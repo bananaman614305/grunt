@@ -118,7 +118,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
   const dbUrl = parsed.values.db ?? DEFAULT_DECISION_LOG_URL;
   const log = await deps.openLog(dbUrl);
   try {
-    const record = await log.get(id);
+    const record = await log.getDecision(id);
     if (!record) {
       deps.stderr.write(`milo explain: no decision found with id "${id}"\n`);
       return 1;

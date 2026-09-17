@@ -33,7 +33,7 @@ export function registerDecisionsRoutes(app: Hono, deps: AppDeps): void {
   });
 
   app.get("/v1/decisions/:id", async (c) => {
-    const record = await deps.log.get(c.req.param("id"));
+    const record = await deps.log.getDecision(c.req.param("id"));
     if (record === undefined) {
       return errorResponse(c, 404, "No decision with that id.", "not_found_error", "decision_not_found");
     }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../types.js";
 import { ROUTER_LIMITS } from "../types.js";
-import { buildJevState, CHARS_PER_TOKEN, messageText } from "./context.js";
+import { buildJevState, CHARS_PER_TOKEN, countUserTurns, messageText } from "./context.js";
 import type { JevState } from "./context.js";
 
 function asState(state: Record<string, unknown>): JevState {
@@ -144,5 +144,64 @@ describe("buildJevState", () => {
     expect(kept.system).toBe("Be brief.");
     expect(kept.recent_user_turns).toEqual(["What does listRecent return?"]);
     expect(approxTokens).toBeLessThan(200);
+  });
+});
+
+describe("countUserTurns", () => {
+  it("counts user messages and nothing else", () => {
+    expect(
+      countUserTurns([
+        { role: "system", content: "You are a sub-agent." },
+        { role: "user", content: "Do the thing." },
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "Now the other thing." },
+      ]),
+    ).toBe(2);
+  });
+
+  it("is unchanged by a tool-result continuation", () => {
+    // This is the whole point: an assistant tool call plus its result is the
+    // same ask coming back, and must not re-route mid-tool-loop.
+    const base = [
+      { role: "system", content: "You are a sub-agent." },
+      { role: "user", content: "Do the thing." },
+    ] as const;
+
+    expect(countUserTurns([...base])).toBe(1);
+    expect(
+      countUserTurns([
+        ...base,
+        { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+        { role: "tool", content: "result", tool_call_id: "c1" },
+        { role: "assistant", content: null, tool_calls: [{ id: "c2" }] },
+        { role: "tool", content: "result", tool_call_id: "c2" },
+      ]),
+    ).toBe(1);
+  });
+
+  it("counts a user turn that carries no usable text", () => {
+    // A turn was still taken, which is what the count is about.
+    expect(
+      countUserTurns([
+        { role: "user", content: "" },
+        { role: "user", content: null },
+        { role: "user", content: [{ type: "image_url" }] },
+      ]),
+    ).toBe(3);
+  });
+
+  it("is zero for a conversation with no user turn", () => {
+    expect(countUserTurns([])).toBe(0);
+    expect(countUserTurns([{ role: "system", content: "prompt" }])).toBe(0);
+  });
+
+  it("does not count developer or system prompts", () => {
+    expect(
+      countUserTurns([
+        { role: "developer", content: "rules" },
+        { role: "system", content: "prompt" },
+        { role: "user", content: "ask" },
+      ]),
+    ).toBe(1);
   });
 });

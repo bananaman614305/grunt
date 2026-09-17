@@ -253,7 +253,7 @@ function post(path: string, body: string, headers: Record<string, string> = API_
 /** Waits for the upstream outcome a streamed response records after the fact. */
 async function upstreamOf(log: DecisionLog, id: string): Promise<NonNullable<DecisionRecord["upstream"]>> {
   for (let attempt = 0; attempt < 200; attempt++) {
-    const record = await log.get(id);
+    const record = await log.getDecision(id);
     if (record?.upstream !== undefined) return record.upstream;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -487,7 +487,7 @@ describe("POST /v1/messages, milo/auto", () => {
     expect(forwarded["max_tokens"]).toBe(1024);
     expect(forwarded).not.toHaveProperty("milo");
 
-    const record = await gateway.log.get(decisionId ?? "");
+    const record = await gateway.log.getDecision(decisionId ?? "");
     expect(record).toMatchObject({
       id: decisionId,
       tier: "frontier",
@@ -552,9 +552,10 @@ describe("POST /v1/messages, milo/auto", () => {
     const second = await post(
       "/v1/messages",
       messagesBody({
+        // A tool loop continuing: tool_use, then the tool_result coming back.
         extraMessages: [
-          { role: "assistant", content: [{ type: "text", text: "Looking." }] },
-          { role: "user", content: "Any luck?" },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "read_file", input: {} }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "file contents" }] },
         ],
       }),
     );
@@ -562,6 +563,26 @@ describe("POST /v1/messages, milo/auto", () => {
     expect(upstreams.jevCalls()).toHaveLength(1);
     expect(second.headers.get("x-milo-sticky")).toBe("true");
     expect(second.headers.get("x-milo-model")).toBe(first.headers.get("x-milo-model"));
+    expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
+  });
+
+  it("re-evaluates when the user asks something new in the same conversation", async () => {
+    await start();
+    upstreams.openRouter = () => jsonResponse(message("test/frontier"));
+
+    const first = await post("/v1/messages", messagesBody());
+    const second = await post(
+      "/v1/messages",
+      messagesBody({
+        extraMessages: [
+          { role: "assistant", content: [{ type: "text", text: "Done." }] },
+          { role: "user", content: "Now redesign the schema for multi-region writes." },
+        ],
+      }),
+    );
+
+    expect(upstreams.jevCalls()).toHaveLength(2);
+    expect(second.headers.get("x-milo-sticky")).toBe("false");
     expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
   });
 

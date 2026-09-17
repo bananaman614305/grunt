@@ -1,7 +1,7 @@
 {
   "posture": "balanced",
   "policyVersion": "v2",
-  "generatedAt": "2026-09-17T19:07:39.888Z",
+  "generatedAt": "2026-09-17T19:54:23.600Z",
   "scored": [
     {
       "kind": "scored",
@@ -21,7 +21,7 @@
       "needsReasoning": 0.06,
       "predictedTier": "fast",
       "reason": "chat task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 28,
+      "latencyMs": 24,
       "agree": true
     },
     {
@@ -42,7 +42,7 @@
       "needsReasoning": 0.04,
       "predictedTier": "fast",
       "reason": "chat task, P(level 1+) 0.01 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 28,
+      "latencyMs": 27,
       "agree": true
     },
     {
@@ -63,7 +63,7 @@
       "needsReasoning": 0.03,
       "predictedTier": "fast",
       "reason": "chat task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 23,
+      "latencyMs": 27,
       "agree": true
     },
     {
@@ -81,7 +81,7 @@
         0,
         0
       ],
-      "needsReasoning": 0.12,
+      "needsReasoning": 0.11,
       "predictedTier": "fast",
       "reason": "chat task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 27,
@@ -95,17 +95,17 @@
       "expectedTier": "fast",
       "notes": "Casual recommendation chat, no real reasoning even though it's multi-turn.",
       "predictedTaskType": "chat",
-      "predictedDifficulty": 0.33,
+      "predictedDifficulty": 0.28,
       "difficultyLevels": [
-        0.67,
-        0.33,
+        0.72,
+        0.28,
         0,
         0
       ],
-      "needsReasoning": 0.14,
+      "needsReasoning": 0.13,
       "predictedTier": "fast",
-      "reason": "chat task, P(level 1+) 0.33 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 5,
+      "reason": "chat task, P(level 1+) 0.28 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 6,
       "agree": true
     },
     {
@@ -123,10 +123,10 @@
         0,
         0
       ],
-      "needsReasoning": 0.19,
+      "needsReasoning": 0.17,
       "predictedTier": "mid",
       "reason": "chat task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 6,
+      "latencyMs": 5,
       "agree": false
     },
     {
@@ -137,17 +137,17 @@
       "expectedTier": "mid",
       "notes": "Needs to weigh the async/distributed constraint against generic icebreaker advice, light reasoning, so mid.",
       "predictedTaskType": "chat",
-      "predictedDifficulty": 0.49,
+      "predictedDifficulty": 0.48,
       "difficultyLevels": [
-        0.51,
-        0.49,
+        0.52,
+        0.48,
         0,
         0
       ],
       "needsReasoning": 0.18,
       "predictedTier": "mid",
       "reason": "chat task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 6,
+      "latencyMs": 5,
       "agree": true
     },
     {
@@ -165,10 +165,10 @@
         0,
         0
       ],
-      "needsReasoning": 0.26,
+      "needsReasoning": 0.27,
       "predictedTier": "mid",
       "reason": "docs task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 4,
+      "latencyMs": 5,
       "agree": true
     },
     {
@@ -179,17 +179,17 @@
       "expectedTier": "fast",
       "notes": "Low-stakes suggestion, little reasoning required, fast.",
       "predictedTaskType": "chat",
-      "predictedDifficulty": 0.15,
+      "predictedDifficulty": 0.13,
       "difficultyLevels": [
-        0.86,
-        0.14,
+        0.87,
+        0.13,
         0,
         0
       ],
       "needsReasoning": 0.09,
       "predictedTier": "fast",
-      "reason": "chat task, P(level 1+) 0.14 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 3,
+      "reason": "chat task, P(level 1+) 0.13 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -200,16 +200,16 @@
       "expectedTier": "mid",
       "notes": "Genuinely needs reasoning about the person's specifics, would be frontier-worthy under general policy, but task_type chat caps at mid at band 2.",
       "predictedTaskType": "chat",
-      "predictedDifficulty": 0.86,
+      "predictedDifficulty": 0.88,
       "difficultyLevels": [
-        0.39,
-        0.36,
-        0.23,
-        0.02
+        0.4,
+        0.35,
+        0.24,
+        0.01
       ],
       "needsReasoning": 0.88,
       "predictedTier": "mid",
-      "reason": "chat task, P(hard) 0.02 below 0.05 and P(level 2+) 0.25 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "chat task, P(hard) 0.01 below 0.05 and P(level 2+) 0.25 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 3,
       "agree": true
     },
@@ -223,15 +223,15 @@
       "predictedTaskType": "chat",
       "predictedDifficulty": 0.72,
       "difficultyLevels": [
-        0.43,
-        0.43,
+        0.42,
+        0.44,
         0.14,
         0
       ],
       "needsReasoning": 0.88,
       "predictedTier": "mid",
       "reason": "chat task, P(hard) 0.00 below 0.05 and P(level 2+) 0.14 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -242,18 +242,18 @@
       "expectedTier": "frontier",
       "notes": "Sustained adversarial philosophical argumentation across turns is genuinely hard reasoning; band 3 lifts the chat/classify cap, so frontier.",
       "predictedTaskType": "chat",
-      "predictedDifficulty": 0.57,
+      "predictedDifficulty": 0.52,
       "difficultyLevels": [
-        0.63,
-        0.23,
-        0.07,
-        0.07
+        0.66,
+        0.22,
+        0.06,
+        0.06
       ],
       "needsReasoning": 0.61,
-      "predictedTier": "frontier",
-      "reason": "chat task, P(hard) 0.07 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "predictedTier": "fast",
+      "reason": "chat task, P(level 1+) 0.34 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 3,
-      "agree": true
+      "agree": false
     },
     {
       "kind": "scored",
@@ -263,17 +263,17 @@
       "expectedTier": "fast",
       "notes": "Unambiguous single-sentence sentiment.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 0.1,
+      "predictedDifficulty": 0.12,
       "difficultyLevels": [
-        0.9,
-        0.1,
+        0.88,
+        0.12,
         0,
         0
       ],
       "needsReasoning": 0.08,
       "predictedTier": "fast",
-      "reason": "classify task, P(level 1+) 0.10 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "reason": "classify task, P(level 1+) 0.12 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -294,7 +294,7 @@
       "needsReasoning": 0.08,
       "predictedTier": "fast",
       "reason": "classify task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -315,7 +315,7 @@
       "needsReasoning": 0.07,
       "predictedTier": "fast",
       "reason": "classify task, P(level 1+) 0.04 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -357,7 +357,7 @@
       "needsReasoning": 0.05,
       "predictedTier": "fast",
       "reason": "classify task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -368,16 +368,16 @@
       "expectedTier": "fast",
       "notes": "Total outage affecting all users is an obvious high, no ambiguity.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 0.27,
+      "predictedDifficulty": 0.24,
       "difficultyLevels": [
-        0.74,
-        0.26,
+        0.77,
+        0.23,
         0,
         0
       ],
       "needsReasoning": 0.12,
       "predictedTier": "fast",
-      "reason": "classify task, P(level 1+) 0.26 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "reason": "classify task, P(level 1+) 0.23 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 1,
       "agree": true
     },
@@ -412,15 +412,15 @@
       "predictedTaskType": "chat",
       "predictedDifficulty": 0.01,
       "difficultyLevels": [
-        1,
-        0,
+        0.99,
+        0.01,
         0,
         0
       ],
-      "needsReasoning": 0.11,
+      "needsReasoning": 0.12,
       "predictedTier": "fast",
-      "reason": "chat task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "reason": "chat task, P(level 1+) 0.01 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -433,15 +433,15 @@
       "predictedTaskType": "classify",
       "predictedDifficulty": 0.07,
       "difficultyLevels": [
-        0.94,
-        0.06,
+        0.93,
+        0.07,
         0,
         0
       ],
       "needsReasoning": 0.09,
       "predictedTier": "fast",
-      "reason": "classify task, P(level 1+) 0.06 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "reason": "classify task, P(level 1+) 0.07 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -462,7 +462,7 @@
       "needsReasoning": 0.05,
       "predictedTier": "fast",
       "reason": "classify task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -473,17 +473,17 @@
       "expectedTier": "fast",
       "notes": "Clearly a feature request once read, minimal reasoning despite band 1.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 0.01,
+      "predictedDifficulty": 0.02,
       "difficultyLevels": [
-        0.99,
-        0.01,
+        0.98,
+        0.02,
         0,
         0
       ],
       "needsReasoning": 0.07,
       "predictedTier": "fast",
-      "reason": "classify task, P(level 1+) 0.01 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "reason": "classify task, P(level 1+) 0.02 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -501,7 +501,7 @@
         0,
         0
       ],
-      "needsReasoning": 0.2,
+      "needsReasoning": 0.21,
       "predictedTier": "fast",
       "reason": "review task, P(level 1+) 0.28 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 1,
@@ -525,7 +525,7 @@
       "needsReasoning": 0.06,
       "predictedTier": "fast",
       "reason": "classify task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -536,14 +536,14 @@
       "expectedTier": "mid",
       "notes": "Needs to compare phrasing and infer that 1 and 2 are the same bug while 3 is a different, unrelated feature request.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 0.67,
+      "predictedDifficulty": 0.73,
       "difficultyLevels": [
-        0.35,
-        0.64,
+        0.28,
+        0.71,
         0.01,
         0
       ],
-      "needsReasoning": 0.42,
+      "needsReasoning": 0.45,
       "predictedTier": "mid",
       "reason": "classify task, P(hard) 0.00 below 0.05 and P(level 2+) 0.01 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
@@ -557,17 +557,17 @@
       "expectedTier": "mid",
       "notes": "Requires reasoning about row-level locking behavior under concurrent decrements, not just classifying the verb.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 0.55,
+      "predictedDifficulty": 0.56,
       "difficultyLevels": [
-        0.53,
-        0.43,
+        0.52,
+        0.45,
         0,
-        0.04
+        0.03
       ],
-      "needsReasoning": 0.24,
+      "needsReasoning": 0.22,
       "predictedTier": "mid",
-      "reason": "classify task, P(hard) 0.04 below 0.05 and P(level 2+) 0.04 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
+      "reason": "classify task, P(hard) 0.03 below 0.05 and P(level 2+) 0.03 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -578,17 +578,17 @@
       "expectedTier": "mid",
       "notes": "Distinguishing tone-based churn risk (2, 5, 7) from surface sentiment needs real reasoning, but classify caps at mid even at band 2.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 0.9,
+      "predictedDifficulty": 0.88,
       "difficultyLevels": [
-        0.13,
+        0.14,
         0.84,
-        0.03,
+        0.02,
         0
       ],
-      "needsReasoning": 0.57,
+      "needsReasoning": 0.55,
       "predictedTier": "mid",
-      "reason": "classify task, P(hard) 0.00 below 0.05 and P(level 2+) 0.03 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "reason": "classify task, P(hard) 0.00 below 0.05 and P(level 2+) 0.02 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -599,14 +599,14 @@
       "expectedTier": "mid",
       "notes": "Several traces are genuinely ambiguous (3 could be permissions or config; 5 could be null-pointer or unknown), needs judgment, capped at mid for classify.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 0.85,
+      "predictedDifficulty": 0.84,
       "difficultyLevels": [
-        0.2,
-        0.75,
+        0.21,
+        0.74,
         0.05,
         0
       ],
-      "needsReasoning": 0.54,
+      "needsReasoning": 0.52,
       "predictedTier": "mid",
       "reason": "classify task, P(hard) 0.00 below 0.05 and P(level 2+) 0.05 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
@@ -620,18 +620,18 @@
       "expectedTier": "frontier",
       "notes": "Deliberately overlapping legal categories and a clause that touches sub-processing, retention, and liability cap simultaneously; band 3 lifts the classify cap to frontier.",
       "predictedTaskType": "classify",
-      "predictedDifficulty": 1.52,
+      "predictedDifficulty": 1.47,
       "difficultyLevels": [
-        0.04,
+        0.05,
+        0.47,
         0.44,
-        0.47000000000000003,
-        0.05
+        0.04
       ],
-      "needsReasoning": 0.87,
-      "predictedTier": "frontier",
-      "reason": "classify task, P(hard) 0.05 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "needsReasoning": 0.88,
+      "predictedTier": "mid",
+      "reason": "classify task, P(hard) 0.04 below 0.05 and P(level 2+) 0.48 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
-      "agree": true
+      "agree": false
     },
     {
       "kind": "scored",
@@ -693,7 +693,7 @@
       "needsReasoning": 0.05,
       "predictedTier": "fast",
       "reason": "docs task, P(level 1+) 0.03 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -704,17 +704,17 @@
       "expectedTier": "fast",
       "notes": "Boilerplate instructions from known commands, low reasoning.",
       "predictedTaskType": "docs",
-      "predictedDifficulty": 0.94,
+      "predictedDifficulty": 0.93,
       "difficultyLevels": [
-        0.06,
-        0.94,
+        0.07,
+        0.93,
         0,
         0
       ],
-      "needsReasoning": 0.16,
+      "needsReasoning": 0.15,
       "predictedTier": "mid",
       "reason": "docs task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 3,
       "agree": false
     },
     {
@@ -732,10 +732,10 @@
         0,
         0
       ],
-      "needsReasoning": 0.06,
+      "needsReasoning": 0.07,
       "predictedTier": "fast",
       "reason": "docs task, P(level 1+) 0.34 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -746,17 +746,17 @@
       "expectedTier": "mid",
       "notes": "Needs to group and prioritize items into user-facing categories, a bit more than transcription.",
       "predictedTaskType": "docs",
-      "predictedDifficulty": 0.73,
+      "predictedDifficulty": 0.72,
       "difficultyLevels": [
-        0.27,
-        0.73,
+        0.28,
+        0.72,
         0,
         0
       ],
       "needsReasoning": 0.16,
       "predictedTier": "mid",
       "reason": "docs task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -767,10 +767,10 @@
       "expectedTier": "mid",
       "notes": "Requires inferring both success and error response shapes and writing them out clearly, mild reasoning.",
       "predictedTaskType": "docs",
-      "predictedDifficulty": 0.87,
+      "predictedDifficulty": 0.82,
       "difficultyLevels": [
-        0.13,
-        0.87,
+        0.18,
+        0.82,
         0,
         0
       ],
@@ -811,14 +811,14 @@
       "predictedTaskType": "docs",
       "predictedDifficulty": 1.01,
       "difficultyLevels": [
-        0.03,
+        0.02,
         0.94,
-        0.03,
+        0.04,
         0
       ],
-      "needsReasoning": 0.32,
+      "needsReasoning": 0.31,
       "predictedTier": "mid",
-      "reason": "docs task, P(hard) 0.00 below 0.05 and P(level 2+) 0.03 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "docs task, P(hard) 0.00 below 0.05 and P(level 2+) 0.04 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -830,16 +830,16 @@
       "expectedTier": "frontier",
       "notes": "Requires synthesizing event flows across five services into correct sequence diagrams and spotting the circular-dependency risk between orders and notifications on cancellation; real cross-cutting reasoning, so frontier.",
       "predictedTaskType": "docs",
-      "predictedDifficulty": 1.87,
+      "predictedDifficulty": 1.78,
       "difficultyLevels": [
         0,
-        0.25,
-        0.63,
-        0.12
+        0.3,
+        0.62,
+        0.08
       ],
-      "needsReasoning": 0.81,
+      "needsReasoning": 0.82,
       "predictedTier": "frontier",
-      "reason": "docs task, P(hard) 0.12 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "docs task, P(hard) 0.08 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -851,16 +851,16 @@
       "expectedTier": "frontier",
       "notes": "Needs careful reasoning to match mitigations to threat classes and correctly identify the VPN timeout as only a partial mitigation for a stolen, already-authenticated laptop; frontier.",
       "predictedTaskType": "docs",
-      "predictedDifficulty": 1.7,
+      "predictedDifficulty": 1.69,
       "difficultyLevels": [
         0,
-        0.47,
-        0.36,
-        0.17
+        0.46,
+        0.39,
+        0.15
       ],
-      "needsReasoning": 0.76,
+      "needsReasoning": 0.77,
       "predictedTier": "frontier",
-      "reason": "docs task, P(hard) 0.17 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "docs task, P(hard) 0.15 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -872,16 +872,16 @@
       "expectedTier": "frontier",
       "notes": "Requires holding three separate documents' claims in mind, identifying direct contradictions versus merely unverified assertions, and producing a reasoned single source of truth; unambiguously frontier-level synthesis.",
       "predictedTaskType": "docs",
-      "predictedDifficulty": 2.73,
+      "predictedDifficulty": 2.74,
       "difficultyLevels": [
         0,
         0,
-        0.27,
-        0.73
+        0.26,
+        0.74
       ],
       "needsReasoning": 0.93,
       "predictedTier": "frontier",
-      "reason": "docs task, P(hard) 0.73 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "docs task, P(hard) 0.74 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -893,16 +893,16 @@
       "expectedTier": "fast",
       "notes": "Single obvious style rule.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 0.13,
+      "predictedDifficulty": 0.17,
       "difficultyLevels": [
-        0.87,
-        0.13,
+        0.83,
+        0.17,
         0,
         0
       ],
       "needsReasoning": 0.11,
       "predictedTier": "fast",
-      "reason": "review task, P(level 1+) 0.13 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "reason": "review task, P(level 1+) 0.17 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 1,
       "agree": true
     },
@@ -914,14 +914,14 @@
       "expectedTier": "fast",
       "notes": "Given the premise, a direct yes/no check.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 0.3,
+      "predictedDifficulty": 0.31,
       "difficultyLevels": [
         0.71,
         0.28,
         0.01,
         0
       ],
-      "needsReasoning": 0.37,
+      "needsReasoning": 0.36,
       "predictedTier": "fast",
       "reason": "review task, P(level 1+) 0.29 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 1,
@@ -942,7 +942,7 @@
         0,
         0
       ],
-      "needsReasoning": 0.22,
+      "needsReasoning": 0.21,
       "predictedTier": "mid",
       "reason": "review task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
@@ -956,17 +956,17 @@
       "expectedTier": "fast",
       "notes": "Small mechanical diff, straightforward to verify by eye.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 1.24,
+      "predictedDifficulty": 1.25,
       "difficultyLevels": [
-        0.15,
-        0.46,
-        0.39,
+        0.17,
+        0.41,
+        0.42,
         0
       ],
-      "needsReasoning": 0.53,
+      "needsReasoning": 0.54,
       "predictedTier": "mid",
-      "reason": "review task, P(hard) 0.00 below 0.05 and P(level 2+) 0.39 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 3,
+      "reason": "review task, P(hard) 0.00 below 0.05 and P(level 2+) 0.42 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "latencyMs": 1,
       "agree": false
     },
     {
@@ -977,17 +977,17 @@
       "expectedTier": "mid",
       "notes": "Needs to spot a second-order issue (integer division truncation) after the first is found, mild reasoning.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 0.5,
+      "predictedDifficulty": 0.52,
       "difficultyLevels": [
+        0.48,
         0.51,
-        0.49,
-        0,
+        0.01,
         0
       ],
-      "needsReasoning": 0.34,
+      "needsReasoning": 0.35,
       "predictedTier": "mid",
-      "reason": "review task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 3,
+      "reason": "review task, P(hard) 0.00 below 0.05 and P(level 2+) 0.01 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -998,18 +998,18 @@
       "expectedTier": "mid",
       "notes": "Needs to reason about whether Postgres 15's fast-path default applies at this row count, a bit of domain knowledge beyond pattern matching.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 1.67,
+      "predictedDifficulty": 1.72,
       "difficultyLevels": [
-        0.01,
-        0.36,
-        0.59,
-        0.04
+        0,
+        0.32,
+        0.63,
+        0.05
       ],
-      "needsReasoning": 0.63,
-      "predictedTier": "mid",
-      "reason": "review task, P(hard) 0.04 below 0.05 and P(level 2+) 0.63 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
-      "agree": true
+      "needsReasoning": 0.61,
+      "predictedTier": "frontier",
+      "reason": "review task, P(hard) 0.05 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 1,
+      "agree": false
     },
     {
       "kind": "scored",
@@ -1019,17 +1019,17 @@
       "expectedTier": "frontier",
       "notes": "Needs to reason about concurrent request races on the shared Map (two requests reading before either writes), unbounded memory growth from never evicting keys, and missing-header handling; genuine correctness reasoning, so frontier.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 2.58,
+      "predictedDifficulty": 2.59,
       "difficultyLevels": [
         0,
         0,
-        0.41,
-        0.59
+        0.4,
+        0.6
       ],
       "needsReasoning": 0.9,
       "predictedTier": "frontier",
-      "reason": "review task, P(hard) 0.59 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "reason": "review task, P(hard) 0.60 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1040,7 +1040,7 @@
       "expectedTier": "frontier",
       "notes": "The refactor swaps jwt.verify for jwt.decode, silently dropping signature verification, and adds a token-in-query-string vector; spotting both requires careful security reasoning, frontier.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 2.86,
+      "predictedDifficulty": 2.87,
       "difficultyLevels": [
         0,
         0,
@@ -1061,16 +1061,16 @@
       "expectedTier": "mid",
       "notes": "Requires reasoning about deploy ordering causing the app to reference a dropped column, a fairly standard migration-safety pattern, mid.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 1.32,
+      "predictedDifficulty": 1.27,
       "difficultyLevels": [
         0.09,
-        0.52,
-        0.38,
+        0.5599999999999999,
+        0.34,
         0.01
       ],
-      "needsReasoning": 0.59,
+      "needsReasoning": 0.61,
       "predictedTier": "mid",
-      "reason": "review task, P(hard) 0.01 below 0.05 and P(level 2+) 0.39 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "review task, P(hard) 0.01 below 0.05 and P(level 2+) 0.35 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1082,16 +1082,16 @@
       "expectedTier": "frontier",
       "notes": "Needs to trace that concurrent gather calls with overlapping keys can both miss the cache and both await fetch_fn for the same key, a subtle interleaving bug; frontier.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 2.76,
+      "predictedDifficulty": 2.73,
       "difficultyLevels": [
         0,
         0.01,
-        0.22,
-        0.77
+        0.25,
+        0.74
       ],
       "needsReasoning": 0.9,
       "predictedTier": "frontier",
-      "reason": "review task, P(hard) 0.77 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "review task, P(hard) 0.74 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1124,16 +1124,16 @@
       "expectedTier": "frontier",
       "notes": "bytes.Equal for key comparison and a plain string == for MAC comparison are both timing-attack vectors, plus the unguarded background goroutine racing with concurrent RotateKey calls; deep, narrow expertise required, frontier.",
       "predictedTaskType": "review",
-      "predictedDifficulty": 2.98,
+      "predictedDifficulty": 2.97,
       "difficultyLevels": [
         0,
         0,
-        0.02,
-        0.98
+        0.03,
+        0.97
       ],
       "needsReasoning": 0.91,
       "predictedTier": "frontier",
-      "reason": "review task, P(hard) 0.98 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "review task, P(hard) 0.97 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1155,7 +1155,7 @@
       "needsReasoning": 0.05,
       "predictedTier": "fast",
       "reason": "edit task, P(level 1+) 0.01 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 0,
       "agree": true
     },
     {
@@ -1187,16 +1187,16 @@
       "expectedTier": "fast",
       "notes": "Small, fully visible file, mechanical rename.",
       "predictedTaskType": "edit",
-      "predictedDifficulty": 0.27,
+      "predictedDifficulty": 0.28,
       "difficultyLevels": [
-        0.73,
-        0.27,
+        0.72,
+        0.28,
         0,
         0
       ],
       "needsReasoning": 0.12,
       "predictedTier": "fast",
-      "reason": "edit task, P(level 1+) 0.27 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "reason": "edit task, P(level 1+) 0.28 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1229,14 +1229,14 @@
       "expectedTier": "mid",
       "notes": "Requires noticing the shared formatting core across three differently-worded functions and designing a clean helper signature.",
       "predictedTaskType": "edit",
-      "predictedDifficulty": 0.84,
+      "predictedDifficulty": 0.79,
       "difficultyLevels": [
-        0.16,
-        0.84,
+        0.21,
+        0.79,
         0,
         0
       ],
-      "needsReasoning": 0.18,
+      "needsReasoning": 0.17,
       "predictedTier": "mid",
       "reason": "edit task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
@@ -1273,14 +1273,14 @@
       "predictedTaskType": "edit",
       "predictedDifficulty": 1,
       "difficultyLevels": [
-        0.01,
-        0.99,
         0,
+        0.99,
+        0.01,
         0
       ],
-      "needsReasoning": 0.2,
+      "needsReasoning": 0.21,
       "predictedTier": "mid",
-      "reason": "edit task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "edit task, P(hard) 0.00 below 0.05 and P(level 2+) 0.01 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1292,7 +1292,7 @@
       "expectedTier": "frontier",
       "notes": "Preserving exact behavior across mount/update/unmount semantics with hooks (avoiding stale closures, race conditions on rapid userId changes, and the unmount guard) is subtle enough to need frontier.",
       "predictedTaskType": "edit",
-      "predictedDifficulty": 1.05,
+      "predictedDifficulty": 1.06,
       "difficultyLevels": [
         0,
         0.96,
@@ -1320,7 +1320,7 @@
         0,
         0
       ],
-      "needsReasoning": 0.32,
+      "needsReasoning": 0.31,
       "predictedTier": "mid",
       "reason": "edit task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
@@ -1334,10 +1334,10 @@
       "expectedTier": "mid",
       "notes": "Standard SUM() OVER (PARTITION BY ... ORDER BY ...) pattern, mid.",
       "predictedTaskType": "edit",
-      "predictedDifficulty": 0.7,
+      "predictedDifficulty": 0.69,
       "difficultyLevels": [
-        0.3,
-        0.7,
+        0.31,
+        0.69,
         0,
         0
       ],
@@ -1355,16 +1355,16 @@
       "expectedTier": "frontier",
       "notes": "Needs a design that adds multi-region support (provider aliases, for_each over regions) while guaranteeing zero-change behavior for existing single-region callers; frontier.",
       "predictedTaskType": "edit",
-      "predictedDifficulty": 2.02,
+      "predictedDifficulty": 2.05,
       "difficultyLevels": [
         0,
-        0.08,
-        0.82,
-        0.1
+        0.07,
+        0.81,
+        0.12
       ],
-      "needsReasoning": 0.82,
+      "needsReasoning": 0.83,
       "predictedTier": "frontier",
-      "reason": "edit task, P(hard) 0.10 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "edit task, P(hard) 0.12 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1400,13 +1400,13 @@
       "predictedDifficulty": 2.95,
       "difficultyLevels": [
         0,
+        0.01,
         0.02,
-        0.02,
-        0.96
+        0.97
       ],
-      "needsReasoning": 0.89,
+      "needsReasoning": 0.88,
       "predictedTier": "frontier",
-      "reason": "edit task, P(hard) 0.96 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "edit task, P(hard) 0.97 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1418,10 +1418,10 @@
       "expectedTier": "fast",
       "notes": "Placeholder flag with no real logic, purely mechanical.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 0.84,
+      "predictedDifficulty": 0.81,
       "difficultyLevels": [
-        0.16,
-        0.84,
+        0.19,
+        0.81,
         0,
         0
       ],
@@ -1439,10 +1439,10 @@
       "expectedTier": "fast",
       "notes": "Mongoose has built-in `timestamps` support for exactly this, mechanical.",
       "predictedTaskType": "edit",
-      "predictedDifficulty": 0.49,
+      "predictedDifficulty": 0.52,
       "difficultyLevels": [
-        0.51,
-        0.49,
+        0.48,
+        0.52,
         0,
         0
       ],
@@ -1460,10 +1460,10 @@
       "expectedTier": "fast",
       "notes": "Textbook health-check endpoint, no design decisions.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 0.62,
+      "predictedDifficulty": 0.59,
       "difficultyLevels": [
-        0.38,
-        0.62,
+        0.41,
+        0.59,
         0,
         0
       ],
@@ -1483,14 +1483,14 @@
       "predictedTaskType": "edit",
       "predictedDifficulty": 1,
       "difficultyLevels": [
-        0,
-        1,
-        0,
+        0.01,
+        0.98,
+        0.01,
         0
       ],
-      "needsReasoning": 0.3,
+      "needsReasoning": 0.32,
       "predictedTier": "mid",
-      "reason": "edit task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "edit task, P(hard) 0.00 below 0.05 and P(level 2+) 0.01 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1502,16 +1502,16 @@
       "expectedTier": "mid",
       "notes": "Needs a deterministic hashing scheme for consistent per-user rollout, a known pattern applied carefully, mid.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 1.47,
+      "predictedDifficulty": 1.43,
       "difficultyLevels": [
         0,
-        0.54,
-        0.45,
+        0.58,
+        0.41,
         0.01
       ],
       "needsReasoning": 0.67,
       "predictedTier": "mid",
-      "reason": "feature task, P(hard) 0.01 below 0.05 and P(level 2+) 0.46 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "feature task, P(hard) 0.01 below 0.05 and P(level 2+) 0.42 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1523,17 +1523,17 @@
       "expectedTier": "mid",
       "notes": "Mirrors an existing, visible pattern into a new format; mostly mechanical translation with some structuring, mid.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 1.21,
+      "predictedDifficulty": 1.18,
       "difficultyLevels": [
         0,
-        0.79,
-        0.21,
+        0.82,
+        0.18,
         0
       ],
-      "needsReasoning": 0.74,
+      "needsReasoning": 0.72,
       "predictedTier": "mid",
-      "reason": "feature task, P(hard) 0.00 below 0.05 and P(level 2+) 0.21 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
+      "reason": "feature task, P(hard) 0.00 below 0.05 and P(level 2+) 0.18 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1544,16 +1544,16 @@
       "expectedTier": "frontier",
       "notes": "Correctness-critical abuse control with a specific fail-open-but-degraded behavior that's easy to get subtly wrong (e.g. accidentally blocking instead of degrading); frontier.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 2.52,
+      "predictedDifficulty": 2.53,
       "difficultyLevels": [
         0,
         0.06,
-        0.37,
-        0.57
+        0.35,
+        0.59
       ],
-      "needsReasoning": 0.86,
+      "needsReasoning": 0.85,
       "predictedTier": "frontier",
-      "reason": "feature task, P(hard) 0.57 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "feature task, P(hard) 0.59 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1572,7 +1572,7 @@
         0.02,
         0.98
       ],
-      "needsReasoning": 0.93,
+      "needsReasoning": 0.92,
       "predictedTier": "frontier",
       "reason": "feature task, P(hard) 0.98 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
@@ -1590,12 +1590,12 @@
       "difficultyLevels": [
         0,
         0.5,
-        0.16,
-        0.34
+        0.14,
+        0.36
       ],
       "needsReasoning": 0.59,
       "predictedTier": "frontier",
-      "reason": "feature task, P(hard) 0.34 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "feature task, P(hard) 0.36 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1607,7 +1607,7 @@
       "expectedTier": "frontier",
       "notes": "Multi-part system design (signing, backoff schedule, DLQ with redrive, status projection) integrating with an existing event bus under at-least-once semantics; clearly frontier.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 2.99,
+      "predictedDifficulty": 2.98,
       "difficultyLevels": [
         0,
         0,
@@ -1628,17 +1628,17 @@
       "expectedTier": "frontier",
       "notes": "A full, correct OAuth2+PKCE implementation with refresh rotation and scope enforcement, kept isolated from an existing unrelated auth system, is a substantial, security-sensitive design task; frontier.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 3,
+      "predictedDifficulty": 2.99,
       "difficultyLevels": [
         0,
         0,
-        0,
-        1
+        0.01,
+        0.99
       ],
       "needsReasoning": 0.92,
       "predictedTier": "frontier",
-      "reason": "feature task, P(hard) 1.00 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 1,
+      "reason": "feature task, P(hard) 0.99 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1659,7 +1659,7 @@
       "needsReasoning": 0.92,
       "predictedTier": "frontier",
       "reason": "feature task, P(hard) 1.00 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1677,7 +1677,7 @@
         0.05,
         0.95
       ],
-      "needsReasoning": 0.93,
+      "needsReasoning": 0.92,
       "predictedTier": "frontier",
       "reason": "feature task, P(hard) 0.95 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
@@ -1698,7 +1698,7 @@
         0.01,
         0.99
       ],
-      "needsReasoning": 0.95,
+      "needsReasoning": 0.94,
       "predictedTier": "frontier",
       "reason": "feature task, P(hard) 0.99 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
@@ -1722,7 +1722,7 @@
       "needsReasoning": 0.09,
       "predictedTier": "fast",
       "reason": "debug task, P(level 1+) 0.01 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1733,14 +1733,14 @@
       "expectedTier": "fast",
       "notes": "Textbook fix (default prop or guard clause), obvious once stated.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 0.73,
+      "predictedDifficulty": 0.74,
       "difficultyLevels": [
         0.27,
         0.73,
         0,
         0
       ],
-      "needsReasoning": 0.15,
+      "needsReasoning": 0.16,
       "predictedTier": "mid",
       "reason": "debug task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
@@ -1756,12 +1756,12 @@
       "predictedTaskType": "debug",
       "predictedDifficulty": 0.48,
       "difficultyLevels": [
-        0.53,
-        0.47,
+        0.52,
+        0.48,
         0,
         0
       ],
-      "needsReasoning": 0.3,
+      "needsReasoning": 0.29,
       "predictedTier": "mid",
       "reason": "debug task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
@@ -1775,17 +1775,17 @@
       "expectedTier": "mid",
       "notes": "Requires reasoning about join fan-out from the one-to-many order_items relationship, not just a syntax read.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 0.92,
+      "predictedDifficulty": 0.9,
       "difficultyLevels": [
-        0.1,
+        0.11,
         0.88,
-        0.02,
+        0.01,
         0
       ],
       "needsReasoning": 0.42,
       "predictedTier": "mid",
-      "reason": "debug task, P(hard) 0.00 below 0.05 and P(level 2+) 0.02 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
+      "reason": "debug task, P(hard) 0.00 below 0.05 and P(level 2+) 0.01 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1796,14 +1796,14 @@
       "expectedTier": "frontier",
       "notes": "The log pattern suggests a proxy timeout specific to slower upstream responses under concurrency, needing hypothesis formation across several log lines and a decision-relevant correlation (tier vs failure); frontier.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 1.97,
+      "predictedDifficulty": 1.99,
       "difficultyLevels": [
-        0.04,
+        0.03,
         0.05,
-        0.8099999999999999,
+        0.82,
         0.1
       ],
-      "needsReasoning": 0.74,
+      "needsReasoning": 0.77,
       "predictedTier": "frontier",
       "reason": "debug task, P(hard) 0.10 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
@@ -1817,17 +1817,17 @@
       "expectedTier": "frontier",
       "notes": "asyncio.Lock is not reentrant, so the nested `async with lock` deadlocks the same task; spotting this requires understanding asyncio's non-reentrant lock semantics specifically, frontier.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 2.41,
+      "predictedDifficulty": 2.47,
       "difficultyLevels": [
         0.01,
-        0.18,
+        0.15,
         0.2,
-        0.61
+        0.64
       ],
-      "needsReasoning": 0.84,
+      "needsReasoning": 0.87,
       "predictedTier": "frontier",
-      "reason": "debug task, P(hard) 0.61 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "reason": "debug task, P(hard) 0.64 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1845,7 +1845,7 @@
         0.63,
         0.05
       ],
-      "needsReasoning": 0.85,
+      "needsReasoning": 0.84,
       "predictedTier": "frontier",
       "reason": "debug task, P(hard) 0.05 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
@@ -1859,16 +1859,16 @@
       "expectedTier": "mid",
       "notes": "Root cause is directly stated in the setup (two parallel jobs applying the same workspace), standard fix is serializing them, mid.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 1.78,
+      "predictedDifficulty": 1.74,
       "difficultyLevels": [
-        0.01,
-        0.35,
-        0.51,
-        0.13
+        0,
+        0.36,
+        0.53,
+        0.11
       ],
-      "needsReasoning": 0.58,
+      "needsReasoning": 0.61,
       "predictedTier": "frontier",
-      "reason": "debug task, P(hard) 0.13 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "debug task, P(hard) 0.11 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": false
     },
@@ -1880,16 +1880,16 @@
       "expectedTier": "mid",
       "notes": "Diagnosis was already supplied in the prior turn; remaining work is picking a robust fix (pad the wait or use fake timers), mid.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 0.88,
+      "predictedDifficulty": 0.9,
       "difficultyLevels": [
-        0.14,
-        0.85,
-        0.01,
+        0.12,
+        0.86,
+        0.02,
         0
       ],
       "needsReasoning": 0.33,
       "predictedTier": "mid",
-      "reason": "debug task, P(hard) 0.00 below 0.05 and P(level 2+) 0.01 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "debug task, P(hard) 0.00 below 0.05 and P(level 2+) 0.02 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 2,
       "agree": true
     },
@@ -1908,10 +1908,10 @@
         0,
         1
       ],
-      "needsReasoning": 0.93,
+      "needsReasoning": 0.94,
       "predictedTier": "frontier",
       "reason": "debug task, P(hard) 1.00 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1922,16 +1922,16 @@
       "expectedTier": "frontier",
       "notes": "The module-level `cachedBuilder` is a shared, mutable Knex query builder reused and chained across concurrent requests, so concurrent `.where()` calls from different tenants stack onto the same object; a genuinely subtle shared-mutable-state bug, frontier.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 2.76,
+      "predictedDifficulty": 2.71,
       "difficultyLevels": [
         0,
         0.04,
-        0.16,
-        0.8
+        0.19,
+        0.77
       ],
-      "needsReasoning": 0.9,
+      "needsReasoning": 0.91,
       "predictedTier": "frontier",
-      "reason": "debug task, P(hard) 0.80 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "debug task, P(hard) 0.77 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1943,16 +1943,16 @@
       "expectedTier": "frontier",
       "notes": "Root cause requires recognizing that invalidation only clears the writer's own process-local cache, not the other five pods'; the fix needs a cross-process invalidation mechanism (pub/sub), genuine distributed-systems reasoning, frontier.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 2.78,
+      "predictedDifficulty": 2.76,
       "difficultyLevels": [
         0,
         0,
-        0.22,
-        0.78
+        0.24,
+        0.76
       ],
-      "needsReasoning": 0.92,
+      "needsReasoning": 0.91,
       "predictedTier": "frontier",
-      "reason": "debug task, P(hard) 0.78 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "debug task, P(hard) 0.76 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 2,
       "agree": true
     },
@@ -1964,16 +1964,16 @@
       "expectedTier": "frontier",
       "notes": "Classic lock-ordering inversion: `get_or_compute` always takes `data` then `stats` (via `record_hit`/`record_miss`), while the newer `report()` takes `stats` then `data` — two threads taking the locks in opposite order can deadlock. Spotting this from a thread dump, across a function added after the original code was reviewed, while also ruling out the team's own wrong hypothesis, is hard; frontier.",
       "predictedTaskType": "debug",
-      "predictedDifficulty": 2.84,
+      "predictedDifficulty": 2.82,
       "difficultyLevels": [
         0,
         0.03,
-        0.1,
-        0.87
+        0.12,
+        0.85
       ],
-      "needsReasoning": 0.9,
+      "needsReasoning": 0.91,
       "predictedTier": "frontier",
-      "reason": "debug task, P(hard) 0.87 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "debug task, P(hard) 0.85 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -1992,7 +1992,7 @@
         0,
         0
       ],
-      "needsReasoning": 0.03,
+      "needsReasoning": 0.04,
       "predictedTier": "fast",
       "reason": "research task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
       "latencyMs": 1,
@@ -2006,17 +2006,17 @@
       "expectedTier": "fast",
       "notes": "Well-worn comparison, recall more than reasoning.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 0.52,
+      "predictedDifficulty": 0.57,
       "difficultyLevels": [
-        0.48,
-        0.52,
+        0.43,
+        0.5700000000000001,
         0,
         0
       ],
       "needsReasoning": 0.1,
       "predictedTier": "mid",
       "reason": "research task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": false
     },
     {
@@ -2027,16 +2027,16 @@
       "expectedTier": "fast",
       "notes": "Standard factual comparison of well-documented tools.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 1.3,
+      "predictedDifficulty": 1.29,
       "difficultyLevels": [
-        0.02,
-        0.67,
-        0.31,
+        0.01,
+        0.7,
+        0.29,
         0
       ],
       "needsReasoning": 0.3,
       "predictedTier": "mid",
-      "reason": "research task, P(hard) 0.00 below 0.05 and P(level 2+) 0.31 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "research task, P(hard) 0.00 below 0.05 and P(level 2+) 0.29 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
       "agree": false
     },
@@ -2050,15 +2050,15 @@
       "predictedTaskType": "research",
       "predictedDifficulty": 0.91,
       "difficultyLevels": [
-        0.09,
-        0.91,
+        0.1,
+        0.9,
         0,
         0
       ],
-      "needsReasoning": 0.15,
+      "needsReasoning": 0.16,
       "predictedTier": "mid",
       "reason": "research task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2069,16 +2069,16 @@
       "expectedTier": "mid",
       "notes": "A grounded comparison against stated constraints, moderate synthesis but a well-trodden design space, mid.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 2.19,
+      "predictedDifficulty": 2.13,
       "difficultyLevels": [
         0,
         0.01,
-        0.8,
-        0.19
+        0.85,
+        0.14
       ],
-      "needsReasoning": 0.87,
+      "needsReasoning": 0.88,
       "predictedTier": "frontier",
-      "reason": "research task, P(hard) 0.19 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "research task, P(hard) 0.14 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": false
     },
@@ -2090,16 +2090,16 @@
       "expectedTier": "frontier",
       "notes": "Directly contradicts a 'byte-for-byte' assumption the team holds (chunks may be coalesced/split, keep-alive comments injected), requiring the researcher to reconcile the docs against the actual acceptance criteria and flag the risk; frontier.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 2.77,
+      "predictedDifficulty": 2.76,
       "difficultyLevels": [
         0,
-        0.02,
-        0.17,
-        0.8
+        0.03,
+        0.18,
+        0.79
       ],
-      "needsReasoning": 0.74,
+      "needsReasoning": 0.72,
       "predictedTier": "frontier",
-      "reason": "research task, P(hard) 0.80 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "research task, P(hard) 0.79 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -2111,17 +2111,17 @@
       "expectedTier": "frontier",
       "notes": "Requires synthesizing ML calibration concepts and proposing a practical detection method without labels, genuinely open-ended reasoning, frontier.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 2.23,
+      "predictedDifficulty": 2.27,
       "difficultyLevels": [
         0,
         0.06,
-        0.65,
-        0.29
+        0.61,
+        0.33
       ],
       "needsReasoning": 0.78,
       "predictedTier": "frontier",
-      "reason": "research task, P(hard) 0.29 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "reason": "research task, P(hard) 0.33 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2153,7 +2153,7 @@
       "expectedTier": "frontier",
       "notes": "Wide-ranging comparative synthesis across five strategies with a constraint-driven recommendation and explicit counter-justification for rejected options; frontier.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 2.75,
+      "predictedDifficulty": 2.74,
       "difficultyLevels": [
         0,
         0,
@@ -2163,7 +2163,7 @@
       "needsReasoning": 0.94,
       "predictedTier": "frontier",
       "reason": "research task, P(hard) 0.75 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2174,16 +2174,16 @@
       "expectedTier": "frontier",
       "notes": "Requires reasoning about GDPR sub-processor disclosure obligations against a concrete, incomplete privacy-policy draft and identifying the specific gap (Jev unmentioned); frontier.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 2.29,
+      "predictedDifficulty": 2.31,
       "difficultyLevels": [
         0.02,
         0.24,
-        0.17,
-        0.57
+        0.16,
+        0.58
       ],
       "needsReasoning": 0.71,
       "predictedTier": "frontier",
-      "reason": "research task, P(hard) 0.57 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "research task, P(hard) 0.58 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -2195,16 +2195,16 @@
       "expectedTier": "frontier",
       "notes": "Needs to reason through adversarial edge cases across four candidate designs and produce a justified recommendation; frontier.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 2.25,
+      "predictedDifficulty": 2.26,
       "difficultyLevels": [
         0,
         0,
-        0.75,
-        0.25
+        0.74,
+        0.26
       ],
       "needsReasoning": 0.93,
       "predictedTier": "frontier",
-      "reason": "research task, P(hard) 0.25 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "research task, P(hard) 0.26 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -2216,17 +2216,17 @@
       "expectedTier": "frontier",
       "notes": "Requires connecting calibration-drift theory to a concrete, constrained schema and designing a monitoring approach without adding new fields; frontier.",
       "predictedTaskType": "research",
-      "predictedDifficulty": 2.21,
+      "predictedDifficulty": 2.23,
       "difficultyLevels": [
         0,
         0.01,
-        0.76,
-        0.23
+        0.74,
+        0.25
       ],
       "needsReasoning": 0.9,
       "predictedTier": "frontier",
-      "reason": "research task, P(hard) 0.23 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "reason": "research task, P(hard) 0.25 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2244,7 +2244,7 @@
         0.4,
         0.6
       ],
-      "needsReasoning": 0.9,
+      "needsReasoning": 0.91,
       "predictedTier": "frontier",
       "reason": "research task, P(hard) 0.60 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
@@ -2268,7 +2268,7 @@
       "needsReasoning": 0.04,
       "predictedTier": "fast",
       "reason": "chat task, P(level 1+) 0.00 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 3,
       "agree": true
     },
     {
@@ -2289,7 +2289,7 @@
       "needsReasoning": 0.1,
       "predictedTier": "fast",
       "reason": "ops task, P(level 1+) 0.03 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -2300,17 +2300,17 @@
       "expectedTier": "fast",
       "notes": "Standard crontab syntax, no ambiguity.",
       "predictedTaskType": "ops",
-      "predictedDifficulty": 0.04,
+      "predictedDifficulty": 0.03,
       "difficultyLevels": [
-        0.96,
-        0.04,
+        0.97,
+        0.03,
         0,
         0
       ],
       "needsReasoning": 0.06,
       "predictedTier": "fast",
-      "reason": "ops task, P(level 1+) 0.04 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "reason": "ops task, P(level 1+) 0.03 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -2321,17 +2321,17 @@
       "expectedTier": "fast",
       "notes": "Two literal lines, mechanical.",
       "predictedTaskType": "edit",
-      "predictedDifficulty": 0.23,
+      "predictedDifficulty": 0.2,
       "difficultyLevels": [
-        0.77,
-        0.23,
+        0.8,
+        0.2,
         0,
         0
       ],
       "needsReasoning": 0.07,
       "predictedTier": "fast",
-      "reason": "edit task, P(level 1+) 0.23 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "reason": "edit task, P(level 1+) 0.20 below 0.35 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -2342,17 +2342,17 @@
       "expectedTier": "mid",
       "notes": "Needs to know the setup-node `cache: pnpm` option and correct ordering relative to pnpm/action-setup, slightly more than copy-paste.",
       "predictedTaskType": "ops",
-      "predictedDifficulty": 0.79,
+      "predictedDifficulty": 0.78,
       "difficultyLevels": [
-        0.21,
-        0.79,
+        0.22,
+        0.78,
         0,
         0
       ],
       "needsReasoning": 0.15,
       "predictedTier": "mid",
       "reason": "ops task, P(hard) 0.00 below 0.05 and P(level 2+) 0.00 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2363,16 +2363,16 @@
       "expectedTier": "mid",
       "notes": "Fairly standard Fly.io configuration additions (health checks, autoscale block) with a specific secrets-handling constraint, mid.",
       "predictedTaskType": "ops",
-      "predictedDifficulty": 1.44,
+      "predictedDifficulty": 1.45,
       "difficultyLevels": [
         0,
-        0.58,
-        0.4,
+        0.57,
+        0.41,
         0.02
       ],
-      "needsReasoning": 0.65,
+      "needsReasoning": 0.63,
       "predictedTier": "mid",
-      "reason": "ops task, P(hard) 0.02 below 0.05 and P(level 2+) 0.42 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
+      "reason": "ops task, P(hard) 0.02 below 0.05 and P(level 2+) 0.43 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
       "latencyMs": 1,
       "agree": true
     },
@@ -2384,17 +2384,17 @@
       "expectedTier": "frontier",
       "notes": "Multiple interacting infra components (primary, replica, pooler, backup schedule) that must be wired together correctly; frontier.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 2.28,
+      "predictedDifficulty": 2.29,
       "difficultyLevels": [
         0,
         0,
-        0.72,
-        0.28
+        0.71,
+        0.29
       ],
       "needsReasoning": 0.73,
       "predictedTier": "frontier",
-      "reason": "feature task, P(hard) 0.28 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "reason": "feature task, P(hard) 0.29 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2405,17 +2405,17 @@
       "expectedTier": "frontier",
       "notes": "Requires designing the traffic-cutover and rollback trigger logic correctly, not just applying a template; frontier.",
       "predictedTaskType": "ops",
-      "predictedDifficulty": 2.19,
+      "predictedDifficulty": 2.21,
       "difficultyLevels": [
         0,
         0,
-        0.81,
-        0.19
+        0.79,
+        0.21
       ],
       "needsReasoning": 0.87,
       "predictedTier": "frontier",
-      "reason": "ops task, P(hard) 0.19 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 1,
+      "reason": "ops task, P(hard) 0.21 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 0,
       "agree": true
     },
     {
@@ -2426,16 +2426,16 @@
       "expectedTier": "mid",
       "notes": "Standard OpenTelemetry adoption pattern (spans, context propagation) replacing ad hoc console logs; well-trodden but requires real setup work, mid.",
       "predictedTaskType": "feature",
-      "predictedDifficulty": 2.19,
+      "predictedDifficulty": 2.23,
       "difficultyLevels": [
         0,
         0,
-        0.81,
-        0.19
+        0.77,
+        0.23
       ],
-      "needsReasoning": 0.84,
+      "needsReasoning": 0.83,
       "predictedTier": "frontier",
-      "reason": "feature task, P(hard) 0.19 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "feature task, P(hard) 0.23 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": false
     },
@@ -2447,17 +2447,17 @@
       "expectedTier": "frontier",
       "notes": "Requires synthesizing two ADRs into concrete, differentiated alerting thresholds and runbook steps per failure mode; frontier.",
       "predictedTaskType": "ops",
-      "predictedDifficulty": 2.5,
+      "predictedDifficulty": 2.55,
       "difficultyLevels": [
         0,
         0,
-        0.5,
-        0.5
+        0.45,
+        0.55
       ],
       "needsReasoning": 0.9,
       "predictedTier": "frontier",
-      "reason": "ops task, P(hard) 0.50 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "reason": "ops task, P(hard) 0.55 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2475,7 +2475,7 @@
         0,
         1
       ],
-      "needsReasoning": 0.95,
+      "needsReasoning": 0.94,
       "predictedTier": "frontier",
       "reason": "ops task, P(hard) 1.00 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
@@ -2489,17 +2489,17 @@
       "expectedTier": "frontier",
       "notes": "Multi-system rotation design with a scope-narrowing detail (OpenRouter keys aren't Milo's to rotate) that must be correctly reasoned about, plus a no-redeploy-to-rotate constraint; frontier.",
       "predictedTaskType": "ops",
-      "predictedDifficulty": 2.94,
+      "predictedDifficulty": 2.93,
       "difficultyLevels": [
         0,
         0,
-        0.06,
-        0.94
+        0.07,
+        0.93
       ],
       "needsReasoning": 0.93,
       "predictedTier": "frontier",
-      "reason": "ops task, P(hard) 0.94 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 1,
+      "reason": "ops task, P(hard) 0.93 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "latencyMs": 0,
       "agree": true
     },
     {
@@ -2510,16 +2510,16 @@
       "expectedTier": "frontier",
       "notes": "Requires diagnosing five distinct flake causes from evidence and correctly triaging which are pipeline-architecture problems versus individual test bugs, then proposing a concrete restructuring; frontier.",
       "predictedTaskType": "ops",
-      "predictedDifficulty": 2.34,
+      "predictedDifficulty": 2.32,
       "difficultyLevels": [
         0,
         0,
-        0.66,
-        0.34
+        0.68,
+        0.32
       ],
       "needsReasoning": 0.94,
       "predictedTier": "frontier",
-      "reason": "ops task, P(hard) 0.34 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+      "reason": "ops task, P(hard) 0.32 at or above 0.05 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
       "latencyMs": 1,
       "agree": true
     }

@@ -241,7 +241,7 @@ function post(path: string, body: string, headers: Record<string, string> = AUTH
 /** Waits for the upstream outcome a streamed response records after the fact. */
 async function upstreamOf(log: DecisionLog, id: string): Promise<NonNullable<DecisionRecord["upstream"]>> {
   for (let attempt = 0; attempt < 200; attempt++) {
-    const record = await log.get(id);
+    const record = await log.getDecision(id);
     if (record?.upstream !== undefined) return record.upstream;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -386,7 +386,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(forwarded["model"]).toBe("test/frontier");
     expect(forwarded).not.toHaveProperty("milo");
 
-    const record = await gateway.log.get(decisionId ?? "");
+    const record = await gateway.log.getDecision(decisionId ?? "");
     expect(record).toMatchObject({
       id: decisionId,
       tier: "frontier",
@@ -418,7 +418,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(res.headers.get("x-milo-tier")).toBe("mid");
     expect(res.headers.get("x-milo-model")).toBe("test/mid");
 
-    const record = await gateway.log.get(res.headers.get("x-milo-decision-id") ?? "");
+    const record = await gateway.log.getDecision(res.headers.get("x-milo-decision-id") ?? "");
     expect(record?.reason).toContain("low posture caps at mid");
   });
 
@@ -455,9 +455,16 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
 
     const first = await post("/v1/chat/completions", chatBody());
+    // A tool loop continuing: the assistant called a tool and its result
+    // comes back. No new user ask, so the decision is reused.
     const second = await post(
       "/v1/chat/completions",
-      chatBody({ extraMessages: [{ role: "assistant", content: "Looking." }, { role: "user", content: "Any luck?" }] }),
+      chatBody({
+        extraMessages: [
+          { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "read_file", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "call_1", content: "file contents" },
+        ],
+      }),
     );
 
     expect(upstreams.jevCalls()).toHaveLength(1);
@@ -466,8 +473,23 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
 
     // The sticky turn is its own row, so the log counts turns, not routes.
-    const sticky = await gateway.log.get(second.headers.get("x-milo-decision-id") ?? "");
+    const sticky = await gateway.log.getDecision(second.headers.get("x-milo-decision-id") ?? "");
     expect(sticky?.sticky).toBe(true);
+  });
+
+  it("re-evaluates when the user asks something new in the same conversation", async () => {
+    await start();
+    upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
+
+    const first = await post("/v1/chat/completions", chatBody());
+    const second = await post(
+      "/v1/chat/completions",
+      chatBody({ extraMessages: [{ role: "assistant", content: "Done." }, { role: "user", content: "Now redesign the schema for multi-region writes." }] }),
+    );
+
+    expect(upstreams.jevCalls()).toHaveLength(2);
+    expect(second.headers.get("x-milo-sticky")).toBe("false");
+    expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
   });
 
   it("refuses with a 429 once the key is over its routed rate limit", async () => {

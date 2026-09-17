@@ -1,9 +1,12 @@
+import { createClient } from "@libsql/client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DecisionRecord } from "../types.js";
+import type { StickyEntry } from "../router/sticky-store.js";
+import type { DecisionRecord, RouteDecision } from "../types.js";
 import { DecisionLog } from "./decision-log.js";
+import { applyMigrations, MIGRATIONS } from "./schema.js";
 
 function record(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
   return {
@@ -14,10 +17,13 @@ function record(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
     reason: "difficulty 1.4 with reasoning required",
     policyVersion: "v1",
     sticky: false,
-    degraded: false,
     createdAt: "2026-09-17T00:00:00.000Z",
     ...overrides,
   };
+}
+
+function entry(decision: RouteDecision, userTurns = 1, expiresAt = Date.now() + 60_000): StickyEntry {
+  return { decision, userTurns, expiresAt };
 }
 
 describe("DecisionLog", () => {
@@ -54,13 +60,13 @@ describe("DecisionLog", () => {
     });
 
     await log.insert(full);
-    const fetched = await log.get("rec-1");
+    const fetched = await log.getDecision("rec-1");
 
     expect(fetched).toEqual(full);
   });
 
-  it("get returns undefined for a missing id", async () => {
-    expect(await log.get("does-not-exist")).toBeUndefined();
+  it("getDecision returns undefined for a missing id", async () => {
+    expect(await log.getDecision("does-not-exist")).toBeUndefined();
   });
 
   it("listRecent orders newest first", async () => {
@@ -81,27 +87,22 @@ describe("DecisionLog", () => {
     expect(await log.listRecent()).toHaveLength(10);
   });
 
-  it("listRecent filters by fingerprint and degradedOnly", async () => {
+  it("listRecent filters by fingerprint", async () => {
     await log.insert(record({ id: "x1", fingerprint: "fp-x", createdAt: "2026-09-17T00:00:01.000Z" }));
-    await log.insert(
-      record({ id: "x2", fingerprint: "fp-x", degraded: true, createdAt: "2026-09-17T00:00:02.000Z" }),
-    );
+    await log.insert(record({ id: "x2", fingerprint: "fp-x", createdAt: "2026-09-17T00:00:02.000Z" }));
     await log.insert(record({ id: "y1", fingerprint: "fp-y", createdAt: "2026-09-17T00:00:03.000Z" }));
 
     const byFingerprint = await log.listRecent({ fingerprint: "fp-x" });
     expect(byFingerprint.map((r) => r.id).sort()).toEqual(["x1", "x2"]);
-
-    const degradedOnly = await log.listRecent({ degradedOnly: true });
-    expect(degradedOnly.map((r) => r.id)).toEqual(["x2"]);
   });
 
   it("setUpstream updates an existing record and is a no-op for a missing id", async () => {
     await log.insert(record({ id: "with-upstream" }));
     await log.setUpstream("with-upstream", { status: 200, latencyMs: 12 });
-    expect((await log.get("with-upstream"))?.upstream).toEqual({ status: 200, latencyMs: 12 });
+    expect((await log.getDecision("with-upstream"))?.upstream).toEqual({ status: 200, latencyMs: 12 });
 
     await expect(log.setUpstream("missing-id", { status: 500, latencyMs: 1 })).resolves.toBeUndefined();
-    expect(await log.get("missing-id")).toBeUndefined();
+    expect(await log.getDecision("missing-id")).toBeUndefined();
   });
 
   it("computes stats over a seeded set", async () => {
@@ -147,7 +148,6 @@ describe("DecisionLog", () => {
         id: "s3",
         tier: "mid",
         model: "anthropic/claude-sonnet-5",
-        degraded: true,
         createdAt: "2026-09-17T00:00:03.000Z",
       }),
     );
@@ -159,14 +159,13 @@ describe("DecisionLog", () => {
       "anthropic/claude-haiku-4.5": 1,
       "anthropic/claude-sonnet-5": 2,
     });
-    expect(stats.degraded).toBe(1);
     expect(stats.sticky).toBe(1);
     // s3 has no signals, so only s1 (100ms) and s2 (200ms) count.
     expect(stats.avgJevLatencyMs).toBe(150);
   });
 
   it("stats reports avgJevLatencyMs as null when nothing has signals", async () => {
-    await log.insert(record({ id: "no-signals", degraded: true }));
+    await log.insert(record({ id: "no-signals" }));
     const stats = await log.stats();
     expect(stats.avgJevLatencyMs).toBeNull();
   });
@@ -226,23 +225,198 @@ describe("DecisionLog", () => {
   });
 });
 
+describe("DecisionLog as a StickyStore", () => {
+  let log: DecisionLog;
+
+  beforeEach(async () => {
+    log = await DecisionLog.open(":memory:");
+  });
+
+  afterEach(async () => {
+    await log.close();
+  });
+
+  it("round-trips an entry, decision and all", async () => {
+    const decision = record({ id: "sticky-1", fingerprint: "fp-1" });
+    await log.set("fp-1", entry(decision, 2, 4_102_444_800_000));
+
+    expect(await log.get("fp-1")).toEqual({
+      decision,
+      userTurns: 2,
+      expiresAt: 4_102_444_800_000,
+    });
+  });
+
+  it("returns undefined for a fingerprint that was never pinned", async () => {
+    expect(await log.get("never-seen")).toBeUndefined();
+  });
+
+  it("replaces the entry when a fingerprint is re-pinned", async () => {
+    await log.set("fp-1", entry(record({ id: "first" }), 1));
+    await log.set("fp-1", entry(record({ id: "second" }), 2));
+
+    const hit = await log.get("fp-1");
+    expect(hit?.decision.id).toBe("second");
+    expect(hit?.userTurns).toBe(2);
+  });
+
+  it("does not return an expired entry, and drops it on the way past", async () => {
+    await log.set("fp-1", entry(record({ id: "stale" }), 1, Date.now() - 1));
+    expect(await log.get("fp-1")).toBeUndefined();
+    // Deleted rather than left to accumulate.
+    expect(await log.get("fp-1")).toBeUndefined();
+  });
+
+  it("deletes, and deleting something absent is a no-op", async () => {
+    await log.set("fp-1", entry(record({ id: "d" }), 1));
+    await log.delete("fp-1");
+    expect(await log.get("fp-1")).toBeUndefined();
+    await expect(log.delete("fp-1")).resolves.toBeUndefined();
+  });
+
+  it("can be pinned before the decision is logged", async () => {
+    // The router writes through before onDecision has run; an entry that
+    // needed its decision row to exist would miss on the very turn it is
+    // meant to serve.
+    const decision = record({ id: "not-yet-logged", fingerprint: "fp-early" });
+    await log.set("fp-early", entry(decision, 1));
+
+    expect((await log.get("fp-early"))?.decision.id).toBe("not-yet-logged");
+    expect(await log.getDecision("not-yet-logged")).toBeUndefined();
+  });
+
+  it("applies the no-secrets guard to a sticky write too", async () => {
+    await expect(
+      log.set("fp-leak", entry(record({ reason: "leaked Bearer x in the reason" }), 1)),
+    ).rejects.toThrow(/key or bearer token/);
+  });
+
+  it("keeps sticky entries separate from decisions", async () => {
+    await log.insert(record({ id: "a-decision", fingerprint: "fp-1" }));
+    await log.set("fp-1", entry(record({ id: "a-decision", fingerprint: "fp-1" }), 1));
+
+    // Pinning does not add a decision row.
+    expect(await log.listRecent()).toHaveLength(1);
+  });
+});
+
 describe("DecisionLog migrations", () => {
-  it("are idempotent when open is called twice on the same file", async () => {
+  async function withFile<T>(fn: (url: string) => Promise<T>): Promise<T> {
     const dir = mkdtempSync(join(tmpdir(), "milo-decision-log-"));
-    const path = join(dir, "milo.db");
-    const url = `file:${path}`;
-
     try {
-      const first = await DecisionLog.open(url);
-      await first.insert(record({ id: "persisted" }));
-      await first.close();
-
-      const second = await DecisionLog.open(url);
-      const fetched = await second.get("persisted");
-      expect(fetched?.id).toBe("persisted");
-      await second.close();
+      return await fn(`file:${join(dir, "milo.db")}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }
+
+  it("are idempotent when open is called twice on the same file", async () => {
+    await withFile(async (url) => {
+      const first = await DecisionLog.open(url);
+      await first.insert(record({ id: "persisted" }));
+      await first.set("fp-persisted", entry(record({ id: "persisted" }), 1));
+      await first.close();
+
+      const second = await DecisionLog.open(url);
+      expect((await second.getDecision("persisted"))?.id).toBe("persisted");
+      expect((await second.get("fp-persisted"))?.decision.id).toBe("persisted");
+      await second.close();
+    });
+  });
+
+  it("stay idempotent over many opens, without losing or duplicating data", async () => {
+    await withFile(async (url) => {
+      for (let i = 0; i < 5; i += 1) {
+        const log = await DecisionLog.open(url);
+        await log.insert(record({ id: `row-${i}`, createdAt: `2026-09-17T00:00:0${i}.000Z` }));
+        await log.close();
+      }
+
+      const log = await DecisionLog.open(url);
+      const rows = await log.listRecent();
+      expect(rows.map((r) => r.id).sort()).toEqual(["row-0", "row-1", "row-2", "row-3", "row-4"]);
+      await log.close();
+    });
+  });
+
+  it("re-applying a migration's SQL does not break the schema or lose rows", async () => {
+    // The runner re-applies a migration whose bookkeeping insert did not land
+    // (a crash between the two), so every statement has to tolerate a second
+    // run.
+    await withFile(async (url) => {
+      const log = await DecisionLog.open(url);
+      await log.insert(record({ id: "survivor" }));
+      await log.set("fp-s", entry(record({ id: "survivor" }), 1));
+      await log.close();
+
+      const db = createClient({ url });
+      const second = MIGRATIONS.find((m) => m.version === 2);
+      expect(second).toBeDefined();
+      await db.executeMultiple(second!.sql);
+      db.close();
+
+      const reopened = await DecisionLog.open(url);
+      expect((await reopened.getDecision("survivor"))?.id).toBe("survivor");
+      expect((await reopened.get("fp-s"))?.decision.id).toBe("survivor");
+      await reopened.close();
+    });
+  });
+
+  it("carries a v1 database forward: degraded is dropped and the rows survive", async () => {
+    await withFile(async (url) => {
+      // Stand up exactly the shipped v1 schema, with a row that has the
+      // column, then let the runner migrate it.
+      const first = MIGRATIONS.find((m) => m.version === 1);
+      expect(first).toBeDefined();
+
+      const db = createClient({ url });
+      await db.executeMultiple(`
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          description TEXT NOT NULL,
+          applied_at TEXT NOT NULL
+        );
+      `);
+      await db.executeMultiple(first!.sql);
+      await db.execute({
+        sql: "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
+        args: [1, first!.description, "2026-09-01T00:00:00.000Z"],
+      });
+      await db.execute({
+        sql: `INSERT INTO decisions
+                (id, fingerprint, tier, model, reason, policy_version, sticky, degraded, created_at,
+                 signals_json, upstream_json)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: ["legacy-1", "fp-legacy", "mid", "m", "why", "v2", 0, 1, "2026-09-01T00:00:00.000Z", null, null],
+      });
+      db.close();
+
+      const log = await DecisionLog.open(url);
+      const rows = await log.listRecent();
+      expect(rows.map((r) => r.id)).toEqual(["legacy-1"]);
+      // The flag is gone from the contract, degraded row or not.
+      expect(rows[0]).not.toHaveProperty("degraded");
+      expect(rows[0]?.tier).toBe("mid");
+
+      // And the new table is there.
+      await log.set("fp-new", entry(record({ id: "after-migration" }), 1));
+      expect((await log.get("fp-new"))?.decision.id).toBe("after-migration");
+      await log.close();
+    });
+  });
+
+  it("runs both migrations on a fresh database and records them", async () => {
+    await withFile(async (url) => {
+      const db = createClient({ url });
+      await applyMigrations(db);
+      const rs = await db.execute("SELECT version FROM schema_migrations ORDER BY version");
+      expect(rs.rows.map((r) => Number(r.version))).toEqual(MIGRATIONS.map((m) => m.version));
+
+      // Re-running adds nothing.
+      await applyMigrations(db);
+      const again = await db.execute("SELECT version FROM schema_migrations ORDER BY version");
+      expect(again.rows).toHaveLength(MIGRATIONS.length);
+      db.close();
+    });
   });
 });

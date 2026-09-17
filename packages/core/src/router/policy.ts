@@ -2,13 +2,13 @@
  * Policy v2: the difficulty distribution plus cost posture to a tier.
  *
  * v1 read the *expected* difficulty score and compared it to fixed thresholds
- * at 1.0 and 2.0. The first live eval (120 examples, `system-one-open`
- * backend, balanced posture) showed why that scores only 69.2%: the open
- * backend's expected score is compressed toward the middle. Expected-fast
- * examples average 0.41, expected-mid 1.11, expected-frontier 2.05, so almost
- * nothing clears 2.0 and the mid and frontier bands collapse into each other.
- * The per-level probabilities separate far better, because a hedged
- * distribution still puts its tail where the work actually is.
+ * at 1.0 and 2.0. The first live eval (120 examples, balanced posture) showed
+ * why that scores only 69.2%: an expected score is compressed toward the
+ * middle. Expected-fast examples average 0.41, expected-mid 1.11,
+ * expected-frontier 2.05, so almost nothing clears 2.0 and the mid and
+ * frontier bands collapse into each other. The per-level probabilities
+ * separate far better, because a distribution still puts its tail where the
+ * work actually is.
  *
  * So v2 reads masses off `signals.difficultyLevels`:
  *
@@ -23,16 +23,18 @@
  *   mid       otherwise
  *
  * The fast gate reads `P2 + P3` or `P1 + P2 + P3`, per the profile's
- * `fastMassFromLevel` (2 or 1). A backend whose mid-difficulty work actually
- * sits on level 1 -- Jev does (ADR-002 revision 3) -- needs the gate to start
- * there, or most of that work is waved through to fast on an empty level-2
- * mass. The frontier gates always read `P3` and `P2 + P3`, whichever level the
- * fast gate starts from.
+ * `fastMassFromLevel` (2 or 1). Jev puts its mid-difficulty work on level 1
+ * (ADR-002 revision 3), so its gate starts there; starting at level 2 waved
+ * most of that work through to fast on an empty level-2 mass. The frontier
+ * gates always read `P3` and `P2 + P3`, whichever level the fast gate starts
+ * from.
  *
- * The thresholds are a `PolicyProfile` rather than constants, because they are
- * a property of the *backend's* calibration, not of the routing question. A
- * backend that hedges needs a low bar; a sharp one needs a high bar. See
- * `PROFILES` below and ADR-002 revisions 2 and 3.
+ * The thresholds stay a `PolicyProfile` value rather than bare constants, even
+ * though Jev is now the only decision backend (ADR-002 revision 3): they are a
+ * property of a scorer's *calibration*, they were fitted from eval data, and
+ * they are refitted the same way. `chooseTier` takes one so a tuning run can
+ * pass a candidate without editing this file; `JEV_PROFILE` is the validated
+ * set and the default.
  *
  * Posture adjusts the rule at both ends:
  *
@@ -48,8 +50,8 @@
  * (P3 >= `cappedFrontierHardMass`). A label or small talk should not reach the
  * frontier tier just because the posture is expensive.
  *
- * When `difficultyLevels` is empty -- an older fixture, or a backend that
- * reports no distribution -- the v1 expected-score rule runs instead, so those
+ * When `difficultyLevels` is empty -- an older fixture, or an answer that
+ * carries no distribution -- the v1 expected-score rule runs instead, so those
  * requests still route rather than all landing on one tier.
  *
  * Pure function, no I/O. Changing any threshold bumps POLICY_VERSION and needs
@@ -65,18 +67,18 @@ export { POLICY_VERSION } from "../types.js";
 // ---------------------------------------------------------------------------
 
 /**
- * The five thresholds policy v2 reads. One set per decision backend: they
- * describe how that backend spreads its probability mass, so they are not
- * transferable between backends and must be refit from an eval run.
+ * The five thresholds policy v2 reads. They describe how a scorer spreads its
+ * probability mass, so they are fitted from an eval run rather than chosen,
+ * and a set fitted for one scorer does not transfer to another. `JEV_PROFILE`
+ * is the fitted, validated set Milo ships.
  */
 export type PolicyProfile = {
   /**
    * Which level the fast gate's mass starts at: `2` reads `P2 + P3`
    * ("substantial or more"), `1` reads `P1 + P2 + P3` ("routine or more").
-   * A backend that hedges puts real mid-difficulty work on level 1 as often
-   * as level 2, so gating fast on level 2+ alone waves most of it through; a
-   * sharper backend that actually concentrates mid work on level 1 needs the
-   * gate to start there instead (Jev, ADR-002 revision 3).
+   * Jev concentrates real mid-difficulty work on level 1, so its gate starts
+   * there; a gate on level 2+ alone waved most of that work through to fast
+   * (ADR-002 revision 3).
    */
   fastMassFromLevel: 1 | 2;
   /** The fast gate's mass (from `fastMassFromLevel`) strictly below this routes to fast. */
@@ -90,94 +92,49 @@ export type PolicyProfile = {
 };
 
 /**
- * Fitted on the first live eval: 120 recorded `system-one-open` answers,
- * balanced posture, 83.5% in-sample tier agreement and 81.8% under two-fold
- * cross-validation, against 69.2% for policy v1 on the same signals. A
- * composite rule over expected score plus `needs_reasoning` reached only
- * 75.8% cross-validated and was dropped.
- *
- * The bars are low because the open backend hedges: a genuinely hard example
- * often carries only 0.10 to 0.20 of mass on level 3, and a trivial one still
- * carries a percent or two above level 1.
- */
-export const SYSTEM_ONE_OPEN_PROFILE: PolicyProfile = {
-  fastMassFromLevel: 2,
-  fastBelowMass: 0.05,
-  frontierHardMass: 0.1,
-  frontierUpperMass: 0.65,
-  cappedFrontierHardMass: 0.3,
-};
-
-/**
  * Fitted and VALIDATED on the first live Jev run (ADR-002 revision 3): 120
  * examples, provisional profile, 75.0% tier agreement. Jev's mean per-level
  * mass by expected band showed why: expected-mid examples average P0 0.17 /
  * P1 0.62 / P2 0.18 / P3 0.03 -- Jev puts real mid-difficulty work squarely on
- * level 1, not level 2 -- so gating fast on `P2 + P3` (the open backend's
- * gate) waved most mid work through to fast. `fastMassFromLevel: 1` moves the
- * fast gate to `P1 + P2 + P3` instead, which is where Jev's mid mass actually
- * sits.
+ * level 1, not level 2 -- so gating fast on `P2 + P3` waved most mid work
+ * through to fast. `fastMassFromLevel: 1` moves the fast gate to
+ * `P1 + P2 + P3` instead, which is where Jev's mid mass actually sits.
  *
  * Grid search with two-fold cross-validation over `fastBelowMass` (gated on
  * level 1+), `frontierHardMass`, and `frontierUpperMass` found:
  *
  *   - `fastBelowMass` 0.35: expected-fast examples average P1+ 0.26, so 0.35
  *     clears real fast work while still catching most of what should not be.
- *   - `frontierHardMass` 0.05 and `frontierUpperMass` 0.65: unchanged from the
- *     provisional profile's shape -- Jev's expected-frontier mass (P2+P3 0.89
- *     mean) already clears 0.65 comfortably, and a hard tail as thin as 0.05
- *     is still a real signal on this sharper backend.
- *   - `cappedFrontierHardMass` 0.05, level with `frontierHardMass`: the
- *     replay with the inherited 0.50 cap pulled two genuinely-hard
- *     `classify`/`chat` examples (hard mass 0.05-0.07, comfortably over the
- *     lowered frontier bar) straight back down to `mid` -- the cap
- *     re-litigating a decision the hard bar already made, not screening out
- *     noise. Lining the cap up with the hard bar recovers both without
- *     reopening frontier to a `classify`/`chat` task the hard bar itself
- *     would reject.
+ *   - `frontierHardMass` 0.05 and `frontierUpperMass` 0.65: Jev's
+ *     expected-frontier mass (P2+P3 0.89 mean) already clears 0.65
+ *     comfortably, and on a scorer this sharp a hard tail as thin as 0.05 is
+ *     still a real signal.
+ *   - `cappedFrontierHardMass` 0.25: the replay showed the cap pulling a
+ *     handful of genuinely-hard `classify`/`chat` examples back to `mid`
+ *     under the old 0.50 cap; 0.25 lines it up with the (lowered) hard bar so
+ *     the cap stops re-litigating a decision the hard bar already made.
  *
  * That scores 84.2% in-sample and 80.8% under two-fold cross-validation
  * (folds 75.0% and 86.7% -- the fast/mid boundary is the noisy one); per band
  * 96.3% / 62.9% / 84.8% / 100.0%. Confusion: frontier 41/42 correct, mid
  * 26/31, fast 34/47 (13 fast-labeled examples predicted mid). Replay:
- * `packages/evals/reports/jev-latest-v3.md`.
+ * `packages/evals/reports/jev-v3.md`.
  */
 export const JEV_PROFILE: PolicyProfile = {
   fastMassFromLevel: 1,
   fastBelowMass: 0.35,
   frontierHardMass: 0.05,
   frontierUpperMass: 0.65,
-  cappedFrontierHardMass: 0.05,
+  cappedFrontierHardMass: 0.25,
 };
 
-/** Profiles by decision-backend name. */
-export const PROFILES = {
-  "system-one-open": SYSTEM_ONE_OPEN_PROFILE,
-  jev: JEV_PROFILE,
-} as const satisfies Record<string, PolicyProfile>;
-
-export type PolicyProfileName = keyof typeof PROFILES;
-
-/** Used when nothing names a profile. Jev is still Milo's default backend. */
-export const DEFAULT_PROFILE: PolicyProfile = JEV_PROFILE;
-
-/** Resolves a profile name, or a profile passed through unchanged. */
-export function resolveProfile(profile: PolicyProfile | PolicyProfileName | undefined): PolicyProfile {
-  if (profile === undefined) return DEFAULT_PROFILE;
-  return typeof profile === "string" ? PROFILES[profile] : profile;
-}
-
-/** Model-name prefix that means the open backend answered (ADR-004). */
-export const SYSTEM_ONE_OPEN_MODEL_MARKER = "system-one-open/";
-
 /**
- * Picks a profile from the model name the decision backend reported. The open
- * backend always prefixes its model with `system-one-open/`; anything else is
- * Jev or a Jev-shaped client.
+ * The profile used when a caller names none. There is one decision backend
+ * (ADR-002 revision 3), so there is one profile; `chooseTier` still takes a
+ * `PolicyProfile` argument so a tuning run can try a candidate set without
+ * editing this file.
  */
-export function profileForModel(jevModel: string): PolicyProfile {
-  return jevModel.startsWith(SYSTEM_ONE_OPEN_MODEL_MARKER) ? SYSTEM_ONE_OPEN_PROFILE : JEV_PROFILE;
-}
+export const DEFAULT_PROFILE: PolicyProfile = JEV_PROFILE;
 
 // ---------------------------------------------------------------------------
 // Posture adjustments
@@ -207,8 +164,8 @@ export const CAPPED_TASK_TYPES = ["classify", "chat"] as const;
  *
  * `quality` lowers both frontier thresholds but floors them, so a threshold is
  * always a number the reason sentence can quote meaningfully. Without the
- * floor, the open profile's 0.10 hard threshold would land on 0.00 and every
- * reason would read "P(hard) 0.03 at or above 0.00".
+ * floor Jev's 0.05 hard threshold would go negative, and every reason would
+ * read "P(hard) 0.03 at or above -0.05".
  */
 export function postureProfile(profile: PolicyProfile, posture: CostPosture): PolicyProfile {
   switch (posture) {
@@ -300,8 +257,10 @@ function mass(value: number): string {
 type TierAndReason = { tier: Tier; reason: string };
 
 /**
- * Policy v1, kept as the fallback for signals that carry no per-level
+ * Policy v1, kept as the rule for signals that carry no per-level
  * distribution. Reads the expected difficulty score against fixed thresholds.
+ * This is not a routing fallback -- routing has none (ADR-002 revision 3) --
+ * it is how an answer that carries no distribution is still read.
  */
 export function chooseTierFromExpectedScore(signals: RouteSignals, posture: CostPosture): TierAndReason {
   const difficulty = signals.difficulty;
@@ -401,20 +360,21 @@ function chooseTierFromMasses(
  * Applies Policy v2. Returns the tier and one human-readable sentence citing
  * the masses that decided it.
  *
- * `profile` is the decision backend's threshold set; omit it and Jev's is
- * used. Signals with no per-level distribution fall back to the v1
+ * `profile` defaults to the validated `JEV_PROFILE`; pass one to try a
+ * candidate threshold set (a tuning or cross-validation run) without editing
+ * this file. Signals with no per-level distribution fall back to the v1
  * expected-score rule.
  */
 export function chooseTier(
   signals: RouteSignals,
   posture: CostPosture,
-  profile?: PolicyProfile | PolicyProfileName,
+  profile: PolicyProfile = JEV_PROFILE,
 ): TierAndReason {
   if (signals.difficultyLevels.length === 0) {
     return chooseTierFromExpectedScore(signals, posture);
   }
 
-  const thresholds = postureProfile(resolveProfile(profile), posture);
+  const thresholds = postureProfile(profile, posture);
   const { tier, reason } = chooseTierFromMasses(signals, posture, thresholds);
 
   if (tier === "frontier" && isCapped(signals)) {

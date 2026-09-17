@@ -35,11 +35,6 @@ const DUMMY_TOOLS: unknown[] = [
   { type: "function", function: { name: "dummy_tool", description: "eval placeholder tool", parameters: {} } },
 ];
 
-/** Extracts the router's degrade cause from its sanitized reason sentence. */
-function degradeCauseFromReason(reason: string): string {
-  const match = /\(([a-z]+)\)/.exec(reason);
-  return match?.[1] ?? "unknown";
-}
 
 async function scoreExample(
   example: RoutingExample,
@@ -74,8 +69,8 @@ async function scoreExample(
     });
     const decision = await router.route(req);
 
-    if (decision.degraded || decision.signals === undefined) {
-      return { kind: "unscored", ...base, errorClass: degradeCauseFromReason(decision.reason) };
+    if (decision.signals === undefined) {
+      return { kind: "unscored", ...base, errorClass: "validation" };
     }
 
     const { signals } = decision;
@@ -95,7 +90,7 @@ async function scoreExample(
     // Anything unexpected (a bad custom roster, a router bug) still must not
     // abort the run; classify it the same way the router classifies a Jev
     // failure, never surfacing the raw error text.
-    return { kind: "unscored", ...base, errorClass: classifyFailure(error) };
+    return { kind: "unscored", ...base, errorClass: classifyFailure(error).cause };
   }
 }
 

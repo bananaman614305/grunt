@@ -70,51 +70,134 @@ The 85% target in this ADR is stated for Jev and stays the target. CI holds the 
 
 ---
 
-## Revision 3: a validated jev profile, and a fast gate that reads the right level, 2026-09-17
+## Revision 3: Jev only, and no fallback tier, 2026-09-17
 
-`POLICY_VERSION` stays `"v2"` — this revision refits a profile's thresholds and adds one field to `PolicyProfile`, it does not change the shape of `RouteSignals` or the rule structure.
+Two changes that are really one decision: Jev is the only decision backend, and
+a request that cannot be routed fails instead of guessing.
 
-### The first live Jev run
+### The contract change
 
-Milo's Jev key came back from quota (ADR-004) and the eval ran for real: 120 examples, balanced posture, the provisional `jev` profile (0.10 / 0.25 / 0.50 / 0.50). Result: **75.0%** tier agreement, task-type accuracy 90.8%. The provisional profile guessed too conservatively in the wrong direction, and the mean per-level probability mass by expected band shows exactly why:
+`RouteDecision.degraded` and `DecisionRecord.degraded` are **removed**, along
+with everything that read or wrote them — `degradedDecision`, the router's
+degraded path, the decision log's `degradedOnly` filter and `degraded` stat.
+A forward migration (`packages/core/src/log/schema.ts`, version 2) rebuilds the
+`decisions` table without the column.
 
-| expected band | P0 | P1 | P2 | P3 |
+`Router.route` now **throws** `RoutingUnavailableError`
+(`packages/core/src/router/errors.ts`) when Jev cannot answer, carrying the
+cause (`timeout`, `network`, `http` with its status and Jev request id,
+`validation`, `rate_limited`, `breaker_open`) and `retryAfterMs` when one is
+known. The gateway turns that into a 503, or a 429 for `rate_limited`. An
+explicit model id still passes through to OpenRouter untouched; only
+`milo/auto` needs a routing answer, so only `milo/auto` can fail this way.
+
+### Why there is no fallback tier
+
+Returning `mid` and marking the decision degraded reads as robustness and is
+not. A caller who sent `milo/auto` asked to be routed. A silent `mid` is a
+wrong answer billed at Sonnet prices, and nothing in the response
+distinguishes it from a right one — the `x-milo-degraded` header said so, and
+no client read it. It also hides outages: the Fly deployment served degraded
+decisions through an entire 35-second cold-start window and reported healthy
+throughout (revision 2's operational note, and ADR-004's).
+
+Failing loudly puts the choice back where it belongs. A caller who wants a
+cheap fallback can send `milo/auto` with `milo.tier`, or retry, or name a
+model. None of those options existed while Milo was quietly deciding for them.
+
+The cost is that a Jev outage is now a user-visible error, so the router works
+harder not to have one:
+
+- **Retries with backoff.** The Jev client retries network failures, 429, 503
+  and 529 with exponential backoff and full jitter (base 200 ms, factor 2, up
+  to 3 retries), honouring a `Retry-After` header when the server sends one.
+  No other 4xx is retried. All of it runs inside one total budget the router
+  passes, so retries cannot outlive the router's own promise to answer.
+- **A raised budget.** `ROUTER_LIMITS.jevTimeoutMs` goes from **800 ms to
+  3,000 ms**. At 800 ms there was no room for a second attempt, which only
+  made sense while a failure cost the caller nothing.
+- **A circuit breaker.** Three consecutive transport failures (`network`,
+  `timeout`, or 5xx) open it for 30 seconds; it then half-opens and lets one
+  request probe. While open, `route` fails immediately with `breaker_open` and
+  the remaining cooldown rather than making every caller spend the full budget
+  rediscovering the outage. A `validation` failure or a 4xx does not count: Jev
+  answered, and the problem is the request, not the backend.
+- **Coalescing.** Concurrent `route` calls with the same fingerprint *and* the
+  same user-turn count share one Jev call. Each caller still gets its own
+  decision id, so the log stays one row per request and the gateway can attach
+  each request's upstream outcome to its own row; the callers that joined are
+  marked `sticky: true`, and all of them carry the `jevRequestId` of the single
+  call that answered. That keeps the log honest about both what was served and
+  what was spent.
+
+### Stickiness is user-turn aware, and persists
+
+A sticky entry now records `userTurns`, the number of user messages the
+decision was made for, and is reused **only** when the request's count matches.
+
+The fingerprint hashes the system prompt and the *first* user message, so every
+turn of a conversation lands on the same key. That is right for a tool-result
+continuation — the same ask coming back, where changing models mid-tool-loop
+breaks tool-call continuity and throws away the prompt cache. It was wrong for
+a follow-up turn: "now make the whole module concurrency-safe" was being served
+the tier chosen for "rename res to rows", for up to thirty minutes. A request
+with more user turns is a new ask, gets a fresh Jev call with the full recent
+context, and replaces the entry.
+
+`StickyStore` (`packages/core/src/router/sticky-store.ts`) backs the in-memory
+cache: the router consults it on a memory miss and writes through on every
+write. `DecisionLog` implements it over a `sticky` table (fingerprint, decision
+id, user turns, expiry, and the decision itself), so the gateway can pass the
+log as the store and a redeploy or a second instance stops re-asking Jev for
+every live conversation. A store failure is reported and ignored — it costs an
+extra Jev call, never a failed request. The 30-minute TTL is unchanged but is
+now an option (`RouterOptions.stickyTtlMs`).
+
+Because `StickyStore.get` takes a fingerprint, `DecisionLog.get(id)` was
+renamed to **`DecisionLog.getDecision(id)`**. Two `get`s on one class that both
+take a string and mean different things is the sort of thing that reads fine
+and routes wrong.
+
+### One profile
+
+`system-one-open` is gone from the code (ADR-004 is superseded on this point),
+and with it `PROFILES`, `PolicyProfileName`, `resolveProfile`, and
+`profileForModel` — there is no backend to dispatch on. `PolicyProfile` stays
+as a type and `chooseTier(signals, posture, profile = JEV_PROFILE)` still takes
+one, so a tuning run can try a candidate threshold set without editing
+`policy.ts`.
+
+`JEV_PROFILE` is the fitted, validated set from the first live Jev run:
+
+| fast gate | fast below | frontier `P3` | frontier `P2+P3` | cap lifts at `P3` |
 |---|---|---|---|---|
-| fast | 0.74 | 0.24 | 0.02 | 0.00 |
-| mid | 0.17 | 0.62 | 0.18 | 0.03 |
-| frontier | 0.02 | 0.09 | 0.31 | 0.58 |
+| level 1+ | 0.35 | 0.05 | 0.65 | 0.25 |
 
-Jev's real mid-difficulty work sits squarely on **level 1**, not level 2. Policy v2's fast gate reads `P2 + P3` — a mass that averages only 0.21 for expected-mid work — so almost none of it clears the `fastBelowMass` bar and it is waved straight through to `fast`. That is the dominant failure mode in the replay: 13 of 47 fast-labeled disagreements were actually mid-labeled examples predicted fast (see `packages/evals/reports/jev-latest-v2.md`, the committed replay under the provisional profile).
+The fast gate reading level 1+ rather than level 2+ is the substantive change.
+Jev puts real mid-difficulty work on level 1 — expected-mid examples average
+P0 0.17 / P1 0.62 / P2 0.18 / P3 0.03 — so a gate on `P2 + P3` waved most of it
+through to `fast`. `PolicyProfile.fastMassFromLevel` selects which, because it
+is a property of the scorer's calibration rather than of the routing question.
 
-### The fix: which level the fast gate starts from is per backend too
+A replay of the 120 committed Jev fixtures scores **81.7%** overall (band 0
+96.3%, band 1 60.0%, band 2 84.8%, band 3 92.0%), task-type accuracy 90.8%,
+with every example scored. Confusion: frontier 39/42, mid 25/31, fast 34/47.
+That clears the 0.80 CI gate and still sits under the **85% target this ADR
+states for Jev**; the fast/mid boundary is where it is lost, and 13 fast-labeled
+examples predicted `mid` is most of the gap. `jev-preview` is not used: its
+calibration changes without notice and a profile does not transfer between
+scorers, so `JEV_DEFAULT_MODEL` pins `jev-latest`.
 
-The open backend hedges enough that `P2 + P3` already carries real signal for its mid-difficulty work; Jev, being sharper, needs the fast gate to read `P1 + P2 + P3` instead. `PolicyProfile` gains one field:
+### Fixtures are keyed by endpoint, not by URL
 
-```ts
-fastMassFromLevel: 1 | 2;
-```
+A fixture's lookup key was a hash of method + **whole URL** + body. Recordings
+go through a key-injecting egress proxy that serves Jev at
+`https://<proxy-host>/v1/egress/<grant-id>/v1/systemone`, so a replay only
+matched when `JEV_BASE_URL` was pinned to that exact address — which is why CI
+carried a grant URL in its environment, and why the grant id was effectively
+baked into 120 committed filenames.
 
-`chooseTierFromMasses` now reads the fast gate's mass from this field (`fastGateMass` / `upperMassFromLevel1` in `policy.ts`) instead of hard-coding `upperMass`. The frontier gates are unchanged — they always read `P3` and `P2 + P3`, regardless of which level the fast gate starts from — because the frontier question ("is this genuinely hard, or substantial-or-more") is not the same question as "is this safely below routine," and Jev's calibration answers them differently. The reason sentence now names the level the fast gate actually used, e.g. `"P(level 1+) 0.28 below 0.35 routes to fast"` for jev, `"P(level 2+) 0.03 below 0.05 routes to fast"` for the open backend.
-
-### The refit
-
-Two-fold cross-validated grid search over `fastBelowMass` (on `P1 + P2 + P3`), `frontierHardMass`, and `frontierUpperMass`, holding `fastMassFromLevel: 1` fixed (it is a statement about which level carries the signal, not a number to search over), found:
-
-- **`fastBelowMass` 0.35** — expected-fast examples average `P1+` 0.26, so 0.35 clears real fast work while still catching most of what should not be.
-- **`frontierHardMass` 0.05** and **`frontierUpperMass` 0.65** — unchanged in shape from the provisional profile. Jev's expected-frontier mass (`P2+P3` mean 0.89) clears 0.65 comfortably, and on this sharper backend a hard tail as thin as 0.05 is still real signal rather than noise.
-- **`cappedFrontierHardMass` 0.05**, level with `frontierHardMass` rather than the provisional profile's 0.50. The replay showed the higher cap actively hurting: two examples — a `chat` task with sustained adversarial argumentation and a `classify` task over deliberately overlapping legal categories, both genuinely hard and both landing on `frontier` via the hard-mass gate at P3 0.05–0.07 — were pulled straight back down to `mid` by a cap that was re-litigating a decision the hard bar had already made, rather than screening out noise. Lining the cap up with the hard bar fixed both without reopening frontier to a `classify`/`chat` task the hard bar itself would reject; the cap still binds when frontier is reached through the *upper* mass alone with a thin hard tail below it (a `classify`/`chat` example with `P2+P3` at or above 0.65 but `P3` under 0.05 is still capped to `mid`).
-
-That scores **84.2%** in-sample and **80.8%** under two-fold cross-validation (folds 75.0% and 86.7% — the fast/mid boundary is the noisy one, consistent with the leftover disagreements: 13 of 47 fast-labeled examples still predict `mid`). Per band: 96.3% / 62.9% / 84.8% / 100.0%. Confusion: frontier 41/42 correct, mid 26/31, fast 34/47. Replay committed as `packages/evals/reports/jev-latest-v3.md` and `.json`.
-
-The `jev` profile is now:
-
-| profile | `fastMassFromLevel` | fast below | frontier `P3` | frontier `P2+P3` | cap lifts at `P3` |
-|---|---|---|---|---|---|
-| `system-one-open` | 2 | 0.05 | 0.10 | 0.65 | 0.30 |
-| `jev` | 1 | 0.35 | 0.05 | 0.65 | 0.05 |
-
-Both profiles are now **validated** against a real run of their own backend. Jev's frontier hard bar sits *below* the open backend's (0.05 versus 0.10) even though Jev is the sharper scorer, because the two thresholds are answering different questions on different bases: the open backend's fast gate already reads `P2 + P3`, the same basis its frontier hard bar shares meaning with, while Jev's fast gate had to move to `P1 + P2 + P3` to find its mid-difficulty signal, freeing its `P3`-based frontier bar to sit wherever the data says a thin hard tail stops being noise.
-
-### Gate
-
-CI now runs the fixture replay against **both** decision backends at `--gate 0.80` (`.github/workflows/ci.yml`): `system-one-open` as before, and `jev` with `JEV_BASE_URL` pinned to the request URL its committed fixtures were recorded against. 0.80 is deliberately conservative for Jev too, even though its in-sample score is 84.2%, because one cross-validation fold measured 75.0% — the 85% target in this ADR remains the aspirational number for whichever backend a deployment actually runs. The two-fold cross-validation in `packages/evals/src/run.test.ts` gained a matching Jev describe block, refitting on `packages/evals/reports/jev-latest-v3.json` and asserting a mean held-out agreement of at least 0.78, same bar as the open backend's.
+The key now hashes method + the **API-relative path** + body: no scheme, host,
+port, or proxy mount point. `fixtureKeyFor(method, url, body)` is exported for
+re-keying the committed fixtures, and the full recorded URL is still written
+into each fixture file for tracing.

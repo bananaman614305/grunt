@@ -275,8 +275,16 @@ export function toChatMessages(body: Body): ChatMessage[] {
     if (typeof turn !== "object" || turn === null) continue;
     const source = turn as Record<string, unknown>;
     // Anthropic has exactly two message roles; anything else is not a turn.
-    const role = source["role"] === "assistant" ? "assistant" : "user";
-    messages.push({ role, content: blockText(source["content"]) });
+    // A user message made only of tool_result blocks is the tool loop
+    // continuing, not a new ask, so the router must not count it as a user
+    // turn: it maps to the "tool" role.
+    const content = source["content"];
+    const onlyToolResults =
+      Array.isArray(content) &&
+      content.length > 0 &&
+      content.every((b) => typeof b === "object" && b !== null && (b as { type?: unknown }).type === "tool_result");
+    const role = source["role"] === "assistant" ? "assistant" : onlyToolResults ? "tool" : "user";
+    messages.push({ role, content: blockText(content) });
   }
 
   return messages;
