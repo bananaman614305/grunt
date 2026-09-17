@@ -18,6 +18,7 @@ Commands:
   decisions   List recent routing decisions
   stats       Summarize the decision log
   roster      Show the effective tier-to-model roster
+  billing     Operate the billing database, Stripe, and provisioning
 
 Run "milo <command> --help" for command-specific options.
 ```
@@ -255,12 +256,159 @@ signals (as above, where the only decision had no signals recorded). An
 invalid `--since` value exits **1** with `milo stats: --since is not a valid
 ISO 8601 timestamp: "<value>"`. Exit code **0** otherwise.
 
+## `milo billing`
+
+Operator access to the billing database (ADR-007) and the Stripe/OpenRouter
+provisioning it depends on -- support and back-office work the account pages
+(`docs/billing.md`) don't expose. Every subcommand takes `--db <url>`,
+falling back to `MILO_DATABASE_URL`, and opens/closes its own connection.
+
+```
+$ milo billing --help
+Usage: milo billing <subcommand> [options]
+
+Operate the billing database and its Stripe / OpenRouter provisioning.
+
+Subcommands:
+  accounts                    List accounts, newest first
+  grant <accountId> <usd>     Grant (or claw back) credit by hand
+  keys <accountId>            List an account's Milo keys
+  revoke-key <keyId>          Revoke one Milo key
+  usage <accountId>           Summarize an account's usage
+  ledger <accountId>          List an account's ledger entries
+  stripe-setup                Ensure Stripe products, prices, and the webhook exist
+  reconcile                   True up OpenRouter usage against the ledger
+
+Run "milo billing <subcommand> --help" for subcommand-specific options.
+Every subcommand takes --db <url> (default: $MILO_DATABASE_URL).
+```
+
+No subcommand: prints this help to stderr and exits **1**. An unknown
+subcommand prints `milo billing: unknown subcommand "<name>"` plus the same
+help and exits **1**. `--help`/`-h`/`help` prints it to stdout and exits **0**.
+Missing `--db` with `MILO_DATABASE_URL` also unset: `milo billing <subcommand>:
+--db or MILO_DATABASE_URL is required`, exit **1**.
+
+### `milo billing accounts`
+
+```
+$ milo billing accounts --db "$MILO_DATABASE_URL"
+ID                          EMAIL            STATUS  BALANCE  CREATED
+01M2RKMCVGGH8NEZV8AQM49MHW  ada@example.com  active  $0.0000  2026-09-17T21:16:16.624Z
+```
+
+`--limit <n>` caps the rows (default 50); a non-positive value exits **1**.
+No accounts prints `(no accounts)`. Exit **0** otherwise.
+
+### `milo billing grant <accountId> <usd>`
+
+Puts credit on an account by hand -- a goodwill grant, a support refund, a
+migration from an old balance -- through the same ledger every other balance
+change uses (ADR-007). `<usd>` may be negative to claw credit back; `--note`
+is required and becomes the ledger entry's reference.
+
+```
+$ milo billing grant 01M2RKMCVGGH8NEZV8AQM49MHW 20 --note "initial credit" --db "$MILO_DATABASE_URL"
+Granted $20.0000 to 01M2RKMCVGGH8NEZV8AQM49MHW. New balance: $20.0000. Ledger entry 01M2RKMPVRKBTYWZVK8MX8WT8N.
+```
+
+Missing `<accountId>`/`<usd>`, a zero or non-numeric `<usd>`, or a missing
+`--note` all exit **1** with a usage error. An unknown account id exits **1**
+with the store's own error. Exit **0** otherwise.
+
+### `milo billing keys <accountId>`
+
+```
+$ milo billing keys 01M2RKMCVGGH8NEZV8AQM49MHW --db "$MILO_DATABASE_URL"
+ID                          NAME    PREFIX    STATUS  CREATED                   LAST USED
+01M2RKMCVJ2HFSHHN0GGSQ8345  laptop  UJ9iTmPR  active  2026-09-17T21:16:16.627Z  never
+```
+
+Newest first; revoked keys are included, marked `revoked` in `STATUS`. No
+keys prints `(no keys)`. Exit **0**.
+
+### `milo billing revoke-key <keyId>`
+
+```
+$ milo billing revoke-key 01M2RKMCVJ2HFSHHN0GGSQ8345 --db "$MILO_DATABASE_URL"
+Revoked key 01M2RKMCVJ2HFSHHN0GGSQ8345.
+```
+
+A no-op (still exit **0**) if the key is already revoked or does not exist --
+`revokeApiKey` on the billing store is intentionally silent either way.
+
+### `milo billing usage <accountId>`
+
+```
+$ milo billing usage 01M2RKMCVGGH8NEZV8AQM49MHW --db "$MILO_DATABASE_URL"
+Requests: 1
+Charged: $0.2875
+Upstream cost: $0.2500
+By model:
+  openai/gpt-5.6-luna: 1
+```
+
+`--since <iso>` filters to usage at or after that timestamp; an invalid one
+exits **1** with `milo billing usage: --since is not a valid ISO 8601
+timestamp: "<value>"`. Exit **0** otherwise.
+
+### `milo billing ledger <accountId>`
+
+```
+$ milo billing ledger 01M2RKMCVGGH8NEZV8AQM49MHW --db "$MILO_DATABASE_URL"
+ID                          KIND        AMOUNT    BALANCE AFTER  REFERENCE       CREATED
+01M2RKMPVRKBTYWZVK8MX8WT8N  adjustment  $20.0000  $20.0000       initial credit  2026-09-17T21:16:26.857Z
+```
+
+Newest first; `--limit <n>` caps the rows (default 50). No entries prints
+`(no ledger entries)`. Exit **0**.
+
+### `milo billing stripe-setup --webhook-url <url>`
+
+Ensures the "Milo credits" Stripe product and one price per credit pack
+exist, and that a webhook endpoint is registered at `--webhook-url`. Safe to
+run again: everything is looked up by name, lookup key, or url first. The
+signing secret prints only the first time the endpoint is created:
+
+```
+$ STRIPE_SECRET_KEY=sk_... milo billing stripe-setup --webhook-url https://milo-gateway.fly.dev/<webhook-route>
+Product: prod_...
+  pack_5: price_...
+  pack_20: price_...
+  pack_100: price_...
+Webhook endpoint: we_... (https://milo-gateway.fly.dev/<webhook-route>)
+Signing secret (shown once): whsec_...
+Store this as STRIPE_WEBHOOK_SECRET now -- Stripe will not show it again.
+```
+
+Running it again against the same `--webhook-url` finds the existing
+endpoint and prints "Webhook endpoint already existed; its signing secret is
+unchanged." instead. Missing `--webhook-url`, or a missing/invalid
+`STRIPE_SECRET_KEY`, exits **1**.
+
+### `milo billing reconcile`
+
+True up OpenRouter's reported spend on each account's sub-key against what
+Milo charged, posting a ledger `adjustment` for any gap (ADR-007; the case a
+stream cut before its usage chunk arrived). Idempotent: running it again
+immediately posts nothing new. Requires `OPENROUTER_PROVISIONING_KEY`.
+
+```
+$ OPENROUTER_PROVISIONING_KEY=... milo billing reconcile --db "$MILO_DATABASE_URL"
+01M2RKMCVGGH8NEZV8AQM49MHW  discrepancy $0.0000  ok
+Accounts checked: 1. Total posted: $0.0000
+```
+
+`--limit <n>` caps how many accounts one run considers (default 500). A
+missing/invalid `OPENROUTER_PROVISIONING_KEY` exits **1** before touching the
+database.
+
 ## Exit codes, summarized
 
 | Code | Meaning |
 |---|---|
 | 0 | Success, or `--help` |
-| 1 | No command, unknown command, bad flag, missing `JEV_API_KEY`, missing/invalid config, not-found decision, invalid `--limit`/`--port`/`--since` |
+| 1 | No command, unknown command, bad flag, missing `JEV_API_KEY`, missing/invalid config, not-found decision, invalid `--limit`/`--port`/`--since`, missing `--db`/`MILO_DATABASE_URL`, a `milo billing` usage error |
 | *(none)* | `serve` on a successful start — the process keeps running |
 
 There is no `milo eval` subcommand. The eval runner is a separate package

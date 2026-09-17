@@ -249,10 +249,24 @@ key itself is still never stored (ADR-003).
 
 <!-- end: bring your own model list -->
 
+## Credits and Milo keys
+
+Bring-your-own-OpenRouter-key stays free and unchanged. If you'd rather not
+hold your own OpenRouter key, create a Milo account at `/account/new`
+(email only) and prepay for credits at `/account` — Stripe Checkout, three
+fixed packs. A Milo key (`mk_...`) then routes through Milo's own OpenRouter
+sub-key instead of yours, charged at upstream cost plus a margin and a flat
+per-request decision fee (both shown on `/account`, never hard-coded), with
+the running balance on `x-milo-balance-usd` on every response. No balance
+means a `402` before any upstream call — Milo never fronts money you haven't
+paid for. See [`docs/billing.md`](docs/billing.md) (ADR-007) for the full
+walkthrough, including the `milo billing` operator CLI.
+
 ## Docs
 
 - [`docs/api/gateway.md`](docs/api/gateway.md) — every route, request/response shape, headers, errors.
-- [`docs/cli.md`](docs/cli.md) — the `milo` CLI: `serve`, `explain`, `decisions`, `stats`, `roster`.
+- [`docs/billing.md`](docs/billing.md) — Milo keys, prepaid credits, the account pages, and the `milo billing` CLI.
+- [`docs/cli.md`](docs/cli.md) — the `milo` CLI: `serve`, `explain`, `decisions`, `stats`, `roster`, `billing`.
 - [`docs/config.md`](docs/config.md) — `milo.config.json` reference and `JEV_API_KEY`.
 - [`docs/routing.md`](docs/routing.md) — how a routing decision gets made.
 - [`docs/evals.md`](docs/evals.md) — running the routing eval set.
