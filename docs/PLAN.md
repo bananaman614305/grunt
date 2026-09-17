@@ -2,6 +2,8 @@
 
 Status: draft v2.1, 2026-09-17. Owner: Alan. Orchestrator: Claude Fable 5.1. Builders: Opus and Sonnet subagents.
 
+Progress (2026-09-17): waves 0, 1, and 2 are merged on `main` (266 unit tests, 4 e2e). Wave 3 in flight: messages endpoint, docs, cleanup. Deploy not started. The vault's Jev key ran out of quota mid-build, so no live eval run yet; the Jev budget was raised to 800 ms after measuring a 520 ms cold round trip. Open decision: add a self-hosted decision backend (system-one-open) as the fallback to Jev.
+
 ## The one thing
 
 Milo is OpenRouter with an actual routing mechanism. A user gives Milo one key, their OpenRouter key, points their agent harness at Milo's base URL, and asks for `milo/auto`. Milo holds its own Jev key, since Jev is early access and users cannot get one yet. For every request, Milo asks Jev what kind of task the prompt is and how hard it is, picks a model from a policy table, forwards the request to OpenRouter with the user's key, and streams the answer back with headers that say which model was chosen and why.
