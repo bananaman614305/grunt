@@ -24,8 +24,6 @@ importers:
         specifier: '3'
         version: 3.2.7(@types/node@22.20.3)
 
-  packages/claude-code: {}
-
   packages/cli: {}
 
   packages/core:
@@ -37,7 +35,14 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
-  packages/evals: {}
+  packages/evals:
+    dependencies:
+      '@milo/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
 
   packages/gateway: {}
 
