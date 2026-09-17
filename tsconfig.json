@@ -4,6 +4,7 @@
     { "path": "packages/core" },
     { "path": "packages/gateway" },
     { "path": "packages/cli" },
-    { "path": "packages/evals" }
+    { "path": "packages/evals" },
+    { "path": "packages/stripe" }
   ]
 }

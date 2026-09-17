@@ -11,6 +11,7 @@ export default defineConfig({
       "@milo/gateway/server": fileURLToPath(new URL("./packages/gateway/src/server.ts", import.meta.url)),
       "@milo/gateway": fileURLToPath(new URL("./packages/gateway/src/index.ts", import.meta.url)),
       "@milo/evals": fileURLToPath(new URL("./packages/evals/src/index.ts", import.meta.url)),
+      "@milo/stripe": fileURLToPath(new URL("./packages/stripe/src/index.ts", import.meta.url)),
     },
   },
   test: {
