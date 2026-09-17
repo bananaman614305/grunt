@@ -7,21 +7,55 @@ import type { Hono } from "hono";
 import {
   DecisionLog,
   DEFAULT_ROSTER,
+  FallbackDecisionClient,
   JevClient,
   OpenRouterClient,
+  ROUTER_LIMITS,
   Router,
   StickyCache,
+  SystemOneOpenClient,
+  SYSTEM_ONE_OPEN_DEFAULT_TIMEOUT_MS,
+  SYSTEM_ONE_OPEN_DEMO_URL,
 } from "@milo/core";
-import type { DecisionRecord, JevClientOptions, OpenRouterClientOptions, RouteDecision, Roster } from "@milo/core";
+import type {
+  DecisionRecord,
+  JevClientLike,
+  JevClientOptions,
+  OpenRouterClientOptions,
+  RouteDecision,
+  Roster,
+  SystemOneOpenClientOptions,
+} from "@milo/core";
 import { createApp } from "./app.js";
 import type { Logger } from "./app.js";
 import { errorMessage } from "./errors.js";
 import { RateLimiter } from "./rate-limit.js";
 import type { RateLimiterOptions } from "./rate-limit.js";
 
+/** The decision backends the router can be wired to (ADR-004). */
+export const DECISION_BACKEND_KINDS = ["jev", "system-one-open", "jev-with-fallback"] as const;
+export type DecisionBackendKind = (typeof DECISION_BACKEND_KINDS)[number];
+
+export type DecisionBackendOptions = {
+  kind: DecisionBackendKind;
+  /** Base URL of a system-one-open deployment. Defaults to the public demo. */
+  systemOneOpenUrl?: string;
+  /** Per-call budget for the open backend in ms. Default 1500. */
+  systemOneOpenTimeoutMs?: number;
+};
+
 export type GatewayOptions = {
-  /** Milo's own Jev key. Read from JEV_API_KEY by the CLI. Never logged. */
+  /**
+   * Milo's own Jev key. Read from JEV_API_KEY by the CLI. Never logged.
+   *
+   * Required by the `jev` and `jev-with-fallback` decision backends and
+   * unused by `system-one-open`. The type stays non-optional because
+   * `GatewayOptions` is a pinned contract, so an absent key is caught by a
+   * runtime check in `createGateway` instead (ADR-004).
+   */
   jevApiKey: string;
+  /** Which decision backend the router asks. Defaults to `{ kind: "jev" }`. */
+  decisionBackend?: DecisionBackendOptions;
   /** Tier to model mapping. Defaults to DEFAULT_ROSTER from core. */
   roster?: Roster;
   /** libsql URL for the decision log: ":memory:" or "file:/path/milo.db". Default ":memory:". */
@@ -48,25 +82,114 @@ export type Gateway = {
   close(): Promise<void>;
 };
 
+/**
+ * Builds the decision client for the configured backend, along with the
+ * router deadline it needs and the label `/healthz` reports.
+ *
+ * The deadline matters: the router enforces its own budget with a race, and
+ * the open backend answers in roughly 850 ms warm, so leaving the Jev budget
+ * of 800 ms in place would degrade every request. An explicit `jevTimeoutMs`
+ * stays the *Jev client's* per-call budget; the router's deadline is derived
+ * from the shape of the backend so a fallback chain has room for both hops.
+ */
+export function buildDecisionBackend(options: GatewayOptions): {
+  client: JevClientLike;
+  kind: DecisionBackendKind;
+  routerTimeoutMs: number;
+  warmup: (() => Promise<unknown>) | undefined;
+} {
+  const kind = options.decisionBackend?.kind ?? "jev";
+  const jevTimeoutMs = options.jevTimeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
+
+  const needsKey = kind === "jev" || kind === "jev-with-fallback";
+  if (needsKey && (options.jevApiKey === undefined || options.jevApiKey === "")) {
+    throw new Error(
+      `milo gateway: the "${kind}" decision backend needs Milo's Jev key. ` +
+        `Set jevApiKey (JEV_API_KEY), or use the "system-one-open" backend, which needs no key.`,
+    );
+  }
+
+  const makeJev = (): JevClient => {
+    const jevOptions: JevClientOptions = { apiKey: options.jevApiKey };
+    if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
+    if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
+    if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
+    return new JevClient(jevOptions);
+  };
+
+  const openTimeoutMs =
+    options.decisionBackend?.systemOneOpenTimeoutMs ?? SYSTEM_ONE_OPEN_DEFAULT_TIMEOUT_MS;
+
+  const makeOpen = (): SystemOneOpenClient => {
+    const openOptions: SystemOneOpenClientOptions = {
+      baseUrl: options.decisionBackend?.systemOneOpenUrl ?? SYSTEM_ONE_OPEN_DEMO_URL,
+      timeoutMs: openTimeoutMs,
+    };
+    if (options.fetch !== undefined) openOptions.fetch = options.fetch;
+    return new SystemOneOpenClient(openOptions);
+  };
+
+  // A little slack on top of the client's own budget so the client's timeout
+  // fires first and classifies the failure, rather than the router's race.
+  const SLACK_MS = 250;
+
+  switch (kind) {
+    case "jev":
+      return { client: makeJev(), kind, routerTimeoutMs: jevTimeoutMs, warmup: undefined };
+
+    case "system-one-open": {
+      const open = makeOpen();
+      return {
+        client: open,
+        kind,
+        routerTimeoutMs: openTimeoutMs + SLACK_MS,
+        warmup: () => open.warmup({ timeoutMs: 60_000 }),
+      };
+    }
+
+    case "jev-with-fallback": {
+      const open = makeOpen();
+      return {
+        client: new FallbackDecisionClient({ primary: makeJev(), secondary: open }),
+        kind,
+        // Both hops run in sequence, so the router must allow both.
+        routerTimeoutMs: jevTimeoutMs + openTimeoutMs + SLACK_MS,
+        warmup: () => open.warmup({ timeoutMs: 60_000 }),
+      };
+    }
+
+    default: {
+      const exhaustive: never = kind;
+      throw new Error(`milo gateway: unknown decision backend "${String(exhaustive)}"`);
+    }
+  }
+}
+
 export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const logger = options.logger ?? consoleLogger();
   const roster = options.roster ?? DEFAULT_ROSTER;
+  const decision = buildDecisionBackend(options);
   const log = await DecisionLog.open(options.decisionLogUrl ?? ":memory:");
   const writes = new WriteQueue(logger);
 
-  const jevOptions: JevClientOptions = { apiKey: options.jevApiKey };
-  if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
-  if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
-  if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
+  // Fire and forget: the public demo scales to zero and takes about 35 s to
+  // wake, so the first routed request should not be the one that pays for it.
+  // A failed warmup is not a startup failure -- the router degrades on its own.
+  if (decision.warmup !== undefined) {
+    void decision.warmup().then(
+      () => logger.info("decision backend warm", { decisionBackend: decision.kind }),
+      () => undefined,
+    );
+  }
 
   const router = new Router({
-    jev: new JevClient(jevOptions),
-    ...(options.jevTimeoutMs !== undefined ? { jevTimeoutMs: options.jevTimeoutMs } : {}),
+    jev: decision.client,
+    jevTimeoutMs: decision.routerTimeoutMs,
     roster,
     sticky: new StickyCache(),
     // Every decision the router makes is logged, degraded ones included: a
     // decision that never reaches the log cannot explain a response header.
-    onDecision: (decision: RouteDecision) => writes.remember(decision.id, log.insert(decision)),
+    onDecision: (decision_: RouteDecision) => writes.remember(decision_.id, log.insert(decision_)),
   });
 
   const openRouterOptions: OpenRouterClientOptions = {};
@@ -80,6 +203,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
 
   const app = createApp({
     router,
+    decisionBackend: decision.kind,
     openRouter: new OpenRouterClient(openRouterOptions),
     log,
     rateLimiter: new RateLimiter(rateLimitOptions),

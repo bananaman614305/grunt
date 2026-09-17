@@ -28,6 +28,8 @@ export type Logger = {
 
 export type AppDeps = {
   router: Router;
+  /** Which decision backend the router is wired to. Reported by `/healthz`. */
+  decisionBackend: string;
   openRouter: OpenRouterClient;
   log: DecisionLog;
   rateLimiter: RateLimiter;
@@ -95,7 +97,9 @@ export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
   // No auth: a health probe must work before anyone has a key.
-  app.get("/healthz", (c) => c.json({ ok: true, policyVersion: POLICY_VERSION }));
+  app.get("/healthz", (c) =>
+    c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: deps.decisionBackend }),
+  );
 
   app.use("/v1/*", requireBearer);
 

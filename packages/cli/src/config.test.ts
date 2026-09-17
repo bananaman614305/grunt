@@ -1,8 +1,16 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_DECISION_LOG_URL, DEFAULT_PORT, loadConfig } from "./config.js";
+import {
+  DECISION_BACKEND_ENV,
+  DEFAULT_DECISION_LOG_URL,
+  DEFAULT_PORT,
+  SYSTEM_ONE_OPEN_URL_ENV,
+  configSchema,
+  loadConfig,
+  resolveDecisionBackend,
+} from "./config.js";
 
 describe("loadConfig", () => {
   let dir: string;
@@ -117,5 +125,120 @@ describe("loadConfig", () => {
     writeFileSync(path, "{ not json");
 
     expect(() => loadConfig(path, dir)).toThrow(/not valid JSON/);
+  });
+
+  it("loads a decisionBackend block", () => {
+    const path = join(dir, "milo.config.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        decisionBackend: {
+          kind: "jev-with-fallback",
+          systemOneOpenUrl: "https://open.example.test",
+          systemOneOpenTimeoutMs: 2000,
+        },
+      }),
+    );
+
+    expect(loadConfig(path, dir).config.decisionBackend).toEqual({
+      kind: "jev-with-fallback",
+      systemOneOpenUrl: "https://open.example.test",
+      systemOneOpenTimeoutMs: 2000,
+    });
+  });
+
+  it("rejects an unknown decisionBackend kind", () => {
+    const path = join(dir, "milo.config.json");
+    writeFileSync(path, JSON.stringify({ decisionBackend: { kind: "gpt-oracle" } }));
+
+    expect(() => loadConfig(path, dir)).toThrow(/decisionBackend\.kind/);
+  });
+
+  it("rejects an unknown field inside decisionBackend", () => {
+    const path = join(dir, "milo.config.json");
+    writeFileSync(path, JSON.stringify({ decisionBackend: { kind: "jev", apiKey: "nope" } }));
+
+    expect(() => loadConfig(path, dir)).toThrow(/apiKey/);
+  });
+
+  it("accepts the shipped milo.config.example.json", () => {
+    const example = new URL("../../../milo.config.example.json", import.meta.url);
+    const parsed = configSchema.safeParse(JSON.parse(readFileSync(example, "utf8")));
+
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe("resolveDecisionBackend", () => {
+  const empty = configSchema.parse({});
+
+  function withBackend(backend: unknown): ReturnType<typeof configSchema.parse> {
+    return configSchema.parse({ decisionBackend: backend });
+  }
+
+  it("returns undefined when nothing is configured anywhere", () => {
+    expect(resolveDecisionBackend(empty, {})).toBeUndefined();
+  });
+
+  it("uses the config block as given", () => {
+    const config = withBackend({ kind: "system-one-open", systemOneOpenUrl: "https://a.test" });
+
+    expect(resolveDecisionBackend(config, {})).toEqual({
+      kind: "system-one-open",
+      systemOneOpenUrl: "https://a.test",
+    });
+  });
+
+  it("falls back to MILO_DECISION_BACKEND for the kind", () => {
+    expect(resolveDecisionBackend(empty, { [DECISION_BACKEND_ENV]: "system-one-open" })).toEqual({
+      kind: "system-one-open",
+    });
+  });
+
+  it("falls back to SYSTEM_ONE_OPEN_URL for the deployment URL", () => {
+    expect(
+      resolveDecisionBackend(empty, {
+        [DECISION_BACKEND_ENV]: "jev-with-fallback",
+        [SYSTEM_ONE_OPEN_URL_ENV]: "https://from-env.test",
+      }),
+    ).toEqual({ kind: "jev-with-fallback", systemOneOpenUrl: "https://from-env.test" });
+  });
+
+  it("defaults the kind to jev when only a URL is in the environment", () => {
+    expect(resolveDecisionBackend(empty, { [SYSTEM_ONE_OPEN_URL_ENV]: "https://from-env.test" })).toEqual({
+      kind: "jev",
+      systemOneOpenUrl: "https://from-env.test",
+    });
+  });
+
+  it("lets the config file win over the environment, field by field", () => {
+    const config = withBackend({ kind: "jev", systemOneOpenUrl: "https://from-file.test" });
+
+    expect(
+      resolveDecisionBackend(config, {
+        [DECISION_BACKEND_ENV]: "system-one-open",
+        [SYSTEM_ONE_OPEN_URL_ENV]: "https://from-env.test",
+      }),
+    ).toEqual({ kind: "jev", systemOneOpenUrl: "https://from-file.test" });
+  });
+
+  it("fills only the field the config file left out", () => {
+    const config = withBackend({ kind: "system-one-open" });
+
+    expect(
+      resolveDecisionBackend(config, { [SYSTEM_ONE_OPEN_URL_ENV]: "https://from-env.test" }),
+    ).toEqual({ kind: "system-one-open", systemOneOpenUrl: "https://from-env.test" });
+  });
+
+  it("ignores blank environment values", () => {
+    expect(
+      resolveDecisionBackend(empty, { [DECISION_BACKEND_ENV]: "  ", [SYSTEM_ONE_OPEN_URL_ENV]: "" }),
+    ).toBeUndefined();
+  });
+
+  it("rejects an unknown MILO_DECISION_BACKEND value, naming the variable", () => {
+    expect(() => resolveDecisionBackend(empty, { [DECISION_BACKEND_ENV]: "gpt-oracle" })).toThrow(
+      /MILO_DECISION_BACKEND must be one of/,
+    );
   });
 });
