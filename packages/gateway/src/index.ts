@@ -8,7 +8,7 @@
  * the router cannot decide fails loudly in the route that asked.
  */
 import type { Hono } from "hono";
-import { DecisionLog, DEFAULT_ROSTER, JevClient, OpenRouterClient, Router, StickyCache } from "@milo/core";
+import { DecisionLog, DEFAULT_PRICING, DEFAULT_ROSTER, JevClient, OpenRouterClient, Router, StickyCache } from "@milo/core";
 import type {
   DecisionRecord,
   JevClientOptions,
@@ -18,10 +18,14 @@ import type {
   RouterOptions,
   StickyStore,
 } from "@milo/core";
+import type { BillingStore, PricingConfig } from "@milo/core";
+import type { OpenRouterProvisioningClient } from "@milo/provisioning";
+import type { StripeClient } from "@milo/stripe";
 import { AnthropicUpstream } from "./anthropic.js";
 import type { AnthropicUpstreamOptions } from "./anthropic.js";
 import { createApp } from "./app.js";
 import type { Logger } from "./app.js";
+import type { BillingRuntime, UsageListing } from "./billing.js";
 import { errorMessage } from "./errors.js";
 import { RateLimiter } from "./rate-limit.js";
 import type { RateLimiterOptions } from "./rate-limit.js";
@@ -55,6 +59,25 @@ export type GatewayOptions = {
   /** OpenRouter app attribution headers. */
   referer?: string;
   title?: string;
+  /**
+   * Milo-issued keys and prepaid credits (ADR-007). Omit it and the
+   * deployment is bring-your-own-key only, exactly as before: an `mk_` bearer
+   * is refused with 401 and nothing else about the gateway changes.
+   */
+  billing?: {
+    /** Where accounts, keys, the ledger and usage live. */
+    store: BillingStore & Partial<UsageListing>;
+    /** Credit purchases and the customer portal. Without it, both 503. */
+    stripe?: StripeClient;
+    /** Mints the per-account OpenRouter sub-key and keeps its limit current. */
+    provisioning?: OpenRouterProvisioningClient;
+    /** Base64 of 32 bytes (`MILO_ENCRYPTION_KEY`); decrypts the sub-key. */
+    encryptionKey: string;
+    /** Margin, decision fee and reserve. Defaults to `DEFAULT_PRICING`. */
+    pricing?: PricingConfig;
+    /** Where a 402 tells the user to add credits. Defaults to `/account`. */
+    accountUrl?: string;
+  };
   /** Injectable fetch for tests. */
   fetch?: typeof fetch;
   /** Minimal logger; defaults to console with keys never included. */
@@ -82,6 +105,20 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
   if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
   if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
+
+  // Normalised once: the pricing default lives here rather than at every
+  // call site that reads a margin or a reserve.
+  const billing: BillingRuntime | undefined =
+    options.billing === undefined
+      ? undefined
+      : {
+          store: options.billing.store,
+          ...(options.billing.stripe !== undefined ? { stripe: options.billing.stripe } : {}),
+          ...(options.billing.provisioning !== undefined ? { provisioning: options.billing.provisioning } : {}),
+          encryptionKey: options.billing.encryptionKey,
+          pricing: options.billing.pricing ?? DEFAULT_PRICING,
+          ...(options.billing.accountUrl !== undefined ? { accountUrl: options.billing.accountUrl } : {}),
+        };
 
   const log = await DecisionLog.open(options.decisionLogUrl ?? ":memory:");
   const writes = new WriteQueue(logger);
@@ -124,6 +161,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const app = createApp({
     router,
     roster,
+    ...(billing !== undefined ? { billing } : {}),
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),
     log,
@@ -132,6 +170,11 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     now: Date.now,
     recordUpstream: (id, upstream: NonNullable<DecisionRecord["upstream"]>) => {
       void writes.track(log.setUpstream(id, upstream));
+    },
+    // A streamed response settles its charge after the handler has returned,
+    // so the same queue that drains late decision-log writes drains these.
+    track: (work: Promise<unknown>) => {
+      void writes.track(work);
     },
   });
 

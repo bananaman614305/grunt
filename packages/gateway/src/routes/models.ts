@@ -10,7 +10,7 @@ import type { Hono } from "hono";
 import type { Context } from "hono";
 import { DEFAULT_ROSTER_INFO, OpenRouterError, ROUTED_MODEL_ID, defaultRosterModels } from "@milo/core";
 import type { AppDeps } from "../app.js";
-import { authorization } from "../app.js";
+import { authOf } from "../billing.js";
 import { errorMessage, errorResponse, openAiError } from "../errors.js";
 
 /**
@@ -58,7 +58,7 @@ export const MILO_AUTO_MODEL = {
 export function registerModelsRoute(app: Hono, deps: AppDeps): void {
   app.get("/v1/models", async (c) => {
     try {
-      const { data } = await deps.openRouter.listModels(authorization(c));
+      const { data } = await deps.openRouter.listModels(authOf(c).openRouterAuthorization);
       return c.json({ data: [MILO_AUTO_MODEL, ...data] });
     } catch (err) {
       deps.logger.error("openrouter models request failed", { error: errorMessage(err) });

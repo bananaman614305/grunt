@@ -10,7 +10,13 @@ export type Migration = {
   version: number;
   description: string;
   /** One or more statements, separated by semicolons. */
-  sql: string;
+  sql?: string;
+  /**
+   * Runs instead of `sql`, for a change SQLite cannot express as plain
+   * statements that are safe to re-run (an `ADD COLUMN` that has to be
+   * skipped when the column is already there, say).
+   */
+  run?: (db: Client) => Promise<void>;
 };
 
 export const MIGRATIONS: Migration[] = [
@@ -100,6 +106,26 @@ CREATE TABLE IF NOT EXISTS rosters (
 CREATE INDEX IF NOT EXISTS idx_rosters_updated_at ON rosters (updated_at);
 `,
   },
+  {
+    version: 4,
+    description: "add the decision account column",
+    // Milo-issued keys (ADR-007) make one deployment multi-tenant, so a
+    // decision now has to say whose it was: `/v1/decisions*` returns only the
+    // authenticated account's rows. Nullable, because a bring-your-own-key
+    // request has no account, and every row written before this migration has
+    // none either -- those stay deployment-wide, exactly as they were.
+    //
+    // `run` rather than `sql`: SQLite has no `ADD COLUMN IF NOT EXISTS`, and
+    // this runner re-applies a migration whose bookkeeping insert did not
+    // land, so the add has to be skipped when the column is already there.
+    run: async (db) => {
+      const columns = await db.execute("PRAGMA table_info(decisions)");
+      if (!columns.rows.some((row) => String(row.name) === "account_id")) {
+        await db.execute("ALTER TABLE decisions ADD COLUMN account_id TEXT");
+      }
+      await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_account_id ON decisions (account_id)");
+    },
+  },
 ];
 
 /**
@@ -108,8 +134,9 @@ CREATE INDEX IF NOT EXISTS idx_rosters_updated_at ON rosters (updated_at);
  * migration already recorded is skipped, and every statement in
  * MIGRATIONS' SQL is written so a partially-applied run (e.g. the process
  * died between executeMultiple and the schema_migrations insert) can still
- * be re-applied without error -- `IF NOT EXISTS` on every create, and
- * `INSERT OR IGNORE` on the migration-2 table copy.
+ * be re-applied without error -- `IF NOT EXISTS` on every create,
+ * `INSERT OR IGNORE` on the migration-2 table copy, and migration 4's `run`
+ * checking for its column before adding it.
  */
 export async function applyMigrations(db: Client): Promise<void> {
   await db.execute(`
@@ -126,7 +153,8 @@ export async function applyMigrations(db: Client): Promise<void> {
   const pending = [...MIGRATIONS].sort((a, b) => a.version - b.version).filter((m) => !applied.has(m.version));
 
   for (const migration of pending) {
-    await db.executeMultiple(migration.sql);
+    if (migration.sql !== undefined) await db.executeMultiple(migration.sql);
+    if (migration.run !== undefined) await migration.run(db);
     await db.execute({
       sql: "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
       args: [migration.version, migration.description, new Date().toISOString()],

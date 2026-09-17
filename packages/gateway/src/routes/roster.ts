@@ -44,7 +44,8 @@ import {
 } from "@milo/core";
 import type { PricedModel, Roster, RosterModel, Tier } from "@milo/core";
 import type { AppDeps } from "../app.js";
-import { keyHash, upstreamAuthorization } from "../app.js";
+import { upstreamAuthorization } from "../app.js";
+import { callerScope } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import { readJsonObject } from "./shared.js";
 
@@ -368,7 +369,7 @@ async function putRoster(c: Context, deps: AppDeps): Promise<Response> {
           frontier: parsed.tiers?.frontier ?? [],
         } satisfies Roster);
 
-  const hash = keyHash(c);
+  const hash = callerScope(c);
   const stored = await deps.log.setRoster(hash, roster);
   // The hash, never the key -- and only at info level, so an operator can see
   // that a roster moved without learning whose.
@@ -384,7 +385,7 @@ async function putRoster(c: Context, deps: AppDeps): Promise<Response> {
 }
 
 async function deleteRoster(c: Context, deps: AppDeps): Promise<Response> {
-  const deleted = await deps.log.deleteRoster(keyHash(c));
+  const deleted = await deps.log.deleteRoster(callerScope(c));
   const view = rosterView(deps.roster ?? DEFAULT_ROSTER, { rosterSource: deploymentSource(deps) });
   return c.json({ deleted, ...view });
 }
@@ -416,7 +417,7 @@ async function loadStored(
   deps: AppDeps,
 ): Promise<{ roster: Roster; updatedAt: string } | undefined> {
   try {
-    return await deps.log.getRoster(keyHash(c));
+    return await deps.log.getRoster(callerScope(c));
   } catch (err) {
     deps.logger.error("per-key roster read failed", { error: errorMessage(err) });
     return undefined;

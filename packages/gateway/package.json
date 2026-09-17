@@ -20,7 +20,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
+    "@milo/billing": "workspace:*",
     "@milo/core": "workspace:*",
+    "@milo/provisioning": "workspace:*",
+    "@milo/stripe": "workspace:*",
     "hono": "^4.13.8"
   },
   "devDependencies": {
