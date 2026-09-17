@@ -2,7 +2,7 @@
 
 Status: draft v2.1, 2026-09-17. Owner: Alan. Orchestrator: Claude Fable 5.1. Builders: Opus and Sonnet subagents.
 
-Progress (2026-09-17): waves 0, 1, and 2 are merged on `main` (266 unit tests, 4 e2e). Wave 3 in flight: messages endpoint, docs, cleanup. Deploy not started. The vault's Jev key ran out of quota mid-build, so no live eval run against Jev yet; the Jev budget was raised to 800 ms after measuring a 520 ms cold round trip. Decision backends are now pluggable (ADR-004): `jev`, `system-one-open`, and `jev-with-fallback`, selected in config or by `MILO_DECISION_BACKEND`, so routing still works while the Jev key is dry.
+Progress (2026-09-17): waves 0, 1, and 2 are merged on `main` (266 unit tests, 4 e2e). Wave 3 in flight: messages endpoint, docs, cleanup. Deploy not started. The vault's Jev key ran out of quota mid-build, so no live eval run against Jev yet; the Jev budget was raised to 800 ms after measuring a 520 ms cold round trip. Decision backends are now pluggable (ADR-004): `jev`, `system-one-open`, and `jev-with-fallback`, selected in config or by `MILO_DECISION_BACKEND`, so routing still works while the Jev key is dry. First live eval with system-one-open, 120 examples, policy v1, balanced posture: 69.2% tier agreement (band 0 100%, band 1 62.9%, band 2 42.4%, band 3 80.0%), task-type accuracy 76.7%, mean latency 390 ms; report in packages/evals/reports/system-one-open-v1.md. A probability-mass rule over the difficulty levels reaches 83.5% in-sample and 81.8% cross-validated on the same signals and is being built as policy v2.
 
 ## The one thing
 
