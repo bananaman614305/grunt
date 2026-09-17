@@ -43,7 +43,7 @@ describe("routing eval set (packages/evals/data/routing.jsonl)", () => {
     expect(total).toBe(examples.length);
   });
 
-  // Policy v1 (docs/PLAN.md, ADR-002), as applied to a discrete 0..3 band:
+  // the labeling rule in data/README.md, as applied to a discrete 0..3 band:
   //   band 0            -> fast
   //   band 1            -> fast or mid (little reasoning vs some reasoning)
   //   band 2            -> mid or frontier (reasoning-dependent), but

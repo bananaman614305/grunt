@@ -1,7 +1,7 @@
 {
   "source": "synthetic",
   "prompt": "concurrency-bug",
-  "expectedTier": { "low": "mid", "balanced": "frontier", "quality": "frontier" },
+  "expectedTier": { "low": "frontier", "balanced": "frontier", "quality": "frontier" },
   "requestId": "req_synthetic_concurrency_bug",
   "model": "jev-latest",
   "answers": {

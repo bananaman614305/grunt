@@ -412,7 +412,7 @@ describe("POST /v1/messages, milo/auto", () => {
 
     expect(res.status).toBe(200);
     // The `flaky-test` fixture is a debug task at difficulty 2.31, which
-    // Policy v1 sends to frontier under the default balanced posture -- the
+    // The policy sends this distribution to frontier under balanced posture -- the
     // same answer the OpenAI surface gets for the same conversation.
     expect(res.headers.get("x-milo-model")).toBe("test/frontier");
     expect(res.headers.get("x-milo-tier")).toBe("frontier");
@@ -455,7 +455,9 @@ describe("POST /v1/messages, milo/auto", () => {
 
     const res = await post("/v1/messages", messagesBody({ milo: { posture: "low", candidates: ["test/mid"] } }));
 
-    expect(res.headers.get("x-milo-tier")).toBe("mid");
+    // Policy v2 keeps the flaky-test distribution on frontier even under `low`
+    // posture; candidates leave only `test/mid` eligible, so that is the model.
+    expect(res.headers.get("x-milo-tier")).toBe("frontier");
     expect(res.headers.get("x-milo-model")).toBe("test/mid");
     expect(JSON.parse(upstreams.openRouterCalls()[0]?.body ?? "{}")).not.toHaveProperty("milo");
   });

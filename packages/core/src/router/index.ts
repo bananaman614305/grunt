@@ -1,5 +1,5 @@
 /**
- * The router: Jev question set, Policy v1, roster resolution, stickiness.
+ * The router: Jev question set, Policy v2, roster resolution, stickiness.
  * See docs/adr/002-routing-signals-and-policy.md.
  */
 
@@ -20,6 +20,21 @@ export type { QuestionKey } from "./questions.js";
 
 export {
   chooseTier,
+  chooseTierFromExpectedScore,
+  postureProfile,
+  profileForModel,
+  resolveProfile,
+  hardMass,
+  upperMass,
+  PROFILES,
+  DEFAULT_PROFILE,
+  JEV_PROFILE,
+  SYSTEM_ONE_OPEN_PROFILE,
+  SYSTEM_ONE_OPEN_MODEL_MARKER,
+  LOW_POSTURE_FAST_MASS,
+  LOW_POSTURE_FRONTIER_SHIFT,
+  QUALITY_POSTURE_FRONTIER_MASS,
+  QUALITY_POSTURE_FRONTIER_SHIFT,
   POLICY_VERSION,
   DIFFICULTY_MID,
   DIFFICULTY_HIGH,
@@ -27,6 +42,7 @@ export {
   REASONING_THRESHOLD,
   CAPPED_TASK_TYPES,
 } from "./policy.js";
+export type { PolicyProfile, PolicyProfileName } from "./policy.js";
 
 export { resolveModel, tierSearchOrder, LONG_OUTPUT_THRESHOLD, DEFAULT_SMALL_OUTPUT_MODELS } from "./roster.js";
 export type { ResolveModelOptions } from "./roster.js";

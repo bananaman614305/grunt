@@ -2,7 +2,7 @@
  * The eval report: what the routing eval runner produced, and how to render
  * it as markdown. See `packages/evals/data/README.md` for the labeling rules
  * behind `expectedTier`/`taskType`/`difficultyBand`, and
- * `docs/adr/002-routing-signals-and-policy.md` for Policy v1.
+ * `docs/adr/002-routing-signals-and-policy.md` for the policy.
  */
 
 import type { CostPosture, TaskType, Tier } from "@milo/core";
@@ -25,11 +25,18 @@ export type ScoredExample = {
   difficultyBand: DifficultyBand;
   /** Jev's raw 0..3 difficulty score. */
   predictedDifficulty: number;
+  /**
+   * Jev's probability mass per difficulty level, ordered 0..3. Empty when the
+   * backend reported none. Policy v2 decides on these, so they are recorded
+   * per example: the cross-validation test in `run.test.ts` refits the
+   * thresholds from this column.
+   */
+  difficultyLevels: number[];
   /** Jev's `needs_reasoning` noul, 0..1. */
   needsReasoning: number;
   /** The dataset's label. */
   expectedTier: Tier;
-  /** What Policy v1 chose. */
+  /** What the policy chose. */
   predictedTier: Tier;
   /** The router's one-sentence reason. */
   reason: string;
@@ -246,10 +253,12 @@ export function formatMarkdown(report: EvalReport): string {
   sections.push("## Policy ceiling note");
   sections.push(
     `${pct(band2MidShare)} (n=${band2Mid.length}/${band2.length}) of difficulty-band-2 examples in the ` +
-      "dataset are labeled `mid`. Policy v1 sends difficulty at or above 2.0 under balanced posture to the " +
-      "frontier tier (docs/PLAN.md § Policy v1, ADR-002), so the static labels and the policy table " +
-      "diverge at band 2 by construction. This is a known divergence between the labels and the table " +
-      "that the orchestrator will settle from the live run, not a defect in this report.",
+      "dataset are labeled `mid`, and the rest `frontier`. Policy v1 could not tell those apart: it sent " +
+      "every expected difficulty at or above 2.0 to the frontier tier under balanced posture, which put a " +
+      "hard ceiling on band-2 agreement. Policy v2 reads the per-level probability masses instead " +
+      "(ADR-002 revision 2), so the band-2 row above measures how much of that ceiling the distribution " +
+      "actually lifts. The thresholds are per decision backend and were fitted on this dataset, so treat " +
+      "an in-sample number here as an upper bound; the cross-validated figure is in `run.test.ts`.",
   );
 
   return sections.join("\n\n");

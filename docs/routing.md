@@ -73,6 +73,12 @@ The nine choices and their exact criteria:
 - **2 — Substantial:** the work spans several files or needs design judgment. Choosing between reasonable approaches, refactoring across modules, writing a non-obvious algorithm, reviewing a real diff, or investigating a bug whose cause is not yet known.
 - **3 — Hard:** concurrency, correctness-critical or security-sensitive logic, an architecture other work will depend on, subtle debugging across layers, or deep research in an unfamiliar system. A wrong answer is expensive and easy to miss.
 
+A score answer carries both an expected score (`signals.difficulty`) and the
+probability mass on each of the four levels (`signals.difficultyLevels`, in
+order 0..3). Policy v2 decides on the masses; the expected score is kept for
+the decision log, for `milo explain`, and as the fallback rule when a backend
+reports no distribution.
+
 ### `needs_reasoning` (noul, 0–1)
 
 > Would answering this well require the agent to work through the problem
@@ -106,26 +112,70 @@ kept intact whenever possible, the system prompt is trimmed from the
 is trimmed from the tail, and older user turns are filled newest-first so
 the oldest are trimmed and dropped first.
 
-## Policy v1
+## Policy v2
 
-`packages/core/src/router/policy.ts` maps `difficulty`, `needs_reasoning`,
-and the request's cost posture to a tier, read as an ordered decision tree
-(not an unordered table — later branches only apply once earlier ones do
-not):
+`packages/core/src/router/policy.ts` decides on two numbers read off the
+difficulty distribution rather than on the expected score:
 
-1. `difficulty < 1.0` → **fast**, regardless of posture or `needs_reasoning`.
-2. Otherwise, if `posture === "quality"` → **frontier**.
-3. Otherwise, if `difficulty >= 2.0` → **frontier** under `balanced`/`quality` posture, **mid** under `low` posture.
-4. Otherwise (`1.0 <= difficulty < 2.0`): if `needs_reasoning >= 0.5` → **mid**.
-5. Otherwise (`1.0 <= difficulty < 2.0` and `needs_reasoning < 0.5`): **mid** under `balanced`/`quality` posture, **fast** under `low` posture.
+- **`P3`** — probability mass on level 3 ("hard").
+- **`P2 + P3`** — mass on level 2 or above ("substantial or more").
 
-Then a cap is applied: a `task_type` of `classify` or `chat` is pulled back
-down to **mid** if the tree above landed it on `frontier` and `difficulty <
-2.5`. This keeps a cheap-to-answer task shape (a label, small talk) off the
-frontier tier just because the posture was expensive.
+Under balanced posture, with the thresholds from the backend's profile:
 
-Equivalent as a table (posture columns; `difficulty` bands are
-`[0, 1.0)`, `[1.0, 2.0)`, `[2.0, 3]`):
+1. `P2 + P3 < fastBelowMass` → **fast**.
+2. Otherwise `P3 >= frontierHardMass` **or** `P2 + P3 >= frontierUpperMass` → **frontier**.
+3. Otherwise → **mid**.
+
+Then the cap: a `task_type` of `classify` or `chat` is pulled back to **mid**
+whenever step 2 landed it on `frontier` and `P3 < cappedFrontierHardMass`.
+This keeps a cheap-to-answer task shape (a label, small talk) off the frontier
+tier unless the backend is genuinely confident the work is hard.
+
+### Profiles
+
+The thresholds describe how a decision backend spreads its probability mass,
+not the routing question, so they are per backend and are not transferable.
+`PROFILES` in `policy.ts`:
+
+| profile | fast below | frontier `P3` | frontier `P2+P3` | cap lifts at `P3` |
+|---|---|---|---|---|
+| `system-one-open` | 0.05 | 0.10 | 0.65 | 0.30 |
+| `jev` *(provisional)* | 0.10 | 0.25 | 0.50 | 0.50 |
+
+The `system-one-open` row is fitted: 83.5% in-sample and 81.8% cross-validated
+on the first live eval, against 69.2% for policy v1 on the same signals. Its
+bars are low because that backend hedges — a genuinely hard example often
+carries only 0.10 to 0.20 of mass on level 3.
+
+The `jev` row is **unvalidated**. Jev has no live run yet (ADR-004), so those
+numbers are reasoned from Jev being the better-calibrated scorer — a sharper
+distribution needs higher bars, or the open backend's thresholds would fire on
+noise. Refit them from a Jev run before trusting them.
+
+The `Router` picks a profile from the model name the backend reported
+(`system-one-open/...` means the open replica, anything else means Jev), unless
+a `profile` option overrides it. The gateway passes its configured backend kind
+through and leaves the option unset for `jev-with-fallback`, where either
+backend may answer any given request.
+
+### Posture
+
+Posture shifts the thresholds rather than replacing the rule:
+
+| posture | effect |
+|---|---|
+| `low` | both frontier thresholds **+0.15**; the fast threshold raised to at least **0.10** |
+| `balanced` | the profile as written |
+| `quality` | both frontier thresholds **−0.10** (floored at 0), and anything not fast goes to frontier once `P2 + P3 >= 0.40` |
+
+Unlike v1, `low` posture can reach the frontier tier: the bar is raised, not
+closed, so genuinely hard work still gets the right model even when the caller
+asked for cheap. The `classify`/`chat` cap is not shifted by posture.
+
+### Fallback
+
+When `difficultyLevels` is empty — an older fixture, or a backend that reports
+no per-level distribution — the v1 expected-score rule runs instead:
 
 | difficulty | needs_reasoning | low | balanced | quality |
 |---|---|---|---|---|
@@ -134,20 +184,24 @@ Equivalent as a table (posture columns; `difficulty` bands are
 | 1.0–2.0 | ≥ 0.5 | mid | mid | frontier* |
 | ≥ 2.0 | any | mid | frontier | frontier |
 
-*`quality` posture always routes to frontier once `difficulty >= 1.0`,
-regardless of `needs_reasoning` — that is what "quality" posture means.
-Every cell in this table is then subject to the `classify`/`chat` cap: pull
-back to `mid` if the cell says `frontier` and `difficulty < 2.5`.
+*`quality` posture always routes to frontier once `difficulty >= 1.0`. Every
+cell is then subject to the v1 cap: pull back to `mid` if the cell says
+`frontier` and `difficulty < 2.5`. Without this fallback a backend that
+reported nothing would look "certainly trivial" and every request would land
+on `fast`.
 
-The router's one-sentence `reason` cites the exact numbers that decided it,
-e.g. `"debug task, difficulty 2.40 with balanced posture routes to
+### The reason sentence
+
+The router's one-sentence `reason` cites the masses that decided it, e.g.
+`"debug task, P(hard) 0.18 at or above 0.10 with balanced posture routes to
 frontier; chose anthropic/claude-opus-5"`, or with the cap applied,
-`"...routes to frontier, but a classify task caps at mid below difficulty
-2.50"`.
+`"...routes to frontier, but a classify task caps at mid below P(hard) 0.30"`.
+On the fallback path it cites the expected score the way v1 did.
 
 Changing any threshold in this file bumps `POLICY_VERSION` (currently
-`"v1"`) and needs an eval run showing at least 85% agreement on
-`packages/evals/data/routing.jsonl` before shipping (ADR-002).
+`"v2"`) and needs an eval run on `packages/evals/data/routing.jsonl` before
+shipping: at least 85% for Jev, at least 80% for the open backend (ADR-002
+revision 2).
 
 ## Roster resolution
 
@@ -214,43 +268,39 @@ The router never blocks a request on Jev being unavailable.
 
 `milo explain <decision-id>` (`docs/cli.md`) prints the decision id, the
 chosen model and tier, the one-sentence reason, and then either a signals
-block — task type, difficulty with its confidence, `needs_reasoning`,
-`long_output`, the Jev request id, the Jev model name, and Jev's latency —
-or, for a degraded decision, `Signals: unavailable (degraded fallback, no
-Jev call recorded)`. It also shows whether the decision was sticky, whether
+block — task type, difficulty with its confidence, the per-level difficulty
+distribution as a small bar chart, `needs_reasoning`, `long_output`, the Jev
+request id, the Jev model name, and Jev's latency — or, for a degraded
+decision, `Signals: unavailable (degraded fallback, no Jev call recorded)`.
+The bar chart is what backs up the reason sentence, since policy v2 decides on
+those masses; a backend that reported none prints `Difficulty levels: not
+reported by this decision backend`. It also shows whether the decision was sticky, whether
 it was degraded, the recorded upstream outcome (status, latency, token
 counts, cost when OpenRouter reported them), the policy version, and the
 creation timestamp. `--json` prints the raw `DecisionRecord` instead.
 
-## Known divergence: labels vs. policy v1 at low-reasoning bands
+## Resolved divergence: labels vs. policy v1 at low-reasoning bands
 
 The labeled eval set (`packages/evals/data/README.md`) labels
-`expected_tier_balanced` per discrete difficulty **band** (an integer 0–3,
-the Jev score itself) using a rule that leans on `needs_reasoning` at the
-middle bands: band 1 is labeled `fast` when little reasoning is needed
-(`mid` otherwise), and band 2 is labeled `mid` when little reasoning is
-needed (`frontier` otherwise).
+`expected_tier_balanced` per discrete difficulty **band** (an integer 0–3)
+using a rule that leans on `needs_reasoning` at the middle bands: band 1 is
+labeled `fast` when little reasoning is needed (`mid` otherwise), and band 2
+is labeled `mid` when little reasoning is needed (`frontier` otherwise).
 
-Policy v1, read at `posture: "balanced"` — the posture the labels assume —
-does not actually use `needs_reasoning` to distinguish those outcomes at
-either band, even though the code branches on it:
+Policy v1 could not express that. At `posture: "balanced"` both of its band-1
+branches returned `mid`, and its band-2 branch never read `needs_reasoning` at
+all, so a low-reasoning band-1 example labeled `fast` went to `mid` and a
+low-reasoning band-2 example labeled `mid` went to `frontier` — regardless of
+the reasoning signal. That put a hard ceiling on agreement exactly where the
+labels lean hardest, and the first live eval measured it: band 1 62.9%, band 2
+42.4%, 69.2% overall.
 
-- **Band 1** (`1.0 <= difficulty < 2.0`): the code's `reasoning >=
-  REASONING_THRESHOLD` branch returns `mid`, and its "else" branch returns
-  `posture === "low" ? "fast" : "mid"` — under `balanced` that is also
-  `mid`. Both branches land on `mid`, so a low-reasoning band-1 example the
-  eval set expects at `fast` gets routed to `mid` by policy v1 regardless of
-  the reasoning signal.
-- **Band 2 and above** (`difficulty >= 2.0`): the code's branch is
-  `posture === "low" ? "mid" : "frontier"`, which never reads
-  `needs_reasoning` at all. A low-reasoning band-2 example the eval set
-  expects at `mid` gets routed to `frontier` under balanced posture.
-
-`needs_reasoning` only changes the outcome under `posture: "low"` at band 1
-(`fast` vs. `mid`) — it has no effect on any balanced-posture decision at
-band 1 or band 2, which is exactly where the eval set's labels rely on it
-most. `packages/evals/src/report.ts` surfaces the band-2 half of this as a
-"known divergence between the labels and the table" in its "Policy ceiling
-note" section, measured but not treated as a defect. A policy v2 is planned
-once a live eval run (`pnpm eval --mode live`) exists to show whether
-`needs_reasoning` should move the balanced-posture boundary at these bands.
+Policy v2 resolves it from a different direction. Rather than adding
+`needs_reasoning` to the balanced-posture boundary — a composite rule that was
+tried and scored *worse* cross-validated (75.8%) — it reads the per-level
+probability mass, which already separates those cases: an easy-looking band-2
+task carries its mass on level 2, a hard one carries a tail on level 3. The
+same recorded signals score band 1 at 71.4% and band 2 at 75.8%, 83.3%
+overall. `packages/evals/src/report.ts` still prints the band-2 label share in
+its "Policy ceiling note" section, now as a measure of how much of the ceiling
+the distribution lifts.

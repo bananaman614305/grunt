@@ -2,7 +2,7 @@
 
 Status: draft v2.1, 2026-09-17. Owner: Alan. Orchestrator: Claude Fable 5.1. Builders: Opus and Sonnet subagents.
 
-Progress (2026-09-17): waves 0, 1, and 2 are merged on `main` (266 unit tests, 4 e2e). Wave 3 in flight: messages endpoint, docs, cleanup. Deploy not started. The vault's Jev key ran out of quota mid-build, so no live eval run against Jev yet; the Jev budget was raised to 800 ms after measuring a 520 ms cold round trip. Decision backends are now pluggable (ADR-004): `jev`, `system-one-open`, and `jev-with-fallback`, selected in config or by `MILO_DECISION_BACKEND`, so routing still works while the Jev key is dry. First live eval with system-one-open, 120 examples, policy v1, balanced posture: 69.2% tier agreement (band 0 100%, band 1 62.9%, band 2 42.4%, band 3 80.0%), task-type accuracy 76.7%, mean latency 390 ms; report in packages/evals/reports/system-one-open-v1.md. A probability-mass rule over the difficulty levels reaches 83.5% in-sample and 81.8% cross-validated on the same signals and is being built as policy v2.
+Progress (2026-09-17): waves 0, 1, and 2 are merged on `main` (266 unit tests, 4 e2e). Wave 3 in flight: messages endpoint, docs, cleanup. Deploy not started. The vault's Jev key ran out of quota mid-build, so no live eval run against Jev yet; the Jev budget was raised to 800 ms after measuring a 520 ms cold round trip. Decision backends are now pluggable (ADR-004): `jev`, `system-one-open`, and `jev-with-fallback`, selected in config or by `MILO_DECISION_BACKEND`, so routing still works while the Jev key is dry. First live eval with system-one-open, 120 examples, policy v1, balanced posture: 69.2% tier agreement (band 0 100%, band 1 62.9%, band 2 42.4%, band 3 80.0%), task-type accuracy 76.7%, mean latency 390 ms; report in packages/evals/reports/system-one-open-v1.md. Policy v2 (ADR-002 revision 2) replaces v1's fixed expected-score thresholds with a probability-mass rule over the difficulty levels, with per-backend threshold profiles: replaying the same recorded fixtures scores **83.3%** (band 0 100%, band 1 71.4%, band 2 75.8%, band 3 92.0%), report in packages/evals/reports/system-one-open-v2.md, and 80.9% mean held-out agreement under two-fold cross-validation. CI gates the open backend at 0.80; 0.85 remains the target for Jev, which still has no live run.
 
 ## The one thing
 
@@ -78,6 +78,7 @@ type CostPosture = "low" | "balanced" | "quality";
 type RouteSignals = {
   taskType: TaskType;
   difficulty: number;            // 0..3 expected score
+  difficultyLevels: number[];    // mass on levels 0..3; empty when a backend reports none (ADR-002 rev 2)
   needsReasoning: number;        // noul
   longOutput: number;            // noul
   confidences: Record<string, number>;
@@ -129,6 +130,8 @@ Request extension (optional, stripped before forwarding to OpenRouter):
 | any | any | quality, and difficulty ≥ 1.0 | frontier |
 
 `task_type` of `classify` or `chat` caps at `mid` unless difficulty ≥ 2.5. `long_output` ≥ 0.7 excludes models with small max output from the tier's list.
+
+Superseded by **policy v2** (ADR-002 revision 2, `docs/routing.md`): the table above is now only the fallback for a backend that reports no per-level distribution. v2 decides on `P(level 3)` and `P(level 2 or above)` against per-backend thresholds, because the open backend's expected score turned out to be too compressed for fixed cut points at 1.0 and 2.0.
 
 Default roster: fast = `anthropic/claude-haiku-4.5`, `google/gemini-2.5-flash`; mid = `anthropic/claude-sonnet-5`; frontier = `anthropic/claude-opus-5`. Users override in `milo.config.json`.
 

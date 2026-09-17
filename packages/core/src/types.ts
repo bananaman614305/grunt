@@ -67,6 +67,12 @@ export type MiloRequestExtension = {
 export type RouteSignals = {
   taskType: TaskType;
   difficulty: number; // 0..3 expected score
+  /**
+   * Probability mass per difficulty level, ordered 0..3, summing to about 1.
+   * Empty when the decision backend reports no per-level distribution -- the
+   * policy then falls back to the expected-score rule (ADR-002 revision 2).
+   */
+  difficultyLevels: number[];
   needsReasoning: number; // noul
   longOutput: number; // noul
   confidences: Record<string, number>;
@@ -106,7 +112,7 @@ export const ROUTER_LIMITS = {
   recentUserTurns: 3,
 } as const;
 
-export const POLICY_VERSION = "v1";
+export const POLICY_VERSION = "v2";
 
 // ---------------------------------------------------------------------------
 // Decision log

@@ -61,9 +61,11 @@ length and difficulty are different axes on purpose.
 
 ## How to assign `expected_tier_balanced`
 
-This eval set encodes Policy v1 (`docs/PLAN.md` § Policy v1, ADR-002) at
-`posture: "balanced"`, specialized to a discrete band instead of a
-continuous difficulty score:
+This eval set encodes the *intended* routing outcome at `posture: "balanced"`,
+specialized to a discrete band instead of a continuous difficulty score. The
+rule below was written against Policy v1 (ADR-002) and the labels have not
+moved since; policy v2 is measured against these same labels, so they remain
+the independent target rather than a restatement of the current table:
 
 | band | rule |
 |---|---|

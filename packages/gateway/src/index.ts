@@ -22,6 +22,7 @@ import type {
   JevClientLike,
   JevClientOptions,
   OpenRouterClientOptions,
+  PolicyProfileName,
   RouteDecision,
   Roster,
   SystemOneOpenClientOptions,
@@ -167,6 +168,27 @@ export function buildDecisionBackend(options: GatewayOptions): {
   }
 }
 
+/**
+ * The policy-v2 profile a configured backend implies (ADR-002 revision 2).
+ * `jev-with-fallback` gets none: its two backends calibrate differently and
+ * either may answer any given request, so the router picks per decision from
+ * the model name the answer carried.
+ */
+export function profileForBackendKind(kind: DecisionBackendKind): PolicyProfileName | undefined {
+  switch (kind) {
+    case "system-one-open":
+      return "system-one-open";
+    case "jev":
+      return "jev";
+    case "jev-with-fallback":
+      return undefined;
+    default: {
+      const exhaustive: never = kind;
+      throw new Error(`milo gateway: unknown decision backend "${String(exhaustive)}"`);
+    }
+  }
+}
+
 export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const logger = options.logger ?? consoleLogger();
   const roster = options.roster ?? DEFAULT_ROSTER;
@@ -184,10 +206,15 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     );
   }
 
+  const profile = profileForBackendKind(decision.kind);
   const router = new Router({
     jev: decision.client,
     jevTimeoutMs: decision.routerTimeoutMs,
     roster,
+    // Policy v2's thresholds are per backend, and the gateway knows which one
+    // it configured. A fallback chain leaves this unset so the router reads it
+    // off whichever backend actually answered.
+    ...(profile !== undefined ? { profile } : {}),
     sticky: new StickyCache(),
     // Every decision the router makes is logged, degraded ones included: a
     // decision that never reaches the log cannot explain a response header.
