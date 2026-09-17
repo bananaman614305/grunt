@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: list | provision
+        description: list | provision | encryption-key
         required: true
         default: list
       cluster:
@@ -31,6 +31,15 @@ jobs:
       - name: List clusters
         if: ${{ inputs.mode == 'list' }}
         run: flyctl mpg list -o "${{ inputs.org }}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Stage a fresh MILO_ENCRYPTION_KEY
+        if: ${{ inputs.mode == 'encryption-key' }}
+        run: |
+          set -euo pipefail
+          KEY=$(openssl rand -base64 32)
+          flyctl secrets set "MILO_ENCRYPTION_KEY=$KEY" -a milo-gateway --stage
+          echo "staged MILO_ENCRYPTION_KEY (not printed)"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Create database and attach
