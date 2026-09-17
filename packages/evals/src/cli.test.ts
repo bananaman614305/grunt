@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MIN_TIER_AGREEMENT, OPEN_BACKEND_TIER_AGREEMENT, parseArgs } from "./cli.js";
+import { MIN_TIER_AGREEMENT, parseArgs } from "./cli.js";
 
 describe("pnpm eval argument parsing", () => {
   it("defaults the gate to the Jev target of 0.85", () => {
@@ -9,7 +9,6 @@ describe("pnpm eval argument parsing", () => {
 
   it("takes a gate from --gate", () => {
     expect(parseArgs(["--gate", "0.8"]).gate).toBe(0.8);
-    expect(parseArgs(["--gate", String(OPEN_BACKEND_TIER_AGREEMENT)]).gate).toBe(0.8);
     expect(parseArgs(["--gate", "0"]).gate).toBe(0);
     expect(parseArgs(["--gate", "1"]).gate).toBe(1);
   });

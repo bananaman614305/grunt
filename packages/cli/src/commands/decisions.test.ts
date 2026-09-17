@@ -62,8 +62,7 @@ describe("milo decisions", () => {
         id: "dec-c",
         createdAt: "2026-09-17T00:02:00.000Z",
         tier: "mid",
-        degraded: true,
-        reason: "routing signals unavailable (timeout), fell back to the mid tier",
+        reason: "forced to the mid tier by the request",
       }),
     );
 
@@ -80,22 +79,9 @@ describe("milo decisions", () => {
     expect(output).toContain("dec-b");
     expect(output).toContain("sticky");
     expect(output).toContain("dec-c");
-    expect(output).toContain("degraded");
     // Newest first.
     expect(output.indexOf("dec-c")).toBeLessThan(output.indexOf("dec-b"));
     expect(output.indexOf("dec-b")).toBeLessThan(output.indexOf("dec-a"));
-  });
-
-  it("filters to degraded decisions only with --degraded", async () => {
-    await log.insert(record({ id: "dec-clean" }));
-    await log.insert(record({ id: "dec-degraded", degraded: true }));
-
-    const { deps, stdout } = createTestDeps({ openLog: async () => log });
-    await run(["--degraded"], deps);
-
-    const output = stdout.toString();
-    expect(output).toContain("dec-degraded");
-    expect(output).not.toContain("dec-clean");
   });
 
   it("respects --limit", async () => {

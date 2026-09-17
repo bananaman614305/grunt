@@ -26,11 +26,7 @@ export type RunRoutingEvalOptions = {
   roster?: Roster;
   /** Max in-flight Jev calls. Defaults to 4. */
   concurrency?: number;
-  /**
-   * Router budget per example. Defaults to the router's own production value
-   * (800 ms). A slower decision backend needs more, or every example scores as
-   * a timeout (ADR-004).
-   */
+  /** Router budget per example. Defaults to the router's own production value (800 ms). */
   jevTimeoutMs?: number;
 };
 

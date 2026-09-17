@@ -25,7 +25,6 @@ export function formatStats(stats: Stats): string {
   for (const [model, count] of Object.entries(stats.byModel)) {
     lines.push(`  ${model}: ${count}`);
   }
-  lines.push(`Degraded: ${stats.degraded}`);
   lines.push(`Sticky: ${stats.sticky}`);
   lines.push(
     `Average Jev latency: ${stats.avgJevLatencyMs !== null ? `${stats.avgJevLatencyMs.toFixed(1)}ms` : "n/a"}`,

@@ -142,7 +142,6 @@ function mdTable(header: string[], rows: string[][]): string {
 export function formatMarkdown(report: EvalReport): string {
   const { scored, unscored } = report;
   const total = scored.length + unscored.length;
-  const all: EvalExampleResult[] = [...scored, ...unscored];
 
   const sections: string[] = [];
 
@@ -245,21 +244,6 @@ export function formatMarkdown(report: EvalReport): string {
         .join("\n"),
     );
   }
-
-  // --- Policy ceiling note -------------------------------------------
-  const band2 = all.filter((e) => e.difficultyBand === 2);
-  const band2Mid = band2.filter((e) => e.expectedTier === "mid");
-  const band2MidShare = band2.length > 0 ? band2Mid.length / band2.length : NaN;
-  sections.push("## Policy ceiling note");
-  sections.push(
-    `${pct(band2MidShare)} (n=${band2Mid.length}/${band2.length}) of difficulty-band-2 examples in the ` +
-      "dataset are labeled `mid`, and the rest `frontier`. Policy v1 could not tell those apart: it sent " +
-      "every expected difficulty at or above 2.0 to the frontier tier under balanced posture, which put a " +
-      "hard ceiling on band-2 agreement. Policy v2 reads the per-level probability masses instead " +
-      "(ADR-002 revision 2), so the band-2 row above measures how much of that ceiling the distribution " +
-      "actually lifts. The thresholds are per decision backend and were fitted on this dataset, so treat " +
-      "an in-sample number here as an upper bound; the cross-validated figure is in `run.test.ts`.",
-  );
 
   return sections.join("\n\n");
 }

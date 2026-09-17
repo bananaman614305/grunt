@@ -42,7 +42,8 @@ Options:
   -h, --help        Show this help
 ```
 
-Env: **`JEV_API_KEY`** (required) — Milo's own Jev key. Missing it prints
+Env: **`JEV_API_KEY`** (required) — Milo's own Jev key. Jev is the only
+decision backend; there is no fallback. Missing it prints
 `milo serve: JEV_API_KEY is not set. Export JEV_API_KEY with Milo's Jev key
 before running \`milo serve\`.` and exits **1**.
 
@@ -102,25 +103,24 @@ Missing the positional id: `milo explain: missing <decision-id>` on stderr,
 followed by the help text, exit **1**. An id not found in the log: `milo
 explain: no decision found with id "<id>"` on stderr, exit **1**.
 
-Sample output (a decision degraded because Jev was unreachable):
+Sample output (a decision that forced a tier and skipped Jev, so it has no signals):
 
 ```
 $ milo explain 01M2R1Q051K81ZJJM304BDAH04 --db "file:/tmp/milo-doctest/decisions.db"
 Decision 01M2R1Q051K81ZJJM304BDAH04
   Chosen model: anthropic/claude-sonnet-5 (tier: mid)
-  Reason: routing signals unavailable (network), fell back to the mid tier
-  Signals: unavailable (degraded fallback, no Jev call recorded)
+  Reason: forced to the mid tier by the request
+  Signals: unavailable (no Jev call recorded)
   Sticky: no
-  Degraded: yes
   Upstream: not recorded
   Policy version: v2
   Created: 2026-09-17T16:03:07.554Z
 ```
 
-A clean (non-degraded) decision instead prints a `Signals:` block with task
-type, difficulty and its confidence, the per-level difficulty distribution as
-a bar chart, `needs_reasoning`, `long_output`, the Jev request id and model,
-and Jev's latency:
+A decision with signals instead prints a `Signals:` block with task type,
+difficulty and its confidence, the per-level difficulty distribution as a bar
+chart, `needs_reasoning`, `long_output`, the Jev request id and model, and
+Jev's latency:
 
 ```
   Task type: debug
@@ -134,10 +134,8 @@ and Jev's latency:
 ```
 
 Policy v2 decides on those masses (`docs/routing.md`), so the bars are what
-back up the `Reason:` line. A backend that reports no distribution prints
-`Difficulty levels: not reported by this decision backend` instead. `--json`
-prints the raw `DecisionRecord` instead of this formatted text. Exit code
-**0** on success.
+back up the `Reason:` line. `--json` prints the raw `DecisionRecord` instead
+of this formatted text. Exit code **0** on success.
 
 ## `milo decisions`
 
@@ -148,7 +146,6 @@ List recent routing decisions as a compact table.
 
 Options:
   --limit <n>   Max rows to print (default: 20)
-  --degraded    Only show degraded decisions
   --db <url>    Decision log libsql URL (default: file:./.milo/decisions.db)
   -h, --help    Show this help
 ```
@@ -158,13 +155,14 @@ Sample output:
 ```
 $ milo decisions --db "file:/tmp/milo-doctest/decisions.db"
 ID                          TIME                      TIER  MODEL                      TASK  DIFF  FLAGS
-01M2R1Q051K81ZJJM304BDAH04  2026-09-17T16:03:07.554Z  mid   anthropic/claude-sonnet-5  -     -     degraded
+01M2R1Q051K81ZJJM304BDAH04  2026-09-17T16:03:07.554Z  mid   anthropic/claude-sonnet-5  -     -     -
 ```
 
-`TASK` and `DIFF` read `-` for a degraded decision (no signals recorded).
-`FLAGS` combines `sticky` and `degraded` with a comma, or `-` when neither
-applies. An empty log prints `(no decisions logged)`. A non-positive-integer
-`--limit` exits **1** with a usage error. Exit code **0** otherwise.
+`TASK` and `DIFF` read `-` for a decision with no signals recorded (a forced
+tier). `FLAGS` shows `sticky`, or `-` when the decision was not served from
+the fingerprint cache. An empty log prints `(no decisions logged)`. A
+non-positive-integer `--limit` exits **1** with a usage error. Exit code **0**
+otherwise.
 
 ## `milo stats`
 
@@ -188,15 +186,14 @@ By tier:
   mid: 1
 By model:
   anthropic/claude-sonnet-5: 1
-Degraded: 1
 Sticky: 0
 Average Jev latency: n/a
 ```
 
 `Average Jev latency` reads `n/a` when no in-scope decision carries Jev
-signals (as above, where the only decision was degraded). An invalid
-`--since` value exits **1** with `milo stats: --since is not a valid ISO
-8601 timestamp: "<value>"`. Exit code **0** otherwise.
+signals (as above, where the only decision had no signals recorded). An
+invalid `--since` value exits **1** with `milo stats: --since is not a valid
+ISO 8601 timestamp: "<value>"`. Exit code **0** otherwise.
 
 ## Exit codes, summarized
 

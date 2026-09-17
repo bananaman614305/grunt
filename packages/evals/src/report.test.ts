@@ -112,7 +112,6 @@ describe("formatMarkdown", () => {
       "## Tier confusion matrix",
       "## Jev latency",
       "## Disagreements",
-      "## Policy ceiling note",
     ];
     for (const heading of headings) {
       expect(markdown, `expected to find "${heading}"`).toContain(heading);

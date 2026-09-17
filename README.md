@@ -17,12 +17,6 @@ export JEV_API_KEY=...                       # Milo's own Jev key; see docs/conf
 node packages/cli/dist/cli.js serve          # listens on http://localhost:8787
 ```
 
-No Jev key? Route with the open-source replica instead (see `docs/adr/004-decision-backends.md`):
-
-```
-MILO_DECISION_BACKEND=system-one-open node packages/cli/dist/cli.js serve
-```
-
 Milo supplies the Jev key itself, so end users of a hosted Milo only need
 their own OpenRouter key — nothing about Jev changes on the client side.
 
@@ -57,7 +51,7 @@ OpenRouter key, forwarded to OpenRouter unchanged and never stored.
 
 ## What you get back
 
-A routed response carries seven `x-milo-*` headers naming the decision:
+A routed response carries six `x-milo-*` headers naming the decision:
 
 ```
 HTTP/1.1 200 OK
@@ -68,7 +62,6 @@ x-milo-tier: frontier
 x-milo-task-type: debug
 x-milo-difficulty: 2.40
 x-milo-sticky: false
-x-milo-degraded: false
 ```
 
 `x-milo-decision-id` resolves at `GET /v1/decisions/:id`. Example (illustrative
@@ -95,7 +88,6 @@ captured response):
   "reason": "debug task, P(hard) 0.51 at or above 0.25 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
   "policyVersion": "v2",
   "sticky": false,
-  "degraded": false,
   "createdAt": "2026-09-17T16:03:07.554Z",
   "upstream": { "status": 200, "latencyMs": 640, "inputTokens": 940, "outputTokens": 210 }
 }

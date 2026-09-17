@@ -1,4 +1,4 @@
-/** `milo decisions [--limit <n>] [--degraded] [--db <url>]`. */
+/** `milo decisions [--limit <n>] [--db <url>]`. */
 import { parseArgs } from "node:util";
 import type { DecisionRecord } from "@milo/core";
 import { DEFAULT_DECISION_LOG_URL } from "../config.js";
@@ -11,7 +11,6 @@ List recent routing decisions as a compact table.
 
 Options:
   --limit <n>   Max rows to print (default: 20)
-  --degraded    Only show degraded decisions
   --db <url>    Decision log libsql URL (default: ${DEFAULT_DECISION_LOG_URL})
   -h, --help    Show this help
 `;
@@ -21,7 +20,6 @@ const DEFAULT_LIMIT = 20;
 function flags(record: DecisionRecord): string {
   const parts: string[] = [];
   if (record.sticky) parts.push("sticky");
-  if (record.degraded) parts.push("degraded");
   return parts.length > 0 ? parts.join(",") : "-";
 }
 
@@ -46,7 +44,6 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
       args,
       options: {
         limit: { type: "string" },
-        degraded: { type: "boolean" },
         db: { type: "string" },
         help: { type: "boolean", short: "h" },
       },
@@ -75,7 +72,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
   const dbUrl = parsed.values.db ?? DEFAULT_DECISION_LOG_URL;
   const log = await deps.openLog(dbUrl);
   try {
-    const records = await log.listRecent({ limit, degradedOnly: parsed.values.degraded === true });
+    const records = await log.listRecent({ limit });
     deps.stdout.write(`${formatDecisionsTable(records)}\n`);
     return 0;
   } finally {

@@ -77,10 +77,9 @@ export function formatExplanation(record: DecisionRecord): string {
     `  Reason: ${record.reason}`,
   ];
   lines.push(
-    record.signals ? formatSignals(record.signals) : "  Signals: unavailable (degraded fallback, no Jev call recorded)",
+    record.signals ? formatSignals(record.signals) : "  Signals: unavailable (no Jev call recorded)",
   );
   lines.push(`  Sticky: ${record.sticky ? "yes" : "no"}`);
-  lines.push(`  Degraded: ${record.degraded ? "yes" : "no"}`);
   lines.push(formatUpstream(record.upstream));
   lines.push(`  Policy version: ${record.policyVersion}`);
   lines.push(`  Created: ${record.createdAt}`);

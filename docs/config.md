@@ -80,8 +80,12 @@ built-in default.
 Milo's own Jev key, read only from the `JEV_API_KEY` environment variable —
 there is no config-file field for it, and it must never be committed to
 `milo.config.json`, a fixture, or a log. `milo serve` refuses to start
-without it. In production this is delivered as a revocable Squire egress
-grant; locally, export it yourself (in development, fetch it through the
-Squire `use_credential` tool rather than pasting it into a shell history).
-It is passed straight through to `GatewayOptions.jevApiKey` and never
-appears in a response, an error message, or the decision log (ADR-003).
+without it. Jev is the only decision backend (ADR-005): there is no
+fallback tier or alternate backend to route through if the key is missing
+or exhausted, so a routed request that cannot reach Jev gets a 503 rather
+than a silently degraded model choice. In production this is delivered as a
+revocable Squire egress grant; locally, export it yourself (in development,
+fetch it through the Squire `use_credential` tool rather than pasting it
+into a shell history). It is passed straight through to
+`GatewayOptions.jevApiKey` and never appears in a response, an error
+message, or the decision log (ADR-003).
