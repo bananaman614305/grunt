@@ -10,21 +10,29 @@
  * The per-level probabilities separate far better, because a hedged
  * distribution still puts its tail where the work actually is.
  *
- * So v2 reads two masses off `signals.difficultyLevels`:
+ * So v2 reads masses off `signals.difficultyLevels`:
  *
- *   P3       = probability the work is level 3 ("hard")
- *   P2 + P3  = probability the work is level 2 or above ("substantial or more")
+ *   P3            = probability the work is level 3 ("hard")
+ *   P2 + P3       = probability the work is level 2 or above ("substantial or more")
+ *   P1 + P2 + P3  = probability the work is level 1 or above ("routine or more")
  *
  * and applies, under balanced posture:
  *
- *   fast      when P2 + P3 <  fastBelowMass
- *   frontier  when P3      >= frontierHardMass  or  P2 + P3 >= frontierUpperMass
+ *   fast      when the fast-gate mass <  fastBelowMass
+ *   frontier  when P3 >= frontierHardMass  or  P2 + P3 >= frontierUpperMass
  *   mid       otherwise
+ *
+ * The fast gate reads `P2 + P3` or `P1 + P2 + P3`, per the profile's
+ * `fastMassFromLevel` (2 or 1). A backend whose mid-difficulty work actually
+ * sits on level 1 -- Jev does (ADR-002 revision 3) -- needs the gate to start
+ * there, or most of that work is waved through to fast on an empty level-2
+ * mass. The frontier gates always read `P3` and `P2 + P3`, whichever level the
+ * fast gate starts from.
  *
  * The thresholds are a `PolicyProfile` rather than constants, because they are
  * a property of the *backend's* calibration, not of the routing question. A
  * backend that hedges needs a low bar; a sharp one needs a high bar. See
- * `PROFILES` below and ADR-002 revision 2.
+ * `PROFILES` below and ADR-002 revisions 2 and 3.
  *
  * Posture adjusts the rule at both ends:
  *
@@ -57,12 +65,21 @@ export { POLICY_VERSION } from "../types.js";
 // ---------------------------------------------------------------------------
 
 /**
- * The four thresholds policy v2 reads. One set per decision backend: they
+ * The five thresholds policy v2 reads. One set per decision backend: they
  * describe how that backend spreads its probability mass, so they are not
  * transferable between backends and must be refit from an eval run.
  */
 export type PolicyProfile = {
-  /** `P2 + P3` strictly below this routes to fast. */
+  /**
+   * Which level the fast gate's mass starts at: `2` reads `P2 + P3`
+   * ("substantial or more"), `1` reads `P1 + P2 + P3` ("routine or more").
+   * A backend that hedges puts real mid-difficulty work on level 1 as often
+   * as level 2, so gating fast on level 2+ alone waves most of it through; a
+   * sharper backend that actually concentrates mid work on level 1 needs the
+   * gate to start there instead (Jev, ADR-002 revision 3).
+   */
+  fastMassFromLevel: 1 | 2;
+  /** The fast gate's mass (from `fastMassFromLevel`) strictly below this routes to fast. */
   fastBelowMass: number;
   /** `P3` at or above this routes to frontier. */
   frontierHardMass: number;
@@ -84,6 +101,7 @@ export type PolicyProfile = {
  * carries a percent or two above level 1.
  */
 export const SYSTEM_ONE_OPEN_PROFILE: PolicyProfile = {
+  fastMassFromLevel: 2,
   fastBelowMass: 0.05,
   frontierHardMass: 0.1,
   frontierUpperMass: 0.65,
@@ -91,30 +109,45 @@ export const SYSTEM_ONE_OPEN_PROFILE: PolicyProfile = {
 };
 
 /**
- * Provisional and UNVALIDATED. Jev has no live eval run yet -- Milo's key ran
- * out of quota mid-build (ADR-004) -- so these numbers are reasoned, not
- * fitted, and must be refit from a Jev run before anyone trusts them.
+ * Fitted and VALIDATED on the first live Jev run (ADR-002 revision 3): 120
+ * examples, provisional profile, 75.0% tier agreement. Jev's mean per-level
+ * mass by expected band showed why: expected-mid examples average P0 0.17 /
+ * P1 0.62 / P2 0.18 / P3 0.03 -- Jev puts real mid-difficulty work squarely on
+ * level 1, not level 2 -- so gating fast on `P2 + P3` (the open backend's
+ * gate) waved most mid work through to fast. `fastMassFromLevel: 1` moves the
+ * fast gate to `P1 + P2 + P3` instead, which is where Jev's mid mass actually
+ * sits.
  *
- * The reasoning: Jev scores 86.9% against the open replica's 76.7% on
- * TypeSafe's public eval, and a better-calibrated scorer concentrates mass on
- * the level it believes instead of smearing it. On a sharper distribution the
- * open backend's thresholds would fire on noise, so every bar moves up to
- * where the probabilities mean what they say:
+ * Grid search with two-fold cross-validation over `fastBelowMass` (gated on
+ * level 1+), `frontierHardMass`, and `frontierUpperMass` found:
  *
- *   - `fastBelowMass` 0.10: a sharp distribution that still leaves a tenth of
- *     its mass above level 1 is genuinely unsure, where the open backend
- *     leaves that much on nearly everything.
- *   - `frontierHardMass` 0.25: "level 3 is a serious contender" rather than
- *     "level 3 is visible in the tail".
- *   - `frontierUpperMass` 0.50: substantial-or-harder is the modal outcome.
- *   - `cappedFrontierHardMass` 0.50: a confident backend should be at even
- *     odds on hard before a `classify` or `chat` task pays frontier prices.
+ *   - `fastBelowMass` 0.35: expected-fast examples average P1+ 0.26, so 0.35
+ *     clears real fast work while still catching most of what should not be.
+ *   - `frontierHardMass` 0.05 and `frontierUpperMass` 0.65: unchanged from the
+ *     provisional profile's shape -- Jev's expected-frontier mass (P2+P3 0.89
+ *     mean) already clears 0.65 comfortably, and a hard tail as thin as 0.05
+ *     is still a real signal on this sharper backend.
+ *   - `cappedFrontierHardMass` 0.05, level with `frontierHardMass`: the
+ *     replay with the inherited 0.50 cap pulled two genuinely-hard
+ *     `classify`/`chat` examples (hard mass 0.05-0.07, comfortably over the
+ *     lowered frontier bar) straight back down to `mid` -- the cap
+ *     re-litigating a decision the hard bar already made, not screening out
+ *     noise. Lining the cap up with the hard bar recovers both without
+ *     reopening frontier to a `classify`/`chat` task the hard bar itself
+ *     would reject.
+ *
+ * That scores 84.2% in-sample and 80.8% under two-fold cross-validation
+ * (folds 75.0% and 86.7% -- the fast/mid boundary is the noisy one); per band
+ * 96.3% / 62.9% / 84.8% / 100.0%. Confusion: frontier 41/42 correct, mid
+ * 26/31, fast 34/47 (13 fast-labeled examples predicted mid). Replay:
+ * `packages/evals/reports/jev-latest-v3.md`.
  */
 export const JEV_PROFILE: PolicyProfile = {
-  fastBelowMass: 0.1,
-  frontierHardMass: 0.25,
-  frontierUpperMass: 0.5,
-  cappedFrontierHardMass: 0.5,
+  fastMassFromLevel: 1,
+  fastBelowMass: 0.35,
+  frontierHardMass: 0.05,
+  frontierUpperMass: 0.65,
+  cappedFrontierHardMass: 0.05,
 };
 
 /** Profiles by decision-backend name. */
@@ -183,6 +216,7 @@ export function postureProfile(profile: PolicyProfile, posture: CostPosture): Po
       return { ...profile, fastBelowMass: Math.max(profile.fastBelowMass, LOW_POSTURE_FAST_MASS) };
     case "quality":
       return {
+        fastMassFromLevel: profile.fastMassFromLevel,
         fastBelowMass: profile.fastBelowMass,
         frontierHardMass: Math.max(
           QUALITY_MIN_FRONTIER_HARD_MASS,
@@ -228,6 +262,25 @@ export function hardMass(levels: readonly number[]): number {
 /** Probability the work is level 2 or above. */
 export function upperMass(levels: readonly number[]): number {
   return (levels[2] ?? 0) + (levels[3] ?? 0);
+}
+
+/** Probability the work is level 1 or above. */
+export function upperMassFromLevel1(levels: readonly number[]): number {
+  return (levels[1] ?? 0) + (levels[2] ?? 0) + (levels[3] ?? 0);
+}
+
+/**
+ * The mass the fast gate reads, per `PolicyProfile.fastMassFromLevel`: `P1 +
+ * P2 + P3` when the gate starts at level 1, `P2 + P3` (same as `upperMass`)
+ * when it starts at level 2.
+ */
+export function fastGateMass(levels: readonly number[], fastMassFromLevel: 1 | 2): number {
+  return fastMassFromLevel === 1 ? upperMassFromLevel1(levels) : upperMass(levels);
+}
+
+/** The reason-sentence label for the fast gate's mass: "level 1+" or "level 2+". */
+function fastGateLabel(fastMassFromLevel: 1 | 2): string {
+  return `level ${fastMassFromLevel}+`;
 }
 
 /** Renders a signal for the reason sentence without trailing-zero noise. */
@@ -295,11 +348,13 @@ function chooseTierFromMasses(
 ): TierAndReason {
   const p3 = hardMass(signals.difficultyLevels);
   const upper = upperMass(signals.difficultyLevels);
+  const fastMass = fastGateMass(signals.difficultyLevels, thresholds.fastMassFromLevel);
+  const fastLabel = fastGateLabel(thresholds.fastMassFromLevel);
 
-  if (upper < thresholds.fastBelowMass) {
+  if (fastMass < thresholds.fastBelowMass) {
     return {
       tier: "fast",
-      reason: `P(level 2+) ${mass(upper)} below ${mass(thresholds.fastBelowMass)} with ${posture} posture routes to fast`,
+      reason: `P(${fastLabel}) ${mass(fastMass)} below ${mass(thresholds.fastBelowMass)} with ${posture} posture routes to fast`,
     };
   }
 
@@ -309,7 +364,7 @@ function chooseTierFromMasses(
   if (posture === "low") {
     return {
       tier: "mid",
-      reason: `P(level 2+) ${mass(upper)} at or above ${mass(thresholds.fastBelowMass)} routes above fast, but low posture caps at mid`,
+      reason: `P(${fastLabel}) ${mass(fastMass)} at or above ${mass(thresholds.fastBelowMass)} routes above fast, but low posture caps at mid`,
     };
   }
 

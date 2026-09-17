@@ -8,7 +8,7 @@ import type {
   SystemOneResult,
   TaskType,
 } from "@milo/core";
-import { buildJevState, chooseTier, SYSTEM_ONE_OPEN_PROFILE } from "@milo/core";
+import { buildJevState, chooseTier, JEV_PROFILE, SYSTEM_ONE_OPEN_PROFILE } from "@milo/core";
 import type { EvalReport, ScoredExample } from "./report.js";
 import { runRoutingEval } from "./run.js";
 import { loadRoutingSet } from "./schema.js";
@@ -214,6 +214,10 @@ function fitProfile(train: ScoredExample[]): { profile: PolicyProfile; agreement
     for (const frontierHardMass of HARD_GRID) {
       for (const frontierUpperMass of UPPER_GRID) {
         const profile: PolicyProfile = {
+          // Not refit: which level the fast gate reads from is a property of
+          // the backend's calibration shape (ADR-002 revision 3), not a
+          // number a grid search should be free to move.
+          fastMassFromLevel: SYSTEM_ONE_OPEN_PROFILE.fastMassFromLevel,
           fastBelowMass,
           frontierHardMass,
           frontierUpperMass,
@@ -291,6 +295,117 @@ describe("policy v2 profile: two-fold cross-validation", () => {
   it("leaves no large gap between the shipped profile and a refit on the whole set", () => {
     const shipped = agreementUnder(REPLAY.scored, SYSTEM_ONE_OPEN_PROFILE);
     const refit = fitProfile(REPLAY.scored);
+    // The shipped thresholds should be one of the best fits on this data; a
+    // wide gap would mean they had drifted away from what they were fitted on.
+    expect(refit.agreement - shipped).toBeLessThan(0.05);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-validation of the jev profile (ADR-002 revision 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The committed replay of the recorded Jev fixtures under policy v2's
+ * validated jev profile. Same shape as `REPLAY` above, so the fit can be
+ * re-derived here rather than taken on trust.
+ */
+const JEV_REPLAY: EvalReport = JSON.parse(
+  readFileSync(new URL("../reports/jev-latest-v3.json", import.meta.url), "utf8"),
+) as EvalReport;
+
+/**
+ * The grid `fastBelowMass` is refit over for Jev. Reads `P1 + P2 + P3`
+ * (`fastMassFromLevel: 1`), a different mass than the open backend's grid, so
+ * it needs its own range: Jev's mid-difficulty work sits mostly on level 1,
+ * so its expected-fast mean mass on this basis is well above the open
+ * backend's expected-fast mean on `P2 + P3`.
+ */
+const JEV_FAST_GRID = [0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5];
+
+/** The best jev profile (fastBelowMass, frontierHardMass, frontierUpperMass) on `train`. */
+function fitJevProfile(train: ScoredExample[]): { profile: PolicyProfile; agreement: number } {
+  let best = { profile: JEV_PROFILE, agreement: -1 };
+  for (const fastBelowMass of JEV_FAST_GRID) {
+    for (const frontierHardMass of HARD_GRID) {
+      for (const frontierUpperMass of UPPER_GRID) {
+        const profile: PolicyProfile = {
+          // Not refit, same as the open backend's fit: which level the fast
+          // gate reads from is a property of the backend's calibration
+          // shape, not a number a grid search should be free to move.
+          fastMassFromLevel: JEV_PROFILE.fastMassFromLevel,
+          fastBelowMass,
+          frontierHardMass,
+          frontierUpperMass,
+          // Not refit: the cap is a product rule about cheap task shapes, not
+          // a threshold fitted to this dataset.
+          cappedFrontierHardMass: JEV_PROFILE.cappedFrontierHardMass,
+        };
+        const agreement = agreementUnder(train, profile);
+        if (agreement > best.agreement) best = { profile, agreement };
+      }
+    }
+  }
+  return best;
+}
+
+describe("policy v2 jev profile: the recorded replay", () => {
+  it("is the committed jev run under the current policy version", () => {
+    expect(JEV_REPLAY.posture).toBe("balanced");
+    expect(JEV_REPLAY.policyVersion).toBe("v2");
+    expect(JEV_REPLAY.scored.length).toBeGreaterThan(100);
+    expect(JEV_REPLAY.unscored).toHaveLength(0);
+  });
+
+  it("agrees with the labels at or above 0.80, the bar CI holds jev to (ADR-002)", () => {
+    const agreement = agreementUnder(JEV_REPLAY.scored, JEV_PROFILE);
+    expect(agreement).toBeGreaterThanOrEqual(0.8);
+    // The report's own recorded verdict must say the same thing.
+    const recorded = JEV_REPLAY.scored.filter((e) => e.agree).length / JEV_REPLAY.scored.length;
+    expect(recorded).toBeCloseTo(agreement, 10);
+  });
+
+  it("carries a per-level distribution for every scored example", () => {
+    for (const example of JEV_REPLAY.scored) {
+      expect(example.difficultyLevels).toHaveLength(4);
+      const total = example.difficultyLevels.reduce((sum, p) => sum + p, 0);
+      expect(total).toBeGreaterThan(0.95);
+      expect(total).toBeLessThan(1.05);
+    }
+  });
+});
+
+describe("policy v2 jev profile: two-fold cross-validation", () => {
+  it("holds up on examples it was not fitted on, so a later tuning cannot silently overfit", () => {
+    const even = JEV_REPLAY.scored.filter((e) => idNumber(e) % 2 === 0);
+    const odd = JEV_REPLAY.scored.filter((e) => idNumber(e) % 2 === 1);
+    expect(even.length).toBeGreaterThan(40);
+    expect(odd.length).toBeGreaterThan(40);
+
+    const folds: Array<[ScoredExample[], ScoredExample[]]> = [
+      [even, odd],
+      [odd, even],
+    ];
+    const heldOut = folds.map(([train, test]) => {
+      const fitted = fitJevProfile(train);
+      const held = agreementUnder(test, fitted.profile);
+      // Logged so a regression says what it actually measured.
+      console.log(
+        `jev fit on n=${train.length}: ${(fitted.agreement * 100).toFixed(1)}% in-sample, ` +
+          `${(held * 100).toFixed(1)}% held out ` +
+          `(fast<${fitted.profile.fastBelowMass}, hard>=${fitted.profile.frontierHardMass}, ` +
+          `upper>=${fitted.profile.frontierUpperMass})`,
+      );
+      return held;
+    });
+
+    const mean = heldOut.reduce((sum, a) => sum + a, 0) / heldOut.length;
+    expect(mean).toBeGreaterThanOrEqual(MIN_CROSS_VALIDATED_AGREEMENT);
+  });
+
+  it("leaves no large gap between the shipped profile and a refit on the whole set", () => {
+    const shipped = agreementUnder(JEV_REPLAY.scored, JEV_PROFILE);
+    const refit = fitJevProfile(JEV_REPLAY.scored);
     // The shipped thresholds should be one of the best fits on this data; a
     // wide gap would mean they had drifted away from what they were fitted on.
     expect(refit.agreement - shipped).toBeLessThan(0.05);

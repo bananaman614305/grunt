@@ -21,3 +21,15 @@ jobs:
       - run: pnpm eval --mode fixtures --gate 0.80
         env:
           MILO_DECISION_BACKEND: system-one-open
+      # The jev profile is validated (ADR-002 revision 3): 84.2% in-sample,
+      # 80.8% two-fold cross-validated. CI holds it to 0.80, the same
+      # conservative floor as the open backend, because the fast/mid boundary
+      # is the noisy fold (75.0%/86.7%); 0.85 stays the aspirational target
+      # (docs/evals.md). JEV_BASE_URL pins the exact request URL the committed
+      # fixtures were recorded against -- fixtures mode never touches the
+      # network, but the fixture lookup is keyed by a hash of the whole
+      # request, base URL included.
+      - run: pnpm eval --mode fixtures --gate 0.80
+        env:
+          MILO_DECISION_BACKEND: jev
+          JEV_BASE_URL: https://trusty-squire-api.fly.dev/v1/egress/g_55825d9a0f80e719d04c25c3

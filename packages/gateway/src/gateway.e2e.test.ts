@@ -218,9 +218,9 @@ describe("the OpenAI SDK against Milo", () => {
     });
     // The reason is the product's explanation, so it has to name the numbers
     // policy v2 actually decided on: P(hard) 0.56 against the jev profile's
-    // 0.25 bar.
+    // 0.05 bar (ADR-002 revision 3).
     expect(decision.reason).toContain("debug task");
-    expect(decision.reason).toContain("P(hard) 0.56 at or above 0.25");
+    expect(decision.reason).toContain("P(hard) 0.56 at or above 0.05");
     expect(decision.reason).toContain("anthropic/claude-opus-5");
 
     await waitForUpstream(decisionId ?? "");

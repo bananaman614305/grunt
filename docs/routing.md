@@ -114,17 +114,24 @@ the oldest are trimmed and dropped first.
 
 ## Policy v2
 
-`packages/core/src/router/policy.ts` decides on two numbers read off the
+`packages/core/src/router/policy.ts` decides on numbers read off the
 difficulty distribution rather than on the expected score:
 
 - **`P3`** — probability mass on level 3 ("hard").
 - **`P2 + P3`** — mass on level 2 or above ("substantial or more").
+- **`P1 + P2 + P3`** — mass on level 1 or above ("routine or more").
 
 Under balanced posture, with the thresholds from the backend's profile:
 
-1. `P2 + P3 < fastBelowMass` → **fast**.
+1. The fast gate's mass — `P2 + P3` or `P1 + P2 + P3`, per the profile's
+   `fastMassFromLevel` (2 or 1) — `< fastBelowMass` → **fast**.
 2. Otherwise `P3 >= frontierHardMass` **or** `P2 + P3 >= frontierUpperMass` → **frontier**.
 3. Otherwise → **mid**.
+
+The frontier gates always read `P3` and `P2 + P3`, whichever level the fast
+gate starts from — a backend's fast/mid boundary and its frontier boundary are
+answering different questions and can sit on different bases (ADR-002
+revision 3).
 
 Then the cap: a `task_type` of `classify` or `chat` is pulled back to **mid**
 whenever step 2 landed it on `frontier` and `P3 < cappedFrontierHardMass`.
@@ -137,20 +144,26 @@ The thresholds describe how a decision backend spreads its probability mass,
 not the routing question, so they are per backend and are not transferable.
 `PROFILES` in `policy.ts`:
 
-| profile | fast below | frontier `P3` | frontier `P2+P3` | cap lifts at `P3` |
-|---|---|---|---|---|
-| `system-one-open` | 0.05 | 0.10 | 0.65 | 0.30 |
-| `jev` *(provisional)* | 0.10 | 0.25 | 0.50 | 0.50 |
+| profile | `fastMassFromLevel` | fast below | frontier `P3` | frontier `P2+P3` | cap lifts at `P3` |
+|---|---|---|---|---|---|
+| `system-one-open` | 2 | 0.05 | 0.10 | 0.65 | 0.30 |
+| `jev` | 1 | 0.35 | 0.05 | 0.65 | 0.05 |
 
-The `system-one-open` row is fitted: 83.5% in-sample and 81.8% cross-validated
-on the first live eval, against 69.2% for policy v1 on the same signals. Its
-bars are low because that backend hedges — a genuinely hard example often
-carries only 0.10 to 0.20 of mass on level 3.
+Both rows are **validated** against a live run of their own backend. The
+`system-one-open` row: 83.5% in-sample and 81.8% cross-validated on the first
+live eval, against 69.2% for policy v1 on the same signals. Its bars are low
+because that backend hedges — a genuinely hard example often carries only
+0.10 to 0.20 of mass on level 3.
 
-The `jev` row is **unvalidated**. Jev has no live run yet (ADR-004), so those
-numbers are reasoned from Jev being the better-calibrated scorer — a sharper
-distribution needs higher bars, or the open backend's thresholds would fire on
-noise. Refit them from a Jev run before trusting them.
+The `jev` row: 84.2% in-sample and 80.8% cross-validated (ADR-002 revision 3).
+Jev's mid-difficulty work sits mostly on level 1 rather than level 2, so its
+fast gate reads `P1 + P2 + P3` instead of `P2 + P3` — the same gate the open
+backend uses would wave most of Jev's mid work through to fast on an empty
+level-2 mass. Its frontier hard bar (0.05) sits *below* the open backend's
+(0.10) even though Jev is the sharper scorer, because that bar answers a
+different question than the fast gate does: once real work clears level 1,
+even a thin level-3 tail (0.05) is a signal worth trusting on a backend this
+sharp, not noise.
 
 The `Router` picks a profile from the model name the backend reported
 (`system-one-open/...` means the open replica, anything else means Jev), unless
@@ -199,12 +212,16 @@ The router's one-sentence `reason` cites the masses that decided it, e.g.
 `"debug task, P(hard) 0.18 at or above 0.10 with balanced posture routes to
 frontier; chose anthropic/claude-opus-5"`, or with the cap applied,
 `"...routes to frontier, but a classify task caps at mid below P(hard) 0.30"`.
-On the fallback path it cites the expected score the way v1 did.
+The fast-gate line names the level the profile actually gated on —
+`"P(level 1+) 0.28 below 0.35 routes to fast"` on the jev profile,
+`"P(level 2+) 0.03 below 0.05 routes to fast"` on the open backend's — since
+the two profiles read different masses at that step (ADR-002 revision 3). On
+the fallback path it cites the expected score the way v1 did.
 
 Changing any threshold in this file bumps `POLICY_VERSION` (currently
 `"v2"`) and needs an eval run on `packages/evals/data/routing.jsonl` before
 shipping: at least 85% for Jev, at least 80% for the open backend (ADR-002
-revision 2).
+revisions 2 and 3; CI holds both to 0.80).
 
 ## Roster resolution
 

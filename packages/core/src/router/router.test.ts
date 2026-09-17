@@ -241,16 +241,17 @@ describe("Router.route: happy path", () => {
   });
 
   it("picks the open profile from the backend's model name, and the jev profile otherwise", async () => {
-    // P3 0.18 clears the open profile's 0.10 hard bar but not Jev's 0.25, and
-    // P2+ 0.38 clears neither upper bar.
+    // P3 0.06 clears Jev's 0.05 hard bar but not the open profile's 0.10, and
+    // P2+ 0.36 clears neither upper bar (Jev's hard bar sits below the open
+    // backend's, ADR-002 revision 3, since Jev hedges less).
     const answers = {
       task_type: { type: "choice", choice: "feature", confidence: 0.9, probabilities: {} },
       difficulty: {
         type: "score",
-        score: 1.36,
+        score: 1.2,
         confidence: 0.4,
         legend: {},
-        probabilities: { "0": 0.2, "1": 0.42, "2": 0.2, "3": 0.18 },
+        probabilities: { "0": 0.2, "1": 0.44, "2": 0.3, "3": 0.06 },
       },
       needs_reasoning: { type: "noul", noul: 0.5 },
       long_output: { type: "noul", noul: 0.2 },
@@ -262,8 +263,8 @@ describe("Router.route: happy path", () => {
       roster: ROSTER,
     });
 
-    expect((await viaJev.route(request())).tier).toBe("mid");
-    expect((await viaOpen.route(request())).tier).toBe("frontier");
+    expect((await viaJev.route(request())).tier).toBe("frontier");
+    expect((await viaOpen.route(request())).tier).toBe("mid");
   });
 
   it("lets the profile option override the model-name choice", async () => {
@@ -271,10 +272,10 @@ describe("Router.route: happy path", () => {
       task_type: { type: "choice", choice: "feature", confidence: 0.9, probabilities: {} },
       difficulty: {
         type: "score",
-        score: 1.36,
+        score: 1.2,
         confidence: 0.4,
         legend: {},
-        probabilities: { "0": 0.2, "1": 0.42, "2": 0.2, "3": 0.18 },
+        probabilities: { "0": 0.2, "1": 0.44, "2": 0.3, "3": 0.06 },
       },
       needs_reasoning: { type: "noul", noul: 0.5 },
       long_output: { type: "noul", noul: 0.2 },
@@ -291,8 +292,8 @@ describe("Router.route: happy path", () => {
       profile: JEV_PROFILE,
     });
 
-    expect((await forced.route(request())).tier).toBe("frontier");
-    expect((await forcedObject.route(request())).tier).toBe("mid");
+    expect((await forced.route(request())).tier).toBe("mid");
+    expect((await forcedObject.route(request())).tier).toBe("frontier");
   });
 
   for (const name of ["trivial-rename", "flaky-test", "schema-migration", "concurrency-bug"]) {

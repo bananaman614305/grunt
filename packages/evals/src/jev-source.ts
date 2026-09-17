@@ -183,9 +183,14 @@ export function makeJevClient(mode: JevSourceMode, opts: MakeJevClientOptions = 
       if (backend === "system-one-open") {
         return makeSystemOneOpen(opts, fixtureFetch(fixturesDir));
       }
+      // A fixture is keyed by a hash of the whole request, base URL included,
+      // so a replay must build the exact same URL the recording session
+      // used (JEV_BASE_URL, when the recording went through a key-injecting
+      // proxy) or every lookup misses and the run scores as all-unscored.
       return new JevClient({
         apiKey: FIXTURE_DUMMY_KEY,
         ...modelOpt,
+        ...baseOpt,
         fetch: fixtureFetch(fixturesDir),
       });
 
