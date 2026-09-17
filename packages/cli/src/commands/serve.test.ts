@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { POLICY_VERSION } from "@milo/core";
 import type { Gateway, GatewayOptions } from "@milo/gateway";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_PORT } from "../config.js";
@@ -317,103 +318,14 @@ describe("milo serve", () => {
     expect(stdout.toString()).toContain("Usage: milo serve");
   });
 
-  // -------------------------------------------------------------------------
-  // Decision backends (ADR-004)
-  // -------------------------------------------------------------------------
-
-  it("does not demand JEV_API_KEY when the backend is system-one-open", async () => {
-    const { createGateway, calls } = fakeGateway();
-    const { serve } = fakeServe();
-    const { deps, stderr } = createTestDeps({
-      env: { MILO_DECISION_BACKEND: "system-one-open", SYSTEM_ONE_OPEN_URL: "https://open.example.test" },
-      createGateway,
-      serve,
-    });
-
-    const code = await run(["--db", ":memory:"], deps);
-
-    expect(code).toBeUndefined();
-    expect(stderr.toString()).toBe("");
-    expect(calls[0]?.decisionBackend).toEqual({
-      kind: "system-one-open",
-      systemOneOpenUrl: "https://open.example.test",
-    });
-  });
-
-  it("still demands JEV_API_KEY for the jev-with-fallback backend", async () => {
+  it("names the policy version on the startup line, with no backend named", async () => {
     const { createGateway } = fakeGateway();
-    const { serve } = fakeServe();
-    const { deps, stderr } = createTestDeps({
-      env: { MILO_DECISION_BACKEND: "jev-with-fallback" },
-      createGateway,
-      serve,
-    });
-
-    const code = await run(["--db", ":memory:"], deps);
-
-    expect(code).toBe(1);
-    expect(stderr.toString()).toContain("JEV_API_KEY");
-    // And it points at the way out.
-    expect(stderr.toString()).toContain("system-one-open");
-  });
-
-  it("reads the decision backend from the config file", async () => {
-    const configPath = join(dir, "milo.config.json");
-    writeFileSync(
-      configPath,
-      JSON.stringify({ decisionBackend: { kind: "system-one-open", systemOneOpenTimeoutMs: 2500 } }),
-    );
-
-    const { createGateway, calls } = fakeGateway();
-    const { serve } = fakeServe();
-    const { deps } = createTestDeps({ env: {}, createGateway, serve });
-
-    const code = await run(["--config", configPath, "--db", ":memory:"], deps);
-
-    expect(code).toBeUndefined();
-    expect(calls[0]?.decisionBackend).toEqual({
-      kind: "system-one-open",
-      systemOneOpenTimeoutMs: 2500,
-    });
-  });
-
-  it("rejects an unknown MILO_DECISION_BACKEND value", async () => {
-    const { createGateway } = fakeGateway();
-    const { serve } = fakeServe();
-    const { deps, stderr } = createTestDeps({
-      env: { JEV_API_KEY: "k", MILO_DECISION_BACKEND: "gpt-oracle" },
-      createGateway,
-      serve,
-    });
-
-    const code = await run(["--db", ":memory:"], deps);
-
-    expect(code).toBe(1);
-    expect(stderr.toString()).toContain("MILO_DECISION_BACKEND");
-  });
-
-  it("names the decision backend on the startup line", async () => {
-    const { createGateway } = fakeGateway();
-    const { serve } = fakeServe();
-    const { deps, stdout } = createTestDeps({
-      env: { MILO_DECISION_BACKEND: "system-one-open" },
-      createGateway,
-      serve,
-    });
-
-    await run(["--db", ":memory:"], deps);
-
-    expect(stdout.toString()).toContain("decisions via system-one-open");
-  });
-
-  it("says `jev` on the startup line when nothing is configured", async () => {
-    const { createGateway, calls } = fakeGateway();
     const { serve } = fakeServe();
     const { deps, stdout } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
 
     await run(["--db", ":memory:"], deps);
 
-    expect(stdout.toString()).toContain("decisions via jev");
-    expect(calls[0]?.decisionBackend).toBeUndefined();
+    expect(stdout.toString()).toContain(`(policy ${POLICY_VERSION})`);
+    expect(stdout.toString()).not.toContain("decisions via");
   });
 });

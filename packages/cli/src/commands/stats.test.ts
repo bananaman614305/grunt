@@ -30,7 +30,7 @@ describe("milo stats", () => {
     await log.close();
   });
 
-  it("summarizes totals, tiers, models, degraded, sticky, and average Jev latency", async () => {
+  it("summarizes totals, tiers, models, sticky, and average Jev latency", async () => {
     await log.insert(
       record({
         id: "dec-a",
@@ -65,7 +65,7 @@ describe("milo stats", () => {
         },
       }),
     );
-    await log.insert(record({ id: "dec-c", tier: "mid", degraded: true }));
+    await log.insert(record({ id: "dec-c", tier: "mid" }));
 
     const { deps, stdout } = createTestDeps({ openLog: async () => log });
     const code = await run([], deps);
@@ -77,13 +77,12 @@ describe("milo stats", () => {
     expect(output).toContain("mid: 2");
     expect(output).toContain("anthropic/claude-haiku-4.5: 1");
     expect(output).toContain("anthropic/claude-sonnet-5: 2");
-    expect(output).toContain("Degraded: 1");
     expect(output).toContain("Sticky: 1");
     expect(output).toContain("Average Jev latency: 100.0ms");
   });
 
   it("prints n/a for average Jev latency when no signals were recorded", async () => {
-    await log.insert(record({ id: "dec-degraded", degraded: true }));
+    await log.insert(record({ id: "dec-no-signals" }));
 
     const { deps, stdout } = createTestDeps({ openLog: async () => log });
     await run([], deps);

@@ -1,7 +1,0 @@
-# CPU classifiers experiment
-
-1. `uv venv --python 3.12 .venv-experiment` (from the repo root), then `uv pip install --python .venv-experiment/bin/python --index-url https://download.pytorch.org/whl/cpu torch --index-strategy unsafe-best-match` followed by `uv pip install --python .venv-experiment/bin/python transformers safetensors sentencepiece accelerate huggingface_hub protobuf`.
-2. `.venv-experiment/bin/python packages/evals/scripts/cpu-classifiers/run_routellm.py` — downloads `routellm/bert_gpt4_augmented` (~1.1 GB) and writes `packages/evals/reports/cpu-classifiers/routellm.jsonl`.
-3. `.venv-experiment/bin/python packages/evals/scripts/cpu-classifiers/run_nvidia.py` — downloads `nvidia/prompt-task-and-complexity-classifier` plus its `microsoft/deberta-v3-base` backbone (~1.4 GB combined) and writes `packages/evals/reports/cpu-classifiers/nvidia.jsonl`; this one is slow (~4s/row on CPU, fixed 512-token padding per the model card's own example code).
-4. `.venv-experiment/bin/python packages/evals/scripts/cpu-classifiers/compare.py` — reads both JSONL files plus `packages/evals/reports/system-one-open-v2.json`, fits and cross-validates tier thresholds for each candidate, and writes `packages/evals/reports/cpu-classifiers/comparison.md`.
-5. Model downloads retry-on-connection-reset are not automatic here — if a download drops mid-transfer, just re-run the same script; Hugging Face Hub resumes from its local cache.

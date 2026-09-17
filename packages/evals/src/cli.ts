@@ -7,9 +7,9 @@
  * when at least one example was scored and tier agreement falls below the
  * gate, so CI can gate on it once real fixtures exist (ADR-002).
  *
- * The gate defaults to 0.85, which is the target for Jev. The open backend
- * measures lower (ADR-002 revision 2), so CI passes `--gate 0.80` for it; see
- * docs/evals.md.
+ * The gate defaults to 0.85, the target for Jev (ADR-002). Pass `--gate` to
+ * loosen it while the Jev-tuned policy profile is still landing (see
+ * docs/evals.md).
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -17,13 +17,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CostPosture } from "@milo/core";
 import { COST_POSTURES } from "@milo/core";
-import {
-  concurrencyForMode,
-  JEV_SOURCE_MODES,
-  makeJevClient,
-  routerTimeoutForMode,
-  warmupBackend,
-} from "./jev-source.js";
+import { concurrencyForMode, JEV_SOURCE_MODES, makeJevClient } from "./jev-source.js";
 import type { JevSourceMode } from "./jev-source.js";
 import { formatMarkdown, tierAgreementRate } from "./report.js";
 import { runRoutingEval } from "./run.js";
@@ -34,13 +28,6 @@ const PACKAGE_ROOT = resolve(__dirname, "..");
 
 /** Tier agreement below this, with at least one scored example, fails the eval (ADR-002). */
 export const MIN_TIER_AGREEMENT = 0.85;
-
-/**
- * What CI expects of the `system-one-open` backend under policy v2. Lower than
- * MIN_TIER_AGREEMENT because the open replica is measurably less accurate than
- * Jev (ADR-004); 0.85 stays the target once Jev has a live run.
- */
-export const OPEN_BACKEND_TIER_AGREEMENT = 0.8;
 
 export type CliOptions = {
   mode: JevSourceMode;
@@ -132,12 +119,8 @@ export async function main(argv: string[]): Promise<number> {
   const examples = options.limit !== undefined ? allExamples.slice(0, options.limit) : allExamples;
 
   const jev = makeJevClient(options.mode);
-  await warmupBackend(jev);
-  // The open backend is slower and runs on one GPU, so it gets a smaller
-  // concurrency and a larger per-example budget than Jev (ADR-004).
   const envTimeout = Number(process.env["JEV_TIMEOUT_MS"]);
-  const jevTimeoutMs =
-    Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout + 250 : routerTimeoutForMode(options.mode);
+  const jevTimeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout + 250 : undefined;
   const report = await runRoutingEval({
     examples,
     jev,

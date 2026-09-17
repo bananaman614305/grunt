@@ -53,13 +53,13 @@ unmodified.
 ### `model` is `"milo/auto"` (routed)
 
 1. The gateway checks the rate limiter (see "Rate limiting" below). If the
-   per-key bucket is empty, the request is **not** rejected — it is degraded
-   to the `mid` tier, marked `degraded: true`, and forwarded anyway; only the
-   Jev call is skipped.
+   per-key bucket is empty, the request is rejected with a 429 before any
+   Jev or OpenRouter call.
 2. Otherwise the conversation is fingerprinted (SHA-256 of the system prompt
-   plus the first user message) and handed to the router
-   (`docs/routing.md`), which either serves a sticky hit, calls Jev and
-   applies the policy table, or degrades to `mid` if Jev fails or times out.
+   plus the first user message) and handed to the router (`docs/routing.md`),
+   which either serves a sticky hit or calls Jev and applies the policy
+   table. Jev is the only decision backend (ADR-005) — there is no fallback
+   tier to fall back to if it cannot answer.
 3. The decision is written to the decision log **before** the upstream call
    starts, so `x-milo-decision-id` is always resolvable at
    `GET /v1/decisions/:id` by the time the client sees it.
@@ -69,24 +69,20 @@ unmodified.
 5. The response comes back with the upstream body untouched (streamed
    responses pass through an identity transform; non-streaming bodies are
    buffered only to read `usage` for the decision log, then re-sent
-   verbatim) plus seven `x-milo-*` headers:
+   verbatim) plus six `x-milo-*` headers:
 
    | Header | Meaning |
    |---|---|
    | `x-milo-decision-id` | ID to look up at `GET /v1/decisions/:id` |
    | `x-milo-model` | The OpenRouter model id actually used |
    | `x-milo-tier` | `fast`, `mid`, or `frontier` |
-   | `x-milo-task-type` | Jev's classified task type, or `unknown` if degraded |
-   | `x-milo-difficulty` | Jev's difficulty score to two decimals, or `unknown` if degraded |
+   | `x-milo-task-type` | Jev's classified task type |
+   | `x-milo-difficulty` | Jev's difficulty score to two decimals |
    | `x-milo-sticky` | `"true"` if served from the fingerprint cache |
-   | `x-milo-degraded` | `"true"` if Jev failed, timed out, or the request was rate limited |
 
-A routing failure that is not a Jev problem (an unusable roster, a router
-bug) is logged as a degraded decision and returned as:
-
-```
-502 { "error": { "message": "Milo could not route this request.", "type": "api_error", "code": "routing_failed" } }
-```
+   These headers are only ever present on a decision that actually routed;
+   a request that could not be routed at all (see "Routing failures" below)
+   gets an error response instead, with none of them.
 
 An OpenRouter request that fails outright (network error, no response) on
 either path returns:
@@ -154,10 +150,9 @@ Query params:
 | Param | Type | Default | Effect |
 |---|---|---|---|
 | `limit` | integer | 50 (server clamps to 1–500) | Max rows |
-| `degraded` | `1`, `true`, or empty string | off | Only degraded decisions |
 
 ```
-GET /v1/decisions?limit=5&degraded=1
+GET /v1/decisions?limit=5
 200 { "data": [ /* DecisionRecord[] */ ] }
 ```
 
@@ -171,14 +166,12 @@ read as a decision id.
   "total": 42,
   "byTier": { "fast": 10, "mid": 20, "frontier": 12 },
   "byModel": { "anthropic/claude-sonnet-5": 20, "...": "..." },
-  "degraded": 3,
   "sticky": 15,
   "avgJevLatencyMs": 87.4
 }
 ```
 
-`avgJevLatencyMs` is `null` when no decision in scope carries Jev signals
-(e.g. everything degraded).
+`avgJevLatencyMs` is `null` when no decision is in scope.
 
 The three `/v1/decisions*` routes require a bearer token like every other
 `/v1` route, but any non-empty one is accepted — the decision log is
@@ -210,21 +203,40 @@ nothing and are never limited. The limiter is a token bucket keyed on a
 SHA-256 hash of the incoming `Authorization` header value (never the raw
 key), capacity and refill rate both defaulting to 120 per minute
 (`rateLimit.routedPerMinute` in config, or `GatewayOptions.rateLimit`).
-Exceeding the bucket does not reject the request: the router is skipped, the
-decision is recorded as `degraded: true` with reason `"rate limited: routed
-requests exceeded <n> per minute for this key"`, and the request still goes
-to OpenRouter on the `mid` tier.
+Exceeding the bucket rejects the request before any Jev or OpenRouter call:
 
-## Degraded behavior
+```
+429 { "error": { "message": "Rate limit exceeded for routed requests.", "type": "rate_limit_error", "code": "rate_limited" } }
+```
 
-A decision has `degraded: true` when the router could not get a clean
-signal from Jev: a timeout (default budget 800 ms, see `docs/config.md` and
-`docs/routing.md`), a network error, a non-2xx from Jev, or an
-unparseable/out-of-range answer. It is also `degraded: true` when the
-gateway skipped Jev because the caller was rate limited. In every degraded
-case the tier is `mid`, `signals` is absent from the decision record,
-`x-milo-task-type` and `x-milo-difficulty` read `"unknown"` on the response,
-and the request still gets an answer — the router never blocks a request.
+with a `Retry-After` header naming when the bucket next has capacity.
+
+## Routing failures
+
+Jev is the only decision backend (ADR-005): there is no fallback tier, so a
+routed request the router cannot answer is not silently downgraded to a
+cheaper model — it fails outright, with no decision written to the log and
+none of the `x-milo-*` headers on the response:
+
+```
+503 { "error": { "message": "Routing is temporarily unavailable.", "type": "api_error", "code": "routing_unavailable" } }
+```
+
+with a `Retry-After` header. This covers a Jev timeout (default budget
+800 ms, see `docs/config.md` and `docs/routing.md`), a network error, a
+non-2xx from Jev, an unparseable/out-of-range answer, and the router's own
+circuit breaker being open. Most of these never reach a client at all:
+exponential-backoff retries, in-flight coalescing of identical concurrent
+asks, and a persisted sticky cache (ADR-005) absorb the ordinary case of a
+slow or momentarily flaky Jev call. The 503 is what is left over when none
+of that resilience is enough.
+
+A routing failure that is not a Jev problem at all (an unusable roster, a
+router bug) is a separate, unrecoverable case:
+
+```
+502 { "error": { "message": "Milo could not route this request.", "type": "api_error", "code": "routing_failed" } }
+```
 
 ## Passthrough to OpenRouter
 

@@ -68,7 +68,6 @@ describe("milo explain", () => {
     expect(output).toContain("Needs reasoning: 60%");
     expect(output).toContain("Long output: 10%");
     expect(output).toContain("Sticky: no");
-    expect(output).toContain("Degraded: no");
     expect(output).toContain("req-1");
     expect(output).toContain("88ms");
     expect(output).toContain("Upstream: not recorded");
@@ -112,22 +111,20 @@ describe("milo explain", () => {
     expect(stdout.toString()).toContain("Difficulty levels: not reported by this decision backend");
   });
 
-  it("explains a degraded decision without signals", async () => {
+  it("explains a forced-tier decision without signals", async () => {
     await log.insert(
       record({
-        id: "dec-degraded",
-        degraded: true,
-        reason: "routing signals unavailable (timeout), fell back to the mid tier",
+        id: "dec-forced",
+        reason: "forced to the mid tier by the request",
       }),
     );
 
     const { deps, stdout } = createTestDeps({ openLog: async () => log });
-    const code = await run(["dec-degraded"], deps);
+    const code = await run(["dec-forced"], deps);
 
     expect(code).toBe(0);
     const output = stdout.toString();
-    expect(output).toContain("Signals: unavailable");
-    expect(output).toContain("Degraded: yes");
+    expect(output).toContain("Signals: unavailable (no Jev call recorded)");
   });
 
   it("marks a sticky decision", async () => {
