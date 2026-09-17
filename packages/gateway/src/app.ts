@@ -10,8 +10,16 @@
 
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
-import { POLICY_VERSION, ROUTED_MODEL_ID } from "@milo/core";
-import type { DecisionRecord, DecisionLog, OpenRouterClient, Router } from "@milo/core";
+import {
+  DEFAULT_ROSTER,
+  DEFAULT_ROSTER_INFO,
+  POLICY_VERSION,
+  ROSTER_NOTE,
+  ROUTED_MODEL_ID,
+  TIERS,
+  defaultRosterModel,
+} from "@milo/core";
+import type { DecisionRecord, DecisionLog, OpenRouterClient, Roster, Router, Tier } from "@milo/core";
 import type { AnthropicUpstream } from "./anthropic.js";
 import { anthropicErrorResponse, errorResponse } from "./errors.js";
 import type { RateLimiter } from "./rate-limit.js";
@@ -20,6 +28,7 @@ import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerProxyRoute } from "./routes/proxy.js";
+import { registerRosterRoute } from "./routes/roster.js";
 import { registerStaticRoutes } from "./routes/static.js";
 
 /** Structurally identical to `GatewayOptions["logger"]`, which is pinned. */
@@ -38,6 +47,13 @@ export const DECISION_BACKEND = "jev";
 
 export type AppDeps = {
   router: Router;
+  /**
+   * The tier-to-model table this deployment is actually running, so `/` and
+   * `/v1/roster` disclose what will be picked rather than what ships.
+   * Defaults to `DEFAULT_ROSTER` for a caller that constructs `AppDeps` by
+   * hand.
+   */
+  roster?: Roster;
   openRouter: OpenRouterClient;
   /** OpenRouter's Anthropic-compatible surface, for `/v1/messages`. */
   anthropic: AnthropicUpstream;
@@ -156,6 +172,7 @@ export function createApp(deps: AppDeps): Hono {
     if (proto === "https" || proto === "http") url.protocol = `${proto}:`;
     const baseUrl = url.toString();
     const origin = baseUrl.slice(0, -"/v1".length);
+    const roster = deps.roster ?? DEFAULT_ROSTER;
     const info = {
       name: "milo",
       description:
@@ -164,7 +181,22 @@ export function createApp(deps: AppDeps): Hono {
       routedModel: ROUTED_MODEL_ID,
       policyVersion: POLICY_VERSION,
       decisionBackend: DECISION_BACKEND,
-      endpoints: ["/healthz", "/v1/chat/completions", "/v1/messages", "/v1/models", "/v1/decisions/:id"],
+      roster: {
+        version: DEFAULT_ROSTER_INFO.version,
+        tiers: Object.fromEntries(TIERS.map((tier) => [tier, [...(roster[tier] ?? [])]])) as Record<
+          Tier,
+          string[]
+        >,
+      },
+      rosterNote: ROSTER_NOTE,
+      endpoints: [
+        "/healthz",
+        "/v1/chat/completions",
+        "/v1/messages",
+        "/v1/models",
+        "/v1/roster",
+        "/v1/decisions/:id",
+      ],
       docs: "https://github.com/bananaman614305/milo",
       setup: `${origin}/setup.md`,
       skill: `${origin}/skill.md`,
@@ -182,6 +214,7 @@ export function createApp(deps: AppDeps): Hono {
   registerChatRoute(app, deps);
   registerMessagesRoute(app, deps);
   registerModelsRoute(app, deps);
+  registerRosterRoute(app, deps);
   registerDecisionsRoutes(app, deps);
   // Last: it claims every `/v1/*` method and path the routes above did not.
   registerProxyRoute(app, deps);
@@ -194,11 +227,28 @@ export function createApp(deps: AppDeps): Hono {
   return app;
 }
 
+/** One row per tier: the tier's models and what each charges for output. */
+function rosterRows(tiers: Record<Tier, string[]>, esc: (v: string) => string): string {
+  return TIERS.map((tier) => {
+    const ids = tiers[tier] ?? [];
+    const models = ids.map((id) => esc(id)).join("<br>");
+    const prices = ids
+      .map((id) => {
+        const known = defaultRosterModel(id);
+        return known === undefined ? "&mdash;" : `$${known.outputUsdPerM}`;
+      })
+      .join("<br>");
+    return `<tr><td class="tier">${esc(tier)}</td><td class="model">${models}</td><td class="price">${prices}</td></tr>`;
+  }).join("\n");
+}
+
 function landingPage(info: {
   baseUrl: string;
   routedModel: string;
   policyVersion: string;
   decisionBackend: string;
+  roster: { version: string; tiers: Record<Tier, string[]> };
+  rosterNote: string;
   docs: string;
   setup: string;
   skill: string;
@@ -220,6 +270,14 @@ function landingPage(info: {
         font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; }
   a { color: inherit; }
   .ok { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #2e9e5b; margin-right: 6px; }
+  table.roster { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 14px; }
+  table.roster th, table.roster td { text-align: left; padding: 5px 10px 5px 0; vertical-align: top;
+        border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, Canvas); }
+  table.roster th { opacity: .6; font-weight: 500; }
+  table.roster td.tier { font-weight: 600; text-transform: capitalize; white-space: nowrap; }
+  table.roster td.model { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+  table.roster td.price { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  p.note { font-size: 14px; opacity: .8; margin: 0 0 28px; }
 </style></head>
 <body><main>
 <h1>Milo</h1>
@@ -234,6 +292,11 @@ function landingPage(info: {
 <pre>export OPENAI_BASE_URL=${esc(info.baseUrl)}
 export OPENAI_API_KEY=&lt;your OpenRouter key&gt;
 # any OpenAI SDK call with model="milo/auto"</pre>
+<h2 style="font-size:18px;margin:0 0 8px">What Milo picks by default</h2>
+<table class="roster"><thead><tr><th>Tier</th><th>Models, in preference order</th><th>Output $/M</th></tr></thead><tbody>
+${rosterRows(info.roster.tiers, esc)}
+</tbody></table>
+<p class="note">${esc(info.rosterNote)} Roster version ${esc(info.roster.version)}; the full table, with prices and weekly usage ranks, is at <code>/v1/roster</code>.</p>
 <p>Every routed response carries <code>x-milo-*</code> headers naming the decision. Fetch <code>/v1/decisions/&lt;id&gt;</code> with the same key to read why.</p>
 <p>For agents: <a href="${esc(info.setup)}">${esc(info.setup)}</a> walks through setup end to end; the same content is installable as a skill from <a href="${esc(info.skill)}">${esc(info.skill)}</a>.</p>
 </main></body></html>`;

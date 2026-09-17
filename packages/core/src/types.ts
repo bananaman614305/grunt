@@ -30,11 +30,27 @@ export type CostPosture = (typeof COST_POSTURES)[number];
 /** Ordered OpenRouter model ids per tier. The first entry is the default. */
 export type Roster = Record<Tier, string[]>;
 
-export const DEFAULT_ROSTER: Roster = {
-  fast: ["anthropic/claude-haiku-4.5", "google/gemini-2.5-flash"],
-  mid: ["anthropic/claude-sonnet-5"],
-  frontier: ["anthropic/claude-opus-5"],
-};
+/**
+ * The shipped default roster, derived from
+ * `router/roster-default.json` -- popular OpenRouter models within price
+ * bands, never anything at or above the JSON's `excludedAbove` output price
+ * (ADR-006). `DEFAULT_ROSTER` is the ids alone, unchanged in shape;
+ * `DEFAULT_ROSTER_INFO` carries the prices, usage ranks, band rules and
+ * provenance that the disclosure surfaces print.
+ */
+export {
+  DEFAULT_ROSTER,
+  DEFAULT_ROSTER_INFO,
+  DEFAULT_SMALL_OUTPUT_MODELS,
+  ROSTER_NOTE,
+  ROSTER_OVERRIDE_NOTE,
+  ROSTER_POSTURE_POLICY,
+  SMALL_OUTPUT_BELOW_TOKENS,
+  defaultRosterModel,
+  defaultRosterModels,
+  isSmallOutput,
+} from "./router/roster-default.js";
+export type { RosterBand, RosterInfo, RosterModel } from "./router/roster-default.js";
 
 export const ROUTED_MODEL_ID = "milo/auto";
 

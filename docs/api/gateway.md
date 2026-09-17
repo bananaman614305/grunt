@@ -113,9 +113,9 @@ picker built against this endpoint shows it like any other entry:
       "id": "milo/auto",
       "canonical_slug": "milo/auto",
       "name": "Milo auto-router",
-      "description": "Routes to a model chosen by Jev from task type and difficulty",
+      "description": "Routes to a model chosen by Jev from task type and difficulty. Default roster 2026-09-17: the 10 most-used models on OpenRouter for coding, popular-and-cheap, nothing above $5/M output. Override per request with milo.candidates; see GET /v1/roster.",
       "pricing": { "prompt": "-1", "completion": "-1", "request": "-1", "image": "-1" },
-      "context_length": 200000,
+      "context_length": 1050000,
       "...": "..."
     },
     { "id": "anthropic/claude-opus-5", "...": "OpenRouter's own entries follow" }
@@ -123,12 +123,85 @@ picker built against this endpoint shows it like any other entry:
 }
 ```
 
+The description names the roster version and what the defaults optimize for,
+because a model picker is where most users first meet `milo/auto`.
+
 `milo/auto`'s `pricing` fields are all `"-1"`, the same convention OpenRouter
 itself uses for its own auto router: the real price is whichever model the
 decision lands on. The rest of the list is cached in-process for five
 minutes. An upstream failure passes through OpenRouter's own status and body
 when there is one (e.g. a 401 for a bad key); a total network failure
 returns the same `502 upstream_unavailable` shape as chat completions.
+
+## `GET /v1/roster`
+
+Returns the tier-to-model table this deployment is running, with everything
+Milo knows about each entry. A caller who sent `milo/auto` handed the model
+choice to Milo; this is how they find out what they handed it to.
+
+```json
+{
+  "version": "2026-09-17",
+  "source": {
+    "usage": "OpenRouter weekly usage ranking, programming category, week ending 2026-09-16 (committed snapshot)",
+    "pricing": "OpenRouter /api/v1/models on 2026-09-17"
+  },
+  "topModels": 10,
+  "bands": {
+    "fast": { "maxOutputUsdPerM": 0.35 },
+    "mid": { "maxOutputUsdPerM": 1.5 },
+    "frontier": { "maxOutputUsdPerM": 5 }
+  },
+  "excludedAbove": 5,
+  "smallOutputBelowTokens": 65536,
+  "usingDefaults": true,
+  "tiers": {
+    "fast": [
+      {
+        "id": "deepseek/deepseek-v4-flash",
+        "inputUsdPerM": 0.07,
+        "outputUsdPerM": 0.14,
+        "usageRank": 2,
+        "weeklyTokens": 15400000000000,
+        "contextLength": 1024000,
+        "maxOutputTokens": 384000,
+        "source": "default",
+        "isTierDefault": true
+      },
+      { "...": "the rest of the tier, in preference order" }
+    ],
+    "mid": ["..."],
+    "frontier": ["..."]
+  },
+  "policy": {
+    "posture": {
+      "low": "favors fast and never returns frontier, whatever the difficulty says",
+      "balanced": "fast for easy work, mid by default, frontier once the difficulty mass clears the bar",
+      "quality": "reaches frontier as soon as the work looks substantial"
+    },
+    "longOutput": "A request whose answer is expected to be long skips any model capping output below 65536 tokens, which is why those are listed last in their tier."
+  },
+  "overrides": {
+    "perRequest": "Send `\"milo\": { \"candidates\": [\"<openrouter id>\", ...] }` with a chat completion.",
+    "perDeployment": "Set `roster` in `milo.config.json` (see docs/config.md) and restart `milo serve`."
+  },
+  "note": "Defaults are the models people actually run on OpenRouter, ...",
+  "premium": "Premium models (Fable, Opus, Astra, Sonnet) are one line away: ..."
+}
+```
+
+Per entry: `source` is `"default"` for a model Milo ships and `"config"` for
+an id this deployment's `milo.config.json` added. A `"config"` entry carries
+only its id — Milo does not know what an operator's own choice costs without
+spending an OpenRouter call, and this route spends none. `isTierDefault`
+marks the first entry of a tier, which is what that tier resolves to unless
+`candidates` or the long-output rule excludes it. `defaultTier` appears when
+a shipped model is listed under a tier other than the one Milo ships it on.
+`usingDefaults` is `false` as soon as anything differs from the shipped table.
+
+Bearer-gated like every other `/v1` route, so it is not an unauthenticated
+description of a deployment. The bare `GET /` carries a shorter version — the
+roster version and the ids per tier — without a key, for discovery.
 
 ## `GET /v1/decisions/:id`
 

@@ -66,7 +66,8 @@ it drains pending decision-log writes, closes the log, and exits.
 ```
 Usage: milo roster [options]
 
-Print the effective tier-to-model roster and where it came from.
+Print the effective tier-to-model roster, what each model costs, how popular
+it is, and where the entry came from.
 
 Options:
   --config <path>   Path to milo.config.json (default: ./milo.config.json if present)
@@ -78,10 +79,33 @@ Sample output (no config file present, so it falls back to `DEFAULT_ROSTER`):
 ```
 $ milo roster
 Roster source: defaults
-  fast      anthropic/claude-haiku-4.5, google/gemini-2.5-flash
-  mid       anthropic/claude-sonnet-5
-  frontier  anthropic/claude-opus-5
+Default roster version: 2026-09-17
+  usage: OpenRouter weekly usage ranking, programming category, week ending 2026-09-16 (committed snapshot)
+  pricing: OpenRouter /api/v1/models on 2026-09-17
+
+  TIER      MODEL                                 IN/M   OUT/M  USE  SOURCE
+  fast      deepseek/deepseek-v4-flash           $0.07   $0.14   #2  default
+            z-ai/glm-5.3-flash                   $0.09    $0.3   #4  default
+            xiaomi/mimo-v2.5                     $0.14   $0.28   #6  default
+            tencent/hy3                        $0.0825   $0.33   #7  default
+  mid       openai/gpt-5.6-luna                   $0.2    $1.2   #1  default
+            deepseek/deepseek-v4.1-flash         $0.15    $0.6   #5  default
+  frontier  z-ai/glm-5.3                          $1.4    $4.4   #9  default
+            google/gemini-3.8-flash              $0.75   $3.75  #10  default
+            tencent/hy4-preview                 $0.834  $2.501   #3  default
+            nvidia/nemotron-3-ultra-550b-a55b   $0.625  $3.125   #8  default
+
+Defaults are the models people actually run on OpenRouter, ordered by weekly usage within price bands; nothing above $5 per million output tokens is chosen unless you list it in `candidates` or your roster config.
+Premium models (Fable, Opus, Astra, Sonnet) are one line away: list their OpenRouter ids per request in `milo.candidates`, or per deployment under `roster` in `milo.config.json`.
 ```
+
+Prices are USD per million tokens and `USE` is the model's rank in
+OpenRouter's weekly usage ranking for the programming category
+(`docs/config.md`, "Why these models"). `SOURCE` says where the entry came
+from: `default` for a model Milo ships, `default (<tier>)` for one it ships on
+a different tier than this config lists it under, and `config` for an id Milo
+does not ship — those print `-` for price and rank, because `milo roster`
+makes no network calls and will not guess.
 
 `Roster source:` reads `config file (<path>)` when a `milo.config.json` with
 a `roster` field was found, otherwise `defaults`. Exit code **0**.

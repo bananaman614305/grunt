@@ -123,6 +123,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
 
   const app = createApp({
     router,
+    roster,
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),
     log,

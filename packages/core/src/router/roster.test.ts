@@ -25,7 +25,9 @@ describe("resolveModel", () => {
   });
 
   it("uses the default roster the gateway ships", () => {
-    expect(resolveModel("mid", DEFAULT_ROSTER)).toBe("anthropic/claude-sonnet-5");
+    expect(resolveModel("fast", DEFAULT_ROSTER)).toBe("deepseek/deepseek-v4-flash");
+    expect(resolveModel("mid", DEFAULT_ROSTER)).toBe("openai/gpt-5.6-luna");
+    expect(resolveModel("frontier", DEFAULT_ROSTER)).toBe("z-ai/glm-5.3");
   });
 
   it("restricts the roster to the request's candidates", () => {
@@ -70,8 +72,48 @@ describe("resolveModel", () => {
     expect(resolveModel("mid", ROSTER, ["mid-a", "mid-b"], opts)).toBe("mid-b");
   });
 
-  it("excludes nothing by default", () => {
+  it("excludes nothing by default for a roster of unknown models", () => {
     expect(resolveModel("fast", ROSTER, undefined, { longOutput: 1 })).toBe("fast-a");
+  });
+
+  describe("the default roster's own max-output data", () => {
+    it("skips a default-roster model whose max output is below 64k", () => {
+      const candidates = ["google/gemini-3.8-flash", "tencent/hy4-preview"];
+      // hy4-preview caps at 64,000 and gemini-3.8-flash at 65,536, so only
+      // one of them can hold a long answer.
+      expect(resolveModel("frontier", DEFAULT_ROSTER, candidates, { longOutput: 0.9 })).toBe(
+        "google/gemini-3.8-flash",
+      );
+      expect(resolveModel("frontier", DEFAULT_ROSTER, candidates, { longOutput: 0.1 })).toBe(
+        "google/gemini-3.8-flash",
+      );
+      // The exclusion is absolute: with only the short one allowed, there is
+      // nothing eligible anywhere and the caller hears about it rather than
+      // getting a truncated answer.
+      expect(() =>
+        resolveModel("frontier", DEFAULT_ROSTER, ["tencent/hy4-preview"], { longOutput: 0.9 }),
+      ).toThrow(/no eligible model for tier frontier/);
+    });
+
+    it("keeps every large-output default eligible at any long_output", () => {
+      for (const longOutput of [0, 0.69, 0.7, 1]) {
+        expect(resolveModel("fast", DEFAULT_ROSTER, undefined, { longOutput })).toBe(
+          "deepseek/deepseek-v4-flash",
+        );
+        expect(resolveModel("mid", DEFAULT_ROSTER, undefined, { longOutput })).toBe("openai/gpt-5.6-luna");
+        expect(resolveModel("frontier", DEFAULT_ROSTER, undefined, { longOutput })).toBe("z-ai/glm-5.3");
+      }
+    });
+
+    it("drops a small-output model from its tier once the answer will be long", () => {
+      const candidates = ["nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3"];
+      expect(resolveModel("frontier", DEFAULT_ROSTER, candidates, { longOutput: 0.7 })).toBe("z-ai/glm-5.3");
+      expect(
+        resolveModel("frontier", DEFAULT_ROSTER, ["nvidia/nemotron-3-ultra-550b-a55b", "tencent/hy3"], {
+          longOutput: 0.7,
+        }),
+      ).toBe("tencent/hy3");
+    });
   });
 
   it("throws only when nothing is eligible anywhere, and says why", () => {

@@ -211,7 +211,7 @@ land on `fast`.
 
 The router's one-sentence `reason` cites the masses that decided it, e.g.
 `"debug task, P(hard) 0.10 at or above 0.05 with balanced posture routes to
-frontier; chose anthropic/claude-opus-5"`, or with the cap applied,
+frontier; chose z-ai/glm-5.3"`, or with the cap applied,
 `"...routes to frontier, but a classify task caps at mid below P(hard) 0.25"`.
 When the fast gate decided it, the sentence names the level it read —
 `"P(level 1+) 0.20 below 0.35 ..."`. On the expected-score path it cites the
@@ -225,24 +225,75 @@ shipping: the target is 85% (ADR-002), and CI gates at 0.80.
 
 `packages/core/src/router/roster.ts` turns a tier into a concrete OpenRouter
 model id: the first entry in that tier's list that is not excluded by a
-`candidates` restriction or by a small-output exclusion (when
-`long_output >= 0.7`, models listed as small-output are skipped — the
-default roster's exclusion list is empty, since every default-roster model
-has a large max output). If nothing in the target tier is eligible, the
-search widens to the next tier up, then down, in that order — the router
-would rather overpay than fail to answer. Only a roster with nothing
-eligible anywhere throws.
+`candidates` restriction or by the small-output exclusion. When
+`long_output >= 0.7`, every model in `DEFAULT_SMALL_OUTPUT_MODELS` is
+skipped — that list is not maintained by hand, it is every default-roster
+entry whose `maxOutputTokens` is below `SMALL_OUTPUT_BELOW_TOKENS` (65,536),
+both read off the roster data. An operator running a custom roster with a
+short-output model in it passes `smallOutputModels` per call. If nothing in
+the target tier is eligible, the search widens to the next tier up, then
+down, in that order — the router would rather overpay than fail to answer.
+Only a roster with nothing eligible anywhere throws, and the small-output
+exclusion is absolute: Milo will fail the request rather than return a
+truncated answer.
 
-The default roster (`DEFAULT_ROSTER` in `packages/core/src/types.ts`):
+### The default roster
 
-| Tier | Models |
-|---|---|
-| fast | `anthropic/claude-haiku-4.5`, `google/gemini-2.5-flash` |
-| mid | `anthropic/claude-sonnet-5` |
-| frontier | `anthropic/claude-opus-5` |
+`DEFAULT_ROSTER` (`packages/core/src/types.ts`, re-exported from
+`packages/core/src/router/roster-default.ts`) is the ids of
+`packages/core/src/router/roster-default.json`, which is data with its
+provenance attached — prices, weekly usage ranks, band rules, collection
+dates. `DEFAULT_ROSTER_INFO` is the whole record, and it is what `GET
+/v1/roster`, the root page, `/setup.md`, the skill and `milo roster` print, so
+no surface can describe a roster the router is not running.
 
-Users override this per-deployment in `milo.config.json` (`docs/config.md`)
-or per-request with `milo.candidates`.
+Version `2026-09-17`, collected from OpenRouter's weekly usage ranking for the
+programming category (week ending 2026-09-16) and its public model catalogue:
+
+| Tier | Model | In $/M | Out $/M | Usage rank | Weekly tokens |
+|---|---|---|---|---|---|
+| fast | `deepseek/deepseek-v4-flash` | 0.07 | 0.14 | 2 | 15.4T |
+| fast | `z-ai/glm-5.3-flash` | 0.09 | 0.30 | 4 | 11.3T |
+| fast | `xiaomi/mimo-v2.5` | 0.14 | 0.28 | 6 | 7.8T |
+| fast | `tencent/hy3` | 0.0825 | 0.33 | 7 | 4.5T |
+| mid | `openai/gpt-5.6-luna` | 0.20 | 1.20 | 1 | 17.3T |
+| mid | `deepseek/deepseek-v4.1-flash` | 0.15 | 0.60 | 5 | 10.3T |
+| frontier | `z-ai/glm-5.3` | 1.40 | 4.40 | 9 | 2.5T |
+| frontier | `google/gemini-3.8-flash` | 0.75 | 3.75 | 10 | 2.2T |
+| frontier | `tencent/hy4-preview` | 0.834 | 2.501 | 3 | 12.0T |
+| frontier | `nvidia/nemotron-3-ultra-550b-a55b` | 0.625 | 3.125 | 8 | 3.5T |
+
+The rule that produced it, and that
+`packages/evals/scripts/roster-refresh.ts` re-applies every week:
+
+1. Fold the ranking onto current ids — a dated build counts as its undated
+   id, and `:free`, `:batch`, `:contributor` and the other data-sharing plan
+   variants are dropped rather than counted as models of their own.
+2. Require a catalogue entry, tool support, and a readable price.
+3. Reject anything at or above **$5 per million output tokens**
+   (`excludedAbove`). This is what keeps Fable, Opus, Astra and Sonnet out:
+   Milo's intended caller is a frontier agent on a subscription handing its
+   sub-tasks down, so the router's job is the cheap half of that pair.
+4. Take the first ten survivors in usage order; their `usageRank` is their
+   position in that list.
+5. Tier by output price: fast at most $0.35/M, mid at most $1.50/M, frontier
+   at most $5/M.
+6. Order each tier by usage rank, except that a model capping output below
+   65,536 tokens sorts last — the long-output rule skips it, so it must never
+   be a tier's default. `tencent/hy4-preview` (64,000) and
+   `nvidia/nemotron-3-ultra-550b-a55b` (32,768) are the two today, which is
+   why rank 3 and rank 8 sit behind rank 9 and rank 10 on the frontier tier.
+
+Because step 6 can only demote and never promote, the first entry of every
+tier is always a model that can produce a long answer — so a `long_output`
+request changes which model answers only when the tier default is itself
+excluded by `candidates`.
+
+Users override the whole thing per-deployment in `milo.config.json`
+(`docs/config.md`) or per-request with `milo.candidates`; an id Milo does not
+ship is reported as `source: "config"` by `/v1/roster` with no price, because
+Milo does not know what an operator's own choice costs without spending a
+call to find out.
 
 ## Stickiness
 

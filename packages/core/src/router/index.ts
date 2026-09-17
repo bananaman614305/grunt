@@ -42,8 +42,26 @@ export {
 } from "./policy.js";
 export type { PolicyProfile } from "./policy.js";
 
-export { resolveModel, tierSearchOrder, LONG_OUTPUT_THRESHOLD, DEFAULT_SMALL_OUTPUT_MODELS } from "./roster.js";
+export {
+  resolveModel,
+  tierSearchOrder,
+  LONG_OUTPUT_THRESHOLD,
+  DEFAULT_SMALL_OUTPUT_MODELS,
+  SMALL_OUTPUT_BELOW_TOKENS,
+} from "./roster.js";
 export type { ResolveModelOptions } from "./roster.js";
+
+export {
+  DEFAULT_ROSTER,
+  DEFAULT_ROSTER_INFO,
+  ROSTER_NOTE,
+  ROSTER_OVERRIDE_NOTE,
+  ROSTER_POSTURE_POLICY,
+  defaultRosterModel,
+  defaultRosterModels,
+  isSmallOutput,
+} from "./roster-default.js";
+export type { RosterBand, RosterInfo, RosterModel } from "./roster-default.js";
 
 export { StickyCache, STICKY_MAX_ENTRIES } from "./sticky.js";
 export type { StickyCacheOptions } from "./sticky.js";
