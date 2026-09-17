@@ -11,9 +11,16 @@ OpenRouter with the resolved model, and the response comes back with
 ## Quickstart
 
 ```
-npm install openai
-export JEV_API_KEY=...          # Milo's own key; see docs/config.md
-milo serve                      # listens on http://localhost:8787
+git clone https://github.com/bananaman614305/milo && cd milo
+pnpm install && pnpm build
+export JEV_API_KEY=...                       # Milo's own Jev key; see docs/config.md
+node packages/cli/dist/cli.js serve          # listens on http://localhost:8787
+```
+
+No Jev key? Route with the open-source replica instead (see `docs/adr/004-decision-backends.md`):
+
+```
+MILO_DECISION_BACKEND=system-one-open node packages/cli/dist/cli.js serve
 ```
 
 Milo supplies the Jev key itself, so end users of a hosted Milo only need
