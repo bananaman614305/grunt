@@ -20,6 +20,7 @@ import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerProxyRoute } from "./routes/proxy.js";
+import { registerStaticRoutes } from "./routes/static.js";
 
 /** Structurally identical to `GatewayOptions["logger"]`, which is pinned. */
 export type Logger = {
@@ -154,6 +155,7 @@ export function createApp(deps: AppDeps): Hono {
     const proto = c.req.header("x-forwarded-proto");
     if (proto === "https" || proto === "http") url.protocol = `${proto}:`;
     const baseUrl = url.toString();
+    const origin = baseUrl.slice(0, -"/v1".length);
     const info = {
       name: "milo",
       description:
@@ -164,11 +166,16 @@ export function createApp(deps: AppDeps): Hono {
       decisionBackend: DECISION_BACKEND,
       endpoints: ["/healthz", "/v1/chat/completions", "/v1/messages", "/v1/models", "/v1/decisions/:id"],
       docs: "https://github.com/bananaman614305/milo",
+      setup: `${origin}/setup.md`,
+      skill: `${origin}/skill.md`,
     };
     const accept = c.req.header("accept") ?? "";
     if (!accept.includes("text/html")) return c.json(info);
     return c.html(landingPage(info));
   });
+
+  // No auth: an agent has to be able to read these before it has a key.
+  registerStaticRoutes(app);
 
   app.use("/v1/*", requireKey);
 
@@ -193,6 +200,8 @@ function landingPage(info: {
   policyVersion: string;
   decisionBackend: string;
   docs: string;
+  setup: string;
+  skill: string;
 }): string {
   const esc = (v: string): string => v.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] ?? ch);
   return `<!doctype html>
@@ -226,5 +235,6 @@ function landingPage(info: {
 export OPENAI_API_KEY=&lt;your OpenRouter key&gt;
 # any OpenAI SDK call with model="milo/auto"</pre>
 <p>Every routed response carries <code>x-milo-*</code> headers naming the decision. Fetch <code>/v1/decisions/&lt;id&gt;</code> with the same key to read why.</p>
+<p>For agents: <a href="${esc(info.setup)}">${esc(info.setup)}</a> walks through setup end to end; the same content is installable as a skill from <a href="${esc(info.skill)}">${esc(info.skill)}</a>.</p>
 </main></body></html>`;
 }

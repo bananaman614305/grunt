@@ -160,3 +160,14 @@ x-milo-degraded: false
 ```
 
 Then `milo explain 01K5...` for the full record, Jev probabilities included.
+
+## Letting an agent do this itself
+
+An agent that has been told "set me up with Milo" can skip this whole page:
+`GET /setup.md` on a running Milo gateway (e.g.
+<https://milo-gateway.fly.dev/setup.md>) has the same three env vars, the
+`.claude/settings.json` form, and the catalog-warning note, generated from
+that instance's own base URL. The same content installs as a Claude Code
+skill (`skills/milo/SKILL.md`, or `claude plugin install milo@milo` after
+`claude plugin marketplace add bananaman614305/milo`), so an agent can carry
+the procedure with it instead of re-fetching the page every time.

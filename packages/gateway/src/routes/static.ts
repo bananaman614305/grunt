@@ -1,0 +1,227 @@
+/**
+ * Agent-facing static routes -- no auth, so an agent (or a bare `curl`) can
+ * read them before it has an OpenRouter key.
+ *
+ * `GET /setup.md`  -- the "set me up with Milo" instructions for an agent.
+ * `GET /llms.txt`  -- the llms.txt convention, pointing at `/setup.md`.
+ * `GET /skill.md`  -- the repository skill (`skills/milo/SKILL.md`) served
+ * over HTTP so `curl` works without cloning the repo. Read once at module
+ * load from the file itself -- there is exactly one copy of this text, so it
+ * cannot drift from what `skills/milo/SKILL.md` says.
+ */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { Context, Hono } from "hono";
+
+/**
+ * `packages/gateway/{src,dist}/routes/static.{ts,js}` sit at the same depth
+ * under the repo root either way, so one relative path resolves whether this
+ * module runs from source (tests) or from the compiled `dist/` the Docker
+ * image ships (which copies `skills/` alongside `packages/`, see the
+ * Dockerfile).
+ *
+ * Read lazily, on the first `/skill.md` request, rather than at import time:
+ * `@milo/gateway` is imported by every CLI command, including ones that
+ * never serve HTTP (`milo explain`, `milo roster`, `--help`), and those
+ * should not fail just because they happen to run somewhere `skills/` was
+ * not copied alongside `dist/`.
+ */
+const SKILL_MD_PATH = fileURLToPath(new URL("../../../../skills/milo/SKILL.md", import.meta.url));
+let cachedSkillMd: string | undefined;
+function skillMd(): string {
+  cachedSkillMd ??= readFileSync(SKILL_MD_PATH, "utf8");
+  return cachedSkillMd;
+}
+
+/** The request's own scheme and host, honoring a TLS-terminating proxy. */
+function origin(c: Context): string {
+  const url = new URL(c.req.url);
+  const proto = c.req.header("x-forwarded-proto");
+  if (proto === "https" || proto === "http") url.protocol = `${proto}:`;
+  return `${url.protocol}//${url.host}`;
+}
+
+function setupMd(base: string): string {
+  return `# Setting up Milo
+
+Milo is OpenRouter with an actual routing mechanism: send one OpenRouter key
+and \`model: "milo/auto"\`, and a small decision model picks the right tier
+(fast, mid, or frontier) for each request from the task's type and
+difficulty. This page is written for an agent that was told "set me up with
+Milo" -- follow it in order.
+
+## 1. Get an OpenRouter key from the user
+
+Milo needs the *user's* OpenRouter key. Never invent one, reuse a key from
+another provider, or fabricate a placeholder and continue as if it worked.
+
+- If the user already gave you a key in this conversation, use it.
+- If your harness exposes a credential vault or secret store, check there
+  first (e.g. a stored "OpenRouter" credential) before asking the user to
+  paste it into chat again.
+- Otherwise, ask the user for their OpenRouter key before doing anything else.
+
+Milo only checks that the key is bearer-shaped; it never validates it against
+OpenRouter and never stores it (see \`docs/api/gateway.md\`).
+
+## 2. Configure the client
+
+Base URLs below are this Milo instance's own address (\`${base}\`). If you are
+looking at a copy of this file fetched from a different deployment, use that
+deployment's own address instead -- everything here is generated from the
+request that fetched it.
+
+### OpenAI-SDK-style tools
+
+Base URL is \`${base}/v1\`; API key is the OpenRouter key; model is
+\`milo/auto\`.
+
+**Python**
+
+\`\`\`python
+from openai import OpenAI
+
+client = OpenAI(base_url="${base}/v1", api_key="sk-or-...")
+resp = client.chat.completions.create(
+    model="milo/auto",
+    messages=[{"role": "user", "content": "..."}],
+)
+\`\`\`
+
+**TypeScript**
+
+\`\`\`ts
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "${base}/v1", apiKey: "sk-or-..." });
+const resp = await client.chat.completions.create({
+  model: "milo/auto",
+  messages: [{ role: "user", content: "..." }],
+});
+\`\`\`
+
+### Claude Code
+
+Three environment variables and \`--model\`, no \`/v1\` on the base URL (Claude
+Code appends its own path):
+
+\`\`\`sh
+export ANTHROPIC_BASE_URL="${base}"
+export ANTHROPIC_AUTH_TOKEN="<the user's OpenRouter key>"
+export ANTHROPIC_API_KEY=""
+claude --model milo/auto
+\`\`\`
+
+Or committed as project-scoped settings in \`.claude/settings.json\` (put the
+key in \`.claude/settings.local.json\` instead if this file is checked in):
+
+\`\`\`json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "${base}",
+    "ANTHROPIC_AUTH_TOKEN": "<the user's OpenRouter key>",
+    "ANTHROPIC_API_KEY": ""
+  },
+  "model": "milo/auto"
+}
+\`\`\`
+
+Claude Code prints a harmless \`model: milo/auto is not in the model catalog\`
+warning at startup -- this is expected and safe to ignore.
+
+### Generic OpenAI-compatible tools
+
+Cursor, Continue, Codex CLI, Aider, and similar tools all take the same three
+fields:
+
+| Field | Value |
+|---|---|
+| Base URL | \`${base}/v1\` |
+| API key | the user's OpenRouter key |
+| Model | \`milo/auto\` |
+
+## 3. Verify it works
+
+\`\`\`sh
+curl -sS ${base}/healthz
+\`\`\`
+
+Then send one request and read the headers back:
+
+\`\`\`sh
+curl -sS -D - -o /dev/null ${base}/v1/chat/completions \\
+  -H "Authorization: Bearer \${OPENROUTER_API_KEY}" \\
+  -H "content-type: application/json" \\
+  -d '{"model":"milo/auto","messages":[{"role":"user","content":"hi"}]}'
+\`\`\`
+
+A routed response carries six \`x-milo-*\` headers: \`x-milo-decision-id\`,
+\`x-milo-model\`, \`x-milo-tier\`, \`x-milo-task-type\`, \`x-milo-difficulty\`, and
+\`x-milo-sticky\`.
+
+## 4. Read a decision
+
+\`\`\`sh
+curl -sS ${base}/v1/decisions/<x-milo-decision-id> \\
+  -H "Authorization: Bearer \${OPENROUTER_API_KEY}"
+\`\`\`
+
+Returns the full decision record: signals, tier, model, and a human-readable
+\`reason\` string explaining the choice.
+
+## 5. Steer routing with the \`milo\` field
+
+A chat completions body can include a top-level \`milo\` field, stripped
+before the request reaches OpenRouter:
+
+\`\`\`json
+{
+  "model": "milo/auto",
+  "messages": [{ "role": "user", "content": "..." }],
+  "milo": { "posture": "low", "candidates": ["anthropic/claude-haiku-4.5"], "tier": "fast" }
+}
+\`\`\`
+
+- \`posture\` -- \`"low"\`, \`"balanced"\` (default), or \`"quality"\`. Shifts the
+  policy table toward cheaper or more capable tiers.
+- \`candidates\` -- restricts the roster to these model ids for this request.
+- \`tier\` -- forces \`"fast"\`, \`"mid"\`, or \`"frontier"\` directly, skipping
+  classification entirely.
+
+Sending any model id other than \`"milo/auto"\` passes the request straight
+through to OpenRouter, unrouted -- no classification call, no decision, no
+\`x-milo-*\` headers.
+
+## More
+
+The repository skill at \`${base}/skill.md\` has the same setup steps plus
+guidance for an agent whose own work is itself routed through Milo (when to
+set \`posture: "low"\` vs. \`"quality"\`, when to force a tier, how to cite a
+decision id). Full route reference: \`${base}/llms.txt\`.
+`;
+}
+
+function llmsTxt(base: string): string {
+  return `# Milo
+
+> OpenRouter with an actual routing mechanism: point an OpenAI-compatible
+> client at Milo with your own OpenRouter key and model "milo/auto", and a
+> policy engine picks the right tier for each request from the task's type
+> and difficulty.
+
+- [Agent setup guide](${base}/setup.md): step-by-step instructions for configuring a client, Claude Code, or another agent to route through Milo.
+- [Health check](${base}/healthz): liveness probe, no auth required.
+- [Source](https://github.com/bananaman614305/milo): repository, API reference, and architecture decisions.
+`;
+}
+
+export function registerStaticRoutes(app: Hono): void {
+  app.get("/setup.md", (c) =>
+    c.text(setupMd(origin(c)), 200, { "content-type": "text/markdown; charset=utf-8" }),
+  );
+  app.get("/llms.txt", (c) =>
+    c.text(llmsTxt(origin(c)), 200, { "content-type": "text/plain; charset=utf-8" }),
+  );
+  app.get("/skill.md", (c) => c.text(skillMd(), 200, { "content-type": "text/markdown; charset=utf-8" }));
+}

@@ -1,0 +1,15 @@
+{
+  "name": "milo",
+  "owner": {
+    "name": "Milo maintainers",
+    "url": "https://github.com/bananaman614305/milo"
+  },
+  "plugins": [
+    {
+      "name": "milo",
+      "source": "./",
+      "description": "Configure a client or Claude Code session to route through Milo, and reason about Milo's routing decisions.",
+      "version": "0.1.0"
+    }
+  ]
+}

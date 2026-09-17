@@ -117,6 +117,17 @@ that request. It is stripped before the request reaches OpenRouter.
 - `candidates` — restricts the roster to these model ids for this request.
 - `tier` — forces a tier (`"fast"`, `"mid"`, `"frontier"`) and skips the Jev call entirely; the decision is recorded with reason `"forced to the <tier> tier by the request"`.
 
+## For agents
+
+A running Milo serves its own onboarding: `GET /setup.md` walks an agent
+through picking up an OpenRouter key and configuring a client, Claude Code,
+or another OpenAI-compatible tool, in Markdown written for that purpose.
+`GET /llms.txt` is the discovery entry point, and `GET /skill.md` serves the
+same instructions as an installable skill (`skills/milo/SKILL.md`) — install
+it in Claude Code with `claude plugin marketplace add bananaman614305/milo`
+then `claude plugin install milo@milo`, or in any skill-aware agent with
+`npx skills add bananaman614305/milo --skill milo`. See `skills/README.md`.
+
 ## Docs
 
 - [`docs/api/gateway.md`](docs/api/gateway.md) — every route, request/response shape, headers, errors.

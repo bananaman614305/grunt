@@ -27,3 +27,7 @@ docs
 README.md
 *.md
 .DS_Store
+
+# skills/ IS needed at runtime: the gateway serves skills/milo/SKILL.md
+# verbatim at GET /skill.md, so the `*.md` exclusion above must not reach it.
+!skills/**
