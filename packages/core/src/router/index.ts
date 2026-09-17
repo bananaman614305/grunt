@@ -53,3 +53,5 @@ export type { StickyCacheOptions } from "./sticky.js";
 
 export { Router, toSignals, classifyFailure, degradedDecision } from "./router.js";
 export type { RouterOptions, DegradeCause, DegradedDecisionInput } from "./router.js";
+export * from "./errors.js";
+export * from "./sticky-store.js";
