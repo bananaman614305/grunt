@@ -78,7 +78,7 @@ import type { Context } from "hono";
 import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
 import type { ChatMessage, ChatRole, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
-import { authorization, passThroughHeaders } from "../app.js";
+import { authorization, passThroughHeaders, keyHash } from "../app.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
@@ -87,8 +87,7 @@ import {
   readJsonObject,
   retryAfterFromBucket,
   retryAfterSeconds,
-  routingUnavailableMessage,
-} from "./shared.js";
+  routingUnavailableMessage, resolveRoster } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 
 export function registerResponsesRoute(app: Hono, deps: AppDeps): void {
@@ -142,7 +141,7 @@ async function routed(
   extension: ReturnType<typeof extractMilo>["extension"],
 ): Promise<Response> {
   const messages = toChatMessages(body);
-  const conversation = fingerprint(messages);
+  const conversation = fingerprint(messages, keyHash(c));
   const candidates = extension?.candidates;
   const forcedTier = extension?.tier;
 
@@ -171,6 +170,9 @@ async function routed(
     messages,
     posture: (extension?.posture ?? "balanced") satisfies CostPosture,
     fingerprint: conversation,
+    // Per-key roster first, then the deployment's, then the shipped default
+    // (ADR-008), exactly as the chat route does.
+    roster: await resolveRoster(c, deps),
   };
   if (Array.isArray(body["tools"])) request.tools = body["tools"];
   if (candidates !== undefined) request.candidates = candidates;

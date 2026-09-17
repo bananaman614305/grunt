@@ -59,6 +59,109 @@ export function rosterTable(): string {
   ].join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// begin: per-key roster onboarding (ADR-008)
+// ---------------------------------------------------------------------------
+
+/**
+ * The first section of `/setup.md`, and the reason the rest of it works: ask
+ * the user which models they want before writing any config.
+ *
+ * Kept as its own function, spliced into `setupMd` at one call site, so this
+ * text can be edited (or moved) without touching the rest of the page.
+ */
+export function askBeforeConfiguringSection(base: string): string {
+  return `## Ask before configuring
+
+**Ask these two questions first, before you write any config or set any
+environment variable:**
+
+1. *Which OpenRouter models do you already use?*
+2. *Which should Milo choose from?*
+
+Most people who reach Milo came from OpenRouter and already have models they
+like. Milo's job is to route between *their* models, not to talk them into
+someone else's list. Ask, then configure.
+
+Ask both questions before anything else; storing the answer needs the user's
+OpenRouter key, so make the call below as soon as you have it (step 1).
+
+### If they name models
+
+Store the list against their key with one call. Use the user's own OpenRouter
+key -- this is the same key everything else here uses:
+
+\`\`\`sh
+curl -sS -X PUT ${base}/v1/roster \\
+  -H "Authorization: Bearer \${OPENROUTER_API_KEY}" \\
+  -H "content-type: application/json" \\
+  -d '{"models":["deepseek/deepseek-v4-flash","openai/gpt-5.6-luna","anthropic/claude-opus-5"]}'
+\`\`\`
+
+The body is exactly this shape -- a flat list of OpenRouter model ids, in the
+user's own order of preference:
+
+\`\`\`json
+{
+  "models": [
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-5.6-luna",
+    "anthropic/claude-opus-5"
+  ]
+}
+\`\`\`
+
+Milo tiers them by output price using the same bands as the default roster
+(fast at most $${DEFAULT_ROSTER_INFO.bands.fast.maxOutputUsdPerM}/M, mid at most
+$${DEFAULT_ROSTER_INFO.bands.mid.maxOutputUsdPerM}/M, frontier at most
+$${DEFAULT_ROSTER_INFO.bands.frontier.maxOutputUsdPerM}/M), keeps the user's order inside each tier, and
+sorts a model that cannot hold a long answer last. A premium model the user
+named -- Opus, Fable, Astra, Sonnet -- is kept and placed on \`frontier\`: the
+$${DEFAULT_ROSTER_INFO.excludedAbove}/M ceiling only stops Milo choosing such a model on its own.
+
+If the user wants to place models by hand instead, send tiers:
+
+\`\`\`json
+{
+  "tiers": {
+    "fast": ["deepseek/deepseek-v4-flash"],
+    "mid": ["openai/gpt-5.6-luna"],
+    "frontier": ["anthropic/claude-opus-5"]
+  }
+}
+\`\`\`
+
+An id OpenRouter does not have comes back as a \`400\` naming it; fix the id
+and send the call again. On success the response carries the resulting roster,
+with each model's price and the tier it landed in, and a \`table\` field with
+the same thing as Markdown. **Show that table to the user once**, then carry
+on with the setup steps below.
+
+### If they say "just pick"
+
+Use the default roster. Show them the top-ten table in "What Milo picks by
+default" below, once, and carry on. Nothing needs storing.
+
+### What Milo keeps
+
+Only a SHA-256 hash of the key, as the row's own name -- never the key, and
+nothing else about the user (ADR-003). \`GET ${base}/v1/roster\` with the same
+key returns what is stored, and:
+
+\`\`\`sh
+curl -sS -X DELETE ${base}/v1/roster \\
+  -H "Authorization: Bearer \${OPENROUTER_API_KEY}"
+\`\`\`
+
+removes it, putting that key back on the default roster.
+
+`;
+}
+
+// ---------------------------------------------------------------------------
+// end: per-key roster onboarding
+// ---------------------------------------------------------------------------
+
 /** The request's own scheme and host, honoring a TLS-terminating proxy. */
 function origin(c: Context): string {
   const url = new URL(c.req.url);
@@ -76,7 +179,7 @@ and \`model: "milo/auto"\`, and a small decision model picks the right tier
 difficulty. This page is written for an agent that was told "set me up with
 Milo" -- follow it in order.
 
-## What Milo is for
+${askBeforeConfiguringSection(base)}## What Milo is for
 
 Milo is built for a two-model setup. A frontier agent the user already pays
 for on a subscription -- Opus, Fable, Sol, whatever they run -- plans the work

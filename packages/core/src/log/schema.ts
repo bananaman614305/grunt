@@ -81,6 +81,25 @@ CREATE TABLE IF NOT EXISTS sticky (
 CREATE INDEX IF NOT EXISTS idx_sticky_expires_at ON sticky (expires_at);
 `,
   },
+  {
+    version: 3,
+    description: "add the per-key roster table",
+    // Per-key rosters (ADR-008). Keyed by the SHA-256 of the bearer
+    // credential -- the same hash the rate limiter buckets on -- because Milo
+    // stores no key material (ADR-003) but still has to recognise the same
+    // caller on a shared deployment. `roster_json` is the whole `Roster`, so
+    // a row is self-contained and readable without the model catalogue.
+    sql: `
+CREATE TABLE IF NOT EXISTS rosters (
+  key_hash TEXT PRIMARY KEY,
+  roster_json TEXT NOT NULL,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rosters_updated_at ON rosters (updated_at);
+`,
+  },
 ];
 
 /**

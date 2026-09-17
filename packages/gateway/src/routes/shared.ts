@@ -8,8 +8,12 @@
  * just its own translation layer.
  */
 
-import type { DecisionRecord, RouteDecision, RoutingUnavailableError } from "@milo/core";
+import { DEFAULT_ROSTER } from "@milo/core";
+import type { DecisionRecord, Roster, RouteDecision, RoutingUnavailableError } from "@milo/core";
 import type { Context } from "hono";
+import type { AppDeps } from "../app.js";
+import { keyHash } from "../app.js";
+import { errorMessage } from "../errors.js";
 
 /** A parsed request body. Both dialects are JSON objects at the top level. */
 export type Body = Record<string, unknown>;
@@ -34,6 +38,34 @@ export async function readJsonObject(c: Context): Promise<Body | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The tier-to-model table one request routes against, in precedence order:
+ *
+ *   1. the roster this caller stored with `PUT /v1/roster`, found by the hash
+ *      of their credential (ADR-008);
+ *   2. the roster this deployment was configured with (`milo.config.json`);
+ *   3. the shipped default.
+ *
+ * It lives here rather than in a route so every dialect resolves it the same
+ * way and a route added later gets it by calling one function. `candidates`
+ * still filters *within* whichever table this returns -- the two are different
+ * questions: this one is "which models are mine", that one is "which of them
+ * for this request".
+ *
+ * A failed roster read is logged and falls through to the deployment's table.
+ * A user who cannot reach their own list is better served by a routed answer
+ * from the defaults than by a 500.
+ */
+export async function resolveRoster(c: Context, deps: AppDeps): Promise<Roster> {
+  try {
+    const stored = await deps.log.getRoster(keyHash(c));
+    if (stored !== undefined) return stored.roster;
+  } catch (err) {
+    deps.logger.error("per-key roster read failed", { error: errorMessage(err) });
+  }
+  return deps.roster ?? DEFAULT_ROSTER;
 }
 
 /**

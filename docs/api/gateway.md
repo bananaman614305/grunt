@@ -56,7 +56,10 @@ unmodified.
    per-key bucket is empty, the request is rejected with a 429 before any
    Jev or OpenRouter call.
 2. Otherwise the conversation is fingerprinted (SHA-256 of the system prompt
-   plus the first user message) and handed to the router (`docs/routing.md`),
+   plus the first user message, scoped to the caller's key hash so two keys
+   never share a sticky decision — ADR-008) and the roster is resolved for
+   that key (stored, else config, else default). Both are handed to the
+   router (`docs/routing.md`),
    which either serves a sticky hit or calls Jev and applies the policy
    table. Jev is the only decision backend (ADR-005) — there is no fallback
    tier to fall back to if it cannot answer.
@@ -176,13 +179,25 @@ returns the same `502 upstream_unavailable` shape as chat completions.
 
 ## `GET /v1/roster`
 
-Returns the tier-to-model table this deployment is running, with everything
-Milo knows about each entry. A caller who sent `milo/auto` handed the model
-choice to Milo; this is how they find out what they handed it to.
+Returns the tier-to-model table **this caller** is routed against, with
+everything Milo knows about each entry. A caller who sent `milo/auto` handed
+the model choice to Milo; this is how they find out what they handed it to.
+
+Precedence, which is the same one the routed path applies (ADR-008):
+
+1. the roster this key stored with `PUT /v1/roster` — `rosterSource: "user"`;
+2. the roster this deployment was configured with — `rosterSource: "config"`;
+3. the shipped default — `rosterSource: "default"`.
+
+`source` (the provenance of the shipped numbers) and `rosterSource` (where the
+table being described came from) are different fields; neither replaces the
+other. A `"user"` view also carries `storedAt`, the ISO 8601 time of the last
+`PUT`.
 
 ```json
 {
   "version": "2026-09-17",
+  "rosterSource": "default",
   "source": {
     "usage": "OpenRouter weekly usage ranking, programming category, week ending 2026-09-16 (committed snapshot)",
     "pricing": "OpenRouter /api/v1/models on 2026-09-17"
@@ -224,25 +239,115 @@ choice to Milo; this is how they find out what they handed it to.
   },
   "overrides": {
     "perRequest": "Send `\"milo\": { \"candidates\": [\"<openrouter id>\", ...] }` with a chat completion.",
-    "perDeployment": "Set `roster` in `milo.config.json` (see docs/config.md) and restart `milo serve`."
+    "perDeployment": "Set `roster` in `milo.config.json` (see docs/config.md) and restart `milo serve`.",
+    "perKey": "PUT /v1/roster with `{ \"models\": [...] }` to store your own list against your key; DELETE /v1/roster reverts."
   },
+  "table": "| Tier | Model | In $/M | Out $/M | Max output |\n|---|---|---|---|---|\n| fast | `deepseek/deepseek-v4-flash` | ...",
   "note": "Defaults are the models people actually run on OpenRouter, ...",
   "premium": "Premium models (Fable, Opus, Astra, Sonnet) are one line away: ..."
 }
 ```
 
-Per entry: `source` is `"default"` for a model Milo ships and `"config"` for
-an id this deployment's `milo.config.json` added. A `"config"` entry carries
-only its id — Milo does not know what an operator's own choice costs without
-spending an OpenRouter call, and this route spends none. `isTierDefault`
-marks the first entry of a tier, which is what that tier resolves to unless
-`candidates` or the long-output rule excludes it. `defaultTier` appears when
-a shipped model is listed under a tier other than the one Milo ships it on.
-`usingDefaults` is `false` as soon as anything differs from the shipped table.
+Per entry: `source` is `"default"` for a model Milo ships, `"config"` for an id
+this deployment's `milo.config.json` added, and `"user"` for one this caller
+stored. A `"config"` or `"user"` entry read back here carries only its id —
+Milo does not know what an id it does not ship costs without spending an
+OpenRouter call, and this route spends none (`PUT` does, so its response does
+carry the prices). `isTierDefault` marks the first entry of a tier, which is
+what that tier resolves to unless `candidates` or the long-output rule excludes
+it. `defaultTier` appears when a shipped model is listed under a tier other
+than the one Milo ships it on. `usingDefaults` is `false` as soon as anything
+differs from the shipped table. `table` is the same tiers rendered as a
+Markdown table, for an agent that has to show a user their roster once.
 
 Bearer-gated like every other `/v1` route, so it is not an unauthenticated
-description of a deployment. The bare `GET /` carries a shorter version — the
-roster version and the ids per tier — without a key, for discovery.
+description of a deployment — and so one key cannot read another's roster. The
+bare `GET /` carries a shorter version — the roster version and the ids per
+tier — without a key, for discovery; that one is always the deployment's
+table, never a stored one.
+
+## `PUT /v1/roster`
+
+Stores a roster against the caller's key, so every routed request from that
+key picks from their own models (ADR-008). The body names models one of two
+ways, exactly one of which may be present.
+
+**A flat list**, tiered for you by output price:
+
+```json
+{ "models": ["deepseek/deepseek-v4-flash", "openai/gpt-5.6-luna", "anthropic/claude-opus-5"] }
+```
+
+Tiering uses the same bands as the default roster — fast at most $0.35/M, mid
+at most $1.50/M, frontier at most $5/M — keeps your order inside a tier, and
+sorts last anything that caps output below `smallOutputBelowTokens` or cannot
+call a tool, so such a model is never a tier's default. The default roster's
+`excludedAbove` ceiling is **not** applied: it exists to stop Milo choosing a
+premium model on its own, and an id you typed is not Milo choosing. A model
+priced above the top band lands on `frontier`.
+
+**Explicit tiers**, placed by hand:
+
+```json
+{
+  "tiers": {
+    "fast": ["deepseek/deepseek-v4-flash"],
+    "mid": ["openai/gpt-5.6-luna"],
+    "frontier": ["anthropic/claude-opus-5"]
+  }
+}
+```
+
+A missing tier is stored empty; at least one model must be named overall. Ids
+are stored in the order given, with no re-tiering.
+
+Every id is checked against OpenRouter's `/v1/models` first, fetched with the
+caller's own key and cached in-process for five minutes. An id that is not in
+the catalogue rejects the whole request — a roster is stored whole or not at
+all:
+
+```
+400 { "error": { "message": "OpenRouter has no model with this id: typo/model. Check GET /v1/models for the exact ids.", "type": "invalid_request_error", "code": "unknown_model" } }
+```
+
+A body naming neither `models` nor `tiers`, or both, or a list that is not an
+array of non-empty strings:
+
+```
+400 { "error": { "message": "Send exactly one of `models` ... or `tiers` ...", "type": "invalid_request_error", "code": "invalid_roster" } }
+```
+
+If OpenRouter cannot be reached to check the ids, nothing is stored:
+
+```
+502 { "error": { "message": "Milo could not reach OpenRouter to check those model ids. Retry shortly.", "type": "api_error", "code": "upstream_unavailable" } }
+```
+
+On success the response is the same shape as `GET`, with `rosterSource:
+"user"`, a `storedAt` timestamp, `table`, and — because this route has just
+fetched the catalogue — each entry's prices, context length and output cap.
+
+A second `PUT` replaces the stored roster; there is no merge.
+
+**What is stored.** The row is keyed by a SHA-256 of the caller's normalized
+bearer credential (the same hash the rate limiter buckets on) and holds only
+that hash, the roster JSON, `source: "user"`, and created/updated timestamps.
+The key itself is never written anywhere (ADR-003), and the store refuses a
+write whose key is not a 64-character hex digest. `milo roster list` shows the
+stored rosters by hash; `milo roster --key-hash <hash>` prints one.
+
+## `DELETE /v1/roster`
+
+Removes the caller's stored roster, putting that key back on the deployment's
+roster (or the shipped default). Answers with `deleted` and the view that now
+applies:
+
+```
+200 { "deleted": true, "rosterSource": "default", "tiers": { "...": "..." }, "...": "..." }
+```
+
+`deleted` is `false` when there was nothing stored; the request still succeeds.
+One key's `DELETE` never touches another's row.
 
 ## `GET /v1/decisions/:id`
 

@@ -22,6 +22,7 @@ import {
 import type { DecisionRecord, DecisionLog, OpenRouterClient, Roster, Router, Tier } from "@milo/core";
 import type { AnthropicUpstream } from "./anthropic.js";
 import { anthropicErrorResponse, errorResponse } from "./errors.js";
+import { hashKey } from "./rate-limit.js";
 import type { RateLimiter } from "./rate-limit.js";
 import { registerChatRoute } from "./routes/chat.js";
 import { registerDecisionsRoutes } from "./routes/decisions.js";
@@ -98,6 +99,21 @@ export function credential(c: Context): string {
  */
 export function upstreamAuthorization(c: Context): string {
   return `Bearer ${credential(c)}`;
+}
+
+/**
+ * The caller's identity as anything but the request itself is allowed to know
+ * it: the SHA-256 of the normalized credential, which is the same function
+ * (`hashKey`) and the same value the rate limiter buckets on.
+ *
+ * It is computed from `upstreamAuthorization` rather than the raw header, so
+ * one key is one identity whichever header carried it and whatever spacing it
+ * arrived with. This is what a per-key roster is stored under (ADR-008): Milo
+ * keeps no key material (ADR-003), so a hash is the only handle it has, and a
+ * hash is all it needs -- it is stable per key and reveals nothing.
+ */
+export function keyHash(c: Context): string {
+  return hashKey(upstreamAuthorization(c));
 }
 
 /** Whether a path is part of the Anthropic-dialect surface. */

@@ -193,6 +193,38 @@ describe("Router.route: forced tier", () => {
   });
 });
 
+describe("Router.route: per-request roster", () => {
+  const fixture = loadFixture("trivial-rename");
+  const MINE: Roster = { fast: ["mine-fast"], mid: ["mine-mid"], frontier: ["mine-frontier"] };
+
+  it("resolves against the request's roster when it brings one", async () => {
+    // One Router serves every key, so the table has to arrive per request
+    // rather than per construction (ADR-008).
+    const router = new Router({ jev: stubJev(fixture.answers), roster: ROSTER });
+    const decision = await router.route(request({ roster: MINE }));
+
+    expect(decision.tier).toBe("fast");
+    expect(decision.model).toBe("mine-fast");
+  });
+
+  it("falls back to the Router's own roster when the request brings none", async () => {
+    const router = new Router({ jev: stubJev(fixture.answers), roster: ROSTER });
+    expect((await router.route(request())).model).toBe("fast-model");
+  });
+
+  it("applies a per-request roster to a forced tier too", async () => {
+    const router = new Router({ jev: stubJev({}), roster: ROSTER });
+    const decision = await router.route(request({ forcedTier: "frontier", roster: MINE }));
+    expect(decision.model).toBe("mine-frontier");
+  });
+
+  it("still lets candidates filter within the request's roster", async () => {
+    const router = new Router({ jev: stubJev(fixture.answers), roster: ROSTER });
+    const decision = await router.route(request({ roster: MINE, candidates: ["mine-mid"] }));
+    expect(decision.model).toBe("mine-mid");
+  });
+});
+
 describe("Router.route: stickiness", () => {
   const fixture = loadFixture("trivial-rename");
 

@@ -12,7 +12,9 @@
  */
 import { createClient, type Client, type Row } from "@libsql/client";
 import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
-import type { DecisionRecord, RouteDecision, RouteSignals, Tier } from "../types.js";
+import type { DecisionRecord, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
+import { assertKeyHash, rosterModelCount } from "./roster-store.js";
+import type { RosterMeta, RosterSource, RosterStore, StoredRoster, StoredRosterSummary } from "./roster-store.js";
 import { applyMigrations } from "./schema.js";
 
 const MAX_FIELD_LENGTH = 2000;
@@ -77,10 +79,23 @@ function rowToRecord(row: Row): DecisionRecord {
   return record;
 }
 
+function rowToStoredRoster(row: Row): StoredRoster {
+  return {
+    keyHash: String(row.key_hash),
+    roster: JSON.parse(String(row.roster_json)) as Roster,
+    source: String(row.source) as RosterSource,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
 const LIST_LIMIT_DEFAULT = 50;
 const LIST_LIMIT_MAX = 500;
 
-export class DecisionLog implements StickyStore {
+const ROSTER_LIST_LIMIT_DEFAULT = 100;
+const ROSTER_LIST_LIMIT_MAX = 1000;
+
+export class DecisionLog implements StickyStore, RosterStore {
   private constructor(private readonly db: Client) {}
 
   /** `url` is `":memory:"` or `file:/path/to.db`. Runs migrations before returning. */
@@ -255,6 +270,84 @@ export class DecisionLog implements StickyStore {
   /** No-op (does not throw) if `fingerprint` is not pinned. */
   async delete(fingerprint: string): Promise<void> {
     await this.db.execute({ sql: "DELETE FROM sticky WHERE fingerprint = ?", args: [fingerprint] });
+  }
+
+  // -------------------------------------------------------------------------
+  // RosterStore
+  // -------------------------------------------------------------------------
+
+  /** The roster this key stored, or undefined when it never stored one. */
+  async getRoster(keyHash: string): Promise<StoredRoster | undefined> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT key_hash, roster_json, source, created_at, updated_at FROM rosters WHERE key_hash = ?",
+      args: [keyHash],
+    });
+    const row = rs.rows[0];
+    return row ? rowToStoredRoster(row) : undefined;
+  }
+
+  /**
+   * Stores (or replaces) one key's roster. `created_at` survives a replace,
+   * so the row still says when this user first chose their own models.
+   *
+   * The roster goes through the same secret guard as a decision: model ids
+   * are short strings a user typed, and a user who pastes their key into the
+   * model list should get an error rather than a row holding it.
+   */
+  async setRoster(keyHash: string, roster: Roster, meta: RosterMeta = {}): Promise<StoredRoster> {
+    assertKeyHash(keyHash);
+    checkNoSecrets("roster", roster);
+    const source: RosterSource = meta.source ?? "user";
+    const now = meta.now ?? new Date().toISOString();
+    const json = JSON.stringify(roster);
+
+    await this.db.execute({
+      sql: `INSERT INTO rosters (key_hash, roster_json, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(key_hash) DO UPDATE SET
+              roster_json = excluded.roster_json,
+              source = excluded.source,
+              updated_at = excluded.updated_at`,
+      args: [keyHash, json, source, now, now],
+    });
+
+    const stored = await this.getRoster(keyHash);
+    // The row was just written, so this only fails if something else deleted
+    // it concurrently; returning what we wrote is still the honest answer.
+    return stored ?? { keyHash, roster, source, createdAt: now, updatedAt: now };
+  }
+
+  /** True when a row was there to remove. */
+  async deleteRoster(keyHash: string): Promise<boolean> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({ sql: "DELETE FROM rosters WHERE key_hash = ?", args: [keyHash] });
+    return rs.rowsAffected > 0;
+  }
+
+  /**
+   * Every stored roster, most recently updated first, as shapes rather than
+   * contents: a hash, how many models it names, and when it moved. For
+   * `milo roster list`, which is an operator looking at a deployment, not a
+   * user reading their own list.
+   */
+  async listRosters(opts?: { limit?: number }): Promise<StoredRosterSummary[]> {
+    const limit = Math.max(1, Math.min(opts?.limit ?? ROSTER_LIST_LIMIT_DEFAULT, ROSTER_LIST_LIMIT_MAX));
+    const rs = await this.db.execute({
+      sql: `SELECT key_hash, roster_json, source, created_at, updated_at FROM rosters
+            ORDER BY updated_at DESC, key_hash ASC LIMIT ?`,
+      args: [limit],
+    });
+    return rs.rows.map((row) => {
+      const stored = rowToStoredRoster(row);
+      return {
+        keyHash: stored.keyHash,
+        modelCount: rosterModelCount(stored.roster),
+        source: stored.source,
+        createdAt: stored.createdAt,
+        updatedAt: stored.updatedAt,
+      };
+    });
   }
 
   /** One JSON record per line, oldest first, paginated internally. */

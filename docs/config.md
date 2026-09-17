@@ -75,6 +75,28 @@ whether it came from a config file or from defaults. A per-request `milo.
 candidates` field further restricts the roster's search to a subset of ids
 for that one request (README, "Per-request options").
 
+#### Precedence
+
+Three things can name a roster, and a routed request resolves them in this
+order (ADR-008):
+
+| Order | Source | Scope | Set by |
+|---|---|---|---|
+| 1 | Per-key roster | One OpenRouter key, on this deployment | `PUT /v1/roster` (`docs/api/gateway.md`) |
+| 2 | `roster` in config | The whole deployment | `milo.config.json`, then restart |
+| 3 | `DEFAULT_ROSTER` | Everything unconfigured | Shipped (ADR-006) |
+
+The first one that exists wins whole — there is no merging between levels, so
+a key with a stored roster does not inherit the config file's tiers. A
+per-request `milo.candidates` is not a fourth level: it filters *within*
+whichever table won, for that one request.
+
+A per-key roster lives in the decision log's `rosters` table, keyed by a
+SHA-256 hash of the key and nothing else, so it survives a restart and a
+redeploy that keeps the `decisionLog` file. `milo roster list` shows which
+hashes have one; `DELETE /v1/roster` with that key removes it and falls back
+to level 2.
+
 #### Why these models
 
 Milo is built for a frontier agent you already pay for on a subscription

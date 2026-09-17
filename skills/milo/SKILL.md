@@ -26,6 +26,91 @@ OpenRouter. The good planner stays; what stops is paying frontier prices for
 the hundred small edits, tests and lookups underneath it. If you are that
 planning agent, keep planning where you are and point the sub-tasks here.
 
+<!-- begin: per-key roster onboarding (ADR-008) -->
+
+## Ask before configuring
+
+**Ask the user these two questions before you write any config or set any
+environment variable:**
+
+1. *Which OpenRouter models do you already use?*
+2. *Which should Milo choose from?*
+
+Most people who reach Milo came from OpenRouter and already have models they
+like. Milo's job is to route between *their* models, not to talk them into
+someone else's list. Ask both questions first; storing the answer needs their
+OpenRouter key, so make the call below as soon as you have it.
+
+### If they name models
+
+Store the list against their key with one call, using the user's own
+OpenRouter key:
+
+```sh
+curl -sS -X PUT https://milo-gateway.fly.dev/v1/roster \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"models":["deepseek/deepseek-v4-flash","openai/gpt-5.6-luna","anthropic/claude-opus-5"]}'
+```
+
+The body is exactly this shape — a flat list of OpenRouter model ids, in the
+user's own order of preference:
+
+```json
+{
+  "models": [
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-5.6-luna",
+    "anthropic/claude-opus-5"
+  ]
+}
+```
+
+Milo tiers them by output price using the same bands as the default roster
+(fast at most $0.35/M, mid at most $1.50/M, frontier at most $5/M), keeps the
+user's order inside each tier, and sorts a model that cannot hold a long
+answer last. A premium model the user named — Opus, Fable, Astra, Sonnet — is
+kept and placed on `frontier`: the $5/M ceiling only stops Milo choosing such
+a model on its own.
+
+If the user would rather place models by hand, send tiers instead:
+
+```json
+{
+  "tiers": {
+    "fast": ["deepseek/deepseek-v4-flash"],
+    "mid": ["openai/gpt-5.6-luna"],
+    "frontier": ["anthropic/claude-opus-5"]
+  }
+}
+```
+
+An id OpenRouter does not have comes back as a `400` naming it; fix the id and
+send the call again. On success the response carries the resulting roster with
+each model's price and the tier it landed in, plus a `table` field with the
+same thing as Markdown. **Show that table to the user once**, then carry on
+with the setup below.
+
+### If they say "just pick"
+
+Use the default roster. Show them the top-ten table in "What Milo picks by
+default" below, once, and carry on. Nothing needs storing.
+
+### What Milo keeps
+
+Only a SHA-256 hash of the key, as the row's own name — never the key, and
+nothing else about the user. `GET /v1/roster` with the same key returns what
+is stored, and
+
+```sh
+curl -sS -X DELETE https://milo-gateway.fly.dev/v1/roster \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY"
+```
+
+removes it, putting that key back on the default roster.
+
+<!-- end: per-key roster onboarding -->
+
 ## Before you configure anything
 
 Milo needs the user's own OpenRouter key. Never invent one, reuse a key from

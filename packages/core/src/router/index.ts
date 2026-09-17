@@ -51,6 +51,9 @@ export {
 } from "./roster.js";
 export type { ResolveModelOptions } from "./roster.js";
 
+export { describeRoster, isDemoted, tierByPrice, tierForPrice } from "./roster-from-models.js";
+export type { PricedModel, RosterPriceInfo, TierBands } from "./roster-from-models.js";
+
 export {
   DEFAULT_ROSTER,
   DEFAULT_ROSTER_INFO,

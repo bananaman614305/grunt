@@ -64,13 +64,18 @@ it drains pending decision-log writes, closes the log, and exits.
 ## `milo roster`
 
 ```
-Usage: milo roster [options]
+Usage: milo roster [list] [options]
 
 Print the effective tier-to-model roster, what each model costs, how popular
 it is, and where the entry came from.
 
+Subcommands:
+  list               List the per-key rosters stored in the decision log
+
 Options:
-  --config <path>   Path to milo.config.json (default: ./milo.config.json if present)
+  --config <path>    Path to milo.config.json (default: ./milo.config.json if present)
+  --key-hash <hash>  Print the roster stored for one key hash (SHA-256 hex)
+  --db <url>         Decision log libsql URL (default: file:./.milo/decisions.db)
   -h, --help         Show this help
 ```
 
@@ -109,6 +114,37 @@ makes no network calls and will not guess.
 
 `Roster source:` reads `config file (<path>)` when a `milo.config.json` with
 a `roster` field was found, otherwise `defaults`. Exit code **0**.
+
+### Per-key rosters
+
+A user can store their own model list against their key with
+`PUT /v1/roster` (ADR-008, `docs/api/gateway.md`). Those rosters live in the
+decision log, keyed by a SHA-256 of the key — never the key itself — so the
+CLI reads them by hash:
+
+```
+$ milo roster list
+KEY HASH                                                          MODELS  SOURCE  UPDATED
+9f2c...e41a                                                       6       user    2026-09-18T09:14:02.331Z
+1b07...cc93                                                       3       user    2026-09-17T22:03:55.007Z
+
+$ milo roster --key-hash 9f2c...e41a
+Roster source: user (key hash 9f2c...e41a)
+Stored: 2026-09-17T18:22:10.114Z
+Updated: 2026-09-18T09:14:02.331Z
+
+  TIER      MODEL                         IN/M  OUT/M  USE  SOURCE
+  fast      deepseek/deepseek-v4-flash   $0.07  $0.14   #2  default
+  mid       openai/gpt-5.6-luna           $0.2   $1.2   #1  default
+  frontier  anthropic/claude-opus-5           -      -    -  user
+```
+
+`list` prints shapes, not contents: an operator can see that per-key rosters
+are in use, and how many models each names, without reading anybody's list.
+`--key-hash` takes only a 64-character hex digest and refuses anything else,
+so a key cannot be passed here by accident; get the hash from `list`. An
+unknown hash exits **1**. Both read `--db` (default
+`file:./.milo/decisions.db`) rather than the config file's roster.
 
 ## `milo explain <decision-id>`
 
