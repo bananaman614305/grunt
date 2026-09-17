@@ -169,7 +169,7 @@ const isDirectRun =
   process.argv[1] !== undefined && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
 if (isDirectRun) {
-  main(process.argv.slice(2))
+  main(process.argv.slice(2).filter((a) => a !== "--"))
     .then((code) => {
       process.exitCode = code;
     })

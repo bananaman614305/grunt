@@ -2,7 +2,7 @@
 
 - Posture: `balanced`
 - Policy version: `v2`
-- Generated: 2026-09-17T16:48:22.360Z
+- Generated: 2026-09-17T17:10:38.286Z
 - Examples: 120 total — 120 scored, 0 unscored
 
 ## Unscored
@@ -50,7 +50,7 @@ Jev's `task_type` matched the dataset label 76.7% of the time (n=120).
 
 ## Jev latency
 
-Mean: 2 ms; p95: 3 ms (n=120)
+Mean: 2 ms; p95: 4 ms (n=120)
 
 ## Disagreements
 
