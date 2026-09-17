@@ -8,7 +8,7 @@
 
 import type { Hono } from "hono";
 import type { Context } from "hono";
-import { OpenRouterError, ROUTED_MODEL_ID } from "@milo/core";
+import { DEFAULT_ROSTER_INFO, OpenRouterError, ROUTED_MODEL_ID, defaultRosterModels } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { authorization } from "../app.js";
 import { errorMessage, errorResponse, openAiError } from "../errors.js";
@@ -18,14 +18,30 @@ import { errorMessage, errorResponse, openAiError } from "../errors.js";
  * OpenRouter itself uses for its auto router: the real price is whichever
  * model the decision lands on. `context_length` is the largest any roster
  * model offers, since the router will not reject a request for length.
+ *
+ * The description names the roster version and what the defaults optimize
+ * for, because a model picker is where most users first meet `milo/auto` and
+ * "routes to a model" does not tell them which models.
  */
+/**
+ * The largest context any default-roster model offers. Read off the roster
+ * data rather than written down, so the claim above stays true when the
+ * weekly refresh moves the roster.
+ */
+const ROSTER_MAX_CONTEXT = Math.max(...defaultRosterModels().map((m) => m.contextLength));
+
 export const MILO_AUTO_MODEL = {
   id: ROUTED_MODEL_ID,
   canonical_slug: ROUTED_MODEL_ID,
   name: "Milo auto-router",
-  description: "Routes to a model chosen by Jev from task type and difficulty",
+  description:
+    "Routes to a model chosen by Jev from task type and difficulty. Default roster " +
+    `${DEFAULT_ROSTER_INFO.version}: the ${DEFAULT_ROSTER_INFO.topModels} most-used models on ` +
+    "OpenRouter for coding, popular-and-cheap, nothing above " +
+    `$${DEFAULT_ROSTER_INFO.excludedAbove}/M output. Override per request with milo.candidates; ` +
+    "see GET /v1/roster.",
   created: 0,
-  context_length: 200_000,
+  context_length: ROSTER_MAX_CONTEXT,
   architecture: {
     modality: "text->text",
     input_modalities: ["text"],
@@ -34,7 +50,7 @@ export const MILO_AUTO_MODEL = {
     instruct_type: null,
   },
   pricing: { prompt: "-1", completion: "-1", request: "-1", image: "-1" },
-  top_provider: { context_length: 200_000, max_completion_tokens: null, is_moderated: false },
+  top_provider: { context_length: ROSTER_MAX_CONTEXT, max_completion_tokens: null, is_moderated: false },
   per_request_limits: null,
   supported_parameters: ["max_tokens", "temperature", "top_p", "stop", "tools", "tool_choice", "stream"],
 } as const;

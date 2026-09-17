@@ -13,6 +13,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Context, Hono } from "hono";
+import { DEFAULT_ROSTER_INFO, ROSTER_NOTE, TIERS } from "@milo/core";
 
 /**
  * `packages/gateway/{src,dist}/routes/static.{ts,js}` sit at the same depth
@@ -34,6 +35,30 @@ function skillMd(): string {
   return cachedSkillMd;
 }
 
+/** Tokens per week as the docs print them: `15.4T`. */
+function tokens(count: number): string {
+  return `${(count / 1e12).toFixed(1)}T`;
+}
+
+/**
+ * The default roster as a Markdown table, generated from the same JSON the
+ * router reads. Written out rather than hand-maintained so `/setup.md` cannot
+ * describe a roster the gateway is not running.
+ */
+export function rosterTable(): string {
+  const rows = TIERS.flatMap((tier) =>
+    DEFAULT_ROSTER_INFO.tiers[tier].map(
+      (m) =>
+        `| ${tier} | \`${m.id}\` | ${m.inputUsdPerM} | ${m.outputUsdPerM} | ${m.usageRank} | ${tokens(m.weeklyTokens)} |`,
+    ),
+  );
+  return [
+    "| Tier | Model | In $/M | Out $/M | Usage rank | Weekly tokens |",
+    "|---|---|---|---|---|---|",
+    ...rows,
+  ].join("\n");
+}
+
 /** The request's own scheme and host, honoring a TLS-terminating proxy. */
 function origin(c: Context): string {
   const url = new URL(c.req.url);
@@ -50,6 +75,16 @@ and \`model: "milo/auto"\`, and a small decision model picks the right tier
 (fast, mid, or frontier) for each request from the task's type and
 difficulty. This page is written for an agent that was told "set me up with
 Milo" -- follow it in order.
+
+## What Milo is for
+
+Milo is built for a two-model setup. A frontier agent the user already pays
+for on a subscription -- Opus, Fable, Sol, whatever they run -- plans the work
+and orchestrates it. The implementation sub-tasks it hands off go through
+Milo, which routes each one to a model that is cheap and popular on
+OpenRouter. The good planner stays; what stops is paying frontier prices for
+the hundred small edits, tests and lookups underneath it. If you are that
+planning agent, keep planning where you are and point the sub-tasks here.
 
 ## 1. Get an OpenRouter key from the user
 
@@ -179,7 +214,7 @@ before the request reaches OpenRouter:
 {
   "model": "milo/auto",
   "messages": [{ "role": "user", "content": "..." }],
-  "milo": { "posture": "low", "candidates": ["anthropic/claude-haiku-4.5"], "tier": "fast" }
+  "milo": { "posture": "low", "candidates": ["deepseek/deepseek-v4-flash"], "tier": "fast" }
 }
 \`\`\`
 
@@ -192,6 +227,57 @@ before the request reaches OpenRouter:
 Sending any model id other than \`"milo/auto"\` passes the request straight
 through to OpenRouter, unrouted -- no classification call, no decision, no
 \`x-milo-*\` headers.
+
+## 6. What Milo picks by default
+
+**Tell the user this once, while you are configuring Milo.** They have handed
+the model choice to a router; they should know what it will choose before the
+first bill, not after.
+
+Default roster \`${DEFAULT_ROSTER_INFO.version}\`:
+
+${rosterTable()}
+
+\`tencent/hy4-preview\` caps output at 64,000 tokens and
+\`nvidia/nemotron-3-ultra-550b-a55b\` at 32,768, both below
+${DEFAULT_ROSTER_INFO.smallOutputBelowTokens}, so they sort last in their tier and are skipped
+outright whenever a long answer is expected.
+
+**How this list was made.** Collected ${DEFAULT_ROSTER_INFO.version} from
+${DEFAULT_ROSTER_INFO.source.usage} and ${DEFAULT_ROSTER_INFO.source.pricing}. Take the
+${DEFAULT_ROSTER_INFO.topModels} most-used models after folding dated builds into their current
+id and dropping \`:free\`, \`:batch\` and the other data-sharing plan variants,
+anything that cannot call a tool, and anything at or above
+$${DEFAULT_ROSTER_INFO.excludedAbove} per million output tokens. Tier them by output price:
+fast at most $${DEFAULT_ROSTER_INFO.bands.fast.maxOutputUsdPerM}/M, mid at most
+$${DEFAULT_ROSTER_INFO.bands.mid.maxOutputUsdPerM}/M, frontier at most
+$${DEFAULT_ROSTER_INFO.bands.frontier.maxOutputUsdPerM}/M. The roster is regenerated from
+OpenRouter's rankings every week, so this table moves as the rankings do.
+
+${ROSTER_NOTE}
+
+**Choosing your own models.** Milo never locks the user into this list.
+
+- Per request (\`milo.candidates\`): \`"milo": { "candidates": ["anthropic/claude-opus-5"] }\`
+  restricts that one request to the ids you name. Any OpenRouter id works,
+  premium models included.
+- Per deployment: set \`roster\` in \`milo.config.json\` with your own ids per
+  tier and restart \`milo serve\`. For example, to put Opus on the frontier
+  tier and leave the rest of the defaults alone:
+
+\`\`\`json
+{
+  "roster": {
+    "fast": ["deepseek/deepseek-v4-flash", "z-ai/glm-5.3-flash"],
+    "mid": ["openai/gpt-5.6-luna", "deepseek/deepseek-v4.1-flash"],
+    "frontier": ["anthropic/claude-opus-5", "z-ai/glm-5.3"]
+  }
+}
+\`\`\`
+
+\`GET ${base}/v1/roster\` (with the OpenRouter key) returns the running roster
+with every price, usage rank and provenance field, plus which tier each
+posture favors.
 
 ## More
 

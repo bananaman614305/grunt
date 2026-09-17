@@ -133,7 +133,7 @@ Request extension (optional, stripped before forwarding to OpenRouter):
 
 Superseded by **policy v2** (ADR-002 revision 2, `docs/routing.md`): the table above is now only the fallback for a backend that reports no per-level distribution. v2 decides on `P(level 3)` and `P(level 2 or above)` against per-backend thresholds, because the open backend's expected score turned out to be too compressed for fixed cut points at 1.0 and 2.0.
 
-Default roster: fast = `anthropic/claude-haiku-4.5`, `google/gemini-2.5-flash`; mid = `anthropic/claude-sonnet-5`; frontier = `anthropic/claude-opus-5`. Users override in `milo.config.json`.
+Default roster (ADR-006, `packages/core/src/router/roster-default.json`, version 2026-09-17): fast = `deepseek/deepseek-v4-flash`, `z-ai/glm-5.3-flash`, `xiaomi/mimo-v2.5`, `tencent/hy3`; mid = `openai/gpt-5.6-luna`, `deepseek/deepseek-v4.1-flash`; frontier = `z-ai/glm-5.3`, `google/gemini-3.8-flash`, `tencent/hy4-preview`, `nvidia/nemotron-3-ultra-550b-a55b`. It is the ten most-used models in OpenRouter's programming category, tool-capable, nothing at or above $5/M output, tiered by output price — the frontier agent that orchestrates runs on the user's own subscription, so Milo's job is the cheap half of that pair. Regenerated weekly from OpenRouter's rankings and disclosed at `GET /v1/roster`, on the root page, in `/setup.md`, in the skill and by `milo roster`. Users override in `milo.config.json` or per request with `milo.candidates`.
 
 ## Waves
 

@@ -66,7 +66,7 @@ OpenRouter untouched, so you can mix:
 
 ```sh
 export ANTHROPIC_MODEL="milo/auto"                     # the main loop is routed
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="anthropic/claude-haiku-4.5"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek/deepseek-v4-flash"
 ```
 
 `ANTHROPIC_DEFAULT_HAIKU_MODEL` is what the `haiku` alias and Claude Code's

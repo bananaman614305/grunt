@@ -16,3 +16,28 @@ export {
   makeJevClient,
 } from "./jev-source.js";
 export type { JevSourceMode, MakeJevClientOptions } from "./jev-source.js";
+
+export {
+  bandFor,
+  buildRosterFile,
+  diffRosterFiles,
+  extractRankingRows,
+  foldPermaslug,
+  scrapeRankingRows,
+  selectRoster,
+  usdPerMillion,
+  DEFAULT_RULES,
+  DROPPED_VARIANTS,
+  TIER_ORDER,
+} from "./roster-select.js";
+export type {
+  OpenRouterModelEntry,
+  OpenRouterModelsPayload,
+  RankingRow,
+  RankingSnapshot,
+  RosterFile,
+  SelectedModel,
+  Selection,
+  SelectionRules,
+  SkippedModel,
+} from "./roster-select.js";

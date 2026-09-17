@@ -14,7 +14,16 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import type { DecisionRecord, Roster, Router, RoutingUnavailableCause } from "@milo/core";
-import { DecisionLog, OpenRouterClient, POLICY_VERSION, RoutingUnavailableError } from "@milo/core";
+import {
+  DecisionLog,
+  DEFAULT_ROSTER,
+  DEFAULT_ROSTER_INFO,
+  OpenRouterClient,
+  POLICY_VERSION,
+  ROSTER_NOTE,
+  RoutingUnavailableError,
+  defaultRosterModels,
+} from "@milo/core";
 import { AnthropicUpstream } from "./anthropic.js";
 import { createApp } from "./app.js";
 import { createGateway } from "./index.js";
@@ -610,15 +619,27 @@ describe("GET /v1/models", () => {
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { data: Array<Record<string, unknown>> };
-    expect(body.data[0]).toMatchObject({
-      id: "milo/auto",
-      name: "Milo auto-router",
-      description: "Routes to a model chosen by Jev from task type and difficulty",
-    });
+    expect(body.data[0]).toMatchObject({ id: "milo/auto", name: "Milo auto-router" });
     // Shaped like a real entry, so a model picker can render it.
     expect(body.data[0]).toHaveProperty("pricing");
     expect(body.data[0]).toHaveProperty("context_length");
     expect(body.data[1]).toMatchObject({ id: "anthropic/claude-sonnet-5" });
+  });
+
+  it("says in the description which roster the defaults come from", async () => {
+    await start();
+    upstreams.openRouter = () => jsonResponse({ data: [] });
+
+    const res = await gateway.app.request("/v1/models", { headers: AUTH });
+    const body = (await res.json()) as { data: Array<{ description: string }> };
+    const description = body.data[0]?.description ?? "";
+    // A model picker is where most users first meet milo/auto, so the entry
+    // has to name the roster version and what the defaults optimize for.
+    expect(description).toContain("Jev");
+    expect(description).toContain(`Default roster ${DEFAULT_ROSTER_INFO.version}`);
+    expect(description).toContain("popular-and-cheap");
+    expect(description).toContain(`$${DEFAULT_ROSTER_INFO.excludedAbove}/M output`);
+    expect(description).toContain("milo.candidates");
   });
 
   it("passes an upstream rejection through with its own status and body", async () => {
@@ -903,6 +924,164 @@ describe("GET /", () => {
     expect(html).toContain("http://milo.test/setup.md");
     expect(html).toContain("http://milo.test/skill.md");
   });
+
+  it("discloses the running roster and the default policy in JSON", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/");
+    const body = (await res.json()) as {
+      roster: { version: string; tiers: Record<string, string[]> };
+      rosterNote: string;
+      endpoints: string[];
+    };
+
+    expect(body.roster.version).toBe(DEFAULT_ROSTER_INFO.version);
+    expect(body.roster.tiers).toEqual({
+      fast: ["test/fast"],
+      mid: ["test/mid"],
+      frontier: ["test/frontier"],
+    });
+    expect(body.rosterNote).toBe(ROSTER_NOTE);
+    expect(body.rosterNote).toContain("$5 per million output tokens");
+    expect(body.endpoints).toContain("/v1/roster");
+  });
+
+  it("reports the shipped defaults when the deployment configured no roster", async () => {
+    await start({ roster: undefined });
+    const res = await gateway.app.request("http://milo.test/");
+    const body = (await res.json()) as { roster: { tiers: Record<string, string[]> } };
+    expect(body.roster.tiers).toEqual({
+      fast: [...DEFAULT_ROSTER.fast],
+      mid: [...DEFAULT_ROSTER.mid],
+      frontier: [...DEFAULT_ROSTER.frontier],
+    });
+  });
+
+  it("shows the three tiers, their models and their output prices on the page", async () => {
+    await start({ roster: undefined });
+    const res = await gateway.app.request("http://milo.test/", { headers: { accept: "text/html,*/*" } });
+    const html = await res.text();
+
+    expect(html).toContain("What Milo picks by default");
+    for (const tier of ["fast", "mid", "frontier"]) expect(html).toContain(`>${tier}</td>`);
+    for (const model of DEFAULT_ROSTER.fast) expect(html).toContain(model);
+    for (const model of DEFAULT_ROSTER.mid) expect(html).toContain(model);
+    for (const model of DEFAULT_ROSTER.frontier) expect(html).toContain(model);
+    // Output price per million, so the cost of the default is on the page.
+    expect(html).toContain("$0.14");
+    expect(html).toContain("$1.2");
+    expect(html).toContain("$4.4");
+    expect(html).toContain(ROSTER_NOTE);
+    expect(html).toContain(DEFAULT_ROSTER_INFO.version);
+  });
+});
+
+describe("GET /v1/roster", () => {
+  it("needs a key like every other /v1 route", async () => {
+    await start();
+    const res = await gateway.app.request("/v1/roster");
+    expect(res.status).toBe(401);
+    expect(upstreams.calls).toHaveLength(0);
+  });
+
+  it("returns the shipped roster with its prices, ranks and provenance", async () => {
+    await start({ roster: undefined });
+    const res = await gateway.app.request("/v1/roster", { headers: AUTH });
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      version: string;
+      source: { usage: string; pricing: string };
+      topModels: number;
+      bands: Record<string, { maxOutputUsdPerM: number }>;
+      excludedAbove: number;
+      usingDefaults: boolean;
+      tiers: Record<string, Array<Record<string, unknown>>>;
+      policy: { posture: Record<string, string>; longOutput: string };
+      overrides: { perRequest: string; perDeployment: string };
+      note: string;
+      premium: string;
+    };
+
+    expect(body.version).toBe(DEFAULT_ROSTER_INFO.version);
+    expect(body.source).toEqual(DEFAULT_ROSTER_INFO.source);
+    expect(body.topModels).toBe(10);
+    expect(body.bands).toEqual(DEFAULT_ROSTER_INFO.bands);
+    expect(body.excludedAbove).toBe(5);
+    expect(body.usingDefaults).toBe(true);
+    expect(body.note).toBe(ROSTER_NOTE);
+    expect(body.premium).toContain("Opus");
+    expect(body.overrides.perRequest).toContain("candidates");
+    expect(body.overrides.perDeployment).toContain("milo.config.json");
+
+    expect(body.tiers.fast?.[0]).toMatchObject({
+      id: "deepseek/deepseek-v4-flash",
+      source: "default",
+      isTierDefault: true,
+      inputUsdPerM: 0.07,
+      outputUsdPerM: 0.14,
+      usageRank: 2,
+      weeklyTokens: 15_400_000_000_000,
+    });
+    expect(body.tiers.frontier?.at(-1)).toMatchObject({
+      id: "nvidia/nemotron-3-ultra-550b-a55b",
+      demotedForSmallOutput: true,
+      isTierDefault: false,
+    });
+  });
+
+  it("says which tier each posture favors", async () => {
+    await start({ roster: undefined });
+    const res = await gateway.app.request("/v1/roster", { headers: AUTH });
+    const body = (await res.json()) as { policy: { posture: Record<string, string>; longOutput: string } };
+
+    expect(Object.keys(body.policy.posture)).toEqual(["low", "balanced", "quality"]);
+    expect(body.policy.posture.low).toContain("fast");
+    expect(body.policy.posture.balanced).toContain("mid");
+    expect(body.policy.posture.quality).toContain("frontier");
+    expect(body.policy.longOutput).toContain("65536");
+  });
+
+  it("marks a deployment's own model ids as coming from config", async () => {
+    await start(); // ROSTER: test/fast, test/mid, test/frontier
+    const res = await gateway.app.request("/v1/roster", { headers: AUTH });
+    const body = (await res.json()) as {
+      usingDefaults: boolean;
+      tiers: Record<string, Array<Record<string, unknown>>>;
+    };
+
+    expect(body.usingDefaults).toBe(false);
+    expect(body.tiers.fast).toEqual([{ id: "test/fast", source: "config", isTierDefault: true }]);
+    expect(body.tiers.frontier).toEqual([{ id: "test/frontier", source: "config", isTierDefault: true }]);
+  });
+
+  it("still names the prices of a shipped model a config moved to another tier", async () => {
+    await start({
+      roster: {
+        fast: ["openai/gpt-5.6-luna"],
+        mid: ["z-ai/glm-5.3"],
+        frontier: ["anthropic/claude-opus-5"],
+      },
+    });
+    const res = await gateway.app.request("/v1/roster", { headers: AUTH });
+    const body = (await res.json()) as {
+      usingDefaults: boolean;
+      tiers: Record<string, Array<Record<string, unknown>>>;
+    };
+
+    expect(body.usingDefaults).toBe(false);
+    expect(body.tiers.fast?.[0]).toMatchObject({
+      id: "openai/gpt-5.6-luna",
+      source: "default",
+      defaultTier: "mid",
+      outputUsdPerM: 1.2,
+    });
+    // A model Milo never ships has no price to report and does not invent one.
+    expect(body.tiers.frontier?.[0]).toEqual({
+      id: "anthropic/claude-opus-5",
+      source: "config",
+      isTierDefault: true,
+    });
+  });
 });
 
 describe("agent-facing static routes", () => {
@@ -951,5 +1130,45 @@ describe("agent-facing static routes", () => {
     const text = await res.text();
     expect(text).toBe(SKILL_MD);
     expect(upstreams.calls).toHaveLength(0);
+  });
+
+  it("discloses the default roster in /setup.md, generated from the roster data", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/setup.md");
+    const text = await res.text();
+
+    expect(text).toContain("What Milo picks by default");
+    // The table is generated from roster-default.json, so it cannot describe
+    // a roster the router is not running.
+    for (const model of defaultRosterModels()) {
+      expect(text).toContain(`| \`${model.id}\` | ${model.inputUsdPerM} |`);
+      expect(text).toContain(`| ${model.usageRank} |`);
+    }
+    expect(text).toContain(ROSTER_NOTE);
+    // Both override paths, and the instruction to say so once.
+    expect(text).toContain("milo.candidates");
+    expect(text).toContain('"roster"');
+    expect(text).toContain("anthropic/claude-opus-5");
+    expect(text).toContain("Tell the user this once");
+    expect(text).toContain("http://milo.test/v1/roster");
+  });
+
+  it("says the same thing in the skill, for an agent that installed it instead", () => {
+    expect(SKILL_MD).toContain("What Milo picks by default");
+    expect(SKILL_MD).toContain("Tell the user this once");
+    for (const model of defaultRosterModels()) expect(SKILL_MD).toContain(model.id);
+    expect(SKILL_MD).toContain("nothing above $5 per million output tokens");
+    expect(SKILL_MD).toContain("milo.candidates");
+    expect(SKILL_MD).toContain("anthropic/claude-opus-5");
+  });
+
+  it("explains the intended frontier-plans-Milo-implements setup in both", async () => {
+    await start();
+    const setup = await (await gateway.app.request("http://milo.test/setup.md")).text();
+    for (const text of [setup, SKILL_MD]) {
+      expect(text).toContain("What Milo is for");
+      expect(text).toContain("subscription");
+      expect(text).toContain("implementation sub-tasks");
+    }
   });
 });

@@ -13,7 +13,8 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "eval": "tsx src/cli.ts"
+    "eval": "tsx src/cli.ts",
+    "roster:refresh": "tsx scripts/roster-refresh.ts"
   },
   "dependencies": {
     "@milo/core": "workspace:*",

@@ -89,6 +89,30 @@ The gate defaults to **0.85** (`MIN_TIER_AGREEMENT` in
 
 CI runs the fixture replay at `--gate 0.80` with no extra environment: fixtures are keyed by the request's API path and body, not the recording address, so replay never touches the network
 
+## Refreshing the default roster
+
+The same package holds the job that regenerates Milo's default roster, since
+it is the one that already talks to OpenRouter:
+
+```
+pnpm --filter @milo/evals run roster:refresh            # dry run, prints the diff
+pnpm --filter @milo/evals run roster:refresh -- --write # rewrites roster-default.json
+```
+
+It reads prices and capabilities from `https://openrouter.ai/api/v1/models`
+and popularity from OpenRouter's rankings page for the programming category
+(there is no public usage API, so the ranking is scraped out of the page; when
+the page's shape changes and nothing parses, the script falls back to the
+committed snapshot in `packages/evals/scripts/popular.json` and says so). The
+selection rule is `packages/evals/src/roster-select.ts`, unit-tested against a
+recorded catalogue fixture — no test in this package touches the network.
+
+`.github/workflows/roster-refresh.yml` runs it every Monday at 09:00 UTC and
+opens a pull request when the roster moves. See `docs/adr/006-default-roster.md`
+for the rule and `docs/config.md` for the shipped table.
+
+## Changing the policy
+
 Changing a threshold in `packages/core/src/router/policy.ts` requires bumping
 `POLICY_VERSION` and re-running the eval to confirm the gate still passes. The
 two-fold cross-validation in `packages/evals/src/run.test.ts` refits the
