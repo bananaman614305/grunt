@@ -4,6 +4,7 @@
  * `src/commands/`, each of which exports `{ help, run }`. `src/cli.ts` is the
  * thin `#!/usr/bin/env node` wrapper around this, wired to `defaultDeps()`.
  */
+import * as billing from "./commands/billing.js";
 import * as decisions from "./commands/decisions.js";
 import * as explain from "./commands/explain.js";
 import * as roster from "./commands/roster.js";
@@ -19,7 +20,7 @@ type Command = {
   run: (args: string[], deps: CliDeps) => Promise<number | undefined>;
 };
 
-const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, roster };
+const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, roster, billing };
 
 export const TOP_LEVEL_HELP = `Usage: milo <command> [options]
 
@@ -31,6 +32,7 @@ Commands:
   decisions   List recent routing decisions
   stats       Summarize the decision log
   roster      Show the effective tier-to-model roster
+  billing     Operate the billing database, Stripe, and provisioning
 
 Run "milo <command> --help" for command-specific options.
 `;

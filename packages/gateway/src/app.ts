@@ -24,6 +24,7 @@ import type { AnthropicUpstream } from "./anthropic.js";
 import { anthropicErrorResponse, errorResponse } from "./errors.js";
 import { hashKey } from "./rate-limit.js";
 import type { RateLimiter } from "./rate-limit.js";
+import { registerAccountPages } from "./routes/account-pages.js";
 import { registerChatRoute } from "./routes/chat.js";
 import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
@@ -235,6 +236,7 @@ export function createApp(deps: AppDeps): Hono {
   registerModelsRoute(app, deps);
   registerRosterRoute(app, deps);
   registerDecisionsRoutes(app, deps);
+  registerAccountPages(app, deps); // account HTML pages
   // Last: it claims every `/v1/*` method and path the routes above did not.
   registerProxyRoute(app, deps);
 

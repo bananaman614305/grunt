@@ -3,5 +3,11 @@
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/test-support.ts"],
-  "references": [{ "path": "../core" }, { "path": "../gateway" }]
+  "references": [
+    { "path": "../core" },
+    { "path": "../gateway" },
+    { "path": "../billing" },
+    { "path": "../provisioning" },
+    { "path": "../stripe" }
+  ]
 }
