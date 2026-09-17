@@ -322,6 +322,16 @@ export class Router {
     this.circuit = new CircuitBreaker({ clock: this.clock, ...opts.breaker });
   }
 
+  /**
+   * The table this request resolves against: its own, if it brought one, else
+   * the Router's. The per-request override is how one gateway serves a
+   * different roster to every key without a Router per key (ADR-007); the
+   * constructor's roster stays the deployment-wide default.
+   */
+  private rosterFor(req: RouteRequest): Roster {
+    return req.roster ?? this.roster;
+  }
+
   /** What the circuit breaker is doing. For the gateway's health endpoint. */
   breakerState(): BreakerStatus {
     return this.circuit.state();
@@ -342,7 +352,7 @@ export class Router {
         id: ulid(),
         fingerprint: req.fingerprint,
         tier: req.forcedTier,
-        model: resolveModel(req.forcedTier, this.roster, req.candidates),
+        model: resolveModel(req.forcedTier, this.rosterFor(req), req.candidates),
         reason: `forced to the ${req.forcedTier} tier by the request`,
         policyVersion: POLICY_VERSION,
         sticky: false,
@@ -366,7 +376,9 @@ export class Router {
     const { signals } = await call;
 
     const { tier, reason } = chooseTier(signals, req.posture, this.profile);
-    const model = resolveModel(tier, this.roster, req.candidates, { longOutput: signals.longOutput });
+    const model = resolveModel(tier, this.rosterFor(req), req.candidates, {
+      longOutput: signals.longOutput,
+    });
 
     const decision: RouteDecision = {
       id: ulid(),

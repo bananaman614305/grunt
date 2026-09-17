@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_ROSTER, DEFAULT_ROSTER_INFO, defaultRosterModels } from "@milo/core";
+import { DecisionLog, DEFAULT_ROSTER, DEFAULT_ROSTER_INFO, defaultRosterModels } from "@milo/core";
+import type { Roster } from "@milo/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestDeps } from "../test-support.js";
 import { run } from "./roster.js";
@@ -136,5 +137,113 @@ describe("milo roster", () => {
 
     expect(code).toBe(0);
     expect(stdout.toString()).toContain("Usage: milo roster");
+  });
+});
+
+describe("milo roster: per-key rosters", () => {
+  const HASH = "a".repeat(64);
+  const OTHER_HASH = "b".repeat(64);
+  const STORED: Roster = {
+    fast: ["custom/fast"],
+    mid: ["openai/gpt-5.6-luna"],
+    frontier: ["anthropic/claude-opus-5"],
+  };
+
+  let log: DecisionLog;
+
+  /** Deps whose `openLog` hands back one in-memory log, kept open for asserts. */
+  function withLog(): ReturnType<typeof createTestDeps> {
+    return createTestDeps({
+      openLog: () =>
+        Promise.resolve({
+          getRoster: (hash: string) => log.getRoster(hash),
+          listRosters: () => log.listRosters(),
+          // The command closes what it opened; the test owns the real handle.
+          close: () => Promise.resolve(),
+        } as unknown as DecisionLog),
+    });
+  }
+
+  beforeEach(async () => {
+    log = await DecisionLog.open(":memory:");
+  });
+
+  afterEach(async () => {
+    await log.close();
+  });
+
+  it("prints a stored roster for a key hash, marked as the user's", async () => {
+    await log.setRoster(HASH, STORED, { now: "2026-09-18T09:00:00.000Z" });
+
+    const { deps, stdout } = withLog();
+    const code = await run(["--key-hash", HASH], deps);
+
+    expect(code).toBe(0);
+    const output = stdout.toString();
+    expect(output).toContain(`Roster source: user (key hash ${HASH})`);
+    expect(output).toContain("Updated: 2026-09-18T09:00:00.000Z");
+    expect(output).toContain("custom/fast");
+    // An id Milo ships keeps its numbers even inside a user's own list.
+    expect(output).toMatch(/openai\/gpt-5\.6-luna.*\$0\.2.*\$1\.2.*#1.*default/);
+    // One Milo does not ship has no prices to print, and is the user's.
+    expect(output).toMatch(/anthropic\/claude-opus-5\s+-\s+-\s+-\s+user/);
+  });
+
+  it("says so when that hash has nothing stored", async () => {
+    const { deps, stderr } = withLog();
+    const code = await run(["--key-hash", OTHER_HASH], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain(`no stored roster for key hash ${OTHER_HASH}`);
+  });
+
+  it("refuses anything that is not a hash, a key most of all", async () => {
+    const { deps, stderr } = createTestDeps();
+    const code = await run(["--key-hash", "sk-or-v1-a-real-key"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("not a key");
+    // And it never opened the log, which `createTestDeps` would have thrown on.
+  });
+
+  it("lists stored rosters as shapes, newest first", async () => {
+    await log.setRoster(HASH, STORED, { now: "2026-09-17T09:00:00.000Z" });
+    await log.setRoster(OTHER_HASH, { fast: ["x/one"], mid: [], frontier: [] }, { now: "2026-09-18T09:00:00.000Z" });
+
+    const { deps, stdout } = withLog();
+    const code = await run(["list"], deps);
+
+    expect(code).toBe(0);
+    const lines = stdout.toString().trimEnd().split("\n");
+    expect(lines[0]).toMatch(/KEY HASH\s+MODELS\s+SOURCE\s+UPDATED/);
+    expect(lines[1]).toBe(`${OTHER_HASH}  1       user    2026-09-18T09:00:00.000Z`);
+    expect(lines[2]).toBe(`${HASH}  3       user    2026-09-17T09:00:00.000Z`);
+    // Nobody's model ids appear in the listing.
+    expect(stdout.toString()).not.toContain("custom/fast");
+  });
+
+  it("says when there is nothing stored", async () => {
+    const { deps, stdout } = withLog();
+    const code = await run(["list"], deps);
+
+    expect(code).toBe(0);
+    expect(stdout.toString()).toContain("(no per-key rosters stored)");
+  });
+
+  it("rejects an unknown subcommand", async () => {
+    const { deps, stderr } = createTestDeps();
+    const code = await run(["lst"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain('unknown subcommand "lst"');
+  });
+
+  it("mentions both in the help", async () => {
+    const { deps, stdout } = createTestDeps();
+    await run(["--help"], deps);
+
+    const output = stdout.toString();
+    expect(output).toContain("--key-hash");
+    expect(output).toContain("list");
   });
 });

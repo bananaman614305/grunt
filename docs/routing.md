@@ -223,6 +223,36 @@ shipping: the target is 85% (ADR-002), and CI gates at 0.80.
 
 ## Roster resolution
 
+### Which roster
+
+A tier means nothing without a table to look it up in, and since ADR-007 one
+deployment can be running several. The gateway resolves one per request in
+`packages/gateway/src/routes/shared.ts` (`resolveRoster`) and hands it to the
+router on the `RouteRequest`:
+
+1. the roster stored against this caller's key hash, if there is one;
+2. the deployment's `roster` from `milo.config.json`;
+3. `DEFAULT_ROSTER`.
+
+The first that exists wins whole. `Router`'s constructor roster is the
+fallback for a caller that passes none — `packages/evals`, and any direct use
+of core — so nothing outside the gateway had to change.
+
+Two consequences worth stating: `milo.candidates` filters *within* the table
+that won rather than adding a fourth level, and the conversation fingerprint
+is scoped to the caller's key hash (`fingerprint(messages, scope)`), because a
+sticky decision shared between two keys could otherwise serve one of them a
+model that is not on their roster at all.
+
+A user's list is tiered by `tierByPrice`
+(`packages/core/src/router/roster-from-models.ts`) on the same output-price
+bands as the default roster, in the order they gave, with small-output and
+tool-less models sorted last so neither is ever a tier's default. The one rule
+that does not carry over is `excludedAbove`: it exists to stop Milo picking a
+$5-and-up model for someone who never asked, and a user who names Opus asked.
+
+### Which model
+
 `packages/core/src/router/roster.ts` turns a tier into a concrete OpenRouter
 model id: the first entry in that tier's list that is not excluded by a
 `candidates` restriction or by the small-output exclusion. When
@@ -289,11 +319,13 @@ tier is always a model that can produce a long answer — so a `long_output`
 request changes which model answers only when the tier default is itself
 excluded by `candidates`.
 
-Users override the whole thing per-deployment in `milo.config.json`
-(`docs/config.md`) or per-request with `milo.candidates`; an id Milo does not
-ship is reported as `source: "config"` by `/v1/roster` with no price, because
-Milo does not know what an operator's own choice costs without spending a
-call to find out.
+Users override the whole thing per key with `PUT /v1/roster`
+(`docs/api/gateway.md`), per deployment in `milo.config.json`
+(`docs/config.md`), or per request with `milo.candidates`; an id Milo does not
+ship is reported as `source: "config"` (or `"user"`) by `GET /v1/roster` with
+no price, because Milo does not know what somebody else's choice costs without
+spending a call to find out — `PUT` has just spent one, so its answer does
+carry the prices.
 
 ## Stickiness
 
@@ -304,6 +336,13 @@ minutes** (`ROUTER_LIMITS.stickyTtlMs`, currently `30 * 60 * 1000` ms, and
 settable per router with `RouterOptions.stickyTtlMs`). Only the first user
 message counts, so every later turn of the same sub-agent task lands on the
 same key even as the conversation grows.
+
+The gateway mixes the caller's key hash into that digest (`fingerprint`'s
+optional `scope`), so two users who send the same conversation get their own
+decisions. Before per-key rosters that only meant a shared Jev call; now it
+would mean one user being served a model from another user's roster. The
+digest keeps its shape, so the decision log and the
+`/v1/decisions?fingerprint=` filter are unaffected.
 
 ### A sticky hit is qualified by the user-turn count
 

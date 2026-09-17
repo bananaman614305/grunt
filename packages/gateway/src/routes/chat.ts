@@ -26,13 +26,14 @@ import type { Context } from "hono";
 import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
 import type { ChatMessage, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
-import { authorization, passThroughHeaders } from "../app.js";
+import { authorization, keyHash, passThroughHeaders } from "../app.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
   onFinished,
   rateLimitedMessage,
   readJsonObject,
+  resolveRoster,
   retryAfterFromBucket,
   retryAfterSeconds,
   routingUnavailableMessage,
@@ -90,7 +91,10 @@ async function routed(
   extension: ReturnType<typeof extractMilo>["extension"],
 ): Promise<Response> {
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
-  const conversation = fingerprint(messages);
+  // Scoped to the caller: since a roster can be stored per key (ADR-007), a
+  // sticky hit shared between two keys could hand one of them a model that is
+  // not on their list.
+  const conversation = fingerprint(messages, keyHash(c));
   const candidates = extension?.candidates;
   const forcedTier = extension?.tier;
 
@@ -119,6 +123,9 @@ async function routed(
     messages,
     posture: (extension?.posture ?? "balanced") satisfies CostPosture,
     fingerprint: conversation,
+    // Per-key roster first, then the deployment's, then the shipped default
+    // (ADR-007). `candidates` below still filters within whichever it is.
+    roster: await resolveRoster(c, deps),
   };
   if (Array.isArray(body["tools"])) request.tools = body["tools"];
   if (candidates !== undefined) request.candidates = candidates;

@@ -104,6 +104,14 @@ export type RouteRequest = {
   candidates?: string[];
   forcedTier?: Tier;
   fingerprint: string;
+  /**
+   * The tier-to-model table to resolve this one request against, overriding
+   * the Router's own. Set by the gateway when the caller's key has a roster
+   * stored against it (ADR-007); absent means "use the Router's", which is
+   * the deployment's config roster, else `DEFAULT_ROSTER`. `candidates` still
+   * filters within whichever table is used.
+   */
+  roster?: Roster;
 };
 
 export type RouteDecision = {

@@ -76,4 +76,33 @@ describe("fingerprint", () => {
     ]);
     expect(withDeveloper).toBe(fingerprint(convo("part one part two", "go")));
   });
+
+  describe("scope", () => {
+    const messages = convo(SYSTEM, "hello");
+
+    it("separates the same conversation sent by two callers", () => {
+      // Two keys may be running different rosters (ADR-007), so they must not
+      // share a sticky decision.
+      expect(fingerprint(messages, "key-a")).not.toBe(fingerprint(messages, "key-b"));
+    });
+
+    it("is stable for one caller across turns of the same conversation", () => {
+      expect(fingerprint(messages, "key-a")).toBe(fingerprint(convo(SYSTEM, "hello"), "key-a"));
+    });
+
+    it("still separates two conversations from one caller", () => {
+      expect(fingerprint(convo(SYSTEM, "one"), "key-a")).not.toBe(fingerprint(convo(SYSTEM, "two"), "key-a"));
+    });
+
+    it("leaves an unscoped fingerprint exactly as it was", () => {
+      expect(fingerprint(messages, undefined)).toBe(fingerprint(messages));
+      expect(fingerprint(messages, "")).toBe(fingerprint(messages));
+    });
+
+    it("is the same shape, so nothing downstream can tell", () => {
+      expect(fingerprint(messages, "key-a")).toMatch(/^[0-9a-f]{64}$/);
+      // And it does not leak the scope it was given.
+      expect(fingerprint(messages, "key-a")).not.toContain("key-a");
+    });
+  });
 });

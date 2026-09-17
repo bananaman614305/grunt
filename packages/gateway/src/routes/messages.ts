@@ -38,7 +38,7 @@ import type { Context } from "hono";
 import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
 import type { ChatMessage, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
-import { upstreamAuthorization } from "../app.js";
+import { keyHash, upstreamAuthorization } from "../app.js";
 import { passBackHeaders } from "../anthropic.js";
 import { anthropicErrorResponse, errorMessage } from "../errors.js";
 import {
@@ -46,6 +46,7 @@ import {
   onFinished,
   rateLimitedMessage,
   readJsonObject,
+  resolveRoster,
   retryAfterFromBucket,
   retryAfterSeconds,
   routingUnavailableMessage,
@@ -102,7 +103,9 @@ async function routed(
   extension: ReturnType<typeof extractMilo>["extension"],
 ): Promise<Response> {
   const messages = toChatMessages(body);
-  const conversation = fingerprint(messages);
+  // Scoped to the caller, as on the OpenAI surface: two keys running
+  // different rosters (ADR-007) must not share a sticky decision.
+  const conversation = fingerprint(messages, keyHash(c));
   const candidates = extension?.candidates;
   const forcedTier = extension?.tier;
 
@@ -126,6 +129,9 @@ async function routed(
     messages,
     posture: (extension?.posture ?? "balanced") satisfies CostPosture,
     fingerprint: conversation,
+    // Same precedence as the OpenAI surface: per-key roster, then the
+    // deployment's, then the shipped default (ADR-007).
+    roster: await resolveRoster(c, deps),
   };
   if (Array.isArray(body["tools"])) request.tools = body["tools"];
   if (candidates !== undefined) request.candidates = candidates;

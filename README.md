@@ -209,6 +209,24 @@ it in Claude Code with `claude plugin marketplace add bananaman614305/milo`
 then `claude plugin install milo@milo`, or in any skill-aware agent with
 `npx skills add bananaman614305/milo --skill milo`. See `skills/README.md`.
 
+<!-- begin: bring your own model list (ADR-007) -->
+
+### Bring your own model list
+
+Onboarding starts by asking, not telling: an agent setting Milo up asks which
+OpenRouter models you already use and which Milo should choose from, before it
+writes any config. Name some and it posts them to `PUT /v1/roster` with your
+key — `{"models": ["deepseek/deepseek-v4-flash", "anthropic/claude-opus-5"]}` —
+which tiers them by output price on the same bands as the default roster and
+keeps your order within a tier; send `tiers` instead to place them by hand.
+Every routed request from that key then picks from your list, `GET /v1/roster`
+shows it back with prices, and `DELETE /v1/roster` reverts to the default. Say
+"just pick" and you get the top-ten roster above, unchanged. Milo stores a
+SHA-256 hash of your key as the row's name and nothing else about you — the
+key itself is still never stored (ADR-003).
+
+<!-- end: bring your own model list -->
+
 ## Docs
 
 - [`docs/api/gateway.md`](docs/api/gateway.md) — every route, request/response shape, headers, errors.
