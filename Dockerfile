@@ -67,6 +67,16 @@ COPY --from=build --chown=node:node /app/packages/gateway/node_modules packages/
 COPY --from=build --chown=node:node /app/packages/cli/package.json packages/cli/package.json
 COPY --from=build --chown=node:node /app/packages/cli/dist packages/cli/dist
 COPY --from=build --chown=node:node /app/packages/cli/node_modules packages/cli/node_modules
+# Every workspace package the CLI imports at runtime must be copied here too.
+COPY --from=build --chown=node:node /app/packages/billing/package.json packages/billing/package.json
+COPY --from=build --chown=node:node /app/packages/billing/dist packages/billing/dist
+COPY --from=build --chown=node:node /app/packages/billing/node_modules packages/billing/node_modules
+COPY --from=build --chown=node:node /app/packages/stripe/package.json packages/stripe/package.json
+COPY --from=build --chown=node:node /app/packages/stripe/dist packages/stripe/dist
+COPY --from=build --chown=node:node /app/packages/stripe/node_modules packages/stripe/node_modules
+COPY --from=build --chown=node:node /app/packages/provisioning/package.json packages/provisioning/package.json
+COPY --from=build --chown=node:node /app/packages/provisioning/dist packages/provisioning/dist
+COPY --from=build --chown=node:node /app/packages/provisioning/node_modules packages/provisioning/node_modules
 
 # `GET /skill.md` on the gateway serves this file verbatim (see
 # packages/gateway/src/routes/static.ts), so it has to sit at the same
