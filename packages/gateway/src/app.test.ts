@@ -858,9 +858,11 @@ describe("GET /", () => {
     await start();
     const res = await gateway.app.request("http://milo.test/");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { baseUrl: string; routedModel: string };
+    const body = (await res.json()) as { baseUrl: string; routedModel: string; setup: string; skill: string };
     expect(body.routedModel).toBe("milo/auto");
     expect(body.baseUrl).toBe("http://milo.test/v1");
+    expect(body.setup).toBe("http://milo.test/setup.md");
+    expect(body.skill).toBe("http://milo.test/skill.md");
     expect(upstreams.calls).toHaveLength(0);
   });
 
@@ -880,5 +882,56 @@ describe("GET /", () => {
     expect(html).toContain("<h1>Milo</h1>");
     expect(html).toContain("milo/auto");
     expect(html).toContain("http://milo.test/v1");
+    expect(html).toContain("http://milo.test/setup.md");
+    expect(html).toContain("http://milo.test/skill.md");
+  });
+});
+
+describe("agent-facing static routes", () => {
+  const SKILL_MD_PATH = new URL("../../../skills/milo/SKILL.md", import.meta.url);
+  const SKILL_MD = readFileSync(SKILL_MD_PATH, "utf8");
+
+  it("serves /setup.md without a key, with the request's own base URL", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/setup.md");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/markdown");
+    const text = await res.text();
+    expect(text).toContain("http://milo.test/v1");
+    expect(text).toContain("ANTHROPIC_BASE_URL=\"http://milo.test\"");
+    expect(upstreams.calls).toHaveLength(0);
+  });
+
+  it("uses the forwarded protocol for /setup.md behind a TLS-terminating proxy", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/setup.md", {
+      headers: { "x-forwarded-proto": "https" },
+    });
+    const text = await res.text();
+    expect(text).toContain("https://milo.test/v1");
+    expect(text).not.toContain("http://milo.test");
+  });
+
+  it("serves /llms.txt without a key, pointing at /setup.md, /healthz, and the repo", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/llms.txt");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const text = await res.text();
+    expect(text.startsWith("# Milo")).toBe(true);
+    expect(text).toContain("http://milo.test/setup.md");
+    expect(text).toContain("http://milo.test/healthz");
+    expect(text).toContain("https://github.com/bananaman614305/milo");
+    expect(upstreams.calls).toHaveLength(0);
+  });
+
+  it("serves /skill.md without a key, byte-equal to skills/milo/SKILL.md", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/skill.md");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/markdown");
+    const text = await res.text();
+    expect(text).toBe(SKILL_MD);
+    expect(upstreams.calls).toHaveLength(0);
   });
 });

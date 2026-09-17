@@ -63,6 +63,11 @@ COPY --from=build --chown=node:node /app/packages/cli/package.json packages/cli/
 COPY --from=build --chown=node:node /app/packages/cli/dist packages/cli/dist
 COPY --from=build --chown=node:node /app/packages/cli/node_modules packages/cli/node_modules
 
+# `GET /skill.md` on the gateway serves this file verbatim (see
+# packages/gateway/src/routes/static.ts), so it has to sit at the same
+# repo-root-relative path in the image as it does in the source tree.
+COPY --chown=node:node skills ./skills
+
 # A Fly volume (or any bind mount) is mounted at /data at deploy time;
 # create it here too so `milo serve` has somewhere to write when running
 # without a mounted volume (e.g. local `docker run`).
