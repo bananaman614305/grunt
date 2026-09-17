@@ -160,17 +160,20 @@ backend may answer any given request.
 
 ### Posture
 
-Posture shifts the thresholds rather than replacing the rule:
+Posture adjusts the rule at both ends rather than replacing it:
 
 | posture | effect |
 |---|---|
-| `low` | both frontier thresholds **+0.15**; the fast threshold raised to at least **0.10** |
+| `low` | the fast threshold raised to at least **0.10**, and the outcome capped at **mid** — the frontier conditions are never evaluated |
 | `balanced` | the profile as written |
-| `quality` | both frontier thresholds **−0.10** (floored at 0), and anything not fast goes to frontier once `P2 + P3 >= 0.40` |
+| `quality` | both frontier thresholds **−0.10**, floored at **0.02** (hard) and **0.10** (upper), and anything not fast goes to frontier once `P2 + P3 >= 0.40` |
 
-Unlike v1, `low` posture can reach the frontier tier: the bar is raised, not
-closed, so genuinely hard work still gets the right model even when the caller
-asked for cheap. The `classify`/`chat` cap is not shifted by posture.
+`low` posture never returns `frontier`, however much mass sits on level 3.
+That is the promise a caller makes when they pick it, and it is the same
+ceiling policy v1 had. The `quality` floors exist so a reason sentence always
+quotes a threshold worth reading: without them the open profile's 0.10 hard
+threshold would drop to 0.00 and every `quality` reason would say "at or above
+0.00". The `classify`/`chat` cap is not moved by posture.
 
 ### Fallback
 

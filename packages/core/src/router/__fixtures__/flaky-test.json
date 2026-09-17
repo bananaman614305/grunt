@@ -1,7 +1,7 @@
 {
   "source": "synthetic",
   "prompt": "flaky-test",
-  "expectedTier": { "low": "frontier", "balanced": "frontier", "quality": "frontier" },
+  "expectedTier": { "low": "mid", "balanced": "frontier", "quality": "frontier" },
   "requestId": "req_synthetic_flaky_test",
   "model": "jev-latest",
   "answers": {

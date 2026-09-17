@@ -40,7 +40,11 @@ The policy reads two masses off that array: `P3` (level 3, "hard") and `P2 + P3`
 - **frontier** when `P3 >= frontierHardMass` **or** `P2 + P3 >= frontierUpperMass`
 - **mid** otherwise
 
-Posture shifts those thresholds rather than replacing the rule. `low` raises both frontier thresholds by 0.15 and raises the fast threshold to at least 0.10. `quality` lowers both frontier thresholds by 0.10 (floored at 0) and sends anything that is not fast to frontier once `P2 + P3 >= 0.40`. Note that `low` posture can now reach the frontier tier for genuinely hard work, where v1 pinned it at `mid`; the bar is raised, not closed.
+Posture adjusts the rule at both ends rather than replacing it.
+
+`low` raises the fast threshold to at least 0.10 and **caps the outcome at `mid`**: the frontier conditions are not evaluated at all, however much mass sits on level 3. That is the promise a caller makes when they pick `low`, and it is the same ceiling policy v1 had. Its reason sentence still cites the mass that lifted it above `fast` — `"P(level 2+) 0.90 at or above 0.10 routes above fast, but low posture caps at mid"`.
+
+`quality` lowers both frontier thresholds by 0.10 and sends anything that is not fast to frontier once `P2 + P3 >= 0.40`. The lowered thresholds are floored at 0.02 (hard) and 0.10 (upper): without a floor the open profile's 0.10 hard threshold would land on 0.00 and every `quality` reason would read "P(hard) 0.03 at or above 0.00", which explains nothing.
 
 The v1 cap survives in mass terms: a `classify` or `chat` task is pulled back to `mid` unless `P3 >= cappedFrontierHardMass`.
 

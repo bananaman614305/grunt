@@ -394,14 +394,13 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       chatBody({ milo: { posture: "low", candidates: ["test/mid"] } }),
     );
 
-    // Policy v2 still calls the flaky-test distribution frontier under `low`
-    // posture (P2+ 0.90 clears even the raised bar), but candidates leave only
-    // one model eligible, so the roster search widens onto it.
-    expect(res.headers.get("x-milo-tier")).toBe("frontier");
+    // `low` posture caps at mid however hard the work looks, and candidates
+    // pin the model there too.
+    expect(res.headers.get("x-milo-tier")).toBe("mid");
     expect(res.headers.get("x-milo-model")).toBe("test/mid");
 
     const record = await gateway.log.get(res.headers.get("x-milo-decision-id") ?? "");
-    expect(record?.reason).toContain("with low posture");
+    expect(record?.reason).toContain("low posture caps at mid");
   });
 
   it("streams byte-for-byte and still answers with the milo headers", async () => {

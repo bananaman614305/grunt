@@ -26,11 +26,13 @@
  * backend that hedges needs a low bar; a sharp one needs a high bar. See
  * `PROFILES` below and ADR-002 revision 2.
  *
- * Posture shifts the thresholds rather than replacing the rule:
+ * Posture adjusts the rule at both ends:
  *
- *   low      raises both frontier thresholds by 0.15 and the fast threshold to
- *            at least 0.10 -- more work lands cheap
- *   quality  lowers both frontier thresholds by 0.10 and sends anything that
+ *   low      raises the fast threshold to at least 0.10, and caps the outcome
+ *            at mid -- the frontier conditions are never evaluated, because
+ *            "cheap" is the promise a caller makes when they pick it
+ *   quality  lowers both frontier thresholds by 0.10 (floored at 0.02 and 0.10
+ *            so a threshold is always worth quoting) and sends anything that
  *            is not fast to frontier once P2 + P3 >= 0.40
  *
  * Then the v1 cap survives: a `classify` or `chat` task is pulled back to
@@ -148,33 +150,48 @@ export function profileForModel(jevModel: string): PolicyProfile {
 // Posture adjustments
 // ---------------------------------------------------------------------------
 
-/** `low` posture raises both frontier thresholds by this much. */
-export const LOW_POSTURE_FRONTIER_SHIFT = 0.15;
 /** `low` posture raises the fast threshold to at least this. */
 export const LOW_POSTURE_FAST_MASS = 0.1;
 /** `quality` posture lowers both frontier thresholds by this much. */
 export const QUALITY_POSTURE_FRONTIER_SHIFT = 0.1;
+/** However far `quality` lowers it, the hard threshold never drops below this. */
+export const QUALITY_MIN_FRONTIER_HARD_MASS = 0.02;
+/** However far `quality` lowers it, the upper threshold never drops below this. */
+export const QUALITY_MIN_FRONTIER_UPPER_MASS = 0.1;
 /** Under `quality`, this much mass at level 2 or above is enough for frontier. */
 export const QUALITY_POSTURE_FRONTIER_MASS = 0.4;
 
 /** Task types that cap at `mid` unless the hard mass is strong on its own. */
 export const CAPPED_TASK_TYPES = ["classify", "chat"] as const;
 
-/** The profile a posture actually applies. */
+/**
+ * The profile a posture actually applies.
+ *
+ * `low` only moves the fast threshold. Its frontier thresholds are left alone
+ * because they are never consulted: `low` posture cannot return `frontier` at
+ * all (see `chooseTierFromMasses`), which is the promise a caller makes when
+ * they pick it.
+ *
+ * `quality` lowers both frontier thresholds but floors them, so a threshold is
+ * always a number the reason sentence can quote meaningfully. Without the
+ * floor, the open profile's 0.10 hard threshold would land on 0.00 and every
+ * reason would read "P(hard) 0.03 at or above 0.00".
+ */
 export function postureProfile(profile: PolicyProfile, posture: CostPosture): PolicyProfile {
   switch (posture) {
     case "low":
-      return {
-        fastBelowMass: Math.max(profile.fastBelowMass, LOW_POSTURE_FAST_MASS),
-        frontierHardMass: profile.frontierHardMass + LOW_POSTURE_FRONTIER_SHIFT,
-        frontierUpperMass: profile.frontierUpperMass + LOW_POSTURE_FRONTIER_SHIFT,
-        cappedFrontierHardMass: profile.cappedFrontierHardMass,
-      };
+      return { ...profile, fastBelowMass: Math.max(profile.fastBelowMass, LOW_POSTURE_FAST_MASS) };
     case "quality":
       return {
         fastBelowMass: profile.fastBelowMass,
-        frontierHardMass: Math.max(0, profile.frontierHardMass - QUALITY_POSTURE_FRONTIER_SHIFT),
-        frontierUpperMass: Math.max(0, profile.frontierUpperMass - QUALITY_POSTURE_FRONTIER_SHIFT),
+        frontierHardMass: Math.max(
+          QUALITY_MIN_FRONTIER_HARD_MASS,
+          profile.frontierHardMass - QUALITY_POSTURE_FRONTIER_SHIFT,
+        ),
+        frontierUpperMass: Math.max(
+          QUALITY_MIN_FRONTIER_UPPER_MASS,
+          profile.frontierUpperMass - QUALITY_POSTURE_FRONTIER_SHIFT,
+        ),
         cappedFrontierHardMass: profile.cappedFrontierHardMass,
       };
     case "balanced":
@@ -283,6 +300,16 @@ function chooseTierFromMasses(
     return {
       tier: "fast",
       reason: `P(level 2+) ${mass(upper)} below ${mass(thresholds.fastBelowMass)} with ${posture} posture routes to fast`,
+    };
+  }
+
+  // `low` never reaches frontier, whatever the masses say. The frontier
+  // conditions below are not evaluated at all: a caller who asked for cheap
+  // gets at most the mid tier, and the reason says so plainly.
+  if (posture === "low") {
+    return {
+      tier: "mid",
+      reason: `P(level 2+) ${mass(upper)} at or above ${mass(thresholds.fastBelowMass)} routes above fast, but low posture caps at mid`,
     };
   }
 

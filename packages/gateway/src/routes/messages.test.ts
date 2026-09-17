@@ -455,9 +455,9 @@ describe("POST /v1/messages, milo/auto", () => {
 
     const res = await post("/v1/messages", messagesBody({ milo: { posture: "low", candidates: ["test/mid"] } }));
 
-    // Policy v2 keeps the flaky-test distribution on frontier even under `low`
-    // posture; candidates leave only `test/mid` eligible, so that is the model.
-    expect(res.headers.get("x-milo-tier")).toBe("frontier");
+    // `low` posture caps at mid however hard the work looks, and candidates
+    // leave only `test/mid` eligible anyway.
+    expect(res.headers.get("x-milo-tier")).toBe("mid");
     expect(res.headers.get("x-milo-model")).toBe("test/mid");
     expect(JSON.parse(upstreams.openRouterCalls()[0]?.body ?? "{}")).not.toHaveProperty("milo");
   });

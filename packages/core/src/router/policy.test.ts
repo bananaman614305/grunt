@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CostPosture, RouteSignals, TaskType } from "../types.js";
+import type { PolicyProfile } from "./policy.js";
 import {
   CAPPED_TASK_TYPES,
   chooseTier,
@@ -8,10 +9,11 @@ import {
   hardMass,
   JEV_PROFILE,
   LOW_POSTURE_FAST_MASS,
-  LOW_POSTURE_FRONTIER_SHIFT,
   postureProfile,
   profileForModel,
   PROFILES,
+  QUALITY_MIN_FRONTIER_HARD_MASS,
+  QUALITY_MIN_FRONTIER_UPPER_MASS,
   QUALITY_POSTURE_FRONTIER_MASS,
   QUALITY_POSTURE_FRONTIER_SHIFT,
   resolveProfile,
@@ -100,24 +102,32 @@ describe("profiles", () => {
   });
 });
 
-describe("posture shifts the thresholds", () => {
-  it("low raises both frontier bars and the fast bar", () => {
+describe("posture adjusts the thresholds", () => {
+  it("low raises the fast bar and leaves the frontier bars alone, since it never consults them", () => {
     const low = postureProfile(SYSTEM_ONE_OPEN_PROFILE, "low");
-    expect(low.frontierHardMass).toBeCloseTo(SYSTEM_ONE_OPEN_PROFILE.frontierHardMass + LOW_POSTURE_FRONTIER_SHIFT);
-    expect(low.frontierUpperMass).toBeCloseTo(SYSTEM_ONE_OPEN_PROFILE.frontierUpperMass + LOW_POSTURE_FRONTIER_SHIFT);
     expect(low.fastBelowMass).toBe(LOW_POSTURE_FAST_MASS);
+    expect(low.frontierHardMass).toBe(SYSTEM_ONE_OPEN_PROFILE.frontierHardMass);
+    expect(low.frontierUpperMass).toBe(SYSTEM_ONE_OPEN_PROFILE.frontierUpperMass);
   });
 
   it("low never lowers a fast bar that already sits above 0.10", () => {
     expect(postureProfile(JEV_PROFILE, "low").fastBelowMass).toBe(JEV_PROFILE.fastBelowMass);
   });
 
-  it("quality lowers both frontier bars and floors them at zero", () => {
+  it("quality lowers both frontier bars", () => {
     const quality = postureProfile(JEV_PROFILE, "quality");
     expect(quality.frontierHardMass).toBeCloseTo(JEV_PROFILE.frontierHardMass - QUALITY_POSTURE_FRONTIER_SHIFT);
     expect(quality.frontierUpperMass).toBeCloseTo(JEV_PROFILE.frontierUpperMass - QUALITY_POSTURE_FRONTIER_SHIFT);
     expect(quality.fastBelowMass).toBe(JEV_PROFILE.fastBelowMass);
-    expect(postureProfile(SYSTEM_ONE_OPEN_PROFILE, "quality").frontierHardMass).toBe(0);
+  });
+
+  it("quality floors both frontier bars so a reason never quotes 0.00", () => {
+    const quality = postureProfile(SYSTEM_ONE_OPEN_PROFILE, "quality");
+    // 0.10 - 0.10 would be 0.00 without the floor.
+    expect(quality.frontierHardMass).toBe(QUALITY_MIN_FRONTIER_HARD_MASS);
+    expect(quality.frontierHardMass).toBeGreaterThan(0);
+    const tiny: PolicyProfile = { ...SYSTEM_ONE_OPEN_PROFILE, frontierUpperMass: 0.05 };
+    expect(postureProfile(tiny, "quality").frontierUpperMass).toBe(QUALITY_MIN_FRONTIER_UPPER_MASS);
   });
 
   it("balanced changes nothing", () => {
@@ -150,8 +160,9 @@ describe("policy v2, system-one-open profile", () => {
     expect(chooseTier(signals(OPEN_UPPER), "low", p).tier).toBe("mid");
   });
 
-  it("low posture still routes genuinely hard work to frontier", () => {
-    expect(chooseTier(signals(OPEN_VERY_HARD), "low", p).tier).toBe("frontier");
+  it("low posture caps at mid even for work that is unambiguously hard", () => {
+    expect(chooseTier(signals(OPEN_VERY_HARD), "low", p).tier).toBe("mid");
+    expect(chooseTier(signals([0, 0, 0, 1]), "low", p).tier).toBe("mid");
   });
 
   it("low posture's raised fast bar takes borderline work to fast", () => {
@@ -188,18 +199,11 @@ describe("policy v2, jev profile", () => {
     expect(chooseTier(signals(JEV_UPPER), "balanced", p).tier).toBe("frontier");
   });
 
-  it("low posture pulls a balanced frontier back to mid", () => {
-    // P3 0.27 clears the balanced hard bar (0.25) but not the low one (0.40),
-    // and P2+ 0.35 clears neither upper bar.
-    expect(chooseTier(signals([0.2, 0.45, 0.08, 0.27]), "balanced", p).tier).toBe("frontier");
-    expect(chooseTier(signals([0.2, 0.45, 0.08, 0.27]), "low", p).tier).toBe("mid");
-    expect(chooseTier(signals(JEV_UPPER), "low", p).tier).toBe("mid");
-  });
-
-  it("low posture still routes genuinely hard work to frontier", () => {
-    expect(chooseTier(signals(JEV_VERY_HARD), "low", p).tier).toBe("frontier");
-    // P2+ 0.70 clears even the low posture's raised upper bar.
-    expect(chooseTier(signals(JEV_HARD), "low", p).tier).toBe("frontier");
+  it("low posture pulls every balanced frontier back to mid", () => {
+    for (const levels of [JEV_HARD, JEV_UPPER, JEV_VERY_HARD]) {
+      expect(chooseTier(signals(levels), "balanced", p).tier).toBe("frontier");
+      expect(chooseTier(signals(levels), "low", p).tier).toBe("mid");
+    }
   });
 
   it("quality posture's mass rule lifts a balanced mid to frontier", () => {
@@ -283,10 +287,11 @@ describe("boundaries", () => {
     }
   });
 
-  it("a distribution that is all level 3 is frontier under every posture and profile", () => {
+  it("a distribution that is all level 3 is frontier under every posture but low", () => {
     for (const posture of POSTURES) {
       for (const profile of ["jev", "system-one-open"] as const) {
-        expect(chooseTier(signals([0, 0, 0, 1]), posture, profile).tier).toBe("frontier");
+        const { tier } = chooseTier(signals([0, 0, 0, 1]), posture, profile);
+        expect(tier).toBe(posture === "low" ? "mid" : "frontier");
       }
     }
   });
@@ -320,9 +325,17 @@ describe("reason text", () => {
     expect(reason).toContain("but a chat task caps at mid below P(hard) 0.30");
   });
 
-  it("names the posture-shifted bar, not the profile's own", () => {
+  it("says that low posture is what capped it, and still cites the mass", () => {
     const { reason } = chooseTier(signals(OPEN_VERY_HARD), "low", "system-one-open");
-    expect(reason).toContain("at or above 0.25");
+    expect(reason).toBe("P(level 2+) 0.90 at or above 0.10 routes above fast, but low posture caps at mid");
+  });
+
+  it("never quotes a 0.00 threshold under quality posture", () => {
+    for (const levels of [OPEN_MID, OPEN_HARD, OPEN_UPPER, OPEN_VERY_HARD]) {
+      for (const profile of ["jev", "system-one-open"] as const) {
+        expect(chooseTier(signals(levels), "quality", profile).reason).not.toContain("0.00");
+      }
+    }
   });
 
   it("never spans more than one sentence", () => {

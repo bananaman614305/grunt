@@ -1,7 +1,7 @@
 {
   "posture": "balanced",
   "policyVersion": "v2",
-  "generatedAt": "2026-09-17T16:43:50.006Z",
+  "generatedAt": "2026-09-17T16:55:07.535Z",
   "scored": [
     {
       "kind": "scored",
@@ -63,7 +63,7 @@
       "needsReasoning": 0.347678542137146,
       "predictedTier": "fast",
       "reason": "classify task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 7,
+      "latencyMs": 6,
       "agree": true
     },
     {
@@ -231,7 +231,7 @@
       "needsReasoning": 0.9028611183166504,
       "predictedTier": "mid",
       "reason": "chat task, P(hard) 0.04 below 0.10 and P(level 2+) 0.26 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -273,7 +273,7 @@
       "needsReasoning": 0.45819151401519775,
       "predictedTier": "fast",
       "reason": "classify task, P(level 2+) 0.02 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -336,7 +336,7 @@
       "needsReasoning": 0.3086731731891632,
       "predictedTier": "fast",
       "reason": "classify task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -357,7 +357,7 @@
       "needsReasoning": 0.4127048850059509,
       "predictedTier": "fast",
       "reason": "classify task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -378,7 +378,7 @@
       "needsReasoning": 0.12972906231880188,
       "predictedTier": "fast",
       "reason": "classify task, P(level 2+) 0.03 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -420,7 +420,7 @@
       "needsReasoning": 0.5676131844520569,
       "predictedTier": "fast",
       "reason": "classify task, P(level 2+) 0.02 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -441,7 +441,7 @@
       "needsReasoning": 0.34773778915405273,
       "predictedTier": "fast",
       "reason": "classify task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -504,7 +504,7 @@
       "needsReasoning": 0.7557454109191895,
       "predictedTier": "fast",
       "reason": "review task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": false
     },
     {
@@ -525,7 +525,7 @@
       "needsReasoning": 0.38910937309265137,
       "predictedTier": "fast",
       "reason": "ops task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -588,7 +588,7 @@
       "needsReasoning": 0.6338056325912476,
       "predictedTier": "mid",
       "reason": "classify task, P(hard) 0.02 below 0.10 and P(level 2+) 0.16 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -630,7 +630,7 @@
       "needsReasoning": 0.7225905060768127,
       "predictedTier": "mid",
       "reason": "classify task, P(hard) 0.02 below 0.10 and P(level 2+) 0.18 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -735,7 +735,7 @@
       "needsReasoning": 0.593895435333252,
       "predictedTier": "fast",
       "reason": "docs task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -798,7 +798,7 @@
       "needsReasoning": 0.563948392868042,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 3,
       "agree": true
     },
     {
@@ -819,7 +819,7 @@
       "needsReasoning": 0.7497391104698181,
       "predictedTier": "mid",
       "reason": "docs task, P(hard) 0.01 below 0.10 and P(level 2+) 0.61 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 3,
       "agree": true
     },
     {
@@ -882,7 +882,7 @@
       "needsReasoning": 0.9650686383247375,
       "predictedTier": "frontier",
       "reason": "docs task, P(hard) 0.40 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -903,7 +903,7 @@
       "needsReasoning": 0.5071687698364258,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -945,7 +945,7 @@
       "needsReasoning": 0.5816136002540588,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 3,
       "agree": true
     },
     {
@@ -966,7 +966,7 @@
       "needsReasoning": 0.5622854232788086,
       "predictedTier": "fast",
       "reason": "review task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -987,7 +987,7 @@
       "needsReasoning": 0.41966235637664795,
       "predictedTier": "fast",
       "reason": "debug task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -1008,7 +1008,7 @@
       "needsReasoning": 0.8425570130348206,
       "predictedTier": "mid",
       "reason": "ops task, P(hard) 0.01 below 0.10 and P(level 2+) 0.20 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1092,7 +1092,7 @@
       "needsReasoning": 0.9208987951278687,
       "predictedTier": "frontier",
       "reason": "debug task, P(hard) 0.34 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1113,7 +1113,7 @@
       "needsReasoning": 0.901560366153717,
       "predictedTier": "frontier",
       "reason": "review task, P(hard) 0.95 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1155,7 +1155,7 @@
       "needsReasoning": 0.13925960659980774,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1176,7 +1176,7 @@
       "needsReasoning": 0.5173956155776978,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1197,7 +1197,7 @@
       "needsReasoning": 0.714424192905426,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1218,7 +1218,7 @@
       "needsReasoning": 0.506838858127594,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1239,7 +1239,7 @@
       "needsReasoning": 0.6041973233222961,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.02 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -1260,7 +1260,7 @@
       "needsReasoning": 0.7275306582450867,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1281,7 +1281,7 @@
       "needsReasoning": 0.823759138584137,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.02 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -1302,7 +1302,7 @@
       "needsReasoning": 0.9074578285217285,
       "predictedTier": "mid",
       "reason": "edit task, P(hard) 0.00 below 0.10 and P(level 2+) 0.33 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -1344,7 +1344,7 @@
       "needsReasoning": 0.7649962306022644,
       "predictedTier": "mid",
       "reason": "edit task, P(hard) 0.00 below 0.10 and P(level 2+) 0.29 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1449,7 +1449,7 @@
       "needsReasoning": 0.5656690001487732,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1722,7 +1722,7 @@
       "needsReasoning": 0.5,
       "predictedTier": "fast",
       "reason": "debug task, P(level 2+) 0.00 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1764,7 +1764,7 @@
       "needsReasoning": 0.854343831539154,
       "predictedTier": "mid",
       "reason": "debug task, P(hard) 0.04 below 0.10 and P(level 2+) 0.15 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 1,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -1848,7 +1848,7 @@
       "needsReasoning": 0.9484991431236267,
       "predictedTier": "frontier",
       "reason": "debug task, P(level 2+) 0.66 at or above 0.65 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1869,7 +1869,7 @@
       "needsReasoning": 0.7946266531944275,
       "predictedTier": "frontier",
       "reason": "debug task, P(hard) 0.19 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -1890,7 +1890,7 @@
       "needsReasoning": 0.7868436574935913,
       "predictedTier": "mid",
       "reason": "debug task, P(hard) 0.00 below 0.10 and P(level 2+) 0.10 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 4,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1911,7 +1911,7 @@
       "needsReasoning": 0.9813500642776489,
       "predictedTier": "frontier",
       "reason": "debug task, P(hard) 0.59 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1932,7 +1932,7 @@
       "needsReasoning": 0.9838318824768066,
       "predictedTier": "frontier",
       "reason": "debug task, P(hard) 0.45 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -1953,7 +1953,7 @@
       "needsReasoning": 0.9682981371879578,
       "predictedTier": "frontier",
       "reason": "feature task, P(hard) 0.38 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -1995,7 +1995,7 @@
       "needsReasoning": 0.4228955805301666,
       "predictedTier": "fast",
       "reason": "research task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2016,7 +2016,7 @@
       "needsReasoning": 0.5347292423248291,
       "predictedTier": "fast",
       "reason": "research task, P(level 2+) 0.04 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -2037,7 +2037,7 @@
       "needsReasoning": 0.9221368432044983,
       "predictedTier": "frontier",
       "reason": "research task, P(level 2+) 0.80 at or above 0.65 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": false
     },
     {
@@ -2100,7 +2100,7 @@
       "needsReasoning": 0.7663267254829407,
       "predictedTier": "frontier",
       "reason": "research task, P(hard) 0.21 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "latencyMs": 2,
       "agree": true
     },
     {
@@ -2142,7 +2142,7 @@
       "needsReasoning": 0.9535895586013794,
       "predictedTier": "frontier",
       "reason": "research task, P(hard) 0.14 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 3,
       "agree": false
     },
     {
@@ -2163,7 +2163,7 @@
       "needsReasoning": 0.9658435583114624,
       "predictedTier": "frontier",
       "reason": "research task, P(hard) 0.26 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 3,
       "agree": true
     },
     {
@@ -2205,7 +2205,7 @@
       "needsReasoning": 0.9713156223297119,
       "predictedTier": "frontier",
       "reason": "research task, P(hard) 0.24 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2247,7 +2247,7 @@
       "needsReasoning": 0.9688919186592102,
       "predictedTier": "frontier",
       "reason": "research task, P(hard) 0.13 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 3,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2268,7 +2268,7 @@
       "needsReasoning": 0.4717246890068054,
       "predictedTier": "fast",
       "reason": "feature task, P(level 2+) 0.03 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2310,7 +2310,7 @@
       "needsReasoning": 0.5677797794342041,
       "predictedTier": "fast",
       "reason": "feature task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 3,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2331,7 +2331,7 @@
       "needsReasoning": 0.319986492395401,
       "predictedTier": "fast",
       "reason": "edit task, P(level 2+) 0.01 below 0.05 with balanced posture routes to fast; chose anthropic/claude-haiku-4.5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2373,7 +2373,7 @@
       "needsReasoning": 0.5949158072471619,
       "predictedTier": "mid",
       "reason": "ops task, P(hard) 0.01 below 0.10 and P(level 2+) 0.22 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 3,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2436,7 +2436,7 @@
       "needsReasoning": 0.19017000496387482,
       "predictedTier": "mid",
       "reason": "feature task, P(hard) 0.05 below 0.10 and P(level 2+) 0.59 below 0.65 with balanced posture routes to mid; chose anthropic/claude-sonnet-5",
-      "latencyMs": 2,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2457,7 +2457,7 @@
       "needsReasoning": 0.9498791694641113,
       "predictedTier": "frontier",
       "reason": "docs task, P(hard) 0.23 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 5,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2478,7 +2478,7 @@
       "needsReasoning": 0.9796985387802124,
       "predictedTier": "frontier",
       "reason": "ops task, P(hard) 0.45 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 5,
+      "latencyMs": 1,
       "agree": true
     },
     {
@@ -2499,7 +2499,7 @@
       "needsReasoning": 0.928798496723175,
       "predictedTier": "frontier",
       "reason": "feature task, P(hard) 0.38 at or above 0.10 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-      "latencyMs": 5,
+      "latencyMs": 1,
       "agree": true
     },
     {
