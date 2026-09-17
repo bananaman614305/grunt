@@ -10,3 +10,4 @@ dist/
 coverage/
 .milo/
 .DS_Store
+.claude/worktrees/
