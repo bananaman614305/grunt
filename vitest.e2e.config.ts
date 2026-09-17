@@ -6,6 +6,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@milo/core": fileURLToPath(new URL("./packages/core/src/index.ts", import.meta.url)),
+      "@milo/gateway/server": fileURLToPath(new URL("./packages/gateway/src/server.ts", import.meta.url)),
+      "@milo/gateway": fileURLToPath(new URL("./packages/gateway/src/index.ts", import.meta.url)),
+      "@milo/evals": fileURLToPath(new URL("./packages/evals/src/index.ts", import.meta.url)),
     },
   },
   test: {
