@@ -135,7 +135,9 @@ export async function main(argv: string[]): Promise<number> {
   await warmupBackend(jev);
   // The open backend is slower and runs on one GPU, so it gets a smaller
   // concurrency and a larger per-example budget than Jev (ADR-004).
-  const jevTimeoutMs = routerTimeoutForMode(options.mode);
+  const envTimeout = Number(process.env["JEV_TIMEOUT_MS"]);
+  const jevTimeoutMs =
+    Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout + 250 : routerTimeoutForMode(options.mode);
   const report = await runRoutingEval({
     examples,
     jev,

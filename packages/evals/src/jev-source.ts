@@ -169,7 +169,14 @@ export function makeJevClient(mode: JevSourceMode, opts: MakeJevClientOptions = 
   const fixturesDir =
     opts.fixturesDir ??
     (backend === "system-one-open" ? DEFAULT_SYSTEM_ONE_OPEN_FIXTURES_DIR : DEFAULT_FIXTURES_DIR);
-  const modelOpt = opts.model !== undefined ? { model: opts.model } : {};
+  const envModel = env["JEV_MODEL"];
+  const model = opts.model ?? (envModel !== undefined && envModel !== "" ? envModel : undefined);
+  const modelOpt = model !== undefined ? { model } : {};
+  // Optional override so live/record runs can go through a key-injecting proxy.
+  const envBase = env["JEV_BASE_URL"];
+  const baseOpt = envBase !== undefined && envBase !== "" ? { baseUrl: envBase } : {};
+  const envTimeout = Number(env["JEV_TIMEOUT_MS"]);
+  const timeoutOpt = Number.isFinite(envTimeout) && envTimeout > 0 ? { timeoutMs: envTimeout } : {};
 
   switch (mode) {
     case "fixtures":
@@ -192,6 +199,8 @@ export function makeJevClient(mode: JevSourceMode, opts: MakeJevClientOptions = 
       return new JevClient({
         apiKey,
         ...modelOpt,
+        ...baseOpt,
+        ...timeoutOpt,
         fetch: recordingFetch(fixturesDir, realFetch),
       });
     }
@@ -199,7 +208,7 @@ export function makeJevClient(mode: JevSourceMode, opts: MakeJevClientOptions = 
     case "live": {
       const apiKey = requireApiKey("live", env);
       const fetchOpt = opts.realFetch !== undefined ? { fetch: opts.realFetch } : {};
-      return new JevClient({ apiKey, ...modelOpt, ...fetchOpt });
+      return new JevClient({ apiKey, ...modelOpt, ...baseOpt, ...timeoutOpt, ...fetchOpt });
     }
 
     case "system-one-open":
