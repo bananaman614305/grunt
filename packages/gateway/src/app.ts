@@ -12,10 +12,12 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { POLICY_VERSION } from "@milo/core";
 import type { DecisionRecord, DecisionLog, OpenRouterClient, RouteDecision, Roster, Router } from "@milo/core";
-import { errorResponse } from "./errors.js";
+import type { AnthropicUpstream } from "./anthropic.js";
+import { anthropicErrorResponse, errorResponse } from "./errors.js";
 import type { RateLimiter } from "./rate-limit.js";
 import { registerChatRoute } from "./routes/chat.js";
 import { registerDecisionsRoutes } from "./routes/decisions.js";
+import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerProxyRoute } from "./routes/proxy.js";
 
@@ -29,6 +31,8 @@ export type Logger = {
 export type AppDeps = {
   router: Router;
   openRouter: OpenRouterClient;
+  /** OpenRouter's Anthropic-compatible surface, for `/v1/messages`. */
+  anthropic: AnthropicUpstream;
   log: DecisionLog;
   rateLimiter: RateLimiter;
   roster: Roster;
@@ -52,6 +56,39 @@ export function authorization(c: Context): string {
   return c.req.header("authorization") ?? "";
 }
 
+/** The bearer token, or `""` if the header is missing or not bearer-shaped. */
+function bearerToken(c: Context): string {
+  return c.req.header("authorization")?.match(/^Bearer\s+(\S.*)$/i)?.[1]?.trim() ?? "";
+}
+
+/**
+ * The user's OpenRouter key, from whichever header carried it.
+ *
+ * The Anthropic SDK and Claude Code send a key as `x-api-key`; every other
+ * client Milo serves sends `Authorization: Bearer`. Both name the same thing
+ * -- the user's OpenRouter key -- so `/v1/messages` accepts either. Bearer
+ * wins when both are present, since that is the one OpenRouter documents.
+ */
+export function credential(c: Context): string {
+  const bearer = bearerToken(c);
+  if (bearer !== "") return bearer;
+  return c.req.header("x-api-key")?.trim() ?? "";
+}
+
+/**
+ * The credential as OpenRouter wants it. Used both as the outgoing
+ * `Authorization` header and as the rate limiter's bucket key, so one key
+ * gets one bucket whichever header it arrived in.
+ */
+export function upstreamAuthorization(c: Context): string {
+  return `Bearer ${credential(c)}`;
+}
+
+/** Whether a path is part of the Anthropic-dialect surface. */
+function isAnthropicPath(pathname: string): boolean {
+  return pathname === "/v1/messages" || pathname.startsWith("/v1/messages/");
+}
+
 /**
  * The upstream headers worth handing to the client: the content type (so an
  * SSE stream still reads as one) and OpenRouter's request id (so a user can
@@ -69,22 +106,35 @@ export function passThroughHeaders(upstream: Response): Headers {
 
 /**
  * Every `/v1/*` request carries the user's OpenRouter key. The gateway only
- * checks that one is present and bearer-shaped -- validating it is
- * OpenRouter's job, and Milo has no way to do it without spending a call.
- * The value is read here and never logged, stored, or echoed back.
+ * checks that one is present -- validating it is OpenRouter's job, and Milo
+ * has no way to do it without spending a call. The value is read here and
+ * never logged, stored, or echoed back.
+ *
+ * Under `/v1/messages` a non-empty `x-api-key` counts, because that is where
+ * the Anthropic SDK and Claude Code put the key (Claude Code's
+ * `ANTHROPIC_API_KEY` sends `x-api-key`, `ANTHROPIC_AUTH_TOKEN` sends
+ * `Authorization: Bearer`, and a user should not have to know which). Both
+ * leave as one bearer token; see `routes/messages.ts`. The refusal wears the
+ * dialect of the route it guards, so each client's error classes parse it.
  */
-const requireBearer: MiddlewareHandler = async (c, next) => {
-  const header = c.req.header("authorization");
-  const token = header?.match(/^Bearer\s+(\S.*)$/i)?.[1];
+const requireKey: MiddlewareHandler = async (c, next) => {
+  const anthropic = isAnthropicPath(new URL(c.req.url).pathname);
 
-  if (token === undefined || token.trim() === "") {
-    return errorResponse(
-      c,
-      401,
-      "No OpenRouter API key provided. Send it as `Authorization: Bearer <key>`.",
-      "authentication_error",
-      "missing_authorization",
-    );
+  if ((anthropic ? credential(c) : bearerToken(c)) === "") {
+    return anthropic
+      ? anthropicErrorResponse(
+          c,
+          401,
+          "No OpenRouter API key provided. Send it as `x-api-key: <key>` or `Authorization: Bearer <key>`.",
+          "authentication_error",
+        )
+      : errorResponse(
+          c,
+          401,
+          "No OpenRouter API key provided. Send it as `Authorization: Bearer <key>`.",
+          "authentication_error",
+          "missing_authorization",
+        );
   }
 
   await next();
@@ -97,9 +147,10 @@ export function createApp(deps: AppDeps): Hono {
   // No auth: a health probe must work before anyone has a key.
   app.get("/healthz", (c) => c.json({ ok: true, policyVersion: POLICY_VERSION }));
 
-  app.use("/v1/*", requireBearer);
+  app.use("/v1/*", requireKey);
 
   registerChatRoute(app, deps);
+  registerMessagesRoute(app, deps);
   registerModelsRoute(app, deps);
   registerDecisionsRoutes(app, deps);
   // Last: it claims every `/v1/*` method and path the routes above did not.

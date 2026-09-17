@@ -1,14 +1,20 @@
 /**
- * OpenAI-shaped error bodies.
+ * Error bodies, in both dialects Milo speaks.
  *
- * Milo is a drop-in for an OpenAI client, so its own failures have to look
- * like OpenAI's: `{ "error": { message, type, code } }`. Clients (and the
- * `openai` SDK's error classes) key off `type` and `code`, so both are
- * required here rather than optional.
+ * Milo is a drop-in for an OpenAI client, so its own failures on the OpenAI
+ * surface have to look like OpenAI's: `{ "error": { message, type, code } }`.
+ * Clients (and the `openai` SDK's error classes) key off `type` and `code`,
+ * so both are required here rather than optional.
+ *
+ * `/v1/messages` is a drop-in for an Anthropic client, so its failures wear
+ * Anthropic's envelope instead: `{ "type": "error", "error": { type, message } }`.
+ * The `@anthropic-ai/sdk` error classes parse that shape, and Claude Code's
+ * retry logic reads the message, so a Milo-minted error has to be shaped like
+ * one the SDK expects or the client's recovery path breaks.
  *
  * Nothing built here ever interpolates a request header. An error message
- * that echoed `Authorization` back would put the user's OpenRouter key into
- * whatever log the client keeps (ADR-003).
+ * that echoed `Authorization` or `x-api-key` back would put the user's
+ * OpenRouter key into whatever log the client keeps (ADR-003).
  */
 
 import type { Context } from "hono";
@@ -32,6 +38,35 @@ export function errorResponse(
   code: string,
 ): Response {
   return c.json(openAiError(message, type, code), status);
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic shape, for `/v1/messages`
+// ---------------------------------------------------------------------------
+
+/** The subset of Anthropic's error types Milo ever mints itself. */
+export type AnthropicErrorType =
+  | "invalid_request_error"
+  | "authentication_error"
+  | "not_found_error"
+  | "api_error";
+
+export type AnthropicErrorBody = {
+  type: "error";
+  error: { type: AnthropicErrorType; message: string };
+};
+
+export function anthropicError(message: string, type: AnthropicErrorType): AnthropicErrorBody {
+  return { type: "error", error: { type, message } };
+}
+
+export function anthropicErrorResponse(
+  c: Context,
+  status: ContentfulStatusCode,
+  message: string,
+  type: AnthropicErrorType,
+): Response {
+  return c.json(anthropicError(message, type), status);
 }
 
 /** An error's message, for a log line. Never rendered into a response body. */

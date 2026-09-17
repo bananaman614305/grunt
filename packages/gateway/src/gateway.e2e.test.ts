@@ -1,16 +1,19 @@
 /**
- * End to end: a real HTTP server, driven by the real `openai` SDK, with both
- * upstreams mocked.
+ * End to end: a real HTTP server, driven by the real `openai` and
+ * `@anthropic-ai/sdk` clients, with both upstreams mocked.
  *
- * This is the acceptance test for task 2.1 as docs/PLAN.md words it -- "a
- * user sets one base URL and their OpenRouter key, sends `milo/auto`, and
- * gets a streamed answer from a model chosen by Jev, with headers naming the
- * decision and a `/v1/decisions/:id` record explaining it". The SDK is here
- * on purpose: `app.request` would not catch a header the SDK cannot see, a
- * status line it rejects, or an SSE frame its parser chokes on.
+ * This is the acceptance test for tasks 2.1 and 3.1 as docs/PLAN.md words
+ * them -- "a user sets one base URL and their OpenRouter key, sends
+ * `milo/auto`, and gets a streamed answer from a model chosen by Jev, with
+ * headers naming the decision and a `/v1/decisions/:id` record explaining
+ * it", from either dialect. The SDKs are here on purpose: `app.request` would
+ * not catch a header an SDK cannot see, a status line it rejects, or an SSE
+ * frame its parser chokes on -- and the Anthropic SDK sends its key as
+ * `x-api-key`, which is exactly the path task 3.1 had to open.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { createGateway } from "./index.js";
 import type { Gateway } from "./index.js";
@@ -44,12 +47,39 @@ const STREAM_FRAMES = [
   "data: [DONE]\n\n",
 ];
 
+/** The Anthropic dialect's SSE frames, as OpenRouter's `/messages` emits them. */
+const ANTHROPIC_FRAMES = [
+  'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_e2e","type":"message","role":"assistant","model":"anthropic/claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":940,"output_tokens":0}}}\n\n',
+  'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+  'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"race "}}\n\n',
+  'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"condition"}}\n\n',
+  'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+  'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":18}}\n\n',
+  'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+];
+
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json", ...headers },
   });
 }
+
+function sse(frames: string[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+/** Every header the gateway sent OpenRouter on its `/messages` calls. */
+const messagesRequests: Headers[] = [];
 
 /** Both upstreams behind one fetch, dispatched on host. */
 const upstreamFetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -70,20 +100,29 @@ const upstreamFetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
   const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>;
 
-  if (body["stream"] === true) {
-    const encoder = new TextEncoder();
+  // OpenRouter's Anthropic-compatible endpoint answers in Anthropic's shape.
+  if (url.pathname === "/api/v1/messages") {
+    messagesRequests.push(new Headers(init?.headers));
+    if (body["stream"] === true) return Promise.resolve(sse(ANTHROPIC_FRAMES));
     return Promise.resolve(
-      new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            for (const frame of STREAM_FRAMES) controller.enqueue(encoder.encode(frame));
-            controller.close();
-          },
-        }),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
+      json(
+        {
+          id: "msg_e2e",
+          type: "message",
+          role: "assistant",
+          model: body["model"],
+          content: [{ type: "text", text: "It is a race condition." }],
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 940, output_tokens: 18 },
+        },
+        200,
+        { "x-request-id": "or-e2e-2" },
       ),
     );
   }
+
+  if (body["stream"] === true) return Promise.resolve(sse(STREAM_FRAMES));
 
   return Promise.resolve(
     json(
@@ -112,9 +151,14 @@ const MESSAGES = [
   { role: "user" as const, content: "The SSE test fails one run in five in CI. Work out why." },
 ];
 
+/** A distinct conversation, so the Anthropic block has its own fingerprint. */
+const ANTHROPIC_SYSTEM = "You are a debugging sub-agent driven by Claude Code.";
+const ANTHROPIC_BRIEF = "The retry test flakes one run in five on CI runners. Work out why.";
+
 let gateway: Gateway;
 let server: RunningServer;
 let client: OpenAI;
+let anthropic: Anthropic;
 
 beforeAll(async () => {
   gateway = await createGateway({
@@ -124,6 +168,9 @@ beforeAll(async () => {
   });
   server = await startServer(gateway, { port: 0, hostname: "127.0.0.1" });
   client = new OpenAI({ baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: KEY, maxRetries: 0 });
+  // The Anthropic SDK appends `/v1/messages` itself, and sends `apiKey` as
+  // `x-api-key` -- which is the whole point of this half of the file.
+  anthropic = new Anthropic({ baseURL: `http://127.0.0.1:${server.port}`, apiKey: KEY, maxRetries: 0 });
 });
 
 afterAll(async () => {
@@ -224,6 +271,125 @@ describe("the OpenAI SDK against Milo", () => {
     await expect(anonymous.chat.completions.create({ model: "milo/auto", messages: MESSAGES })).rejects.toMatchObject({
       status: 401,
     });
+  });
+});
+
+describe("the Anthropic SDK against Milo", () => {
+  it("routes a non-streaming message and explains the choice", async () => {
+    const { data, response } = await anthropic.messages
+      .create({
+        model: "milo/auto",
+        max_tokens: 1024,
+        system: ANTHROPIC_SYSTEM,
+        messages: [{ role: "user", content: ANTHROPIC_BRIEF }],
+      })
+      .withResponse();
+
+    expect(data.content[0]).toMatchObject({ type: "text", text: "It is a race condition." });
+    // Difficulty 2.4 on a debug task under the default balanced posture is
+    // frontier, and the default roster's frontier model is Opus 5.
+    expect(data.model).toBe("anthropic/claude-opus-5");
+
+    expect(response.headers.get("x-milo-model")).toBe("anthropic/claude-opus-5");
+    expect(response.headers.get("x-milo-tier")).toBe("frontier");
+    expect(response.headers.get("x-milo-task-type")).toBe("debug");
+    expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
+    expect(response.headers.get("x-milo-sticky")).toBe("false");
+    expect(response.headers.get("x-milo-degraded")).toBe("false");
+    expect(response.headers.get("x-request-id")).toBe("or-e2e-2");
+
+    // The SDK's key arrived as `x-api-key` and left as a bearer token, and
+    // the version header it always sends was carried through.
+    const sent = messagesRequests[0];
+    expect(sent?.get("authorization")).toBe(`Bearer ${KEY}`);
+    expect(sent?.has("x-api-key")).toBe(false);
+    expect(sent?.get("anthropic-version")).toBe("2023-06-01");
+
+    const decisionId = response.headers.get("x-milo-decision-id");
+    expect(decisionId).toBeTruthy();
+
+    const decision = await fetchDecision(decisionId ?? "");
+    expect(decision).toMatchObject({
+      id: decisionId,
+      tier: "frontier",
+      model: "anthropic/claude-opus-5",
+      policyVersion: "v1",
+      degraded: false,
+      signals: { taskType: "debug", difficulty: 2.4, jevRequestId: "req_e2e_0001" },
+    });
+    expect(decision.reason).toContain("debug task");
+
+    await waitForUpstream(decisionId ?? "");
+    const settled = await fetchDecision(decisionId ?? "");
+    // Read off `usage.input_tokens` / `usage.output_tokens`, not the OpenAI
+    // dialect's `prompt_tokens` / `completion_tokens`.
+    expect(settled.upstream).toMatchObject({ status: 200, inputTokens: 940, outputTokens: 18 });
+  });
+
+  it("streams a routed message through the SDK's parser", async () => {
+    const { data: stream, response } = await anthropic.messages
+      .create({
+        model: "milo/auto",
+        max_tokens: 1024,
+        system: ANTHROPIC_SYSTEM,
+        messages: [{ role: "user", content: ANTHROPIC_BRIEF }],
+        stream: true,
+      })
+      .withResponse();
+
+    expect(response.headers.get("x-milo-model")).toBe("anthropic/claude-opus-5");
+    expect(response.headers.get("x-milo-tier")).toBe("frontier");
+    // Same fingerprint as the turn above, so this one costs no Jev call.
+    expect(response.headers.get("x-milo-sticky")).toBe("true");
+
+    let content = "";
+    let stop: string | null | undefined;
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") content += event.delta.text;
+      if (event.type === "message_delta") stop ??= event.delta.stop_reason;
+    }
+
+    expect(content).toBe("race condition");
+    expect(stop).toBe("end_turn");
+
+    const decisionId = response.headers.get("x-milo-decision-id") ?? "";
+    await waitForUpstream(decisionId);
+    const decision = await fetchDecision(decisionId);
+    expect(decision).toMatchObject({ sticky: true, model: "anthropic/claude-opus-5" });
+    expect(decision.upstream).toMatchObject({ status: 200 });
+  });
+
+  it("passes an explicit model through unrouted", async () => {
+    const before = messagesRequests.length;
+
+    const { data, response } = await anthropic.messages
+      .create({
+        model: "anthropic/claude-haiku-4.5",
+        max_tokens: 64,
+        messages: [{ role: "user", content: "ping" }],
+      })
+      .withResponse();
+
+    expect(data.model).toBe("anthropic/claude-haiku-4.5");
+    expect(response.headers.get("x-milo-decision-id")).toBeNull();
+    expect(messagesRequests).toHaveLength(before + 1);
+  });
+
+  it("rejects a request with no key the way the SDK expects", async () => {
+    const anonymous = new Anthropic({
+      baseURL: `http://127.0.0.1:${server.port}`,
+      apiKey: "placeholder",
+      maxRetries: 0,
+      defaultHeaders: { "x-api-key": null },
+    });
+
+    await expect(
+      anonymous.messages.create({
+        model: "milo/auto",
+        max_tokens: 64,
+        messages: [{ role: "user", content: "ping" }],
+      }),
+    ).rejects.toMatchObject({ status: 401 });
   });
 });
 
