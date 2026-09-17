@@ -24,7 +24,20 @@ importers:
         specifier: '3'
         version: 3.2.7(@types/node@22.20.3)
 
-  packages/cli: {}
+  packages/cli:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^1
+        version: 1.19.17(hono@4.13.8)
+      '@milo/core':
+        specifier: workspace:*
+        version: link:../core
+      '@milo/gateway':
+        specifier: workspace:*
+        version: link:../gateway
+      zod:
+        specifier: ^3
+        version: 3.25.76
 
   packages/core:
     dependencies:

@@ -1,0 +1,15 @@
+{
+  "port": 8787,
+  "hostname": "127.0.0.1",
+  "roster": {
+    "fast": ["anthropic/claude-haiku-4.5", "google/gemini-2.5-flash"],
+    "mid": ["anthropic/claude-sonnet-5"],
+    "frontier": ["anthropic/claude-opus-5"]
+  },
+  "rateLimit": {
+    "routedPerMinute": 120
+  },
+  "decisionLog": "file:./.milo/decisions.db",
+  "referer": "https://your-app.example.com",
+  "title": "Your App Name"
+}

@@ -6,7 +6,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "bin": { "milo": "./dist/cli.js" },
   "scripts": { "build": "tsc -b" },
-  "dependencies": {},
+  "dependencies": {
+    "@hono/node-server": "^1",
+    "@milo/core": "workspace:*",
+    "@milo/gateway": "workspace:*",
+    "zod": "^3"
+  },
   "devDependencies": {}
 }

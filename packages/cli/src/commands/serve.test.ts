@@ -1,0 +1,174 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Gateway, GatewayOptions } from "@milo/gateway";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_PORT } from "../config.js";
+import type { ServeFn, ServeOptions } from "../deps.js";
+import { createTestDeps } from "../test-support.js";
+import { run } from "./serve.js";
+
+function fakeGateway(): { createGateway: (options: GatewayOptions) => Promise<Gateway>; calls: GatewayOptions[] } {
+  const calls: GatewayOptions[] = [];
+  return {
+    calls,
+    createGateway: async (options: GatewayOptions) => {
+      calls.push(options);
+      return {
+        app: { fetch: async () => new Response("ok") } as unknown as Gateway["app"],
+        log: {} as Gateway["log"],
+        close: async () => undefined,
+      };
+    },
+  };
+}
+
+function fakeServe(): { serve: ServeFn; calls: ServeOptions[] } {
+  const calls: ServeOptions[] = [];
+  const serve: ServeFn = (options) => {
+    calls.push(options);
+    return { close: (cb) => cb?.() };
+  };
+  return { serve, calls };
+}
+
+describe("milo serve", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "milo-cli-serve-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+  });
+
+  it("exits 1 and prints nothing to stdout when JEV_API_KEY is missing", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps, stdout, stderr } = createTestDeps({ env: {}, createGateway, serve });
+
+    const code = await run(["--db", ":memory:"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("JEV_API_KEY");
+    expect(stdout.toString()).toBe("");
+  });
+
+  it("never prints the JEV_API_KEY value, even on a successful start", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve } = fakeServe();
+    const secret = "sk-should-never-appear-in-cli-output";
+    const { deps, stdout, stderr } = createTestDeps({ env: { JEV_API_KEY: secret }, createGateway, serve });
+
+    const code = await run(["--db", ":memory:"], deps);
+
+    expect(code).toBeUndefined();
+    expect(stdout.toString()).not.toContain(secret);
+    expect(stderr.toString()).not.toContain(secret);
+  });
+
+  it("passes JEV_API_KEY through to createGateway", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "the-real-key" }, createGateway, serve });
+
+    await run(["--db", ":memory:"], deps);
+
+    expect(calls[0]?.jevApiKey).toBe("the-real-key");
+  });
+
+  it("prints a startup line containing the port and the OPENAI_BASE_URL hint", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve, calls } = fakeServe();
+    const { deps, stdout } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+
+    const code = await run(["--port", "5555", "--db", ":memory:"], deps);
+
+    expect(code).toBeUndefined();
+    const output = stdout.toString();
+    expect(output).toContain("5555");
+    expect(output).toContain("OPENAI_BASE_URL=http://localhost:5555/v1");
+    expect(output).toContain('model: "milo/auto"');
+    expect(calls[0]?.port).toBe(5555);
+  });
+
+  it("prefers --port over the config file's port, and the file over the default", async () => {
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(configPath, JSON.stringify({ port: 9000 }));
+
+    const flagFakes = fakeServe();
+    const flagGateway = fakeGateway();
+    await run(
+      ["--config", configPath, "--port", "1234", "--db", ":memory:"],
+      createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway: flagGateway.createGateway, serve: flagFakes.serve })
+        .deps,
+    );
+    expect(flagFakes.calls[0]?.port).toBe(1234);
+
+    const fileFakes = fakeServe();
+    const fileGateway = fakeGateway();
+    await run(
+      ["--config", configPath, "--db", ":memory:"],
+      createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway: fileGateway.createGateway, serve: fileFakes.serve })
+        .deps,
+    );
+    expect(fileFakes.calls[0]?.port).toBe(9000);
+
+    const defaultFakes = fakeServe();
+    const defaultGateway = fakeGateway();
+    // No --config: loadConfig looks for milo.config.json relative to
+    // process.cwd(), which the repo does not keep, so this is the default.
+    await run(
+      ["--db", ":memory:"],
+      createTestDeps({
+        env: { JEV_API_KEY: "k" },
+        createGateway: defaultGateway.createGateway,
+        serve: defaultFakes.serve,
+      }).deps,
+    );
+    expect(defaultFakes.calls[0]?.port).toBe(DEFAULT_PORT);
+  });
+
+  it("passes the decision log URL from --db through to createGateway", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+
+    await run(["--db", ":memory:"], deps);
+
+    expect(calls[0]?.decisionLogUrl).toBe(":memory:");
+  });
+
+  it("rejects a non-numeric --port", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps, stderr } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+
+    const code = await run(["--port", "not-a-number", "--db", ":memory:"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("--port");
+  });
+
+  it("reports a clear error when an explicit --config path does not exist", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps, stderr } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+
+    const code = await run(["--config", join(dir, "missing.json"), "--db", ":memory:"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("could not read");
+  });
+
+  it("prints help with --help and touches nothing else", async () => {
+    const { deps, stdout } = createTestDeps();
+    const code = await run(["--help"], deps);
+
+    expect(code).toBe(0);
+    expect(stdout.toString()).toContain("Usage: milo serve");
+  });
+});
