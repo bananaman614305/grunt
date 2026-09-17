@@ -1,0 +1,29 @@
+# Rebuilt fresh inside the image; a host copy here would be stale and could
+# mask a real build failure.
+node_modules
+**/node_modules
+dist
+**/dist
+**/*.tsbuildinfo
+
+.git
+.github
+.claude
+.claude/worktrees
+
+# Local dev state and secrets that must never end up in a build context.
+.milo
+.env
+.env.*
+!.env.example
+**/*.db
+**/*.db-journal
+**/*.sqlite
+coverage
+
+# Not needed to build or run the image.
+packages/evals/reports
+docs
+README.md
+*.md
+.DS_Store
