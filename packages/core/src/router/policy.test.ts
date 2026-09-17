@@ -6,6 +6,7 @@ import {
   chooseTier,
   chooseTierFromExpectedScore,
   DEFAULT_PROFILE,
+  fastGateMass,
   hardMass,
   JEV_PROFILE,
   LOW_POSTURE_FAST_MASS,
@@ -19,6 +20,7 @@ import {
   resolveProfile,
   SYSTEM_ONE_OPEN_PROFILE,
   upperMass,
+  upperMassFromLevel1,
 } from "./policy.js";
 
 const POSTURES: CostPosture[] = ["low", "balanced", "quality"];
@@ -56,12 +58,13 @@ const OPEN_HARD = [0.1, 0.4, 0.32, 0.18]; //  P3 0.18, P2+ 0.50
 const OPEN_UPPER = [0.05, 0.25, 0.65, 0.05]; //  P3 0.05, P2+ 0.70
 const OPEN_VERY_HARD = [0.02, 0.08, 0.5, 0.4]; //  P3 0.40, P2+ 0.90
 
-// Distributions chosen against JEV_PROFILE (0.10 / 0.25 / 0.50 / 0.50).
-const JEV_FAST = [0.75, 0.18, 0.05, 0.02]; //  P3 0.02, P2+ 0.07
-const JEV_MID = [0.1, 0.6, 0.25, 0.05]; //  P3 0.05, P2+ 0.30
-const JEV_HARD = [0.05, 0.25, 0.4, 0.3]; //  P3 0.30, P2+ 0.70
-const JEV_UPPER = [0.05, 0.35, 0.45, 0.15]; //  P3 0.15, P2+ 0.60
-const JEV_VERY_HARD = [0.01, 0.04, 0.35, 0.6]; //  P3 0.60, P2+ 0.95
+// Distributions chosen against JEV_PROFILE (fastMassFromLevel 1, fast below
+// 0.35 / hard 0.05 / upper 0.65 / cap 0.05).
+const JEV_FAST = [0.75, 0.2, 0.04, 0.01]; //  P1+ 0.25, P3 0.01, P2+ 0.05
+const JEV_MID = [0.3, 0.5, 0.15, 0.03]; //  P1+ 0.70, P3 0.03, P2+ 0.18
+const JEV_HARD = [0.1, 0.5, 0.3, 0.1]; //  P1+ 0.90, P3 0.10, P2+ 0.40
+const JEV_UPPER = [0.05, 0.3, 0.62, 0.03]; //  P1+ 0.95, P3 0.03, P2+ 0.65
+const JEV_VERY_HARD = [0.01, 0.04, 0.35, 0.6]; //  P1+ 0.99, P3 0.60, P2+ 0.95
 
 describe("masses", () => {
   it("reads P(hard) and P(level 2+) off the distribution", () => {
@@ -73,6 +76,18 @@ describe("masses", () => {
     expect(hardMass([0.5, 0.5])).toBe(0);
     expect(upperMass([0.5, 0.5])).toBe(0);
   });
+
+  it("reads P(level 1+) off the distribution", () => {
+    expect(upperMassFromLevel1([0.1, 0.2, 0.3, 0.4])).toBeCloseTo(0.9);
+    expect(upperMassFromLevel1([1])).toBe(0);
+  });
+
+  it("the fast gate reads P(level 1+) or P(level 2+) per fastMassFromLevel", () => {
+    const levels = [0.1, 0.2, 0.3, 0.4];
+    expect(fastGateMass(levels, 1)).toBeCloseTo(upperMassFromLevel1(levels));
+    expect(fastGateMass(levels, 2)).toBeCloseTo(upperMass(levels));
+    expect(fastGateMass(levels, 2)).toBe(upperMass(levels));
+  });
 });
 
 describe("profiles", () => {
@@ -82,9 +97,14 @@ describe("profiles", () => {
     expect(DEFAULT_PROFILE).toBe(JEV_PROFILE);
   });
 
-  it("the open backend's bars sit below Jev's, because it hedges", () => {
-    expect(SYSTEM_ONE_OPEN_PROFILE.frontierHardMass).toBeLessThan(JEV_PROFILE.frontierHardMass);
+  it("jev's fast gate starts a level higher and needs more mass, since its mid work sits on level 1", () => {
+    expect(SYSTEM_ONE_OPEN_PROFILE.fastMassFromLevel).toBe(2);
+    expect(JEV_PROFILE.fastMassFromLevel).toBe(1);
     expect(SYSTEM_ONE_OPEN_PROFILE.fastBelowMass).toBeLessThan(JEV_PROFILE.fastBelowMass);
+  });
+
+  it("jev trusts a thinner hard-mass tail for frontier than the open backend, since it hedges less", () => {
+    expect(JEV_PROFILE.frontierHardMass).toBeLessThan(SYSTEM_ONE_OPEN_PROFILE.frontierHardMass);
   });
 
   it("resolves a name, a profile, or nothing at all", () => {
@@ -110,15 +130,17 @@ describe("posture adjusts the thresholds", () => {
     expect(low.frontierUpperMass).toBe(SYSTEM_ONE_OPEN_PROFILE.frontierUpperMass);
   });
 
-  it("low never lowers a fast bar that already sits above 0.10", () => {
-    expect(postureProfile(JEV_PROFILE, "low").fastBelowMass).toBe(JEV_PROFILE.fastBelowMass);
+  it("low never lowers a fast bar that already sits above 0.10, and leaves fastMassFromLevel alone", () => {
+    const low = postureProfile(JEV_PROFILE, "low");
+    expect(low.fastBelowMass).toBe(JEV_PROFILE.fastBelowMass);
+    expect(low.fastMassFromLevel).toBe(JEV_PROFILE.fastMassFromLevel);
   });
 
-  it("quality lowers both frontier bars", () => {
+  it("quality lowers the upper frontier bar", () => {
     const quality = postureProfile(JEV_PROFILE, "quality");
-    expect(quality.frontierHardMass).toBeCloseTo(JEV_PROFILE.frontierHardMass - QUALITY_POSTURE_FRONTIER_SHIFT);
     expect(quality.frontierUpperMass).toBeCloseTo(JEV_PROFILE.frontierUpperMass - QUALITY_POSTURE_FRONTIER_SHIFT);
     expect(quality.fastBelowMass).toBe(JEV_PROFILE.fastBelowMass);
+    expect(quality.fastMassFromLevel).toBe(JEV_PROFILE.fastMassFromLevel);
   });
 
   it("quality floors both frontier bars so a reason never quotes 0.00", () => {
@@ -130,8 +152,14 @@ describe("posture adjusts the thresholds", () => {
     expect(postureProfile(tiny, "quality").frontierUpperMass).toBe(QUALITY_MIN_FRONTIER_UPPER_MASS);
   });
 
+  it("quality floors jev's hard bar too, since 0.05 minus the shift is already negative", () => {
+    const quality = postureProfile(JEV_PROFILE, "quality");
+    expect(quality.frontierHardMass).toBe(QUALITY_MIN_FRONTIER_HARD_MASS);
+  });
+
   it("balanced changes nothing", () => {
     expect(postureProfile(SYSTEM_ONE_OPEN_PROFILE, "balanced")).toBe(SYSTEM_ONE_OPEN_PROFILE);
+    expect(postureProfile(JEV_PROFILE, "balanced")).toBe(JEV_PROFILE);
   });
 });
 
@@ -182,11 +210,13 @@ describe("policy v2, system-one-open profile", () => {
 describe("policy v2, jev profile", () => {
   const p = "jev" as const;
 
-  it("fast when P2 + P3 is below the fast bar", () => {
+  it("fast when P1 + P2 + P3 is below the fast bar", () => {
     expect(chooseTier(signals(JEV_FAST), "balanced", p).tier).toBe("fast");
   });
 
-  it("mid when neither frontier bar is reached", () => {
+  it("mid when the fast gate and neither frontier bar fire", () => {
+    // P1+ 0.70 clears the fast bar, but P3 0.03 and P2+ 0.18 both stay under
+    // the frontier bars.
     expect(chooseTier(signals(JEV_MID), "balanced", p).tier).toBe("mid");
   });
 
@@ -207,8 +237,10 @@ describe("policy v2, jev profile", () => {
   });
 
   it("quality posture's mass rule lifts a balanced mid to frontier", () => {
-    // P2+ 0.42 clears QUALITY_POSTURE_FRONTIER_MASS but neither balanced bar.
-    const levels = [0.18, 0.4, 0.34, 0.08];
+    // P1+ 0.91 clears the fast bar; P3 0.02 stays under the balanced hard bar
+    // (0.05); P2+ 0.42 clears QUALITY_POSTURE_FRONTIER_MASS with margin, but
+    // not the balanced upper bar (0.65).
+    const levels = [0.09, 0.49, 0.4, 0.02];
     expect(chooseTier(signals(levels), "balanced", p).tier).toBe("mid");
     const quality = chooseTier(signals(levels), "quality", p);
     expect(quality.tier).toBe("frontier");
@@ -216,8 +248,10 @@ describe("policy v2, jev profile", () => {
   });
 
   it("quality posture's lowered hard bar lifts a narrow, hard-tailed mid", () => {
-    // P2+ 0.30 stays under the quality mass rule, but P3 0.20 clears 0.15.
-    const levels = [0.3, 0.4, 0.1, 0.2];
+    // P1+ 0.70 clears the fast bar; P3 0.03 stays under the balanced hard bar
+    // (0.05) and P2+ 0.20 stays under both the upper bar and the quality mass
+    // rule, but quality floors the hard bar to 0.02, which P3 0.03 clears.
+    const levels = [0.3, 0.5, 0.17, 0.03];
     expect(chooseTier(signals(levels), "balanced", p).tier).toBe("mid");
     expect(chooseTier(signals(levels), "quality", p).tier).toBe("frontier");
   });
@@ -241,10 +275,12 @@ describe("the classify and chat cap", () => {
       expect(chooseTier(signals(JEV_VERY_HARD, taskType), "balanced", "jev").tier).toBe("frontier");
     });
 
-    it(`${taskType} is capped at Jev's higher bar too`, () => {
-      // P3 0.30 is frontier under the jev profile but below its 0.50 cap bar.
-      expect(chooseTier(signals(JEV_HARD), "balanced", "jev").tier).toBe("frontier");
-      expect(chooseTier(signals(JEV_HARD, taskType), "balanced", "jev").tier).toBe("mid");
+    it(`${taskType} is capped under jev too, when frontier came from the upper mass alone`, () => {
+      // Jev's cap sits level with its hard bar (0.05), so a hard-mass route to
+      // frontier always clears the cap; JEV_UPPER reaches frontier through the
+      // upper mass instead, with P3 0.03 still below the cap.
+      expect(chooseTier(signals(JEV_UPPER), "balanced", "jev").tier).toBe("frontier");
+      expect(chooseTier(signals(JEV_UPPER, taskType), "balanced", "jev").tier).toBe("mid");
     });
 
     it(`${taskType} never has the cap raise a tier`, () => {
@@ -277,6 +313,18 @@ describe("boundaries", () => {
   it("the cap bar is inclusive: exactly at it reaches frontier", () => {
     expect(chooseTier(signals([0.2, 0.2, 0.3, 0.3], "chat"), "balanced", "system-one-open").tier).toBe("frontier");
     expect(chooseTier(signals([0.2, 0.2, 0.301, 0.299], "chat"), "balanced", "system-one-open").tier).toBe("mid");
+  });
+
+  it("jev's fast bar reads P(level 1+): exactly at 0.35 is not fast, just below is", () => {
+    expect(chooseTier(signals([0.66, 0.33, 0.01, 0]), "balanced", "jev").tier).toBe("fast");
+    expect(chooseTier(signals([0.65, 0.34, 0.01, 0]), "balanced", "jev").tier).toBe("mid");
+  });
+
+  it("jev's cap bar sits level with its hard bar: exactly at 0.05 reaches frontier, just below does not", () => {
+    // Both reach frontier via the upper mass (P2+ well above 0.65) or the hard
+    // mass alone; only P3 crossing the 0.05 cap bar differs between them.
+    expect(chooseTier(signals([0.3, 0.2, 0.45, 0.05], "chat"), "balanced", "jev").tier).toBe("frontier");
+    expect(chooseTier(signals([0.05, 0.2, 0.71, 0.04], "chat"), "balanced", "jev").tier).toBe("mid");
   });
 
   it("a distribution that is all level 0 is fast under every posture and profile", () => {
@@ -328,6 +376,21 @@ describe("reason text", () => {
   it("says that low posture is what capped it, and still cites the mass", () => {
     const { reason } = chooseTier(signals(OPEN_VERY_HARD), "low", "system-one-open");
     expect(reason).toBe("P(level 2+) 0.90 at or above 0.10 routes above fast, but low posture caps at mid");
+  });
+
+  it("names level 1+ for jev's fast gate, since fastMassFromLevel is 1 there", () => {
+    const { reason } = chooseTier(signals(JEV_FAST), "balanced", "jev");
+    expect(reason).toBe("P(level 1+) 0.25 below 0.35 with balanced posture routes to fast");
+  });
+
+  it("names level 2+ for the open backend's fast gate, since fastMassFromLevel is 2 there", () => {
+    const { reason } = chooseTier(signals(OPEN_FAST), "balanced", "system-one-open");
+    expect(reason).toBe("P(level 2+) 0.03 below 0.05 with balanced posture routes to fast");
+  });
+
+  it("still names level 1+ when low posture is what capped a jev decision at mid", () => {
+    const { reason } = chooseTier(signals(JEV_VERY_HARD), "low", "jev");
+    expect(reason).toBe("P(level 1+) 0.99 at or above 0.35 routes above fast, but low posture caps at mid");
   });
 
   it("never quotes a 0.00 threshold under quality posture", () => {

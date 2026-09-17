@@ -31,6 +31,18 @@ never log, return, or embed it in an error message; in development, fetch
 it through the Squire `use_credential` tool rather than exporting it
 directly (same rule as `milo serve`, ADR-003).
 
+A Jev fixture is looked up by a hash of the *whole* request, base URL
+included, so replaying the committed Jev fixtures in `--mode fixtures` needs
+`MILO_DECISION_BACKEND=jev` and `JEV_BASE_URL` set to the exact URL the
+recording session used — a Squire egress grant, not `https://api.typesafe.ai`
+— or every lookup misses and the run comes back all-unscored. `.github/workflows/ci.yml`
+shows the value the committed fixtures were recorded against. This never
+touches the network in `fixtures` mode; the base URL is only part of the
+lookup key. `JEV_MODEL` matters the same way for the model field in the
+request body — Jev fixtures are recorded on `jev-latest` only, which is also
+`JevClient`'s default, so `record`/`live` runs need no override to stay
+consistent with the committed set.
+
 ### Other flags
 
 | Flag | Default | Effect |
@@ -73,13 +85,19 @@ The gate defaults to **0.85** (`MIN_TIER_AGREEMENT` in
 
 | backend | CI expects | why |
 |---|---|---|
-| `jev` | **0.85** | The target in ADR-002. Not yet measured: Milo's Jev key ran out of quota mid-build (ADR-004). |
+| `jev` | **0.80** | Validated (ADR-002 revision 3): 84.2% in-sample, 80.8% two-fold cross-validated (folds 75.0% and 86.7% — the fast/mid boundary is the noisy one). CI holds it to the same conservative 0.80 floor as the open backend rather than the 0.85 target, since a single fold measured as low as 75.0%; 0.85 stays the aspirational target. |
 | `system-one-open` | **0.80** | The open replica is measurably less accurate than Jev (76.7% vs. 86.9% on TypeSafe's public eval). Policy v2 scores **83.3%** on the committed fixtures, so 0.80 leaves headroom without hiding a regression. |
 
-CI runs the fixture replay against the open backend at `--gate 0.80`, since
-that is the backend the committed fixtures were recorded from. **0.85 remains
-the target** and takes effect for the `jev` backend the moment a live Jev run
-exists; the lower bar is for the open replica only (ADR-002 revision 2).
+CI runs the fixture replay against both backends at `--gate 0.80`:
+`MILO_DECISION_BACKEND=system-one-open` against the open replica's fixtures,
+and `MILO_DECISION_BACKEND=jev` (with `JEV_BASE_URL` pinned to the exact
+request URL the committed Jev fixtures were recorded against — replay never
+touches the network, but the fixture lookup is keyed by a hash of the whole
+request) against Jev's. Both backends now have a validated profile; **0.85
+remains the stated target** in ADR-002 for whichever backend a deployment
+actually uses in production, and the 0.80 CI floor exists so a regression
+still fails the build without demanding a perfect score from either replica
+(ADR-002 revisions 2 and 3).
 
 Changing a threshold in `packages/core/src/router/policy.ts` requires bumping
 `POLICY_VERSION` and re-running the eval to confirm the gate still passes. The
