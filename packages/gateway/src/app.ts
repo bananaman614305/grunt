@@ -151,26 +151,28 @@ export function createApp(deps: AppDeps): Hono {
     c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: deps.decisionBackend }),
   );
 
-  // A landing answer for people who open the bare address in a browser.
-  app.get("/", (c) =>
-    c.json({
+  // A landing answer for people who open the bare address. Browsers get a
+  // short page; programs get JSON.
+  app.get("/", (c) => {
+    const url = new URL("/v1", c.req.url);
+    const proto = c.req.header("x-forwarded-proto");
+    if (proto === "https" || proto === "http") url.protocol = `${proto}:`;
+    const baseUrl = url.toString();
+    const info = {
       name: "milo",
       description:
         'OpenRouter with an actual routing mechanism. Point an OpenAI-compatible client at /v1 with your OpenRouter key and use model "milo/auto".',
-      baseUrl: (() => {
-        // Fly and most proxies terminate TLS and forward plain HTTP.
-        const url = new URL("/v1", c.req.url);
-        const proto = c.req.header("x-forwarded-proto");
-        if (proto === "https" || proto === "http") url.protocol = `${proto}:`;
-        return url.toString();
-      })(),
+      baseUrl,
       routedModel: ROUTED_MODEL_ID,
       policyVersion: POLICY_VERSION,
       decisionBackend: deps.decisionBackend,
       endpoints: ["/healthz", "/v1/chat/completions", "/v1/messages", "/v1/models", "/v1/decisions/:id"],
       docs: "https://github.com/bananaman614305/milo",
-    }),
-  );
+    };
+    const accept = c.req.header("accept") ?? "";
+    if (!accept.includes("text/html")) return c.json(info);
+    return c.html(landingPage(info));
+  });
 
   app.use("/v1/*", requireKey);
 
@@ -187,4 +189,46 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   return app;
+}
+
+function landingPage(info: {
+  baseUrl: string;
+  routedModel: string;
+  policyVersion: string;
+  decisionBackend: string;
+  docs: string;
+}): string {
+  const esc = (v: string): string => v.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] ?? ch);
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Milo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 40px 20px 64px; font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: Canvas; color: CanvasText; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 40px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  p.lede { font-size: 18px; margin: 0 0 28px; opacity: .85; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0 0 28px; }
+  dt { opacity: .6; } dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+  pre { background: color-mix(in srgb, CanvasText 8%, Canvas); padding: 14px 16px; overflow-x: auto; border-radius: 6px;
+        font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  a { color: inherit; }
+  .ok { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #2e9e5b; margin-right: 6px; }
+</style></head>
+<body><main>
+<h1>Milo</h1>
+<p class="lede">OpenRouter with an actual routing mechanism. Send <code>model: "milo/auto"</code> and a small decision model picks the right tier for each request from the task's type and difficulty.</p>
+<dl>
+  <dt>Status</dt><dd><span class="ok"></span>up, policy ${esc(info.policyVersion)}, decisions via ${esc(info.decisionBackend)}</dd>
+  <dt>Base URL</dt><dd>${esc(info.baseUrl)}</dd>
+  <dt>Model</dt><dd>${esc(info.routedModel)}</dd>
+  <dt>Docs</dt><dd><a href="${esc(info.docs)}">${esc(info.docs)}</a></dd>
+</dl>
+<h2 style="font-size:18px;margin:0 0 8px">Use it</h2>
+<pre>export OPENAI_BASE_URL=${esc(info.baseUrl)}
+export OPENAI_API_KEY=&lt;your OpenRouter key&gt;
+# any OpenAI SDK call with model="milo/auto"</pre>
+<p>Every routed response carries <code>x-milo-*</code> headers naming the decision. Fetch <code>/v1/decisions/&lt;id&gt;</code> with the same key to read why.</p>
+</main></body></html>`;
 }

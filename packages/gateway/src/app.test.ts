@@ -870,4 +870,15 @@ describe("GET /", () => {
     const body = (await res.json()) as { baseUrl: string };
     expect(body.baseUrl).toBe("https://milo.test/v1");
   });
+
+  it("renders a page for browsers", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/", { headers: { accept: "text/html,*/*" } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("<h1>Milo</h1>");
+    expect(html).toContain("milo/auto");
+    expect(html).toContain("http://milo.test/v1");
+  });
 });
