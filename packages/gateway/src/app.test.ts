@@ -62,9 +62,32 @@ const jevHangs: Handler = () =>
     setTimeout(fail, 5_000).unref();
   });
 
+/** The same answers in the open backend's list-of-answers wire shape. */
+function systemOneOpenOk(name: string): Handler {
+  const f = fixture(name);
+  return (call) => {
+    if (call.url.pathname === "/info") {
+      return jsonResponse({ model: "e2b-full", device: "cuda", primitives: ["choice", "score", "noul"] });
+    }
+    const answers = Object.entries(f.answers).map(([id, answer]) => {
+      const a = answer as Record<string, unknown>;
+      if (a["type"] === "score") {
+        // The open backend returns no legend and keys probabilities by index.
+        const { legend: _legend, ...rest } = a;
+        return { id, ...rest };
+      }
+      return { id, ...a };
+    });
+    return jsonResponse({ answers, latency_ms: 110.8, passes: 1, model: "e2b-full" });
+  };
+}
+
+const SYSTEM_ONE_OPEN_URL = "https://open.example.test";
+
 class Upstreams {
   readonly calls: Call[] = [];
   jev: Handler = jevOk("flaky-test");
+  systemOneOpen: Handler = systemOneOpenOk("flaky-test");
   openRouter: Handler = () => jsonResponse({ ok: true });
 
   readonly fetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -79,6 +102,7 @@ class Upstreams {
     this.calls.push(call);
 
     if (url.host === "api.typesafe.ai") return this.jev(call);
+    if (url.host === "open.example.test") return this.systemOneOpen(call);
     if (url.host === "openrouter.ai") return this.openRouter(call);
     throw new Error(`unexpected upstream host: ${url.host}`);
   }) as typeof fetch;
@@ -89,6 +113,10 @@ class Upstreams {
 
   jevCalls(): Call[] {
     return this.calls.filter((c) => c.url.host === "api.typesafe.ai");
+  }
+
+  systemOneOpenCalls(): Call[] {
+    return this.calls.filter((c) => c.url.host === "open.example.test");
   }
 }
 
@@ -169,6 +197,9 @@ async function start(overrides: Partial<GatewayOptions> = {}): Promise<Gateway> 
 beforeEach(() => {
   upstreams = new Upstreams();
   lines = [];
+  // A test that never starts a gateway (or whose `createGateway` throws) must
+  // not have `afterEach` close the previous test's gateway a second time.
+  gateway = undefined as unknown as Gateway;
 });
 
 afterEach(async () => {
@@ -668,13 +699,111 @@ describe("generic /v1 proxy", () => {
 });
 
 describe("GET /healthz", () => {
-  it("answers without a key", async () => {
+  it("answers without a key and names the decision backend", async () => {
     await start();
     const res = await gateway.app.request("/healthz");
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, policyVersion: "v1" });
+    expect(await res.json()).toEqual({ ok: true, policyVersion: "v1", decisionBackend: "jev" });
     expect(upstreams.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Decision backends (ADR-004)
+// ---------------------------------------------------------------------------
+
+describe("decision backends", () => {
+  it("routes through system-one-open and never touches Jev", async () => {
+    await start({
+      jevApiKey: "",
+      decisionBackend: { kind: "system-one-open", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
+    });
+    upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
+
+    const res = await post("/v1/chat/completions", chatBody());
+
+    expect(res.status).toBe(200);
+    // The fixture's signals put this one on the frontier tier, whichever
+    // backend produced them.
+    expect(res.headers.get("x-milo-model")).toBe("test/frontier");
+    expect(res.headers.get("x-milo-task-type")).toBe("debug");
+    expect(upstreams.jevCalls()).toHaveLength(0);
+
+    const decide = upstreams.systemOneOpenCalls().filter((c) => c.url.pathname === "/decide");
+    expect(decide).toHaveLength(1);
+    expect(decide[0]?.method).toBe("POST");
+    // The open backend has no auth, and Milo must not invent one.
+    expect(decide[0]?.headers.get("authorization")).toBeNull();
+
+    const id = res.headers.get("x-milo-decision-id") ?? "";
+    const record = await gateway.log.get(id);
+    expect(record?.signals?.jevModel).toBe("system-one-open/e2b-full");
+    expect(record?.signals?.jevRequestId).toMatch(/^s1o_/);
+    expect(record?.degraded).toBe(false);
+  });
+
+  it("warms the open backend at startup and reports it from healthz", async () => {
+    await start({
+      jevApiKey: "",
+      decisionBackend: { kind: "system-one-open", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
+    });
+
+    const res = await gateway.app.request("/healthz");
+    expect(await res.json()).toEqual({
+      ok: true,
+      policyVersion: "v1",
+      decisionBackend: "system-one-open",
+    });
+
+    // The warmup is fire and forget, so give the microtask queue a turn.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(upstreams.systemOneOpenCalls().map((c) => c.url.pathname)).toContain("/info");
+  });
+
+  it("falls back to the open backend when Jev fails, and says so in healthz", async () => {
+    await start({
+      decisionBackend: { kind: "jev-with-fallback", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
+    });
+    upstreams.jev = () => jsonResponse({ error: "quota exceeded" }, 429);
+    upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
+
+    const res = await post("/v1/chat/completions", chatBody());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-task-type")).toBe("debug");
+
+    const health = await gateway.app.request("/healthz");
+    expect(await health.json()).toMatchObject({ decisionBackend: "jev-with-fallback" });
+
+    const id = res.headers.get("x-milo-decision-id") ?? "";
+    const record = await gateway.log.get(id);
+    expect(record?.signals?.jevModel).toBe("system-one-open/e2b-full");
+    expect(record?.degraded).toBe(false);
+  });
+
+  it("throws a clear error when the jev backend has no key", async () => {
+    await expect(
+      createGateway({ jevApiKey: "", roster: ROSTER, fetch: upstreams.fetch }),
+    ).rejects.toThrow(/needs Milo's Jev key/);
+
+    await expect(
+      createGateway({
+        jevApiKey: "",
+        roster: ROSTER,
+        fetch: upstreams.fetch,
+        decisionBackend: { kind: "jev-with-fallback" },
+      }),
+    ).rejects.toThrow(/needs Milo's Jev key/);
+  });
+
+  it("does not need a Jev key for the open backend", async () => {
+    await expect(
+      start({
+        jevApiKey: "",
+        decisionBackend: { kind: "system-one-open", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
+      }),
+    ).resolves.toBeDefined();
   });
 });
 

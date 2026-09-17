@@ -36,6 +36,35 @@ const rateLimitSchema = z
   })
   .strict();
 
+/** Mirrors `DecisionBackendOptions` from `@milo/gateway` (ADR-004). */
+export const DECISION_BACKEND_KINDS = ["jev", "system-one-open", "jev-with-fallback"] as const;
+export type DecisionBackendKind = (typeof DECISION_BACKEND_KINDS)[number];
+
+export const DEFAULT_DECISION_BACKEND_KIND: DecisionBackendKind = "jev";
+
+/** Env vars that stand in for the config block when it is absent. */
+export const DECISION_BACKEND_ENV = "MILO_DECISION_BACKEND";
+export const SYSTEM_ONE_OPEN_URL_ENV = "SYSTEM_ONE_OPEN_URL";
+
+const decisionBackendSchema = z
+  .object({
+    kind: z.enum(DECISION_BACKEND_KINDS),
+    systemOneOpenUrl: z.string().trim().min(1).optional(),
+    systemOneOpenTimeoutMs: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/**
+ * Written out rather than inferred from the schema: `exactOptionalPropertyTypes`
+ * makes Zod's `?: T | undefined` incompatible with the gateway's `?: T`, and
+ * this is the shape that is handed to `GatewayOptions.decisionBackend`.
+ */
+export type DecisionBackendConfig = {
+  kind: DecisionBackendKind;
+  systemOneOpenUrl?: string;
+  systemOneOpenTimeoutMs?: number;
+};
+
 export const configSchema = z
   .object({
     port: z.number().int().positive().default(DEFAULT_PORT),
@@ -43,6 +72,7 @@ export const configSchema = z
     roster: rosterSchema.optional(),
     rateLimit: rateLimitSchema.optional(),
     decisionLog: z.string().trim().min(1).default(DEFAULT_DECISION_LOG_URL),
+    decisionBackend: decisionBackendSchema.optional(),
     referer: z.string().trim().min(1).optional(),
     title: z.string().trim().min(1).optional(),
     /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
@@ -107,4 +137,47 @@ export function loadConfig(path?: string, cwd: string = process.cwd()): LoadedCo
   }
 
   return { config: result.data, source: { kind: "file", path: resolvedPath } };
+}
+
+function isDecisionBackendKind(value: string): value is DecisionBackendKind {
+  return (DECISION_BACKEND_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * Resolves the decision backend from the config file, falling back to the
+ * environment field by field: `MILO_DECISION_BACKEND` for the kind and
+ * `SYSTEM_ONE_OPEN_URL` for the deployment URL. The config file wins wherever
+ * it sets a field, so a checked-in config is not silently overridden by a
+ * stray variable in someone's shell.
+ *
+ * Returns `undefined` when nothing is configured anywhere, which leaves the
+ * gateway on its own default (`jev`).
+ */
+export function resolveDecisionBackend(
+  config: MiloConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): DecisionBackendConfig | undefined {
+  const fromFile = config.decisionBackend;
+  const envKind = env[DECISION_BACKEND_ENV]?.trim();
+  const envUrl = env[SYSTEM_ONE_OPEN_URL_ENV]?.trim();
+
+  if (envKind !== undefined && envKind !== "" && !isDecisionBackendKind(envKind)) {
+    throw new Error(
+      `milo config: ${DECISION_BACKEND_ENV} must be one of ${DECISION_BACKEND_KINDS.join(", ")}, ` +
+        `got "${envKind}"`,
+    );
+  }
+
+  const kind: DecisionBackendKind | undefined =
+    fromFile?.kind ?? (envKind !== undefined && envKind !== "" ? envKind : undefined);
+  const url = fromFile?.systemOneOpenUrl ?? (envUrl !== undefined && envUrl !== "" ? envUrl : undefined);
+  const timeoutMs = fromFile?.systemOneOpenTimeoutMs;
+
+  if (kind === undefined && url === undefined && timeoutMs === undefined) return undefined;
+
+  return {
+    kind: kind ?? DEFAULT_DECISION_BACKEND_KIND,
+    ...(url !== undefined ? { systemOneOpenUrl: url } : {}),
+    ...(timeoutMs !== undefined ? { systemOneOpenTimeoutMs: timeoutMs } : {}),
+  };
 }

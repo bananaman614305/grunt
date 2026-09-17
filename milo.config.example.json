@@ -10,6 +10,11 @@
     "routedPerMinute": 120
   },
   "decisionLog": "file:./.milo/decisions.db",
+  "decisionBackend": {
+    "kind": "jev-with-fallback",
+    "systemOneOpenUrl": "https://mithalouni--jev-serve-e2b-full-server-web.modal.run",
+    "systemOneOpenTimeoutMs": 1500
+  },
   "referer": "https://your-app.example.com",
   "title": "Your App Name",
   "jevTimeoutMs": 800

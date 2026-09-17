@@ -26,6 +26,12 @@ export type RunRoutingEvalOptions = {
   roster?: Roster;
   /** Max in-flight Jev calls. Defaults to 4. */
   concurrency?: number;
+  /**
+   * Router budget per example. Defaults to the router's own production value
+   * (800 ms). A slower decision backend needs more, or every example scores as
+   * a timeout (ADR-004).
+   */
+  jevTimeoutMs?: number;
 };
 
 /** A placeholder tool list, standing in for "this request looked agentic." */
@@ -44,6 +50,7 @@ async function scoreExample(
   jev: JevClientLike,
   posture: CostPosture,
   roster: Roster | undefined,
+  jevTimeoutMs: number | undefined,
 ): Promise<ScoredExample | UnscoredExample> {
   const base = {
     id: example.id,
@@ -64,7 +71,11 @@ async function scoreExample(
 
     // A fresh Router (and fresh sticky cache) per example: no state carries
     // between examples even when several run concurrently.
-    const router = new Router(roster !== undefined ? { jev, roster } : { jev });
+    const router = new Router({
+      jev,
+      ...(roster !== undefined ? { roster } : {}),
+      ...(jevTimeoutMs !== undefined ? { jevTimeoutMs } : {}),
+    });
     const decision = await router.route(req);
 
     if (decision.degraded || decision.signals === undefined) {
@@ -121,7 +132,7 @@ export async function runRoutingEval(opts: RunRoutingEvalOptions): Promise<EvalR
   const concurrency = opts.concurrency ?? 4;
 
   const results = await mapWithConcurrency(examples, concurrency, (example) =>
-    scoreExample(example, opts.jev, posture, opts.roster),
+    scoreExample(example, opts.jev, posture, opts.roster, opts.jevTimeoutMs),
   );
 
   const scored: ScoredExample[] = [];

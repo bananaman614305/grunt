@@ -13,7 +13,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CostPosture } from "@milo/core";
 import { COST_POSTURES } from "@milo/core";
-import { JEV_SOURCE_MODES, makeJevClient } from "./jev-source.js";
+import {
+  concurrencyForMode,
+  JEV_SOURCE_MODES,
+  makeJevClient,
+  routerTimeoutForMode,
+  warmupBackend,
+} from "./jev-source.js";
 import type { JevSourceMode } from "./jev-source.js";
 import { formatMarkdown, tierAgreementRate } from "./report.js";
 import { runRoutingEval } from "./run.js";
@@ -103,7 +109,17 @@ export async function main(argv: string[]): Promise<number> {
   const examples = options.limit !== undefined ? allExamples.slice(0, options.limit) : allExamples;
 
   const jev = makeJevClient(options.mode);
-  const report = await runRoutingEval({ examples, jev, posture: options.posture });
+  await warmupBackend(jev);
+  // The open backend is slower and runs on one GPU, so it gets a smaller
+  // concurrency and a larger per-example budget than Jev (ADR-004).
+  const jevTimeoutMs = routerTimeoutForMode(options.mode);
+  const report = await runRoutingEval({
+    examples,
+    jev,
+    posture: options.posture,
+    concurrency: concurrencyForMode(options.mode),
+    ...(jevTimeoutMs !== undefined ? { jevTimeoutMs } : {}),
+  });
 
   const markdown = formatMarkdown(report);
   process.stdout.write(`${markdown}\n`);

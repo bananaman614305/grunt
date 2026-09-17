@@ -2,7 +2,7 @@
 
 Status: draft v2.1, 2026-09-17. Owner: Alan. Orchestrator: Claude Fable 5.1. Builders: Opus and Sonnet subagents.
 
-Progress (2026-09-17): waves 0, 1, and 2 are merged on `main` (266 unit tests, 4 e2e). Wave 3 in flight: messages endpoint, docs, cleanup. Deploy not started. The vault's Jev key ran out of quota mid-build, so no live eval run yet; the Jev budget was raised to 800 ms after measuring a 520 ms cold round trip. Open decision: add a self-hosted decision backend (system-one-open) as the fallback to Jev.
+Progress (2026-09-17): waves 0, 1, and 2 are merged on `main` (266 unit tests, 4 e2e). Wave 3 in flight: messages endpoint, docs, cleanup. Deploy not started. The vault's Jev key ran out of quota mid-build, so no live eval run against Jev yet; the Jev budget was raised to 800 ms after measuring a 520 ms cold round trip. Decision backends are now pluggable (ADR-004): `jev`, `system-one-open`, and `jev-with-fallback`, selected in config or by `MILO_DECISION_BACKEND`, so routing still works while the Jev key is dry.
 
 ## The one thing
 

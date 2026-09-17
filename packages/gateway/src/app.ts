@@ -30,6 +30,8 @@ export type Logger = {
 
 export type AppDeps = {
   router: Router;
+  /** Which decision backend the router is wired to. Reported by `/healthz`. */
+  decisionBackend: string;
   openRouter: OpenRouterClient;
   /** OpenRouter's Anthropic-compatible surface, for `/v1/messages`. */
   anthropic: AnthropicUpstream;
@@ -145,7 +147,9 @@ export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
   // No auth: a health probe must work before anyone has a key.
-  app.get("/healthz", (c) => c.json({ ok: true, policyVersion: POLICY_VERSION }));
+  app.get("/healthz", (c) =>
+    c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: deps.decisionBackend }),
+  );
 
   app.use("/v1/*", requireKey);
 
