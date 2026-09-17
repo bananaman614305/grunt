@@ -29,6 +29,7 @@ import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerProxyRoute } from "./routes/proxy.js";
 import { registerRosterRoute } from "./routes/roster.js";
+import { registerResponsesRoute } from "./routes/responses.js";
 import { registerStaticRoutes } from "./routes/static.js";
 
 /** Structurally identical to `GatewayOptions["logger"]`, which is pinned. */
@@ -193,6 +194,7 @@ export function createApp(deps: AppDeps): Hono {
         "/healthz",
         "/v1/chat/completions",
         "/v1/messages",
+        "/v1/responses",
         "/v1/models",
         "/v1/roster",
         "/v1/decisions/:id",
@@ -213,6 +215,7 @@ export function createApp(deps: AppDeps): Hono {
 
   registerChatRoute(app, deps);
   registerMessagesRoute(app, deps);
+  registerResponsesRoute(app, deps);
   registerModelsRoute(app, deps);
   registerRosterRoute(app, deps);
   registerDecisionsRoutes(app, deps);

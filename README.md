@@ -209,6 +209,28 @@ it in Claude Code with `claude plugin marketplace add bananaman614305/milo`
 then `claude plugin install milo@milo`, or in any skill-aware agent with
 `npx skills add bananaman614305/milo --skill milo`. See `skills/README.md`.
 
+<!-- Codex: begin -->
+### Codex CLI
+
+Codex talks to a custom provider over the Responses API, which Milo serves at
+`POST /v1/responses`. Put this in `~/.codex/config.toml`:
+
+```toml
+model_provider = "milo"
+model = "milo/auto"
+
+[model_providers.milo]
+name = "Milo"
+base_url = "https://milo-gateway.fly.dev/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+```
+
+Then `export OPENROUTER_API_KEY=sk-or-...` and run `codex --model milo/auto`.
+Full setup, the `-c` one-liner form, and what passes through unrouted:
+[`docs/codex.md`](docs/codex.md).
+<!-- Codex: end -->
+
 ## Docs
 
 - [`docs/api/gateway.md`](docs/api/gateway.md) — every route, request/response shape, headers, errors.
