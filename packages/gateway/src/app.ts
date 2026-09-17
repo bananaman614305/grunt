@@ -20,6 +20,7 @@ import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerProxyRoute } from "./routes/proxy.js";
+import { registerResponsesRoute } from "./routes/responses.js";
 import { registerStaticRoutes } from "./routes/static.js";
 
 /** Structurally identical to `GatewayOptions["logger"]`, which is pinned. */
@@ -164,7 +165,14 @@ export function createApp(deps: AppDeps): Hono {
       routedModel: ROUTED_MODEL_ID,
       policyVersion: POLICY_VERSION,
       decisionBackend: DECISION_BACKEND,
-      endpoints: ["/healthz", "/v1/chat/completions", "/v1/messages", "/v1/models", "/v1/decisions/:id"],
+      endpoints: [
+        "/healthz",
+        "/v1/chat/completions",
+        "/v1/messages",
+        "/v1/responses",
+        "/v1/models",
+        "/v1/decisions/:id",
+      ],
       docs: "https://github.com/bananaman614305/milo",
       setup: `${origin}/setup.md`,
       skill: `${origin}/skill.md`,
@@ -181,6 +189,7 @@ export function createApp(deps: AppDeps): Hono {
 
   registerChatRoute(app, deps);
   registerMessagesRoute(app, deps);
+  registerResponsesRoute(app, deps);
   registerModelsRoute(app, deps);
   registerDecisionsRoutes(app, deps);
   // Last: it claims every `/v1/*` method and path the routes above did not.

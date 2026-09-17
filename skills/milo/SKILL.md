@@ -107,6 +107,48 @@ fields: base URL, API key, model. Point them at Milo the same way:
 | API key | the user's OpenRouter key |
 | Model | `milo/auto` |
 
+<!-- Codex: begin -->
+### Codex CLI
+
+Codex is the exception to the table above: it does not take a base URL and a
+key as plain settings. It needs a custom provider in `~/.codex/config.toml`,
+and since Codex 0.154 the only supported wire protocol is the Responses API
+(`wire_api = "responses"`), which Milo serves at `POST /v1/responses`.
+
+```toml
+model_provider = "milo"
+model = "milo/auto"
+
+[model_providers.milo]
+name = "Milo"
+base_url = "https://milo-gateway.fly.dev/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+```
+
+`env_key` names the environment variable Codex reads the user's OpenRouter key
+from, so export it and run `codex --model milo/auto`:
+
+```sh
+export OPENROUTER_API_KEY="<the user's OpenRouter key>"
+codex --model milo/auto
+```
+
+For one session without editing the file, every key also works as a `-c`
+override:
+
+```sh
+codex -c model_provider=milo \
+      -c 'model_providers.milo={name="Milo",base_url="https://milo-gateway.fly.dev/v1",env_key="OPENROUTER_API_KEY",wire_api="responses"}' \
+      --model milo/auto
+```
+
+Codex does not display response headers, so read a decision back with
+`milo decisions --limit 1` and `milo explain <id>`, or from
+`GET /v1/decisions/<id>`. Any model id other than `milo/auto` passes straight
+through to OpenRouter unrouted.
+<!-- Codex: end -->
+
 ## Verify it works
 
 ```sh

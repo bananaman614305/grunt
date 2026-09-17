@@ -101,6 +101,47 @@ A malformed request body (not JSON, or not a JSON object) returns:
 400 { "error": { "message": "Request body must be a JSON object.", "type": "invalid_request_error", "code": "invalid_request_body" } }
 ```
 
+## `POST /v1/responses`
+
+The OpenAI Responses dialect, for Codex CLI and anything else configured with
+`wire_api = "responses"`. Bearer auth only. Upstream is
+`POST https://openrouter.ai/api/v1/responses`.
+
+Behavior forks on `model` exactly as `/v1/chat/completions` does: `milo/auto`
+routes and anything else passes through with only the `milo` field stripped.
+Same rate limiter and same forced-tier skip, the same six `x-milo-*` headers
+on a routed response, and the same 429 / 502 / 503 refusals in the OpenAI
+error shape.
+
+What differs is the request shape the router reads. There are no `messages`:
+
+| Responses field | What the router sees |
+|---|---|
+| `instructions` (string) | the system message |
+| `input` (string) | one user message |
+| `input` item `{ type: "message", role, content }` | that role's turn; `content` is a string or parts whose `input_text` / `output_text` / `text` contribute their text |
+| `input` item `{ type: "function_call" }` | an assistant marker line naming the tool |
+| `input` item `{ type: "function_call_output" }` | a `role: "tool"` message — a continuation, **not** a new user turn, so the pinned decision is reused |
+| `input` item `{ type: "reasoning" }` and other item types | ignored |
+| `tools` | passed along as the tool list |
+
+`previous_response_id` and `store` are forwarded untouched. Stickiness does
+not use them: the router keys on the conversation fingerprint, which is what
+makes a stateless client that resends its whole `input` every turn (Codex,
+with `store: false`) stick to one model across a tool loop. OpenRouter's own
+schema rejects a non-null `previous_response_id` with a 400 and declares
+`store` `const false`; Milo lets that refusal come from them.
+
+Usage for the decision log is read off `usage.input_tokens`,
+`usage.output_tokens`, and OpenRouter's `usage.cost`. A streamed response is
+never parsed, so it records status and latency only — in this dialect usage
+rides on the `response.completed` event inside the stream.
+
+Any other `/v1/responses/*` path (retrieve, cancel, delete, input items) is
+not claimed here and falls through to the generic `/v1/*` proxy below.
+
+See [`docs/codex.md`](../codex.md) for the client-side setup.
+
 ## `GET /v1/models`
 
 Returns OpenRouter's model list with `milo/auto` prepended, so a model

@@ -6,10 +6,16 @@
  * them -- "a user sets one base URL and their OpenRouter key, sends
  * `milo/auto`, and gets a streamed answer from a model chosen by Jev, with
  * headers naming the decision and a `/v1/decisions/:id` record explaining
- * it", from either dialect. The SDKs are here on purpose: `app.request` would
- * not catch a header an SDK cannot see, a status line it rejects, or an SSE
- * frame its parser chokes on -- and the Anthropic SDK sends its key as
- * `x-api-key`, which is exactly the path task 3.1 had to open.
+ * it", from any of the three dialects. The SDKs are here on purpose:
+ * `app.request` would not catch a header an SDK cannot see, a status line it
+ * rejects, or an SSE frame its parser chokes on -- and the Anthropic SDK
+ * sends its key as `x-api-key`, which is exactly the path task 3.1 had to
+ * open.
+ *
+ * The Responses block drives `client.responses` from the same `openai` SDK
+ * (v7, which has the resource), in the shape Codex CLI sends: `instructions`
+ * as the system prompt, the whole conversation resent in `input`, and
+ * `store: false`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -59,6 +65,20 @@ const ANTHROPIC_FRAMES = [
   'event: message_stop\ndata: {"type":"message_stop"}\n\n',
 ];
 
+/**
+ * The Responses dialect's SSE frames, as OpenRouter's `/responses` emits
+ * them: named events whose `data` is discriminated on `type`, usage carried
+ * on `response.completed`, and no `[DONE]` sentinel.
+ */
+const RESPONSES_FRAMES = [
+  'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_e2e","object":"response","status":"in_progress","model":"anthropic/claude-opus-5","output":[]}}\n\n',
+  'event: response.output_item.added\ndata: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_e2e","role":"assistant","status":"in_progress","content":[]}}\n\n',
+  'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_e2e","output_index":0,"content_index":0,"delta":"race "}\n\n',
+  'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_e2e","output_index":0,"content_index":0,"delta":"condition"}\n\n',
+  'event: response.output_text.done\ndata: {"type":"response.output_text.done","sequence_number":4,"item_id":"msg_e2e","output_index":0,"content_index":0,"text":"race condition"}\n\n',
+  'event: response.completed\ndata: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_e2e","object":"response","status":"completed","model":"anthropic/claude-opus-5","output":[],"usage":{"input_tokens":940,"output_tokens":18,"total_tokens":958}}}\n\n',
+];
+
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -81,6 +101,9 @@ function sse(frames: string[]): Response {
 
 /** Every header the gateway sent OpenRouter on its `/messages` calls. */
 const messagesRequests: Headers[] = [];
+
+/** Every body the gateway sent OpenRouter on its `/responses` calls. */
+const responsesRequests: Record<string, unknown>[] = [];
 
 /** Both upstreams behind one fetch, dispatched on host. */
 const upstreamFetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -123,6 +146,42 @@ const upstreamFetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  // OpenRouter's Responses endpoint answers in the Responses shape.
+  if (url.pathname === "/api/v1/responses") {
+    responsesRequests.push(body);
+    if (body["stream"] === true) return Promise.resolve(sse(RESPONSES_FRAMES));
+    return Promise.resolve(
+      json(
+        {
+          id: "resp_e2e",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: body["model"],
+          output: [
+            {
+              type: "message",
+              id: "msg_e2e",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "It is a race condition.", annotations: [] }],
+            },
+          ],
+          usage: {
+            input_tokens: 940,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 18,
+            output_tokens_details: { reasoning_tokens: 0 },
+            total_tokens: 958,
+            cost: 0.0091,
+          },
+        },
+        200,
+        { "x-request-id": "or-e2e-3" },
+      ),
+    );
+  }
+
   if (body["stream"] === true) return Promise.resolve(sse(STREAM_FRAMES));
 
   return Promise.resolve(
@@ -155,6 +214,10 @@ const MESSAGES = [
 /** A distinct conversation, so the Anthropic block has its own fingerprint. */
 const ANTHROPIC_SYSTEM = "You are a debugging sub-agent driven by Claude Code.";
 const ANTHROPIC_BRIEF = "The retry test flakes one run in five on CI runners. Work out why.";
+
+/** A third conversation, so the Responses block has its own fingerprint too. */
+const CODEX_INSTRUCTIONS = "You are a debugging sub-agent driven by Codex CLI.";
+const CODEX_BRIEF = "The stream test flakes one run in five on CI runners. Work out why.";
 
 let gateway: Gateway;
 let server: RunningServer;
@@ -408,6 +471,110 @@ describe("the Anthropic SDK against Milo", () => {
         messages: [{ role: "user", content: "ping" }],
       }),
     ).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe("the OpenAI SDK's Responses API against Milo", () => {
+  // The shape Codex CLI sends: `instructions` as the system prompt, the whole
+  // conversation resent in `input` every turn, `store: false`, and no
+  // `previous_response_id` -- OpenRouter's Responses endpoint is stateless.
+  it("routes a non-streaming response and explains the choice", async () => {
+    const { data, response } = await client.responses
+      .create({
+        model: "milo/auto",
+        instructions: CODEX_INSTRUCTIONS,
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: CODEX_BRIEF }] }],
+        store: false,
+      })
+      .withResponse();
+
+    expect(data.output_text).toBe("It is a race condition.");
+    // Difficulty 2.4 on a debug task under the default balanced posture is
+    // frontier, and the default roster's frontier model is Opus 5.
+    expect(data.model).toBe("anthropic/claude-opus-5");
+
+    expect(response.headers.get("x-milo-model")).toBe("anthropic/claude-opus-5");
+    expect(response.headers.get("x-milo-tier")).toBe("frontier");
+    expect(response.headers.get("x-milo-task-type")).toBe("debug");
+    expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
+    expect(response.headers.get("x-milo-sticky")).toBe("false");
+    expect(response.headers.get("x-request-id")).toBe("or-e2e-3");
+
+    // Only `model` was rewritten; `store` travelled as sent and no `milo`
+    // field reached OpenRouter.
+    const sent = responsesRequests[0];
+    expect(sent?.["model"]).toBe("anthropic/claude-opus-5");
+    expect(sent?.["store"]).toBe(false);
+    expect(sent).not.toHaveProperty("milo");
+
+    const decisionId = response.headers.get("x-milo-decision-id");
+    expect(decisionId).toBeTruthy();
+
+    const decision = await fetchDecision(decisionId ?? "");
+    expect(decision).toMatchObject({
+      id: decisionId,
+      tier: "frontier",
+      model: "anthropic/claude-opus-5",
+      policyVersion: POLICY_VERSION,
+      signals: { taskType: "debug", difficulty: 2.4, jevRequestId: "req_e2e_0001" },
+    });
+    expect(decision.reason).toContain("debug task");
+
+    await waitForUpstream(decisionId ?? "");
+    const settled = await fetchDecision(decisionId ?? "");
+    // Read off `usage.input_tokens` / `usage.output_tokens`, not the chat
+    // dialect's `prompt_tokens` / `completion_tokens`.
+    expect(settled.upstream).toMatchObject({
+      status: 200,
+      inputTokens: 940,
+      outputTokens: 18,
+      costUsd: 0.0091,
+    });
+  });
+
+  it("streams a routed response through the SDK's parser", async () => {
+    const { data: stream, response } = await client.responses
+      .create({
+        model: "milo/auto",
+        instructions: CODEX_INSTRUCTIONS,
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: CODEX_BRIEF }] }],
+        store: false,
+        stream: true,
+      })
+      .withResponse();
+
+    expect(response.headers.get("x-milo-model")).toBe("anthropic/claude-opus-5");
+    expect(response.headers.get("x-milo-tier")).toBe("frontier");
+    // Same fingerprint as the turn above, so this one costs no Jev call.
+    expect(response.headers.get("x-milo-sticky")).toBe("true");
+
+    let content = "";
+    let completed: string | undefined;
+    for await (const event of stream) {
+      if (event.type === "response.output_text.delta") content += event.delta;
+      if (event.type === "response.completed") completed = event.response.status;
+    }
+
+    expect(content).toBe("race condition");
+    expect(completed).toBe("completed");
+
+    const decisionId = response.headers.get("x-milo-decision-id") ?? "";
+    await waitForUpstream(decisionId);
+    const decision = await fetchDecision(decisionId);
+    expect(decision).toMatchObject({ sticky: true, model: "anthropic/claude-opus-5" });
+    expect(decision.upstream).toMatchObject({ status: 200 });
+  });
+
+  it("passes an explicit model through unrouted", async () => {
+    const before = responsesRequests.length;
+
+    const { data, response } = await client.responses
+      .create({ model: "openai/gpt-5.3-codex", input: "ping", store: false })
+      .withResponse();
+
+    expect(data.model).toBe("openai/gpt-5.3-codex");
+    expect(response.headers.get("x-milo-decision-id")).toBeNull();
+    expect(responsesRequests).toHaveLength(before + 1);
   });
 });
 

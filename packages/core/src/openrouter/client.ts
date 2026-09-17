@@ -78,6 +78,30 @@ export class OpenRouterClient {
   }
 
   /**
+   * POSTs a prepared Responses API body to OpenRouter's `/responses` and
+   * returns the upstream `Response` unread, exactly as `chatCompletions`
+   * does. Same contract: the caller has already run `prepareBody`, and a
+   * streamed body is never touched here.
+   */
+  async responses(opts: {
+    headers: Headers;
+    body: Record<string, unknown>;
+    signal?: AbortSignal;
+  }): Promise<Response> {
+    const headers = this.buildHeaders(opts.headers);
+    headers.set("content-type", "application/json");
+
+    const init: RequestInit = {
+      method: "POST",
+      headers,
+      body: JSON.stringify(opts.body),
+    };
+    if (opts.signal) init.signal = opts.signal;
+
+    return this.doFetch(`${this.baseUrl}/responses`, init, "responses");
+  }
+
+  /**
    * Lists OpenRouter's models. Cached for five minutes per client instance,
    * keyed by nothing — the list is the same for every caller, so the
    * `authorization` value used for one call is never stored and never

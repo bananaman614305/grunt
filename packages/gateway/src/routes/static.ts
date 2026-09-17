@@ -141,6 +141,43 @@ fields:
 | API key | the user's OpenRouter key |
 | Model | \`milo/auto\` |
 
+<!-- Codex: begin -->
+### Codex CLI
+
+Codex is the exception: it needs a custom provider in \`~/.codex/config.toml\`
+rather than three plain settings, and since Codex 0.154 the only supported
+wire protocol is the Responses API, which Milo serves at \`POST /v1/responses\`.
+
+\`\`\`toml
+model_provider = "milo"
+model = "milo/auto"
+
+[model_providers.milo]
+name = "Milo"
+base_url = "${base}/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+\`\`\`
+
+\`env_key\` names the environment variable Codex reads the key from:
+
+\`\`\`sh
+export OPENROUTER_API_KEY="<the user's OpenRouter key>"
+codex --model milo/auto
+\`\`\`
+
+Or for one session, with no file to edit:
+
+\`\`\`sh
+codex -c model_provider=milo \\
+      -c 'model_providers.milo={name="Milo",base_url="${base}/v1",env_key="OPENROUTER_API_KEY",wire_api="responses"}' \\
+      --model milo/auto
+\`\`\`
+
+Codex does not show response headers, so read a decision back from
+\`${base}/v1/decisions/<id>\` (step 4) instead.
+<!-- Codex: end -->
+
 ## 3. Verify it works
 
 \`\`\`sh
