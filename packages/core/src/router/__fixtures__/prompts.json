@@ -1,0 +1,9 @@
+{
+  "system": "You are a sub-agent in a multi-agent engineering crew. You have tools for reading files, searching the repository, editing files, and running the test suite. Work only in the assigned worktree. Report back with a short summary and the test output.",
+  "prompts": {
+    "trivial-rename": "In packages/core/src/log/store.ts, rename the local variable `res` to `rows` everywhere it appears in `listRecent`. Nothing else should change.",
+    "flaky-test": "The gateway test `streams byte-for-byte` passes locally but fails about one run in five in CI with `AssertionError: expected 3 chunks, got 2`. Find out why and fix it. It may be a race between the SSE reader and the mock server closing the socket, but nobody has confirmed that.",
+    "schema-migration": "Design the migration path for moving the decision log from SQLite to Postgres without downtime. We have about 40 million rows, the gateway writes on every request, and reads go through `getById` and `listRecent`. Write up the approach: dual-write, backfill, cutover, and rollback, with the schema changes each step needs.",
+    "concurrency-bug": "Under load the sticky cache occasionally hands two concurrent requests different models for the same fingerprint, so a conversation switches model mid-task. Both requests miss the cache, both call Jev, and the second write wins. Fix it so concurrent misses on one fingerprint collapse into a single Jev call, without holding a lock across the whole request."
+  }
+}
