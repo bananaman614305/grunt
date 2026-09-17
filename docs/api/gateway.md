@@ -32,7 +32,7 @@ No auth. Returns immediately so a health probe works before anyone has a key.
 
 ```
 GET /healthz
-200 { "ok": true, "policyVersion": "v1" }
+200 { "ok": true, "policyVersion": "v2" }
 ```
 
 ## `POST /v1/chat/completions`

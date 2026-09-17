@@ -4,8 +4,12 @@
  * prints the markdown report to stdout, and writes it (and optionally a JSON
  * dump) to disk. Exits 0 even when every example is unscored -- that is a
  * legitimate outcome when no Jev fixtures are recorded yet -- but exits 2
- * when at least one example was scored and tier agreement falls below 0.85,
- * so CI can gate on it once real fixtures exist (ADR-002).
+ * when at least one example was scored and tier agreement falls below the
+ * gate, so CI can gate on it once real fixtures exist (ADR-002).
+ *
+ * The gate defaults to 0.85, which is the target for Jev. The open backend
+ * measures lower (ADR-002 revision 2), so CI passes `--gate 0.80` for it; see
+ * docs/evals.md.
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -31,12 +35,21 @@ const PACKAGE_ROOT = resolve(__dirname, "..");
 /** Tier agreement below this, with at least one scored example, fails the eval (ADR-002). */
 export const MIN_TIER_AGREEMENT = 0.85;
 
+/**
+ * What CI expects of the `system-one-open` backend under policy v2. Lower than
+ * MIN_TIER_AGREEMENT because the open replica is measurably less accurate than
+ * Jev (ADR-004); 0.85 stays the target once Jev has a live run.
+ */
+export const OPEN_BACKEND_TIER_AGREEMENT = 0.8;
+
 export type CliOptions = {
   mode: JevSourceMode;
   posture: CostPosture;
   limit: number | undefined;
   out: string;
   json: string | undefined;
+  /** Minimum tier agreement before the run fails with exit code 2. */
+  gate: number;
 };
 
 function isOneOf<T extends string>(values: readonly T[], value: string): value is T {
@@ -50,6 +63,7 @@ export function parseArgs(argv: string[]): CliOptions {
     limit: undefined,
     out: resolve(PACKAGE_ROOT, "reports/latest.md"),
     json: undefined,
+    gate: MIN_TIER_AGREEMENT,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -85,6 +99,15 @@ export function parseArgs(argv: string[]): CliOptions {
           throw new Error(`--limit must be a positive integer, got "${value}"`);
         }
         options.limit = n;
+        break;
+      }
+      case "--gate": {
+        const value = next();
+        const n = Number.parseFloat(value);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+          throw new Error(`--gate must be a number between 0 and 1, got "${value}"`);
+        }
+        options.gate = n;
         break;
       }
       case "--out":
@@ -133,7 +156,10 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const agreement = tierAgreementRate(report);
-  if (report.scored.length > 0 && agreement < MIN_TIER_AGREEMENT) {
+  if (report.scored.length > 0 && agreement < options.gate) {
+    process.stderr.write(
+      `tier agreement ${(agreement * 100).toFixed(1)}% is below the gate of ${(options.gate * 100).toFixed(1)}%\n`,
+    );
     return 2;
   }
   return 0;

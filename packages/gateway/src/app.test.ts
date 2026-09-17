@@ -13,6 +13,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DecisionLog, DecisionRecord, Roster } from "@milo/core";
+import { POLICY_VERSION } from "@milo/core";
 import { createGateway } from "./index.js";
 import type { Gateway, GatewayOptions } from "./index.js";
 
@@ -349,7 +350,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
 
     expect(res.status).toBe(200);
     // The `flaky-test` fixture is a debug task at difficulty 2.31, which
-    // Policy v1 sends to frontier under the default balanced posture.
+    // The policy sends this distribution to frontier under balanced posture.
     expect(res.headers.get("x-milo-model")).toBe("test/frontier");
     expect(res.headers.get("x-milo-tier")).toBe("frontier");
     expect(res.headers.get("x-milo-task-type")).toBe("debug");
@@ -393,9 +394,13 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       chatBody({ milo: { posture: "low", candidates: ["test/mid"] } }),
     );
 
-    // Difficulty 2.31 under `low` posture is mid, and candidates pin it there.
+    // `low` posture caps at mid however hard the work looks, and candidates
+    // pin the model there too.
     expect(res.headers.get("x-milo-tier")).toBe("mid");
     expect(res.headers.get("x-milo-model")).toBe("test/mid");
+
+    const record = await gateway.log.get(res.headers.get("x-milo-decision-id") ?? "");
+    expect(record?.reason).toContain("low posture caps at mid");
   });
 
   it("streams byte-for-byte and still answers with the milo headers", async () => {
@@ -704,7 +709,7 @@ describe("GET /healthz", () => {
     const res = await gateway.app.request("/healthz");
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, policyVersion: "v1", decisionBackend: "jev" });
+    expect(await res.json()).toEqual({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: "jev" });
     expect(upstreams.calls).toHaveLength(0);
   });
 });
@@ -752,7 +757,7 @@ describe("decision backends", () => {
     const res = await gateway.app.request("/healthz");
     expect(await res.json()).toEqual({
       ok: true,
-      policyVersion: "v1",
+      policyVersion: POLICY_VERSION,
       decisionBackend: "system-one-open",
     });
 

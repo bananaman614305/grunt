@@ -4,6 +4,7 @@ import type { JevClientLike, SystemOneRequest, SystemOneResult } from "../jev/ty
 import type { ChatMessage, CostPosture, RouteDecision, RouteRequest, Roster, Tier } from "../types.js";
 import { POLICY_VERSION, ROUTER_LIMITS } from "../types.js";
 import { fingerprint } from "./fingerprint.js";
+import { JEV_PROFILE } from "./policy.js";
 import { classifyFailure, degradedDecision, Router } from "./router.js";
 import { StickyCache } from "./sticky.js";
 
@@ -190,6 +191,7 @@ describe("Router.route: happy path", () => {
     expect(decision.signals).toEqual({
       taskType: "debug",
       difficulty: 2.31,
+      difficultyLevels: [0.01, 0.09, 0.49, 0.41],
       needsReasoning: 0.93,
       longOutput: 0.31,
       confidences: { task_type: 0.94, difficulty: 0.72 },
@@ -199,8 +201,98 @@ describe("Router.route: happy path", () => {
     });
     expect(decision.degraded).toBe(false);
     expect(decision.reason).toContain("debug task");
-    expect(decision.reason).toContain("difficulty 2.31");
+    expect(decision.reason).toContain("P(hard) 0.41");
     expect(decision.reason).toContain("frontier-model");
+  });
+
+  it("leaves difficultyLevels empty when the backend reports no distribution", async () => {
+    const fixture = loadFixture("flaky-test");
+    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
+    delete answers["difficulty"]?.["probabilities"];
+    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
+
+    const decision = await router.route(request());
+
+    expect(decision.signals?.difficultyLevels).toEqual([]);
+    // Policy falls back to the v1 expected-score rule, which still routes it.
+    expect(decision.reason).toContain("difficulty 2.31");
+    expect(decision.tier).toBe("frontier");
+  });
+
+  it("treats an all-zero distribution as no distribution, not as certainly trivial", async () => {
+    const fixture = loadFixture("flaky-test");
+    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
+    answers["difficulty"]!["probabilities"] = {};
+    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
+
+    const decision = await router.route(request());
+
+    expect(decision.signals?.difficultyLevels).toEqual([]);
+    expect(decision.tier).toBe("frontier");
+  });
+
+  it("reads a partial distribution, treating the missing levels as zero mass", async () => {
+    const fixture = loadFixture("trivial-rename");
+    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
+    answers["difficulty"]!["probabilities"] = { "0": 0.7, "1": 0.3 };
+    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
+
+    expect((await router.route(request())).signals?.difficultyLevels).toEqual([0.7, 0.3, 0, 0]);
+  });
+
+  it("picks the open profile from the backend's model name, and the jev profile otherwise", async () => {
+    // P3 0.18 clears the open profile's 0.10 hard bar but not Jev's 0.25, and
+    // P2+ 0.38 clears neither upper bar.
+    const answers = {
+      task_type: { type: "choice", choice: "feature", confidence: 0.9, probabilities: {} },
+      difficulty: {
+        type: "score",
+        score: 1.36,
+        confidence: 0.4,
+        legend: {},
+        probabilities: { "0": 0.2, "1": 0.42, "2": 0.2, "3": 0.18 },
+      },
+      needs_reasoning: { type: "noul", noul: 0.5 },
+      long_output: { type: "noul", noul: 0.2 },
+    } as unknown as SystemOneResult["answers"];
+
+    const viaJev = new Router({ jev: stubJev(answers, { model: "jev-latest" }), roster: ROSTER });
+    const viaOpen = new Router({
+      jev: stubJev(answers, { model: "system-one-open/e2b-full" }),
+      roster: ROSTER,
+    });
+
+    expect((await viaJev.route(request())).tier).toBe("mid");
+    expect((await viaOpen.route(request())).tier).toBe("frontier");
+  });
+
+  it("lets the profile option override the model-name choice", async () => {
+    const answers = {
+      task_type: { type: "choice", choice: "feature", confidence: 0.9, probabilities: {} },
+      difficulty: {
+        type: "score",
+        score: 1.36,
+        confidence: 0.4,
+        legend: {},
+        probabilities: { "0": 0.2, "1": 0.42, "2": 0.2, "3": 0.18 },
+      },
+      needs_reasoning: { type: "noul", noul: 0.5 },
+      long_output: { type: "noul", noul: 0.2 },
+    } as unknown as SystemOneResult["answers"];
+
+    const forced = new Router({
+      jev: stubJev(answers, { model: "jev-latest" }),
+      roster: ROSTER,
+      profile: "system-one-open",
+    });
+    const forcedObject = new Router({
+      jev: stubJev(answers, { model: "system-one-open/e2b-full" }),
+      roster: ROSTER,
+      profile: JEV_PROFILE,
+    });
+
+    expect((await forced.route(request())).tier).toBe("frontier");
+    expect((await forcedObject.route(request())).tier).toBe("mid");
   });
 
   for (const name of ["trivial-rename", "flaky-test", "schema-migration", "concurrency-bug"]) {

@@ -15,6 +15,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import { POLICY_VERSION } from "@milo/core";
 import { createGateway } from "./index.js";
 import type { Gateway } from "./index.js";
 import { startServer } from "./server.js";
@@ -205,7 +206,7 @@ describe("the OpenAI SDK against Milo", () => {
       id: decisionId,
       tier: "frontier",
       model: "anthropic/claude-opus-5",
-      policyVersion: "v1",
+      policyVersion: POLICY_VERSION,
       degraded: false,
       signals: {
         taskType: "debug",
@@ -215,9 +216,11 @@ describe("the OpenAI SDK against Milo", () => {
         jevModel: "jev-latest",
       },
     });
-    // The reason is the product's explanation, so it has to name the numbers.
+    // The reason is the product's explanation, so it has to name the numbers
+    // policy v2 actually decided on: P(hard) 0.56 against the jev profile's
+    // 0.25 bar.
     expect(decision.reason).toContain("debug task");
-    expect(decision.reason).toContain("2.4");
+    expect(decision.reason).toContain("P(hard) 0.56 at or above 0.25");
     expect(decision.reason).toContain("anthropic/claude-opus-5");
 
     await waitForUpstream(decisionId ?? "");
@@ -313,7 +316,7 @@ describe("the Anthropic SDK against Milo", () => {
       id: decisionId,
       tier: "frontier",
       model: "anthropic/claude-opus-5",
-      policyVersion: "v1",
+      policyVersion: POLICY_VERSION,
       degraded: false,
       signals: { taskType: "debug", difficulty: 2.4, jevRequestId: "req_e2e_0001" },
     });

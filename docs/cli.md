@@ -50,7 +50,7 @@ Startup output:
 
 ```
 $ JEV_API_KEY=dummy milo serve --port 8799 --db "file:/tmp/milo-doctest/decisions.db"
-milo: gateway listening on http://localhost:8799 (policy v1)
+milo: gateway listening on http://localhost:8799 (policy v2)
 milo: set OPENAI_BASE_URL=http://localhost:8799/v1 and use model: "milo/auto"
 ```
 
@@ -113,14 +113,31 @@ Decision 01M2R1Q051K81ZJJM304BDAH04
   Sticky: no
   Degraded: yes
   Upstream: not recorded
-  Policy version: v1
+  Policy version: v2
   Created: 2026-09-17T16:03:07.554Z
 ```
 
 A clean (non-degraded) decision instead prints a `Signals:` block with task
-type, difficulty and its confidence, `needs_reasoning`, `long_output`, the
-Jev request id and model, and Jev's latency. `--json` prints the raw
-`DecisionRecord` instead of this formatted text. Exit code **0** on success.
+type, difficulty and its confidence, the per-level difficulty distribution as
+a bar chart, `needs_reasoning`, `long_output`, the Jev request id and model,
+and Jev's latency:
+
+```
+  Task type: debug
+  Difficulty: 2.40 (confidence 81%)
+  Difficulty levels:
+    0 trivial     [                        ] 1%
+    1 routine     [==                      ] 9%
+    2 substantial [=========               ] 39%
+    3 hard        [============            ] 51%
+  Needs reasoning: 94%
+```
+
+Policy v2 decides on those masses (`docs/routing.md`), so the bars are what
+back up the `Reason:` line. A backend that reports no distribution prints
+`Difficulty levels: not reported by this decision backend` instead. `--json`
+prints the raw `DecisionRecord` instead of this formatted text. Exit code
+**0** on success.
 
 ## `milo decisions`
 

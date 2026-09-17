@@ -15,15 +15,41 @@ Options:
   -h, --help   Show this help
 `;
 
+/** Level names, in the order `difficultyLevels` reports them (ADR-002). */
+const DIFFICULTY_LEVEL_NAMES = ["trivial", "routine", "substantial", "hard"] as const;
+
+/** Width of a full bar, in characters. */
+const BAR_WIDTH = 24;
+
+/**
+ * Renders the per-level difficulty distribution as a small bar chart. Policy
+ * v2 decides on these masses rather than on the expected score, so `explain`
+ * has to show them or it cannot back up the reason sentence it prints.
+ */
+export function formatDifficultyLevels(levels: number[]): string[] {
+  if (levels.length === 0) {
+    return ["  Difficulty levels: not reported by this decision backend"];
+  }
+  const lines = ["  Difficulty levels:"];
+  levels.forEach((probability, level) => {
+    const clamped = Math.max(0, Math.min(1, probability));
+    const filled = Math.round(clamped * BAR_WIDTH);
+    const name = DIFFICULTY_LEVEL_NAMES[level] ?? `level ${level}`;
+    const bar = "=".repeat(filled) + " ".repeat(BAR_WIDTH - filled);
+    lines.push(`    ${level} ${name.padEnd(11)} [${bar}] ${formatProbability(probability)}`);
+  });
+  return lines;
+}
+
 function formatSignals(signals: RouteSignals): string {
-  // RouteSignals carries one confidence per question (the winning answer's
-  // own probability), not the full per-level distribution Jev computed --
-  // that is not part of the DecisionRecord contract, so this is the most
-  // detail `explain` can show for difficulty.
+  // `confidences` carries one number per question (the winning answer's own
+  // probability); `difficultyLevels` carries the whole distribution policy v2
+  // actually reads, so both are shown.
   const difficultyConfidence = signals.confidences["difficulty"];
   return [
     `  Task type: ${signals.taskType}`,
     `  Difficulty: ${signals.difficulty.toFixed(2)} (confidence ${formatProbability(difficultyConfidence)})`,
+    ...formatDifficultyLevels(signals.difficultyLevels ?? []),
     `  Needs reasoning: ${formatProbability(signals.needsReasoning)}`,
     `  Long output: ${formatProbability(signals.longOutput)}`,
     `  Jev request id: ${signals.jevRequestId || "(none)"}`,

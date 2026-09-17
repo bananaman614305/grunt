@@ -82,6 +82,7 @@ captured response):
   "signals": {
     "taskType": "debug",
     "difficulty": 2.4,
+    "difficultyLevels": [0.01, 0.09, 0.39, 0.51],
     "needsReasoning": 0.94,
     "longOutput": 0.22,
     "confidences": { "task_type": 0.9, "difficulty": 0.81 },
@@ -91,8 +92,8 @@ captured response):
   },
   "tier": "frontier",
   "model": "anthropic/claude-opus-5",
-  "reason": "debug task, difficulty 2.40 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
-  "policyVersion": "v1",
+  "reason": "debug task, P(hard) 0.51 at or above 0.25 with balanced posture routes to frontier; chose anthropic/claude-opus-5",
+  "policyVersion": "v2",
   "sticky": false,
   "degraded": false,
   "createdAt": "2026-09-17T16:03:07.554Z",

@@ -88,6 +88,7 @@ async function scoreExample(
       ...base,
       predictedTaskType: signals.taskType,
       predictedDifficulty: signals.difficulty,
+      difficultyLevels: signals.difficultyLevels,
       needsReasoning: signals.needsReasoning,
       predictedTier: decision.tier,
       reason: decision.reason,

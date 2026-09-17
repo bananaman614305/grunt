@@ -18,3 +18,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm test
+      # The committed fixtures were recorded from the open backend, which is
+      # held to 0.80 rather than the 0.85 Jev target (docs/evals.md).
+      - run: pnpm eval -- --mode fixtures --gate 0.80
+        env:
+          MILO_DECISION_BACKEND: system-one-open

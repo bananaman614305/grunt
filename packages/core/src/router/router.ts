@@ -5,7 +5,12 @@
  *   1. a forced tier skips Jev entirely;
  *   2. a sticky hit on the fingerprint reuses the decision;
  *   3. otherwise one Jev `/v1/systemone` call under a hard
- *      `ROUTER_LIMITS.jevTimeoutMs` budget, then Policy v1 and the roster.
+ *      `ROUTER_LIMITS.jevTimeoutMs` budget, then Policy v2 and the roster.
+ *
+ * Policy v2's thresholds are per decision backend (ADR-002 revision 2), so the
+ * router picks a `PolicyProfile`: the `profile` option when the caller set one,
+ * otherwise from the model name the backend reported -- `system-one-open/...`
+ * means the open replica, anything else means Jev.
  *
  * The router never blocks a request. Any Jev failure -- timeout, network,
  * HTTP, or a malformed answer -- degrades to the `mid` tier with
@@ -19,7 +24,8 @@ import type { JevAnswer, JevClientLike, SystemOneResult } from "../jev/types.js"
 import type { ChatMessage, RouteDecision, RouteRequest, RouteSignals, Roster, TaskType } from "../types.js";
 import { DEFAULT_ROSTER, POLICY_VERSION, ROUTER_LIMITS, TASK_TYPES } from "../types.js";
 import { buildJevState } from "./context.js";
-import { chooseTier } from "./policy.js";
+import { chooseTier, profileForModel, resolveProfile } from "./policy.js";
+import type { PolicyProfile, PolicyProfileName } from "./policy.js";
 import { ROUTER_QUESTIONS } from "./questions.js";
 import { resolveModel } from "./roster.js";
 import { StickyCache } from "./sticky.js";
@@ -73,6 +79,13 @@ export type RouterOptions = {
   onError?: (err: unknown) => void;
   /** Jev budget in ms; defaults to ROUTER_LIMITS.jevTimeoutMs. */
   jevTimeoutMs?: number;
+  /**
+   * Policy v2 threshold set, or the name of one. Overrides the per-decision
+   * choice made from the backend's reported model name, which is what a
+   * fallback chain wants (its two backends report different names) and a
+   * fixed backend does not.
+   */
+  profile?: PolicyProfile | PolicyProfileName;
 };
 
 /** A Jev answer that does not match its question's shape. */
@@ -117,18 +130,54 @@ function readTaskType(answer: JevAnswer | undefined): { taskType: TaskType; conf
   return { taskType: choice as TaskType, confidence: finite(confidence) ? confidence : 0 };
 }
 
-function readDifficulty(answer: JevAnswer | undefined): { difficulty: number; confidence: number } {
+/**
+ * Reads the per-level probability mass off a score answer, ordered 0..3. A
+ * key the backend omitted reads as 0.
+ *
+ * A backend that reports no distribution at all -- no `probabilities` field,
+ * an empty one, or one whose mass sums to zero -- gets an empty array, and the
+ * policy falls back to the expected-score rule. An all-zero array would
+ * otherwise read as "certainly trivial" and send every request to `fast`.
+ */
+function readDifficultyLevels(answer: Record<string, unknown>, levelCount: number): number[] {
+  const probabilities = answer["probabilities"];
+  if (!isRecord(probabilities)) return [];
+  const levels: number[] = [];
+  let total = 0;
+  for (let level = 0; level < levelCount; level += 1) {
+    const value = probabilities[String(level)];
+    const mass = finite(value) && value > 0 ? value : 0;
+    levels.push(mass);
+    total += mass;
+  }
+  return total > 0 ? levels : [];
+}
+
+function difficultyLevelCount(): number {
+  const question = ROUTER_QUESTIONS["difficulty"];
+  return question && question.type === "score" ? question.criteria.length : 4;
+}
+
+function readDifficulty(answer: JevAnswer | undefined): {
+  difficulty: number;
+  confidence: number;
+  levels: number[];
+} {
   if (!isRecord(answer) || answer["type"] !== "score") {
     throw new AnswerValidationError('answer "difficulty" is not a score');
   }
   const score = answer["score"];
-  const levels = ROUTER_QUESTIONS["difficulty"];
-  const max = levels && levels.type === "score" ? levels.criteria.length - 1 : 3;
+  const levelCount = difficultyLevelCount();
+  const max = levelCount - 1;
   if (!finite(score) || score < 0 || score > max) {
     throw new AnswerValidationError('answer "difficulty" is out of range');
   }
   const confidence = answer["confidence"];
-  return { difficulty: score, confidence: finite(confidence) ? confidence : 0 };
+  return {
+    difficulty: score,
+    confidence: finite(confidence) ? confidence : 0,
+    levels: readDifficultyLevels(answer, levelCount),
+  };
 }
 
 /**
@@ -148,6 +197,7 @@ export function toSignals(result: SystemOneResult, fallbackLatencyMs: number): R
   return {
     taskType: task.taskType,
     difficulty: difficulty.difficulty,
+    difficultyLevels: difficulty.levels,
     needsReasoning,
     longOutput,
     // noul answers carry no confidence of their own, so only the choice and
@@ -186,6 +236,7 @@ export class Router {
   private readonly onDecision: ((decision: RouteDecision) => void | Promise<void>) | undefined;
   private readonly onError: (err: unknown) => void;
   private readonly jevTimeoutMs: number;
+  private readonly profile: PolicyProfile | undefined;
 
   constructor(opts: RouterOptions) {
     this.jev = opts.jev;
@@ -195,6 +246,12 @@ export class Router {
     this.onDecision = opts.onDecision;
     this.onError = opts.onError ?? (() => undefined);
     this.jevTimeoutMs = opts.jevTimeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
+    this.profile = opts.profile !== undefined ? resolveProfile(opts.profile) : undefined;
+  }
+
+  /** The configured profile, else the one the answering backend's name implies. */
+  private profileFor(signals: RouteSignals): PolicyProfile {
+    return this.profile ?? profileForModel(signals.jevModel);
   }
 
   async route(req: RouteRequest): Promise<RouteDecision> {
@@ -229,7 +286,7 @@ export class Router {
       return this.emit(this.degraded(req, classifyFailure(error)));
     }
 
-    const { tier, reason } = chooseTier(signals, req.posture);
+    const { tier, reason } = chooseTier(signals, req.posture, this.profileFor(signals));
     const model = resolveModel(tier, this.roster, req.candidates, { longOutput: signals.longOutput });
 
     const decision: RouteDecision = {
