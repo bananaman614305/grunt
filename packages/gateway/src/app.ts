@@ -11,7 +11,7 @@
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { POLICY_VERSION, ROUTED_MODEL_ID } from "@milo/core";
-import type { DecisionRecord, DecisionLog, OpenRouterClient, RouteDecision, Roster, Router } from "@milo/core";
+import type { DecisionRecord, DecisionLog, OpenRouterClient, Router } from "@milo/core";
 import type { AnthropicUpstream } from "./anthropic.js";
 import { anthropicErrorResponse, errorResponse } from "./errors.js";
 import type { RateLimiter } from "./rate-limit.js";
@@ -28,27 +28,23 @@ export type Logger = {
   error(msg: string, meta?: Record<string, unknown>): void;
 };
 
+/**
+ * What `/healthz` and `/` report as the decision backend. Jev is the only one
+ * (ADR-005), but the key stays in both payloads so a dashboard that reads it
+ * does not break.
+ */
+export const DECISION_BACKEND = "jev";
+
 export type AppDeps = {
   router: Router;
-  /** Which decision backend the router is wired to. Reported by `/healthz`. */
-  decisionBackend: string;
   openRouter: OpenRouterClient;
   /** OpenRouter's Anthropic-compatible surface, for `/v1/messages`. */
   anthropic: AnthropicUpstream;
   log: DecisionLog;
   rateLimiter: RateLimiter;
-  roster: Roster;
   logger: Logger;
   /** Injectable clock for upstream latency. */
   now: () => number;
-  /**
-   * Writes a decision the gateway minted itself (rate limited, or the router
-   * throwing), awaited before the response goes out. Decisions the router
-   * produced are written by its own `onDecision` hook instead, which the
-   * router awaits internally -- by the time `route()` resolves, that row
-   * already exists.
-   */
-  insertDecision(decision: RouteDecision): Promise<void>;
   /** Fire and forget, but tracked so `close()` can drain it. */
   recordUpstream(id: string, upstream: NonNullable<DecisionRecord["upstream"]>): void;
 };
@@ -148,7 +144,7 @@ export function createApp(deps: AppDeps): Hono {
 
   // No auth: a health probe must work before anyone has a key.
   app.get("/healthz", (c) =>
-    c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: deps.decisionBackend }),
+    c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: DECISION_BACKEND }),
   );
 
   // A landing answer for people who open the bare address. Browsers get a
@@ -165,7 +161,7 @@ export function createApp(deps: AppDeps): Hono {
       baseUrl,
       routedModel: ROUTED_MODEL_ID,
       policyVersion: POLICY_VERSION,
-      decisionBackend: deps.decisionBackend,
+      decisionBackend: DECISION_BACKEND,
       endpoints: ["/healthz", "/v1/chat/completions", "/v1/messages", "/v1/models", "/v1/decisions/:id"],
       docs: "https://github.com/bananaman614305/milo",
     };

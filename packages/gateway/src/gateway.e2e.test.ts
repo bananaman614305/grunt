@@ -195,8 +195,18 @@ describe("the OpenAI SDK against Milo", () => {
     expect(response.headers.get("x-milo-task-type")).toBe("debug");
     expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
     expect(response.headers.get("x-milo-sticky")).toBe("false");
-    expect(response.headers.get("x-milo-degraded")).toBe("false");
     expect(response.headers.get("x-request-id")).toBe("or-e2e-1");
+
+    // Six headers explain the choice; `x-milo-degraded` is not among them,
+    // because there is no degraded decision to report any more.
+    expect([...response.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
+      "x-milo-decision-id",
+      "x-milo-difficulty",
+      "x-milo-model",
+      "x-milo-sticky",
+      "x-milo-task-type",
+      "x-milo-tier",
+    ]);
 
     const decisionId = response.headers.get("x-milo-decision-id");
     expect(decisionId).toBeTruthy();
@@ -207,7 +217,6 @@ describe("the OpenAI SDK against Milo", () => {
       tier: "frontier",
       model: "anthropic/claude-opus-5",
       policyVersion: POLICY_VERSION,
-      degraded: false,
       signals: {
         taskType: "debug",
         difficulty: 2.4,
@@ -277,6 +286,14 @@ describe("the OpenAI SDK against Milo", () => {
   });
 });
 
+describe("the health surface", () => {
+  it("reports the policy version and the one decision backend", async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/healthz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: "jev" });
+  });
+});
+
 describe("the Anthropic SDK against Milo", () => {
   it("routes a non-streaming message and explains the choice", async () => {
     const { data, response } = await anthropic.messages
@@ -298,7 +315,6 @@ describe("the Anthropic SDK against Milo", () => {
     expect(response.headers.get("x-milo-task-type")).toBe("debug");
     expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
     expect(response.headers.get("x-milo-sticky")).toBe("false");
-    expect(response.headers.get("x-milo-degraded")).toBe("false");
     expect(response.headers.get("x-request-id")).toBe("or-e2e-2");
 
     // The SDK's key arrived as `x-api-key` and left as a bearer token, and
@@ -317,7 +333,6 @@ describe("the Anthropic SDK against Milo", () => {
       tier: "frontier",
       model: "anthropic/claude-opus-5",
       policyVersion: POLICY_VERSION,
-      degraded: false,
       signals: { taskType: "debug", difficulty: 2.4, jevRequestId: "req_e2e_0001" },
     });
     expect(decision.reason).toContain("debug task");

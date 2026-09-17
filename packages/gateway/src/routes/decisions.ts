@@ -24,11 +24,10 @@ export function registerDecisionsRoutes(app: Hono, deps: AppDeps): void {
   });
 
   app.get("/v1/decisions", async (c) => {
-    const opts: { limit?: number; degradedOnly?: boolean } = {};
+    const opts: { limit?: number } = {};
 
     const limit = Number(c.req.query("limit"));
     if (Number.isFinite(limit) && limit > 0) opts.limit = Math.floor(limit);
-    if (isTrue(c.req.query("degraded"))) opts.degradedOnly = true;
 
     return c.json({ data: await deps.log.listRecent(opts) });
   });
@@ -40,8 +39,4 @@ export function registerDecisionsRoutes(app: Hono, deps: AppDeps): void {
     }
     return c.json(record);
   });
-}
-
-function isTrue(value: string | undefined): boolean {
-  return value === "" || value === "1" || value?.toLowerCase() === "true";
 }

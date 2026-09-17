@@ -20,7 +20,12 @@
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
-export type ErrorType = "authentication_error" | "invalid_request_error" | "not_found_error" | "api_error";
+export type ErrorType =
+  | "authentication_error"
+  | "invalid_request_error"
+  | "not_found_error"
+  | "rate_limit_error"
+  | "api_error";
 
 export type OpenAIErrorBody = {
   error: { message: string; type: ErrorType; code: string };
@@ -30,14 +35,22 @@ export function openAiError(message: string, type: ErrorType, code: string): Ope
   return { error: { message, type, code } };
 }
 
+/**
+ * `headers` exists for the one case that needs it: a refusal that tells the
+ * client when to come back (`Retry-After` on a 429 or a 503). Everything else
+ * passes four arguments and gets a plain JSON body.
+ */
 export function errorResponse(
   c: Context,
   status: ContentfulStatusCode,
   message: string,
   type: ErrorType,
   code: string,
+  headers?: Record<string, string>,
 ): Response {
-  return c.json(openAiError(message, type, code), status);
+  return headers === undefined
+    ? c.json(openAiError(message, type, code), status)
+    : c.json(openAiError(message, type, code), status, headers);
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +62,7 @@ export type AnthropicErrorType =
   | "invalid_request_error"
   | "authentication_error"
   | "not_found_error"
+  | "rate_limit_error"
   | "api_error";
 
 export type AnthropicErrorBody = {
@@ -65,8 +79,11 @@ export function anthropicErrorResponse(
   status: ContentfulStatusCode,
   message: string,
   type: AnthropicErrorType,
+  headers?: Record<string, string>,
 ): Response {
-  return c.json(anthropicError(message, type), status);
+  return headers === undefined
+    ? c.json(anthropicError(message, type), status)
+    : c.json(anthropicError(message, type), status, headers);
 }
 
 /** An error's message, for a log line. Never rendered into a response body. */

@@ -23,12 +23,20 @@
 
 import type { Hono } from "hono";
 import type { Context } from "hono";
-import { extractMilo, fingerprint, isStreaming, prepareBody } from "@milo/core";
+import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
 import type { ChatMessage, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { authorization, passThroughHeaders } from "../app.js";
 import { errorMessage, errorResponse } from "../errors.js";
-import { applyMiloHeaders, degradedDecision, onFinished, readJsonObject } from "./shared.js";
+import {
+  applyMiloHeaders,
+  onFinished,
+  rateLimitedMessage,
+  readJsonObject,
+  retryAfterFromBucket,
+  retryAfterSeconds,
+  routingUnavailableMessage,
+} from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 
 export function registerChatRoute(app: Hono, deps: AppDeps): void {
@@ -86,47 +94,66 @@ async function routed(
   const candidates = extension?.candidates;
   const forcedTier = extension?.tier;
 
-  let decision: RouteDecision;
-
   // A forced tier never calls Jev, so it never spends the budget the rate
   // limiter exists to bound; only an unforced request can be over the limit.
   if (forcedTier === undefined && !deps.rateLimiter.tryConsume(authorization(c))) {
-    // Over the limit is not a rejection: the user's OpenRouter spend is
-    // theirs, only Milo's Jev spend is capped. Skip Jev, take `mid`, say so.
-    decision = degradedDecision(
-      deps,
-      conversation,
-      candidates,
-      `rate limited: routed requests exceeded ${deps.rateLimiter.capacity} per minute for this key`,
-    );
-    deps.logger.warn("routed request rate limited", { decisionId: decision.id, fingerprint: conversation });
-    await deps.insertDecision(decision);
-  } else {
-    const request: RouteRequest = {
-      messages,
-      posture: (extension?.posture ?? "balanced") satisfies CostPosture,
+    // No decision is made here, so no decision row is written: there is
+    // nothing to explain but the refusal itself.
+    const retryAfter = retryAfterFromBucket(deps.rateLimiter.retryAfterMs(authorization(c)));
+    deps.logger.warn("routed request rate limited", {
       fingerprint: conversation,
-    };
-    if (Array.isArray(body["tools"])) request.tools = body["tools"];
-    if (candidates !== undefined) request.candidates = candidates;
-    if (forcedTier !== undefined) request.forcedTier = forcedTier;
+      status: 429,
+      retryAfter,
+    });
+    return errorResponse(
+      c,
+      429,
+      rateLimitedMessage(deps.rateLimiter.capacity),
+      "rate_limit_error",
+      "rate_limit_exceeded",
+      { "retry-after": retryAfter },
+    );
+  }
 
-    try {
-      decision = await deps.router.route(request);
-    } catch (err) {
-      // The router degrades rather than throwing, so reaching here means a
-      // bug or an unusable roster. Record why, then fail loudly: guessing a
-      // model on top of a broken configuration would hide it.
-      deps.logger.error("router threw", { error: errorMessage(err) });
-      const failed = degradedDecision(
-        deps,
-        conversation,
-        candidates,
-        "routing failed unexpectedly, fell back to the mid tier",
+  const request: RouteRequest = {
+    messages,
+    posture: (extension?.posture ?? "balanced") satisfies CostPosture,
+    fingerprint: conversation,
+  };
+  if (Array.isArray(body["tools"])) request.tools = body["tools"];
+  if (candidates !== undefined) request.candidates = candidates;
+  if (forcedTier !== undefined) request.forcedTier = forcedTier;
+
+  let decision: RouteDecision;
+  try {
+    decision = await deps.router.route(request);
+  } catch (err) {
+    // Jev could not answer, and there is no second backend and no mid-tier
+    // guess left to make: `milo/auto` without a decision is a 503, and the
+    // client is told to retry or name a model itself.
+    if (isRoutingUnavailable(err)) {
+      const retryAfter = retryAfterSeconds(err);
+      deps.logger.warn("routing unavailable", {
+        cause: err.cause_,
+        status: 503,
+        upstreamStatus: err.status,
+        jevRequestId: err.requestId,
+        retryAfter,
+      });
+      return errorResponse(
+        c,
+        503,
+        routingUnavailableMessage(err.cause_),
+        "api_error",
+        "routing_unavailable",
+        { "retry-after": retryAfter },
       );
-      await deps.insertDecision(failed);
-      return errorResponse(c, 502, "Milo could not route this request.", "api_error", "routing_failed");
     }
+
+    // Anything else is a bug or an unusable roster. Fail loudly rather than
+    // fabricating a model on top of a broken configuration.
+    deps.logger.error("router threw", { error: errorMessage(err), status: 502 });
+    return errorResponse(c, 502, "Milo could not route this request.", "api_error", "routing_failed");
   }
 
   deps.logger.info("routed", {
@@ -134,7 +161,6 @@ async function routed(
     model: decision.model,
     tier: decision.tier,
     sticky: decision.sticky,
-    degraded: decision.degraded,
   });
 
   return forward(c, deps, body, decision);

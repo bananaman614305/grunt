@@ -8,10 +8,8 @@
  * just its own translation layer.
  */
 
-import { degradedDecision as coreDegradedDecision } from "@milo/core";
-import type { DecisionRecord, RouteDecision } from "@milo/core";
+import type { DecisionRecord, RouteDecision, RoutingUnavailableError } from "@milo/core";
 import type { Context } from "hono";
-import type { AppDeps } from "../app.js";
 
 /** A parsed request body. Both dialects are JSON objects at the top level. */
 export type Body = Record<string, unknown>;
@@ -39,40 +37,59 @@ export async function readJsonObject(c: Context): Promise<Body | undefined> {
 }
 
 /**
- * The seven headers that explain a routed response. Identical on both routes:
- * a client that learned to read them from the OpenAI surface reads them off
- * the Anthropic one without changing a line.
+ * The six headers that explain a routed response. Identical on both routes: a
+ * client that learned to read them from the OpenAI surface reads them off the
+ * Anthropic one without changing a line.
+ *
+ * Every decision that reaches here came from Jev or from a forced tier, so a
+ * missing `signals` now means only "forced, no question was asked"; there is
+ * no degraded decision left to describe.
  */
 export function applyMiloHeaders(headers: Headers, decision: RouteDecision): void {
   headers.set("x-milo-decision-id", decision.id);
   headers.set("x-milo-model", decision.model);
   headers.set("x-milo-tier", decision.tier);
-  // A degraded decision has no signals; say `unknown` rather than inventing a
-  // task type or a difficulty the router never got.
   headers.set("x-milo-task-type", decision.signals?.taskType ?? "unknown");
   headers.set("x-milo-difficulty", decision.signals ? decision.signals.difficulty.toFixed(2) : "unknown");
   headers.set("x-milo-sticky", decision.sticky ? "true" : "false");
-  headers.set("x-milo-degraded", decision.degraded ? "true" : "false");
+}
+
+/** `Retry-After` when Milo could not route at all, in seconds. */
+export const ROUTING_RETRY_AFTER_SECONDS = 2;
+
+/**
+ * What a client is told when Jev could not answer. It names the class of
+ * failure and nothing else -- no upstream text, no key material (ADR-003) --
+ * and it says what the user can do about it, because the alternative Milo
+ * used to offer (a guessed mid-tier model) is gone: an explicit model id
+ * still passes straight through to OpenRouter.
+ */
+export function routingUnavailableMessage(cause: string): string {
+  return `Milo could not route this request: ${cause} from the decision model. Retry, or set an explicit model.`;
 }
 
 /**
- * A degraded decision the gateway minted itself. `resolveModel` can throw on
- * a roster with nothing eligible, and the whole point of a degraded decision
- * is that it still answers, so widen the search before giving up on it.
+ * The `Retry-After` value for a routing failure: whatever hint the error
+ * carried, else two seconds. Whole seconds, since that is what the header
+ * takes, and never zero.
  */
-export function degradedDecision(
-  deps: AppDeps,
-  conversation: string,
-  candidates: string[] | undefined,
-  reason: string,
-): RouteDecision {
-  return coreDegradedDecision({
-    fingerprint: conversation,
-    roster: deps.roster,
-    ...(candidates !== undefined ? { candidates } : {}),
-    reason,
-    clock: deps.now,
-  });
+export function retryAfterSeconds(err: RoutingUnavailableError): string {
+  const ms = err.retryAfterMs;
+  if (ms === undefined) return String(ROUTING_RETRY_AFTER_SECONDS);
+  return String(Math.max(1, Math.ceil(ms / 1000)));
+}
+
+/** The `Retry-After` value for a rate-limited key, from its bucket's refill. */
+export function retryAfterFromBucket(ms: number): string {
+  return String(Math.max(1, Math.ceil(ms / 1000)));
+}
+
+/** What a client is told when its key is out of routed-request budget. */
+export function rateLimitedMessage(perMinute: number): string {
+  return (
+    `Milo routes at most ${perMinute} requests a minute for one key. ` +
+    "Retry shortly, or set an explicit model, which Milo forwards without routing."
+  );
 }
 
 export function onFinished(done: () => void): TransformStream<Uint8Array, Uint8Array> {

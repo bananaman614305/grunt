@@ -66,6 +66,42 @@ describe("RateLimiter", () => {
     expect(limiter.tryConsume("Bearer sk-or-v1-someone-else")).toBe(true);
   });
 
+  it("says how long a refused key must wait, and nothing for one that need not", () => {
+    const times = { now: 0 };
+    const limiter = new RateLimiter({ routedPerMinute: 2, clock: at(times) });
+
+    // A key nobody has seen can spend right now.
+    expect(limiter.retryAfterMs(KEY)).toBe(0);
+
+    expect([limiter.tryConsume(KEY), limiter.tryConsume(KEY), limiter.tryConsume(KEY)]).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    // Two a minute is one every thirty seconds, and the bucket is empty.
+    expect(limiter.retryAfterMs(KEY)).toBe(30_000);
+
+    // Half a token in: half the wait left. (The answer is always rounded up,
+    // so a client told to wait never comes back a millisecond too early.)
+    times.now = 15_000;
+    expect(limiter.retryAfterMs(KEY)).toBe(15_000);
+
+    times.now = 30_000;
+    expect(limiter.retryAfterMs(KEY)).toBe(0);
+    expect(limiter.tryConsume(KEY)).toBe(true);
+  });
+
+  it("does not spend a token to answer the question", () => {
+    const limiter = new RateLimiter({ routedPerMinute: 2, clock: () => 0 });
+    expect(limiter.tryConsume(KEY)).toBe(true);
+
+    for (let i = 0; i < 10; i++) limiter.retryAfterMs(KEY);
+
+    // One token left, and reading the wait did not eat it.
+    expect(limiter.tryConsume(KEY)).toBe(true);
+    expect(limiter.tryConsume(KEY)).toBe(false);
+  });
+
   it("holds the key bound under churn and keeps limiting the key still spending", () => {
     const limiter = new RateLimiter({ routedPerMinute: 1, maxKeys: 8, clock: () => 0 });
     expect(limiter.tryConsume(KEY)).toBe(true);

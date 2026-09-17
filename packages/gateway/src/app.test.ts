@@ -12,10 +12,14 @@
 
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DecisionLog, DecisionRecord, Roster } from "@milo/core";
-import { POLICY_VERSION } from "@milo/core";
+import type { Hono } from "hono";
+import type { DecisionRecord, Roster, Router, RoutingUnavailableCause } from "@milo/core";
+import { DecisionLog, OpenRouterClient, POLICY_VERSION, RoutingUnavailableError } from "@milo/core";
+import { AnthropicUpstream } from "./anthropic.js";
+import { createApp } from "./app.js";
 import { createGateway } from "./index.js";
 import type { Gateway, GatewayOptions } from "./index.js";
+import { RateLimiter } from "./rate-limit.js";
 
 // A key-shaped value that must never reach a decision, a header, or a log.
 const KEY = "sk-or-v1-NEVERLEAKTHIS0123456789abcdef";
@@ -55,40 +59,9 @@ function jevOk(name: string): Handler {
     });
 }
 
-/** Never answers; aborts when the caller's deadline fires. */
-const jevHangs: Handler = () =>
-  new Promise<Response>((_resolve, reject) => {
-    const fail = (): void => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-    // Nothing resolves this; the router's 400 ms budget ends the wait.
-    setTimeout(fail, 5_000).unref();
-  });
-
-/** The same answers in the open backend's list-of-answers wire shape. */
-function systemOneOpenOk(name: string): Handler {
-  const f = fixture(name);
-  return (call) => {
-    if (call.url.pathname === "/info") {
-      return jsonResponse({ model: "e2b-full", device: "cuda", primitives: ["choice", "score", "noul"] });
-    }
-    const answers = Object.entries(f.answers).map(([id, answer]) => {
-      const a = answer as Record<string, unknown>;
-      if (a["type"] === "score") {
-        // The open backend returns no legend and keys probabilities by index.
-        const { legend: _legend, ...rest } = a;
-        return { id, ...rest };
-      }
-      return { id, ...a };
-    });
-    return jsonResponse({ answers, latency_ms: 110.8, passes: 1, model: "e2b-full" });
-  };
-}
-
-const SYSTEM_ONE_OPEN_URL = "https://open.example.test";
-
 class Upstreams {
   readonly calls: Call[] = [];
   jev: Handler = jevOk("flaky-test");
-  systemOneOpen: Handler = systemOneOpenOk("flaky-test");
   openRouter: Handler = () => jsonResponse({ ok: true });
 
   readonly fetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -103,7 +76,6 @@ class Upstreams {
     this.calls.push(call);
 
     if (url.host === "api.typesafe.ai") return this.jev(call);
-    if (url.host === "open.example.test") return this.systemOneOpen(call);
     if (url.host === "openrouter.ai") return this.openRouter(call);
     throw new Error(`unexpected upstream host: ${url.host}`);
   }) as typeof fetch;
@@ -114,10 +86,6 @@ class Upstreams {
 
   jevCalls(): Call[] {
     return this.calls.filter((c) => c.url.host === "api.typesafe.ai");
-  }
-
-  systemOneOpenCalls(): Call[] {
-    return this.calls.filter((c) => c.url.host === "open.example.test");
   }
 }
 
@@ -195,9 +163,50 @@ async function start(overrides: Partial<GatewayOptions> = {}): Promise<Gateway> 
   return gateway;
 }
 
+/** Decision logs opened by `stubRouterApp`, closed with the gateway. */
+let stubLogs: DecisionLog[];
+
+/**
+ * The app wired to a router that throws, which is the only way to drive the
+ * routing-failure paths from here: the real `Router` is what decides to throw,
+ * and this file's job is what the *gateway* does with the throw.
+ */
+async function stubRouterApp(
+  route: () => Promise<never>,
+  opts: { routedPerMinute?: number } = {},
+): Promise<{ app: Hono; log: DecisionLog }> {
+  const log = await DecisionLog.open(":memory:");
+  stubLogs.push(log);
+  const app = createApp({
+    router: { route } as unknown as Router,
+    openRouter: new OpenRouterClient({ fetch: upstreams.fetch }),
+    anthropic: new AnthropicUpstream({ fetch: upstreams.fetch }),
+    log,
+    rateLimiter: new RateLimiter(
+      opts.routedPerMinute !== undefined ? { routedPerMinute: opts.routedPerMinute } : {},
+    ),
+    logger: capturingLogger(lines),
+    now: Date.now,
+    recordUpstream: () => undefined,
+  });
+  return { app, log };
+}
+
+/** A router that always throws the same routing failure. */
+function unroutable(cause: RoutingUnavailableCause, opts: { retryAfterMs?: number } = {}): () => Promise<never> {
+  return () =>
+    Promise.reject(
+      new RoutingUnavailableError(cause, `jev ${cause}`, {
+        requestId: "req_jev_0001",
+        ...(opts.retryAfterMs !== undefined ? { retryAfterMs: opts.retryAfterMs } : {}),
+      }),
+    );
+}
+
 beforeEach(() => {
   upstreams = new Upstreams();
   lines = [];
+  stubLogs = [];
   // A test that never starts a gateway (or whose `createGateway` throws) must
   // not have `afterEach` close the previous test's gateway a second time.
   gateway = undefined as unknown as Gateway;
@@ -205,6 +214,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await gateway?.close();
+  for (const log of stubLogs) await log.close();
 });
 
 function chatBody(extra: Record<string, unknown> = {}): string {
@@ -356,8 +366,18 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(res.headers.get("x-milo-task-type")).toBe("debug");
     expect(res.headers.get("x-milo-difficulty")).toBe("2.31");
     expect(res.headers.get("x-milo-sticky")).toBe("false");
-    expect(res.headers.get("x-milo-degraded")).toBe("false");
     expect(res.headers.get("x-request-id")).toBe("or-req-2");
+
+    // Six headers explain a decision, and `x-milo-degraded` is not one of
+    // them any more: there is no degraded decision left to report.
+    expect([...res.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
+      "x-milo-decision-id",
+      "x-milo-difficulty",
+      "x-milo-model",
+      "x-milo-sticky",
+      "x-milo-task-type",
+      "x-milo-tier",
+    ]);
 
     const decisionId = res.headers.get("x-milo-decision-id");
     expect(decisionId).toBeTruthy();
@@ -371,7 +391,6 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       id: decisionId,
       tier: "frontier",
       model: "test/frontier",
-      degraded: false,
       sticky: false,
       signals: { taskType: "debug", difficulty: 2.31, jevRequestId: "req_synthetic_flaky_test" },
     });
@@ -413,7 +432,6 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(res.headers.get("content-type")).toBe("text/event-stream");
     expect(res.headers.get("x-milo-model")).toBe("test/frontier");
     expect(res.headers.get("x-milo-tier")).toBe("frontier");
-    expect(res.headers.get("x-milo-degraded")).toBe("false");
     const decisionId = res.headers.get("x-milo-decision-id") ?? "";
     expect(decisionId).not.toBe("");
 
@@ -452,53 +470,35 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(sticky?.sticky).toBe(true);
   });
 
-  it("degrades to mid and still forwards when Jev times out", async () => {
-    await start();
-    upstreams.jev = jevHangs;
-    upstreams.openRouter = () => jsonResponse(completion("test/mid"));
-
-    const res = await post("/v1/chat/completions", chatBody());
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-milo-degraded")).toBe("true");
-    expect(res.headers.get("x-milo-tier")).toBe("mid");
-    expect(res.headers.get("x-milo-model")).toBe("test/mid");
-    expect(res.headers.get("x-milo-task-type")).toBe("unknown");
-    expect(res.headers.get("x-milo-difficulty")).toBe("unknown");
-
-    expect(JSON.parse(upstreams.openRouterCalls()[0]?.body ?? "{}")).toMatchObject({ model: "test/mid" });
-
-    const record = await gateway.log.get(res.headers.get("x-milo-decision-id") ?? "");
-    expect(record?.degraded).toBe(true);
-    expect(record?.signals).toBeUndefined();
-    expect(record?.reason).toMatch(/routing signals unavailable/);
-  });
-
-  it("degrades without calling Jev once the key is over its routed rate limit", async () => {
+  it("refuses with a 429 once the key is over its routed rate limit", async () => {
     await start({ rateLimit: { routedPerMinute: 1 } });
-    upstreams.openRouter = () => jsonResponse(completion("test/mid"));
+    upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
 
     const first = await post("/v1/chat/completions", chatBody());
-    expect(first.headers.get("x-milo-degraded")).toBe("false");
+    expect(first.status).toBe(200);
 
     const second = await post(
       "/v1/chat/completions",
       chatBody({ extraMessages: [{ role: "user", content: "A different brief entirely." }] }),
     );
 
-    expect(second.status).toBe(200);
-    expect(second.headers.get("x-milo-degraded")).toBe("true");
-    expect(second.headers.get("x-milo-tier")).toBe("mid");
-    expect(second.headers.get("x-milo-sticky")).toBe("false");
+    expect(second.status).toBe(429);
+    expect(await second.json()).toMatchObject({
+      error: { type: "rate_limit_error", code: "rate_limit_exceeded" },
+    });
+    // One token a minute refills in sixty seconds, rounded up to whole ones.
+    expect(second.headers.get("retry-after")).toBe("60");
+    expect(second.headers.get("x-milo-decision-id")).toBeNull();
 
-    // Only the first request spent a Jev call; both reached OpenRouter.
+    // Only the first request spent a Jev call, and only it reached OpenRouter:
+    // a refusal is not routed and not forwarded.
     expect(upstreams.jevCalls()).toHaveLength(1);
-    expect(upstreams.openRouterCalls()).toHaveLength(2);
+    expect(upstreams.openRouterCalls()).toHaveLength(1);
 
-    const record = await gateway.log.get(second.headers.get("x-milo-decision-id") ?? "");
-    expect(record?.reason).toBe("rate limited: routed requests exceeded 1 per minute for this key");
-    expect(record?.degraded).toBe(true);
-    expect(record?.signals).toBeUndefined();
+    // And it is not a decision, so the log has only the first request's row.
+    const rows = await gateway.log.listRecent({ limit: 100 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(first.headers.get("x-milo-decision-id"));
   });
 
   it("does not spend a rate limit token on a forced tier, since it skips Jev", async () => {
@@ -507,7 +507,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
 
     // Burn the one token the bucket has on a forced-tier request, five times
     // over: if forcing a tier consumed a token, every request past the first
-    // would come back degraded.
+    // would be refused.
     for (let i = 0; i < 5; i++) {
       const res = await post(
         "/v1/chat/completions",
@@ -516,7 +516,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
           extraMessages: [{ role: "user", content: `forced turn ${i}` }],
         }),
       );
-      expect(res.headers.get("x-milo-degraded")).toBe("false");
+      expect(res.status).toBe(200);
       expect(res.headers.get("x-milo-tier")).toBe("fast");
     }
 
@@ -527,7 +527,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       "/v1/chat/completions",
       chatBody({ extraMessages: [{ role: "user", content: "unforced turn" }] }),
     );
-    expect(unforced.headers.get("x-milo-degraded")).toBe("false");
+    expect(unforced.status).toBe(200);
   });
 
   it("does not spend rate limit tokens on passthrough requests", async () => {
@@ -542,7 +542,8 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     }
 
     const routed = await post("/v1/chat/completions", chatBody());
-    expect(routed.headers.get("x-milo-degraded")).toBe("false");
+    expect(routed.status).toBe(200);
+    expect(routed.headers.get("x-milo-tier")).toBe("frontier");
   });
 
   it("passes an upstream 500 straight through and records it", async () => {
@@ -630,30 +631,7 @@ describe("GET /v1/decisions", () => {
     expect(listed.data.map((d) => d.id)).toContain(decisionId);
 
     const stats = await gateway.app.request("/v1/decisions/stats", { headers: AUTH });
-    expect(await stats.json()).toMatchObject({ total: 1, byTier: { frontier: 1 }, degraded: 0 });
-  });
-
-  it("filters the list to degraded decisions", async () => {
-    await start();
-    upstreams.jev = jevHangs;
-    upstreams.openRouter = () => jsonResponse(completion("test/mid"));
-    const degraded = await post("/v1/chat/completions", chatBody());
-
-    upstreams.jev = jevOk("flaky-test");
-    await post(
-      "/v1/chat/completions",
-      chatBody({ extraMessages: [{ role: "user", content: "A second, unrelated brief." }] }),
-    );
-
-    const all = (await (await gateway.app.request("/v1/decisions", { headers: AUTH })).json()) as {
-      data: DecisionRecord[];
-    };
-    expect(all.data).toHaveLength(2);
-
-    const only = (await (
-      await gateway.app.request("/v1/decisions?degraded=true", { headers: AUTH })
-    ).json()) as { data: DecisionRecord[] };
-    expect(only.data.map((d) => d.id)).toEqual([degraded.headers.get("x-milo-decision-id")]);
+    expect(await stats.json()).toMatchObject({ total: 1, byTier: { frontier: 1 } });
   });
 
   it("404s an unknown id in the OpenAI error shape", async () => {
@@ -709,106 +687,124 @@ describe("GET /healthz", () => {
     const res = await gateway.app.request("/healthz");
 
     expect(res.status).toBe(200);
+    // Jev is the only backend now, but the key stays so dashboards reading it
+    // keep working.
     expect(await res.json()).toEqual({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: "jev" });
     expect(upstreams.calls).toHaveLength(0);
+  });
+
+  it("names it at the root too", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/");
+    expect(await res.json()).toMatchObject({ decisionBackend: "jev" });
   });
 });
 
 // ---------------------------------------------------------------------------
-// Decision backends (ADR-004)
+// The decision backend: Jev, and only Jev (ADR-005)
 // ---------------------------------------------------------------------------
 
-describe("decision backends", () => {
-  it("routes through system-one-open and never touches Jev", async () => {
-    await start({
-      jevApiKey: "",
-      decisionBackend: { kind: "system-one-open", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
-    });
-    upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
-
-    const res = await post("/v1/chat/completions", chatBody());
-
-    expect(res.status).toBe(200);
-    // The fixture's signals put this one on the frontier tier, whichever
-    // backend produced them.
-    expect(res.headers.get("x-milo-model")).toBe("test/frontier");
-    expect(res.headers.get("x-milo-task-type")).toBe("debug");
-    expect(upstreams.jevCalls()).toHaveLength(0);
-
-    const decide = upstreams.systemOneOpenCalls().filter((c) => c.url.pathname === "/decide");
-    expect(decide).toHaveLength(1);
-    expect(decide[0]?.method).toBe("POST");
-    // The open backend has no auth, and Milo must not invent one.
-    expect(decide[0]?.headers.get("authorization")).toBeNull();
-
-    const id = res.headers.get("x-milo-decision-id") ?? "";
-    const record = await gateway.log.get(id);
-    expect(record?.signals?.jevModel).toBe("system-one-open/e2b-full");
-    expect(record?.signals?.jevRequestId).toMatch(/^s1o_/);
-    expect(record?.degraded).toBe(false);
+describe("the Jev key", () => {
+  it("is required, and says which variable sets it", async () => {
+    await expect(createGateway({ jevApiKey: "", roster: ROSTER, fetch: upstreams.fetch })).rejects.toThrow(
+      /JEV_API_KEY/,
+    );
   });
+});
 
-  it("warms the open backend at startup and reports it from healthz", async () => {
-    await start({
-      jevApiKey: "",
-      decisionBackend: { kind: "system-one-open", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
+// ---------------------------------------------------------------------------
+// Routing failures: 503, in the OpenAI dialect
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/chat/completions when the router cannot decide", () => {
+  const CAUSES: RoutingUnavailableCause[] = [
+    "timeout",
+    "network",
+    "http",
+    "validation",
+    "breaker_open",
+    "rate_limited",
+  ];
+
+  it.each(CAUSES)("answers 503 in the OpenAI shape for a %s failure", async (cause) => {
+    const { app, log } = await stubRouterApp(unroutable(cause));
+
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: AUTH,
+      body: chatBody(),
     });
 
-    const res = await gateway.app.request("/healthz");
+    expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
-      ok: true,
-      policyVersion: POLICY_VERSION,
-      decisionBackend: "system-one-open",
+      error: {
+        message: `Milo could not route this request: ${cause} from the decision model. Retry, or set an explicit model.`,
+        type: "api_error",
+        code: "routing_unavailable",
+      },
+    });
+    // No hint on the error, so the default two seconds.
+    expect(res.headers.get("retry-after")).toBe("2");
+    // Nothing was decided, so nothing was forwarded and nothing was logged.
+    expect(res.headers.get("x-milo-decision-id")).toBeNull();
+    expect(upstreams.openRouterCalls()).toHaveLength(0);
+    expect(await log.listRecent({ limit: 100 })).toHaveLength(0);
+
+    // One line, naming the cause and the status, carrying no key material.
+    const line = lines.find((l) => l.msg === "routing unavailable");
+    expect(line?.meta).toMatchObject({ cause, status: 503, jevRequestId: "req_jev_0001" });
+    expect(JSON.stringify(lines)).not.toContain(KEY);
+  });
+
+  it("uses the error's own retry hint, rounded up to whole seconds", async () => {
+    const { app } = await stubRouterApp(unroutable("rate_limited", { retryAfterMs: 3_400 }));
+
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: AUTH,
+      body: chatBody(),
     });
 
-    // The warmup is fire and forget, so give the microtask queue a turn.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(upstreams.systemOneOpenCalls().map((c) => c.url.pathname)).toContain("/info");
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("4");
   });
 
-  it("falls back to the open backend when Jev fails, and says so in healthz", async () => {
-    await start({
-      decisionBackend: { kind: "jev-with-fallback", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
+  it("still answers 502 for a router failure that is not a routing failure", async () => {
+    const { app, log } = await stubRouterApp(() => Promise.reject(new Error("roster has no eligible model")));
+
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: AUTH,
+      body: chatBody(),
     });
-    upstreams.jev = () => jsonResponse({ error: "quota exceeded" }, 429);
-    upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
 
-    const res = await post("/v1/chat/completions", chatBody());
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-milo-task-type")).toBe("debug");
-
-    const health = await gateway.app.request("/healthz");
-    expect(await health.json()).toMatchObject({ decisionBackend: "jev-with-fallback" });
-
-    const id = res.headers.get("x-milo-decision-id") ?? "";
-    const record = await gateway.log.get(id);
-    expect(record?.signals?.jevModel).toBe("system-one-open/e2b-full");
-    expect(record?.degraded).toBe(false);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ error: { type: "api_error", code: "routing_failed" } });
+    // No fabricated mid-tier decision behind it.
+    expect(await log.listRecent({ limit: 100 })).toHaveLength(0);
+    expect(upstreams.openRouterCalls()).toHaveLength(0);
   });
 
-  it("throws a clear error when the jev backend has no key", async () => {
-    await expect(
-      createGateway({ jevApiKey: "", roster: ROSTER, fetch: upstreams.fetch }),
-    ).rejects.toThrow(/needs Milo's Jev key/);
+  it("refuses an over-limit key before it ever reaches the router", async () => {
+    let routes = 0;
+    const { app, log } = await stubRouterApp(
+      () => {
+        routes += 1;
+        return Promise.reject(new Error("the router must not be asked"));
+      },
+      { routedPerMinute: 1 },
+    );
 
-    await expect(
-      createGateway({
-        jevApiKey: "",
-        roster: ROSTER,
-        fetch: upstreams.fetch,
-        decisionBackend: { kind: "jev-with-fallback" },
-      }),
-    ).rejects.toThrow(/needs Milo's Jev key/);
-  });
+    // The bucket starts full, so spend its one token on a request that throws
+    // its way to a 502, then watch the next one stop at the limiter.
+    await app.request("/v1/chat/completions", { method: "POST", headers: AUTH, body: chatBody() });
+    const res = await app.request("/v1/chat/completions", { method: "POST", headers: AUTH, body: chatBody() });
 
-  it("does not need a Jev key for the open backend", async () => {
-    await expect(
-      start({
-        jevApiKey: "",
-        decisionBackend: { kind: "system-one-open", systemOneOpenUrl: SYSTEM_ONE_OPEN_URL },
-      }),
-    ).resolves.toBeDefined();
+    expect(routes).toBe(1);
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("60");
+    expect(await res.json()).toMatchObject({ error: { type: "rate_limit_error", code: "rate_limit_exceeded" } });
+    expect(await log.listRecent({ limit: 100 })).toHaveLength(0);
   });
 });
 
@@ -822,8 +818,8 @@ describe("key handling", () => {
     upstreams.openRouter = () => jsonResponse(completion("test/frontier"), 200, { "x-request-id": "or-req-9" });
 
     const routed = await post("/v1/chat/completions", chatBody());
-    // A second routed call, over the limit, so the rate-limited decision path
-    // (which is the one that reads the key) is covered too.
+    // A second routed call, over the limit, so the rate-limited path (which
+    // reads the key to find the bucket) is covered too.
     await post(
       "/v1/chat/completions",
       chatBody({ extraMessages: [{ role: "user", content: "Another brief." }] }),

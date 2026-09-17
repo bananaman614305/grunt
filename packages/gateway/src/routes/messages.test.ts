@@ -15,9 +15,14 @@
 
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DecisionLog, DecisionRecord, Roster } from "@milo/core";
+import type { Hono } from "hono";
+import type { DecisionRecord, Roster, Router, RoutingUnavailableCause } from "@milo/core";
+import { DecisionLog, OpenRouterClient, RoutingUnavailableError } from "@milo/core";
+import { AnthropicUpstream } from "../anthropic.js";
+import { createApp } from "../app.js";
 import { createGateway } from "../index.js";
 import type { Gateway, GatewayOptions } from "../index.js";
+import { RateLimiter } from "../rate-limit.js";
 
 // A key-shaped value that must never reach a decision, a header, or a log.
 const KEY = "sk-or-v1-NEVERLEAKTHIS0123456789abcdef";
@@ -176,13 +181,55 @@ async function start(overrides: Partial<GatewayOptions> = {}): Promise<Gateway> 
   return gateway;
 }
 
+/** Decision logs opened by `stubRouterApp`, closed with the gateway. */
+let stubLogs: DecisionLog[];
+
+/**
+ * The app wired to a router that throws. The real `Router` decides when to
+ * throw; what this file checks is that the Anthropic surface renders the
+ * throw in Anthropic's own error envelope.
+ */
+async function stubRouterApp(
+  route: () => Promise<never>,
+  opts: { routedPerMinute?: number } = {},
+): Promise<{ app: Hono; log: DecisionLog }> {
+  const log = await DecisionLog.open(":memory:");
+  stubLogs.push(log);
+  const app = createApp({
+    router: { route } as unknown as Router,
+    openRouter: new OpenRouterClient({ fetch: upstreams.fetch }),
+    anthropic: new AnthropicUpstream({ fetch: upstreams.fetch }),
+    log,
+    rateLimiter: new RateLimiter(
+      opts.routedPerMinute !== undefined ? { routedPerMinute: opts.routedPerMinute } : {},
+    ),
+    logger: capturingLogger(lines),
+    now: Date.now,
+    recordUpstream: () => undefined,
+  });
+  return { app, log };
+}
+
+/** A router that always throws the same routing failure. */
+function unroutable(cause: RoutingUnavailableCause, opts: { retryAfterMs?: number } = {}): () => Promise<never> {
+  return () =>
+    Promise.reject(
+      new RoutingUnavailableError(cause, `jev ${cause}`, {
+        requestId: "req_jev_0001",
+        ...(opts.retryAfterMs !== undefined ? { retryAfterMs: opts.retryAfterMs } : {}),
+      }),
+    );
+}
+
 beforeEach(() => {
   upstreams = new Upstreams();
   lines = [];
+  stubLogs = [];
 });
 
 afterEach(async () => {
   await gateway?.close();
+  for (const log of stubLogs) await log.close();
 });
 
 type Extra = Record<string, unknown> & { extraMessages?: unknown[] };
@@ -419,8 +466,17 @@ describe("POST /v1/messages, milo/auto", () => {
     expect(res.headers.get("x-milo-task-type")).toBe("debug");
     expect(res.headers.get("x-milo-difficulty")).toBe("2.31");
     expect(res.headers.get("x-milo-sticky")).toBe("false");
-    expect(res.headers.get("x-milo-degraded")).toBe("false");
     expect(res.headers.get("x-request-id")).toBe("or-req-2");
+
+    // The same six headers the OpenAI surface sets, and no seventh.
+    expect([...res.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
+      "x-milo-decision-id",
+      "x-milo-difficulty",
+      "x-milo-model",
+      "x-milo-sticky",
+      "x-milo-task-type",
+      "x-milo-tier",
+    ]);
 
     const decisionId = res.headers.get("x-milo-decision-id");
     expect(decisionId).toBeTruthy();
@@ -436,7 +492,6 @@ describe("POST /v1/messages, milo/auto", () => {
       id: decisionId,
       tier: "frontier",
       model: "test/frontier",
-      degraded: false,
       sticky: false,
       signals: { taskType: "debug", difficulty: 2.31, jevRequestId: "req_synthetic_flaky_test" },
     });
@@ -510,40 +565,40 @@ describe("POST /v1/messages, milo/auto", () => {
     expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
   });
 
-  it("degrades without calling Jev once the key is over its routed rate limit", async () => {
+  it("refuses with an Anthropic-shaped 429 once the key is over its routed rate limit", async () => {
     await start({ rateLimit: { routedPerMinute: 1 } });
-    upstreams.openRouter = () => jsonResponse(message("test/mid"));
+    upstreams.openRouter = () => jsonResponse(message("test/frontier"));
 
     const first = await post("/v1/messages", messagesBody());
-    expect(first.headers.get("x-milo-degraded")).toBe("false");
+    expect(first.status).toBe(200);
 
     const second = await post("/v1/messages", messagesBody({ extraMessages: [{ role: "user", content: "More?" }] }));
 
-    expect(second.status).toBe(200);
-    expect(second.headers.get("x-milo-degraded")).toBe("true");
-    expect(second.headers.get("x-milo-tier")).toBe("mid");
-    expect(second.headers.get("x-milo-sticky")).toBe("false");
-    expect(second.headers.get("x-milo-task-type")).toBe("unknown");
+    expect(second.status).toBe(429);
+    expect(await second.json()).toEqual({
+      type: "error",
+      error: { type: "rate_limit_error", message: expect.any(String) },
+    });
+    expect(second.headers.get("retry-after")).toBe("60");
+    expect(second.headers.get("x-milo-decision-id")).toBeNull();
 
+    // The refusal is not routed, not forwarded, and not a decision.
     expect(upstreams.jevCalls()).toHaveLength(1);
-    expect(upstreams.openRouterCalls()).toHaveLength(2);
-
-    const record = await gateway.log.get(second.headers.get("x-milo-decision-id") ?? "");
-    expect(record?.reason).toBe("rate limited: routed requests exceeded 1 per minute for this key");
-    expect(record?.signals).toBeUndefined();
+    expect(upstreams.openRouterCalls()).toHaveLength(1);
+    expect(await gateway.log.listRecent({ limit: 100 })).toHaveLength(1);
   });
 
   it("shares one rate limit bucket across both header spellings of the same key", async () => {
     await start({ rateLimit: { routedPerMinute: 1 } });
-    upstreams.openRouter = () => jsonResponse(message("test/mid"));
+    upstreams.openRouter = () => jsonResponse(message("test/frontier"));
 
     const first = await post("/v1/messages", messagesBody(), API_KEY_AUTH);
-    expect(first.headers.get("x-milo-degraded")).toBe("false");
+    expect(first.status).toBe(200);
 
     // Same key, other header: the bucket is keyed on the credential, not the
     // header, so this must not buy a second budget.
     const second = await post("/v1/messages", messagesBody(), BEARER_AUTH);
-    expect(second.headers.get("x-milo-degraded")).toBe("true");
+    expect(second.status).toBe(429);
   });
 
   it("passes an upstream refusal through with its own status and body", async () => {
@@ -567,6 +622,95 @@ describe("POST /v1/messages, milo/auto", () => {
     const res = await post("/v1/messages", messagesBody());
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ type: "error", error: { type: "api_error" } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Routing failures: 503, in the Anthropic dialect
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/messages when the router cannot decide", () => {
+  const CAUSES: RoutingUnavailableCause[] = [
+    "timeout",
+    "network",
+    "http",
+    "validation",
+    "breaker_open",
+    "rate_limited",
+  ];
+
+  it.each(CAUSES)("answers 503 in the Anthropic shape for a %s failure", async (cause) => {
+    const { app, log } = await stubRouterApp(unroutable(cause));
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: API_KEY_AUTH,
+      body: messagesBody(),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: `Milo could not route this request: ${cause} from the decision model. Retry, or set an explicit model.`,
+      },
+    });
+    expect(res.headers.get("retry-after")).toBe("2");
+    expect(res.headers.get("x-milo-decision-id")).toBeNull();
+    expect(upstreams.openRouterCalls()).toHaveLength(0);
+    expect(await log.listRecent({ limit: 100 })).toHaveLength(0);
+
+    const line = lines.find((l) => l.msg === "routing unavailable");
+    expect(line?.meta).toMatchObject({ cause, status: 503, jevRequestId: "req_jev_0001" });
+    expect(JSON.stringify(lines)).not.toContain(KEY);
+  });
+
+  it("uses the error's own retry hint, rounded up to whole seconds", async () => {
+    const { app } = await stubRouterApp(unroutable("breaker_open", { retryAfterMs: 10_500 }));
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: API_KEY_AUTH,
+      body: messagesBody(),
+    });
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("11");
+  });
+
+  it("still answers 502 for a router failure that is not a routing failure", async () => {
+    const { app, log } = await stubRouterApp(() => Promise.reject(new Error("roster has no eligible model")));
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: API_KEY_AUTH,
+      body: messagesBody(),
+    });
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ type: "error", error: { type: "api_error" } });
+    expect(await log.listRecent({ limit: 100 })).toHaveLength(0);
+  });
+
+  it("refuses an over-limit key before it ever reaches the router", async () => {
+    let routes = 0;
+    const { app, log } = await stubRouterApp(
+      () => {
+        routes += 1;
+        return Promise.reject(new Error("the router must not be asked"));
+      },
+      { routedPerMinute: 1 },
+    );
+
+    await app.request("/v1/messages", { method: "POST", headers: API_KEY_AUTH, body: messagesBody() });
+    const res = await app.request("/v1/messages", { method: "POST", headers: API_KEY_AUTH, body: messagesBody() });
+
+    expect(routes).toBe(1);
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("60");
+    expect(await res.json()).toMatchObject({ type: "error", error: { type: "rate_limit_error" } });
+    expect(await log.listRecent({ limit: 100 })).toHaveLength(0);
   });
 });
 
@@ -711,8 +855,8 @@ describe("key handling on /v1/messages", () => {
     upstreams.openRouter = () => jsonResponse(message("test/frontier"), 200, { "x-request-id": "or-req-9" });
 
     const routed = await post("/v1/messages", messagesBody(), API_KEY_AUTH);
-    // A second routed call, over the limit, so the rate-limited decision path
-    // (which is the one that reads the key) is covered too.
+    // A second routed call, over the limit, so the rate-limited path (which
+    // reads the key to find the bucket) is covered too.
     await post("/v1/messages", messagesBody({ extraMessages: [{ role: "user", content: "Another brief." }] }));
     const unauthorized = await gateway.app.request("/v1/messages", { method: "POST", headers: JSON_TYPE, body: "{}" });
 

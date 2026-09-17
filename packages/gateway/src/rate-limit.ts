@@ -7,10 +7,12 @@
  * raw value is the user's OpenRouter key: hashing means the limiter's map,
  * and anything that ever dumps it, holds no key material.
  *
- * Exceeding the limit is not an error. The gateway degrades the request to
- * the `mid` tier and forwards it anyway; only the Jev call is skipped. So
- * `tryConsume` returns a boolean rather than throwing, and only routed
- * requests ever call it -- passthrough traffic costs Milo nothing.
+ * Exceeding the limit is a 429 in the client's own dialect: Milo has no
+ * second decision backend to fall back to, so a routed request it cannot pay
+ * to route is a refusal rather than a guess. `tryConsume` returns a boolean
+ * rather than throwing, `retryAfterMs` says when the key may come back, and
+ * only routed requests ever call either -- passthrough traffic costs Milo
+ * nothing.
  */
 
 import { createHash } from "node:crypto";
@@ -75,6 +77,26 @@ export class RateLimiter {
     if (bucket.tokens < 1) return false;
     bucket.tokens -= 1;
     return true;
+  }
+
+  /**
+   * How long until this key's bucket holds a whole token again, in ms. 0 when
+   * it already does (including for a key that has never been seen). Reading
+   * it spends nothing, so a refused request can compute its own `Retry-After`.
+   */
+  retryAfterMs(authorization: string): number {
+    return this.retryAfterMsHashed(hashKey(authorization));
+  }
+
+  /** As `retryAfterMs`, for a key that is already hashed. */
+  retryAfterMsHashed(key: string): number {
+    const bucket = this.buckets.get(key);
+    if (bucket === undefined) return 0;
+    const tokens = this.refilled(bucket, this.clock());
+    if (tokens >= 1) return 0;
+    // Tokens arrive at `capacity` a minute, so the wait for the missing
+    // fraction of one is that fraction of a minute's worth of refill.
+    return Math.ceil(((1 - tokens) * MINUTE_MS) / this.capacity);
   }
 
   /** Tracked keys. Exposed for tests asserting the bound holds. */
