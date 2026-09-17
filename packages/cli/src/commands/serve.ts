@@ -95,6 +95,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     ...(config.rateLimit !== undefined ? { rateLimit: config.rateLimit } : {}),
     ...(config.referer !== undefined ? { referer: config.referer } : {}),
     ...(config.title !== undefined ? { title: config.title } : {}),
+    ...(config.jevTimeoutMs !== undefined ? { jevTimeoutMs: config.jevTimeoutMs } : {}),
   };
 
   const gateway = await deps.createGateway(gatewayOptions);

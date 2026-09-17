@@ -465,6 +465,35 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(record?.signals).toBeUndefined();
   });
 
+  it("does not spend a rate limit token on a forced tier, since it skips Jev", async () => {
+    await start({ rateLimit: { routedPerMinute: 1 } });
+    upstreams.openRouter = () => jsonResponse(completion("test/fast"));
+
+    // Burn the one token the bucket has on a forced-tier request, five times
+    // over: if forcing a tier consumed a token, every request past the first
+    // would come back degraded.
+    for (let i = 0; i < 5; i++) {
+      const res = await post(
+        "/v1/chat/completions",
+        chatBody({
+          milo: { tier: "fast" },
+          extraMessages: [{ role: "user", content: `forced turn ${i}` }],
+        }),
+      );
+      expect(res.headers.get("x-milo-degraded")).toBe("false");
+      expect(res.headers.get("x-milo-tier")).toBe("fast");
+    }
+
+    expect(upstreams.jevCalls()).toHaveLength(0);
+
+    // The bucket is still full: an unforced request right after still succeeds.
+    const unforced = await post(
+      "/v1/chat/completions",
+      chatBody({ extraMessages: [{ role: "user", content: "unforced turn" }] }),
+    );
+    expect(unforced.headers.get("x-milo-degraded")).toBe("false");
+  });
+
   it("does not spend rate limit tokens on passthrough requests", async () => {
     await start({ rateLimit: { routedPerMinute: 1 } });
     upstreams.openRouter = () => jsonResponse(completion("anthropic/claude-sonnet-5"));

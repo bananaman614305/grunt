@@ -142,6 +142,28 @@ describe("milo serve", () => {
     expect(calls[0]?.decisionLogUrl).toBe(":memory:");
   });
 
+  it("passes jevTimeoutMs from the config file through to createGateway", async () => {
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(configPath, JSON.stringify({ jevTimeoutMs: 500 }));
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+
+    await run(["--config", configPath, "--db", ":memory:"], deps);
+
+    expect(calls[0]?.jevTimeoutMs).toBe(500);
+  });
+
+  it("omits jevTimeoutMs from createGateway options when the config does not set it", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+
+    await run(["--db", ":memory:"], deps);
+
+    expect(calls[0]).not.toHaveProperty("jevTimeoutMs");
+  });
+
   it("rejects a non-numeric --port", async () => {
     const { createGateway } = fakeGateway();
     const { serve } = fakeServe();

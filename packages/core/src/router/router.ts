@@ -27,14 +27,50 @@ import { StickyCache } from "./sticky.js";
 /** Why the router degraded. Never carries upstream text. */
 export type DegradeCause = "timeout" | "network" | "http" | "validation";
 
+export type DegradedDecisionInput = {
+  fingerprint: string;
+  roster: Roster;
+  candidates?: string[];
+  reason: string;
+  /** Injectable for tests; defaults to Date.now. */
+  clock?: () => number;
+};
+
+/**
+ * Builds a degraded `RouteDecision`: `mid` tier, `degraded: true`, no
+ * signals, never pinned sticky. The one place a degraded decision is
+ * assembled, so the router and every caller that mints one itself (a rate
+ * limit, a router throw) agree on its shape.
+ */
+export function degradedDecision(input: DegradedDecisionInput): RouteDecision {
+  const clock = input.clock ?? Date.now;
+  return {
+    id: ulid(),
+    fingerprint: input.fingerprint,
+    tier: "mid",
+    model: resolveModel("mid", input.roster, input.candidates),
+    reason: input.reason,
+    policyVersion: POLICY_VERSION,
+    sticky: false,
+    degraded: true,
+    createdAt: new Date(clock()).toISOString(),
+  };
+}
+
 export type RouterOptions = {
   jev: JevClientLike;
   roster?: Roster;
   sticky?: StickyCache;
   /** Injectable for tests; defaults to Date.now. */
   clock?: () => number;
-  /** Called with every decision the router returns, including degraded ones. */
-  onDecision?: (decision: RouteDecision) => void;
+  /**
+   * Called with every decision the router returns, including degraded ones.
+   * Awaited before `route` resolves; a hook that throws or rejects is caught
+   * and handed to `onError` rather than breaking routing.
+   */
+  onDecision?: (decision: RouteDecision) => void | Promise<void>;
+  /** Called when `onDecision` throws or rejects. Defaults to a no-op. */
+  onError?: (err: unknown) => void;
   /** Jev budget in ms; defaults to ROUTER_LIMITS.jevTimeoutMs. */
   jevTimeoutMs?: number;
 };
@@ -147,7 +183,8 @@ export class Router {
   private readonly roster: Roster;
   private readonly sticky: StickyCache;
   private readonly clock: () => number;
-  private readonly onDecision: ((decision: RouteDecision) => void) | undefined;
+  private readonly onDecision: ((decision: RouteDecision) => void | Promise<void>) | undefined;
+  private readonly onError: (err: unknown) => void;
   private readonly jevTimeoutMs: number;
 
   constructor(opts: RouterOptions) {
@@ -156,6 +193,7 @@ export class Router {
     this.clock = opts.clock ?? Date.now;
     this.sticky = opts.sticky ?? new StickyCache(opts.clock ? { clock: opts.clock } : {});
     this.onDecision = opts.onDecision;
+    this.onError = opts.onError ?? (() => undefined);
     this.jevTimeoutMs = opts.jevTimeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
   }
 
@@ -241,25 +279,27 @@ export class Router {
   }
 
   private degraded(req: RouteRequest, cause: DegradeCause): RouteDecision {
-    return {
-      id: ulid(),
+    return degradedDecision({
       fingerprint: req.fingerprint,
-      tier: "mid",
-      model: resolveModel("mid", this.roster, req.candidates),
+      roster: this.roster,
+      ...(req.candidates !== undefined ? { candidates: req.candidates } : {}),
       reason: `routing signals unavailable (${cause}), fell back to the mid tier`,
-      policyVersion: POLICY_VERSION,
-      sticky: false,
-      degraded: true,
-      createdAt: this.nowIso(),
-    };
+      clock: this.clock,
+    });
   }
 
   private nowIso(): string {
     return new Date(this.clock()).toISOString();
   }
 
-  private emit(decision: RouteDecision): RouteDecision {
-    this.onDecision?.(decision);
+  private async emit(decision: RouteDecision): Promise<RouteDecision> {
+    if (this.onDecision !== undefined) {
+      try {
+        await this.onDecision(decision);
+      } catch (err) {
+        this.onError(err);
+      }
+    }
     return decision;
   }
 }

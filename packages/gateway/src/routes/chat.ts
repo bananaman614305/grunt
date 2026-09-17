@@ -23,17 +23,8 @@
 
 import type { Hono } from "hono";
 import type { Context } from "hono";
-import { ulid } from "ulid";
-import {
-  DEFAULT_ROSTER,
-  POLICY_VERSION,
-  extractMilo,
-  fingerprint,
-  isStreaming,
-  prepareBody,
-  resolveModel,
-} from "@milo/core";
-import type { ChatMessage, CostPosture, DecisionRecord, RouteDecision, RouteRequest, Roster } from "@milo/core";
+import { degradedDecision, extractMilo, fingerprint, isStreaming, prepareBody } from "@milo/core";
+import type { ChatMessage, CostPosture, DecisionRecord, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { authorization, passThroughHeaders } from "../app.js";
 import { errorMessage, errorResponse } from "../errors.js";
@@ -94,18 +85,22 @@ async function routed(
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   const conversation = fingerprint(messages);
   const candidates = extension?.candidates;
+  const forcedTier = extension?.tier;
 
   let decision: RouteDecision;
 
-  if (!deps.rateLimiter.tryConsume(authorization(c))) {
+  // A forced tier never calls Jev, so it never spends the budget the rate
+  // limiter exists to bound; only an unforced request can be over the limit.
+  if (forcedTier === undefined && !deps.rateLimiter.tryConsume(authorization(c))) {
     // Over the limit is not a rejection: the user's OpenRouter spend is
     // theirs, only Milo's Jev spend is capped. Skip Jev, take `mid`, say so.
-    decision = degraded(
-      deps,
-      conversation,
-      candidates,
-      `rate limited: routed requests exceeded ${deps.rateLimiter.capacity} per minute for this key`,
-    );
+    decision = degradedDecision({
+      fingerprint: conversation,
+      roster: deps.roster,
+      ...(candidates !== undefined ? { candidates } : {}),
+      reason: `rate limited: routed requests exceeded ${deps.rateLimiter.capacity} per minute for this key`,
+      clock: deps.now,
+    });
     deps.logger.warn("routed request rate limited", { decisionId: decision.id, fingerprint: conversation });
     await deps.insertDecision(decision);
   } else {
@@ -116,7 +111,7 @@ async function routed(
     };
     if (Array.isArray(body["tools"])) request.tools = body["tools"];
     if (candidates !== undefined) request.candidates = candidates;
-    if (extension?.tier !== undefined) request.forcedTier = extension.tier;
+    if (forcedTier !== undefined) request.forcedTier = forcedTier;
 
     try {
       decision = await deps.router.route(request);
@@ -125,14 +120,16 @@ async function routed(
       // bug or an unusable roster. Record why, then fail loudly: guessing a
       // model on top of a broken configuration would hide it.
       deps.logger.error("router threw", { error: errorMessage(err) });
-      const failed = degraded(deps, conversation, candidates, "routing failed unexpectedly, fell back to the mid tier");
+      const failed = degradedDecision({
+        fingerprint: conversation,
+        roster: deps.roster,
+        ...(candidates !== undefined ? { candidates } : {}),
+        reason: "routing failed unexpectedly, fell back to the mid tier",
+        clock: deps.now,
+      });
       await deps.insertDecision(failed);
       return errorResponse(c, 502, "Milo could not route this request.", "api_error", "routing_failed");
     }
-
-    // The router wrote this decision through its `onDecision` hook; make sure
-    // that write landed before the id goes out on a response header.
-    await deps.decisionSettled(decision.id);
   }
 
   deps.logger.info("routed", {
@@ -211,37 +208,6 @@ async function readJsonObject(c: Context): Promise<Body | undefined> {
     return parsed as Body;
   } catch {
     return undefined;
-  }
-}
-
-/**
- * A degraded decision the gateway minted itself. `resolveModel` can throw on
- * a roster with nothing eligible, and the whole point of a degraded decision
- * is that it still answers, so widen the search before giving up on it.
- */
-function degraded(deps: AppDeps, conversation: string, candidates: string[] | undefined, reason: string): RouteDecision {
-  return {
-    id: ulid(),
-    fingerprint: conversation,
-    tier: "mid",
-    model: midModel(deps.roster, candidates),
-    reason,
-    policyVersion: POLICY_VERSION,
-    sticky: false,
-    degraded: true,
-    createdAt: new Date(deps.now()).toISOString(),
-  };
-}
-
-function midModel(roster: Roster, candidates: string[] | undefined): string {
-  try {
-    return resolveModel("mid", roster, candidates);
-  } catch {
-    try {
-      return resolveModel("mid", roster);
-    } catch {
-      return DEFAULT_ROSTER.mid[0] ?? "openrouter/auto";
-    }
   }
 }
 

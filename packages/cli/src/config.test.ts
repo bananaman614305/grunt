@@ -61,6 +61,22 @@ describe("loadConfig", () => {
     expect(loaded.config.decisionLog).toBe(DEFAULT_DECISION_LOG_URL);
   });
 
+  it("loads an explicit jevTimeoutMs", () => {
+    const path = join(dir, "milo.config.json");
+    writeFileSync(path, JSON.stringify({ jevTimeoutMs: 500 }));
+
+    const loaded = loadConfig(path, dir);
+
+    expect(loaded.config.jevTimeoutMs).toBe(500);
+  });
+
+  it("rejects a non-positive jevTimeoutMs", () => {
+    const path = join(dir, "milo.config.json");
+    writeFileSync(path, JSON.stringify({ jevTimeoutMs: 0 }));
+
+    expect(() => loadConfig(path, dir)).toThrow(/jevTimeoutMs/);
+  });
+
   it("resolves a relative --config path against the given cwd, defaulting to milo.config.json", () => {
     writeFileSync(join(dir, "milo.config.json"), JSON.stringify({ port: 4242 }));
 

@@ -34,5 +34,5 @@ export type { ResolveModelOptions } from "./roster.js";
 export { StickyCache, STICKY_MAX_ENTRIES } from "./sticky.js";
 export type { StickyCacheOptions } from "./sticky.js";
 
-export { Router, toSignals, classifyFailure } from "./router.js";
-export type { RouterOptions, DegradeCause } from "./router.js";
+export { Router, toSignals, classifyFailure, degradedDecision } from "./router.js";
+export type { RouterOptions, DegradeCause, DegradedDecisionInput } from "./router.js";
