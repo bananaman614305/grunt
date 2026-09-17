@@ -24,8 +24,6 @@ importers:
         specifier: '3'
         version: 3.2.7(@types/node@22.20.3)
 
-  packages/claude-code: {}
-
   packages/cli: {}
 
   packages/core:

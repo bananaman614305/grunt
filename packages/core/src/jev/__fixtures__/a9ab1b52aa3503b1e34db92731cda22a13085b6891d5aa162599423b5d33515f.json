@@ -1,0 +1,18 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.typesafe.ai/v1/systemone",
+    "body": "{\"model\":\"jev-latest\",\"state\":\"User: The payment webhook handler throws a null pointer exception intermittently. Fix the bug and add a regression test.\",\"questions\":{\"needs_reasoning\":{\"type\":\"noul\",\"instructions\":\"Does answering this well require multi-step reasoning?\"},\"task_type\":{\"type\":\"choice\",\"instructions\":\"What kind of task is this?\",\"criteria\":{\"chat\":null,\"edit\":null,\"feature\":null,\"debug\":\"Fixing a bug or unexpected behavior\",\"research\":null,\"review\":null,\"docs\":null,\"ops\":null,\"classify\":null}},\"difficulty\":{\"type\":\"score\",\"instructions\":\"How difficult is this task?\",\"criteria\":[\"trivial\",\"easy\",\"moderate\",\"hard\"]}}}",
+    "headers": {
+      "content-type": "application/json"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "x-typesafe-request-id": "req_01a0af00000000000000000000000002"
+    },
+    "body": "{\"model\":\"jev-latest\",\"answers\":{\"needs_reasoning\":{\"type\":\"noul\",\"noul\":0.82},\"task_type\":{\"type\":\"choice\",\"choice\":\"debug\",\"confidence\":0.91,\"probabilities\":{\"chat\":0.01,\"edit\":0.02,\"feature\":0.02,\"debug\":0.91,\"research\":0.01,\"review\":0.01,\"docs\":0.01,\"ops\":0.005,\"classify\":0.005}},\"difficulty\":{\"type\":\"score\",\"score\":1.6,\"confidence\":0.78,\"legend\":{\"0\":\"trivial\",\"1\":\"easy\",\"2\":\"moderate\",\"3\":\"hard\"},\"probabilities\":{\"0\":0.05,\"1\":0.35,\"2\":0.45,\"3\":0.15}}},\"usage\":{\"input_tokens\":142,\"output_tokens\":37}}"
+  }
+}
