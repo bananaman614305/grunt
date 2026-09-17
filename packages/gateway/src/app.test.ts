@@ -852,3 +852,15 @@ describe("key handling", () => {
     expect(lines.every((line) => line.level !== "error")).toBe(true);
   });
 });
+
+describe("GET /", () => {
+  it("describes the service without requiring a key", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { baseUrl: string; routedModel: string };
+    expect(body.routedModel).toBe("milo/auto");
+    expect(body.baseUrl).toBe("http://milo.test/v1");
+    expect(upstreams.calls).toHaveLength(0);
+  });
+});

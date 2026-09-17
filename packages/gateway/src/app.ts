@@ -10,7 +10,7 @@
 
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
-import { POLICY_VERSION } from "@milo/core";
+import { POLICY_VERSION, ROUTED_MODEL_ID } from "@milo/core";
 import type { DecisionRecord, DecisionLog, OpenRouterClient, RouteDecision, Roster, Router } from "@milo/core";
 import type { AnthropicUpstream } from "./anthropic.js";
 import { anthropicErrorResponse, errorResponse } from "./errors.js";
@@ -149,6 +149,21 @@ export function createApp(deps: AppDeps): Hono {
   // No auth: a health probe must work before anyone has a key.
   app.get("/healthz", (c) =>
     c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: deps.decisionBackend }),
+  );
+
+  // A landing answer for people who open the bare address in a browser.
+  app.get("/", (c) =>
+    c.json({
+      name: "milo",
+      description:
+        'OpenRouter with an actual routing mechanism. Point an OpenAI-compatible client at /v1 with your OpenRouter key and use model "milo/auto".',
+      baseUrl: new URL("/v1", c.req.url).toString(),
+      routedModel: ROUTED_MODEL_ID,
+      policyVersion: POLICY_VERSION,
+      decisionBackend: deps.decisionBackend,
+      endpoints: ["/healthz", "/v1/chat/completions", "/v1/messages", "/v1/models", "/v1/decisions/:id"],
+      docs: "https://github.com/bananaman614305/milo",
+    }),
   );
 
   app.use("/v1/*", requireKey);
