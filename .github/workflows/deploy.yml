@@ -1,0 +1,25 @@
+# Deploys the gateway to Fly.io by building on Fly's remote builder and
+# pushing to registry.fly.io, so the image never has to be public.
+#
+# Needs one repository secret: FLY_API_TOKEN (a Fly deploy token scoped to
+# the milo-gateway app, or an org token). Create it in GitHub under
+# Settings > Secrets and variables > Actions. The token never leaves
+# GitHub's runner.
+name: deploy
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency: deploy-milo-gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
