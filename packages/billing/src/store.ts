@@ -409,6 +409,23 @@ export class PgBillingStore implements BillingStore {
     return rowToUsageRecord(row);
   }
 
+  /** Newest first; `limit` defaults to 50 and caps at 500. */
+  async listUsage(accountId: AccountId, opts?: { limit?: number; sinceIso?: string }): Promise<UsageRecord[]> {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 50, 500));
+    const where = opts?.sinceIso === undefined ? "" : " AND created_at >= $3::timestamptz";
+    const params: unknown[] = opts?.sinceIso === undefined ? [accountId, limit] : [accountId, limit, opts.sinceIso];
+    const { rows } = await this.db.query(
+      `SELECT id, account_id, api_key_id, decision_id, model, input_tokens, output_tokens,
+              upstream_cost_micro_usd, charged_micro_usd, created_at
+         FROM usage_records
+        WHERE account_id = $1${where}
+        ORDER BY created_at DESC, id DESC
+        LIMIT $2`,
+      params,
+    );
+    return rows.map(rowToUsageRecord);
+  }
+
   /** `byModel` counts requests per model, the same sense as the decision log's. */
   async usageSummary(
     accountId: AccountId,

@@ -560,3 +560,27 @@ describe("markStripeEvent", () => {
     expect(await store.markStripeEvent(`evt_b_${Date.now()}`)).toBe(true);
   });
 });
+
+describe("listUsage", () => {
+  it("lists newest first, honours limit and since", async () => {
+    const account = await store.createAccount(`usage-list-${Date.now()}@example.test`);
+    const { key } = await store.createApiKey(account.id, "k");
+    for (let i = 0; i < 3; i += 1) {
+      await store.recordUsage({
+        accountId: account.id,
+        apiKeyId: key.id,
+        decisionId: null,
+        model: `m${i}`,
+        inputTokens: 1,
+        outputTokens: 1,
+        upstreamCostMicroUsd: 100 * (i + 1),
+        chargedMicroUsd: 115 * (i + 1),
+      });
+    }
+    const all = await store.listUsage(account.id);
+    expect(all.map((r) => r.model)).toEqual(["m2", "m1", "m0"]);
+    expect((await store.listUsage(account.id, { limit: 2 })).length).toBe(2);
+    const since = await store.listUsage(account.id, { sinceIso: new Date(Date.now() + 60_000).toISOString() });
+    expect(since).toEqual([]);
+  });
+});

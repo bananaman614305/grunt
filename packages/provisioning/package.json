@@ -15,6 +15,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@milo/core": "workspace:*"
+    "@milo/core": "workspace:*",
+    "@milo/billing": "workspace:*"
   }
 }
