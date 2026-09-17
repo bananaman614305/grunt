@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Gateway, GatewayOptions } from "@milo/gateway";
@@ -130,6 +130,129 @@ describe("milo serve", () => {
       }).deps,
     );
     expect(defaultFakes.calls[0]?.port).toBe(DEFAULT_PORT);
+  });
+
+  // -------------------------------------------------------------------------
+  // PORT / MILO_DB environment fallbacks
+  // -------------------------------------------------------------------------
+
+  it("falls back to the PORT environment variable when no --port is given", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve, calls } = fakeServe();
+    const { deps, stdout } = createTestDeps({ env: { JEV_API_KEY: "k", PORT: "6001" }, createGateway, serve });
+
+    const code = await run(["--db", ":memory:"], deps);
+
+    expect(code).toBeUndefined();
+    expect(calls[0]?.port).toBe(6001);
+    expect(stdout.toString()).toContain("http://localhost:6001");
+  });
+
+  it("prefers --port over the PORT environment variable", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve, calls } = fakeServe();
+    const { deps } = createTestDeps({
+      env: { JEV_API_KEY: "k", PORT: "6001" },
+      createGateway,
+      serve,
+    });
+
+    await run(["--port", "7002", "--db", ":memory:"], deps);
+
+    expect(calls[0]?.port).toBe(7002);
+  });
+
+  it("prefers the PORT environment variable over the config file's port", async () => {
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(configPath, JSON.stringify({ port: 9000 }));
+    const { createGateway } = fakeGateway();
+    const { serve, calls } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k", PORT: "6001" }, createGateway, serve });
+
+    await run(["--config", configPath, "--db", ":memory:"], deps);
+
+    expect(calls[0]?.port).toBe(6001);
+  });
+
+  it("rejects a non-numeric PORT environment variable", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps, stderr } = createTestDeps({
+      env: { JEV_API_KEY: "k", PORT: "not-a-number" },
+      createGateway,
+      serve,
+    });
+
+    const code = await run(["--db", ":memory:"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("PORT");
+  });
+
+  it("ignores a blank PORT environment variable", async () => {
+    const { createGateway } = fakeGateway();
+    const { serve, calls } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k", PORT: "  " }, createGateway, serve });
+
+    const code = await run(["--db", ":memory:"], deps);
+
+    expect(code).toBeUndefined();
+    expect(calls[0]?.port).toBe(DEFAULT_PORT);
+  });
+
+  it("falls back to the MILO_DB environment variable when no --db is given", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k", MILO_DB: ":memory:" }, createGateway, serve });
+
+    const code = await run([], deps);
+
+    expect(code).toBeUndefined();
+    expect(calls[0]?.decisionLogUrl).toBe(":memory:");
+  });
+
+  it("prefers --db over the MILO_DB environment variable", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({
+      env: { JEV_API_KEY: "k", MILO_DB: "file:./should-not-be-used.db" },
+      createGateway,
+      serve,
+    });
+
+    await run(["--db", ":memory:"], deps);
+
+    expect(calls[0]?.decisionLogUrl).toBe(":memory:");
+  });
+
+  it("prefers the MILO_DB environment variable over the config file's decisionLog", async () => {
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(configPath, JSON.stringify({ decisionLog: "file:./from-file.db" }));
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k", MILO_DB: ":memory:" }, createGateway, serve });
+
+    await run(["--config", configPath], deps);
+
+    expect(calls[0]?.decisionLogUrl).toBe(":memory:");
+  });
+
+  it("creates the parent directory of an absolute MILO_DB file: path", async () => {
+    const dataDir = join(dir, "data-subdir");
+    const dbPath = join(dataDir, "decisions.db");
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({
+      env: { JEV_API_KEY: "k", MILO_DB: `file:${dbPath}` },
+      createGateway,
+      serve,
+    });
+
+    const code = await run([], deps);
+
+    expect(code).toBeUndefined();
+    expect(calls[0]?.decisionLogUrl).toBe(`file:${dbPath}`);
+    expect(statSync(dataDir).isDirectory()).toBe(true);
   });
 
   it("passes the decision log URL from --db through to createGateway", async () => {

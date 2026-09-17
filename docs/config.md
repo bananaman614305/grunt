@@ -65,9 +65,15 @@ whether it came from a config file or from defaults. A per-request `milo.
 candidates` field further restricts the roster's search to a subset of ids
 for that one request (README, "Per-request options").
 
-`decisionLog`'s parent directory is created automatically by `milo serve`
-when it resolves to a relative `file:` path under the current directory
-(`:memory:` and absolute paths are left alone).
+`decisionLog`'s parent directory is created automatically by `milo serve`,
+whether the `file:` path is relative (resolved under the current directory)
+or absolute (e.g. `file:/data/decisions.db`, for a mounted volume in the
+container image — `docs/deploy.md`). `:memory:` is left alone.
+
+`port` and `decisionLog` can also be set from the environment as `PORT` and
+`MILO_DB`, for the container image, which ships no config file. Precedence
+is `--port`/`--db` beats `PORT`/`MILO_DB` beats `milo.config.json` beats the
+built-in default.
 
 ## `JEV_API_KEY` (environment variable, not config)
 

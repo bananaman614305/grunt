@@ -1,0 +1,40 @@
+app = "milo-gateway"
+primary_region = "iad"
+
+# `flyctl deploy` builds this image locally (or with Fly's remote builder)
+# from the repo's Dockerfile. Deploying by the Machines API instead (see
+# docs/deploy.md) uses the published ghcr.io image and ignores this block.
+[build]
+  dockerfile = "Dockerfile"
+
+# No secrets here. JEV_API_KEY is set with `fly secrets set JEV_API_KEY=...`
+# (unset entirely while the backend below is system-one-open, which needs
+# no key).
+[env]
+  MILO_DECISION_BACKEND = "system-one-open"
+
+# A 1 GB volume mounted at /data, matching MILO_DB=file:/data/decisions.db
+# baked into the image. Create it once with:
+#   fly volumes create milo_data --region iad --size 1
+[[mounts]]
+  source = "milo_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  # One app, one machine: never scale to zero, never scale out.
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "15s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

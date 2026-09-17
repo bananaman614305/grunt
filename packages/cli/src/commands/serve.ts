@@ -15,24 +15,47 @@ which needs no key.
 
 Options:
   --config <path>   Path to milo.config.json (default: ./milo.config.json if present)
-  --port <n>        Port to listen on (overrides config)
-  --db <url>        Decision log libsql URL (overrides config)
+  --port <n>        Port to listen on (overrides PORT, which overrides config)
+  --db <url>        Decision log libsql URL (overrides MILO_DB, which overrides config)
   -h, --help        Show this help
 
 Environment:
   JEV_API_KEY             Milo's Jev key (required for the jev backends)
   MILO_DECISION_BACKEND   jev | system-one-open | jev-with-fallback
   SYSTEM_ONE_OPEN_URL     Base URL of a system-one-open deployment
+  PORT                    Port to listen on (overridden by --port; overrides config)
+  MILO_DB                 Decision log libsql URL (overridden by --db; overrides config)
+
+Precedence for port and the decision log URL: flag beats environment variable
+beats config file beats built-in default.
 `;
 
 const FILE_SCHEME = "file:";
+const PORT_ENV = "PORT";
+const DECISION_LOG_ENV = "MILO_DB";
 
-/** Creates the parent directory of a `file:` decision log URL that resolves under `cwd`. */
+/**
+ * Creates the parent directory of a `file:` decision log URL, resolving a
+ * relative path under `cwd` first. A Fly volume (or any bind mount) is
+ * mounted empty, so an absolute path like `file:/data/decisions.db` needs
+ * its parent directory created too, not just relative dev paths.
+ */
 function ensureLogDirectory(url: string, cwd: string): void {
   if (!url.startsWith(FILE_SCHEME)) return;
   const filePath = url.slice(FILE_SCHEME.length);
-  if (filePath === "" || filePath === ":memory:" || isAbsolute(filePath)) return;
-  mkdirSync(dirname(resolve(cwd, filePath)), { recursive: true });
+  if (filePath === "" || filePath === ":memory:") return;
+  const resolved = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+  mkdirSync(dirname(resolved), { recursive: true });
+}
+
+/** Parses a port value from a flag or environment variable; `undefined` when absent or blank. */
+function parsePositiveIntPort(raw: string | undefined): number | undefined | null {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === "") return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
 }
 
 /**
@@ -88,17 +111,31 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     return 1;
   }
 
+  // Precedence: flag beats environment variable beats config file beats
+  // built-in default. `config.port` / `config.decisionLog` already resolve
+  // "config file beats default" (see config.ts), so PORT / MILO_DB only need
+  // to be layered in below the flag and above whatever `config` produced.
   let port = config.port;
+  const envPort = parsePositiveIntPort(deps.env[PORT_ENV]);
+  if (envPort === null) {
+    deps.stderr.write(`milo serve: ${PORT_ENV} must be a positive integer, got "${deps.env[PORT_ENV]}"\n`);
+    return 1;
+  }
+  if (envPort !== undefined) port = envPort;
+
   if (parsed.values.port !== undefined) {
-    const parsedPort = Number(parsed.values.port);
-    if (!Number.isInteger(parsedPort) || parsedPort <= 0) {
+    const parsedPort = parsePositiveIntPort(parsed.values.port);
+    if (parsedPort === undefined || parsedPort === null) {
       deps.stderr.write(`milo serve: --port must be a positive integer, got "${parsed.values.port}"\n`);
       return 1;
     }
     port = parsedPort;
   }
 
-  const decisionLogUrl = parsed.values.db ?? config.decisionLog;
+  const envDb = deps.env[DECISION_LOG_ENV];
+  let decisionLogUrl = config.decisionLog;
+  if (envDb !== undefined && envDb.trim() !== "") decisionLogUrl = envDb;
+  if (parsed.values.db !== undefined) decisionLogUrl = parsed.values.db;
   ensureLogDirectory(decisionLogUrl, process.cwd());
 
   const gatewayOptions: GatewayOptions = {
