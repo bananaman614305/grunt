@@ -45,6 +45,8 @@ export const configSchema = z
     decisionLog: z.string().trim().min(1).default(DEFAULT_DECISION_LOG_URL),
     referer: z.string().trim().min(1).optional(),
     title: z.string().trim().min(1).optional(),
+    /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
+    jevTimeoutMs: z.number().int().positive().optional(),
   })
   .strict();
 

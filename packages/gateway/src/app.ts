@@ -37,12 +37,12 @@ export type AppDeps = {
   now: () => number;
   /**
    * Writes a decision the gateway minted itself (rate limited, or the router
-   * throwing). Decisions the router produced are written by its `onDecision`
-   * hook instead; wait for those with `decisionSettled`.
+   * throwing), awaited before the response goes out. Decisions the router
+   * produced are written by its own `onDecision` hook instead, which the
+   * router awaits internally -- by the time `route()` resolves, that row
+   * already exists.
    */
   insertDecision(decision: RouteDecision): Promise<void>;
-  /** Resolves once the router's `onDecision` write for `id` has landed. */
-  decisionSettled(id: string): Promise<void>;
   /** Fire and forget, but tracked so `close()` can drain it. */
   recordUpstream(id: string, upstream: NonNullable<DecisionRecord["upstream"]>): void;
 };

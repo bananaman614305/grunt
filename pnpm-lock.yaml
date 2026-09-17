@@ -75,9 +75,6 @@ importers:
       hono:
         specifier: ^4.13.8
         version: 4.13.8
-      ulid:
-        specifier: ^3.0.2
-        version: 3.0.2
     devDependencies:
       openai:
         specifier: ^7.17.0

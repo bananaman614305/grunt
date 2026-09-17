@@ -4,7 +4,7 @@ import type { JevClientLike, SystemOneRequest, SystemOneResult } from "../jev/ty
 import type { ChatMessage, CostPosture, RouteDecision, RouteRequest, Roster, Tier } from "../types.js";
 import { POLICY_VERSION, ROUTER_LIMITS } from "../types.js";
 import { fingerprint } from "./fingerprint.js";
-import { classifyFailure, Router } from "./router.js";
+import { classifyFailure, degradedDecision, Router } from "./router.js";
 import { StickyCache } from "./sticky.js";
 
 // A key-shaped string that must never surface in a reason or a decision.
@@ -391,6 +391,100 @@ describe("Router.route: the Jev key never reaches a decision", () => {
       expect(serialized).not.toContain("sk-");
     });
   }
+});
+
+describe("degradedDecision", () => {
+  it("builds a mid-tier, degraded, non-sticky decision with no signals", () => {
+    const decision = degradedDecision({
+      fingerprint: "fp-1",
+      roster: ROSTER,
+      reason: "something went wrong",
+    });
+
+    expect(decision.tier).toBe("mid");
+    expect(decision.model).toBe("mid-model");
+    expect(decision.degraded).toBe(true);
+    expect(decision.sticky).toBe(false);
+    expect(decision.signals).toBeUndefined();
+    expect(decision.reason).toBe("something went wrong");
+    expect(decision.fingerprint).toBe("fp-1");
+    expect(decision.policyVersion).toBe(POLICY_VERSION);
+    expect(decision.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+  });
+
+  it("honours candidates and an injected clock", () => {
+    const decision = degradedDecision({
+      fingerprint: "fp-2",
+      roster: ROSTER,
+      candidates: ["frontier-model"],
+      reason: "over the limit",
+      clock: () => 1_700_000_000_000,
+    });
+
+    expect(decision.model).toBe("frontier-model");
+    expect(decision.createdAt).toBe(new Date(1_700_000_000_000).toISOString());
+  });
+
+  it("is the implementation the router's own degraded path uses", async () => {
+    const router = new Router({ jev: failingJev(new Error("boom")), roster: ROSTER });
+    const decision = await router.route(request());
+
+    expect(decision.tier).toBe("mid");
+    expect(decision.degraded).toBe(true);
+    expect(decision.sticky).toBe(false);
+    expect(decision.signals).toBeUndefined();
+  });
+});
+
+describe("Router.route: onDecision is awaited", () => {
+  it("waits for an async onDecision before resolving", async () => {
+    let resolveHook: () => void = () => undefined;
+    const hookDone = new Promise<void>((resolve) => {
+      resolveHook = resolve;
+    });
+    let observed: RouteDecision | undefined;
+    const router = new Router({
+      jev: stubJev(loadFixture("trivial-rename").answers),
+      roster: ROSTER,
+      onDecision: async (d) => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        observed = d;
+        resolveHook();
+      },
+    });
+
+    const decision = await router.route(request());
+    expect(observed).toEqual(decision);
+    await hookDone;
+  });
+
+  it("catches an onDecision failure and routes it to onError instead of throwing", async () => {
+    const errors: unknown[] = [];
+    const hookError = new Error("log insert failed");
+    const router = new Router({
+      jev: stubJev(loadFixture("trivial-rename").answers),
+      roster: ROSTER,
+      onDecision: () => Promise.reject(hookError),
+      onError: (err) => errors.push(err),
+    });
+
+    const decision = await router.route(request());
+
+    expect(decision.tier).toBeDefined();
+    expect(errors).toEqual([hookError]);
+  });
+
+  it("does not throw when onDecision fails and no onError is given", async () => {
+    const router = new Router({
+      jev: stubJev(loadFixture("trivial-rename").answers),
+      roster: ROSTER,
+      onDecision: () => {
+        throw new Error("boom");
+      },
+    });
+
+    await expect(router.route(request())).resolves.toMatchObject({ degraded: false });
+  });
 });
 
 describe("classifyFailure", () => {

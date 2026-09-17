@@ -66,7 +66,15 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     sticky: new StickyCache(),
     // Every decision the router makes is logged, degraded ones included: a
     // decision that never reaches the log cannot explain a response header.
-    onDecision: (decision: RouteDecision) => writes.remember(decision.id, log.insert(decision)),
+    // The router awaits this itself, so `route()` does not resolve until the
+    // row exists -- no separate wait is needed before a response header goes
+    // out.
+    onDecision: async (decision: RouteDecision) => {
+      await log.insert(decision);
+    },
+    onError: (err) => {
+      logger.error("decision log write failed", { error: errorMessage(err) });
+    },
   });
 
   const openRouterOptions: OpenRouterClientOptions = {};
@@ -87,7 +95,6 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     logger,
     now: Date.now,
     insertDecision: (decision) => writes.track(log.insert(decision)),
-    decisionSettled: (id) => writes.settled(id),
     recordUpstream: (id, upstream: NonNullable<DecisionRecord["upstream"]>) => {
       void writes.track(log.setUpstream(id, upstream));
     },
@@ -106,20 +113,19 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
 }
 
 /**
- * Tracks decision-log writes that outlive the request that started them.
- *
- * Two problems it solves. A decision id goes out on a response header, so its
- * row has to exist before the response does -- `settled` is how a handler
- * waits for the write the router's `onDecision` hook started. And a streamed
- * response records its upstream outcome after the handler has returned, so
- * `drain` is how `close()` avoids shutting the database under it.
+ * Tracks decision-log writes that outlive the request that started them, so
+ * `close()` can wait for them before shutting the database down: a streamed
+ * response records its upstream outcome after the handler has already
+ * returned, and a gateway-minted decision (rate limited, or the router
+ * throwing) is written outside the router's own `onDecision` hook. That hook
+ * is awaited inline by the router itself, so a decision it produced needs no
+ * separate wait here before a response header goes out.
  *
  * A failed write is logged and swallowed. Losing an audit row is bad; failing
  * a user's completion because SQLite was busy is worse.
  */
 class WriteQueue {
   private readonly pending = new Set<Promise<void>>();
-  private readonly byDecision = new Map<string, Promise<void>>();
 
   constructor(private readonly logger: Logger) {}
 
@@ -135,19 +141,6 @@ class WriteQueue {
       this.pending.delete(guarded);
     });
     return guarded;
-  }
-
-  remember(id: string, write: Promise<unknown>): void {
-    const guarded = this.track(write);
-    this.byDecision.set(id, guarded);
-    void guarded.then(() => {
-      this.byDecision.delete(id);
-    });
-  }
-
-  /** Resolves once the write for `id` has landed, or immediately if it has. */
-  settled(id: string): Promise<void> {
-    return this.byDecision.get(id) ?? Promise.resolve();
   }
 
   async drain(): Promise<void> {

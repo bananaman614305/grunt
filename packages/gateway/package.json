@@ -21,8 +21,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.17",
     "@milo/core": "workspace:*",
-    "hono": "^4.13.8",
-    "ulid": "^3.0.2"
+    "hono": "^4.13.8"
   },
   "devDependencies": {
     "openai": "^7.17.0"

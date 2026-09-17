@@ -11,5 +11,6 @@
   },
   "decisionLog": "file:./.milo/decisions.db",
   "referer": "https://your-app.example.com",
-  "title": "Your App Name"
+  "title": "Your App Name",
+  "jevTimeoutMs": 800
 }
