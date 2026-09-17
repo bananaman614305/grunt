@@ -1,0 +1,40 @@
+# One-off provisioning for Milo's billing database on Fly Managed Postgres.
+# Runs on GitHub's runner with the FLY_API_TOKEN secret so no connection
+# string or encryption key ever leaves Fly and GitHub.
+#
+# mode=list       prints the org's MPG clusters
+# mode=provision  creates database `milo` on the given cluster, attaches it
+#                 to milo-gateway as MILO_DATABASE_URL, and stages a fresh
+#                 MILO_ENCRYPTION_KEY (32 random bytes, base64)
+name: provision-db
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: list | provision
+        required: true
+        default: list
+      cluster:
+        description: MPG cluster id (provision mode)
+        required: false
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: List clusters
+        if: ${{ inputs.mode == 'list' }}
+        run: flyctl mpg list
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Create database and attach
+        if: ${{ inputs.mode == 'provision' }}
+        run: |
+          set -euo pipefail
+          flyctl mpg databases create "${{ inputs.cluster }}" --name milo || echo "database may already exist"
+          flyctl mpg attach "${{ inputs.cluster }}" -a milo-gateway -d milo --variable-name MILO_DATABASE_URL
+          KEY=$(openssl rand -base64 32)
+          flyctl secrets set "MILO_ENCRYPTION_KEY=$KEY" -a milo-gateway --stage
+          echo "attached and staged MILO_ENCRYPTION_KEY (not printed)"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
