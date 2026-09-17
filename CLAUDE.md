@@ -27,7 +27,7 @@ pnpm eval          # eval runner on fixtures; --live is opt-in
 - Never put a key in source, fixtures, `.env` files, logs, or a commit. The Jev key is Milo's, read from `JEV_API_KEY` in the server env only. In development, call Jev through the Squire `use_credential` MCP tool. User OpenRouter keys are forwarded from the `Authorization` header and never stored. Fixtures are recorded responses with request ids kept and key material stripped. The decision log stores no message content.
 - Jev API: `POST https://api.typesafe.ai/v1/systemone` with `{ model, state, questions }`. Question types `noul`, `choice`, `score`. Spec: `https://api.typesafe.ai/openapi.json`. Model: `jev-latest` only (never `jev-preview`).
 - OpenRouter API: `https://openrouter.ai/api/v1`. Only the `model` field is rewritten; everything else passes through. Strip the `milo` body field before forwarding.
-- Work happens in a git worktree on a branch, never on `main`. One task, one branch, one PR.
+- Solo development for now: small, verified changes may be committed and pushed straight to `main`. Use a worktree, branch, and PR for anything risky or multi-step. One task, one branch.
 - Report completion only with test output pasted. If a test fails, say so.
 - Do not widen a task's scope. If a contract in `types.ts` is wrong for your task, stop and report instead of changing it.
 - Commit messages: plain imperative subject, body explains why.
