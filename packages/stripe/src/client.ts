@@ -30,6 +30,30 @@ export interface CreateStripeClientOptions {
   secretKey?: string;
   /** Overrides `STRIPE_WEBHOOK_SECRET`. */
   webhookSecret?: string;
+  /**
+   * Overrides `STRIPE_API_BASE`: a full base URL for a key-injecting proxy
+   * (for example a vault egress grant). The SDK's requests, which it builds
+   * as `/v1/...` on the host, are rewritten to `<base path>/v1/...`.
+   */
+  apiBase?: string;
+}
+
+/** Builds the SDK options for a proxied base URL, or `{}` when none is set. */
+export function proxiedSdkOptions(apiBase: string | undefined): Stripe.StripeConfig {
+  if (!apiBase) return {};
+  const url = new URL(apiBase);
+  const prefix = url.pathname.replace(/\/+$/, "");
+  const rewrite: typeof fetch = (input, init) => {
+    const original = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    original.pathname = `${prefix}${original.pathname}`;
+    return fetch(original.toString(), init);
+  };
+  return {
+    host: url.hostname,
+    protocol: url.protocol === "http:" ? "http" : "https",
+    ...(url.port ? { port: url.port } : {}),
+    httpClient: Stripe.createFetchHttpClient(rewrite),
+  };
 }
 
 /**
@@ -52,8 +76,9 @@ export function createStripeClient(opts: CreateStripeClientOptions = {}): Stripe
     throw new Error("STRIPE_SECRET_KEY is not set");
   }
 
+  const apiBase = opts.apiBase ?? process.env["STRIPE_API_BASE"];
   return {
-    sdk: new Stripe(secretKey, { apiVersion: STRIPE_API_VERSION }),
+    sdk: new Stripe(secretKey, { apiVersion: STRIPE_API_VERSION, ...proxiedSdkOptions(apiBase) }),
     webhookSecret,
   };
 }
