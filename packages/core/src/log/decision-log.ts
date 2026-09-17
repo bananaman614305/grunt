@@ -2,9 +2,17 @@
  * The decision log: every RouteDecision (plus the upstream call outcome,
  * once known) recorded for audit and tuning. Never stores message content
  * or a key; see the guard in `assertNoSecrets`.
+ *
+ * It also implements `StickyStore`, so the gateway can hand the log to the
+ * router as the durable backing for its sticky cache. The two live in the
+ * same database on purpose: a sticky entry is a decision that is still in
+ * force, and keeping it next to the decisions it points at means one file to
+ * back up, one migration path, and no second service to stand up for a table
+ * with one row per live conversation.
  */
 import { createClient, type Client, type Row } from "@libsql/client";
-import type { DecisionRecord, RouteSignals, Tier } from "../types.js";
+import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
+import type { DecisionRecord, RouteDecision, RouteSignals, Tier } from "../types.js";
 import { applyMigrations } from "./schema.js";
 
 const MAX_FIELD_LENGTH = 2000;
@@ -39,9 +47,10 @@ function checkNoSecrets(path: string, value: unknown): void {
  * string over 2,000 characters, or anything that looks like an OpenRouter
  * key or a bearer token. `RouteDecision` never carries message content or
  * a key by contract, but this catches a caller that got it wrong before
- * it lands in SQLite.
+ * it lands in SQLite. Applied to sticky writes too, since those store a
+ * whole decision.
  */
-function assertNoSecrets(record: DecisionRecord): void {
+function assertNoSecrets(record: RouteDecision): void {
   checkNoSecrets("reason", record.reason);
   if (record.signals) {
     checkNoSecrets("signals", record.signals);
@@ -57,7 +66,6 @@ function rowToRecord(row: Row): DecisionRecord {
     reason: String(row.reason),
     policyVersion: String(row.policy_version),
     sticky: Boolean(row.sticky),
-    degraded: Boolean(row.degraded),
     createdAt: String(row.created_at),
   };
   if (row.signals_json !== null && row.signals_json !== undefined) {
@@ -72,7 +80,7 @@ function rowToRecord(row: Row): DecisionRecord {
 const LIST_LIMIT_DEFAULT = 50;
 const LIST_LIMIT_MAX = 500;
 
-export class DecisionLog {
+export class DecisionLog implements StickyStore {
   private constructor(private readonly db: Client) {}
 
   /** `url` is `":memory:"` or `file:/path/to.db`. Runs migrations before returning. */
@@ -86,8 +94,8 @@ export class DecisionLog {
     assertNoSecrets(record);
     await this.db.execute({
       sql: `INSERT INTO decisions
-              (id, fingerprint, tier, model, reason, policy_version, sticky, degraded, created_at, signals_json, upstream_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (id, fingerprint, tier, model, reason, policy_version, sticky, created_at, signals_json, upstream_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         record.id,
         record.fingerprint,
@@ -96,7 +104,6 @@ export class DecisionLog {
         record.reason,
         record.policyVersion,
         record.sticky ? 1 : 0,
-        record.degraded ? 1 : 0,
         record.createdAt,
         record.signals ? JSON.stringify(record.signals) : null,
         record.upstream ? JSON.stringify(record.upstream) : null,
@@ -104,25 +111,28 @@ export class DecisionLog {
     });
   }
 
-  async get(id: string): Promise<DecisionRecord | undefined> {
+  /**
+   * One decision by id.
+   *
+   * Named `getDecision` rather than `get` because `get` belongs to
+   * `StickyStore` below, where it takes a fingerprint and returns a sticky
+   * entry. Two `get`s on one class that take a string and mean different
+   * things is exactly the sort of thing that reads fine and routes wrong.
+   */
+  async getDecision(id: string): Promise<DecisionRecord | undefined> {
     const rs = await this.db.execute({ sql: "SELECT * FROM decisions WHERE id = ?", args: [id] });
     const row = rs.rows[0];
     return row ? rowToRecord(row) : undefined;
   }
 
   /** Newest first. */
-  async listRecent(opts?: { limit?: number; fingerprint?: string; degradedOnly?: boolean }): Promise<
-    DecisionRecord[]
-  > {
+  async listRecent(opts?: { limit?: number; fingerprint?: string }): Promise<DecisionRecord[]> {
     const limit = Math.max(1, Math.min(opts?.limit ?? LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX));
     const clauses: string[] = [];
     const args: Array<string | number> = [];
     if (opts?.fingerprint) {
       clauses.push("fingerprint = ?");
       args.push(opts.fingerprint);
-    }
-    if (opts?.degradedOnly) {
-      clauses.push("degraded = 1");
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rs = await this.db.execute({
@@ -144,20 +154,18 @@ export class DecisionLog {
     total: number;
     byTier: Record<string, number>;
     byModel: Record<string, number>;
-    degraded: number;
     sticky: number;
     avgJevLatencyMs: number | null;
   }> {
     const where = opts?.sinceIso ? "WHERE created_at >= ?" : "";
     const args = opts?.sinceIso ? [opts.sinceIso] : [];
     const rs = await this.db.execute({
-      sql: `SELECT tier, model, sticky, degraded, signals_json FROM decisions ${where}`,
+      sql: `SELECT tier, model, sticky, signals_json FROM decisions ${where}`,
       args,
     });
 
     const byTier: Record<string, number> = {};
     const byModel: Record<string, number> = {};
-    let degraded = 0;
     let sticky = 0;
     let latencySum = 0;
     let latencyCount = 0;
@@ -167,7 +175,6 @@ export class DecisionLog {
       const model = String(row.model);
       byTier[tier] = (byTier[tier] ?? 0) + 1;
       byModel[model] = (byModel[model] ?? 0) + 1;
-      if (row.degraded) degraded += 1;
       if (row.sticky) sticky += 1;
       if (row.signals_json !== null && row.signals_json !== undefined) {
         const signals = JSON.parse(String(row.signals_json)) as RouteSignals;
@@ -182,10 +189,72 @@ export class DecisionLog {
       total: rs.rows.length,
       byTier,
       byModel,
-      degraded,
       sticky,
       avgJevLatencyMs: latencyCount > 0 ? latencySum / latencyCount : null,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // StickyStore
+  // -------------------------------------------------------------------------
+
+  /**
+   * The live sticky entry for a fingerprint, or undefined when there is none
+   * or it has expired. An expired row is deleted on the way past, so the
+   * table stays roughly the size of the live conversation set without a
+   * sweeper.
+   */
+  async get(fingerprint: string): Promise<StickyEntry | undefined> {
+    const rs = await this.db.execute({
+      sql: "SELECT user_turns, expires_at, decision_json FROM sticky WHERE fingerprint = ?",
+      args: [fingerprint],
+    });
+    const row = rs.rows[0];
+    if (row === undefined) return undefined;
+
+    const expiresAt = Number(row.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      await this.delete(fingerprint);
+      return undefined;
+    }
+    return {
+      decision: JSON.parse(String(row.decision_json)) as RouteDecision,
+      userTurns: Number(row.user_turns),
+      expiresAt,
+    };
+  }
+
+  /**
+   * Pins an entry for a fingerprint, replacing whatever was there. The
+   * decision is stored whole rather than joined back to `decisions`: the
+   * router writes here before the decision has been logged, and a sticky
+   * entry that could not be read until its decision row landed would miss on
+   * exactly the turn it is meant to serve. `decision_id` is kept alongside so
+   * the entry can still be traced to its row.
+   */
+  async set(fingerprint: string, entry: StickyEntry): Promise<void> {
+    assertNoSecrets(entry.decision);
+    await this.db.execute({
+      sql: `INSERT INTO sticky (fingerprint, decision_id, user_turns, expires_at, decision_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(fingerprint) DO UPDATE SET
+              decision_id = excluded.decision_id,
+              user_turns = excluded.user_turns,
+              expires_at = excluded.expires_at,
+              decision_json = excluded.decision_json`,
+      args: [
+        fingerprint,
+        entry.decision.id,
+        entry.userTurns,
+        entry.expiresAt,
+        JSON.stringify(entry.decision),
+      ],
+    });
+  }
+
+  /** No-op (does not throw) if `fingerprint` is not pinned. */
+  async delete(fingerprint: string): Promise<void> {
+    await this.db.execute({ sql: "DELETE FROM sticky WHERE fingerprint = ?", args: [fingerprint] });
   }
 
   /** One JSON record per line, oldest first, paginated internally. */

@@ -70,9 +70,22 @@ export type JevModelMetadata = { name: string; description: string; release_date
 export interface JevClientLike {
   systemone(
     req: Omit<SystemOneRequest, "model"> & { model?: string },
-    opts?: { signal?: AbortSignal },
+    /**
+     * `signal` aborts the call; `budgetMs` is the total time the caller will
+     * wait for an answer, retries and backoff included. The router passes its
+     * own `jevTimeoutMs` as the budget so a retrying client cannot outlive the
+     * router's promise to answer within it.
+     */
+    opts?: { signal?: AbortSignal; budgetMs?: number },
   ): Promise<SystemOneResult>;
 }
 
 export const JEV_BASE_URL = "https://api.typesafe.ai";
+
+/**
+ * The only model Milo asks routing questions of. TypeSafe also publishes a
+ * preview model whose calibration changes without notice; the policy profile
+ * in `router/policy.ts` is fitted against this one, and a profile does not
+ * transfer between scorers, so Milo pins it (ADR-002 revision 3).
+ */
 export const JEV_DEFAULT_MODEL = "jev-latest";

@@ -67,3 +67,137 @@ The `jev` profile (0.10 / 0.25 / 0.50 / 0.50) is **provisional and unvalidated**
 ### Gate
 
 The 85% target in this ADR is stated for Jev and stays the target. CI holds the `system-one-open` backend to **0.80** (`pnpm eval --gate 0.80`), which the v2 replay clears with room; `MIN_TIER_AGREEMENT` in the eval CLI still defaults to 0.85. The two-fold cross-validation in `packages/evals/src/run.test.ts` asserts a mean held-out agreement of at least 0.78, so a later tuning cannot buy in-sample agreement by overfitting this dataset.
+
+---
+
+## Revision 3: Jev only, and no fallback tier, 2026-09-17
+
+Two changes that are really one decision: Jev is the only decision backend, and
+a request that cannot be routed fails instead of guessing.
+
+### The contract change
+
+`RouteDecision.degraded` and `DecisionRecord.degraded` are **removed**, along
+with everything that read or wrote them — `degradedDecision`, the router's
+degraded path, the decision log's `degradedOnly` filter and `degraded` stat.
+A forward migration (`packages/core/src/log/schema.ts`, version 2) rebuilds the
+`decisions` table without the column.
+
+`Router.route` now **throws** `RoutingUnavailableError`
+(`packages/core/src/router/errors.ts`) when Jev cannot answer, carrying the
+cause (`timeout`, `network`, `http` with its status and Jev request id,
+`validation`, `rate_limited`, `breaker_open`) and `retryAfterMs` when one is
+known. The gateway turns that into a 503, or a 429 for `rate_limited`. An
+explicit model id still passes through to OpenRouter untouched; only
+`milo/auto` needs a routing answer, so only `milo/auto` can fail this way.
+
+### Why there is no fallback tier
+
+Returning `mid` and marking the decision degraded reads as robustness and is
+not. A caller who sent `milo/auto` asked to be routed. A silent `mid` is a
+wrong answer billed at Sonnet prices, and nothing in the response
+distinguishes it from a right one — the `x-milo-degraded` header said so, and
+no client read it. It also hides outages: the Fly deployment served degraded
+decisions through an entire 35-second cold-start window and reported healthy
+throughout (revision 2's operational note, and ADR-004's).
+
+Failing loudly puts the choice back where it belongs. A caller who wants a
+cheap fallback can send `milo/auto` with `milo.tier`, or retry, or name a
+model. None of those options existed while Milo was quietly deciding for them.
+
+The cost is that a Jev outage is now a user-visible error, so the router works
+harder not to have one:
+
+- **Retries with backoff.** The Jev client retries network failures, 429, 503
+  and 529 with exponential backoff and full jitter (base 200 ms, factor 2, up
+  to 3 retries), honouring a `Retry-After` header when the server sends one.
+  No other 4xx is retried. All of it runs inside one total budget the router
+  passes, so retries cannot outlive the router's own promise to answer.
+- **A raised budget.** `ROUTER_LIMITS.jevTimeoutMs` goes from **800 ms to
+  3,000 ms**. At 800 ms there was no room for a second attempt, which only
+  made sense while a failure cost the caller nothing.
+- **A circuit breaker.** Three consecutive transport failures (`network`,
+  `timeout`, or 5xx) open it for 30 seconds; it then half-opens and lets one
+  request probe. While open, `route` fails immediately with `breaker_open` and
+  the remaining cooldown rather than making every caller spend the full budget
+  rediscovering the outage. A `validation` failure or a 4xx does not count: Jev
+  answered, and the problem is the request, not the backend.
+- **Coalescing.** Concurrent `route` calls with the same fingerprint *and* the
+  same user-turn count share one Jev call. Each caller still gets its own
+  decision id, so the log stays one row per request and the gateway can attach
+  each request's upstream outcome to its own row; the callers that joined are
+  marked `sticky: true`, and all of them carry the `jevRequestId` of the single
+  call that answered. That keeps the log honest about both what was served and
+  what was spent.
+
+### Stickiness is user-turn aware, and persists
+
+A sticky entry now records `userTurns`, the number of user messages the
+decision was made for, and is reused **only** when the request's count matches.
+
+The fingerprint hashes the system prompt and the *first* user message, so every
+turn of a conversation lands on the same key. That is right for a tool-result
+continuation — the same ask coming back, where changing models mid-tool-loop
+breaks tool-call continuity and throws away the prompt cache. It was wrong for
+a follow-up turn: "now make the whole module concurrency-safe" was being served
+the tier chosen for "rename res to rows", for up to thirty minutes. A request
+with more user turns is a new ask, gets a fresh Jev call with the full recent
+context, and replaces the entry.
+
+`StickyStore` (`packages/core/src/router/sticky-store.ts`) backs the in-memory
+cache: the router consults it on a memory miss and writes through on every
+write. `DecisionLog` implements it over a `sticky` table (fingerprint, decision
+id, user turns, expiry, and the decision itself), so the gateway can pass the
+log as the store and a redeploy or a second instance stops re-asking Jev for
+every live conversation. A store failure is reported and ignored — it costs an
+extra Jev call, never a failed request. The 30-minute TTL is unchanged but is
+now an option (`RouterOptions.stickyTtlMs`).
+
+Because `StickyStore.get` takes a fingerprint, `DecisionLog.get(id)` was
+renamed to **`DecisionLog.getDecision(id)`**. Two `get`s on one class that both
+take a string and mean different things is the sort of thing that reads fine
+and routes wrong.
+
+### One profile
+
+`system-one-open` is gone from the code (ADR-004 is superseded on this point),
+and with it `PROFILES`, `PolicyProfileName`, `resolveProfile`, and
+`profileForModel` — there is no backend to dispatch on. `PolicyProfile` stays
+as a type and `chooseTier(signals, posture, profile = JEV_PROFILE)` still takes
+one, so a tuning run can try a candidate threshold set without editing
+`policy.ts`.
+
+`JEV_PROFILE` is the fitted, validated set from the first live Jev run:
+
+| fast gate | fast below | frontier `P3` | frontier `P2+P3` | cap lifts at `P3` |
+|---|---|---|---|---|
+| level 1+ | 0.35 | 0.05 | 0.65 | 0.25 |
+
+The fast gate reading level 1+ rather than level 2+ is the substantive change.
+Jev puts real mid-difficulty work on level 1 — expected-mid examples average
+P0 0.17 / P1 0.62 / P2 0.18 / P3 0.03 — so a gate on `P2 + P3` waved most of it
+through to `fast`. `PolicyProfile.fastMassFromLevel` selects which, because it
+is a property of the scorer's calibration rather than of the routing question.
+
+A replay of the 120 committed Jev fixtures scores **81.7%** overall (band 0
+96.3%, band 1 60.0%, band 2 84.8%, band 3 92.0%), task-type accuracy 90.8%,
+with every example scored. Confusion: frontier 39/42, mid 25/31, fast 34/47.
+That clears the 0.80 CI gate and still sits under the **85% target this ADR
+states for Jev**; the fast/mid boundary is where it is lost, and 13 fast-labeled
+examples predicted `mid` is most of the gap. `jev-preview` is not used: its
+calibration changes without notice and a profile does not transfer between
+scorers, so `JEV_DEFAULT_MODEL` pins `jev-latest`.
+
+### Fixtures are keyed by endpoint, not by URL
+
+A fixture's lookup key was a hash of method + **whole URL** + body. Recordings
+go through a key-injecting egress proxy that serves Jev at
+`https://<proxy-host>/v1/egress/<grant-id>/v1/systemone`, so a replay only
+matched when `JEV_BASE_URL` was pinned to that exact address — which is why CI
+carried a grant URL in its environment, and why the grant id was effectively
+baked into 120 committed filenames.
+
+The key now hashes method + the **API-relative path** + body: no scheme, host,
+port, or proxy mount point. `fixtureKeyFor(method, url, body)` is exported for
+re-keying the committed fixtures, and the full recorded URL is still written
+into each fixture file for tracing.

@@ -3,7 +3,7 @@
  * See docs/adr/002-routing-signals-and-policy.md.
  */
 
-export { buildJevState, messageText, CHARS_PER_TOKEN, TRUNCATION_MARKER } from "./context.js";
+export { buildJevState, countUserTurns, messageText, CHARS_PER_TOKEN, TRUNCATION_MARKER } from "./context.js";
 export type { JevState } from "./context.js";
 
 export { fingerprint } from "./fingerprint.js";
@@ -22,15 +22,12 @@ export {
   chooseTier,
   chooseTierFromExpectedScore,
   postureProfile,
-  profileForModel,
-  resolveProfile,
   hardMass,
   upperMass,
-  PROFILES,
+  upperMassFromLevel1,
+  fastGateMass,
   DEFAULT_PROFILE,
   JEV_PROFILE,
-  SYSTEM_ONE_OPEN_PROFILE,
-  SYSTEM_ONE_OPEN_MODEL_MARKER,
   LOW_POSTURE_FAST_MASS,
   QUALITY_MIN_FRONTIER_HARD_MASS,
   QUALITY_MIN_FRONTIER_UPPER_MASS,
@@ -43,7 +40,7 @@ export {
   REASONING_THRESHOLD,
   CAPPED_TASK_TYPES,
 } from "./policy.js";
-export type { PolicyProfile, PolicyProfileName } from "./policy.js";
+export type { PolicyProfile } from "./policy.js";
 
 export { resolveModel, tierSearchOrder, LONG_OUTPUT_THRESHOLD, DEFAULT_SMALL_OUTPUT_MODELS } from "./roster.js";
 export type { ResolveModelOptions } from "./roster.js";
@@ -51,7 +48,15 @@ export type { ResolveModelOptions } from "./roster.js";
 export { StickyCache, STICKY_MAX_ENTRIES } from "./sticky.js";
 export type { StickyCacheOptions } from "./sticky.js";
 
-export { Router, toSignals, classifyFailure, degradedDecision } from "./router.js";
-export type { RouterOptions, DegradeCause, DegradedDecisionInput } from "./router.js";
+export {
+  CircuitBreaker,
+  isTransportFailure,
+  BREAKER_COOLDOWN_MS,
+  BREAKER_FAILURE_THRESHOLD,
+} from "./breaker.js";
+export type { BreakerState, BreakerStatus, CircuitBreakerOptions } from "./breaker.js";
+
+export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT } from "./router.js";
+export type { RouterOptions } from "./router.js";
 export * from "./errors.js";
 export * from "./sticky-store.js";

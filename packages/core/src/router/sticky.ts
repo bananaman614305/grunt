@@ -6,13 +6,24 @@
  * breaks tool-call continuity and throws away the provider's prompt cache
  * (ADR-002).
  *
- * Process-local on purpose. A hosted Milo with several instances will see a
- * conversation land on a cold instance and pay one extra Jev call; that costs
- * about $0.00002 and is cheaper than the shared store it would take to avoid.
+ * An entry is keyed by fingerprint but qualified by `userTurns`, the number of
+ * user messages the decision was made for. A later request on the same
+ * fingerprint with the *same* user-turn count is the same ask coming back --
+ * a tool-result continuation, where the model must not change mid-tool-loop.
+ * A request with *more* user turns is a new ask in an old conversation: the
+ * user has said something else, and that something else may be much harder or
+ * much easier than what was routed before. Reusing the pinned tier there was
+ * the old behaviour and it silently mis-routed every follow-up turn for half
+ * an hour. See `StickyStore` in `./sticky-store.ts`.
+ *
+ * This cache is process-local. A `StickyStore` behind it (the decision log
+ * implements one) is what survives a redeploy or a second instance; the
+ * router consults the store on a miss here and writes through on every set.
  */
 
 import type { RouteDecision } from "../types.js";
 import { ROUTER_LIMITS } from "../types.js";
+import type { StickyEntry } from "./sticky-store.js";
 
 /** Hard bound on entries; the oldest are evicted first. */
 export const STICKY_MAX_ENTRIES = 10_000;
@@ -24,14 +35,12 @@ export type StickyCacheOptions = {
   clock?: () => number;
 };
 
-type Entry = { decision: RouteDecision; expiresAt: number };
-
 export class StickyCache {
   readonly ttlMs: number;
   readonly maxEntries: number;
   private readonly clock: () => number;
   // A Map iterates in insertion order, which is the eviction order we want.
-  private readonly entries = new Map<string, Entry>();
+  private readonly entries = new Map<string, StickyEntry>();
 
   constructor(opts: StickyCacheOptions = {}) {
     this.ttlMs = opts.ttlMs ?? ROUTER_LIMITS.stickyTtlMs;
@@ -39,19 +48,32 @@ export class StickyCache {
     this.clock = opts.clock ?? Date.now;
   }
 
-  /** The live decision for a fingerprint, or undefined if absent or expired. */
-  get(fingerprint: string): RouteDecision | undefined {
+  /**
+   * Builds the entry a decision made at `userTurns` should be stored under,
+   * with this cache's TTL applied. The router hands the same value to the
+   * cache and to the store, so the two cannot disagree about when it expires.
+   */
+  entryFor(decision: RouteDecision, userTurns: number): StickyEntry {
+    return { decision, userTurns, expiresAt: this.clock() + this.ttlMs };
+  }
+
+  /** The live entry for a fingerprint, or undefined if absent or expired. */
+  get(fingerprint: string): StickyEntry | undefined {
     const entry = this.entries.get(fingerprint);
     if (entry === undefined) return undefined;
     if (entry.expiresAt <= this.clock()) {
       this.entries.delete(fingerprint);
       return undefined;
     }
-    return entry.decision;
+    return entry;
   }
 
-  /** Pins a decision to a fingerprint for `ttlMs`. Re-setting restarts the TTL. */
-  set(fingerprint: string, decision: RouteDecision): void {
+  /**
+   * Pins an entry to a fingerprint until its own `expiresAt`. Re-setting
+   * replaces the entry outright, which is how a new user turn takes over a
+   * fingerprint from the decision that preceded it.
+   */
+  set(fingerprint: string, entry: StickyEntry): void {
     // Delete first so a re-set moves the key to the back of the eviction queue.
     this.entries.delete(fingerprint);
     // Sweeping is O(n), so only do it when the bound is actually in the way.
@@ -61,7 +83,11 @@ export class StickyCache {
       if (oldest.done === true) break;
       this.entries.delete(oldest.value);
     }
-    this.entries.set(fingerprint, { decision, expiresAt: this.clock() + this.ttlMs });
+    this.entries.set(fingerprint, entry);
+  }
+
+  delete(fingerprint: string): void {
+    this.entries.delete(fingerprint);
   }
 
   /** Live entries, expired ones excluded. */

@@ -199,3 +199,24 @@ export function buildJevState(
     approxTokens: Math.ceil(chars / CHARS_PER_TOKEN),
   };
 }
+
+/**
+ * How many user messages the request carries.
+ *
+ * This is the router's "is this the same ask?" test (see `StickyCache`). A
+ * tool-result continuation adds `assistant` and `tool` messages but no `user`
+ * message, so the count is unchanged and the pinned decision still applies.
+ * A genuine follow-up adds a `user` message, the count moves, and the router
+ * asks Jev again rather than serving a tier chosen for an earlier question.
+ *
+ * Every user message counts, including one whose content is empty or is made
+ * only of non-text parts: what matters is that a turn was taken, not whether
+ * it had text the state builder could use.
+ */
+export function countUserTurns(messages: ChatMessage[]): number {
+  let count = 0;
+  for (const message of messages) {
+    if (message.role === "user") count += 1;
+  }
+  return count;
+}

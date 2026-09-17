@@ -1,12 +1,15 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { JevError } from "../jev/client.js";
 import type { JevClientLike, SystemOneRequest, SystemOneResult } from "../jev/types.js";
 import type { ChatMessage, CostPosture, RouteDecision, RouteRequest, Roster, Tier } from "../types.js";
 import { POLICY_VERSION, ROUTER_LIMITS } from "../types.js";
+import { BREAKER_COOLDOWN_MS } from "./breaker.js";
+import { isRoutingUnavailable, RoutingUnavailableError } from "./errors.js";
 import { fingerprint } from "./fingerprint.js";
-import { JEV_PROFILE } from "./policy.js";
-import { classifyFailure, degradedDecision, Router } from "./router.js";
+import { classifyFailure, Router } from "./router.js";
 import { StickyCache } from "./sticky.js";
+import type { StickyEntry, StickyStore } from "./sticky-store.js";
 
 // A key-shaped string that must never surface in a reason or a decision.
 const FAKE_KEY = "sk-live-NEVERLEAKTHIS0123456789";
@@ -20,6 +23,20 @@ const ROSTER: Roster = {
 const MESSAGES: ChatMessage[] = [
   { role: "system", content: "You are a sub-agent in an engineering crew." },
   { role: "user", content: "Rename res to rows in listRecent." },
+];
+
+/** The same conversation after a tool call: no new user turn. */
+const TOOL_CONTINUATION: ChatMessage[] = [
+  ...MESSAGES,
+  { role: "assistant", content: null, tool_calls: [{ id: "call_1" }] },
+  { role: "tool", content: "ok", tool_call_id: "call_1" },
+];
+
+/** The same conversation after the user says something else. */
+const NEXT_USER_TURN: ChatMessage[] = [
+  ...TOOL_CONTINUATION,
+  { role: "assistant", content: "Renamed it." },
+  { role: "user", content: "Now make the whole module concurrency-safe." },
 ];
 
 function request(overrides: Partial<RouteRequest> = {}): RouteRequest {
@@ -45,14 +62,18 @@ function loadFixture(name: string): Fixture {
   return JSON.parse(readFileSync(new URL(`./__fixtures__/${name}.json`, import.meta.url), "utf8")) as Fixture;
 }
 
-type StubJev = JevClientLike & { calls: Array<Omit<SystemOneRequest, "model"> & { model?: string }> };
+type StubCall = Omit<SystemOneRequest, "model"> & { model?: string };
+type StubJev = JevClientLike & { calls: StubCall[]; budgets: Array<number | undefined> };
 
 function stubJev(answers: SystemOneResult["answers"], extra: Partial<SystemOneResult> = {}): StubJev {
-  const calls: StubJev["calls"] = [];
+  const calls: StubCall[] = [];
+  const budgets: Array<number | undefined> = [];
   return {
     calls,
-    systemone: (req) => {
+    budgets,
+    systemone: (req, opts) => {
       calls.push(req);
+      budgets.push(opts?.budgetMs);
       return Promise.resolve({
         model: "jev-latest",
         answers,
@@ -65,8 +86,63 @@ function stubJev(answers: SystemOneResult["answers"], extra: Partial<SystemOneRe
   };
 }
 
+/** A stub whose calls resolve only when the test says so. */
+function gatedJev(answers: SystemOneResult["answers"]): StubJev & { release: () => void } {
+  const calls: StubCall[] = [];
+  const budgets: Array<number | undefined> = [];
+  const waiters: Array<() => void> = [];
+  return {
+    calls,
+    budgets,
+    release: () => {
+      for (const resume of waiters.splice(0)) resume();
+    },
+    systemone: async (req, opts) => {
+      calls.push(req);
+      budgets.push(opts?.budgetMs);
+      await new Promise<void>((resolve) => waiters.push(resolve));
+      return {
+        model: "jev-latest",
+        answers,
+        usage: { input_tokens: 1200, output_tokens: 24 },
+        requestId: `req_${calls.length}`,
+        latencyMs: 64,
+      };
+    },
+  };
+}
+
 function failingJev(error: unknown): JevClientLike {
   return { systemone: () => Promise.reject(error) };
+}
+
+/** An in-memory StickyStore that counts what the router asked it to do. */
+function memoryStore(): StickyStore & {
+  entries: Map<string, StickyEntry>;
+  gets: string[];
+  sets: Array<[string, StickyEntry]>;
+} {
+  const entries = new Map<string, StickyEntry>();
+  const gets: string[] = [];
+  const sets: Array<[string, StickyEntry]> = [];
+  return {
+    entries,
+    gets,
+    sets,
+    get: (fp) => {
+      gets.push(fp);
+      return Promise.resolve(entries.get(fp));
+    },
+    set: (fp, entry) => {
+      sets.push([fp, entry]);
+      entries.set(fp, entry);
+      return Promise.resolve();
+    },
+    delete: (fp) => {
+      entries.delete(fp);
+      return Promise.resolve();
+    },
+  };
 }
 
 afterEach(() => {
@@ -74,7 +150,7 @@ afterEach(() => {
 });
 
 describe("Router.route: forced tier", () => {
-  it("skips Jev, reports no signals, and is not degraded", async () => {
+  it("skips Jev and reports no signals", async () => {
     const jev = stubJev({});
     const decisions: RouteDecision[] = [];
     const router = new Router({ jev, roster: ROSTER, onDecision: (d) => decisions.push(d) });
@@ -85,7 +161,6 @@ describe("Router.route: forced tier", () => {
     expect(decision.tier).toBe("frontier");
     expect(decision.model).toBe("frontier-model");
     expect(decision.reason).toContain("forced");
-    expect(decision.degraded).toBe(false);
     expect(decision.sticky).toBe(false);
     expect(decision.signals).toBeUndefined();
     expect(decision.policyVersion).toBe(POLICY_VERSION);
@@ -104,6 +179,17 @@ describe("Router.route: forced tier", () => {
     const router = new Router({ jev: stubJev({}), roster: ROSTER, sticky });
     await router.route(request({ forcedTier: "fast" }));
     expect(sticky.size).toBe(0);
+  });
+
+  it("answers even with the breaker wide open: it needs no backend", async () => {
+    const router = new Router({ jev: failingJev(new TypeError("fetch failed")), roster: ROSTER });
+    for (let i = 0; i < 3; i += 1) {
+      await expect(router.route(request())).rejects.toThrow(RoutingUnavailableError);
+    }
+    expect(router.breakerState().state).toBe("open");
+
+    const decision = await router.route(request({ forcedTier: "fast" }));
+    expect(decision.tier).toBe("fast");
   });
 });
 
@@ -163,175 +249,320 @@ describe("Router.route: stickiness", () => {
     expect(jev.calls).toHaveLength(2);
     expect(after.sticky).toBe(false);
   });
+
+  it("takes a stickyTtlMs option, so the pin window is tunable", async () => {
+    let now = 1_700_000_000_000;
+    const jev = stubJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER, clock: () => now, stickyTtlMs: 1_000 });
+
+    await router.route(request());
+    now += 1_001;
+    await router.route(request());
+
+    expect(jev.calls).toHaveLength(2);
+  });
 });
 
-describe("Router.route: happy path", () => {
-  it("sends the built state and the four questions under an abort signal", async () => {
-    const jev = stubJev(loadFixture("trivial-rename").answers);
+describe("Router.route: user-turn-aware stickiness", () => {
+  const fixture = loadFixture("trivial-rename");
+
+  it("reuses the decision for a tool-result continuation, which adds no user turn", async () => {
+    const jev = stubJev(fixture.answers);
     const router = new Router({ jev, roster: ROSTER });
-
-    await router.route(request({ tools: [{ name: "read_file" }] }));
-
-    const call = jev.calls[0];
-    expect(call).toBeDefined();
-    expect(Object.keys(call!.questions).sort()).toEqual(["difficulty", "long_output", "needs_reasoning", "task_type"]);
-    const state = call!.state as Record<string, unknown>;
-    expect(state["has_tools"]).toBe(true);
-    expect(state["tool_count"]).toBe(1);
-    expect(state["recent_user_turns"]).toEqual(["Rename res to rows in listRecent."]);
-  });
-
-  it("maps answers onto signals", async () => {
-    const fixture = loadFixture("flaky-test");
-    const jev = stubJev(fixture.answers, { requestId: fixture.requestId, model: fixture.model, latencyMs: 71 });
-    const router = new Router({ jev, roster: ROSTER });
-
-    const decision = await router.route(request());
-
-    expect(decision.signals).toEqual({
-      taskType: "debug",
-      difficulty: 2.31,
-      difficultyLevels: [0.01, 0.09, 0.49, 0.41],
-      needsReasoning: 0.93,
-      longOutput: 0.31,
-      confidences: { task_type: 0.94, difficulty: 0.72 },
-      jevRequestId: fixture.requestId,
-      jevModel: "jev-latest",
-      latencyMs: 71,
-    });
-    expect(decision.degraded).toBe(false);
-    expect(decision.reason).toContain("debug task");
-    expect(decision.reason).toContain("P(hard) 0.41");
-    expect(decision.reason).toContain("frontier-model");
-  });
-
-  it("leaves difficultyLevels empty when the backend reports no distribution", async () => {
-    const fixture = loadFixture("flaky-test");
-    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
-    delete answers["difficulty"]?.["probabilities"];
-    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
-
-    const decision = await router.route(request());
-
-    expect(decision.signals?.difficultyLevels).toEqual([]);
-    // Policy falls back to the v1 expected-score rule, which still routes it.
-    expect(decision.reason).toContain("difficulty 2.31");
-    expect(decision.tier).toBe("frontier");
-  });
-
-  it("treats an all-zero distribution as no distribution, not as certainly trivial", async () => {
-    const fixture = loadFixture("flaky-test");
-    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
-    answers["difficulty"]!["probabilities"] = {};
-    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
-
-    const decision = await router.route(request());
-
-    expect(decision.signals?.difficultyLevels).toEqual([]);
-    expect(decision.tier).toBe("frontier");
-  });
-
-  it("reads a partial distribution, treating the missing levels as zero mass", async () => {
-    const fixture = loadFixture("trivial-rename");
-    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
-    answers["difficulty"]!["probabilities"] = { "0": 0.7, "1": 0.3 };
-    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
-
-    expect((await router.route(request())).signals?.difficultyLevels).toEqual([0.7, 0.3, 0, 0]);
-  });
-
-  it("picks the open profile from the backend's model name, and the jev profile otherwise", async () => {
-    // P3 0.18 clears the open profile's 0.10 hard bar but not Jev's 0.25, and
-    // P2+ 0.38 clears neither upper bar.
-    const answers = {
-      task_type: { type: "choice", choice: "feature", confidence: 0.9, probabilities: {} },
-      difficulty: {
-        type: "score",
-        score: 1.36,
-        confidence: 0.4,
-        legend: {},
-        probabilities: { "0": 0.2, "1": 0.42, "2": 0.2, "3": 0.18 },
-      },
-      needs_reasoning: { type: "noul", noul: 0.5 },
-      long_output: { type: "noul", noul: 0.2 },
-    } as unknown as SystemOneResult["answers"];
-
-    const viaJev = new Router({ jev: stubJev(answers, { model: "jev-latest" }), roster: ROSTER });
-    const viaOpen = new Router({
-      jev: stubJev(answers, { model: "system-one-open/e2b-full" }),
-      roster: ROSTER,
-    });
-
-    expect((await viaJev.route(request())).tier).toBe("mid");
-    expect((await viaOpen.route(request())).tier).toBe("frontier");
-  });
-
-  it("lets the profile option override the model-name choice", async () => {
-    const answers = {
-      task_type: { type: "choice", choice: "feature", confidence: 0.9, probabilities: {} },
-      difficulty: {
-        type: "score",
-        score: 1.36,
-        confidence: 0.4,
-        legend: {},
-        probabilities: { "0": 0.2, "1": 0.42, "2": 0.2, "3": 0.18 },
-      },
-      needs_reasoning: { type: "noul", noul: 0.5 },
-      long_output: { type: "noul", noul: 0.2 },
-    } as unknown as SystemOneResult["answers"];
-
-    const forced = new Router({
-      jev: stubJev(answers, { model: "jev-latest" }),
-      roster: ROSTER,
-      profile: "system-one-open",
-    });
-    const forcedObject = new Router({
-      jev: stubJev(answers, { model: "system-one-open/e2b-full" }),
-      roster: ROSTER,
-      profile: JEV_PROFILE,
-    });
-
-    expect((await forced.route(request())).tier).toBe("frontier");
-    expect((await forcedObject.route(request())).tier).toBe("mid");
-  });
-
-  for (const name of ["trivial-rename", "flaky-test", "schema-migration", "concurrency-bug"]) {
-    const fixture = loadFixture(name);
-    it(`routes the ${name} fixture where the policy expects under every posture`, async () => {
-      for (const posture of ["low", "balanced", "quality"] as const) {
-        const router = new Router({ jev: stubJev(fixture.answers), roster: ROSTER });
-        const decision = await router.route(request({ posture }));
-        expect(`${posture}:${decision.tier}`).toBe(`${posture}:${fixture.expectedTier[posture]}`);
-      }
-    });
-  }
-
-  it("calls onDecision with every decision it returns", async () => {
-    const decisions: RouteDecision[] = [];
-    const router = new Router({
-      jev: stubJev(loadFixture("trivial-rename").answers),
-      roster: ROSTER,
-      onDecision: (d) => decisions.push(d),
-    });
+    const fp = fingerprint(MESSAGES);
 
     const first = await router.route(request());
-    const second = await router.route(request());
-    const forced = await router.route(request({ forcedTier: "mid" }));
+    const continued = await router.route(request({ messages: TOOL_CONTINUATION, fingerprint: fp }));
 
-    expect(decisions).toEqual([first, second, forced]);
-    expect(decisions[1]?.sticky).toBe(true);
+    // Switching models mid-tool-loop breaks tool-call continuity; this is the
+    // case stickiness exists for.
+    expect(jev.calls).toHaveLength(1);
+    expect(continued.sticky).toBe(true);
+    expect(continued.model).toBe(first.model);
+  });
+
+  it("re-evaluates when the user takes another turn, and replaces the entry", async () => {
+    const jev = stubJev(fixture.answers);
+    const sticky = new StickyCache();
+    const router = new Router({ jev, roster: ROSTER, sticky });
+    const fp = fingerprint(MESSAGES);
+
+    await router.route(request());
+    const next = await router.route(request({ messages: NEXT_USER_TURN, fingerprint: fp }));
+
+    // The fingerprint only hashes the system prompt and the first user
+    // message, so a follow-up lands on the same key -- but it is a different
+    // question and gets its own answer.
+    expect(jev.calls).toHaveLength(2);
+    expect(next.sticky).toBe(false);
+    expect(sticky.get(fp)?.userTurns).toBe(2);
+  });
+
+  it("sends the new turn's context to Jev on the re-evaluation, not the old", async () => {
+    const jev = stubJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+
+    await router.route(request());
+    await router.route(request({ messages: NEXT_USER_TURN, fingerprint: fingerprint(MESSAGES) }));
+
+    const second = jev.calls[1]?.state as Record<string, unknown>;
+    expect(second["recent_user_turns"]).toEqual([
+      "Rename res to rows in listRecent.",
+      "Now make the whole module concurrency-safe.",
+    ]);
+    expect(second["user_message_count"]).toBe(2);
+  });
+
+  it("pins the new decision, so the next continuation of it reuses the new tier", async () => {
+    const jev = stubJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+    const fp = fingerprint(MESSAGES);
+
+    await router.route(request());
+    await router.route(request({ messages: NEXT_USER_TURN, fingerprint: fp }));
+    const third = await router.route(request({ messages: NEXT_USER_TURN, fingerprint: fp }));
+
+    expect(jev.calls).toHaveLength(2);
+    expect(third.sticky).toBe(true);
   });
 });
 
-describe("Router.route: degraded fallback", () => {
+describe("Router.route: the sticky store", () => {
+  const fixture = loadFixture("trivial-rename");
+
+  it("writes through on every fresh decision", async () => {
+    const store = memoryStore();
+    const jev = stubJev(fixture.answers);
+    const now = 1_700_000_000_000;
+    const router = new Router({ jev, roster: ROSTER, stickyStore: store, clock: () => now });
+
+    const decision = await router.route(request());
+
+    expect(store.sets).toHaveLength(1);
+    const [fp, entry] = store.sets[0] as [string, StickyEntry];
+    expect(fp).toBe(decision.fingerprint);
+    expect(entry.decision.id).toBe(decision.id);
+    expect(entry.userTurns).toBe(1);
+    expect(entry.expiresAt).toBe(now + ROUTER_LIMITS.stickyTtlMs);
+  });
+
+  it("fills a cold memory cache from the store instead of asking Jev", async () => {
+    const store = memoryStore();
+    const jev = stubJev(fixture.answers);
+    const fp = fingerprint(MESSAGES);
+
+    // One instance decides and writes through.
+    await new Router({ jev, roster: ROSTER, stickyStore: store }).route(request());
+    expect(jev.calls).toHaveLength(1);
+
+    // A second instance -- a redeploy, or another Fly machine -- starts cold.
+    const cold = stubJev(fixture.answers);
+    const second = new Router({ jev: cold, roster: ROSTER, stickyStore: store });
+    const decision = await second.route(request());
+
+    expect(cold.calls).toHaveLength(0);
+    expect(store.gets).toContain(fp);
+    expect(decision.sticky).toBe(true);
+    expect(decision.tier).toBe("fast");
+  });
+
+  it("consults the store only once per conversation: the fill warms memory", async () => {
+    const store = memoryStore();
+    await new Router({ jev: stubJev(fixture.answers), roster: ROSTER, stickyStore: store }).route(request());
+    store.gets.length = 0;
+
+    const cold = new Router({ jev: stubJev(fixture.answers), roster: ROSTER, stickyStore: store });
+    await cold.route(request());
+    await cold.route(request());
+
+    expect(store.gets).toHaveLength(1);
+  });
+
+  it("ignores a stored entry recorded at a different user-turn count", async () => {
+    const store = memoryStore();
+    const fp = fingerprint(MESSAGES);
+    await new Router({ jev: stubJev(fixture.answers), roster: ROSTER, stickyStore: store }).route(request());
+
+    const cold = stubJev(fixture.answers);
+    const second = new Router({ jev: cold, roster: ROSTER, stickyStore: store });
+    const decision = await second.route(request({ messages: NEXT_USER_TURN, fingerprint: fp }));
+
+    expect(cold.calls).toHaveLength(1);
+    expect(decision.sticky).toBe(false);
+    expect(store.entries.get(fp)?.userTurns).toBe(2);
+  });
+
+  it("ignores an expired stored entry", async () => {
+    const store = memoryStore();
+    let now = 1_700_000_000_000;
+    await new Router({ jev: stubJev(fixture.answers), roster: ROSTER, stickyStore: store, clock: () => now })
+      .route(request());
+
+    now += ROUTER_LIMITS.stickyTtlMs + 1;
+    const cold = stubJev(fixture.answers);
+    await new Router({ jev: cold, roster: ROSTER, stickyStore: store, clock: () => now }).route(request());
+
+    expect(cold.calls).toHaveLength(1);
+  });
+
+  it("routes anyway when the store is down, and reports the failure", async () => {
+    const errors: unknown[] = [];
+    const broken: StickyStore = {
+      get: () => Promise.reject(new Error("store read failed")),
+      set: () => Promise.reject(new Error("store write failed")),
+      delete: () => Promise.resolve(),
+    };
+    const router = new Router({
+      jev: stubJev(fixture.answers),
+      roster: ROSTER,
+      stickyStore: broken,
+      onError: (err) => errors.push(err),
+    });
+
+    const decision = await router.route(request());
+
+    // A store outage costs an extra Jev call on another instance, never a
+    // failed request.
+    expect(decision.tier).toBe("fast");
+    expect(errors).toHaveLength(2);
+  });
+
+  it("never consults the store when there is none", async () => {
+    const jev = stubJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+    await expect(router.route(request())).resolves.toBeDefined();
+  });
+});
+
+describe("Router.route: coalescing identical asks", () => {
+  const fixture = loadFixture("trivial-rename");
+
+  it("shares one Jev call between concurrent identical asks", async () => {
+    const jev = gatedJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+
+    const all = Promise.all([router.route(request()), router.route(request()), router.route(request())]);
+    await Promise.resolve();
+    jev.release();
+    const [a, b, c] = await all;
+
+    expect(jev.calls).toHaveLength(1);
+    expect([a, b, c].map((d) => d.tier)).toEqual(["fast", "fast", "fast"]);
+    // Each caller gets its own decision id, so the log stays one row per
+    // request and the gateway can attach each request's upstream outcome to
+    // its own row.
+    expect(new Set([a.id, b.id, c.id]).size).toBe(3);
+    // ...and they all cite the one Jev call that actually answered.
+    expect(new Set([a, b, c].map((d) => d.signals?.jevRequestId))).toEqual(new Set(["req_1"]));
+  });
+
+  it("marks every caller but the one that made the call sticky", async () => {
+    const jev = gatedJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+
+    const all = Promise.all([router.route(request()), router.route(request()), router.route(request())]);
+    await Promise.resolve();
+    jev.release();
+    const decisions = await all;
+
+    expect(decisions.filter((d) => !d.sticky)).toHaveLength(1);
+    expect(decisions.filter((d) => d.sticky)).toHaveLength(2);
+  });
+
+  it("does not coalesce different fingerprints", async () => {
+    const jev = gatedJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+
+    const all = Promise.all([router.route(request()), router.route(request({ fingerprint: "other" }))]);
+    await Promise.resolve();
+    jev.release();
+    await all;
+
+    expect(jev.calls).toHaveLength(2);
+  });
+
+  it("does not coalesce the same fingerprint at different user-turn counts", async () => {
+    const jev = gatedJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+    const fp = fingerprint(MESSAGES);
+
+    const all = Promise.all([
+      router.route(request()),
+      router.route(request({ messages: NEXT_USER_TURN, fingerprint: fp })),
+    ]);
+    await Promise.resolve();
+    jev.release();
+    await all;
+
+    // Two different questions; sharing one answer would route the follow-up
+    // on the first turn's signals.
+    expect(jev.calls).toHaveLength(2);
+  });
+
+  it("gives every joined caller the same failure when the shared call fails", async () => {
+    let reject: (err: unknown) => void = () => undefined;
+    let started = 0;
+    const jev: JevClientLike = {
+      systemone: () => {
+        started += 1;
+        return new Promise<never>((_resolve, rej) => {
+          reject = rej;
+        });
+      },
+    };
+    const router = new Router({ jev, roster: ROSTER });
+
+    const all = Promise.allSettled([router.route(request()), router.route(request())]);
+    await Promise.resolve();
+    reject(new TypeError("fetch failed"));
+    const results = await all;
+
+    expect(started).toBe(1);
+    expect(results.every((r) => r.status === "rejected")).toBe(true);
+    for (const r of results) {
+      expect(isRoutingUnavailable((r as PromiseRejectedResult).reason)).toBe(true);
+    }
+  });
+
+  it("clears the entry on settle, so a later ask is not served a stale promise", async () => {
+    const jev = gatedJev(fixture.answers);
+    const sticky = new StickyCache({ ttlMs: 0 }); // never a sticky hit
+    const router = new Router({ jev, roster: ROSTER, sticky });
+
+    const first = Promise.all([router.route(request()), router.route(request())]);
+    await Promise.resolve();
+    jev.release();
+    await first;
+
+    const second = router.route(request());
+    await Promise.resolve();
+    jev.release();
+    await second;
+
+    expect(jev.calls).toHaveLength(2);
+  });
+
+  it("does not leave an entry behind after a failure", async () => {
+    const jev = failingJev(new TypeError("fetch failed"));
+    const router = new Router({ jev, roster: ROSTER, breaker: { failureThreshold: 100 } });
+
+    await expect(router.route(request())).rejects.toThrow(RoutingUnavailableError);
+    // A pinned failure would make every later caller inherit the first
+    // outage forever.
+    await expect(router.route(request())).rejects.toThrow(RoutingUnavailableError);
+  });
+});
+
+describe("Router.route: it fails loudly", () => {
   const causes: Array<[string, unknown, string]> = [
     ["network", new TypeError("fetch failed"), "network"],
-    ["http", Object.assign(new Error("bad gateway"), { status: 502 }), "http"],
+    ["http", new JevError("boom", "http", { status: 502, requestId: "req_502" }), "http"],
     ["abort", Object.assign(new Error("aborted"), { name: "AbortError" }), "timeout"],
+    ["validation", new JevError("nope", "validation"), "validation"],
   ];
 
   for (const [label, error, cause] of causes) {
-    it(`falls back to mid on a ${label} failure`, async () => {
+    it(`throws RoutingUnavailableError on a ${label} failure`, async () => {
       const decisions: RouteDecision[] = [];
       const router = new Router({
         jev: failingJev(error),
@@ -339,29 +570,57 @@ describe("Router.route: degraded fallback", () => {
         onDecision: (d) => decisions.push(d),
       });
 
-      const decision = await router.route(request());
+      const thrown = await router.route(request()).catch((err: unknown) => err);
 
-      expect(decision.tier).toBe("mid");
-      expect(decision.model).toBe("mid-model");
-      expect(decision.degraded).toBe(true);
-      expect(decision.sticky).toBe(false);
-      expect(decision.signals).toBeUndefined();
-      expect(decision.reason).toContain(cause);
-      expect(decisions).toEqual([decision]);
+      expect(thrown).toBeInstanceOf(RoutingUnavailableError);
+      expect((thrown as RoutingUnavailableError).cause_).toBe(cause);
+      // No decision is invented, so none is logged.
+      expect(decisions).toEqual([]);
     });
   }
 
-  it("degrades to mid when Jev exceeds the timeout budget", async () => {
+  it("throws rather than returning a mid-tier guess", async () => {
+    const router = new Router({ jev: failingJev(new TypeError("fetch failed")), roster: ROSTER });
+    // The old behaviour returned `mid` and marked it degraded, which is a
+    // wrong answer billed at Sonnet prices and indistinguishable from a right
+    // one.
+    await expect(router.route(request())).rejects.toThrow(RoutingUnavailableError);
+  });
+
+  it("carries the status and Jev's request id on an http failure", async () => {
+    const router = new Router({
+      jev: failingJev(new JevError("boom", "http", { status: 502, requestId: "req_502" })),
+      roster: ROSTER,
+    });
+
+    const err = (await router.route(request()).catch((e: unknown) => e)) as RoutingUnavailableError;
+    expect(err.cause_).toBe("http");
+    expect(err.status).toBe(502);
+    expect(err.requestId).toBe("req_502");
+  });
+
+  it("reports a 429 as rate_limited and passes the Retry-After through", async () => {
+    const router = new Router({
+      jev: failingJev(new JevError("slow down", "http", { status: 429, retryAfterMs: 2_000 })),
+      roster: ROSTER,
+    });
+
+    const err = (await router.route(request()).catch((e: unknown) => e)) as RoutingUnavailableError;
+    expect(err.cause_).toBe("rate_limited");
+    expect(err.status).toBe(429);
+    expect(err.retryAfterMs).toBe(2_000);
+  });
+
+  it("throws a timeout when Jev exceeds the budget", async () => {
     vi.useFakeTimers();
     const router = new Router({ jev: { systemone: () => new Promise<never>(() => {}) }, roster: ROSTER });
 
-    const pending = router.route(request());
+    const pending = router.route(request()).catch((err: unknown) => err);
     await vi.advanceTimersByTimeAsync(ROUTER_LIMITS.jevTimeoutMs);
-    const decision = await pending;
+    const err = (await pending) as RoutingUnavailableError;
 
-    expect(decision.tier).toBe("mid");
-    expect(decision.degraded).toBe(true);
-    expect(decision.reason).toContain("timeout");
+    expect(err).toBeInstanceOf(RoutingUnavailableError);
+    expect(err.cause_).toBe("timeout");
   });
 
   it("ignores a Jev rejection that lands after the deadline", async () => {
@@ -376,31 +635,33 @@ describe("Router.route: degraded fallback", () => {
       roster: ROSTER,
     });
 
-    const pending = router.route(request());
+    const pending = router.route(request()).catch((err: unknown) => err);
     await vi.advanceTimersByTimeAsync(ROUTER_LIMITS.jevTimeoutMs);
-    const decision = await pending;
-    expect(decision.degraded).toBe(true);
+    expect(await pending).toBeInstanceOf(RoutingUnavailableError);
 
     // Vitest fails the test on an unhandled rejection, so this asserts that the
     // abandoned call cannot take the process down.
     await vi.advanceTimersByTimeAsync(ROUTER_LIMITS.jevTimeoutMs * 2);
   });
 
-  it("does not pin a degraded decision, so the next turn retries Jev", async () => {
-    const sticky = new StickyCache();
-    const router = new Router({ jev: failingJev(new Error("boom")), roster: ROSTER, sticky });
-
-    const decision = await router.route(request());
-
-    expect(decision.degraded).toBe(true);
-    expect(sticky.size).toBe(0);
-    expect(sticky.get(decision.fingerprint)).toBeUndefined();
+  it("passes its own budget to the client, so retries live inside it", async () => {
+    const jev = stubJev(loadFixture("trivial-rename").answers);
+    const router = new Router({ jev, roster: ROSTER, jevTimeoutMs: 1_234 });
+    await router.route(request());
+    expect(jev.budgets).toEqual([1_234]);
   });
 
-  it("honours candidates while degraded", async () => {
-    const router = new Router({ jev: failingJev(new Error("boom")), roster: ROSTER });
-    const decision = await router.route(request({ candidates: ["frontier-model"] }));
-    expect(decision.model).toBe("frontier-model");
+  it("pins nothing when it throws, so the next turn tries again", async () => {
+    const sticky = new StickyCache();
+    const router = new Router({
+      jev: failingJev(new Error("boom")),
+      roster: ROSTER,
+      sticky,
+      breaker: { failureThreshold: 100 },
+    });
+
+    await expect(router.route(request())).rejects.toThrow(RoutingUnavailableError);
+    expect(sticky.size).toBe(0);
   });
 
   const malformed: Array<[string, SystemOneResult["answers"]]> = [
@@ -444,19 +705,330 @@ describe("Router.route: degraded fallback", () => {
   ];
 
   for (const [label, answers] of malformed) {
-    it(`degrades on ${label}`, async () => {
+    it(`throws a validation failure on ${label}`, async () => {
       const router = new Router({ jev: stubJev(answers), roster: ROSTER });
-      const decision = await router.route(request());
+      const err = (await router.route(request()).catch((e: unknown) => e)) as RoutingUnavailableError;
 
-      expect(decision.tier).toBe("mid");
-      expect(decision.degraded).toBe(true);
-      expect(decision.reason).toContain("validation");
-      expect(decision.signals).toBeUndefined();
+      expect(err).toBeInstanceOf(RoutingUnavailableError);
+      expect(err.cause_).toBe("validation");
     });
   }
 });
 
-describe("Router.route: the Jev key never reaches a decision", () => {
+describe("Router.route: the circuit breaker", () => {
+  const fixture = loadFixture("trivial-rename");
+
+  it("starts closed and reports its state", () => {
+    const router = new Router({ jev: stubJev(fixture.answers), roster: ROSTER });
+    expect(router.breakerState()).toEqual({ state: "closed", failures: 0 });
+  });
+
+  it("opens after three transport failures and then refuses without calling Jev", async () => {
+    const now = 1_700_000_000_000;
+    let calls = 0;
+    const jev: JevClientLike = {
+      systemone: () => {
+        calls += 1;
+        return Promise.reject(new TypeError("fetch failed"));
+      },
+    };
+    const router = new Router({ jev, roster: ROSTER, clock: () => now });
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(router.route(request({ fingerprint: `fp-${i}` }))).rejects.toThrow(RoutingUnavailableError);
+    }
+    expect(calls).toBe(3);
+    expect(router.breakerState().state).toBe("open");
+
+    const err = (await router.route(request({ fingerprint: "fp-x" })).catch((e: unknown) => e)) as
+      RoutingUnavailableError;
+    expect(err.cause_).toBe("breaker_open");
+    expect(err.retryAfterMs).toBe(BREAKER_COOLDOWN_MS);
+    // The whole point: no fourth call, and no three-second wait to find out.
+    expect(calls).toBe(3);
+  });
+
+  it("counts down the cooldown in retryAfterMs", async () => {
+    let now = 1_700_000_000_000;
+    const router = new Router({ jev: failingJev(new TypeError("x")), roster: ROSTER, clock: () => now });
+    for (let i = 0; i < 3; i += 1) {
+      await expect(router.route(request({ fingerprint: `fp-${i}` }))).rejects.toThrow();
+    }
+
+    now += 11_000;
+    const err = (await router.route(request({ fingerprint: "y" })).catch((e: unknown) => e)) as
+      RoutingUnavailableError;
+    expect(err.retryAfterMs).toBe(BREAKER_COOLDOWN_MS - 11_000);
+  });
+
+  it("half-opens after the cooldown, and a successful probe closes it", async () => {
+    let now = 1_700_000_000_000;
+    let fail = true;
+    let calls = 0;
+    const jev: JevClientLike = {
+      systemone: () => {
+        calls += 1;
+        if (fail) return Promise.reject(new TypeError("fetch failed"));
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: fixture.answers,
+          usage: { input_tokens: 1, output_tokens: 1 },
+          requestId: "req_probe",
+          latencyMs: 10,
+        });
+      },
+    };
+    const router = new Router({ jev, roster: ROSTER, clock: () => now });
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(router.route(request({ fingerprint: `fp-${i}` }))).rejects.toThrow();
+    }
+    now += BREAKER_COOLDOWN_MS;
+    expect(router.breakerState().state).toBe("half_open");
+
+    fail = false;
+    const decision = await router.route(request({ fingerprint: "probe" }));
+    expect(decision.tier).toBe("fast");
+    expect(calls).toBe(4);
+    expect(router.breakerState()).toEqual({ state: "closed", failures: 0 });
+  });
+
+  it("a failed probe re-opens it for another full cooldown", async () => {
+    let now = 1_700_000_000_000;
+    const router = new Router({
+      jev: failingJev(new TypeError("fetch failed")),
+      roster: ROSTER,
+      clock: () => now,
+    });
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(router.route(request({ fingerprint: `fp-${i}` }))).rejects.toThrow();
+    }
+    now += BREAKER_COOLDOWN_MS;
+
+    const probe = (await router.route(request({ fingerprint: "probe" })).catch((e: unknown) => e)) as
+      RoutingUnavailableError;
+    expect(probe.cause_).toBe("network");
+
+    const after = (await router.route(request({ fingerprint: "after" })).catch((e: unknown) => e)) as
+      RoutingUnavailableError;
+    expect(after.cause_).toBe("breaker_open");
+    expect(after.retryAfterMs).toBe(BREAKER_COOLDOWN_MS);
+  });
+
+  it("does not open on failures Jev actually answered", async () => {
+    const router = new Router({
+      jev: failingJev(new JevError("bad request", "http", { status: 400 })),
+      roster: ROSTER,
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      const err = (await router.route(request({ fingerprint: `fp-${i}` })).catch((e: unknown) => e)) as
+        RoutingUnavailableError;
+      expect(err.cause_).toBe("http");
+    }
+    expect(router.breakerState()).toEqual({ state: "closed", failures: 0 });
+  });
+
+  it("a success in between resets the failure run", async () => {
+    let fail = true;
+    const jev: JevClientLike = {
+      systemone: () =>
+        fail
+          ? Promise.reject(new TypeError("fetch failed"))
+          : Promise.resolve({
+              model: "jev-latest",
+              answers: fixture.answers,
+              usage: { input_tokens: 1, output_tokens: 1 },
+              requestId: "req_ok",
+              latencyMs: 10,
+            }),
+    };
+    const router = new Router({ jev, roster: ROSTER });
+
+    await expect(router.route(request({ fingerprint: "a" }))).rejects.toThrow();
+    await expect(router.route(request({ fingerprint: "b" }))).rejects.toThrow();
+    fail = false;
+    await router.route(request({ fingerprint: "c" }));
+    fail = true;
+    await expect(router.route(request({ fingerprint: "d" }))).rejects.toThrow();
+
+    expect(router.breakerState().state).toBe("closed");
+  });
+
+  it("serves a sticky hit while open: the answer is already known", async () => {
+    const now = 1_700_000_000_000;
+    let fail = false;
+    const jev: JevClientLike = {
+      systemone: () =>
+        fail
+          ? Promise.reject(new TypeError("fetch failed"))
+          : Promise.resolve({
+              model: "jev-latest",
+              answers: fixture.answers,
+              usage: { input_tokens: 1, output_tokens: 1 },
+              requestId: "req_ok",
+              latencyMs: 10,
+            }),
+    };
+    const router = new Router({ jev, roster: ROSTER, clock: () => now });
+
+    const first = await router.route(request());
+    fail = true;
+    for (let i = 0; i < 3; i += 1) {
+      await expect(router.route(request({ fingerprint: `other-${i}` }))).rejects.toThrow();
+    }
+    expect(router.breakerState().state).toBe("open");
+
+    const sticky = await router.route(request());
+    expect(sticky.sticky).toBe(true);
+    expect(sticky.model).toBe(first.model);
+  });
+});
+
+describe("Router.route: happy path", () => {
+  it("sends the built state and the four questions under an abort signal", async () => {
+    const jev = stubJev(loadFixture("trivial-rename").answers);
+    const router = new Router({ jev, roster: ROSTER });
+
+    await router.route(request({ tools: [{ name: "read_file" }] }));
+
+    const call = jev.calls[0];
+    expect(call).toBeDefined();
+    expect(Object.keys(call!.questions).sort()).toEqual(["difficulty", "long_output", "needs_reasoning", "task_type"]);
+    const state = call!.state as Record<string, unknown>;
+    expect(state["has_tools"]).toBe(true);
+    expect(state["tool_count"]).toBe(1);
+    expect(state["recent_user_turns"]).toEqual(["Rename res to rows in listRecent."]);
+  });
+
+  it("maps answers onto signals", async () => {
+    const fixture = loadFixture("flaky-test");
+    const jev = stubJev(fixture.answers, { requestId: fixture.requestId, model: fixture.model, latencyMs: 71 });
+    const router = new Router({ jev, roster: ROSTER });
+
+    const decision = await router.route(request());
+
+    expect(decision.signals).toEqual({
+      taskType: "debug",
+      difficulty: 2.31,
+      difficultyLevels: [0.01, 0.09, 0.49, 0.41],
+      needsReasoning: 0.93,
+      longOutput: 0.31,
+      confidences: { task_type: 0.94, difficulty: 0.72 },
+      jevRequestId: fixture.requestId,
+      jevModel: "jev-latest",
+      latencyMs: 71,
+    });
+    expect(decision.reason).toContain("debug task");
+    expect(decision.reason).toContain("P(hard) 0.41");
+    expect(decision.reason).toContain("frontier-model");
+  });
+
+  it("leaves difficultyLevels empty when the answer carries no distribution", async () => {
+    const fixture = loadFixture("flaky-test");
+    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
+    delete answers["difficulty"]?.["probabilities"];
+    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
+
+    const decision = await router.route(request());
+
+    expect(decision.signals?.difficultyLevels).toEqual([]);
+    // Policy falls back to the v1 expected-score rule, which still routes it.
+    expect(decision.reason).toContain("difficulty 2.31");
+    expect(decision.tier).toBe("frontier");
+  });
+
+  it("treats an all-zero distribution as no distribution, not as certainly trivial", async () => {
+    const fixture = loadFixture("flaky-test");
+    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
+    answers["difficulty"]!["probabilities"] = {};
+    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
+
+    const decision = await router.route(request());
+
+    expect(decision.signals?.difficultyLevels).toEqual([]);
+    expect(decision.tier).toBe("frontier");
+  });
+
+  it("reads a partial distribution, treating the missing levels as zero mass", async () => {
+    const fixture = loadFixture("trivial-rename");
+    const answers = JSON.parse(JSON.stringify(fixture.answers)) as Record<string, Record<string, unknown>>;
+    answers["difficulty"]!["probabilities"] = { "0": 0.7, "1": 0.3 };
+    const router = new Router({ jev: stubJev(answers as SystemOneResult["answers"]), roster: ROSTER });
+
+    expect((await router.route(request())).signals?.difficultyLevels).toEqual([0.7, 0.3, 0, 0]);
+  });
+
+  it("uses the Jev profile whatever the backend called itself", async () => {
+    const answers = {
+      task_type: { type: "choice", choice: "feature", confidence: 0.9, probabilities: {} },
+      difficulty: {
+        type: "score",
+        score: 1.36,
+        confidence: 0.4,
+        legend: {},
+        probabilities: { "0": 0.2, "1": 0.42, "2": 0.2, "3": 0.18 },
+      },
+      needs_reasoning: { type: "noul", noul: 0.5 },
+      long_output: { type: "noul", noul: 0.2 },
+    } as unknown as SystemOneResult["answers"];
+
+    // There is one profile now, so the reported model name no longer selects
+    // thresholds; it is recorded in the signals and nothing more.
+    const a = new Router({ jev: stubJev(answers, { model: "jev-latest" }), roster: ROSTER });
+    const b = new Router({ jev: stubJev(answers, { model: "something-else" }), roster: ROSTER });
+
+    expect((await a.route(request())).tier).toBe("frontier");
+    expect((await b.route(request())).tier).toBe("frontier");
+  });
+
+  it("lets a caller pass a candidate profile", async () => {
+    const fixture = loadFixture("flaky-test");
+    const timid = new Router({
+      jev: stubJev(fixture.answers),
+      roster: ROSTER,
+      // A bar nothing can clear: every answer routes to fast.
+      profile: {
+        fastMassFromLevel: 1,
+        fastBelowMass: 1.1,
+        frontierHardMass: 0.05,
+        frontierUpperMass: 0.65,
+        cappedFrontierHardMass: 0.25,
+      },
+    });
+    expect((await timid.route(request())).tier).toBe("fast");
+  });
+
+  for (const name of ["trivial-rename", "flaky-test", "schema-migration", "concurrency-bug"]) {
+    const fixture = loadFixture(name);
+    it(`routes the ${name} fixture where the policy expects under every posture`, async () => {
+      for (const posture of ["low", "balanced", "quality"] as const) {
+        const router = new Router({ jev: stubJev(fixture.answers), roster: ROSTER });
+        const decision = await router.route(request({ posture }));
+        expect(`${posture}:${decision.tier}`).toBe(`${posture}:${fixture.expectedTier[posture]}`);
+      }
+    });
+  }
+
+  it("calls onDecision with every decision it returns", async () => {
+    const decisions: RouteDecision[] = [];
+    const router = new Router({
+      jev: stubJev(loadFixture("trivial-rename").answers),
+      roster: ROSTER,
+      onDecision: (d) => decisions.push(d),
+    });
+
+    const first = await router.route(request());
+    const second = await router.route(request());
+    const forced = await router.route(request({ forcedTier: "mid" }));
+
+    expect(decisions).toEqual([first, second, forced]);
+    expect(decisions[1]?.sticky).toBe(true);
+  });
+});
+
+describe("Router.route: the Jev key never reaches a decision or an error", () => {
   const leaky: unknown[] = [
     new Error(`401 Unauthorized calling https://api.typesafe.ai/v1/systemone with Bearer ${FAKE_KEY}`),
     Object.assign(new Error(`request failed: {"Authorization":"Bearer ${FAKE_KEY}"}`), { status: 403 }),
@@ -464,68 +1036,20 @@ describe("Router.route: the Jev key never reaches a decision", () => {
   ];
 
   for (const [index, error] of leaky.entries()) {
-    it(`keeps key material out of the reason (case ${index + 1})`, async () => {
-      const decisions: RouteDecision[] = [];
-      const router = new Router({
-        jev: failingJev(error),
-        roster: ROSTER,
-        onDecision: (d) => decisions.push(d),
-      });
+    it(`keeps key material out of the thrown error (case ${index + 1})`, async () => {
+      const router = new Router({ jev: failingJev(error), roster: ROSTER });
 
-      const decision = await router.route(request());
-      const serialized = JSON.stringify(decisions);
+      const err = (await router.route(request()).catch((e: unknown) => e)) as RoutingUnavailableError;
+      const serialized = `${err.message} ${JSON.stringify(err)} ${Object.values(err).join(" ")}`;
 
-      expect(decision.reason).not.toContain(FAKE_KEY);
-      expect(decision.reason).not.toContain("sk-");
-      expect(decision.reason).not.toContain("Bearer");
-      expect(decision.reason).not.toContain("Authorization");
       expect(serialized).not.toContain(FAKE_KEY);
       expect(serialized).not.toContain("sk-");
+      expect(serialized).not.toContain("Bearer");
+      expect(serialized).not.toContain("Authorization");
+      // The error names the class of failure and nothing more.
+      expect(err.message).toContain("routing is unavailable");
     });
   }
-});
-
-describe("degradedDecision", () => {
-  it("builds a mid-tier, degraded, non-sticky decision with no signals", () => {
-    const decision = degradedDecision({
-      fingerprint: "fp-1",
-      roster: ROSTER,
-      reason: "something went wrong",
-    });
-
-    expect(decision.tier).toBe("mid");
-    expect(decision.model).toBe("mid-model");
-    expect(decision.degraded).toBe(true);
-    expect(decision.sticky).toBe(false);
-    expect(decision.signals).toBeUndefined();
-    expect(decision.reason).toBe("something went wrong");
-    expect(decision.fingerprint).toBe("fp-1");
-    expect(decision.policyVersion).toBe(POLICY_VERSION);
-    expect(decision.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-  });
-
-  it("honours candidates and an injected clock", () => {
-    const decision = degradedDecision({
-      fingerprint: "fp-2",
-      roster: ROSTER,
-      candidates: ["frontier-model"],
-      reason: "over the limit",
-      clock: () => 1_700_000_000_000,
-    });
-
-    expect(decision.model).toBe("frontier-model");
-    expect(decision.createdAt).toBe(new Date(1_700_000_000_000).toISOString());
-  });
-
-  it("is the implementation the router's own degraded path uses", async () => {
-    const router = new Router({ jev: failingJev(new Error("boom")), roster: ROSTER });
-    const decision = await router.route(request());
-
-    expect(decision.tier).toBe("mid");
-    expect(decision.degraded).toBe(true);
-    expect(decision.sticky).toBe(false);
-    expect(decision.signals).toBeUndefined();
-  });
 });
 
 describe("Router.route: onDecision is awaited", () => {
@@ -575,16 +1099,35 @@ describe("Router.route: onDecision is awaited", () => {
       },
     });
 
-    await expect(router.route(request())).resolves.toMatchObject({ degraded: false });
+    await expect(router.route(request())).resolves.toMatchObject({ tier: "fast" });
   });
 });
 
 describe("classifyFailure", () => {
   it("names the class of failure without reading its message", () => {
-    expect(classifyFailure(Object.assign(new Error("x"), { name: "TimeoutError" }))).toBe("timeout");
-    expect(classifyFailure(Object.assign(new Error("x"), { name: "AbortError" }))).toBe("timeout");
-    expect(classifyFailure(Object.assign(new Error("x"), { status: 500 }))).toBe("http");
-    expect(classifyFailure(new TypeError("fetch failed"))).toBe("network");
-    expect(classifyFailure(undefined)).toBe("network");
+    expect(classifyFailure(Object.assign(new Error("x"), { name: "TimeoutError" })).cause).toBe("timeout");
+    expect(classifyFailure(Object.assign(new Error("x"), { name: "AbortError" })).cause).toBe("timeout");
+    expect(classifyFailure(Object.assign(new Error("x"), { status: 500 })).cause).toBe("http");
+    expect(classifyFailure(new TypeError("fetch failed")).cause).toBe("network");
+    expect(classifyFailure(undefined).cause).toBe("network");
+  });
+
+  it("separates a rate limit from a generic http failure", () => {
+    expect(classifyFailure(new JevError("x", "http", { status: 429 })).cause).toBe("rate_limited");
+    expect(classifyFailure(Object.assign(new Error("x"), { status: 429 })).cause).toBe("rate_limited");
+    expect(classifyFailure(new JevError("x", "http", { status: 500 })).cause).toBe("http");
+  });
+
+  it("carries the status, request id and Retry-After the gateway needs", () => {
+    expect(
+      classifyFailure(new JevError("x", "http", { status: 503, requestId: "req_1", retryAfterMs: 5_000 })),
+    ).toEqual({ cause: "http", status: 503, requestId: "req_1", retryAfterMs: 5_000 });
+  });
+
+  it("omits an empty request id rather than reporting one", () => {
+    expect(classifyFailure(new JevError("x", "http", { status: 500, requestId: "" }))).toEqual({
+      cause: "http",
+      status: 500,
+    });
   });
 });

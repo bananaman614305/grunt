@@ -93,20 +93,35 @@ export type RouteRequest = {
 export type RouteDecision = {
   id: string; // ulid
   fingerprint: string;
-  signals?: RouteSignals; // absent when degraded or forced
+  signals?: RouteSignals; // absent only when the tier was forced by the request
   tier: Tier;
   model: string;
   reason: string; // one sentence, human readable
   policyVersion: string;
-  sticky: boolean; // served from the fingerprint cache
-  degraded: boolean; // Jev unavailable; fell back to mid
+  /**
+   * The decision was reused rather than freshly decided: a sticky-cache or
+   * sticky-store hit, or a caller that shared an in-flight Jev call with an
+   * identical concurrent ask. A sticky decision carries the same `signals`
+   * (and the same `jevRequestId`) as the call that produced it.
+   */
+  sticky: boolean;
   createdAt: string; // ISO 8601
 };
 
 /** Hard limits the router must respect. */
 export const ROUTER_LIMITS = {
-  jevTimeoutMs: 800, // default; cold TLS to api.typesafe.ai is ~350 ms from us-east, configurable per Router/Gateway
-  jevRetries: 1,
+  /**
+   * Total budget for getting an answer out of Jev, retries and backoff
+   * included -- not the budget for one HTTP attempt. Raised from 800 ms when
+   * the fallback tier was removed (ADR-002 revision 3): with no degraded
+   * answer to fall back on, a request is better served by a second attempt
+   * 200 ms later than by a 503, and a cold TLS handshake to api.typesafe.ai
+   * is about 350 ms of the first attempt on its own. Configurable per
+   * Router/Gateway.
+   */
+  jevTimeoutMs: 3_000,
+  /** Retries after the first attempt, inside `jevTimeoutMs`. */
+  jevRetries: 3,
   stickyTtlMs: 30 * 60 * 1000,
   contextTokenBudget: 8_000,
   recentUserTurns: 3,
