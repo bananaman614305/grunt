@@ -11,3 +11,5 @@ coverage/
 .milo/
 .DS_Store
 .claude/worktrees/
+.venv-experiment/
+__pycache__/
