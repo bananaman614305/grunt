@@ -55,7 +55,7 @@ sets defaults for `PORT` and `MILO_DB`.
 | `PORT` | no | `8787` | Port the gateway listens on. `--port` beats `PORT` beats `milo.config.json`'s `port` beats the default. |
 | `MILO_DB` | no | `file:/data/decisions.db` (set by the image) | libsql URL for the decision log. `--db` beats `MILO_DB` beats `milo.config.json`'s `decisionLog` beats the default. A `file:` path's parent directory is created automatically, relative or absolute. |
 | `JEV_API_KEY` | only for the `jev` and `jev-with-fallback` decision backends | *(unset)* | Milo's own TypeSafe Jev key. Never put this in the image, a config file, or the workflow — supply it at deploy time (`fly secrets set`, or an injected Squire egress grant). Not needed when `MILO_DECISION_BACKEND=system-one-open`. |
-| `MILO_DECISION_BACKEND` | no | `jev` | `jev` \| `system-one-open` \| `jev-with-fallback` (ADR-004). The Fly plan below runs `system-one-open`, which needs no key. |
+| `MILO_DECISION_BACKEND` | no | `jev` | `jev` \| `system-one-open` \| `jev-with-fallback` (ADR-004). The Fly plan below runs `jev-with-fallback`: Jev first, the open replica when Jev is unreachable, overloaded, or out of quota. |
 | `SYSTEM_ONE_OPEN_URL` | no | the built-in public demo URL | Base URL of a `system-one-open` deployment, for the `system-one-open` and `jev-with-fallback` backends. |
 | `--config <path>` (flag, not an env var) | no | none (defaults apply) | Path to a `milo.config.json` for the roster, rate limit, referer/title, or `decisionBackend` block (`docs/config.md`). Mount one into the container and pass `--config` in a custom `CMD`/`command` override if you need it; the shipped image runs with no config file. |
 
@@ -65,7 +65,7 @@ this way.
 
 ## Fly.io plan
 
-One app, one always-on machine, `system-one-open` as the decision backend
+One app, one always-on machine, `jev-with-fallback` as the decision backend
 (no `JEV_API_KEY` needed to stand this up):
 
 - App name `milo-gateway`, primary region `iad`.
@@ -73,7 +73,7 @@ One app, one always-on machine, `system-one-open` as the decision backend
 - A 1 GB volume mounted at `/data`, matching `MILO_DB=file:/data/decisions.db`
   baked into the image.
 - An HTTP service on port 8787 with health checks against `/healthz`.
-- `MILO_DECISION_BACKEND=system-one-open` in `[env]`.
+- `MILO_DECISION_BACKEND=jev-with-fallback` in `[env]`, and `JEV_API_KEY` set once with `fly secrets set` (or through Fly's GraphQL `setSecrets`); the secret takes effect on the next deploy.
 
 `fly.toml` at the repo root encodes exactly this and works with a plain
 `flyctl deploy` (Fly builds the image itself from the `Dockerfile`, so this
@@ -102,7 +102,7 @@ curl -X POST \
     "config": {
       "image": "ghcr.io/<owner>/milo:latest",
       "guest": { "cpu_kind": "shared", "cpus": 1, "memory_mb": 512 },
-      "env": { "MILO_DECISION_BACKEND": "system-one-open" },
+      "env": { "MILO_DECISION_BACKEND": "jev-with-fallback" },
       "mounts": [{ "volume": "<volume-id>", "path": "/data" }],
       "services": [{
         "internal_port": 8787,

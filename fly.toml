@@ -7,11 +7,11 @@ primary_region = "iad"
 [build]
   dockerfile = "Dockerfile"
 
-# No secrets here. JEV_API_KEY is set with `fly secrets set JEV_API_KEY=...`
-# (unset entirely while the backend below is system-one-open, which needs
-# no key).
+# No secrets here. JEV_API_KEY is set with `fly secrets set JEV_API_KEY=...`.
+# Jev is the primary decision backend; the open replica takes over when Jev
+# is unreachable, overloaded, or out of quota (circuit breaker, see ADR-004).
 [env]
-  MILO_DECISION_BACKEND = "system-one-open"
+  MILO_DECISION_BACKEND = "jev-with-fallback"
 
 # A 1 GB volume mounted at /data, matching MILO_DB=file:/data/decisions.db
 # baked into the image. Create it once with:
