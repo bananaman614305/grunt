@@ -177,3 +177,27 @@ fetch it through the Squire `use_credential` tool rather than pasting it
 into a shell history). It is passed straight through to
 `GatewayOptions.jevApiKey` and never appears in a response, an error
 message, or the decision log (ADR-003).
+
+## Milo keys and credits (environment variables, not config)
+
+Milo-issued keys and prepaid credits (ADR-007) are configured entirely from
+the environment, because every value here is a secret or a price and neither
+belongs in a file that ships with the repo. None of them are required: with
+`MILO_DATABASE_URL` unset the deployment is bring-your-own-key only, every
+`mk_` bearer gets a 401 saying so, and nothing else about the gateway
+changes.
+
+| variable | what it does |
+| --- | --- |
+| `MILO_DATABASE_URL` | Postgres URL for accounts, keys, the ledger and usage. **This is the switch**: set it and Milo keys, `/v1/account*`, `/v1/signup` and the Stripe webhook exist; leave it unset and they do not. `milo serve` runs pending migrations on start. |
+| `MILO_ENCRYPTION_KEY` | base64 of 32 random bytes (`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`). Encrypts each account's OpenRouter sub-key at rest. **Required when `MILO_DATABASE_URL` is set** — `milo serve` refuses to start without it, because a gateway that cannot decrypt a sub-key cannot serve that account at all. Rotating it invalidates every stored sub-key. |
+| `MILO_MARGIN` | the fraction added to OpenRouter's reported cost, default `0.15`. `0.2` is a 20% margin. A negative value is refused at startup. |
+| `STRIPE_SECRET_KEY` | enables `POST /v1/account/checkout` and `POST /v1/account/portal`; without it both answer 503. |
+| `STRIPE_WEBHOOK_SECRET` | verifies `POST /billing/stripe/webhook`. Stripe shows it once, when the endpoint is created (`registerWebhook` in `@milo/stripe`). Both Stripe variables must be set for Stripe to be wired up at all. |
+| `OPENROUTER_PROVISIONING_KEY` | Milo's own OpenRouter provisioning key. Mints each account's sub-key on first paid use and keeps its spend limit equal to the account's balance. Without it, an account that has no sub-key yet gets a 503 rather than an upstream call. |
+
+On Fly every one of these is a secret (`fly secrets set`), never a value in
+`fly.toml`, and none of them appears in a response, a log line, or the
+decision log. The margin and the flat decision fee are also visible to users
+at `GET /v1/account`, which is deliberate: the bill should be reproducible
+from the numbers Milo publishes.

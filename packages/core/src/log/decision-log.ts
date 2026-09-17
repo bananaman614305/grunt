@@ -59,8 +59,17 @@ function assertNoSecrets(record: RouteDecision): void {
   }
 }
 
-function rowToRecord(row: Row): DecisionRecord {
-  const record: DecisionRecord = {
+/**
+ * A decision row as it comes back out, with the account it belongs to when it
+ * has one. `accountId` lives here rather than on `DecisionRecord` in
+ * `types.ts` because that contract is pinned: a Milo-key account (ADR-007) is
+ * a property of the *row*, not of the routing decision, and a bring-your-own
+ * key request has no account at all.
+ */
+export type StoredDecision = DecisionRecord & { accountId?: string };
+
+function rowToRecord(row: Row): StoredDecision {
+  const record: StoredDecision = {
     id: String(row.id),
     fingerprint: String(row.fingerprint),
     tier: String(row.tier) as Tier,
@@ -75,6 +84,9 @@ function rowToRecord(row: Row): DecisionRecord {
   }
   if (row.upstream_json !== null && row.upstream_json !== undefined) {
     record.upstream = JSON.parse(String(row.upstream_json)) as NonNullable<DecisionRecord["upstream"]>;
+  }
+  if (row.account_id !== null && row.account_id !== undefined) {
+    record.accountId = String(row.account_id);
   }
   return record;
 }
@@ -134,20 +146,34 @@ export class DecisionLog implements StickyStore, RosterStore {
    * entry. Two `get`s on one class that take a string and mean different
    * things is exactly the sort of thing that reads fine and routes wrong.
    */
-  async getDecision(id: string): Promise<DecisionRecord | undefined> {
+  async getDecision(id: string): Promise<StoredDecision | undefined> {
     const rs = await this.db.execute({ sql: "SELECT * FROM decisions WHERE id = ?", args: [id] });
     const row = rs.rows[0];
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** Newest first. */
-  async listRecent(opts?: { limit?: number; fingerprint?: string }): Promise<DecisionRecord[]> {
+  /**
+   * Attaches an account to a decision that has already been written. The
+   * router logs a decision before the gateway knows anything about money, so
+   * the account is stamped on afterwards rather than passed in (ADR-007). A
+   * no-op (does not throw) if `id` does not exist.
+   */
+  async setAccount(id: string, accountId: string): Promise<void> {
+    await this.db.execute({ sql: "UPDATE decisions SET account_id = ? WHERE id = ?", args: [accountId, id] });
+  }
+
+  /** Newest first. `accountId` scopes the list to one account's decisions. */
+  async listRecent(opts?: { limit?: number; fingerprint?: string; accountId?: string }): Promise<StoredDecision[]> {
     const limit = Math.max(1, Math.min(opts?.limit ?? LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX));
     const clauses: string[] = [];
     const args: Array<string | number> = [];
     if (opts?.fingerprint) {
       clauses.push("fingerprint = ?");
       args.push(opts.fingerprint);
+    }
+    if (opts?.accountId) {
+      clauses.push("account_id = ?");
+      args.push(opts.accountId);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rs = await this.db.execute({
@@ -165,15 +191,24 @@ export class DecisionLog implements StickyStore, RosterStore {
     });
   }
 
-  async stats(opts?: { sinceIso?: string }): Promise<{
+  async stats(opts?: { sinceIso?: string; accountId?: string }): Promise<{
     total: number;
     byTier: Record<string, number>;
     byModel: Record<string, number>;
     sticky: number;
     avgJevLatencyMs: number | null;
   }> {
-    const where = opts?.sinceIso ? "WHERE created_at >= ?" : "";
-    const args = opts?.sinceIso ? [opts.sinceIso] : [];
+    const clauses: string[] = [];
+    const args: string[] = [];
+    if (opts?.sinceIso) {
+      clauses.push("created_at >= ?");
+      args.push(opts.sinceIso);
+    }
+    if (opts?.accountId) {
+      clauses.push("account_id = ?");
+      args.push(opts.accountId);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rs = await this.db.execute({
       sql: `SELECT tier, model, sticky, signals_json FROM decisions ${where}`,
       args,

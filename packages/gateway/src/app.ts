@@ -21,9 +21,12 @@ import {
 } from "@milo/core";
 import type { DecisionRecord, DecisionLog, OpenRouterClient, Roster, Router, Tier } from "@milo/core";
 import type { AnthropicUpstream } from "./anthropic.js";
+import { billingAuth } from "./billing.js";
+import type { BillingRuntime } from "./billing.js";
 import { anthropicErrorResponse, errorResponse } from "./errors.js";
 import { hashKey } from "./rate-limit.js";
 import type { RateLimiter } from "./rate-limit.js";
+import { registerBillingRoutes } from "./routes/billing-api.js";
 import { registerChatRoute } from "./routes/chat.js";
 import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
@@ -47,6 +50,9 @@ export type Logger = {
  */
 export const DECISION_BACKEND = "jev";
 
+/** The one `/v1` route that exists for people who have no key yet. */
+const SIGNUP_PATH = "/v1/signup";
+
 export type AppDeps = {
   router: Router;
   /**
@@ -66,6 +72,18 @@ export type AppDeps = {
   now: () => number;
   /** Fire and forget, but tracked so `close()` can drain it. */
   recordUpstream(id: string, upstream: NonNullable<DecisionRecord["upstream"]>): void;
+  /**
+   * Milo-issued keys, credits and metering (ADR-007). Absent means this
+   * deployment is bring-your-own-key only: nothing changes for a BYOK caller,
+   * and an `mk_` bearer is refused with 401.
+   */
+  billing?: BillingRuntime;
+  /**
+   * Registers work that outlives the request that started it -- the charge
+   * for a streamed response -- so `close()` can drain it. Optional: without
+   * it the work still runs, it just is not waited for on shutdown.
+   */
+  track?(work: Promise<unknown>): void;
 };
 
 /** The raw `Authorization` header. Valid by the time any route runs. */
@@ -117,7 +135,7 @@ export function keyHash(c: Context): string {
 }
 
 /** Whether a path is part of the Anthropic-dialect surface. */
-function isAnthropicPath(pathname: string): boolean {
+export function isAnthropicPath(pathname: string): boolean {
   return pathname === "/v1/messages" || pathname.startsWith("/v1/messages/");
 }
 
@@ -148,9 +166,19 @@ export function passThroughHeaders(upstream: Response): Headers {
  * `Authorization: Bearer`, and a user should not have to know which). Both
  * leave as one bearer token; see `routes/messages.ts`. The refusal wears the
  * dialect of the route it guards, so each client's error classes parse it.
+ *
+ * `POST /v1/signup` is the one exception: it is how somebody with no key at
+ * all gets their first one (ADR-007), so it cannot demand one. It has a rate
+ * limit of its own instead (`routes/billing-api.ts`).
  */
 const requireKey: MiddlewareHandler = async (c, next) => {
-  const anthropic = isAnthropicPath(new URL(c.req.url).pathname);
+  const pathname = new URL(c.req.url).pathname;
+  // Signing up is how a user gets their first key, so it cannot require one.
+  if (pathname === SIGNUP_PATH) {
+    await next();
+    return;
+  }
+  const anthropic = isAnthropicPath(pathname);
 
   if ((anthropic ? credential(c) : bearerToken(c)) === "") {
     return anthropic
@@ -228,6 +256,9 @@ export function createApp(deps: AppDeps): Hono {
   registerStaticRoutes(app);
 
   app.use("/v1/*", requireKey);
+  // Resolves `mk_` keys to an account and everything else to BYOK, once per
+  // request, before any route reads the caller (ADR-007).
+  app.use("/v1/*", billingAuth(deps));
 
   registerChatRoute(app, deps);
   registerMessagesRoute(app, deps);
@@ -235,6 +266,8 @@ export function createApp(deps: AppDeps): Hono {
   registerModelsRoute(app, deps);
   registerRosterRoute(app, deps);
   registerDecisionsRoutes(app, deps);
+  // billing JSON routes
+  if (deps.billing !== undefined) registerBillingRoutes(app, deps);
   // Last: it claims every `/v1/*` method and path the routes above did not.
   registerProxyRoute(app, deps);
 

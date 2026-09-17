@@ -10,8 +10,11 @@
   "scripts": { "build": "tsc -b" },
   "dependencies": {
     "@hono/node-server": "^1",
+    "@milo/billing": "workspace:*",
     "@milo/core": "workspace:*",
     "@milo/gateway": "workspace:*",
+    "@milo/provisioning": "workspace:*",
+    "@milo/stripe": "workspace:*",
     "zod": "^3"
   },
   "devDependencies": {}

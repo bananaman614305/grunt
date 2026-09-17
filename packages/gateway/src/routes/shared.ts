@@ -12,7 +12,7 @@ import { DEFAULT_ROSTER } from "@milo/core";
 import type { DecisionRecord, Roster, RouteDecision, RoutingUnavailableError } from "@milo/core";
 import type { Context } from "hono";
 import type { AppDeps } from "../app.js";
-import { keyHash } from "../app.js";
+import { callerScope } from "../billing.js";
 import { errorMessage } from "../errors.js";
 
 /** A parsed request body. Both dialects are JSON objects at the top level. */
@@ -44,7 +44,8 @@ export async function readJsonObject(c: Context): Promise<Body | undefined> {
  * The tier-to-model table one request routes against, in precedence order:
  *
  *   1. the roster this caller stored with `PUT /v1/roster`, found by the hash
- *      of their credential (ADR-008);
+ *      of their credential -- their Milo key's hash when they authenticated
+ *      with one (ADR-007), their OpenRouter key's otherwise (ADR-008);
  *   2. the roster this deployment was configured with (`milo.config.json`);
  *   3. the shipped default.
  *
@@ -60,7 +61,7 @@ export async function readJsonObject(c: Context): Promise<Body | undefined> {
  */
 export async function resolveRoster(c: Context, deps: AppDeps): Promise<Roster> {
   try {
-    const stored = await deps.log.getRoster(keyHash(c));
+    const stored = await deps.log.getRoster(callerScope(c));
     if (stored !== undefined) return stored.roster;
   } catch (err) {
     deps.logger.error("per-key roster read failed", { error: errorMessage(err) });

@@ -2,7 +2,10 @@
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { POLICY_VERSION } from "@milo/core";
+import { DEFAULT_PRICING, POLICY_VERSION } from "@milo/core";
+import { PgBillingStore } from "@milo/billing";
+import { OpenRouterProvisioningClient } from "@milo/provisioning";
+import { createStripeClient } from "@milo/stripe";
 import type { GatewayOptions } from "@milo/gateway";
 import { loadConfig } from "../config.js";
 import type { CliDeps, ServeOptions } from "../deps.js";
@@ -23,6 +26,15 @@ Environment:
   PORT                    Port to listen on (overridden by --port; overrides config)
   MILO_DB                 Decision log libsql URL (overridden by --db; overrides config)
 
+Milo-issued keys and prepaid credits (all optional; without MILO_DATABASE_URL
+the deployment is bring-your-own-key only and an mk_ key gets a 401):
+  MILO_DATABASE_URL       Postgres URL for accounts, keys, ledger and usage
+  MILO_ENCRYPTION_KEY     base64 of 32 bytes; encrypts the OpenRouter sub-key
+  MILO_MARGIN             fraction on top of upstream cost (default 0.15)
+  STRIPE_SECRET_KEY       enables credit checkout and the customer portal
+  STRIPE_WEBHOOK_SECRET   verifies POST /billing/stripe/webhook
+  OPENROUTER_PROVISIONING_KEY  mints and limits each account's sub-key
+
 Precedence for port and the decision log URL: flag beats environment variable
 beats config file beats built-in default.
 `;
@@ -30,6 +42,9 @@ beats config file beats built-in default.
 const FILE_SCHEME = "file:";
 const PORT_ENV = "PORT";
 const DECISION_LOG_ENV = "MILO_DB";
+const BILLING_DB_ENV = "MILO_DATABASE_URL";
+const ENCRYPTION_KEY_ENV = "MILO_ENCRYPTION_KEY";
+const MARGIN_ENV = "MILO_MARGIN";
 
 /**
  * Creates the parent directory of a `file:` decision log URL, resolving a
@@ -129,9 +144,18 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
   if (parsed.values.db !== undefined) decisionLogUrl = parsed.values.db;
   ensureLogDirectory(decisionLogUrl, process.cwd());
 
+  let billing: GatewayOptions["billing"];
+  try {
+    billing = await buildBilling(deps.env);
+  } catch (error) {
+    deps.stderr.write(`milo serve: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+
   const gatewayOptions: GatewayOptions = {
     jevApiKey,
     decisionLogUrl,
+    ...(billing !== undefined ? { billing } : {}),
     ...(config.roster !== undefined ? { roster: config.roster } : {}),
     ...(config.rateLimit !== undefined ? { rateLimit: config.rateLimit } : {}),
     ...(config.referer !== undefined ? { referer: config.referer } : {}),
@@ -151,6 +175,13 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
   const displayHost = config.hostname ?? "localhost";
   const baseUrl = `http://${displayHost}:${port}`;
   deps.stdout.write(`milo: gateway listening on ${baseUrl} (policy ${POLICY_VERSION})\n`);
+  if (billing !== undefined) {
+    deps.stdout.write(
+      `milo: Milo keys enabled (margin ${billing.pricing?.margin ?? DEFAULT_PRICING.margin}` +
+        `${billing.stripe === undefined ? ", no Stripe" : ""}` +
+        `${billing.provisioning === undefined ? ", no provisioning" : ""})\n`,
+    );
+  }
   deps.stdout.write(`milo: set OPENAI_BASE_URL=${baseUrl}/v1 and use model: "milo/auto"\n`);
 
   let shuttingDown = false;
@@ -160,10 +191,75 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     deps.stdout.write(`milo: received ${signal}, shutting down\n`);
     server.close(() => {
       void gateway.close();
+      // The store is this command's to close: `createGateway` was handed it,
+      // it did not open it.
+      void closeBilling(billing);
     });
   };
   process.once("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));
 
   return undefined;
+}
+
+/**
+ * The billing runtime, from the environment (ADR-007). `MILO_DATABASE_URL` is
+ * the switch: without it a deployment has no accounts and `milo serve` starts
+ * exactly as it always did. With it, the encryption key is required too --
+ * every account's OpenRouter sub-key is stored encrypted with it, and a
+ * gateway that cannot decrypt one cannot serve the account at all, so
+ * refusing to start is better than 503-ing every Milo key at request time.
+ *
+ * Stripe and provisioning are separately optional so a staging deployment can
+ * run Milo keys without taking payments: checkout and the portal answer 503
+ * without Stripe, and an account with no sub-key yet answers 503 without a
+ * provisioning key.
+ */
+async function buildBilling(env: NodeJS.ProcessEnv): Promise<GatewayOptions["billing"]> {
+  const url = env[BILLING_DB_ENV];
+  if (url === undefined || url.trim() === "") return undefined;
+
+  const encryptionKey = env[ENCRYPTION_KEY_ENV];
+  if (encryptionKey === undefined || encryptionKey === "") {
+    throw new Error(
+      `${BILLING_DB_ENV} is set, so ${ENCRYPTION_KEY_ENV} is required (base64 of 32 random bytes).`,
+    );
+  }
+
+  const margin = parseMargin(env[MARGIN_ENV]);
+  const store = await PgBillingStore.open({ url: url.trim() });
+
+  const billing: NonNullable<GatewayOptions["billing"]> = {
+    store,
+    encryptionKey,
+    pricing: { ...DEFAULT_PRICING, margin },
+  };
+
+  const stripeSecret = env["STRIPE_SECRET_KEY"];
+  const webhookSecret = env["STRIPE_WEBHOOK_SECRET"];
+  if (stripeSecret !== undefined && stripeSecret !== "" && webhookSecret !== undefined && webhookSecret !== "") {
+    billing.stripe = createStripeClient({ secretKey: stripeSecret, webhookSecret });
+  }
+
+  const provisioningKey = env["OPENROUTER_PROVISIONING_KEY"];
+  if (provisioningKey !== undefined && provisioningKey !== "") {
+    billing.provisioning = new OpenRouterProvisioningClient({ provisioningKey });
+  }
+
+  return billing;
+}
+
+/** `MILO_MARGIN` as a fraction, or the default. Refuses a negative margin. */
+function parseMargin(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_PRICING.margin;
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${MARGIN_ENV} must be a non-negative number, got "${raw}"`);
+  }
+  return parsed;
+}
+
+async function closeBilling(billing: GatewayOptions["billing"]): Promise<void> {
+  const store = billing?.store as { close?: () => Promise<void> } | undefined;
+  await store?.close?.();
 }

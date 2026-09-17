@@ -25,8 +25,8 @@
  *     `output_tokens_details.reasoning_tokens`. OpenRouter extends the OpenAI
  *     shape with `usage.cost` (credits) and `usage.cost_details`. Note these
  *     are Anthropic's field *names* and not the chat dialect's
- *     `prompt_tokens` / `completion_tokens`, which is why `readUsage` here is
- *     its own function rather than `chat.ts`'s.
+ *     `prompt_tokens` / `completion_tokens`, which is why `usage.ts` reads
+ *     each dialect's numbers with its own field names.
  *   - streaming: SSE frames whose `data` is the `StreamEvents` union,
  *     discriminated on a `type` field. The event names OpenRouter declares
  *     are `response.created`, `response.in_progress`,
@@ -43,9 +43,10 @@
  *     `response.fusion_call.*`) and `response.debug`.
  *   - **usage in a stream arrives on `response.completed`**, inside that
  *     event's `response.usage` -- there is no per-chunk `usage` and no
- *     `[DONE]` sentinel like the chat dialect's. A streamed call here
- *     therefore records status and latency only, exactly as `chat.ts` does,
- *     rather than parsing the stream to find tokens.
+ *     `[DONE]` sentinel like the chat dialect's. A streamed call records
+ *     status and latency in the decision log, exactly as `chat.ts` does; when
+ *     the caller is paying with a Milo key, `usage.ts` also reads that one
+ *     event off a tee of the stream so the charge can be settled (ADR-007).
  *   - `previous_response_id`: documented as **not supported** -- "The
  *     Responses API is stateless: no responses are stored, so a previous
  *     response cannot be referenced. Requests with a non-null value are
@@ -78,7 +79,17 @@ import type { Context } from "hono";
 import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
 import type { ChatMessage, ChatRole, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
-import { authorization, passThroughHeaders, keyHash } from "../app.js";
+import { authorization, passThroughHeaders } from "../app.js";
+import {
+  callerScope,
+  chargeBuffered,
+  chargeStream,
+  creditGate,
+  isMetered,
+  noteDecisionAccount,
+  rateLimitBucket,
+  upstreamHeadersFor,
+} from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
@@ -89,6 +100,7 @@ import {
   retryAfterSeconds,
   routingUnavailableMessage, resolveRoster } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
+import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
 export function registerResponsesRoute(app: Hono, deps: AppDeps): void {
   app.post("/v1/responses", (c) => handleResponses(c, deps));
@@ -106,6 +118,11 @@ async function handleResponses(c: Context, deps: AppDeps): Promise<Response> {
     );
   }
 
+  // A Milo key with no credit is refused before Jev and before OpenRouter
+  // (ADR-007); a BYOK request never reaches the gate.
+  const refusal = creditGate(c, deps);
+  if (refusal !== undefined) return refusal;
+
   const { extension, isRouted } = extractMilo(body);
   return isRouted ? routed(c, deps, body, extension) : passthrough(c, deps, body);
 }
@@ -121,13 +138,31 @@ async function passthrough(c: Context, deps: AppDeps, body: Body): Promise<Respo
 
   let upstream: Response;
   try {
-    upstream = await deps.openRouter.responses({ headers: c.req.raw.headers, body: forwarded });
+    upstream = await deps.openRouter.responses({ headers: upstreamHeadersFor(c), body: forwarded });
   } catch (err) {
     deps.logger.error("openrouter responses request failed", { routed: false, error: errorMessage(err) });
     return upstreamUnavailable(c);
   }
 
-  return new Response(upstream.body, { status: upstream.status, headers: passThroughHeaders(upstream) });
+  // A Milo key pays for passthrough too -- the tokens went on Milo's sub-key
+  // -- but without the decision fee, since no decision was made. A BYOK
+  // caller takes the first branch, which is today's plain passthrough.
+  const headers = passThroughHeaders(upstream);
+  const ctx = { surface: "responses" as const, model: String(body["model"] ?? "") };
+
+  if (!isMetered(c) || !upstream.ok || upstream.body === null) {
+    return new Response(upstream.body, { status: upstream.status, headers });
+  }
+  if (isStreaming(body)) {
+    return new Response(chargeStream(c, deps, headers, ctx, upstream.body), {
+      status: upstream.status,
+      headers,
+    });
+  }
+
+  const text = await upstream.text();
+  await chargeBuffered(c, deps, headers, ctx, readBodyUsage("responses", text));
+  return new Response(text, { status: upstream.status, headers });
 }
 
 // ---------------------------------------------------------------------------
@@ -141,16 +176,19 @@ async function routed(
   extension: ReturnType<typeof extractMilo>["extension"],
 ): Promise<Response> {
   const messages = toChatMessages(body);
-  const conversation = fingerprint(messages, keyHash(c));
+  const conversation = fingerprint(messages, callerScope(c));
   const candidates = extension?.candidates;
   const forcedTier = extension?.tier;
 
   // A forced tier never calls Jev, so it never spends the budget the rate
   // limiter exists to bound; only an unforced request can be over the limit.
-  if (forcedTier === undefined && !deps.rateLimiter.tryConsume(authorization(c))) {
+  // The bucket is the Milo key's hash for a Milo key and the OpenRouter
+  // credential's for a BYOK caller, so rotating either gets a fresh bucket.
+  const bucket = rateLimitBucket(c, authorization(c));
+  if (forcedTier === undefined && !deps.rateLimiter.tryConsumeHashed(bucket)) {
     // No decision is made here, so no decision row is written: there is
     // nothing to explain but the refusal itself.
-    const retryAfter = retryAfterFromBucket(deps.rateLimiter.retryAfterMs(authorization(c)));
+    const retryAfter = retryAfterFromBucket(deps.rateLimiter.retryAfterMsHashed(bucket));
     deps.logger.warn("routed request rate limited", {
       fingerprint: conversation,
       status: 429,
@@ -215,6 +253,10 @@ async function routed(
     sticky: decision.sticky,
   });
 
+  // Stamps the account on the row the router just wrote, so this decision
+  // shows up in that account's `/v1/decisions` and nobody else's.
+  await noteDecisionAccount(c, deps, decision.id);
+
   return forward(c, deps, body, decision);
 }
 
@@ -228,7 +270,7 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
 
   let upstream: Response;
   try {
-    upstream = await deps.openRouter.responses({ headers: c.req.raw.headers, body: forwarded });
+    upstream = await deps.openRouter.responses({ headers: upstreamHeadersFor(c), body: forwarded });
   } catch (err) {
     deps.recordUpstream(decision.id, { status: 502, latencyMs: deps.now() - startedAt });
     deps.logger.error("openrouter responses request failed", { decisionId: decision.id, error: errorMessage(err) });
@@ -241,19 +283,25 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
   // A streamed success is the only case where the body must not be touched.
   // An upstream error is JSON however the request was made, so it takes the
   // buffered path and passes through with its own status.
+  const ctx = { surface: "responses" as const, model: decision.model, decisionId: decision.id };
+
   if (isStreaming(body) && upstream.ok && upstream.body !== null) {
-    const stream = upstream.body.pipeThrough(
+    const recorded = upstream.body.pipeThrough(
       onFinished(() => {
         deps.recordUpstream(decision.id, { status: upstream.status, latencyMs: deps.now() - startedAt });
       }),
     );
-    return new Response(stream, { status: upstream.status, headers });
+    // The charge settles from the usage on `response.completed`, after the
+    // client already has every byte.
+    return new Response(chargeStream(c, deps, headers, ctx, recorded), { status: upstream.status, headers });
   }
 
   const text = await upstream.text();
+  const usage = upstream.ok ? readBodyUsage("responses", text) : {};
   const record: Upstream = { status: upstream.status, latencyMs: deps.now() - startedAt };
-  if (upstream.ok) Object.assign(record, readUsage(text));
+  if (upstream.ok) Object.assign(record, toUpstreamRecord(usage));
   deps.recordUpstream(decision.id, record);
+  if (upstream.ok) await chargeBuffered(c, deps, headers, ctx, usage);
 
   return new Response(text, { status: upstream.status, headers });
 }
@@ -394,29 +442,6 @@ function partText(part: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Token counts off a Responses body. The field names are `usage.input_tokens`
- * and `usage.output_tokens`, as on the Anthropic surface and unlike the chat
- * dialect's `prompt_tokens` / `completion_tokens`. OpenRouter adds
- * `usage.cost` in credits when the request asked for it.
- */
-function readUsage(text: string): Partial<Upstream> {
-  let usage: unknown;
-  try {
-    usage = (JSON.parse(text) as { usage?: unknown }).usage;
-  } catch {
-    return {};
-  }
-  if (typeof usage !== "object" || usage === null) return {};
-
-  const source = usage as Record<string, unknown>;
-  const result: Partial<Upstream> = {};
-  if (typeof source["input_tokens"] === "number") result.inputTokens = source["input_tokens"];
-  if (typeof source["output_tokens"] === "number") result.outputTokens = source["output_tokens"];
-  if (typeof source["cost"] === "number") result.costUsd = source["cost"];
-  return result;
-}
 
 function upstreamUnavailable(c: Context): Response {
   return errorResponse(c, 502, "Upstream request to OpenRouter failed.", "api_error", "upstream_unavailable");

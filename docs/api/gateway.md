@@ -7,24 +7,48 @@ needs a bearer token.
 
 ## Auth
 
-Every `/v1/*` request must carry:
+Every `/v1/*` request must carry a bearer token, and there are two kinds
+(ADR-003, ADR-007). Which one you sent decides everything else on this page:
+who pays, what the response headers say, and whose decisions you can read.
 
 ```
-Authorization: Bearer <your OpenRouter key>
+Authorization: Bearer <your OpenRouter key>     # bring your own key (BYOK)
+Authorization: Bearer mk_<your Milo key>        # a Milo account
 ```
 
-Milo only checks that the header is present and bearer-shaped
+**BYOK.** Any bearer that does not start with `mk_` is your own OpenRouter
+key. Milo only checks that the header is present and bearer-shaped
 (`^Bearer\s+\S.*$`); it does not validate the key against OpenRouter, since
-doing so would cost a call. A missing or empty bearer token gets:
+doing so would cost a call. The value is forwarded to OpenRouter unchanged
+and is never logged, stored, or echoed back in a response. Milo charges
+nothing: you pay OpenRouter directly, and no `x-milo-cost-usd` header
+appears.
+
+**Milo key.** A bearer starting with `mk_` is a key Milo issued. It is looked
+up by its SHA-256 (the only form the database holds) and the request goes
+upstream on that account's own OpenRouter sub-key, which Milo mints on the
+account's first paid request and stores encrypted. The account is charged
+what OpenRouter reports plus margin (see "Credits and cost headers" below).
+The Milo key never reaches OpenRouter and the sub-key never reaches you.
+
+| condition | answer |
+| --- | --- |
+| no bearer at all | `401 missing_authorization` |
+| `mk_` key on a deployment with no billing configured | `401 milo_keys_disabled`, "Milo keys are not enabled on this deployment." |
+| `mk_` key that is unknown or revoked | `401 invalid_api_key` |
+| `mk_` key whose account is suspended | `403 account_suspended` |
+| `mk_` key whose account is below the reserve | `402 insufficient_credits` |
 
 ```
 401 { "error": { "message": "No OpenRouter API key provided. Send it as `Authorization: Bearer <key>`.", "type": "authentication_error", "code": "missing_authorization" } }
 ```
 
-The header value is forwarded to OpenRouter unchanged and is never logged,
-stored, or echoed back in a response (ADR-003). Milo's own Jev key never
-appears on this surface at all — it lives in the server's `JEV_API_KEY`
-environment variable (`docs/config.md`).
+`/v1/messages` also accepts the key as `x-api-key`, in either kind, because
+that is where the Anthropic SDK and Claude Code put it; refusals on that path
+wear Anthropic's error envelope.
+
+Milo's own Jev key never appears on this surface at all — it lives in the
+server's `JEV_API_KEY` environment variable (`docs/config.md`).
 
 ## `GET /healthz`
 
@@ -392,12 +416,19 @@ read as a decision id.
 
 `avgJevLatencyMs` is `null` when no decision is in scope.
 
-The three `/v1/decisions*` routes require a bearer token like every other
-`/v1` route, but any non-empty one is accepted — the decision log is
-per-deployment, not per-key, so on a shared instance one user can read
-another's decisions. This is a known gap for a single-tenant MVP, called out
-in the source (`packages/gateway/src/routes/decisions.ts`) as needing
-per-key scoping before Milo is multi-tenant.
+What the three `/v1/decisions*` routes return depends on how you
+authenticated (ADR-007):
+
+- **with a Milo key**, only that account's decisions. Every routed request
+  made with a Milo key stamps the account on its decision row; the list and
+  the stats filter on it, and `/v1/decisions/:id` answers 404 for a row
+  belonging to someone else — the same answer a row that does not exist
+  gets, so the endpoint cannot be used to probe for other accounts.
+- **with an OpenRouter key**, the whole deployment, exactly as before. The
+  log is per deployment, not per key, so on a shared instance one BYOK user
+  can read another's decisions. This is the known single-tenant gap called
+  out in ADR-008; Milo keys are the path off it, and BYOK behaviour is
+  deliberately unchanged.
 
 ## Generic `/v1/*` proxy
 
@@ -414,13 +445,112 @@ with `//`, is refused before any network call:
 400 { "error": { "message": "Milo will not proxy that path.", "type": "invalid_request_error", "code": "invalid_path" } }
 ```
 
+## Credits and cost headers
+
+Only a request authenticated with a Milo key is charged. Everything in this
+section is absent from a BYOK response.
+
+**Before the call.** If the account's balance is below the reserve
+(`reserveMicroUsd`, $0.05 by default) the request is refused before Jev and
+before OpenRouter — nothing upstream is called and nothing is charged:
+
+```
+402
+x-milo-balance-usd: 0.000000
+{ "error": { "message": "Milo credits exhausted. Add credits at https://<host>/account.", "type": "insufficient_quota", "code": "insufficient_credits" } }
+```
+
+On `/v1/messages` the same refusal arrives as
+`{ "type": "error", "error": { "type": "billing_error", "message": "..." } }`.
+
+**After the call.** The charge is
+
+```
+charged = round(upstream_cost * (1 + margin)) + decision_fee
+```
+
+in integer micro-USD, where `upstream_cost` is what OpenRouter reports for
+the call (`usage.cost`, in USD) and `decision_fee` is charged only on a
+routed (`milo/auto`) request, because only that one called Jev. An
+explicit-model passthrough is charged too — the tokens were spent on Milo's
+sub-key either way — but without the fee. The charge is posted to the ledger
+(reference: the decision id, or `passthrough:<upstream id>`), recorded in
+`/v1/account/usage`, and reported on the response:
+
+```
+x-milo-cost-usd: 0.002350      # what this request cost the account, USD
+x-milo-balance-usd: 4.997650   # what is left, USD
+```
+
+**Streamed responses.** HTTP trailers are not available here, so a streamed
+response cannot report its own cost in a header. Milo reads the usage off a
+tee of the stream — the last chat chunk's `usage`, `response.completed` for
+the Responses dialect, `message_start` plus `message_delta` for the Anthropic
+one — without altering a byte, and posts the charge when the stream ends. The
+two headers on a streamed response therefore say:
+
+```
+x-milo-cost-usd: pending
+x-milo-balance-usd: 5.000000   # the balance BEFORE this request
+```
+
+The settled figures are in `GET /v1/account/usage` and `GET
+/v1/account/ledger` a moment later.
+
+**When Milo cannot price a call** — no `usage.cost` came back and the model
+is not one the shipped roster has prices for, or a stream ended without ever
+reporting usage — nothing is charged and a warning naming the decision id is
+logged, so the gap can be reconciled against OpenRouter's own usage figures.
+On the Anthropic dialect, where OpenRouter does not always include a cost,
+the charge falls back to the roster's per-million token prices.
+
+The generic `/v1/*` proxy is gated (a broke account gets the 402) but not
+metered; the sub-key's own OpenRouter spend limit, kept equal to the
+account's balance, is what bounds it.
+
+## Account and billing routes
+
+These need a Milo key. A BYOK caller gets `403 milo_key_required` with a
+pointer at the account page, because there is no account behind an
+OpenRouter key. They are absent entirely (404) on a deployment with no
+billing configured.
+
+| route | what it does |
+| --- | --- |
+| `GET /v1/account` | the account, `balanceUsd`, the account's keys (id, name, prefix, timestamps — never a hash or a secret), and the pricing config with the credit packs |
+| `POST /v1/account/keys` | `{ "name": "laptop" }` mints a key; the response carries `secret` **once** and it is never retrievable again |
+| `DELETE /v1/account/keys/:id` | revokes one of this account's keys; another account's id reads as 404 |
+| `GET /v1/account/usage?since=<iso>` | `{ summary, records }` — the aggregate and the 50 most recent usage rows |
+| `GET /v1/account/ledger?limit=` | every balance movement, newest first, each with `amountUsd` and `balanceAfterUsd` |
+| `POST /v1/account/checkout` | `{ "packId": "pack_20" }` returns `{ url }` for Stripe Checkout; success and cancel URLs are derived from the request origin (`/account/success?session_id={CHECKOUT_SESSION_ID}` and `/account`) |
+| `POST /v1/account/portal` | `{ url }` for Stripe's customer portal. 409 until the account has a Stripe customer, which the first checkout creates |
+
+Two routes have no auth:
+
+**`POST /billing/stripe/webhook`** is authenticated by Stripe's signature
+over the raw body: `400 invalid_signature` when it does not verify, `200`
+when the event is applied *or* deliberately ignored (a non-2xx would only
+make Stripe retry an event nobody wants). A credited event posts the credit
+and raises the account's OpenRouter sub-key limit to the new balance.
+
+**`POST /v1/signup`** takes `{ "email": "you@example.com" }` and returns
+`{ accountId, key }` with the key shown once; `409` if the email already has
+an account. **This is MVP onboarding and deliberately thin**: there is no
+email sign-in yet, so anyone who can reach the deployment can claim an
+address they do not own. What stands in for verification until there is: a
+hard limit of 5 signups an hour per client address (`429`), the 409 above so
+an existing account can never be taken over, and a starting balance of zero,
+so the worst a stranger can do is create an empty account. Replace it with
+an email sign-in link before advertising it.
+
 ## Rate limiting
 
 Jev spend is Milo's, not the user's, so only routed (`milo/auto`) requests
 are rate limited — passthrough traffic and the generic proxy cost Milo
-nothing and are never limited. The limiter is a token bucket keyed on a
-SHA-256 hash of the incoming `Authorization` header value (never the raw
-key), capacity and refill rate both defaulting to 120 per minute
+nothing and are never limited. The limiter is a token bucket keyed on the
+caller's identity — the SHA-256 of the Milo key for a Milo key, the SHA-256
+of the `Authorization` header value for a BYOK caller, never a raw key —
+capacity and refill rate both defaulting to 120 per minute
 (`rateLimit.routedPerMinute` in config, or `GatewayOptions.rateLimit`).
 Exceeding the bucket rejects the request before any Jev or OpenRouter call:
 
@@ -472,8 +602,11 @@ Every Milo-originated error uses the OpenAI SDK's error shape so the
 `openai` client's own error classes key off it correctly:
 
 ```json
-{ "error": { "message": "...", "type": "authentication_error" | "invalid_request_error" | "not_found_error" | "api_error", "code": "..." } }
+{ "error": { "message": "...", "type": "authentication_error" | "invalid_request_error" | "not_found_error" | "rate_limit_error" | "insufficient_quota" | "api_error", "code": "..." } }
 ```
+
+`/v1/messages` uses Anthropic's envelope instead, with `billing_error` for a
+402 and `permission_error` for a 403.
 
 No Milo error message ever interpolates a request header or an upstream
 error's raw text (ADR-003) — the log line for an unhandled server error is

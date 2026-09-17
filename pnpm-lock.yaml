@@ -51,12 +51,21 @@ importers:
       '@hono/node-server':
         specifier: ^1
         version: 1.19.17(hono@4.13.8)
+      '@milo/billing':
+        specifier: workspace:*
+        version: link:../billing
       '@milo/core':
         specifier: workspace:*
         version: link:../core
       '@milo/gateway':
         specifier: workspace:*
         version: link:../gateway
+      '@milo/provisioning':
+        specifier: workspace:*
+        version: link:../provisioning
+      '@milo/stripe':
+        specifier: workspace:*
+        version: link:../stripe
       zod:
         specifier: ^3
         version: 3.25.76
@@ -91,9 +100,18 @@ importers:
       '@hono/node-server':
         specifier: ^1.19.17
         version: 1.19.17(hono@4.13.8)
+      '@milo/billing':
+        specifier: workspace:*
+        version: link:../billing
       '@milo/core':
         specifier: workspace:*
         version: link:../core
+      '@milo/provisioning':
+        specifier: workspace:*
+        version: link:../provisioning
+      '@milo/stripe':
+        specifier: workspace:*
+        version: link:../stripe
       hono:
         specifier: ^4.13.8
         version: 4.13.8

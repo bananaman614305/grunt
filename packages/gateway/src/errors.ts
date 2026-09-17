@@ -25,6 +25,8 @@ export type ErrorType =
   | "invalid_request_error"
   | "not_found_error"
   | "rate_limit_error"
+  /** OpenAI's own type for "this account cannot pay for this call" (ADR-007). */
+  | "insufficient_quota"
   | "api_error";
 
 export type OpenAIErrorBody = {
@@ -61,6 +63,10 @@ export function errorResponse(
 export type AnthropicErrorType =
   | "invalid_request_error"
   | "authentication_error"
+  /** 403: a suspended Milo account, in Anthropic's own wording. */
+  | "permission_error"
+  /** 402: out of Milo credits. Anthropic's type for a payment problem. */
+  | "billing_error"
   | "not_found_error"
   | "rate_limit_error"
   | "api_error";

@@ -225,6 +225,40 @@ describe("DecisionLog", () => {
   });
 });
 
+describe("DecisionLog and accounts", () => {
+  let log: DecisionLog;
+
+  beforeEach(async () => {
+    log = await DecisionLog.open(":memory:");
+  });
+
+  afterEach(async () => {
+    await log.close();
+  });
+
+  it("stamps an account on a decision and filters lists and stats by it", async () => {
+    await log.insert(record({ id: "a1", fingerprint: "fp-a" }));
+    await log.insert(record({ id: "b1", fingerprint: "fp-b" }));
+    await log.insert(record({ id: "x1", fingerprint: "fp-x" }));
+    await log.setAccount("a1", "acc_1");
+    await log.setAccount("b1", "acc_2");
+
+    expect((await log.getDecision("a1"))?.accountId).toBe("acc_1");
+    // A row nobody claimed carries no account, which is what a BYOK request
+    // leaves behind.
+    expect((await log.getDecision("x1"))?.accountId).toBeUndefined();
+
+    expect((await log.listRecent({ accountId: "acc_1" })).map((r) => r.id)).toEqual(["a1"]);
+    expect((await log.listRecent()).map((r) => r.id).sort()).toEqual(["a1", "b1", "x1"]);
+    expect((await log.stats({ accountId: "acc_2" })).total).toBe(1);
+    expect((await log.stats()).total).toBe(3);
+  });
+
+  it("ignores an account stamp for a decision that does not exist", async () => {
+    await expect(log.setAccount("missing", "acc_1")).resolves.toBeUndefined();
+  });
+});
+
 describe("DecisionLog as a StickyStore", () => {
   let log: DecisionLog;
 

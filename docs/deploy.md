@@ -55,6 +55,11 @@ sets defaults for `PORT` and `MILO_DB`.
 | `PORT` | no | `8787` | Port the gateway listens on. `--port` beats `PORT` beats `milo.config.json`'s `port` beats the default. |
 | `MILO_DB` | no | `file:/data/decisions.db` (set by the image) | libsql URL for the decision log. `--db` beats `MILO_DB` beats `milo.config.json`'s `decisionLog` beats the default. A `file:` path's parent directory is created automatically, relative or absolute. |
 | `JEV_API_KEY` | **yes** | *(unset)* | Milo's own TypeSafe Jev key. Jev is the only decision backend (ADR-005); `milo serve` refuses to start without it. Never put this in the image, a config file, or the workflow — supply it at deploy time (`fly secrets set`, or an injected Squire egress grant). |
+| `MILO_DATABASE_URL` | no | *(unset)* | Postgres URL for Milo-issued keys and prepaid credits (ADR-007). Unset means bring-your-own-key only: every `mk_` bearer gets a 401 and nothing else changes. Set it and `MILO_ENCRYPTION_KEY` becomes required. |
+| `MILO_ENCRYPTION_KEY` | only with `MILO_DATABASE_URL` | *(unset)* | base64 of 32 random bytes; encrypts each account's OpenRouter sub-key at rest. A Fly secret, never in the image. |
+| `MILO_MARGIN` | no | `0.15` | Fraction added to OpenRouter's reported cost when charging a Milo account. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | no | *(unset)* | Both required together for credit checkout, the customer portal, and the Stripe webhook; without them those routes answer 503. |
+| `OPENROUTER_PROVISIONING_KEY` | no | *(unset)* | Mints each account's OpenRouter sub-key and keeps its spend limit equal to the balance. |
 | `--config <path>` (flag, not an env var) | no | none (defaults apply) | Path to a `milo.config.json` for the roster, rate limit, or referer/title (`docs/config.md`). Mount one into the container and pass `--config` in a custom `CMD`/`command` override if you need it; the shipped image runs with no config file. |
 
 See `docs/config.md` for the full config-file schema and precedence rules,
