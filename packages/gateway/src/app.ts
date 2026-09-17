@@ -157,7 +157,13 @@ export function createApp(deps: AppDeps): Hono {
       name: "milo",
       description:
         'OpenRouter with an actual routing mechanism. Point an OpenAI-compatible client at /v1 with your OpenRouter key and use model "milo/auto".',
-      baseUrl: new URL("/v1", c.req.url).toString(),
+      baseUrl: (() => {
+        // Fly and most proxies terminate TLS and forward plain HTTP.
+        const url = new URL("/v1", c.req.url);
+        const proto = c.req.header("x-forwarded-proto");
+        if (proto === "https" || proto === "http") url.protocol = `${proto}:`;
+        return url.toString();
+      })(),
       routedModel: ROUTED_MODEL_ID,
       policyVersion: POLICY_VERSION,
       decisionBackend: deps.decisionBackend,

@@ -863,4 +863,11 @@ describe("GET /", () => {
     expect(body.baseUrl).toBe("http://milo.test/v1");
     expect(upstreams.calls).toHaveLength(0);
   });
+
+  it("uses the forwarded protocol behind a TLS-terminating proxy", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/", { headers: { "x-forwarded-proto": "https" } });
+    const body = (await res.json()) as { baseUrl: string };
+    expect(body.baseUrl).toBe("https://milo.test/v1");
+  });
 });
