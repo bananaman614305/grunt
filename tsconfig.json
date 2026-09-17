@@ -5,6 +5,7 @@
     { "path": "packages/gateway" },
     { "path": "packages/cli" },
     { "path": "packages/evals" },
-    { "path": "packages/stripe" }
+    { "path": "packages/stripe" },
+    { "path": "packages/provisioning" }
   ]
 }

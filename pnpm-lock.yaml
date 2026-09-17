@@ -83,6 +83,12 @@ importers:
         specifier: ^7.17.0
         version: 7.17.0(ws@8.21.3)(zod@3.25.76)
 
+  packages/provisioning:
+    dependencies:
+      '@milo/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/stripe:
     dependencies:
       '@milo/core':
