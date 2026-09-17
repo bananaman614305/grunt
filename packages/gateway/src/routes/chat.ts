@@ -23,23 +23,13 @@
 
 import type { Hono } from "hono";
 import type { Context } from "hono";
-import { ulid } from "ulid";
-import {
-  DEFAULT_ROSTER,
-  POLICY_VERSION,
-  extractMilo,
-  fingerprint,
-  isStreaming,
-  prepareBody,
-  resolveModel,
-} from "@milo/core";
-import type { ChatMessage, CostPosture, DecisionRecord, RouteDecision, RouteRequest, Roster } from "@milo/core";
+import { extractMilo, fingerprint, isStreaming, prepareBody } from "@milo/core";
+import type { ChatMessage, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { authorization, passThroughHeaders } from "../app.js";
 import { errorMessage, errorResponse } from "../errors.js";
-
-type Body = Record<string, unknown>;
-type Upstream = NonNullable<DecisionRecord["upstream"]>;
+import { applyMiloHeaders, degradedDecision, onFinished, readJsonObject } from "./shared.js";
+import type { Body, Upstream } from "./shared.js";
 
 export function registerChatRoute(app: Hono, deps: AppDeps): void {
   app.post("/v1/chat/completions", (c) => handleChat(c, deps));
@@ -100,7 +90,7 @@ async function routed(
   if (!deps.rateLimiter.tryConsume(authorization(c))) {
     // Over the limit is not a rejection: the user's OpenRouter spend is
     // theirs, only Milo's Jev spend is capped. Skip Jev, take `mid`, say so.
-    decision = degraded(
+    decision = degradedDecision(
       deps,
       conversation,
       candidates,
@@ -125,7 +115,12 @@ async function routed(
       // bug or an unusable roster. Record why, then fail loudly: guessing a
       // model on top of a broken configuration would hide it.
       deps.logger.error("router threw", { error: errorMessage(err) });
-      const failed = degraded(deps, conversation, candidates, "routing failed unexpectedly, fell back to the mid tier");
+      const failed = degradedDecision(
+        deps,
+        conversation,
+        candidates,
+        "routing failed unexpectedly, fell back to the mid tier",
+      );
       await deps.insertDecision(failed);
       return errorResponse(c, 502, "Milo could not route this request.", "api_error", "routing_failed");
     }
@@ -182,86 +177,9 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
   return new Response(text, { status: upstream.status, headers });
 }
 
-function applyMiloHeaders(headers: Headers, decision: RouteDecision): void {
-  headers.set("x-milo-decision-id", decision.id);
-  headers.set("x-milo-model", decision.model);
-  headers.set("x-milo-tier", decision.tier);
-  // A degraded decision has no signals; say `unknown` rather than inventing a
-  // task type or a difficulty the router never got.
-  headers.set("x-milo-task-type", decision.signals?.taskType ?? "unknown");
-  headers.set("x-milo-difficulty", decision.signals ? decision.signals.difficulty.toFixed(2) : "unknown");
-  headers.set("x-milo-sticky", decision.sticky ? "true" : "false");
-  headers.set("x-milo-degraded", decision.degraded ? "true" : "false");
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async function readJsonObject(c: Context): Promise<Body | undefined> {
-  let text: string;
-  try {
-    text = await c.req.text();
-  } catch {
-    return undefined;
-  }
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-    return parsed as Body;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * A degraded decision the gateway minted itself. `resolveModel` can throw on
- * a roster with nothing eligible, and the whole point of a degraded decision
- * is that it still answers, so widen the search before giving up on it.
- */
-function degraded(deps: AppDeps, conversation: string, candidates: string[] | undefined, reason: string): RouteDecision {
-  return {
-    id: ulid(),
-    fingerprint: conversation,
-    tier: "mid",
-    model: midModel(deps.roster, candidates),
-    reason,
-    policyVersion: POLICY_VERSION,
-    sticky: false,
-    degraded: true,
-    createdAt: new Date(deps.now()).toISOString(),
-  };
-}
-
-function midModel(roster: Roster, candidates: string[] | undefined): string {
-  try {
-    return resolveModel("mid", roster, candidates);
-  } catch {
-    try {
-      return resolveModel("mid", roster);
-    } catch {
-      return DEFAULT_ROSTER.mid[0] ?? "openrouter/auto";
-    }
-  }
-}
-
-/**
- * Identity transform that calls `done` after the last chunk. Chunks are
- * enqueued exactly as they arrive, so the stream stays byte-for-byte what
- * OpenRouter sent. A client that disconnects mid-stream never reaches the
- * flush, so that request's upstream outcome stays unrecorded -- which is the
- * honest answer, since the call did not finish.
- */
-function onFinished(done: () => void): TransformStream<Uint8Array, Uint8Array> {
-  return new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      controller.enqueue(chunk);
-    },
-    flush() {
-      done();
-    },
-  });
-}
 
 /** Token counts and OpenRouter's cost, when the body carries them. */
 function readUsage(text: string): Partial<Upstream> {

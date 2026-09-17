@@ -13,6 +13,8 @@ import {
   StickyCache,
 } from "@milo/core";
 import type { DecisionRecord, JevClientOptions, OpenRouterClientOptions, RouteDecision, Roster } from "@milo/core";
+import { AnthropicUpstream } from "./anthropic.js";
+import type { AnthropicUpstreamOptions } from "./anthropic.js";
 import { createApp } from "./app.js";
 import type { Logger } from "./app.js";
 import { errorMessage } from "./errors.js";
@@ -75,12 +77,17 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   if (options.referer !== undefined) openRouterOptions.referer = options.referer;
   if (options.title !== undefined) openRouterOptions.title = options.title;
 
+  // The Anthropic dialect goes to the same OpenRouter deployment over its
+  // `/messages` endpoint, so it takes the same base URL and the same fetch.
+  const anthropicOptions: AnthropicUpstreamOptions = { ...openRouterOptions };
+
   const rateLimitOptions: RateLimiterOptions = {};
   if (options.rateLimit !== undefined) rateLimitOptions.routedPerMinute = options.rateLimit.routedPerMinute;
 
   const app = createApp({
     router,
     openRouter: new OpenRouterClient(openRouterOptions),
+    anthropic: new AnthropicUpstream(anthropicOptions),
     log,
     rateLimiter: new RateLimiter(rateLimitOptions),
     roster,
