@@ -51,7 +51,7 @@ consistent with the committed set.
 | `--limit <n>` | all 120 | Only run the first `n` examples. |
 | `--out <path>` | `packages/evals/reports/latest.md` | Where the markdown report is written (also printed to stdout). |
 | `--json <path>` | *(not written)* | Also write the full `EvalReport` as JSON to this path. |
-| `--gate <0..1>` | `0.85` | Minimum overall tier agreement before the run exits 2. Pass `0.80` for the `system-one-open` backend (see below). |
+| `--gate <0..1>` | `0.85` | Minimum overall tier agreement before the run exits 2. CI passes `0.80` (see below). |
 
 ## What the report contains
 
@@ -85,19 +85,9 @@ The gate defaults to **0.85** (`MIN_TIER_AGREEMENT` in
 
 | backend | CI expects | why |
 |---|---|---|
-| `jev` | **0.80** | Validated (ADR-002 revision 3): 84.2% in-sample, 80.8% two-fold cross-validated (folds 75.0% and 86.7% — the fast/mid boundary is the noisy one). CI holds it to the same conservative 0.80 floor as the open backend rather than the 0.85 target, since a single fold measured as low as 75.0%; 0.85 stays the aspirational target. |
-| `system-one-open` | **0.80** | The open replica is measurably less accurate than Jev (76.7% vs. 86.9% on TypeSafe's public eval). Policy v2 scores **83.3%** on the committed fixtures, so 0.80 leaves headroom without hiding a regression. |
+| `jev` (`jev-latest`) | **0.80** | Validated (ADR-002 revision 3) on the committed `jev-latest` fixtures: 81.7% overall (bands 96.3 / 60.0 / 84.8 / 92.0), 90.8% task-type accuracy, two-fold cross-validation mean 78.3% (folds 83.3% and 73.3%; the fast/mid boundary is the noisy one). CI holds it to 0.80; 0.85 stays the target. |
 
-CI runs the fixture replay against both backends at `--gate 0.80`:
-`MILO_DECISION_BACKEND=system-one-open` against the open replica's fixtures,
-and `MILO_DECISION_BACKEND=jev` (with `JEV_BASE_URL` pinned to the exact
-request URL the committed Jev fixtures were recorded against — replay never
-touches the network, but the fixture lookup is keyed by a hash of the whole
-request) against Jev's. Both backends now have a validated profile; **0.85
-remains the stated target** in ADR-002 for whichever backend a deployment
-actually uses in production, and the 0.80 CI floor exists so a regression
-still fails the build without demanding a perfect score from either replica
-(ADR-002 revisions 2 and 3).
+CI runs the fixture replay at `--gate 0.80` with no extra environment: fixtures are keyed by the request's API path and body, not the recording address, so replay never touches the network
 
 Changing a threshold in `packages/core/src/router/policy.ts` requires bumping
 `POLICY_VERSION` and re-running the eval to confirm the gate still passes. The

@@ -114,11 +114,11 @@ export type PolicyProfile = {
  *     under the old 0.50 cap; 0.25 lines it up with the (lowered) hard bar so
  *     the cap stops re-litigating a decision the hard bar already made.
  *
- * That scores 84.2% in-sample and 80.8% under two-fold cross-validation
- * (folds 75.0% and 86.7% -- the fast/mid boundary is the noisy one); per band
+ * That scores 81.7% in-sample and 78.3% under two-fold cross-validation
+ * (folds 83.3% and 73.3% -- the fast/mid boundary is the noisy one); per band
  * 96.3% / 62.9% / 84.8% / 100.0%. Confusion: frontier 41/42 correct, mid
  * 26/31, fast 34/47 (13 fast-labeled examples predicted mid). Replay:
- * `packages/evals/reports/jev-v3.md`.
+ * `packages/evals/reports/jev-latest-v3.md`.
  */
 export const JEV_PROFILE: PolicyProfile = {
   fastMassFromLevel: 1,

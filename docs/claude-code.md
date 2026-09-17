@@ -156,7 +156,6 @@ x-milo-tier: frontier
 x-milo-task-type: debug
 x-milo-difficulty: 2.31
 x-milo-sticky: false
-x-milo-degraded: false
 ```
 
 Then `milo explain 01K5...` for the full record, Jev probabilities included.
