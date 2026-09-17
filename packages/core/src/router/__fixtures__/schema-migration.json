@@ -1,0 +1,35 @@
+{
+  "source": "synthetic",
+  "prompt": "schema-migration",
+  "expectedTier": { "low": "mid", "balanced": "frontier", "quality": "frontier" },
+  "requestId": "req_synthetic_schema_migration",
+  "model": "jev-latest",
+  "answers": {
+    "task_type": {
+      "type": "choice",
+      "choice": "ops",
+      "confidence": 0.51,
+      "probabilities": {
+        "chat": 0.002,
+        "edit": 0.006,
+        "feature": 0.081,
+        "debug": 0.004,
+        "research": 0.162,
+        "review": 0.011,
+        "docs": 0.223,
+        "ops": 0.51,
+        "classify": 0.001
+      }
+    },
+    "difficulty": {
+      "type": "score",
+      "score": 2.64,
+      "confidence": 0.81,
+      "legend": { "0": "Trivial", "1": "Routine", "2": "Substantial", "3": "Hard" },
+      "probabilities": { "0": 0.004, "1": 0.026, "2": 0.3, "3": 0.67 }
+    },
+    "needs_reasoning": { "type": "noul", "noul": 0.96 },
+    "long_output": { "type": "noul", "noul": 0.88 }
+  },
+  "usage": { "input_tokens": 1256, "output_tokens": 24 }
+}
