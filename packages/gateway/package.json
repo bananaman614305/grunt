@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
     }
   },
   "scripts": {
@@ -17,6 +21,10 @@
   "dependencies": {
     "@hono/node-server": "^1.19.17",
     "@milo/core": "workspace:*",
-    "hono": "^4.13.8"
+    "hono": "^4.13.8",
+    "ulid": "^3.0.2"
+  },
+  "devDependencies": {
+    "openai": "^7.17.0"
   }
 }
