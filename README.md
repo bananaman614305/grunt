@@ -145,10 +145,11 @@ Default roster `2026-09-17`:
 | frontier | `tencent/hy4-preview` | 0.834 | 2.501 | 3 | 12.0T |
 | frontier | `nvidia/nemotron-3-ultra-550b-a55b` | 0.625 | 3.125 | 8 | 3.5T |
 
-The first entry in a tier is that tier's default. `tencent/hy4-preview` caps
-output at 64,000 tokens and `nvidia/nemotron-3-ultra-550b-a55b` at 32,768,
-both below 65,536, so they sort last in their tier and are skipped outright
-whenever a long answer is expected.
+The first entry in a tier is that tier's default. `nvidia/nemotron-3-ultra-550b-a55b`
+caps output at 32,768 tokens, below the 60,000 floor, so it sorts last in its
+tier and is skipped outright whenever a long answer is expected;
+`tencent/hy4-preview` (64,000) and `google/gemini-3.8-flash` (65,536) stay
+eligible.
 
 **The rule**, collected 2026-09-17 from OpenRouter's weekly usage ranking for
 the programming category (week ending 2026-09-16) and its public model

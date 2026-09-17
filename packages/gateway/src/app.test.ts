@@ -1038,7 +1038,7 @@ describe("GET /v1/roster", () => {
     expect(body.policy.posture.low).toContain("fast");
     expect(body.policy.posture.balanced).toContain("mid");
     expect(body.policy.posture.quality).toContain("frontier");
-    expect(body.policy.longOutput).toContain("65536");
+    expect(body.policy.longOutput).toContain("60000");
   });
 
   it("marks a deployment's own model ids as coming from config", async () => {

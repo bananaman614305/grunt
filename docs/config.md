@@ -103,7 +103,7 @@ current id and dropping `:free`, `:batch` and the other data-sharing plan
 variants, anything that cannot call a tool, and anything at or above **$5 per
 million output tokens**; tiered by output price (fast at most $0.35/M, mid at
 most $1.50/M, frontier at most $5/M); ordered by usage within a tier, with a
-model whose max output is below 65,536 tokens last, because the router skips
+model whose max output is below 60,000 tokens last, because the router skips
 it whenever a long answer is expected (`tencent/hy4-preview` at 64,000 and
 `nvidia/nemotron-3-ultra-550b-a55b` at 32,768 are the two today).
 

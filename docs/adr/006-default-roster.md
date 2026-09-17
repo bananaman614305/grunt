@@ -40,7 +40,7 @@ the ceiling above which nothing is ever chosen.
 - `DEFAULT_ROSTER_INFO: RosterInfo` — the whole record, for the surfaces that
   disclose it.
 - `DEFAULT_SMALL_OUTPUT_MODELS` — every entry whose `maxOutputTokens` is below
-  `SMALL_OUTPUT_BELOW_TOKENS` (65,536), which is what `resolveModel` skips
+  `SMALL_OUTPUT_BELOW_TOKENS` (60,000), which is what `resolveModel` skips
   when `long_output >= 0.7`. That list used to be an empty array with a
   comment asking operators to maintain it; it is now read off the same data
   that says what each model can do.
@@ -63,7 +63,7 @@ category:
 5. Tier by output price: fast at most $0.35/M, mid at most $1.50/M, frontier
    at most $5/M.
 6. Order each tier by usage rank, except that a model capping output below
-   65,536 tokens sorts last, since the long-output rule skips it and it must
+   60,000 tokens sorts last, since the long-output rule skips it and it must
    therefore never be a tier's default.
 
 Shipped as version `2026-09-17`: fast is deepseek-v4-flash, glm-5.3-flash,

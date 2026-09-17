@@ -107,7 +107,7 @@ export const DEFAULT_RULES: SelectionRules = {
     frontier: { maxOutputUsdPerM: 5 },
   },
   excludedAbove: 5,
-  smallOutputBelowTokens: 65_536,
+  smallOutputBelowTokens: 60_000,
   topModels: 10,
 };
 
@@ -424,6 +424,10 @@ function objectEnd(body: string, start: number): number {
  * deduplicated, keeping the largest token count seen for a slug.
  */
 export function scrapeRankingRows(body: string): RankingRow[] {
+  // The rankings page embeds its data in a Next.js flight payload where JSON
+  // quotes are escaped (\" and \\); unescape once so the field matchers see
+  // plain JSON.
+  body = body.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
   let fromJson: RankingRow[] = [];
   try {
     fromJson = extractRankingRows(JSON.parse(body));

@@ -166,9 +166,9 @@ describe("selectRoster", () => {
     // hy4-preview is rank 3 and nemotron rank 8, but both cap output below
     // 65,536, so they sort behind glm-5.3 (9) and gemini-3.8-flash (10).
     expect(ids(selection.tiers.frontier)).toEqual([
+      "tencent/hy4-preview",
       "z-ai/glm-5.3",
       "google/gemini-3.8-flash",
-      "tencent/hy4-preview",
       "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
     expect(selection.tiers.frontier[0]?.demotedForSmallOutput).toBeUndefined();
@@ -178,7 +178,7 @@ describe("selectRoster", () => {
     const demoted = TIER_ORDER.flatMap((t) => selection.tiers[t])
       .filter((m) => m.demotedForSmallOutput === true)
       .map((m) => m.id);
-    expect(demoted).toEqual(["tencent/hy4-preview", "nvidia/nemotron-3-ultra-550b-a55b"]);
+    expect(demoted).toEqual(["nvidia/nemotron-3-ultra-550b-a55b"]);
   });
 
   it("never makes a small-output model a tier default", () => {
@@ -199,7 +199,7 @@ describe("buildRosterFile", () => {
     expect(file.bands).toEqual(DEFAULT_RULES.bands);
     expect(file.excludedAbove).toBe(5);
     expect(file.topModels).toBe(10);
-    expect(file.smallOutputBelowTokens).toBe(65_536);
+    expect(file.smallOutputBelowTokens).toBe(60_000);
   });
 });
 

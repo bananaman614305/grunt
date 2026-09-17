@@ -7,7 +7,7 @@
  *
  * "Too small" is read off the roster data rather than maintained by hand:
  * `DEFAULT_SMALL_OUTPUT_MODELS` is every default-roster entry whose
- * `maxOutputTokens` is below `SMALL_OUTPUT_BELOW_TOKENS` (65,536), both
+ * `maxOutputTokens` is below `SMALL_OUTPUT_BELOW_TOKENS` (60,000), both
  * derived from `roster-default.json` (ADR-006). An operator running a custom
  * roster with a short-output model passes `smallOutputModels` per call.
  *

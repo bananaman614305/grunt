@@ -228,7 +228,7 @@ model id: the first entry in that tier's list that is not excluded by a
 `candidates` restriction or by the small-output exclusion. When
 `long_output >= 0.7`, every model in `DEFAULT_SMALL_OUTPUT_MODELS` is
 skipped — that list is not maintained by hand, it is every default-roster
-entry whose `maxOutputTokens` is below `SMALL_OUTPUT_BELOW_TOKENS` (65,536),
+entry whose `maxOutputTokens` is below `SMALL_OUTPUT_BELOW_TOKENS` (60,000),
 both read off the roster data. An operator running a custom roster with a
 short-output model in it passes `smallOutputModels` per call. If nothing in
 the target tier is eligible, the search widens to the next tier up, then
@@ -279,10 +279,10 @@ The rule that produced it, and that
 5. Tier by output price: fast at most $0.35/M, mid at most $1.50/M, frontier
    at most $5/M.
 6. Order each tier by usage rank, except that a model capping output below
-   65,536 tokens sorts last — the long-output rule skips it, so it must never
-   be a tier's default. `tencent/hy4-preview` (64,000) and
-   `nvidia/nemotron-3-ultra-550b-a55b` (32,768) are the two today, which is
-   why rank 3 and rank 8 sit behind rank 9 and rank 10 on the frontier tier.
+   60,000 tokens sorts last — the long-output rule skips it, so it must never
+   be a tier's default. `nvidia/nemotron-3-ultra-550b-a55b` (32,768) is the
+   one today, which is why rank 8 sits last on the frontier tier while
+   `tencent/hy4-preview` (64,000), rank 3, leads it.
 
 Because step 6 can only demote and never promote, the first entry of every
 tier is always a model that can produce a long answer — so a `long_output`

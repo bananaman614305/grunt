@@ -17,7 +17,7 @@
     }
   },
   "excludedAbove": 5,
-  "smallOutputBelowTokens": 65536,
+  "smallOutputBelowTokens": 60000,
   "tiers": {
     "fast": [
       {
@@ -79,6 +79,15 @@
     ],
     "frontier": [
       {
+        "id": "tencent/hy4-preview",
+        "inputUsdPerM": 0.834,
+        "outputUsdPerM": 2.501,
+        "weeklyTokens": 12000000000000,
+        "contextLength": 1048576,
+        "maxOutputTokens": 64000,
+        "usageRank": 3
+      },
+      {
         "id": "z-ai/glm-5.3",
         "inputUsdPerM": 1.4,
         "outputUsdPerM": 4.4,
@@ -95,16 +104,6 @@
         "contextLength": 1048576,
         "maxOutputTokens": 65536,
         "usageRank": 10
-      },
-      {
-        "id": "tencent/hy4-preview",
-        "inputUsdPerM": 0.834,
-        "outputUsdPerM": 2.501,
-        "weeklyTokens": 12000000000000,
-        "contextLength": 1048576,
-        "maxOutputTokens": 64000,
-        "demotedForSmallOutput": true,
-        "usageRank": 3
       },
       {
         "id": "nvidia/nemotron-3-ultra-550b-a55b",

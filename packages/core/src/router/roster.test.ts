@@ -27,7 +27,7 @@ describe("resolveModel", () => {
   it("uses the default roster the gateway ships", () => {
     expect(resolveModel("fast", DEFAULT_ROSTER)).toBe("deepseek/deepseek-v4-flash");
     expect(resolveModel("mid", DEFAULT_ROSTER)).toBe("openai/gpt-5.6-luna");
-    expect(resolveModel("frontier", DEFAULT_ROSTER)).toBe("z-ai/glm-5.3");
+    expect(resolveModel("frontier", DEFAULT_ROSTER)).toBe("tencent/hy4-preview");
   });
 
   it("restricts the roster to the request's candidates", () => {
@@ -77,9 +77,9 @@ describe("resolveModel", () => {
   });
 
   describe("the default roster's own max-output data", () => {
-    it("skips a default-roster model whose max output is below 64k", () => {
-      const candidates = ["google/gemini-3.8-flash", "tencent/hy4-preview"];
-      // hy4-preview caps at 64,000 and gemini-3.8-flash at 65,536, so only
+    it("skips a default-roster model whose max output is below 60k", () => {
+      const candidates = ["google/gemini-3.8-flash", "nvidia/nemotron-3-ultra-550b-a55b"];
+      // nemotron caps at 32,768 and gemini-3.8-flash at 65,536, so only
       // one of them can hold a long answer.
       expect(resolveModel("frontier", DEFAULT_ROSTER, candidates, { longOutput: 0.9 })).toBe(
         "google/gemini-3.8-flash",
@@ -91,7 +91,7 @@ describe("resolveModel", () => {
       // nothing eligible anywhere and the caller hears about it rather than
       // getting a truncated answer.
       expect(() =>
-        resolveModel("frontier", DEFAULT_ROSTER, ["tencent/hy4-preview"], { longOutput: 0.9 }),
+        resolveModel("frontier", DEFAULT_ROSTER, ["nvidia/nemotron-3-ultra-550b-a55b"], { longOutput: 0.9 }),
       ).toThrow(/no eligible model for tier frontier/);
     });
 
@@ -101,7 +101,7 @@ describe("resolveModel", () => {
           "deepseek/deepseek-v4-flash",
         );
         expect(resolveModel("mid", DEFAULT_ROSTER, undefined, { longOutput })).toBe("openai/gpt-5.6-luna");
-        expect(resolveModel("frontier", DEFAULT_ROSTER, undefined, { longOutput })).toBe("z-ai/glm-5.3");
+        expect(resolveModel("frontier", DEFAULT_ROSTER, undefined, { longOutput })).toBe("tencent/hy4-preview");
       }
     });
 

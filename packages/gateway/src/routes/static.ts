@@ -238,10 +238,9 @@ Default roster \`${DEFAULT_ROSTER_INFO.version}\`:
 
 ${rosterTable()}
 
-\`tencent/hy4-preview\` caps output at 64,000 tokens and
-\`nvidia/nemotron-3-ultra-550b-a55b\` at 32,768, both below
-${DEFAULT_ROSTER_INFO.smallOutputBelowTokens}, so they sort last in their tier and are skipped
-outright whenever a long answer is expected.
+\`nvidia/nemotron-3-ultra-550b-a55b\` caps output at 32,768 tokens, below the
+${DEFAULT_ROSTER_INFO.smallOutputBelowTokens} floor, so it sorts last in its tier and is skipped
+outright whenever a long answer is expected; \`tencent/hy4-preview\` (64,000) stays eligible.
 
 **How this list was made.** Collected ${DEFAULT_ROSTER_INFO.version} from
 ${DEFAULT_ROSTER_INFO.source.usage} and ${DEFAULT_ROSTER_INFO.source.pricing}. Take the

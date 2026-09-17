@@ -124,9 +124,9 @@ describe("DEFAULT_ROSTER", () => {
       ],
       mid: ["openai/gpt-5.6-luna", "deepseek/deepseek-v4.1-flash"],
       frontier: [
+        "tencent/hy4-preview",
         "z-ai/glm-5.3",
         "google/gemini-3.8-flash",
-        "tencent/hy4-preview",
         "nvidia/nemotron-3-ultra-550b-a55b",
       ],
     });
@@ -135,9 +135,8 @@ describe("DEFAULT_ROSTER", () => {
 
 describe("DEFAULT_SMALL_OUTPUT_MODELS", () => {
   it("is derived from the data's own max output, not maintained by hand", () => {
-    expect(SMALL_OUTPUT_BELOW_TOKENS).toBe(65_536);
+    expect(SMALL_OUTPUT_BELOW_TOKENS).toBe(60_000);
     expect(DEFAULT_SMALL_OUTPUT_MODELS).toEqual([
-      "tencent/hy4-preview",
       "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
   });
