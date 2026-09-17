@@ -99,7 +99,7 @@ export type RouteDecision = {
 
 /** Hard limits the router must respect. */
 export const ROUTER_LIMITS = {
-  jevTimeoutMs: 400,
+  jevTimeoutMs: 800, // default; cold TLS to api.typesafe.ai is ~350 ms from us-east, configurable per Router/Gateway
   jevRetries: 1,
   stickyTtlMs: 30 * 60 * 1000,
   contextTokenBudget: 8_000,

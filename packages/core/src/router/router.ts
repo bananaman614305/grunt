@@ -35,6 +35,8 @@ export type RouterOptions = {
   clock?: () => number;
   /** Called with every decision the router returns, including degraded ones. */
   onDecision?: (decision: RouteDecision) => void;
+  /** Jev budget in ms; defaults to ROUTER_LIMITS.jevTimeoutMs. */
+  jevTimeoutMs?: number;
 };
 
 /** A Jev answer that does not match its question's shape. */
@@ -126,6 +128,10 @@ export function classifyFailure(error: unknown): DegradeCause {
   if (error instanceof AnswerValidationError) return "validation";
   if (error instanceof JevTimeoutError) return "timeout";
 
+  // The Jev client classifies its own failures; trust that first.
+  const kind = isRecord(error) ? error["kind"] : undefined;
+  if (kind === "timeout" || kind === "network" || kind === "http" || kind === "validation") return kind;
+
   const name = isRecord(error) && typeof error["name"] === "string" ? error["name"] : "";
   if (name === "TimeoutError" || name === "AbortError") return "timeout";
 
@@ -142,6 +148,7 @@ export class Router {
   private readonly sticky: StickyCache;
   private readonly clock: () => number;
   private readonly onDecision: ((decision: RouteDecision) => void) | undefined;
+  private readonly jevTimeoutMs: number;
 
   constructor(opts: RouterOptions) {
     this.jev = opts.jev;
@@ -149,6 +156,7 @@ export class Router {
     this.clock = opts.clock ?? Date.now;
     this.sticky = opts.sticky ?? new StickyCache(opts.clock ? { clock: opts.clock } : {});
     this.onDecision = opts.onDecision;
+    this.jevTimeoutMs = opts.jevTimeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
   }
 
   async route(req: RouteRequest): Promise<RouteDecision> {
@@ -207,13 +215,14 @@ export class Router {
 
   private async callJev(messages: ChatMessage[], tools: unknown[] | undefined): Promise<SystemOneResult> {
     const { state } = buildJevState(messages, tools);
-    const signal = AbortSignal.timeout(ROUTER_LIMITS.jevTimeoutMs);
+    const budget = this.jevTimeoutMs;
+    const signal = AbortSignal.timeout(budget);
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(
-        () => reject(new JevTimeoutError(`jev exceeded ${ROUTER_LIMITS.jevTimeoutMs}ms`)),
-        ROUTER_LIMITS.jevTimeoutMs,
+        () => reject(new JevTimeoutError(`jev exceeded ${budget}ms`)),
+        budget,
       );
     });
 

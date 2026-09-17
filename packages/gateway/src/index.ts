@@ -29,6 +29,8 @@ export type GatewayOptions = {
   /** Upstream base URLs, overridable for tests. */
   openRouterBaseUrl?: string;
   jevBaseUrl?: string;
+  /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
+  jevTimeoutMs?: number;
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
   /** OpenRouter app attribution headers. */
@@ -54,10 +56,12 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
 
   const jevOptions: JevClientOptions = { apiKey: options.jevApiKey };
   if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
+  if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
   if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
 
   const router = new Router({
     jev: new JevClient(jevOptions),
+    ...(options.jevTimeoutMs !== undefined ? { jevTimeoutMs: options.jevTimeoutMs } : {}),
     roster,
     sticky: new StickyCache(),
     // Every decision the router makes is logged, degraded ones included: a

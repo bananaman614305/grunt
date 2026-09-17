@@ -22,7 +22,7 @@ Out of scope for the MVP: preference memory, capture, output grading, harness ho
 | Policy | Versioned table in code mapping signals plus cost posture to a tier, and a roster mapping tiers to OpenRouter model ids. Default roster ships; users override in config. | Inspectable and diffable. Jev's calibration is unpublished, so the policy must be tunable without retraining anything. |
 | Stickiness | A conversation fingerprint (hash of system prompt plus first user message) pins the chosen model for 30 minutes | Switching models mid-conversation breaks tool-call continuity and wastes cache. Sub-agents are multi-turn. |
 | Explainability | Response headers `x-milo-decision-id`, `x-milo-model`, `x-milo-task-type`, `x-milo-difficulty`; `GET /v1/decisions/:id` returns the full decision with Jev probabilities | The audit trail is the product's proof and the basis for tuning. |
-| Fallback | If Jev fails or times out (400 ms budget), route to the roster's `mid` tier, mark the decision degraded | Never block a request on the router. |
+| Fallback | If Jev fails or times out (800 ms default budget, configurable), route to the roster's `mid` tier, mark the decision degraded | Never block a request on the router. |
 | Stack | TypeScript, Node 22, pnpm, Hono, Vitest, Zod, SQLite via libsql for the decision log | See ADR-001. |
 | Deploy | Local first (`milo serve`), Fly.io for a hosted instance | Existing account. |
 | License | Proprietary for now | Keeps monetization open. |
@@ -145,7 +145,7 @@ Each task is one subagent in its own worktree, one branch, one PR, tests green b
 
 | # | Owner | Task | Acceptance |
 |---|---|---|---|
-| 1.1 | Sonnet | Jev client in `core/src/jev`: typed builders for noul/choice/score, bearer auth, 400 ms timeout, one retry with jitter, request-id capture, fixture recorder and replayer | Fixtures replay in unit tests; one opt-in live test hits `/v1/models` |
+| 1.1 | Sonnet | Jev client in `core/src/jev`: typed builders for noul/choice/score, bearer auth, configurable timeout, one retry with jitter, request-id capture, fixture recorder and replayer | Fixtures replay in unit tests; one opt-in live test hits `/v1/models` |
 | 1.2 | Opus | Router in `core/src/router`: Jev question set over the conversation (system prompt, last 3 user turns, tool presence, truncated to 8k tokens), policy table v1, roster resolution with candidates filter, sticky cache with TTL, degraded fallback, one-sentence reason | Unit tests for every policy row; ≥ 85% tier agreement on the eval set once 1.4 lands |
 | 1.3 | Sonnet | OpenRouter client in `core/src/openrouter`: chat completions with SSE passthrough, models list with cache, error mapping, forwarding rules (strip the `milo` body field, pass `Authorization` through) | Tests against a mocked OpenRouter; streams byte-for-byte |
 | 1.4 | Sonnet | Routing eval set in `evals/data/routing.jsonl`: 120 prompts across all task types and difficulties, labeled with task_type, difficulty band, and expected tier under `balanced` | README on labeling rules; orchestrator reviews 30 |
@@ -180,7 +180,7 @@ Each task is one subagent in its own worktree, one branch, one PR, tests green b
 |---|---|
 | Jev tier agreement below 85% | Eval set measures it from wave 1; policy thresholds are tunable; low-confidence decisions can default to `mid` |
 | Model switch mid-conversation breaks tool calls | Sticky fingerprint cache, 30 min TTL |
-| Jev adds latency to every call | 400 ms hard budget, degraded fallback, sticky cache means one Jev call per conversation |
+| Jev adds latency to every call | 800 ms default budget, degraded fallback, sticky cache means one Jev call per conversation |
 | OpenRouter API drift | Generic passthrough for everything not explicitly handled; only `model` is rewritten |
 | Key leakage | User keys live only in request headers, never stored or logged. Milo's Jev key lives only in server env as a revocable egress grant. Decision log stores no message content. |
 | Jev spend abuse on a hosted endpoint | Rate limit per OpenRouter-key hash, 8k-token context cap, degraded passthrough when limited |

@@ -207,6 +207,12 @@ export class JevClient implements JevClientLike {
       return await this.fetchImpl(url, init);
     } catch (err) {
       if (isAbortError(err)) {
+        // A caller signal made with AbortSignal.timeout carries a TimeoutError
+        // reason; report that as a timeout, not as a generic abort.
+        const reason = callerSignal?.reason as { name?: unknown } | undefined;
+        if (callerAborted && reason !== undefined && reason !== null && reason.name === "TimeoutError") {
+          throw new TimeoutAbort();
+        }
         if (callerAborted) throw new CallerAbort();
         if (timedOut) throw new TimeoutAbort();
       }

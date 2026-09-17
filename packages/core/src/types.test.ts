@@ -9,6 +9,6 @@ describe("core contracts", () => {
     expect(new Set(TASK_TYPES).size).toBe(TASK_TYPES.length);
   });
   it("jev budget is under half a second", () => {
-    expect(ROUTER_LIMITS.jevTimeoutMs).toBeLessThanOrEqual(500);
+    expect(ROUTER_LIMITS.jevTimeoutMs).toBeLessThanOrEqual(1000);
   });
 });

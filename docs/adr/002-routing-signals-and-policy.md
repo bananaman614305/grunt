@@ -8,7 +8,7 @@ For each routed request Milo makes one Jev `/v1/systemone` call whose `state` is
 
 A versioned policy table in `packages/core/src/router/policy.ts` maps those signals plus the request's cost posture (`low`, `balanced`, `quality`) to a tier (`fast`, `mid`, `frontier`). A roster maps tiers to ordered OpenRouter model ids; users override it in config, and a request may restrict it with `milo.candidates`. The first roster entry for the chosen tier that is not excluded is the model.
 
-A conversation fingerprint (SHA-256 of the system prompt plus the first user message) pins the decision for 30 minutes so multi-turn sub-agents do not switch models mid-task. If Jev fails or exceeds a 400 ms budget, the router returns the `mid` tier and marks the decision degraded. Every decision is written to the log with all probabilities, the Jev request id, and the policy version.
+A conversation fingerprint (SHA-256 of the system prompt plus the first user message) pins the decision for 30 minutes so multi-turn sub-agents do not switch models mid-task. If Jev fails or exceeds its budget (default 800 ms, configurable; a cold TLS handshake to api.typesafe.ai alone is about 350 ms), the router returns the `mid` tier and marks the decision degraded. Every decision is written to the log with all probabilities, the Jev request id, and the policy version.
 
 ## Why
 
