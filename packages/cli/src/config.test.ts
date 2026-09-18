@@ -142,3 +142,20 @@ describe("loadConfig", () => {
     expect(parsed.success).toBe(true);
   });
 });
+
+describe("sampling config (ADR-010)", () => {
+  it("parses the sampling block and defaults enabled to true", () => {
+    const parsed = configSchema.parse({ sampling: { sampleTimeoutMs: 45000 } });
+    expect(parsed.sampling).toEqual({ enabled: true, sampleTimeoutMs: 45000 });
+  });
+
+  it("accepts an explicit opt-out", () => {
+    const parsed = configSchema.parse({ sampling: { enabled: false } });
+    expect(parsed.sampling?.enabled).toBe(false);
+  });
+
+  it("rejects unknown sampling keys and bad timeouts", () => {
+    expect(() => configSchema.parse({ sampling: { cells: [] } })).toThrow();
+    expect(() => configSchema.parse({ sampling: { sampleTimeoutMs: -1 } })).toThrow();
+  });
+});

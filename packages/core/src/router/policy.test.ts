@@ -3,7 +3,12 @@ import type { CostPosture, RouteSignals, TaskType } from "../types.js";
 import type { PolicyProfile } from "./policy.js";
 import {
   CAPPED_TASK_TYPES,
+  chooseOutcome,
   chooseTier,
+  clampSamples,
+  DEFAULT_SAMPLE_COUNT,
+  MAX_SAMPLE_COUNT,
+  SAMPLING_TASK_TYPES,
   chooseTierFromExpectedScore,
   DEFAULT_PROFILE,
   fastGateMass,
@@ -401,5 +406,98 @@ describe("the v1 expected-score rule when there are no levels", () => {
     expect(chooseTier(scoreOnly(1.5, 0.9), "balanced")).toEqual(
       chooseTierFromExpectedScore(scoreOnly(1.5, 0.9), "balanced"),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Best-of-N sampling cells (policy v4, ADR-010)
+// ---------------------------------------------------------------------------
+
+describe("chooseOutcome: sampling cells", () => {
+  it("samples edit and docs, and only edit and docs", () => {
+    expect([...SAMPLING_TASK_TYPES]).toEqual(["edit", "docs"]);
+  });
+
+  it.each(SAMPLING_TASK_TYPES)("resolves a mid-band %s cell to best-of-5 on fast", (taskType) => {
+    const outcome = chooseOutcome(signals(MID, taskType), "balanced");
+    expect(outcome.tier).toBe("fast");
+    expect(outcome.samples).toBe(DEFAULT_SAMPLE_COUNT);
+    expect(outcome.unsampledTier).toBe("mid");
+    expect(outcome.reason).toContain("best-of-5");
+  });
+
+  it("samples a frontier-band edit cell too, remembering the frontier choice", () => {
+    const outcome = chooseOutcome(signals(VERY_HARD, "edit"), "balanced");
+    expect(outcome).toMatchObject({ tier: "fast", samples: 5, unsampledTier: "frontier" });
+  });
+
+  it("samples under quality posture", () => {
+    // Under quality this distribution's hard mass clears the lowered bar, so
+    // the unsampled choice is frontier -- and sampling still replaces it.
+    const outcome = chooseOutcome(signals(MID, "docs"), "quality");
+    expect(outcome).toMatchObject({ tier: "fast", samples: 5, unsampledTier: "frontier" });
+  });
+
+  it("never samples under low posture", () => {
+    const outcome = chooseOutcome(signals(MID, "edit"), "low");
+    expect(outcome.tier).toBe("mid");
+    expect(outcome.samples).toBeUndefined();
+    expect(outcome.unsampledTier).toBeUndefined();
+  });
+
+  it("does not sample band 0: a cell the mass machinery routes to fast stays one fast call", () => {
+    const outcome = chooseOutcome(signals(FAST, "edit"), "balanced");
+    expect(outcome).toMatchObject({ tier: "fast" });
+    expect(outcome.samples).toBeUndefined();
+  });
+
+  it("does not sample task types outside the stable winners", () => {
+    for (const taskType of ["feature", "debug", "research", "review", "chat", "ops", "classify"] as const) {
+      const outcome = chooseOutcome(signals(MID, taskType), "balanced");
+      expect(outcome.samples).toBeUndefined();
+      expect(outcome).toEqual(chooseTier(signals(MID, taskType), "balanced"));
+    }
+  });
+
+  it("samples on the expected-score path too, when the v1 rule lands above fast", () => {
+    const outcome = chooseOutcome(scoreOnly(1.5, 0.9, "edit"), "balanced");
+    expect(outcome).toMatchObject({ tier: "fast", samples: 5, unsampledTier: "mid" });
+  });
+
+  it("a milo.samples of 1 disables sampling for the request", () => {
+    const outcome = chooseOutcome(signals(MID, "edit"), "balanced", JEV_PROFILE, 1);
+    expect(outcome).toEqual(chooseTier(signals(MID, "edit"), "balanced"));
+  });
+
+  it("an explicit milo.samples sets N on a cell that samples", () => {
+    const outcome = chooseOutcome(signals(MID, "edit"), "balanced", JEV_PROFILE, 3);
+    expect(outcome.samples).toBe(3);
+  });
+
+  it("caps an explicit milo.samples at MAX_SAMPLE_COUNT", () => {
+    const outcome = chooseOutcome(signals(MID, "docs"), "balanced", JEV_PROFILE, 20);
+    expect(outcome.samples).toBe(MAX_SAMPLE_COUNT);
+  });
+
+  it("an override does not turn sampling on for a cell the policy does not sample", () => {
+    const outcome = chooseOutcome(signals(MID, "debug"), "balanced", JEV_PROFILE, 5);
+    expect(outcome.samples).toBeUndefined();
+  });
+});
+
+describe("clampSamples", () => {
+  it("passes integers 1..8 through and caps above", () => {
+    expect(clampSamples(1)).toBe(1);
+    expect(clampSamples(5)).toBe(5);
+    expect(clampSamples(8)).toBe(8);
+    expect(clampSamples(9)).toBe(8);
+  });
+
+  it("ignores anything that is not a positive integer", () => {
+    expect(clampSamples(undefined)).toBeUndefined();
+    expect(clampSamples(0)).toBeUndefined();
+    expect(clampSamples(-2)).toBeUndefined();
+    expect(clampSamples(2.5)).toBeUndefined();
+    expect(clampSamples(Number.NaN)).toBeUndefined();
   });
 });

@@ -1163,3 +1163,86 @@ describe("classifyFailure", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Best-of-N sampling outcomes (policy v4, ADR-010)
+// ---------------------------------------------------------------------------
+
+describe("sampled decisions", () => {
+  /** An edit task whose mass sits in the mid band: samples under balanced. */
+  const editMidAnswers: SystemOneResult["answers"] = {
+    task_type: {
+      type: "choice",
+      choice: "edit",
+      confidence: 0.91,
+      probabilities: { edit: 0.91, feature: 0.05, debug: 0.04 },
+    },
+    difficulty: {
+      type: "score",
+      score: 0.69,
+      confidence: 0.7,
+      legend: { "0": "Trivial", "1": "Routine", "2": "Substantial", "3": "Hard" },
+      probabilities: { "0": 0.5, "1": 0.35, "2": 0.11, "3": 0.04 },
+    },
+    needs_reasoning: { type: "noul", noul: 0.4 },
+    long_output: { type: "noul", noul: 0.1 },
+  };
+
+  it("resolves an edit/mid cell to best-of-5 on the fast tier, keeping the unsampled tier", async () => {
+    const router = new Router({ jev: stubJev(editMidAnswers), roster: ROSTER });
+    const decision = await router.route(request());
+    expect(decision.tier).toBe("fast");
+    expect(decision.model).toBe("fast-model");
+    expect(decision.samples).toBe(5);
+    expect(decision.unsampledTier).toBe("mid");
+    expect(decision.reason).toContain("best-of-5");
+  });
+
+  it("resolves to the single-model outcome when sampling is disabled", async () => {
+    const router = new Router({ jev: stubJev(editMidAnswers), roster: ROSTER, samplingEnabled: false });
+    const decision = await router.route(request());
+    expect(decision.tier).toBe("mid");
+    expect(decision.model).toBe("mid-model");
+    expect(decision.samples).toBeUndefined();
+    expect(decision.unsampledTier).toBeUndefined();
+  });
+
+  it("honors a per-request samples override: 1 disables, N sets the count", async () => {
+    const router = new Router({ jev: stubJev(editMidAnswers), roster: ROSTER });
+    const disabled = await router.route(request({ samples: 1 }));
+    expect(disabled.tier).toBe("mid");
+    expect(disabled.samples).toBeUndefined();
+
+    const three = await router.route(request({ fingerprint: "other", samples: 3 }));
+    expect(three.samples).toBe(3);
+    expect(three.tier).toBe("fast");
+  });
+
+  it("reuses a sampled decision from the sticky cache as sampled", async () => {
+    const router = new Router({ jev: stubJev(editMidAnswers), roster: ROSTER });
+    const first = await router.route(request());
+    const second = await router.route(request());
+    expect(second.sticky).toBe(true);
+    expect(second.samples).toBe(5);
+    expect(second.unsampledTier).toBe("mid");
+    expect(second.model).toBe(first.model);
+  });
+
+  it("re-applies a samples: 1 override to a sticky sampled decision", async () => {
+    const router = new Router({ jev: stubJev(editMidAnswers), roster: ROSTER });
+    await router.route(request());
+    const optedOut = await router.route(request({ samples: 1 }));
+    expect(optedOut.sticky).toBe(true);
+    expect(optedOut.tier).toBe("mid");
+    expect(optedOut.model).toBe("mid-model");
+    expect(optedOut.samples).toBeUndefined();
+    expect(optedOut.unsampledTier).toBeUndefined();
+  });
+
+  it("never samples a forced tier", async () => {
+    const router = new Router({ jev: stubJev(editMidAnswers), roster: ROSTER });
+    const decision = await router.route(request({ forcedTier: "mid" }));
+    expect(decision.samples).toBeUndefined();
+    expect(decision.tier).toBe("mid");
+  });
+});

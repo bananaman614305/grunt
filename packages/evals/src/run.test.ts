@@ -152,3 +152,44 @@ describe("runRoutingEval: forced wrong tier for known ids", () => {
     }
   });
 });
+
+describe("runRoutingEval: sampled decisions (ADR-010)", () => {
+  it("scores agreement on the unsampled tier, not the fast execution tier", async () => {
+    // An edit example labeled mid: policy v4 resolves it to best-of-5 on
+    // fast, and the gate must still measure the mid choice underneath.
+    const editMid = examples.find((e) => e.task_type === "edit" && e.expected_tier_balanced === "mid");
+    expect(editMid).toBeDefined();
+    const chosen = editMid as RoutingExample;
+
+    const jev: JevClientLike = {
+      systemone: () => {
+        const answers = makeAnswers({ taskType: "edit", difficulty: 1.1, needsReasoning: 0.3 });
+        // A mid-band distribution: P1+ 0.50 clears the fast gate, and neither
+        // frontier gate fires, so the unsampled tier is mid.
+        answers["difficulty"] = {
+          type: "score",
+          score: 0.69,
+          confidence: 0.9,
+          legend: {},
+          probabilities: { "0": 0.5, "1": 0.35, "2": 0.11, "3": 0.04 },
+        };
+        const result: SystemOneResult = {
+          model: "jev-latest",
+          requestId: "req-sampled",
+          latencyMs: 42,
+          usage: { input_tokens: 100, output_tokens: 10 },
+          answers,
+        };
+        return Promise.resolve(result);
+      },
+    };
+
+    const report = await runRoutingEval({ examples: [chosen], jev });
+    expect(report.unscored).toHaveLength(0);
+    const scored = report.scored[0];
+    expect(scored?.predictedTier).toBe("mid");
+    expect(scored?.agree).toBe(true);
+    // The reason still shows that the decision itself sampled.
+    expect(scored?.reason).toContain("best-of-5");
+  });
+});

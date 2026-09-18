@@ -454,3 +454,55 @@ describe("DecisionLog migrations", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sampled decisions (ADR-010)
+// ---------------------------------------------------------------------------
+
+describe("sampled decisions in the log", () => {
+  let log: DecisionLog;
+
+  beforeEach(async () => {
+    log = await DecisionLog.open(":memory:");
+  });
+
+  afterEach(async () => {
+    await log.close();
+  });
+
+  it("round-trips samples and unsampledTier", async () => {
+    const sampled = record({ id: "rec-sampled", tier: "fast", samples: 5, unsampledTier: "mid" });
+    await log.insert(sampled);
+    const fetched = await log.getDecision("rec-sampled");
+    expect(fetched?.samples).toBe(5);
+    expect(fetched?.unsampledTier).toBe("mid");
+    expect(fetched).toEqual(sampled);
+  });
+
+  it("leaves both fields absent on an unsampled decision", async () => {
+    await log.insert(record({ id: "rec-plain" }));
+    const fetched = await log.getDecision("rec-plain");
+    expect(fetched?.samples).toBeUndefined();
+    expect(fetched?.unsampledTier).toBeUndefined();
+  });
+
+  it("round-trips the per-sample upstream metadata and the pick", async () => {
+    await log.insert(record({ id: "rec-up", tier: "fast", samples: 3, unsampledTier: "mid" }));
+    const upstream: NonNullable<DecisionRecord["upstream"]> = {
+      status: 200,
+      latencyMs: 4200,
+      inputTokens: 900,
+      outputTokens: 450,
+      costUsd: 0.0009,
+      samples: [
+        { index: 0, status: 200, latencyMs: 1800, inputTokens: 300, outputTokens: 150, costUsd: 0.0003, jevQuality: 2.4, jevCorrect: 0.9, picked: true },
+        { index: 1, status: 200, latencyMs: 2100, inputTokens: 300, outputTokens: 150, costUsd: 0.0003, jevQuality: 1.1, jevCorrect: 0.4 },
+        { index: 2, status: 0, latencyMs: 60_000, error: "timeout" },
+      ],
+      samplePick: 0,
+    };
+    await log.setUpstream("rec-up", upstream);
+    const fetched = await log.getDecision("rec-up");
+    expect(fetched?.upstream).toEqual(upstream);
+  });
+});
