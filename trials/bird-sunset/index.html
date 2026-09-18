@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Into the infinite sunset</title>
+    <style>
+      :root {
+        --ink: rgba(255, 244, 232, 0.82);
+        --ink-dim: rgba(255, 244, 232, 0.45);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: linear-gradient(
+          180deg,
+          #140a30 0%,
+          #3d1c58 28%,
+          #96396a 52%,
+          #e7654a 66%,
+          #ffb26b 78%,
+          #170f2f 79%,
+          #170f2f 100%
+        );
+        color: var(--ink);
+        font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      #scene {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      /* Corner falloff: keeps the eye in the middle of the frame. */
+      #vignette {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(120% 90% at 50% 55%, transparent 45%, rgba(8, 3, 20, 0.45) 100%);
+      }
+
+      #overlay {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        transition: opacity 1.4s ease;
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: lowercase;
+        text-shadow: 0 1px 12px rgba(20, 4, 30, 0.6);
+      }
+
+      #overlay.faded {
+        opacity: 0;
+      }
+
+      #overlay.hidden {
+        display: none;
+      }
+
+      #title {
+        position: absolute;
+        left: max(28px, env(safe-area-inset-left));
+        bottom: max(26px, env(safe-area-inset-bottom));
+        line-height: 1.9;
+      }
+
+      #title b {
+        font-weight: 500;
+        font-size: 13px;
+        letter-spacing: 0.34em;
+      }
+
+      #title span {
+        display: block;
+        color: var(--ink-dim);
+      }
+
+      #hints {
+        position: absolute;
+        right: max(28px, env(safe-area-inset-right));
+        bottom: max(26px, env(safe-area-inset-bottom));
+        text-align: right;
+        line-height: 1.9;
+        color: var(--ink-dim);
+      }
+
+      #hints kbd {
+        font: inherit;
+        color: var(--ink);
+      }
+
+      #breath {
+        position: absolute;
+        left: 50%;
+        bottom: max(34px, env(safe-area-inset-bottom));
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+
+      #breath-ring {
+        width: 92px;
+        height: 92px;
+        border: 1px solid rgba(255, 236, 214, 0.55);
+        border-radius: 50%;
+        box-shadow: 0 0 26px rgba(255, 190, 130, 0.28), inset 0 0 26px rgba(255, 190, 130, 0.18);
+        will-change: transform;
+      }
+
+      #breath-label {
+        color: var(--ink-dim);
+        min-height: 1em;
+      }
+
+      #loading {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+        letter-spacing: 0.28em;
+        text-transform: lowercase;
+        color: var(--ink-dim);
+        transition: opacity 1s ease;
+      }
+
+      body.ready #loading {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #failed {
+        position: fixed;
+        inset: 0;
+        display: none;
+        place-items: center;
+        padding: 24px;
+        text-align: center;
+        line-height: 1.8;
+        font-size: 12px;
+        letter-spacing: 0.16em;
+      }
+
+      body.failed #failed {
+        display: grid;
+      }
+
+      @media (max-width: 620px) {
+        #hints {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="vignette"></div>
+
+    <div id="overlay">
+      <div id="title">
+        <b>into the infinite sunset</b>
+        <span>a bird, flying, forever</span>
+      </div>
+      <div id="breath">
+        <div id="breath-ring"></div>
+        <div id="breath-label">breathe in</div>
+      </div>
+      <div id="hints">
+        <div><kbd>m</kbd> sound <span id="sound-state">off</span></div>
+        <div><kbd>space</kbd> pause · <kbd>h</kbd> hide · <kbd>f</kbd> full screen</div>
+      </div>
+    </div>
+
+    <div id="loading">warming the sky…</div>
+    <div id="failed">this scene needs webgl, and this browser will not give it to us.</div>
+
+    <noscript>
+      <div id="failed" style="display: grid">this scene is a running program; it needs javascript.</div>
+    </noscript>
+
+    <script>
+      // Surfaced as a body class so the CSS can react without a framework.
+      window.addEventListener('error', (event) => {
+        if (event.message && /webgl|context/i.test(event.message)) {
+          document.body.classList.add('failed');
+        }
+      });
+    </script>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./vendor/three.module.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import('./src/main.js').catch((error) => {
+        console.error(error);
+        document.body.classList.add('failed');
+      });
+    </script>
+  </body>
+</html>
