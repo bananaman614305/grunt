@@ -64,6 +64,7 @@ export type BenchCliOptions = {
   graders: string;
   /** The labeled example set to run; defaults to the committed routing set. */
   data: string;
+  dsReasoning: string | undefined;
   out: string;
   json: string | undefined;
 };
@@ -95,6 +96,7 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     vary: false,
     graders: DEFAULT_GRADERS_PATH,
     data: DEFAULT_ROUTING_SET_PATH,
+    dsReasoning: undefined,
     out: resolve(PACKAGE_ROOT, "reports/bench-latest.md"),
     json: undefined,
   };
@@ -193,6 +195,12 @@ export function parseArgs(argv: string[]): BenchCliOptions {
       case "--data":
         options.data = resolve(INVOKE_CWD, next());
         break;
+      case "--ds-reasoning": {
+        const value = next();
+        if (!["low", "medium", "high"].includes(value)) throw new Error(`--ds-reasoning must be low|medium|high, got "${value}"`);
+        options.dsReasoning = value;
+        break;
+      }
       case "--out":
         options.out = resolve(INVOKE_CWD, next());
         break;
@@ -270,6 +278,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     timeoutMs: options.timeoutMs,
     ...(options.salt !== undefined ? { salt: options.salt } : {}),
     providerPins: options.pins,
+    ...(options.dsReasoning !== undefined ? { dsReasoning: options.dsReasoning } : {}),
     sampleTimeoutMs: options.sampleTimeoutMs,
     ...(options.samples > 1 ? { samples: options.samples, sampleTier: options.sampleTier, vary: options.vary } : {}),
     ...(jev !== undefined ? { jev } : {}),

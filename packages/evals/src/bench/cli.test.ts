@@ -82,6 +82,12 @@ describe("parseArgs", () => {
     expect(parseArgs(["--data", "packages/evals/data/longhorizon.jsonl"]).data.endsWith("longhorizon.jsonl")).toBe(true);
   });
 
+  it("--ds-reasoning caps the deepseek arm's thinking", () => {
+    expect(parseArgs([]).dsReasoning).toBeUndefined();
+    expect(parseArgs(["--ds-reasoning", "low"]).dsReasoning).toBe("low");
+    expect(() => parseArgs(["--ds-reasoning", "max"])).toThrow(/--ds-reasoning/);
+  });
+
   it("rejects bad values", () => {
     expect(() => parseArgs(["--posture", "cheap"])).toThrow(/--posture/);
     expect(() => parseArgs(["--arms", "milo,slow"])).toThrow(/--arms/);

@@ -102,6 +102,8 @@ export type RunBenchOptions = {
   samples?: number;
   /** Which tier's fixed model to sample. Defaults to `fast`. */
   sampleTier?: FixedArm;
+  /** OpenRouter `reasoning.effort` for the deepseek arm's samples (ablation knob). */
+  dsReasoning?: string;
   /** Cycle the prompt framings in `PROMPT_VARIANTS` across samples. */
   vary?: boolean;
   /** Ranks samples. Required when `samples` > 1. */
@@ -362,6 +364,7 @@ async function drawSample(
   index: number,
   vary: boolean,
   external?: AbortController,
+  reasoningEffort?: string,
 ): Promise<DrawnSample> {
   const { options } = runner;
   const variant = variantFor(index, vary);
@@ -370,6 +373,10 @@ async function drawSample(
     messages: applyVariant(messages, variant),
     ...(example.has_tools ? { tools: BENCH_TOOLS, tool_choice: "auto" } : {}),
     ...providerField(model, options.providerPins ?? DEFAULT_PROVIDER_PINS),
+    // Gate run 1: the band-3 orchestrator spent ~15k reasoning tokens per
+    // example (97% of the arm's cost). The cap trades thinking length for
+    // price; the ablation measures what that trade costs in pass rate.
+    ...(reasoningEffort !== undefined ? { reasoning: { effort: reasoningEffort } } : {}),
   };
   const base: SampleRecord = { index, variant, model, status: 0, ttfbMs: NaN, totalMs: NaN };
   try {
@@ -545,7 +552,7 @@ async function runDeepseekArm(runner: Runner, example: RoutingExample, messages:
     const slot: Slot = { controller, settled: false, done: Promise.resolve() };
     slots.push(slot);
     slot.done = (async (): Promise<void> => {
-      const drawn = await drawSample(runner, example, messages, budget.model, index, true, controller);
+      const drawn = await drawSample(runner, example, messages, budget.model, index, true, controller, options.dsReasoning);
       slot.drawn = drawn;
       // Rank as the stream completes; after a decision no new ranks start.
       if (n > 1 && okDrawn(drawn) && !decided) {
