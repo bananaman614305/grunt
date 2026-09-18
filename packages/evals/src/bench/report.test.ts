@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatBenchMarkdown, percentile, summarizeArm, summarizeJudgeAudit, summarizeRouting, summarizeSpend } from "./report.js";
-import type { ArmResult, BenchReport, BenchRow, Grade } from "./types.js";
+import { armLabel, formatBenchMarkdown, percentile, summarizeArm, summarizeCompute, summarizeJudgeAudit, summarizeRouting, summarizeSpend, summaryArms } from "./report.js";
+import type { ArmResult, BenchReport, BenchRow, ComputeRecord, Grade } from "./types.js";
 
 const FABLE = { id: "anthropic/claude-fable-5.1", inputUsdPerM: 10, outputUsdPerM: 50 };
 const PRICES = {
@@ -199,5 +199,65 @@ describe("spend and judge audit", () => {
     const md = formatBenchMarkdown(report([]));
     expect(md).toContain("(fresh calls only; cache bypassed)");
     expect(md).not.toContain("- Judge audit:");
+  });
+});
+
+describe("deepseek and custom arms in the report", () => {
+  const band2: ComputeRecord = { band: 2, budget: 5, completed: 3, aborted: 2, earlyStop: true, pick: 0, sizingLatencyMs: 20, rankLatencyMs: 5, jevCalls: 4, jevCostUsd: 0.00008, samples: [] };
+  const band0: ComputeRecord = { band: 0, budget: 1, completed: 1, aborted: 0, earlyStop: false, pick: 0, sizingLatencyMs: 30, jevCalls: 1, jevCostUsd: 0.00002, samples: [] };
+
+  const rows = [
+    row("r-1", "fast", [
+      result({ arm: "fast", model: "fast/model", tier: "fast", grade: pass }),
+      result({ arm: "deepseek", model: "ds/flash", tier: "fast", grade: pass, costUsd: 0.001, jevLatencyMs: 20, compute: band2 }),
+      result({ arm: "custom:anthropic/claude-fable-5.1", model: "anthropic/claude-fable-5.1", tier: "mid", grade: fail, costUsd: 0.01 }),
+    ]),
+    row("r-2", "fast", [
+      result({ arm: "deepseek", model: "ds/flash", tier: "fast", grade: pass, costUsd: 0.0005, compute: band0 }),
+    ]),
+  ];
+  const r = report(rows);
+
+  it("summaryArms appends the extra arms in first-seen order and armLabel names a custom arm by its model", () => {
+    const arms = summaryArms(r);
+    expect(arms.slice(-2)).toEqual(["deepseek", "custom:anthropic/claude-fable-5.1"]);
+    expect(armLabel("custom:anthropic/claude-fable-5.1")).toBe("anthropic/claude-fable-5.1");
+    expect(armLabel("deepseek")).toBe("deepseek");
+  });
+
+  it("summarizeCompute aggregates budgets per band, adaptive stops, and Jev spend", () => {
+    const c = summarizeCompute(r);
+    expect(c).toBeDefined();
+    expect(c?.sized).toBe(2);
+    expect(c?.byBand).toEqual([
+      { band: 0, model: "ds/flash", samples: 1, count: 1 },
+      { band: 2, model: "ds/flash", samples: 5, count: 1 },
+    ]);
+    expect(c?.multiSample).toBe(1);
+    expect(c?.earlyStops).toBe(1);
+    expect(c?.aborted).toBe(2);
+    expect(c?.meanCompleted).toBe(3);
+    expect(c?.meanBudget).toBe(5);
+    expect(c?.jevUsd).toBeCloseTo(0.0001, 9);
+  });
+
+  it("is undefined when the arm never ran", () => {
+    expect(summarizeCompute(report([rows[0] as BenchRow].map((x) => ({ ...x, results: x.results.filter((res) => res.arm === "fast") }))))).toBeUndefined();
+  });
+
+  it("the markdown includes both arms in the headline and a compute-controller section", () => {
+    const md = formatBenchMarkdown(r);
+    expect(md).toContain("`deepseek`");
+    expect(md).toContain("`anthropic/claude-fable-5.1`");
+    expect(md).not.toContain("`custom:anthropic/claude-fable-5.1`");
+    expect(md).toContain("## Compute controller (`deepseek` arm, ADR-012 phase 1)");
+    expect(md).toContain("Adaptive stops: 1 of 1 multi-sample budgets returned early, aborting 2 stragglers");
+    expect(md).toContain("mean 3.0 of 5.0 budgeted");
+  });
+
+  it("counts deepseek and custom arms as real arms in the spend summary", () => {
+    const spend = summarizeSpend(r);
+    // fast (tokens: 1000*0.1/1e6 + 100*0.2/1e6 = 0.00012) + 0.001 + 0.01 + 0.0005.
+    expect(spend.armsUsd).toBeCloseTo(0.01162, 9);
   });
 });

@@ -136,6 +136,52 @@ per **arm**, in a per-example shuffled order so no arm always goes first:
 | `milo` | `milo/auto` through the gateway (`--gateway`), at one posture per run (`--posture`) | the thing being benchmarked |
 | `fast`, `mid`, `frontier` | that tier's default roster model, directly on OpenRouter (`--openrouter`) | the fixed-model alternatives, and the twins the routed call is timed against |
 | `oracle` | no extra calls: the fixed arm of each example's labeled tier | the ceiling perfect routing could reach |
+| `deepseek` | the composed compute controller over the DeepSeek family (below); opt-in, never in the default arms | the ADR-012 phase 1 experiment, measured before any gateway change |
+| `custom:<model>` | one direct call on any OpenRouter model id, e.g. `custom:anthropic/claude-fable-5.1` | ad-hoc comparison arms; how the real-Fable subset run is made |
+
+A `custom:<openrouter-model-id>` arm behaves exactly like a fixed arm: one
+streamed call per example, graded like the rest, priced from the same
+OpenRouter catalogue fetch as everything else, and provider-pinned only when
+the model id is in the pins map. The report labels it by the model id.
+
+### The `deepseek` arm (ADR-012 phase 1)
+
+`--arms deepseek` runs the compute-controller experiment as a composed arm,
+so it can be measured against `mid` (the current best arm) before anything
+ships in the gateway. Per example:
+
+1. **Sizing.** One Jev `systemone` call with the router's own
+   `ROUTER_QUESTIONS` over the router's own state builder. The signals are
+   read through the same band-mass gates the core policy runs (imported from
+   `@milo/core`, never copied): the fast gate is band 0, the hard-mass gate
+   band 3, the upper-mass gate band 2, and the mid cell band 1.
+2. **Budget.** Band 0 buys one `deepseek/deepseek-v4-flash` call; band 1
+   best-of-3 on v4-flash; band 2 best-of-5 on v4-flash; band 3 best-of-5 on
+   `deepseek/deepseek-v4.1-flash`.
+3. **Adaptive N.** Samples draw in parallel with the `PROMPT_VARIANTS`
+   framings and are ranked by Jev as each stream completes, mirroring the
+   gateway's first-k early return: once 3 samples are ranked and the best
+   expected quality is at or above 2.5, the pick returns and the
+   still-running stragglers are actually aborted through their
+   `AbortController` (recorded as `error: "aborted"`, never graded, their
+   spend stopped mid-stream). With no early winner, Jev's best rank over
+   everything wins; when ranking failed throughout, the first success does.
+4. **Grading and cost.** The picked answer is graded by the ordinary
+   graders. The arm's cost is the true aggregate: every completed sample
+   plus every Jev call — one sizing and one rank per ranked sample — at
+   $0.00002 per call. Its latency is the sizing call plus the wall time to
+   the pick, the sequential shape a gateway implementation would have.
+
+The arm needs `JEV_API_KEY` (and `JEV_BASE_URL` for a key-injecting proxy),
+built the same way `--samples` builds its ranking client; it is why the arm
+is opt-in rather than in the defaults. The report's headline includes the
+arm like any other, and a **Compute controller** section shows the budgets
+chosen per band, how many multi-sample budgets the adaptive stop ended
+early (and how many stragglers it aborted), the mean samples actually
+drawn, and the Jev latency and spend. Per-sample metadata rides on each
+example's JSON row under the arm's `compute` field. The ADR-012 gate reads
+this arm against `mid` and a `custom:anthropic/claude-fable-5.1` subset
+run.
 
 Every successful answer is graded. `packages/evals/data/graders.jsonl` holds
 one grader per example id: a **mechanical** one (`regex`, `contains_all`,
@@ -201,6 +247,7 @@ pnpm bench -- --gateway https://milo-gateway.fly.dev/v1 --limit 20 --no-judge
 pnpm bench -- --posture low --ids r-013,r-049 --json ./tmp/bench.json
 pnpm bench -- --openrouter https://<squire-egress-proxy>/api/v1   # a key-injecting proxy in front of OpenRouter
 pnpm bench -- --judge-audit 0.25 --no-judge-cache                 # audit a quarter of judged answers, force fresh verdicts
+pnpm bench -- --arms deepseek,mid,custom:anthropic/claude-fable-5.1 --limit 20   # ADR-012 subset run; needs JEV_API_KEY too
 ```
 
 Every call, the routed arm and the judge included, is pinned to an

@@ -13,6 +13,12 @@ export type ChatCallOptions = {
   apiKey: string;
   body: Record<string, unknown>;
   timeoutMs: number;
+  /**
+   * External abort, combined with the timeout: whichever fires first cancels
+   * the request. The adaptive deepseek arm uses this to stop stragglers the
+   * moment an early winner is picked.
+   */
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   /** Injectable clock for tests. */
   now?: () => number;
@@ -33,6 +39,11 @@ export async function measureChatCompletion(options: ChatCallOptions): Promise<C
   const now = options.now ?? (() => performance.now());
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+  const onExternalAbort = (): void => controller.abort();
+  if (options.signal !== undefined) {
+    if (options.signal.aborted) controller.abort();
+    else options.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   const started = now();
 
   try {
@@ -68,6 +79,7 @@ export async function measureChatCompletion(options: ChatCallOptions): Promise<C
     return { status: response.status, ...parsed, milo };
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 

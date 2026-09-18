@@ -14,8 +14,36 @@ export type FixedArm = (typeof FIXED_ARMS)[number];
 
 /** The routed arm: `milo/auto` through a gateway, at one cost posture per run. */
 export const MILO_ARM = "milo" as const;
-export type ArmName = FixedArm | typeof MILO_ARM;
-export const ARM_NAMES = [MILO_ARM, ...FIXED_ARMS] as const satisfies readonly ArmName[];
+
+/**
+ * The composed compute-controller arm (ADR-012 phase 1): one Jev sizing call
+ * per example picks a compute budget over the DeepSeek family, samples are
+ * drawn with adaptive early stopping, and Jev picks the answer. Needs a Jev
+ * client, like `--samples` does.
+ */
+export const DEEPSEEK_ARM = "deepseek" as const;
+export type DeepseekArm = typeof DEEPSEEK_ARM;
+
+/**
+ * A custom fixed arm: `custom:<openrouter-model-id>` in `--arms` makes one
+ * ordinary direct call per example on that model, provider-pinned only when
+ * the model is in the pins map. The report labels it by the model id.
+ */
+export const CUSTOM_ARM_PREFIX = "custom:" as const;
+export type CustomArm = `custom:${string}`;
+
+export function isCustomArm(arm: string): arm is CustomArm {
+  return arm.startsWith(CUSTOM_ARM_PREFIX) && arm.length > CUSTOM_ARM_PREFIX.length;
+}
+
+/** The OpenRouter model id a custom arm calls. */
+export function customArmModel(arm: CustomArm): string {
+  return arm.slice(CUSTOM_ARM_PREFIX.length);
+}
+
+export type ArmName = FixedArm | typeof MILO_ARM | DeepseekArm | CustomArm;
+/** The closed arm names; `custom:<model>` entries are validated by shape instead. */
+export const ARM_NAMES = [MILO_ARM, ...FIXED_ARMS, DEEPSEEK_ARM] as const satisfies readonly ArmName[];
 
 /**
  * Synthetic arms derived from one set of N samples (`--samples`): the sample
@@ -74,7 +102,7 @@ export type ArmResult = {
   unsampledTier?: Tier;
   /** Routed arm only: the gateway drew this many samples server-side. */
   gatewaySamples?: number;
-  /** Routed arm only: Jev's own latency from the decision record. */
+  /** Routed arm: Jev's own latency from the decision record. Deepseek arm: the sizing call's latency. */
   jevLatencyMs?: number;
   /** Routed arm only: the gateway's measured upstream latency from the decision record. */
   upstreamLatencyMs?: number;
@@ -84,6 +112,39 @@ export type ArmResult = {
   error?: string;
   /** The outcome grade, when a grader exists and the call succeeded. */
   grade?: Grade;
+  /** Deepseek arm only: what the compute controller did for this example. */
+  compute?: ComputeRecord;
+};
+
+/**
+ * What the compute controller (ADR-012 phase 1) did for one example: the
+ * band it read off Jev's routing signals, the budget that band bought, and
+ * how the adaptive stop played out. Rides on the deepseek arm's `ArmResult`;
+ * the arm's `costUsd` already includes `jevCostUsd`.
+ */
+export type ComputeRecord = {
+  /** Difficulty band from the policy's band-mass reading, 0..3. */
+  band: 0 | 1 | 2 | 3;
+  /** Samples the budget bought (1, 3, or 5). */
+  budget: number;
+  /** Samples that ran to completion (not aborted, not failed). */
+  completed: number;
+  /** Stragglers aborted after the adaptive stop fired. */
+  aborted: number;
+  /** The adaptive stop returned before every sample had settled. */
+  earlyStop: boolean;
+  /** Index of the picked sample in `samples`; absent when nothing succeeded. */
+  pick?: number;
+  /** Latency of the Jev sizing call (the ROUTER_QUESTIONS systemone), ms. */
+  sizingLatencyMs: number;
+  /** Mean Jev ranking latency across ranked samples, ms; absent with no ranks. */
+  rankLatencyMs?: number;
+  /** Jev calls made: one sizing plus one per ranked sample. */
+  jevCalls: number;
+  /** Those calls at `JEV_USD_PER_CALL`, included in the arm's `costUsd`. */
+  jevCostUsd: number;
+  /** Per-sample metadata; an aborted straggler records `error: "aborted"`. */
+  samples: SampleRecord[];
 };
 
 export type Grade = {

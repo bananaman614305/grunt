@@ -91,3 +91,22 @@ describe("main", () => {
     await expect(main([], {})).rejects.toThrow(/OPENROUTER_API_KEY/);
   });
 });
+
+describe("deepseek and custom arms", () => {
+  it("accepts deepseek and custom:<model> in --arms", () => {
+    expect(parseArgs(["--arms", "deepseek,mid,custom:anthropic/claude-fable-5.1"]).arms).toEqual([
+      "deepseek",
+      "mid",
+      "custom:anthropic/claude-fable-5.1",
+    ]);
+  });
+
+  it("keeps deepseek out of the default arms", () => {
+    expect(parseArgs([]).arms).not.toContain("deepseek");
+  });
+
+  it("rejects a bare custom: and unknown names", () => {
+    expect(() => parseArgs(["--arms", "custom:"])).toThrow(/--arms/);
+    expect(() => parseArgs(["--arms", "deepsek"])).toThrow(/--arms/);
+  });
+});
