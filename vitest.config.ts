@@ -17,7 +17,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/*/src/**/*.test.ts", "packages/evals/agentic/*.test.ts"],
+    include: ["packages/*/src/**/*.test.ts", "packages/evals/agentic/*.test.ts", "packages/evals/swebench/*.test.ts"],
     exclude: ["**/*.e2e.test.ts", "**/*.live.test.ts"],
     environment: "node",
     passWithNoTests: true,
