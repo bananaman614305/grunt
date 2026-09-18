@@ -17,6 +17,16 @@ export const MILO_ARM = "milo" as const;
 export type ArmName = FixedArm | typeof MILO_ARM;
 export const ARM_NAMES = [MILO_ARM, ...FIXED_ARMS] as const satisfies readonly ArmName[];
 
+/**
+ * Synthetic arms derived from one set of N samples (`--samples`): the sample
+ * Jev rates highest, and the oracle that takes a passing sample whenever one
+ * exists. They make no calls of their own; their cost is every sample's cost
+ * plus the ranking calls, and their time is when the pick became available.
+ */
+export const SAMPLED_ARMS = ["bestof-jev", "bestof-oracle"] as const;
+export type SampledArm = (typeof SAMPLED_ARMS)[number];
+export type ResultArm = ArmName | SampledArm;
+
 /** Per-million-token USD prices, as OpenRouter quotes them. */
 export type ModelPrice = { id: string; inputUsdPerM: number; outputUsdPerM: number };
 
@@ -44,7 +54,7 @@ export type CallMeasurement = {
 
 /** One arm's result for one example. */
 export type ArmResult = {
-  arm: ArmName;
+  arm: ResultArm;
   /** The OpenRouter model id the answer came from. */
   model: string;
   /** Milo's tier for the routed arm; the arm's own tier for a fixed one. */
@@ -82,6 +92,29 @@ export type Grade = {
   judgeCostUsd?: number;
 };
 
+/** Jev's verdict on one sample. */
+export type SampleRank = { quality: number; correct: number; confidence: number; latencyMs: number };
+
+/** One of the N samples drawn for best-of-N. */
+export type SampleRecord = {
+  index: number;
+  /** The prompt framing this sample got; empty when none. */
+  variant: string;
+  model: string;
+  provider?: string;
+  status: number;
+  ttfbMs: number;
+  totalMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
+  error?: string;
+  grade?: Grade;
+  rank?: SampleRank;
+  rankError?: string;
+};
+
 /** One example with every arm's result. */
 export type BenchRow = {
   id: string;
@@ -90,7 +123,12 @@ export type BenchRow = {
   expectedTier: Tier;
   hasGrader: boolean;
   results: ArmResult[];
+  /** Present when the run drew samples for best-of-N. */
+  samples?: SampleRecord[];
 };
+
+/** How the samples were drawn, recorded on the report. */
+export type SamplingConfig = { n: number; model: string; tier: Tier; vary: boolean; jevUsdPerCall: number };
 
 export type BenchReport = {
   generatedAt: string;
@@ -104,5 +142,6 @@ export type BenchReport = {
   judgeModel: string;
   /** OpenRouter provider slugs every call was pinned to, in order; empty means OpenRouter's own choice. */
   providers: string[];
+  sampling?: SamplingConfig;
   rows: BenchRow[];
 };

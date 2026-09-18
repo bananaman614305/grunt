@@ -15,13 +15,18 @@
  * caller and goes only into the `Authorization` header.
  */
 
-import type { ChatMessage, CostPosture } from "@milo/core";
+import type { ChatMessage, CostPosture, JevClientLike, Tier } from "@milo/core";
 import type { RoutingExample } from "../schema.js";
 import { buildJudgeMessages, gradeMechanically, isMechanical, parseJudgeVerdict } from "./graders.js";
 import type { GraderRow } from "./graders.js";
+import { applyVariant, pickByJev, pickByOracle, rankAnswer, variantFor } from "./sampling.js";
+import type { RankedSample } from "./sampling.js";
 import { measureChatCompletion } from "./sse.js";
-import type { ArmName, ArmResult, BenchReport, BenchRow, CallMeasurement, FixedArm, ModelPrice } from "./types.js";
+import type { ArmName, ArmResult, BenchReport, BenchRow, CallMeasurement, FixedArm, Grade, ModelPrice, SampleRecord, SamplingConfig } from "./types.js";
 import { FIXED_ARMS, MILO_ARM } from "./types.js";
+
+/** Jev's price per systemone call, USD (docs/PLAN.md). Charged to the best-of arms once per sample. */
+export const JEV_USD_PER_CALL = 0.00002;
 
 export type RunBenchOptions = {
   examples: RoutingExample[];
@@ -50,6 +55,18 @@ export type RunBenchOptions = {
    * is what makes two runs comparable. Empty leaves the choice to OpenRouter.
    */
   providers?: string[];
+  /**
+   * Best-of-N: draw this many samples per example from `sampleTier`'s fixed
+   * model, grade each, rank each with `jev`, and add the `bestof-*` arms.
+   * 1 or undefined draws none.
+   */
+  samples?: number;
+  /** Which tier's fixed model to sample. Defaults to `fast`. */
+  sampleTier?: FixedArm;
+  /** Cycle the prompt framings in `PROMPT_VARIANTS` across samples. */
+  vary?: boolean;
+  /** Ranks samples. Required when `samples` > 1. */
+  jev?: JevClientLike;
   fetchImpl?: typeof fetch;
   onProgress?: (message: string) => void;
   /** Injectable for tests. */
@@ -174,18 +191,14 @@ async function attachDecision(runner: Runner, result: ArmResult, decisionId: str
   }
 }
 
-async function grade(runner: Runner, example: RoutingExample, task: ChatMessage[], result: ArmResult, answer: string): Promise<ArmResult> {
+/** Grades one answer with the example's grader: mechanically, or by the judge when enabled. */
+async function gradeAnswer(runner: Runner, example: RoutingExample, task: ChatMessage[], answer: string): Promise<Grade | undefined> {
   const { options } = runner;
-  if (result.error !== undefined) return result;
   const row = options.graders.get(example.id);
-  if (row === undefined) return result;
+  if (row === undefined) return undefined;
 
-  if (isMechanical(row.grader)) {
-    const mechanical = gradeMechanically(row.grader, answer);
-    if (mechanical !== undefined) result.grade = mechanical;
-    return result;
-  }
-  if (!options.judge || row.grader.type !== "judge") return result;
+  if (isMechanical(row.grader)) return gradeMechanically(row.grader, answer);
+  if (!options.judge || row.grader.type !== "judge") return undefined;
 
   try {
     const verdict = await runner.measure(options.openRouterBaseUrl, {
@@ -194,16 +207,116 @@ async function grade(runner: Runner, example: RoutingExample, task: ChatMessage[
       temperature: 0,
       ...providerField(options.providers),
     });
-    if (verdict.status !== 200) {
-      result.grade = { score: 0, pass: false, by: "judge", reason: `judge HTTP ${verdict.status}` };
-      return result;
-    }
+    if (verdict.status !== 200) return { score: 0, pass: false, by: "judge", reason: `judge HTTP ${verdict.status}` };
     const parsed = parseJudgeVerdict(verdict.text);
-    result.grade = { ...parsed, ...(verdict.costUsd !== undefined ? { judgeCostUsd: verdict.costUsd } : {}) };
+    return { ...parsed, ...(verdict.costUsd !== undefined ? { judgeCostUsd: verdict.costUsd } : {}) };
   } catch (error) {
-    result.grade = { score: 0, pass: false, by: "judge", reason: `judge ${classify(error)}` };
+    return { score: 0, pass: false, by: "judge", reason: `judge ${classify(error)}` };
   }
+}
+
+async function grade(runner: Runner, example: RoutingExample, task: ChatMessage[], result: ArmResult, answer: string): Promise<ArmResult> {
+  if (result.error !== undefined) return result;
+  const verdict = await gradeAnswer(runner, example, task, answer);
+  if (verdict !== undefined) result.grade = verdict;
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Best-of-N sampling
+// ---------------------------------------------------------------------------
+
+/** Draws, grades, and ranks N samples for one example. */
+async function drawSamples(runner: Runner, example: RoutingExample, messages: ChatMessage[]): Promise<SampleRecord[]> {
+  const { options } = runner;
+  const n = options.samples ?? 1;
+  const tier: FixedArm = options.sampleTier ?? "fast";
+  const model = options.fixedModels[tier];
+
+  const draw = async (index: number): Promise<{ record: SampleRecord; text: string }> => {
+    const variant = variantFor(index, options.vary === true);
+    const body: Record<string, unknown> = {
+      model,
+      messages: applyVariant(messages, variant),
+      ...(example.has_tools ? { tools: BENCH_TOOLS, tool_choice: "auto" } : {}),
+      ...providerField(options.providers),
+    };
+    const base: SampleRecord = { index, variant, model, status: 0, ttfbMs: NaN, totalMs: NaN };
+    try {
+      const m = await runner.measure(options.openRouterBaseUrl, body);
+      const record: SampleRecord = {
+        ...base,
+        status: m.status,
+        ttfbMs: m.ttfbMs,
+        totalMs: m.totalMs,
+        ...(m.provider !== undefined ? { provider: m.provider } : {}),
+        ...(m.inputTokens !== undefined ? { inputTokens: m.inputTokens } : {}),
+        ...(m.outputTokens !== undefined ? { outputTokens: m.outputTokens } : {}),
+        ...(m.reasoningTokens !== undefined ? { reasoningTokens: m.reasoningTokens } : {}),
+        ...(m.costUsd !== undefined ? { costUsd: m.costUsd } : {}),
+        ...(m.status !== 200 ? { error: `HTTP ${m.status}` } : {}),
+      };
+      return { record, text: m.text };
+    } catch (error) {
+      return { record: { ...base, error: classify(error) }, text: "" };
+    }
+  };
+
+  const drawn = await Promise.all(Array.from({ length: n }, (_, i) => draw(i)));
+
+  await Promise.all(
+    drawn.map(async ({ record, text }) => {
+      if (record.error !== undefined) return;
+      const verdict = await gradeAnswer(runner, example, messages, text);
+      if (verdict !== undefined) record.grade = verdict;
+      if (options.jev === undefined) return;
+      try {
+        record.rank = await rankAnswer(options.jev, messages, text);
+      } catch (error) {
+        record.rankError = classify(error);
+      }
+    }),
+  );
+
+  return drawn.map((d) => d.record);
+}
+
+/** Folds the samples into one synthetic arm result around the chosen sample. */
+function sampledArm(arm: "bestof-jev" | "bestof-oracle", samples: SampleRecord[], tier: Tier, pick: RankedSample | undefined): ArmResult {
+  const ok = samples.filter((s) => s.error === undefined && s.status === 200);
+  const chosen = pick === undefined ? undefined : samples[pick.index];
+  const model = samples[0]?.model ?? "";
+  if (chosen === undefined || ok.length === 0) {
+    return { arm, model, tier, status: 0, ttfbMs: NaN, totalMs: NaN, error: "no successful sample" };
+  }
+  const sum = (pickField: (s: SampleRecord) => number | undefined): number | undefined => {
+    const values = ok.map(pickField).filter((v): v is number => v !== undefined);
+    return values.length === 0 ? undefined : values.reduce((a, b) => a + b, 0);
+  };
+  // The pick is usable once the slowest sample has finished and the slowest
+  // ranking call has answered; samples and ranks both run in parallel.
+  const slowest = Math.max(...ok.map((s) => s.totalMs));
+  const rankWait = Math.max(0, ...ok.map((s) => s.rank?.latencyMs ?? 0));
+  const ready = slowest + (arm === "bestof-jev" ? rankWait : 0);
+  const cost = sum((s) => s.costUsd);
+  const jevCost = arm === "bestof-jev" ? ok.filter((s) => s.rank !== undefined).length * JEV_USD_PER_CALL : 0;
+  const inputTokens = sum((s) => s.inputTokens);
+  const outputTokens = sum((s) => s.outputTokens);
+  const reasoningTokens = sum((s) => s.reasoningTokens);
+  return {
+    arm,
+    model,
+    tier,
+    ...(chosen.provider !== undefined ? { provider: chosen.provider } : {}),
+    status: 200,
+    ttfbMs: ready,
+    totalMs: ready,
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cost !== undefined ? { costUsd: cost + jevCost } : {}),
+    ...(chosen.grade !== undefined ? { grade: chosen.grade } : {}),
+  };
 }
 
 async function runExample(runner: Runner, example: RoutingExample, index: number): Promise<BenchRow> {
@@ -213,6 +326,18 @@ async function runExample(runner: Runner, example: RoutingExample, index: number
   for (const arm of armOrder(options.arms, index)) {
     results.push(await callArm(runner, example, messages, arm));
   }
+
+  let samples: SampleRecord[] | undefined;
+  if ((options.samples ?? 1) > 1) {
+    samples = await drawSamples(runner, example, messages);
+    const tier: Tier = options.sampleTier ?? "fast";
+    const ranked: RankedSample[] = samples
+      .filter((s) => s.error === undefined && s.status === 200)
+      .map((s) => ({ index: s.index, grade: s.grade, rank: s.rank }));
+    results.push(sampledArm("bestof-jev", samples, tier, pickByJev(ranked)));
+    results.push(sampledArm("bestof-oracle", samples, tier, pickByOracle(ranked)));
+  }
+
   options.onProgress?.(`${example.id}: ${results.map((r) => `${r.arm}=${r.error ?? (r.grade ? (r.grade.pass ? "pass" : "fail") : "ok")}`).join(" ")}`);
   return {
     id: example.id,
@@ -221,10 +346,14 @@ async function runExample(runner: Runner, example: RoutingExample, index: number
     expectedTier: example.expected_tier_balanced,
     hasGrader: options.graders.has(example.id),
     results,
+    ...(samples !== undefined ? { samples } : {}),
   };
 }
 
 export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
+  if ((options.samples ?? 1) > 1 && options.jev === undefined) {
+    throw new Error("samples > 1 needs a Jev client to rank them");
+  }
   const runner: Runner = {
     options,
     measure: (baseUrl, body) =>
@@ -253,6 +382,12 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
   const prices: Record<string, ModelPrice> = {};
   for (const [id, price] of options.prices) prices[id] = price;
 
+  const sampleTier: FixedArm = options.sampleTier ?? "fast";
+  const sampling: SamplingConfig | undefined =
+    (options.samples ?? 1) > 1
+      ? { n: options.samples as number, model: options.fixedModels[sampleTier], tier: sampleTier, vary: options.vary === true, jevUsdPerCall: JEV_USD_PER_CALL }
+      : undefined;
+
   return {
     generatedAt: (options.now ?? (() => new Date().toISOString()))(),
     gateway: options.gatewayBaseUrl,
@@ -262,6 +397,7 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     baseline: options.baseline,
     judgeModel: options.judgeModel,
     providers: options.providers ?? [],
+    ...(sampling !== undefined ? { sampling } : {}),
     rows: rows.filter((r): r is BenchRow => r !== undefined),
   };
 }

@@ -8,14 +8,15 @@
  * routed arm could reach with perfect tier choice.
  */
 
-import type { Tier } from "@milo/core";
-import { TIERS } from "@milo/core";
+import type { TaskType, Tier } from "@milo/core";
+import { TASK_TYPES, TIERS } from "@milo/core";
 import { costFromTokens, estimateCostUsd } from "./prices.js";
-import type { ArmName, ArmResult, BenchReport, BenchRow, FixedArm, ModelPrice } from "./types.js";
+import { auroc, randomPickPassRate } from "./sampling.js";
+import type { ArmResult, BenchReport, BenchRow, FixedArm, ModelPrice, ResultArm } from "./types.js";
 import { FIXED_ARMS, MILO_ARM } from "./types.js";
 
-export type SummaryArm = ArmName | "oracle";
-export const SUMMARY_ARMS = [MILO_ARM, "oracle", "frontier", "mid", "fast"] as const satisfies readonly SummaryArm[];
+export type SummaryArm = ResultArm | "oracle";
+export const SUMMARY_ARMS = [MILO_ARM, "oracle", "frontier", "mid", "fast", "bestof-jev", "bestof-oracle"] as const satisfies readonly SummaryArm[];
 
 /** One arm's aggregate numbers. `NaN` means no data, never zero. */
 export type ArmSummary = {
@@ -88,7 +89,7 @@ function succeeded(result: ArmResult): boolean {
 }
 
 function resultFor(row: BenchRow, arm: SummaryArm): ArmResult | undefined {
-  const name: ArmName = arm === "oracle" ? row.expectedTier : arm;
+  const name: ResultArm = arm === "oracle" ? row.expectedTier : arm;
   return row.results.find((r) => r.arm === name);
 }
 
@@ -212,6 +213,76 @@ export function summarizeRouting(report: BenchReport): RoutingSummary {
   };
 }
 
+export type SamplingSummary = {
+  rows: number;
+  samples: number;
+  okSamples: number;
+  gradedSamples: number;
+  rankedSamples: number;
+  rankFailures: number;
+  /** Mean per-sample pass rate: what a random pick scores in expectation. */
+  randomPick: number;
+  /** Rows with at least one passing sample, over rows with any graded sample. */
+  coverage: number;
+  /** AUROC of Jev's expected quality score against the grader's pass/fail. */
+  aurocQuality: number;
+  /** AUROC of Jev's correctness probability against the grader's pass/fail. */
+  aurocCorrect: number;
+  /** Over rows where samples disagree: how often Jev's pick passed, and the random baseline there. */
+  mixedRows: number;
+  jevPickOnMixed: number;
+  randomOnMixed: number;
+  jevLatencyMean: number;
+  byTaskType: Array<{ taskType: TaskType; n: number; single: number; random: number; jev: number; oracle: number }>;
+};
+
+export function summarizeSampling(report: BenchReport): SamplingSummary | undefined {
+  if (report.sampling === undefined) return undefined;
+  const withSamples = report.rows.filter((r) => r.samples !== undefined && r.samples.length > 0);
+  const all = withSamples.flatMap((r) => r.samples as NonNullable<BenchRow["samples"]>);
+  const ok = all.filter((s) => s.error === undefined && s.status === 200);
+  const graded = ok.filter((s) => s.grade !== undefined);
+  const ranked = ok.filter((s) => s.rank !== undefined);
+  const gradedAndRanked = graded.filter((s) => s.rank !== undefined);
+
+  const rowsGraded = withSamples.filter((r) => (r.samples ?? []).some((s) => s.grade !== undefined));
+  const covered = rowsGraded.filter((r) => (r.samples ?? []).some((s) => s.grade?.pass === true));
+  const mixed = rowsGraded.filter((r) => {
+    const g = (r.samples ?? []).filter((s) => s.grade !== undefined);
+    return g.some((s) => s.grade?.pass) && g.some((s) => !s.grade?.pass);
+  });
+  const jevOnMixed = mixed.filter((r) => isOk(r.results.find((x) => x.arm === "bestof-jev")) && r.results.find((x) => x.arm === "bestof-jev")?.grade?.pass === true);
+  const randomOnMixedRates = mixed.map((r) => randomPickPassRate((r.samples ?? []).map((s) => ({ index: s.index, grade: s.grade, rank: s.rank }))));
+
+  const byTaskType = TASK_TYPES.map((taskType) => {
+    const rows = rowsGraded.filter((r) => r.taskType === taskType);
+    const rateOf = (arm: SummaryArm): number => {
+      const picked = rows.map((r) => resultFor(r, arm)).filter((x) => isOk(x) && x.grade !== undefined);
+      return rate(picked.filter((x) => x?.grade?.pass).length, picked.length);
+    };
+    const random = mean(rows.map((r) => randomPickPassRate((r.samples ?? []).map((s) => ({ index: s.index, grade: s.grade, rank: s.rank })))).filter((v) => !Number.isNaN(v)));
+    return { taskType, n: rows.length, single: rateOf(report.sampling?.tier ?? "fast"), random, jev: rateOf("bestof-jev"), oracle: rateOf("bestof-oracle") };
+  });
+
+  return {
+    rows: withSamples.length,
+    samples: all.length,
+    okSamples: ok.length,
+    gradedSamples: graded.length,
+    rankedSamples: ranked.length,
+    rankFailures: ok.filter((s) => s.rankError !== undefined).length,
+    randomPick: rate(graded.filter((s) => s.grade?.pass).length, graded.length),
+    coverage: rate(covered.length, rowsGraded.length),
+    aurocQuality: auroc(gradedAndRanked.map((s) => ({ score: s.rank?.quality ?? 0, pass: s.grade?.pass === true }))),
+    aurocCorrect: auroc(gradedAndRanked.map((s) => ({ score: s.rank?.correct ?? 0, pass: s.grade?.pass === true }))),
+    mixedRows: mixed.length,
+    jevPickOnMixed: rate(jevOnMixed.length, mixed.length),
+    randomOnMixed: mean(randomOnMixedRates.filter((v) => !Number.isNaN(v))),
+    jevLatencyMean: mean(ranked.map((s) => s.rank?.latencyMs ?? 0)),
+    byTaskType,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Markdown
 // ---------------------------------------------------------------------------
@@ -246,8 +317,9 @@ function tierMark(result: ArmResult | undefined): string {
 }
 
 export function formatBenchMarkdown(report: BenchReport): string {
-  const arms = SUMMARY_ARMS.map((arm) => summarizeArm(report, arm));
+  const arms = SUMMARY_ARMS.map((arm) => summarizeArm(report, arm)).filter((a) => a.calls > 0);
   const routing = summarizeRouting(report);
+  const sampling = summarizeSampling(report);
   const judgeCost = report.rows
     .flatMap((row) => row.results)
     .reduce((s, r) => s + (r.grade?.judgeCostUsd ?? 0), 0);
@@ -308,6 +380,27 @@ export function formatBenchMarkdown(report: BenchReport): string {
       `- Missed savings (routed to frontier, fast passed): ${routing.missedSavings} of ${routing.comparedN}`,
     ].join("\n"),
   );
+
+  if (sampling !== undefined && report.sampling !== undefined) {
+    const cfg = report.sampling;
+    sections.push(`## Best-of-${cfg.n} sampling on \`${cfg.model}\` (${cfg.tier} tier${cfg.vary ? ", prompt framings varied" : ""})`);
+    sections.push(
+      [
+        `- Samples: ${sampling.samples} drawn over ${sampling.rows} examples; ${sampling.okSamples} succeeded, ${sampling.gradedSamples} graded, ${sampling.rankedSamples} ranked by Jev (${sampling.rankFailures} ranking failures)`,
+        `- Random pick (mean per-sample pass rate): ${pct(sampling.randomPick)}`,
+        `- Coverage (some sample passes): ${pct(sampling.coverage)} — the ceiling any selector could reach`,
+        `- Jev as verifier: AUROC ${sampling.aurocQuality.toFixed(3)} on its quality score, ${sampling.aurocCorrect.toFixed(3)} on its correctness probability (0.5 is chance)`,
+        `- Where samples disagree (${sampling.mixedRows} examples): Jev's pick passed ${pct(sampling.jevPickOnMixed)} of the time, a random pick ${pct(sampling.randomOnMixed)}, the oracle 100%`,
+        `- Jev ranking latency: mean ${ms(sampling.jevLatencyMean)} per sample, charged at $${cfg.jevUsdPerCall} per call`,
+      ].join("\n"),
+    );
+    sections.push(
+      table(
+        ["task type", "n", "single sample", "random pick", "jev pick", "oracle"],
+        sampling.byTaskType.filter((t) => t.n > 0).map((t) => [t.taskType, String(t.n), pct(t.single), pct(t.random), pct(t.jev), pct(t.oracle)]),
+      ),
+    );
+  }
 
   const failures = report.rows.flatMap((row) =>
     row.results.filter((r) => !succeeded(r)).map((r) => `- **${row.id}** \`${r.arm}\` (${r.model}): ${r.error ?? `HTTP ${r.status}`}`),

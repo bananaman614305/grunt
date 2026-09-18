@@ -13,14 +13,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CostPosture } from "@milo/core";
-import { COST_POSTURES, DEFAULT_ROSTER } from "@milo/core";
+import { COST_POSTURES, DEFAULT_ROSTER, JevClient } from "@milo/core";
 import { loadRoutingSet } from "../schema.js";
 import { DEFAULT_GRADERS_PATH, loadGraders } from "./graders.js";
 import { BASELINE_FALLBACK_PRICE, BASELINE_MODEL_ID, fetchPrices } from "./prices.js";
 import { formatBenchMarkdown } from "./report.js";
 import { fixedModelsFromRoster, runBench } from "./run.js";
-import type { ArmName } from "./types.js";
-import { ARM_NAMES } from "./types.js";
+import type { ArmName, FixedArm } from "./types.js";
+import { ARM_NAMES, FIXED_ARMS } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
@@ -48,6 +48,9 @@ export type BenchCliOptions = {
   timeoutMs: number;
   salt: string | undefined;
   providers: string[];
+  samples: number;
+  sampleTier: FixedArm;
+  vary: boolean;
   graders: string;
   out: string;
   json: string | undefined;
@@ -71,6 +74,9 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     timeoutMs: 180_000,
     salt: undefined,
     providers: [...DEFAULT_PROVIDERS],
+    samples: 1,
+    sampleTier: "fast",
+    vary: false,
     graders: DEFAULT_GRADERS_PATH,
     out: resolve(PACKAGE_ROOT, "reports/bench-latest.md"),
     json: undefined,
@@ -137,6 +143,18 @@ export function parseArgs(argv: string[]): BenchCliOptions {
         options.providers = value === "none" ? [] : value.split(",").map((p) => p.trim()).filter((p) => p !== "");
         break;
       }
+      case "--samples":
+        options.samples = positiveInt(next(), "--samples");
+        break;
+      case "--sample-tier": {
+        const value = next();
+        if (!isOneOf(FIXED_ARMS, value)) throw new Error(`--sample-tier must be one of ${FIXED_ARMS.join("|")}, got "${value}"`);
+        options.sampleTier = value;
+        break;
+      }
+      case "--vary":
+        options.vary = true;
+        break;
       case "--graders":
         options.graders = resolve(process.cwd(), next());
         break;
@@ -158,6 +176,16 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
   const apiKey = env["OPENROUTER_API_KEY"];
   if (apiKey === undefined || apiKey === "") {
     throw new Error("OPENROUTER_API_KEY is not set; the benchmark sends it as the bearer to the gateway and to OpenRouter");
+  }
+
+  let jev: JevClient | undefined;
+  if (options.samples > 1) {
+    const jevKey = env["JEV_API_KEY"];
+    if (jevKey === undefined || jevKey === "") {
+      throw new Error("--samples needs JEV_API_KEY (and JEV_BASE_URL for a key-injecting proxy) so Jev can rank the samples");
+    }
+    const jevBase = env["JEV_BASE_URL"];
+    jev = new JevClient({ apiKey: jevKey, ...(jevBase !== undefined && jevBase !== "" ? { baseUrl: jevBase } : {}) });
   }
 
   let examples = loadRoutingSet();
@@ -196,6 +224,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     timeoutMs: options.timeoutMs,
     ...(options.salt !== undefined ? { salt: options.salt } : {}),
     providers: options.providers,
+    ...(options.samples > 1 && jev !== undefined ? { samples: options.samples, sampleTier: options.sampleTier, vary: options.vary, jev } : {}),
     onProgress: (line) => process.stderr.write(`${line}\n`),
   });
 
