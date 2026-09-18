@@ -49,6 +49,13 @@ export type GatewayOptions = {
   jevBaseUrl?: string;
   /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs. */
   jevTimeoutMs?: number;
+  /**
+   * Best-of-N sampling (ADR-010). `enabled` (default true) lets policy v4's
+   * sampled cells resolve; false and every cell keeps its single-model
+   * outcome. `sampleTimeoutMs` caps each sample's wall clock (default
+   * 60,000). The cells themselves are fixed in code for now (`policy.ts`).
+   */
+  sampling?: { enabled?: boolean; sampleTimeoutMs?: number };
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
   /**
@@ -105,6 +112,10 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
   if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
   if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
+  // One client for the router's questions and the gateway's sample ranking
+  // (ADR-010): same key, same base URL, same injected fetch.
+  const jev = new JevClient(jevOptions);
+  const samplingEnabled = options.sampling?.enabled ?? true;
 
   // Normalised once: the pricing default lives here rather than at every
   // call site that reads a margin or a reserve.
@@ -124,8 +135,9 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const writes = new WriteQueue(logger);
 
   const routerOptions = {
-    jev: new JevClient(jevOptions),
+    jev,
     roster,
+    samplingEnabled,
     ...(options.jevTimeoutMs !== undefined ? { jevTimeoutMs: options.jevTimeoutMs } : {}),
     sticky: new StickyCache(),
     // `stickyStore` arrives in core's RouterOptions with the persistent sticky
@@ -161,6 +173,10 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const app = createApp({
     router,
     roster,
+    jev,
+    ...(options.sampling?.sampleTimeoutMs !== undefined
+      ? { sampling: { sampleTimeoutMs: options.sampling.sampleTimeoutMs } }
+      : {}),
     ...(billing !== undefined ? { billing } : {}),
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),

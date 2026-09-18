@@ -53,6 +53,7 @@ import {
   routingUnavailableMessage,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
+import { forwardSampled } from "./sampling.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
 export function registerChatRoute(app: Hono, deps: AppDeps): void {
@@ -172,6 +173,7 @@ async function routed(
   if (Array.isArray(body["tools"])) request.tools = body["tools"];
   if (candidates !== undefined) request.candidates = candidates;
   if (forcedTier !== undefined) request.forcedTier = forcedTier;
+  if (extension?.samples !== undefined) request.samples = extension.samples;
 
   let decision: RouteDecision;
   try {
@@ -215,6 +217,13 @@ async function routed(
   // Stamps the account on the row the router just wrote, so this decision
   // shows up in that account's `/v1/decisions` and nobody else's.
   await noteDecisionAccount(c, deps, decision.id);
+
+  // A sampled decision (ADR-010) fans out instead of forwarding once. Only
+  // this surface executes sampling; the other dialects opt out at routing
+  // time (see routes/messages.ts and routes/responses.ts).
+  if (decision.samples !== undefined && decision.samples > 1) {
+    return forwardSampled(c, deps, body, decision, { candidates });
+  }
 
   return forward(c, deps, body, decision);
 }

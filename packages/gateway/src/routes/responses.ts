@@ -215,6 +215,10 @@ async function routed(
   if (Array.isArray(body["tools"])) request.tools = body["tools"];
   if (candidates !== undefined) request.candidates = candidates;
   if (forcedTier !== undefined) request.forcedTier = forcedTier;
+  // Best-of-N execution lives on the chat-completions surface only for now
+  // (ADR-010): this dialect opts out at routing time, so its decisions keep
+  // their single-model outcome instead of a sampled one it cannot run.
+  request.samples = 1;
 
   let decision: RouteDecision;
   try {

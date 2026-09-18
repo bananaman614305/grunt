@@ -36,6 +36,19 @@ const rateLimitSchema = z
   })
   .strict();
 
+/**
+ * Best-of-N sampling (ADR-010). `enabled` defaults to true -- sampling is a
+ * routing outcome, on by default for the cells the policy names; the cells
+ * themselves are fixed in code for now. `sampleTimeoutMs` caps each sample's
+ * wall clock (gateway default: 60,000 ms).
+ */
+const samplingSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    sampleTimeoutMs: z.number().int().positive().optional(),
+  })
+  .strict();
+
 export const configSchema = z
   .object({
     port: z.number().int().positive().default(DEFAULT_PORT),
@@ -47,6 +60,7 @@ export const configSchema = z
     title: z.string().trim().min(1).optional(),
     /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
     jevTimeoutMs: z.number().int().positive().optional(),
+    sampling: samplingSchema.optional(),
   })
   .strict();
 

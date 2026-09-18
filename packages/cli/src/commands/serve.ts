@@ -161,6 +161,16 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     ...(config.referer !== undefined ? { referer: config.referer } : {}),
     ...(config.title !== undefined ? { title: config.title } : {}),
     ...(config.jevTimeoutMs !== undefined ? { jevTimeoutMs: config.jevTimeoutMs } : {}),
+    ...(config.sampling !== undefined
+      ? {
+          sampling: {
+            enabled: config.sampling.enabled,
+            ...(config.sampling.sampleTimeoutMs !== undefined
+              ? { sampleTimeoutMs: config.sampling.sampleTimeoutMs }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   const gateway = await deps.createGateway(gatewayOptions);
