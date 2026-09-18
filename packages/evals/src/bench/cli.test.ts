@@ -77,6 +77,11 @@ describe("parseArgs", () => {
     });
   });
 
+  it("--data selects another labeled set", () => {
+    expect(parseArgs([]).data.endsWith("data/routing.jsonl")).toBe(true);
+    expect(parseArgs(["--data", "packages/evals/data/longhorizon.jsonl"]).data.endsWith("longhorizon.jsonl")).toBe(true);
+  });
+
   it("rejects bad values", () => {
     expect(() => parseArgs(["--posture", "cheap"])).toThrow(/--posture/);
     expect(() => parseArgs(["--arms", "milo,slow"])).toThrow(/--arms/);

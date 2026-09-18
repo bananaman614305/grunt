@@ -14,7 +14,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CostPosture } from "@milo/core";
 import { COST_POSTURES, DEFAULT_ROSTER, JevClient } from "@milo/core";
-import { loadRoutingSet } from "../schema.js";
+import { DEFAULT_ROUTING_SET_PATH, loadRoutingSet } from "../schema.js";
 import { JudgeCache } from "./cache.js";
 import { DEFAULT_GRADERS_PATH, loadGraders } from "./graders.js";
 import { BASELINE_FALLBACK_PRICE, BASELINE_MODEL_ID, fetchPrices } from "./prices.js";
@@ -62,6 +62,8 @@ export type BenchCliOptions = {
   sampleTier: FixedArm;
   vary: boolean;
   graders: string;
+  /** The labeled example set to run; defaults to the committed routing set. */
+  data: string;
   out: string;
   json: string | undefined;
 };
@@ -92,6 +94,7 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     sampleTier: "fast",
     vary: false,
     graders: DEFAULT_GRADERS_PATH,
+    data: DEFAULT_ROUTING_SET_PATH,
     out: resolve(PACKAGE_ROOT, "reports/bench-latest.md"),
     json: undefined,
   };
@@ -187,6 +190,9 @@ export function parseArgs(argv: string[]): BenchCliOptions {
       case "--graders":
         options.graders = resolve(INVOKE_CWD, next());
         break;
+      case "--data":
+        options.data = resolve(INVOKE_CWD, next());
+        break;
       case "--out":
         options.out = resolve(INVOKE_CWD, next());
         break;
@@ -221,7 +227,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     jev = new JevClient({ apiKey: jevKey, ...(jevBase !== undefined && jevBase !== "" ? { baseUrl: jevBase } : {}) });
   }
 
-  let examples = loadRoutingSet();
+  let examples = loadRoutingSet(options.data);
   if (options.ids !== undefined) {
     const wanted = new Set(options.ids);
     examples = examples.filter((e) => wanted.has(e.id));
