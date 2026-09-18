@@ -8,6 +8,7 @@ import { BREAKER_COOLDOWN_MS } from "./breaker.js";
 import { isRoutingUnavailable, RoutingUnavailableError } from "./errors.js";
 import { fingerprint } from "./fingerprint.js";
 import { classifyFailure, Router } from "./router.js";
+import type { RouterOptions } from "./router.js";
 import { StickyCache } from "./sticky.js";
 import type { StickyEntry, StickyStore } from "./sticky-store.js";
 
@@ -1252,5 +1253,141 @@ describe("sampled decisions", () => {
     const decision = await router.route(request({ forcedTier: "mid" }));
     expect(decision.samples).toBeUndefined();
     expect(decision.tier).toBe("mid");
+  });
+});
+
+describe("deepseek mode (ADR-012)", () => {
+  /** Signals whose band the controller reads: only the difficulty differs. */
+  function bandAnswers(probabilities: Record<string, number>, score = 1): SystemOneResult["answers"] {
+    return {
+      task_type: {
+        type: "choice",
+        choice: "feature",
+        confidence: 0.9,
+        probabilities: { feature: 0.9, edit: 0.1 },
+      },
+      difficulty: {
+        type: "score",
+        score,
+        confidence: 0.7,
+        legend: { "0": "Trivial", "1": "Routine", "2": "Substantial", "3": "Hard" },
+        probabilities,
+      },
+      needs_reasoning: { type: "noul", noul: 0.4 },
+      long_output: { type: "noul", noul: 0.1 },
+    };
+  }
+
+  const BAND0 = bandAnswers({ "0": 0.9, "1": 0.1 }, 0.1);
+  const BAND1 = bandAnswers({ "0": 0.5, "1": 0.35, "2": 0.11, "3": 0.04 }, 0.69);
+  const BAND2 = bandAnswers({ "0": 0.1, "1": 0.2, "2": 0.66, "3": 0.04 }, 1.64);
+  const BAND3 = bandAnswers({ "0": 0.5, "1": 0.3, "2": 0.1, "3": 0.1 }, 0.8);
+
+  function deepseekRouter(answers: SystemOneResult["answers"], extra: Partial<RouterOptions> = {}): Router {
+    return new Router({ jev: stubJev(answers), roster: ROSTER, mode: "deepseek", ...extra });
+  }
+
+  it("maps bands 0 and 1 to a single v4-flash call", async () => {
+    for (const [name, answers] of [
+      ["band0", BAND0],
+      ["band1", BAND1],
+    ] as const) {
+      const decision = await deepseekRouter(answers).route(request({ fingerprint: name }));
+      expect(decision.model).toBe("deepseek/deepseek-v4-flash");
+      expect(decision.tier).toBe("fast");
+      expect(decision.samples).toBeUndefined();
+      expect(decision.unsampledModel).toBeUndefined();
+      expect(decision.reason).toContain("deepseek controller");
+    }
+  });
+
+  it("maps band 2 to best-of-5 on v4-flash and band 3 to best-of-5 on v4.1-flash", async () => {
+    const band2 = await deepseekRouter(BAND2).route(request());
+    expect(band2.model).toBe("deepseek/deepseek-v4-flash");
+    expect(band2.tier).toBe("mid");
+    expect(band2.samples).toBe(5);
+    expect(band2.unsampledModel).toBe("deepseek/deepseek-v4-flash");
+    expect(band2.unsampledTier).toBeUndefined();
+    expect(band2.reason).toContain("band 2");
+    expect(band2.reason).toContain("best-of-5 on deepseek/deepseek-v4-flash");
+
+    const band3 = await deepseekRouter(BAND3).route(request({ fingerprint: "band3" }));
+    expect(band3.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(band3.tier).toBe("frontier");
+    expect(band3.samples).toBe(5);
+    expect(band3.unsampledModel).toBe("deepseek/deepseek-v4.1-flash");
+  });
+
+  it("keeps milo.samples semantics: 1 collapses to one call on the same model, N re-sizes a sampling band only", async () => {
+    const single = await deepseekRouter(BAND3).route(request({ samples: 1 }));
+    expect(single.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(single.samples).toBeUndefined();
+
+    const three = await deepseekRouter(BAND2).route(request({ fingerprint: "n3", samples: 3 }));
+    expect(three.samples).toBe(3);
+    expect(three.model).toBe("deepseek/deepseek-v4-flash");
+
+    // A band that does not sample is not multiplied by an override.
+    const band1 = await deepseekRouter(BAND1).route(request({ fingerprint: "b1", samples: 6 }));
+    expect(band1.samples).toBeUndefined();
+  });
+
+  it("collapses every band to a single call when sampling is disabled", async () => {
+    const decision = await deepseekRouter(BAND3, { samplingEnabled: false }).route(request());
+    expect(decision.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(decision.samples).toBeUndefined();
+  });
+
+  it("posture does not move the band: low posture still buys the band-3 budget", async () => {
+    const decision = await deepseekRouter(BAND3).route(request({ posture: "low" }));
+    expect(decision.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(decision.samples).toBe(5);
+  });
+
+  it("falls back to roster resolution when candidates exclude the controller's model", async () => {
+    const decision = await deepseekRouter(BAND2).route(request({ candidates: ["mid-model"] }));
+    expect(decision.model).toBe("mid-model");
+    expect(decision.reason).not.toContain("deepseek controller");
+  });
+
+  it("keeps the controller when candidates include its model", async () => {
+    const decision = await deepseekRouter(BAND2).route(
+      request({ candidates: ["deepseek/deepseek-v4-flash", "mid-model"] }),
+    );
+    expect(decision.model).toBe("deepseek/deepseek-v4-flash");
+    expect(decision.samples).toBe(5);
+  });
+
+  it("ignores a per-request roster: the controller's model wins and forced tiers use the deployment's table", async () => {
+    const theirs: Roster = { fast: ["their-fast"], mid: ["their-mid"], frontier: ["their-frontier"] };
+    const routed = await deepseekRouter(BAND0).route(request({ roster: theirs }));
+    expect(routed.model).toBe("deepseek/deepseek-v4-flash");
+
+    const forced = await deepseekRouter(BAND0).route(
+      request({ fingerprint: "forced", roster: theirs, forcedTier: "mid" }),
+    );
+    expect(forced.model).toBe("mid-model");
+  });
+
+  it("reuses a sticky controller decision, and a samples: 1 override keeps its model", async () => {
+    const router = deepseekRouter(BAND3);
+    const first = await router.route(request());
+    const second = await router.route(request());
+    expect(second.sticky).toBe(true);
+    expect(second.samples).toBe(5);
+    expect(second.model).toBe(first.model);
+
+    const optedOut = await router.route(request({ samples: 1 }));
+    expect(optedOut.sticky).toBe(true);
+    expect(optedOut.samples).toBeUndefined();
+    expect(optedOut.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(optedOut.unsampledModel).toBeUndefined();
+  });
+
+  it("defaults to roster mode: an unconfigured router never picks a deepseek model", async () => {
+    const router = new Router({ jev: stubJev(BAND3), roster: ROSTER });
+    const decision = await router.route(request());
+    expect(decision.model).toBe("frontier-model");
+    expect(decision.reason).not.toContain("deepseek");
   });
 });

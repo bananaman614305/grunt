@@ -62,6 +62,19 @@ describe("loadConfig", () => {
     expect(loaded.config.decisionLog).toBe(DEFAULT_DECISION_LOG_URL);
   });
 
+  it("parses the routing mode (ADR-012), defaulting to roster and rejecting an unknown one", () => {
+    const path = join(dir, "milo.config.json");
+
+    writeFileSync(path, JSON.stringify({ mode: "deepseek" }));
+    expect(loadConfig(path, dir).config.mode).toBe("deepseek");
+
+    writeFileSync(path, JSON.stringify({}));
+    expect(loadConfig(path, dir).config.mode).toBe("roster");
+
+    writeFileSync(path, JSON.stringify({ mode: "banana" }));
+    expect(() => loadConfig(path, dir)).toThrow(/mode/);
+  });
+
   it("loads an explicit jevTimeoutMs", () => {
     const path = join(dir, "milo.config.json");
     writeFileSync(path, JSON.stringify({ jevTimeoutMs: 500 }));

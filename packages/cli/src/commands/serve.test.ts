@@ -134,6 +134,59 @@ describe("milo serve", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Routing mode (ADR-012)
+  // -------------------------------------------------------------------------
+
+  it("passes the config's mode to createGateway, defaulting to roster", async () => {
+    const defaults = fakeGateway();
+    await run(
+      ["--db", ":memory:"],
+      createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway: defaults.createGateway, serve: fakeServe().serve })
+        .deps,
+    );
+    expect(defaults.calls[0]?.mode).toBe("roster");
+
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(configPath, JSON.stringify({ mode: "deepseek" }));
+    const configured = fakeGateway();
+    const { deps, stdout } = createTestDeps({
+      env: { JEV_API_KEY: "k" },
+      createGateway: configured.createGateway,
+      serve: fakeServe().serve,
+    });
+    await run(["--config", configPath, "--db", ":memory:"], deps);
+    expect(configured.calls[0]?.mode).toBe("deepseek");
+    expect(stdout.toString()).toContain("mode deepseek");
+  });
+
+  it("prefers MILO_MODE over the config file's mode, and rejects an unknown value", async () => {
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(configPath, JSON.stringify({ mode: "roster" }));
+
+    const overridden = fakeGateway();
+    await run(
+      ["--config", configPath, "--db", ":memory:"],
+      createTestDeps({
+        env: { JEV_API_KEY: "k", MILO_MODE: "deepseek" },
+        createGateway: overridden.createGateway,
+        serve: fakeServe().serve,
+      }).deps,
+    );
+    expect(overridden.calls[0]?.mode).toBe("deepseek");
+
+    const invalid = fakeGateway();
+    const { deps, stderr } = createTestDeps({
+      env: { JEV_API_KEY: "k", MILO_MODE: "banana" },
+      createGateway: invalid.createGateway,
+      serve: fakeServe().serve,
+    });
+    const code = await run(["--db", ":memory:"], deps);
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("MILO_MODE");
+    expect(invalid.calls).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
   // PORT / MILO_DB environment fallbacks
   // -------------------------------------------------------------------------
 

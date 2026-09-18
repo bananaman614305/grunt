@@ -559,3 +559,58 @@ describe("sampled fan-out: first-k early return", () => {
     expect((upstream.samples?.[2] as Record<string, unknown>)["aborted"]).toBe(true);
   });
 });
+
+describe("a sampled decision whose model is not tier-derived (ADR-012)", () => {
+  /** The deepseek controller's shape: a fixed family model, no roster tier. */
+  function controllerDecision(): RouteDecision {
+    const { unsampledTier: _unsampledTier, ...rest } = sampledDecision();
+    return {
+      ...rest,
+      tier: "mid",
+      model: "deepseek/deepseek-v4-flash",
+      unsampledModel: "deepseek/deepseek-v4-flash",
+      reason: "edit task, difficulty band 2 under the deepseek controller buys best-of-3 on deepseek/deepseek-v4-flash",
+    };
+  }
+
+  it("draws every sample on the decision's own model, roster or not", async () => {
+    const contents = ["a q1", "b q3", "c q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), decision: controllerDecision() });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(openRouter.calls).toHaveLength(3);
+    for (const call of openRouter.calls) {
+      expect(call.body["model"]).toBe("deepseek/deepseek-v4-flash");
+    }
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message["content"]).toBe("b q3");
+    expect(res.headers.get("x-milo-model")).toBe("deepseek/deepseek-v4-flash");
+    expect(res.headers.get("x-milo-tier")).toBe("mid");
+  });
+
+  it("falls back to one call on unsampledModel -- never a roster resolution -- when every sample fails", async () => {
+    openRouter.handler = (_body, index) => {
+      if (index < 3) {
+        return new Response(JSON.stringify({ error: { message: "boom" } }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return ok({ ...completionBody("fallback answer"), model: "deepseek/deepseek-v4-flash" });
+    };
+    const a = await app({ jev: rankingJev(), decision: controllerDecision() });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    // Three failed samples, then the single-call fallback on the decision's
+    // own unsampledModel: the roster's mid tier is never consulted.
+    expect(openRouter.calls).toHaveLength(4);
+    expect(openRouter.calls[3]?.body["model"]).toBe("deepseek/deepseek-v4-flash");
+    expect(res.headers.get("x-milo-model")).toBe("deepseek/deepseek-v4-flash");
+
+    const upstream = recorded[0]?.upstream as Upstream;
+    expect(upstream.sampleNote).toBe("all_samples_failed");
+  });
+});

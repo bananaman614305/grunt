@@ -427,6 +427,25 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     });
   });
 
+  it("routes onto the deepseek family in deepseek mode (ADR-012)", async () => {
+    await start({ mode: "deepseek" });
+    upstreams.openRouter = () => jsonResponse(completion("deepseek/deepseek-v4.1-flash"));
+
+    // The flaky-test fixture's hard mass puts it in band 3; `samples: 1`
+    // collapses the band's best-of-5 to one call on the same model.
+    const res = await post("/v1/chat/completions", chatBody({ milo: { samples: 1 } }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-model")).toBe("deepseek/deepseek-v4.1-flash");
+    expect(res.headers.get("x-milo-tier")).toBe("frontier");
+
+    const forwarded = JSON.parse(upstreams.openRouterCalls()[0]?.body ?? "{}") as Record<string, unknown>;
+    expect(forwarded["model"]).toBe("deepseek/deepseek-v4.1-flash");
+
+    const record = await gateway.log.getDecision(res.headers.get("x-milo-decision-id") ?? "");
+    expect(record?.reason).toContain("deepseek controller");
+  });
+
   it("honours the milo extension's posture and candidates", async () => {
     await start();
     upstreams.openRouter = () => jsonResponse(completion("test/mid"));
@@ -751,6 +770,16 @@ describe("GET /healthz", () => {
     // keep working.
     expect(await res.json()).toEqual({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: "jev", mode: "roster" });
     expect(upstreams.calls).toHaveLength(0);
+  });
+
+  it("reports the deepseek mode when the deployment runs it (ADR-012)", async () => {
+    await start({ mode: "deepseek" });
+
+    const health = (await (await gateway.app.request("/healthz")).json()) as Record<string, unknown>;
+    expect(health["mode"]).toBe("deepseek");
+
+    const root = (await (await gateway.app.request("/")).json()) as Record<string, unknown>;
+    expect(root["mode"]).toBe("deepseek");
   });
 
   it("names it at the root too", async () => {
