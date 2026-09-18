@@ -12,11 +12,35 @@ import type { TaskType, Tier } from "@milo/core";
 import { TASK_TYPES, TIERS } from "@milo/core";
 import { costFromTokens, estimateCostUsd } from "./prices.js";
 import { auroc, randomPickPassRate } from "./sampling.js";
-import type { ArmResult, BenchReport, BenchRow, FixedArm, Grade, ModelPrice, ResultArm } from "./types.js";
-import { FIXED_ARMS, MILO_ARM } from "./types.js";
+import type { ArmResult, BenchReport, BenchRow, ComputeRecord, FixedArm, Grade, ModelPrice, ResultArm } from "./types.js";
+import { customArmModel, DEEPSEEK_ARM, FIXED_ARMS, isCustomArm, MILO_ARM } from "./types.js";
 
 export type SummaryArm = ResultArm | "oracle";
 export const SUMMARY_ARMS = [MILO_ARM, "oracle", "frontier", "mid", "fast", "bestof-jev", "bestof-oracle"] as const satisfies readonly SummaryArm[];
+
+/**
+ * The arms the headline table shows: the fixed list above plus whatever else
+ * the run actually produced -- the composed `deepseek` arm and any
+ * `custom:<model>` arms -- in the order they first appear in the rows.
+ */
+export function summaryArms(report: BenchReport): SummaryArm[] {
+  const known = new Set<string>(SUMMARY_ARMS);
+  const extra: SummaryArm[] = [];
+  for (const row of report.rows) {
+    for (const result of row.results) {
+      if (!known.has(result.arm)) {
+        known.add(result.arm);
+        extra.push(result.arm);
+      }
+    }
+  }
+  return [...SUMMARY_ARMS, ...extra];
+}
+
+/** The headline label for an arm: a custom arm is labeled by its model id. */
+export function armLabel(arm: SummaryArm): string {
+  return isCustomArm(arm) ? customArmModel(arm) : arm;
+}
 
 /** One arm's aggregate numbers. `NaN` means no data, never zero. */
 export type ArmSummary = {
@@ -284,6 +308,65 @@ export function summarizeSampling(report: BenchReport): SamplingSummary | undefi
   };
 }
 
+export type ComputeSummary = {
+  /** Examples the deepseek arm sized (a compute record exists). */
+  sized: number;
+  /** Examples whose sizing or execution failed outright (no compute record). */
+  failedSizing: number;
+  /** Budget counts per band, 0..3, with the band's model and sample count. */
+  byBand: Array<{ band: 0 | 1 | 2 | 3; model: string; samples: number; count: number }>;
+  /** Sized examples whose budget was more than one sample. */
+  multiSample: number;
+  /** Of those, how many the adaptive stop ended before every sample settled. */
+  earlyStops: number;
+  /** Stragglers aborted across the run. */
+  aborted: number;
+  /** Mean samples that ran to completion on multi-sample budgets. */
+  meanCompleted: number;
+  /** Mean samples the multi-sample budgets bought. */
+  meanBudget: number;
+  jevSizingMean: number;
+  jevRankMean: number;
+  /** Every deepseek-arm Jev call at its per-call price, USD. */
+  jevUsd: number;
+};
+
+/** Aggregates the deepseek arm's compute records; undefined when the arm never ran. */
+export function summarizeCompute(report: BenchReport): ComputeSummary | undefined {
+  const results = report.rows
+    .map((row) => row.results.find((r) => r.arm === DEEPSEEK_ARM))
+    .filter((r): r is ArmResult => r !== undefined);
+  if (results.length === 0) return undefined;
+  const records = results.map((r) => r.compute).filter((c): c is ComputeRecord => c !== undefined);
+
+  const bands = new Map<number, { band: 0 | 1 | 2 | 3; model: string; samples: number; count: number }>();
+  for (const c of records) {
+    const entry = bands.get(c.band);
+    if (entry === undefined) {
+      const owner = results.find((r) => r.compute === c);
+      bands.set(c.band, { band: c.band, model: owner?.model ?? "", samples: c.budget, count: 1 });
+    } else {
+      entry.count += 1;
+    }
+  }
+
+  const multi = records.filter((c) => c.budget > 1);
+  const ranks = records.map((c) => c.rankLatencyMs).filter((v): v is number => v !== undefined);
+  return {
+    sized: records.length,
+    failedSizing: results.length - records.length,
+    byBand: [...bands.values()].sort((a, b) => a.band - b.band),
+    multiSample: multi.length,
+    earlyStops: multi.filter((c) => c.earlyStop).length,
+    aborted: records.reduce((sum, c) => sum + c.aborted, 0),
+    meanCompleted: mean(multi.map((c) => c.completed)),
+    meanBudget: mean(multi.map((c) => c.budget)),
+    jevSizingMean: mean(records.map((c) => c.sizingLatencyMs)),
+    jevRankMean: mean(ranks),
+    jevUsd: records.reduce((sum, c) => sum + c.jevCostUsd, 0),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Spend and judge audit
 // ---------------------------------------------------------------------------
@@ -293,7 +376,12 @@ function sumDefined(values: Array<number | undefined>): number {
 }
 
 function isRealArm(result: ArmResult): boolean {
-  return result.arm === MILO_ARM || (FIXED_ARMS as readonly string[]).includes(result.arm);
+  return (
+    result.arm === MILO_ARM ||
+    result.arm === DEEPSEEK_ARM ||
+    isCustomArm(result.arm) ||
+    (FIXED_ARMS as readonly string[]).includes(result.arm)
+  );
 }
 
 /**
@@ -414,9 +502,10 @@ function tierMark(result: ArmResult | undefined): string {
 }
 
 export function formatBenchMarkdown(report: BenchReport): string {
-  const arms = SUMMARY_ARMS.map((arm) => summarizeArm(report, arm)).filter((a) => a.calls > 0);
+  const arms = summaryArms(report).map((arm) => summarizeArm(report, arm)).filter((a) => a.calls > 0);
   const routing = summarizeRouting(report);
   const sampling = summarizeSampling(report);
+  const compute = summarizeCompute(report);
   const spend = summarizeSpend(report);
   const audit = summarizeJudgeAudit(report);
   const cache = report.judgeCacheStats;
@@ -452,7 +541,7 @@ export function formatBenchMarkdown(report: BenchReport): string {
     table(
       ["arm", "ok/calls", "graded", "pass", "quality vs frontier", "cost", "per call", "baseline est.", "savings", "savings 2x", "ttfb p50", "ttfb p95", "total p50", "out tok", "reason tok"],
       arms.map((a) => [
-        `\`${a.arm}\``,
+        `\`${armLabel(a.arm)}\``,
         `${a.ok}/${a.calls}`,
         String(a.graded),
         pct(a.passRate),
@@ -503,6 +592,21 @@ export function formatBenchMarkdown(report: BenchReport): string {
         ["task type", "n", "single sample", "random pick", "jev pick", "oracle"],
         sampling.byTaskType.filter((t) => t.n > 0).map((t) => [t.taskType, String(t.n), pct(t.single), pct(t.random), pct(t.jev), pct(t.oracle)]),
       ),
+    );
+  }
+
+  if (compute !== undefined) {
+    const bands = compute.byBand
+      .map((b) => `band ${b.band} \u2192 ${b.samples}\u00d7\`${b.model}\` (${b.count})`)
+      .join(", ");
+    sections.push("## Compute controller (`deepseek` arm, ADR-012 phase 1)");
+    sections.push(
+      [
+        `- Sized ${compute.sized} examples${compute.failedSizing > 0 ? ` (${compute.failedSizing} sizing failures)` : ""}; budgets chosen: ${bands === "" ? "none" : bands}`,
+        `- Adaptive stops: ${compute.earlyStops} of ${compute.multiSample} multi-sample budgets returned early, aborting ${compute.aborted} stragglers`,
+        `- Samples actually drawn on multi-sample budgets: mean ${compute.meanCompleted.toFixed(1)} of ${compute.meanBudget.toFixed(1)} budgeted`,
+        `- Jev: sizing mean ${ms(compute.jevSizingMean)}, ranking mean ${ms(compute.jevRankMean)} per sample, ${usd(compute.jevUsd)} total (included in the arm's cost)`,
+      ].join("\n"),
     );
   }
 

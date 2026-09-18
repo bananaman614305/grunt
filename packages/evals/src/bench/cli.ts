@@ -23,7 +23,8 @@ import { fixedModelsFromRoster, runBench } from "./run.js";
 import { DEFAULT_PROVIDER_PINS } from "./providers.js";
 import type { ProviderPins } from "./providers.js";
 import type { ArmName, FixedArm } from "./types.js";
-import { ARM_NAMES, FIXED_ARMS } from "./types.js";
+import { ARM_NAMES, CUSTOM_ARM_PREFIX, customArmModel, DEEPSEEK_ARM, FIXED_ARMS, isCustomArm, MILO_ARM } from "./types.js";
+import { DEEPSEEK_BRANCH_MODEL, DEEPSEEK_ORCHESTRATOR_MODEL } from "./deepseek.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
@@ -74,7 +75,8 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     gateway: DEFAULT_GATEWAY,
     openrouter: DEFAULT_OPENROUTER,
     posture: "balanced",
-    arms: [...ARM_NAMES],
+    // The deepseek arm is opt-in: it needs a Jev key and spends on N samples.
+    arms: [MILO_ARM, ...FIXED_ARMS],
     judge: true,
     judgeModel: DEFAULT_JUDGE_MODEL,
     judgeAudit: DEFAULT_JUDGE_AUDIT_FRACTION,
@@ -124,7 +126,9 @@ export function parseArgs(argv: string[]): BenchCliOptions {
       case "--arms": {
         const arms = next().split(",").map((a) => a.trim()).filter((a) => a !== "");
         for (const arm of arms) {
-          if (!isOneOf(ARM_NAMES, arm)) throw new Error(`--arms must be a comma list of ${ARM_NAMES.join("|")}, got "${arm}"`);
+          if (!isOneOf(ARM_NAMES, arm) && !isCustomArm(arm)) {
+            throw new Error(`--arms must be a comma list of ${ARM_NAMES.join("|")} or ${CUSTOM_ARM_PREFIX}<openrouter-model-id>, got "${arm}"`);
+          }
         }
         options.arms = arms as ArmName[];
         break;
@@ -203,11 +207,15 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     throw new Error("OPENROUTER_API_KEY is not set; the benchmark sends it as the bearer to the gateway and to OpenRouter");
   }
 
+  // One Jev client for everything that needs one: sample ranking
+  // (`--samples`) and the composed deepseek arm's sizing and ranking.
   let jev: JevClient | undefined;
-  if (options.samples > 1) {
+  const wantsDeepseek = options.arms.includes(DEEPSEEK_ARM);
+  if (options.samples > 1 || wantsDeepseek) {
     const jevKey = env["JEV_API_KEY"];
     if (jevKey === undefined || jevKey === "") {
-      throw new Error("--samples needs JEV_API_KEY (and JEV_BASE_URL for a key-injecting proxy) so Jev can rank the samples");
+      const who = wantsDeepseek ? "the deepseek arm" : "--samples";
+      throw new Error(`${who} needs JEV_API_KEY (and JEV_BASE_URL for a key-injecting proxy) so Jev can size and rank the samples`);
     }
     const jevBase = env["JEV_BASE_URL"];
     jev = new JevClient({ apiKey: jevKey, ...(jevBase !== undefined && jevBase !== "" ? { baseUrl: jevBase } : {}) });
@@ -222,7 +230,11 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
   const graders = loadGraders(options.graders);
 
   const fixedModels = fixedModelsFromRoster(DEFAULT_ROSTER);
-  const priceIds = [BASELINE_MODEL_ID, options.judgeModel, AUDIT_JUDGE_MODEL, ...Object.values(fixedModels)];
+  // Custom arms and the deepseek arm are priced from the same catalogue
+  // fetch, so token-only responses still cost out and the report has rates.
+  const customModels = options.arms.filter(isCustomArm).map(customArmModel);
+  const deepseekModels = wantsDeepseek ? [DEEPSEEK_BRANCH_MODEL, DEEPSEEK_ORCHESTRATOR_MODEL] : [];
+  const priceIds = [BASELINE_MODEL_ID, options.judgeModel, AUDIT_JUDGE_MODEL, ...Object.values(fixedModels), ...customModels, ...deepseekModels];
   let prices;
   try {
     prices = await fetchPrices(priceIds);
@@ -253,7 +265,8 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     ...(options.salt !== undefined ? { salt: options.salt } : {}),
     providerPins: options.pins,
     sampleTimeoutMs: options.sampleTimeoutMs,
-    ...(options.samples > 1 && jev !== undefined ? { samples: options.samples, sampleTier: options.sampleTier, vary: options.vary, jev } : {}),
+    ...(options.samples > 1 ? { samples: options.samples, sampleTier: options.sampleTier, vary: options.vary } : {}),
+    ...(jev !== undefined ? { jev } : {}),
     onProgress: (line) => process.stderr.write(`${line}\n`),
   });
 

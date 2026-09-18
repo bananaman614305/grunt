@@ -2,10 +2,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { JevClientLike, SystemOneResult } from "@milo/core";
 import type { RoutingExample } from "../schema.js";
 import { JudgeCache } from "./cache.js";
+import { DEEPSEEK_BRANCH_MODEL, DEEPSEEK_ORCHESTRATOR_MODEL } from "./deepseek.js";
 import type { GraderRow } from "./graders.js";
-import { armOrder, fixedModelsFromRoster, providerField, runBench, saltMessages } from "./run.js";
+import { armOrder, fixedModelsFromRoster, JEV_USD_PER_CALL, providerField, runBench, saltMessages } from "./run.js";
 import type { RunBenchOptions } from "./run.js";
 
 function sseResponse(text: string, usage: Record<string, unknown>, headers: Record<string, string> = {}): Response {
@@ -288,5 +290,217 @@ describe("judge cache and audit", () => {
     expect(counts["cheap"]).toBe(1); // retried, not served from the cache
     expect(second.judgeCacheStats).toEqual({ hits: 0, misses: 1 });
     expect(second.rows[0]?.results[0]?.grade?.pass).toBe(true);
+  });
+});
+
+describe("the deepseek arm (ADR-012 phase 1)", () => {
+  /**
+   * A fake Jev that sizes with the given difficulty distribution and ranks
+   * each candidate answer by `rankOf`. Sizing calls carry `task_type` in
+   * their questions; ranking calls carry `quality`.
+   */
+  function fakeJev(
+    levels: Record<string, number>,
+    rankOf: (answer: string) => Record<string, number> | Error = () => ({ "3": 1 }),
+  ): JevClientLike & { sizings: number; ranks: number } {
+    const jev = {
+      sizings: 0,
+      ranks: 0,
+      systemone: async (req: { state: unknown; questions: Record<string, unknown> }): Promise<SystemOneResult> => {
+        if ("task_type" in req.questions) {
+          jev.sizings += 1;
+          return {
+            model: "jev-latest",
+            requestId: `size-${jev.sizings}`,
+            latencyMs: 20,
+            usage: { input_tokens: 10, output_tokens: 1 },
+            answers: {
+              task_type: { type: "choice", choice: "edit", confidence: 0.9, probabilities: { edit: 0.9 } },
+              difficulty: { type: "score", score: 1, confidence: 0.8, legend: {}, probabilities: levels },
+              needs_reasoning: { type: "noul", noul: 0.5 },
+              long_output: { type: "noul", noul: 0.1 },
+            },
+          };
+        }
+        jev.ranks += 1;
+        const answer = (req.state as { candidate_answer: string }).candidate_answer;
+        const verdict = rankOf(answer);
+        if (verdict instanceof Error) throw verdict;
+        return {
+          model: "jev-latest",
+          requestId: `rank-${jev.ranks}`,
+          latencyMs: 5,
+          usage: { input_tokens: 10, output_tokens: 1 },
+          answers: {
+            quality: { type: "score", score: 0, confidence: 0.9, legend: {}, probabilities: verdict },
+            correct: { type: "noul", noul: 0.5 },
+          },
+        };
+      },
+    };
+    return jev;
+  }
+
+  function options(jev: JevClientLike, fetchImpl: typeof fetch, over: Partial<RunBenchOptions> = {}): RunBenchOptions {
+    return {
+      examples: [example("r-1", "Do the thing.")],
+      graders: new Map<string, GraderRow>([["r-1", { id: "r-1", grader: { type: "regex", pattern: "answer" } }]]),
+      gatewayBaseUrl: "http://gw/v1",
+      openRouterBaseUrl: "http://or/api/v1",
+      apiKey: "k",
+      posture: "balanced",
+      arms: ["deepseek"],
+      fixedModels: { fast: "f", mid: "m", frontier: "x" },
+      judgeModel: "j",
+      judge: false,
+      prices: new Map(),
+      baseline: { id: "b", inputUsdPerM: 1, outputUsdPerM: 1 },
+      concurrency: 1,
+      timeoutMs: 1000,
+      providerPins: {},
+      jev,
+      fetchImpl,
+      ...over,
+    };
+  }
+
+  it("requires a Jev client", async () => {
+    const fetchImpl: typeof fetch = async () => sseResponse("x", {});
+    await expect(runBench({ ...options(fakeJev({}), fetchImpl), jev: undefined })).rejects.toThrow(/deepseek arm needs a Jev client/);
+  });
+
+  it("band 0 makes one v4-flash call, no ranking, and charges one Jev call", async () => {
+    const jev = fakeJev({ "0": 0.9, "1": 0.1 });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return sseResponse("the answer", { prompt_tokens: 10, completion_tokens: 5, cost: 0.001 });
+    };
+    const report = await runBench(options(jev, fetchImpl));
+    const result = report.rows[0]?.results.find((r) => r.arm === "deepseek");
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]?.["model"]).toBe(DEEPSEEK_BRANCH_MODEL);
+    expect(result).toMatchObject({ model: DEEPSEEK_BRANCH_MODEL, status: 200, jevLatencyMs: expect.any(Number) as number });
+    expect(result?.grade?.pass).toBe(true);
+    expect(result?.costUsd).toBeCloseTo(0.001 + JEV_USD_PER_CALL, 10);
+    expect(result?.compute).toMatchObject({ band: 0, budget: 1, completed: 1, aborted: 0, earlyStop: false, pick: 0, jevCalls: 1 });
+    expect(jev.ranks).toBe(0);
+  });
+
+  it("band 2 draws on v4-flash and the adaptive stop aborts the stragglers after 3 clear ranks", async () => {
+    const jev = fakeJev({ "0": 0.1, "1": 0.2, "2": 0.7 }, () => ({ "3": 1 }));
+    let calls = 0;
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      calls += 1;
+      if (calls <= 3) return sseResponse(`answer-${calls}`, { prompt_tokens: 10, completion_tokens: 5, cost: 0.001 });
+      // Stragglers: never answer, reject only when the runner aborts them.
+      return new Promise((_resolve, reject) => {
+        const fail = (): void => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        const signal = init?.signal;
+        if (signal?.aborted === true) fail();
+        else signal?.addEventListener("abort", fail, { once: true });
+      });
+    };
+    const report = await runBench(options(jev, fetchImpl));
+    const result = report.rows[0]?.results.find((r) => r.arm === "deepseek");
+    expect(result?.status).toBe(200);
+    expect(result?.model).toBe(DEEPSEEK_BRANCH_MODEL);
+    const compute = result?.compute;
+    expect(compute).toMatchObject({ band: 2, budget: 5, completed: 3, aborted: 2, earlyStop: true, jevCalls: 4 });
+    expect(compute?.samples).toHaveLength(5);
+    expect(compute?.samples.filter((s) => s.error === "aborted").map((s) => s.index)).toEqual([3, 4]);
+    expect(jev.sizings).toBe(1);
+    expect(jev.ranks).toBe(3);
+    // True aggregate cost: three completed samples plus four Jev calls.
+    expect(result?.costUsd).toBeCloseTo(0.003 + 4 * JEV_USD_PER_CALL, 10);
+    expect(result?.grade?.pass).toBe(true);
+  });
+
+  it("band 3 samples the orchestrator model and Jev's best rank picks without an early stop", async () => {
+    const jev = fakeJev({ "0": 0.2, "1": 0.3, "2": 0.4, "3": 0.1 }, (answer) => (answer === "answer-3" ? { "2": 1 } : { "1": 1 }));
+    let calls = 0;
+    const models = new Set<string>();
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      calls += 1;
+      models.add((JSON.parse(String(init?.body)) as { model: string }).model);
+      return sseResponse(`answer-${calls}`, { prompt_tokens: 10, completion_tokens: 5, cost: 0.001 });
+    };
+    const report = await runBench(options(jev, fetchImpl));
+    const result = report.rows[0]?.results.find((r) => r.arm === "deepseek");
+    expect(models).toEqual(new Set([DEEPSEEK_ORCHESTRATOR_MODEL]));
+    expect(result?.compute).toMatchObject({ band: 3, budget: 5, completed: 5, aborted: 0, earlyStop: false, pick: 2, jevCalls: 6 });
+    expect(result?.grade?.pass).toBe(true);
+  });
+
+  it("falls back to the first success when every rank fails, and says so per sample", async () => {
+    const jev = fakeJev({ "0": 0.5, "1": 0.5 }, () => new Error("rank down"));
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return sseResponse(`answer-${calls}`, { prompt_tokens: 10, completion_tokens: 5, cost: 0.001 });
+    };
+    const report = await runBench(options(jev, fetchImpl));
+    const result = report.rows[0]?.results.find((r) => r.arm === "deepseek");
+    expect(result?.status).toBe(200);
+    expect(result?.compute).toMatchObject({ band: 1, budget: 3, pick: 0, jevCalls: 1 });
+    expect(result?.compute?.samples.every((s) => s.rankError !== undefined)).toBe(true);
+    expect(result?.grade?.pass).toBe(true);
+  });
+
+  it("records a sizing failure without drawing a single sample", async () => {
+    const jev: JevClientLike = {
+      systemone: async () => {
+        throw new Error("jev down");
+      },
+    };
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return sseResponse("x", {});
+    };
+    const report = await runBench(options(jev, fetchImpl));
+    const result = report.rows[0]?.results.find((r) => r.arm === "deepseek");
+    expect(result?.error).toMatch(/^sizing /);
+    expect(result?.compute).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+});
+
+describe("custom arms", () => {
+  it("calls the named model directly, pinned only when the model is in the pins map", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      // The frame echoes the requested model, as OpenRouter's do.
+      return sseResponse("negative", { prompt_tokens: 10, completion_tokens: 2, cost: 0.00001 }, { "x-milo-model": String(body["model"]) });
+    };
+    const report = await runBench({
+      examples: [example("r-1", "Classify: bad.")],
+      graders: new Map<string, GraderRow>([["r-1", { id: "r-1", grader: { type: "regex", pattern: "negative" } }]]),
+      gatewayBaseUrl: "http://gw/v1",
+      openRouterBaseUrl: "http://or/api/v1",
+      apiKey: "k",
+      posture: "balanced",
+      arms: ["custom:anthropic/claude-fable-5.1", "custom:acme/unpinned"],
+      fixedModels: { fast: "f", mid: "m", frontier: "x" },
+      judgeModel: "j",
+      judge: false,
+      prices: new Map(),
+      baseline: { id: "b", inputUsdPerM: 1, outputUsdPerM: 1 },
+      concurrency: 1,
+      timeoutMs: 1000,
+      providerPins: { "anthropic/claude-fable-5.1": ["anthropic"] },
+      fetchImpl,
+    });
+    const row = report.rows[0];
+    const fable = row?.results.find((r) => r.arm === "custom:anthropic/claude-fable-5.1");
+    expect(fable).toMatchObject({ model: "anthropic/claude-fable-5.1", status: 200 });
+    expect(fable?.grade?.pass).toBe(true);
+    expect(row?.results.find((r) => r.arm === "custom:acme/unpinned")?.model).toBe("acme/unpinned");
+    const pinned = bodies.find((b) => b["model"] === "anthropic/claude-fable-5.1");
+    expect(pinned?.["provider"]).toEqual({ order: ["anthropic"], allow_fallbacks: false });
+    const unpinned = bodies.find((b) => b["model"] === "acme/unpinned");
+    expect(unpinned?.["provider"]).toBeUndefined();
   });
 });

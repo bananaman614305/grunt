@@ -78,3 +78,25 @@ describe("measureChatCompletion", () => {
     expect((calls[0]?.init.headers as Record<string, string>)["Authorization"]).toBe("Bearer sk-test");
   });
 });
+
+describe("external abort", () => {
+  it("cancels the request when the caller's signal fires", async () => {
+    const controller = new AbortController();
+    const fetchImpl: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const fail = (): void => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        if (init?.signal?.aborted === true) fail();
+        else init?.signal?.addEventListener("abort", fail, { once: true });
+      });
+    const pending = measureChatCompletion({
+      baseUrl: "http://or/api/v1",
+      apiKey: "k",
+      body: { model: "m", messages: [] },
+      timeoutMs: 60_000,
+      signal: controller.signal,
+      fetchImpl,
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
