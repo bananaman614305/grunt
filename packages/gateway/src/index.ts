@@ -123,8 +123,12 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const log = await DecisionLog.open(options.decisionLogUrl ?? ":memory:");
   const writes = new WriteQueue(logger);
 
+  // One client for both the routing call and the preference-capture
+  // resolution call (ADR-011): one key, one retry discipline.
+  const jev = new JevClient(jevOptions);
+
   const routerOptions = {
-    jev: new JevClient(jevOptions),
+    jev,
     roster,
     ...(options.jevTimeoutMs !== undefined ? { jevTimeoutMs: options.jevTimeoutMs } : {}),
     sticky: new StickyCache(),
@@ -165,6 +169,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),
     log,
+    jev,
     rateLimiter: new RateLimiter(rateLimitOptions),
     logger,
     now: Date.now,

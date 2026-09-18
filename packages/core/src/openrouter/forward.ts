@@ -60,6 +60,11 @@ export function extractMilo(body: Record<string, unknown>): {
   if (typeof source.tier === "string" && isTier(source.tier)) {
     extension.tier = source.tier;
   }
+  // Only `false` means anything: injection is the default (ADR-011), so a
+  // stray `brief: true` is the same as saying nothing.
+  if (source.brief === false) {
+    extension.brief = false;
+  }
 
   return { extension, isRouted };
 }

@@ -126,6 +126,46 @@ CREATE INDEX IF NOT EXISTS idx_rosters_updated_at ON rosters (updated_at);
       await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_account_id ON decisions (account_id)");
     },
   },
+  {
+    version: 5,
+    description: "add the preference tables",
+    // Preference memory (ADR-011). Keyed like rosters by the SHA-256 of the
+    // bearer credential (the account key's hash for `mk_` keys), because Milo
+    // stores no key material (ADR-003). One row per (caller, scope, field):
+    // `scope` is "global" or a task type, `field` a closed-vocabulary label,
+    // `value` a member of that field's closed vocabulary -- never message
+    // content. `provenance` is the fingerprint of the teaching turn, so a row
+    // can say where it came from without saying what was said. `version`
+    // counts contradictions: replacing a value bumps it and resets
+    // `confidence`; repetition only raises `confidence` (capped at 1).
+    //
+    // `preference_settings` carries the per-key switches ADR-011 promises:
+    // capture off entirely, and the brief off for every request from a key.
+    // A key with no row has both on.
+    sql: `
+CREATE TABLE IF NOT EXISTS preferences (
+  id TEXT PRIMARY KEY,
+  key_hash TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  field TEXT NOT NULL,
+  value TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  version INTEGER NOT NULL,
+  provenance TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (key_hash, scope, field)
+);
+CREATE INDEX IF NOT EXISTS idx_preferences_key_hash ON preferences (key_hash);
+
+CREATE TABLE IF NOT EXISTS preference_settings (
+  key_hash TEXT PRIMARY KEY,
+  capture_enabled INTEGER NOT NULL DEFAULT 1,
+  brief_enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+`,
+  },
 ];
 
 /**

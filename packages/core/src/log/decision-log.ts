@@ -11,6 +11,16 @@
  * with one row per live conversation.
  */
 import { createClient, type Client, type Row } from "@libsql/client";
+import { ulid } from "ulid";
+import { assertPreferenceCandidate, mergeCandidate } from "../preferences/store.js";
+import type {
+  PreferenceCandidate,
+  PreferenceField,
+  PreferenceRow,
+  PreferenceScope,
+  PreferenceSettings,
+  PreferenceStore,
+} from "../preferences/store.js";
 import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
 import type { DecisionRecord, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
 import { assertKeyHash, rosterModelCount } from "./roster-store.js";
@@ -101,13 +111,28 @@ function rowToStoredRoster(row: Row): StoredRoster {
   };
 }
 
+function rowToPreference(row: Row): PreferenceRow {
+  return {
+    id: String(row.id),
+    keyHash: String(row.key_hash),
+    scope: String(row.scope) as PreferenceScope,
+    field: String(row.field) as PreferenceField,
+    value: String(row.value),
+    confidence: Number(row.confidence),
+    version: Number(row.version),
+    provenance: String(row.provenance),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
 const LIST_LIMIT_DEFAULT = 50;
 const LIST_LIMIT_MAX = 500;
 
 const ROSTER_LIST_LIMIT_DEFAULT = 100;
 const ROSTER_LIST_LIMIT_MAX = 1000;
 
-export class DecisionLog implements StickyStore, RosterStore {
+export class DecisionLog implements StickyStore, RosterStore, PreferenceStore {
   private constructor(private readonly db: Client) {}
 
   /** `url` is `":memory:"` or `file:/path/to.db`. Runs migrations before returning. */
@@ -383,6 +408,144 @@ export class DecisionLog implements StickyStore, RosterStore {
         updatedAt: stored.updatedAt,
       };
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // PreferenceStore (ADR-011)
+  // -------------------------------------------------------------------------
+
+  async getPreference(
+    keyHash: string,
+    scope: PreferenceScope,
+    field: PreferenceField,
+  ): Promise<PreferenceRow | undefined> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT * FROM preferences WHERE key_hash = ? AND scope = ? AND field = ?",
+      args: [keyHash, scope, field],
+    });
+    const row = rs.rows[0];
+    return row ? rowToPreference(row) : undefined;
+  }
+
+  /** Every row this key stored: highest confidence first, then most recent. */
+  async listPreferences(keyHash: string): Promise<PreferenceRow[]> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: `SELECT * FROM preferences WHERE key_hash = ?
+            ORDER BY confidence DESC, updated_at DESC, id ASC`,
+      args: [keyHash],
+    });
+    return rs.rows.map(rowToPreference);
+  }
+
+  /**
+   * Records one capture observation under the ADR-011 rule (`mergeCandidate`):
+   * a first observation creates the row at version 1; repeating the same
+   * value raises confidence (capped at 1) and keeps the version; a
+   * contradicting value replaces it, bumps the version, and resets confidence.
+   * The row's id and `created_at` survive a replace -- the row is still "this
+   * caller's <field> preference", whatever it currently says.
+   */
+  async upsertPreference(keyHash: string, candidate: PreferenceCandidate): Promise<PreferenceRow> {
+    assertPreferenceCandidate(keyHash, candidate);
+    const now = candidate.now ?? new Date().toISOString();
+
+    const existing = await this.getPreference(keyHash, candidate.scope, candidate.field);
+    const merged = mergeCandidate(existing, candidate);
+
+    if (existing === undefined) {
+      const row: PreferenceRow = {
+        id: ulid(),
+        keyHash,
+        scope: candidate.scope,
+        field: candidate.field,
+        value: merged.value,
+        confidence: merged.confidence,
+        version: merged.version,
+        provenance: merged.provenance,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await this.db.execute({
+        sql: `INSERT INTO preferences
+                (id, key_hash, scope, field, value, confidence, version, provenance, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          row.id,
+          row.keyHash,
+          row.scope,
+          row.field,
+          row.value,
+          row.confidence,
+          row.version,
+          row.provenance,
+          row.createdAt,
+          row.updatedAt,
+        ],
+      });
+      return row;
+    }
+
+    await this.db.execute({
+      sql: `UPDATE preferences
+            SET value = ?, confidence = ?, version = ?, provenance = ?, updated_at = ?
+            WHERE id = ?`,
+      args: [merged.value, merged.confidence, merged.version, merged.provenance, now, existing.id],
+    });
+    return { ...existing, ...merged, updatedAt: now };
+  }
+
+  /**
+   * Scoped by both id *and* key hash, so one caller cannot delete another's
+   * row by guessing ids -- the same 404-shaped answer a missing row gets.
+   */
+  async deletePreference(keyHash: string, id: string): Promise<boolean> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "DELETE FROM preferences WHERE id = ? AND key_hash = ?",
+      args: [id, keyHash],
+    });
+    return rs.rowsAffected > 0;
+  }
+
+  /** Both switches are on for a key that never stored a settings row. */
+  async getPreferenceSettings(keyHash: string): Promise<PreferenceSettings> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT capture_enabled, brief_enabled FROM preference_settings WHERE key_hash = ?",
+      args: [keyHash],
+    });
+    const row = rs.rows[0];
+    if (row === undefined) return { keyHash, captureEnabled: true, briefEnabled: true };
+    return {
+      keyHash,
+      captureEnabled: Boolean(Number(row.capture_enabled)),
+      briefEnabled: Boolean(Number(row.brief_enabled)),
+    };
+  }
+
+  async setPreferenceSettings(
+    keyHash: string,
+    patch: Partial<Pick<PreferenceSettings, "captureEnabled" | "briefEnabled">>,
+  ): Promise<PreferenceSettings> {
+    assertKeyHash(keyHash);
+    const current = await this.getPreferenceSettings(keyHash);
+    const next: PreferenceSettings = {
+      keyHash,
+      captureEnabled: patch.captureEnabled ?? current.captureEnabled,
+      briefEnabled: patch.briefEnabled ?? current.briefEnabled,
+    };
+    await this.db.execute({
+      sql: `INSERT INTO preference_settings (key_hash, capture_enabled, brief_enabled, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key_hash) DO UPDATE SET
+              capture_enabled = excluded.capture_enabled,
+              brief_enabled = excluded.brief_enabled,
+              updated_at = excluded.updated_at`,
+      args: [keyHash, next.captureEnabled ? 1 : 0, next.briefEnabled ? 1 : 0, new Date().toISOString()],
+    });
+    return next;
   }
 
   /** One JSON record per line, oldest first, paginated internally. */

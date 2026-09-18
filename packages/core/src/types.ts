@@ -74,11 +74,35 @@ export type MiloRequestExtension = {
   candidates?: string[];
   /** Force a tier and skip Jev. Recorded as a decision with reason "forced". */
   tier?: Tier;
+  /**
+   * `false` skips the injected preference brief for this one request
+   * (ADR-011). Absent means "inject when the caller has stored
+   * output-shaping preferences"; there is no `true` opt-in because
+   * injection is the default.
+   */
+  brief?: boolean;
 };
 
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
+
+/**
+ * What the capture questions riding the routing systemone call detected
+ * (ADR-011): the latest user turn stated a durable preference, and which
+ * closed-vocabulary field it concerns. Carries a field *name* and two
+ * probabilities, never message content. `field` is a string here rather
+ * than the `PreferenceField` union so this pinned file does not depend on
+ * the preferences module; `preferences/questions.ts` only ever writes
+ * members of its closed vocabulary into it.
+ */
+export type PreferenceCaptureSignal = {
+  field: string;
+  /** The detection noul, already at or above the capture threshold. */
+  detection: number;
+  /** Confidence of the field choice. */
+  fieldConfidence: number;
+};
 
 export type RouteSignals = {
   taskType: TaskType;
@@ -95,6 +119,13 @@ export type RouteSignals = {
   jevRequestId: string;
   jevModel: string;
   latencyMs: number;
+  /**
+   * Set only when the preference-capture detection fired on this call
+   * (ADR-011). The gateway's `maybeCapture` then runs the second, targeted
+   * resolution call; absence means "no durable preference stated", which is
+   * almost every request.
+   */
+  capture?: PreferenceCaptureSignal;
 };
 
 export type RouteRequest = {
