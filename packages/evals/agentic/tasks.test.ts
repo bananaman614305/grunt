@@ -14,10 +14,12 @@ const TASKS_DIR = join(dirname(fileURLToPath(import.meta.url)), "tasks");
 const EXPECTED_IDS = [
   "at-001", "at-002", "at-003", "at-004", "at-005",
   "at-006", "at-007", "at-008", "at-009", "at-010",
+  "at-011", "at-012", "at-013", "at-014", "at-015",
+  "at-016", "at-017", "at-018", "at-019", "at-020",
 ];
 
 describe("agentic task fixtures", () => {
-  it("ships exactly at-001..at-010", () => {
+  it("ships exactly at-001..at-020", () => {
     expect(readdirSync(TASKS_DIR).sort()).toEqual(EXPECTED_IDS);
   });
 
