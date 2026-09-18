@@ -19,6 +19,17 @@ edits, tests and lookups underneath it. That is why Milo's default roster is
 the most-used cheap models rather than a second copy of the frontier model you
 are already subscribed to — see "Why these models" below.
 
+For the task shapes where a cheap model tried five times beats a bigger model
+tried once — small edits and docs work, per two live benchmark runs — Milo
+does exactly that by default: it fans the request out as five fast-tier calls
+with varied framings, has Jev score every answer, and returns the best one,
+with `x-milo-samples` and `x-milo-sample-pick` headers saying so (ADR-010). A
+sampled request spends roughly five fast-tier calls of your OpenRouter budget,
+which is still in the same band as the one mid-tier call it replaces; send
+`milo: { "samples": 1 }` to opt a request out, or set
+`sampling: { "enabled": false }` in `milo.config.json` to turn it off for a
+deployment.
+
 ## Quickstart
 
 ```
@@ -127,6 +138,7 @@ that request. It is stripped before the request reaches OpenRouter.
 - `posture` — `"low"`, `"balanced"`, or `"quality"`. Defaults to `"balanced"`. Shifts the policy table toward cheaper or more capable tiers (`docs/routing.md`).
 - `candidates` — restricts the roster to these model ids for this request.
 - `tier` — forces a tier (`"fast"`, `"mid"`, `"frontier"`) and skips the Jev call entirely; the decision is recorded with reason `"forced to the <tier> tier by the request"`.
+- `samples` — best-of-N control (ADR-010): `1` disables sampling for this request, a larger integer (capped at 8) sets the sample count on the cells the policy samples.
 
 ## Why these models
 

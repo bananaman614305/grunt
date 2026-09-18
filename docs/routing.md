@@ -218,8 +218,38 @@ When the fast gate decided it, the sentence names the level it read —
 score the way v1 did.
 
 Changing any threshold in this file bumps `POLICY_VERSION` (currently
-`"v2"`) and needs an eval run on `packages/evals/data/routing.jsonl` before
-shipping: the target is 85% (ADR-002), and CI gates at 0.80.
+`"v4"`) and needs an eval run on `packages/evals/data/routing.jsonl` before
+shipping: the target is 85% (ADR-002), and CI gates at 0.80. The eval scores
+agreement on a sampled decision's `unsampledTier`, so the gate keeps
+measuring the policy's underlying choice whether or not a cell samples.
+
+## Best-of-N sampling cells (policy v4, ADR-010)
+
+Some cells resolve to a *sampled* outcome instead of a higher tier. When the
+task type is `edit` or `docs`, the posture is `balanced` or `quality`, and
+the mass rule above lands anywhere above `fast` (difficulty bands 1..3 in
+the eval set's terms), the decision becomes
+
+```
+{ tier: "fast", samples: 5, unsampledTier: <what the rule chose> }
+```
+
+`tier` is what will execute — five fast-tier draws, ranked by Jev, best
+answer returned (`docs/api/gateway.md`, "Best-of-N sampling") — and
+`unsampledTier` is what a single call would have used. The cells come from
+two live benchmark runs (ADR-010): best-of-5 on fast beat the mid tier on
+`edit` (92% vs 77%) and `docs` (100% vs 92%) and lost on `feature`,
+`research` and `debug`, which keep their single-model outcome. `low` posture
+never samples — N fast calls cost more than the one fast or mid call `low`
+promises — and a `milo.samples` of `1` opts a request out (2..8 sets the
+count). A deployment turns the whole thing off with
+`sampling: { "enabled": false }` in `milo.config.json`; the cells themselves
+are fixed in `policy.ts` for now and are tuned by the benchmark like every
+other policy change.
+
+Sticky reuse keeps a sampled outcome pinned like any other decision, and a
+`samples: 1` override on a later turn converts the pinned decision back to
+its unsampled tier for that request.
 
 ## Roster resolution
 

@@ -56,7 +56,7 @@ No auth. Returns immediately so a health probe works before anyone has a key.
 
 ```
 GET /healthz
-200 { "ok": true, "policyVersion": "v2" }
+200 { "ok": true, "policyVersion": "v4" }
 ```
 
 ## `POST /v1/chat/completions`
@@ -110,6 +110,58 @@ unmodified.
    These headers are only ever present on a decision that actually routed;
    a request that could not be routed at all (see "Routing failures" below)
    gets an error response instead, with none of them.
+
+### Best-of-N sampling (ADR-010)
+
+For the cells where the benchmark showed a cheap model tried five times beats
+the tier the policy used to buy — `edit` and `docs` tasks above the trivial
+band, under `balanced` or `quality` posture — the decision resolves to
+best-of-5 on the fast tier instead of a single higher-tier call, and this
+route executes it:
+
+1. Five non-streaming upstream calls go out in parallel on the caller's key,
+   each with one of the varied framings appended to the system prompt and
+   each under its own wall-clock cap (60 s by default;
+   `sampling.sampleTimeoutMs` in `milo.config.json`).
+2. Every finished answer is scored by one Jev call on Milo's key (quality
+   0–3 plus a correctness probability), and the best answer — highest
+   expected quality, correctness breaking ties — goes back to the client.
+   Tool-call answers are ranked and picked like any other.
+3. Two more headers disclose it, on top of the six above:
+
+   | Header | Meaning |
+   |---|---|
+   | `x-milo-samples` | how many samples were drawn (`x-milo-tier` is `fast`) |
+   | `x-milo-sample-pick` | the zero-based index of the sample returned |
+
+A non-streaming request gets the chosen upstream body verbatim. A streaming
+request is buffered until the pick and then replayed as well-formed SSE: one
+chunk carrying the whole answer as a delta, a final chunk with the finish
+reason and the chosen sample's usage, then `[DONE]`. Time-to-first-byte on a
+sampled request is therefore the slowest capped sample plus one Jev rank, not
+the fast model's own TTFT.
+
+**Spend:** a sampled request spends roughly N fast-tier calls of the caller's
+OpenRouter budget (plus N+1 Jev calls on Milo's), which the benchmark showed
+lands in the same cost band as the one mid-tier call it replaces and well
+below frontier. A Milo key (`mk_`) is charged the sum of every sample's usage
+as one usage row against the decision. The decision record at
+`GET /v1/decisions/:id` aggregates tokens and cost across samples in its
+`upstream` block and stores per-sample metadata — tokens, cost, Jev scores,
+the pick, failure classes — never content.
+
+Failure behavior: if every sample fails, the request is answered by one
+ordinary call on the decision's `unsampledTier` (the tier the policy would
+have picked without sampling; the headers then name that model and tier). If
+Jev cannot rank any sample, the first successful sample is returned and the
+decision record says `ranking_failed`.
+
+Opting out: `milo: { "samples": 1 }` disables sampling for one request (any
+explicit integer up to 8 sets the count instead); `posture: "low"` never
+samples; `sampling: { "enabled": false }` in `milo.config.json` turns it off
+for the deployment. Sampling currently executes on this route only — routed
+`/v1/messages` and `/v1/responses` requests always take their single-model
+outcome.
 
 An OpenRouter request that fails outright (network error, no response) on
 either path returns:
