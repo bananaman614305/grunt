@@ -141,9 +141,35 @@ Every successful answer is graded. `packages/evals/data/graders.jsonl` holds
 one grader per example id: a **mechanical** one (`regex`, `contains_all`,
 `contains_any`, `not_contains`, or an `all` of those) where a correct answer
 has an unambiguous token, else a **judge** rubric with a `must` list that a
-grading model (`--judge-model`, default Sonnet 5) scores 0..1; a score at or
-above 0.7 passes. Judge cost is reported apart from the arms. `--no-judge`
-skips it, leaving judged examples ungraded.
+grading model (`--judge-model`, default `openai/gpt-5.6-luna`) scores 0..1;
+a score at or above 0.7 passes. Judge cost is reported apart from the arms.
+`--no-judge` skips it, leaving judged examples ungraded.
+
+The judge is a cheap model by default, and audited so it can be trusted or
+caught drifting: `--judge-audit <fraction>` (default `0.1`) has that fraction
+of judged answers *also* graded by `anthropic/claude-sonnet-5`. The pick is
+deterministic per (example id, arm) — a hash of the slot falls below the
+fraction or it does not — so reruns audit the same answers, and raising the
+fraction only adds slots. The report's **Judge audit** line gives the two
+judges' agreement on the audited subset, the pass-rate delta (primary minus
+audit; positive means the cheap judge is more lenient), and both judges'
+costs. `--judge-audit 0` disables the audit, as does pointing
+`--judge-model` at the audit model itself.
+
+Judge verdicts are **cached** under `packages/evals/.judge-cache/`
+(gitignored), one JSON file per verdict, keyed by a sha256 of the example
+id, the grader's content, the judge model, and the answer text. A rerun over
+unchanged answers makes no judge calls at all; the header's judge-cost line
+counts fresh calls only and prints the hit/miss counts. Changing the answer,
+the rubric, or the judge model changes the key and misses; a failed judge
+call (timeout or non-200) is never cached, so it is retried next run.
+Mechanical grades are free and never cached. `--no-judge-cache` bypasses the
+cache entirely, neither reading nor writing it.
+
+The header also prints one **Spend** line: the run's total upstream cost,
+split into arms (the routed and fixed calls), samples (best-of-N draws, when
+drawn), and judge (fresh judge and audit calls) — the price of the run
+without reconstructing it from columns.
 
 ### The three numbers
 
@@ -174,6 +200,7 @@ pnpm bench                                   # local gateway, balanced posture, 
 pnpm bench -- --gateway https://milo-gateway.fly.dev/v1 --limit 20 --no-judge
 pnpm bench -- --posture low --ids r-013,r-049 --json ./tmp/bench.json
 pnpm bench -- --openrouter https://<squire-egress-proxy>/api/v1   # a key-injecting proxy in front of OpenRouter
+pnpm bench -- --judge-audit 0.25 --no-judge-cache                 # audit a quarter of judged answers, force fresh verdicts
 ```
 
 Every call, the routed arm and the judge included, is pinned to an

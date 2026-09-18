@@ -17,8 +17,10 @@
 
 import type { ChatMessage, CostPosture, JevClientLike, Tier } from "@milo/core";
 import type { RoutingExample } from "../schema.js";
+import { auditSelected, graderContentHash, verdictKey } from "./cache.js";
+import type { JudgeCacheLike } from "./cache.js";
 import { buildJudgeMessages, gradeMechanically, isMechanical, parseJudgeVerdict } from "./graders.js";
-import type { GraderRow } from "./graders.js";
+import type { Grader, GraderRow } from "./graders.js";
 import { DEFAULT_PROVIDER_PINS, pinsFor } from "./providers.js";
 import type { ProviderPins } from "./providers.js";
 import { applyVariant, pickByJev, pickByOracle, rankAnswer, variantFor } from "./sampling.js";
@@ -44,6 +46,21 @@ export type RunBenchOptions = {
   judgeModel: string;
   /** False skips every judge call; judged examples are then ungraded. */
   judge: boolean;
+  /**
+   * Re-grade this fraction of judged answers with `auditJudgeModel` too, so
+   * a cheap judge is continuously checked against a stronger one. The pick
+   * is deterministic per (example id, arm), so reruns audit the same
+   * answers. 0 or undefined audits nothing.
+   */
+  judgeAuditFraction?: number;
+  /** The auditing judge. No audit runs when it is absent or equals `judgeModel`. */
+  auditJudgeModel?: string;
+  /**
+   * Verdict cache: a hit skips the judge call and carries no cost, so the
+   * report's judge cost counts fresh calls only. Undefined bypasses caching
+   * and every judge call goes out fresh. Failed calls are never cached.
+   */
+  judgeCache?: JudgeCacheLike;
   prices: Map<string, ModelPrice>;
   baseline: ModelPrice;
   concurrency: number;
@@ -133,6 +150,8 @@ function classify(error: unknown): string {
 type Runner = {
   options: RunBenchOptions;
   measure: (baseUrl: string, body: Record<string, unknown>, timeoutMs?: number) => Promise<CallMeasurement>;
+  /** Present when `judgeCache` is; mutated as verdicts hit or miss. */
+  cacheStats?: { hits: number; misses: number };
 };
 
 async function callArm(runner: Runner, example: RoutingExample, messages: ChatMessage[], arm: ArmName): Promise<ArmResult> {
@@ -207,8 +226,61 @@ async function attachDecision(runner: Runner, result: ArmResult, decisionId: str
   }
 }
 
-/** Grades one answer with the example's grader: mechanically, or by the judge when enabled. */
-async function gradeAnswer(runner: Runner, example: RoutingExample, task: ChatMessage[], answer: string): Promise<Grade | undefined> {
+/** One judge call. `verdict` is false when the call itself failed — worth retrying later, so never cached or audited. */
+async function callJudge(
+  runner: Runner,
+  task: ChatMessage[],
+  answer: string,
+  grader: Extract<Grader, { type: "judge" }>,
+  model: string,
+): Promise<{ grade: Grade; verdict: boolean }> {
+  const { options } = runner;
+  try {
+    const measured = await runner.measure(options.openRouterBaseUrl, {
+      model,
+      messages: buildJudgeMessages(task, answer, grader),
+      temperature: 0,
+      ...providerField(model, options.providerPins ?? DEFAULT_PROVIDER_PINS),
+    });
+    if (measured.status !== 200) return { grade: { score: 0, pass: false, by: "judge", reason: `judge HTTP ${measured.status}` }, verdict: false };
+    const parsed = parseJudgeVerdict(measured.text);
+    return { grade: { ...parsed, ...(measured.costUsd !== undefined ? { judgeCostUsd: measured.costUsd } : {}) }, verdict: true };
+  } catch (error) {
+    return { grade: { score: 0, pass: false, by: "judge", reason: `judge ${classify(error)}` }, verdict: false };
+  }
+}
+
+/** A verdict from the cache when possible, else a fresh call whose real verdict is cached. */
+async function judgeWithCache(
+  runner: Runner,
+  exampleId: string,
+  task: ChatMessage[],
+  answer: string,
+  grader: Extract<Grader, { type: "judge" }>,
+  model: string,
+): Promise<{ grade: Grade; verdict: boolean }> {
+  const cache = runner.options.judgeCache;
+  if (cache === undefined) return callJudge(runner, task, answer, grader, model);
+  const key = verdictKey({ exampleId, graderHash: graderContentHash(grader), judgeModel: model, answer });
+  const hit = cache.get(key);
+  if (hit !== undefined) {
+    if (runner.cacheStats !== undefined) runner.cacheStats.hits += 1;
+    return { grade: hit, verdict: true };
+  }
+  const fresh = await callJudge(runner, task, answer, grader, model);
+  if (runner.cacheStats !== undefined) runner.cacheStats.misses += 1;
+  if (fresh.verdict) cache.set(key, fresh.grade);
+  return fresh;
+}
+
+/**
+ * Grades one answer with the example's grader: mechanically, or by the judge
+ * when enabled. `armKey` names the answer's slot — an arm name, or
+ * `sample-<n>` for a best-of-N draw — and drives the deterministic audit
+ * pick: a picked slot whose primary verdict was real is also graded by the
+ * auditing judge, and that verdict rides on the grade as `audit`.
+ */
+async function gradeAnswer(runner: Runner, example: RoutingExample, task: ChatMessage[], answer: string, armKey: string): Promise<Grade | undefined> {
   const { options } = runner;
   const row = options.graders.get(example.id);
   if (row === undefined) return undefined;
@@ -216,24 +288,31 @@ async function gradeAnswer(runner: Runner, example: RoutingExample, task: ChatMe
   if (isMechanical(row.grader)) return gradeMechanically(row.grader, answer);
   if (!options.judge || row.grader.type !== "judge") return undefined;
 
-  try {
-    const verdict = await runner.measure(options.openRouterBaseUrl, {
-      model: options.judgeModel,
-      messages: buildJudgeMessages(task, answer, row.grader),
-      temperature: 0,
-      ...providerField(options.judgeModel, options.providerPins ?? DEFAULT_PROVIDER_PINS),
-    });
-    if (verdict.status !== 200) return { score: 0, pass: false, by: "judge", reason: `judge HTTP ${verdict.status}` };
-    const parsed = parseJudgeVerdict(verdict.text);
-    return { ...parsed, ...(verdict.costUsd !== undefined ? { judgeCostUsd: verdict.costUsd } : {}) };
-  } catch (error) {
-    return { score: 0, pass: false, by: "judge", reason: `judge ${classify(error)}` };
+  const primary = await judgeWithCache(runner, example.id, task, answer, row.grader, options.judgeModel);
+  const auditModel = options.auditJudgeModel;
+  if (
+    primary.verdict &&
+    auditModel !== undefined &&
+    auditModel !== options.judgeModel &&
+    auditSelected(example.id, armKey, options.judgeAuditFraction ?? 0)
+  ) {
+    const audit = await judgeWithCache(runner, example.id, task, answer, row.grader, auditModel);
+    if (audit.verdict) {
+      primary.grade.audit = {
+        model: auditModel,
+        score: audit.grade.score,
+        pass: audit.grade.pass,
+        ...(audit.grade.reason !== undefined ? { reason: audit.grade.reason } : {}),
+        ...(audit.grade.judgeCostUsd !== undefined ? { judgeCostUsd: audit.grade.judgeCostUsd } : {}),
+      };
+    }
   }
+  return primary.grade;
 }
 
 async function grade(runner: Runner, example: RoutingExample, task: ChatMessage[], result: ArmResult, answer: string): Promise<ArmResult> {
   if (result.error !== undefined) return result;
-  const verdict = await gradeAnswer(runner, example, task, answer);
+  const verdict = await gradeAnswer(runner, example, task, answer, result.arm);
   if (verdict !== undefined) result.grade = verdict;
   return result;
 }
@@ -283,7 +362,7 @@ async function drawSamples(runner: Runner, example: RoutingExample, messages: Ch
   await Promise.all(
     drawn.map(async ({ record, text }) => {
       if (record.error !== undefined) return;
-      const verdict = await gradeAnswer(runner, example, messages, text);
+      const verdict = await gradeAnswer(runner, example, messages, text, `sample-${record.index}`);
       if (verdict !== undefined) record.grade = verdict;
       if (options.jev === undefined) return;
       try {
@@ -370,8 +449,10 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
   if ((options.samples ?? 1) > 1 && options.jev === undefined) {
     throw new Error("samples > 1 needs a Jev client to rank them");
   }
+  const cacheStats = options.judgeCache !== undefined ? { hits: 0, misses: 0 } : undefined;
   const runner: Runner = {
     options,
+    ...(cacheStats !== undefined ? { cacheStats } : {}),
     measure: (baseUrl, body, timeoutMs) =>
       measureChatCompletion({
         baseUrl,
@@ -404,6 +485,10 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
       ? { n: options.samples as number, model: options.fixedModels[sampleTier], tier: sampleTier, vary: options.vary === true, jevUsdPerCall: JEV_USD_PER_CALL }
       : undefined;
 
+  const auditFraction = options.judgeAuditFraction ?? 0;
+  const auditing =
+    options.judge && auditFraction > 0 && options.auditJudgeModel !== undefined && options.auditJudgeModel !== options.judgeModel;
+
   return {
     generatedAt: (options.now ?? (() => new Date().toISOString()))(),
     gateway: options.gatewayBaseUrl,
@@ -412,6 +497,8 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     prices,
     baseline: options.baseline,
     judgeModel: options.judgeModel,
+    ...(auditing ? { judgeAudit: { model: options.auditJudgeModel as string, fraction: auditFraction } } : {}),
+    ...(cacheStats !== undefined ? { judgeCacheStats: cacheStats } : {}),
     providerPins: options.providerPins ?? DEFAULT_PROVIDER_PINS,
     ...(sampling !== undefined ? { sampling } : {}),
     rows: rows.filter((r): r is BenchRow => r !== undefined),

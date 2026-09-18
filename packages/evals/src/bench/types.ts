@@ -88,7 +88,19 @@ export type Grade = {
   pass: boolean;
   by: "mechanical" | "judge";
   reason?: string;
-  /** Judge cost, USD, so it can be reported apart from the arms. */
+  /** Cost of a FRESH judge call, USD; absent on a cache hit, so a report's summed judge cost counts fresh calls only. */
+  judgeCostUsd?: number;
+  /** A second judge's verdict on this answer, when the audit picked it (`--judge-audit`). */
+  audit?: AuditVerdict;
+};
+
+/** The auditing judge's verdict on an audited answer. */
+export type AuditVerdict = {
+  model: string;
+  score: number;
+  pass: boolean;
+  reason?: string;
+  /** Fresh audit call cost, USD; absent when the audit verdict came from the cache. */
   judgeCostUsd?: number;
 };
 
@@ -140,6 +152,10 @@ export type BenchReport = {
   prices: Record<string, ModelPrice>;
   baseline: ModelPrice;
   judgeModel: string;
+  /** Present when a fraction of judged answers was re-graded by a second judge. */
+  judgeAudit?: { model: string; fraction: number };
+  /** Judge verdict cache counters; absent when the cache was bypassed. */
+  judgeCacheStats?: { hits: number; misses: number };
   /** Per-model OpenRouter provider pins in effect for the run. */
   providerPins: Record<string, string[]>;
   sampling?: SamplingConfig;

@@ -1,7 +1,12 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RoutingExample } from "../schema.js";
+import { JudgeCache } from "./cache.js";
 import type { GraderRow } from "./graders.js";
 import { armOrder, fixedModelsFromRoster, providerField, runBench, saltMessages } from "./run.js";
+import type { RunBenchOptions } from "./run.js";
 
 function sseResponse(text: string, usage: Record<string, unknown>, headers: Record<string, string> = {}): Response {
   const frames = [
@@ -170,5 +175,118 @@ describe("runBench", () => {
     expect(row?.results.find((r) => r.arm === "milo")).toMatchObject({ error: "network", status: 0 });
     expect(row?.results.find((r) => r.arm === "milo")?.grade).toBeUndefined();
     expect(row?.results.find((r) => r.arm === "fast")?.grade?.pass).toBe(true);
+  });
+});
+
+describe("judge cache and audit", () => {
+  /** A fake OpenRouter: one fixed answer, and one verdict per judge model, counting judge calls. */
+  function judgeFetch(counts: Record<string, number>): typeof fetch {
+    return async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const model = body["model"] as string;
+      if (model === "judge/cheap") {
+        counts["cheap"] = (counts["cheap"] ?? 0) + 1;
+        return sseResponse('{"score": 0.9, "pass": true, "reason": "fine"}', { prompt_tokens: 40, completion_tokens: 15, cost: 0.0001 });
+      }
+      if (model === "judge/strong") {
+        counts["strong"] = (counts["strong"] ?? 0) + 1;
+        return sseResponse('{"score": 0.4, "pass": false, "reason": "shallow"}', { prompt_tokens: 40, completion_tokens: 15, cost: 0.001 });
+      }
+      return sseResponse("an answer", { prompt_tokens: 10, completion_tokens: 5, cost: 0.00001 });
+    };
+  }
+
+  function benchOptions(counts: Record<string, number>, over: Partial<RunBenchOptions> = {}): RunBenchOptions {
+    return {
+      examples: [example("r-2", "Write docs.")],
+      graders: new Map<string, GraderRow>([["r-2", { id: "r-2", grader: { type: "judge", rubric: "any" } }]]),
+      gatewayBaseUrl: "http://gw/v1",
+      openRouterBaseUrl: "http://or/api/v1",
+      apiKey: "k",
+      posture: "balanced",
+      arms: ["fast"],
+      fixedModels: { fast: "fast/model", mid: "mid/model", frontier: "frontier/model" },
+      judgeModel: "judge/cheap",
+      judge: true,
+      prices: new Map(),
+      baseline: { id: "b", inputUsdPerM: 1, outputUsdPerM: 1 },
+      concurrency: 1,
+      timeoutMs: 1000,
+      providerPins: {},
+      fetchImpl: judgeFetch(counts),
+      ...over,
+    };
+  }
+
+  it("audits at fraction 1: the strong judge re-grades and its verdict rides on the grade", async () => {
+    const counts: Record<string, number> = {};
+    const report = await runBench(benchOptions(counts, { judgeAuditFraction: 1, auditJudgeModel: "judge/strong" }));
+    const grade = report.rows[0]?.results[0]?.grade;
+    expect(grade).toMatchObject({ score: 0.9, pass: true, by: "judge", judgeCostUsd: 0.0001 });
+    expect(grade?.audit).toEqual({ model: "judge/strong", score: 0.4, pass: false, reason: "shallow", judgeCostUsd: 0.001 });
+    expect(counts).toEqual({ cheap: 1, strong: 1 });
+    expect(report.judgeAudit).toEqual({ model: "judge/strong", fraction: 1 });
+  });
+
+  it("audits nothing at fraction 0, or when the audit judge is the primary judge", async () => {
+    const c1: Record<string, number> = {};
+    const r1 = await runBench(benchOptions(c1, { judgeAuditFraction: 0, auditJudgeModel: "judge/strong" }));
+    expect(r1.rows[0]?.results[0]?.grade?.audit).toBeUndefined();
+    expect(c1["strong"]).toBeUndefined();
+    expect(r1.judgeAudit).toBeUndefined();
+
+    const c2: Record<string, number> = {};
+    const r2 = await runBench(benchOptions(c2, { judgeAuditFraction: 1, auditJudgeModel: "judge/cheap" }));
+    expect(r2.rows[0]?.results[0]?.grade?.audit).toBeUndefined();
+    expect(c2["cheap"]).toBe(1);
+    expect(r2.judgeAudit).toBeUndefined();
+  });
+
+  it("serves a rerun from the cache: no judge network calls, no judge cost, hits counted", async () => {
+    const cache = new JudgeCache(mkdtempSync(join(tmpdir(), "bench-cache-")));
+    const counts: Record<string, number> = {};
+
+    const first = await runBench(benchOptions(counts, { judgeCache: cache, judgeAuditFraction: 1, auditJudgeModel: "judge/strong" }));
+    expect(counts).toEqual({ cheap: 1, strong: 1 });
+    expect(first.judgeCacheStats).toEqual({ hits: 0, misses: 2 });
+    expect(first.rows[0]?.results[0]?.grade?.judgeCostUsd).toBe(0.0001);
+
+    const second = await runBench(benchOptions(counts, { judgeCache: cache, judgeAuditFraction: 1, auditJudgeModel: "judge/strong" }));
+    expect(counts).toEqual({ cheap: 1, strong: 1 }); // nothing fresh
+    expect(second.judgeCacheStats).toEqual({ hits: 2, misses: 0 });
+    const grade = second.rows[0]?.results[0]?.grade;
+    expect(grade).toMatchObject({ score: 0.9, pass: true, by: "judge" });
+    expect(grade?.judgeCostUsd).toBeUndefined(); // a hit is free
+    expect(grade?.audit).toEqual({ model: "judge/strong", score: 0.4, pass: false, reason: "shallow" });
+  });
+
+  it("bypasses the cache when none is given: every run calls the judge again and reports no stats", async () => {
+    const counts: Record<string, number> = {};
+    await runBench(benchOptions(counts));
+    const report = await runBench(benchOptions(counts));
+    expect(counts["cheap"]).toBe(2);
+    expect(report.judgeCacheStats).toBeUndefined();
+  });
+
+  it("does not cache a failed judge call, so the next run retries it", async () => {
+    const cache = new JudgeCache(mkdtempSync(join(tmpdir(), "bench-cache-")));
+    let failures = 0;
+    const failingFetch: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (body["model"] === "judge/cheap") {
+        failures += 1;
+        return new Response("busy", { status: 503 });
+      }
+      return sseResponse("an answer", { prompt_tokens: 10, completion_tokens: 5 });
+    };
+    const first = await runBench(benchOptions({}, { judgeCache: cache, fetchImpl: failingFetch }));
+    expect(first.rows[0]?.results[0]?.grade).toMatchObject({ pass: false, reason: "judge HTTP 503" });
+    expect(failures).toBe(1);
+
+    const counts: Record<string, number> = {};
+    const second = await runBench(benchOptions(counts, { judgeCache: cache }));
+    expect(counts["cheap"]).toBe(1); // retried, not served from the cache
+    expect(second.judgeCacheStats).toEqual({ hits: 0, misses: 1 });
+    expect(second.rows[0]?.results[0]?.grade?.pass).toBe(true);
   });
 });

@@ -12,7 +12,7 @@ import type { TaskType, Tier } from "@milo/core";
 import { TASK_TYPES, TIERS } from "@milo/core";
 import { costFromTokens, estimateCostUsd } from "./prices.js";
 import { auroc, randomPickPassRate } from "./sampling.js";
-import type { ArmResult, BenchReport, BenchRow, FixedArm, ModelPrice, ResultArm } from "./types.js";
+import type { ArmResult, BenchReport, BenchRow, FixedArm, Grade, ModelPrice, ResultArm } from "./types.js";
 import { FIXED_ARMS, MILO_ARM } from "./types.js";
 
 export type SummaryArm = ResultArm | "oracle";
@@ -284,11 +284,107 @@ export function summarizeSampling(report: BenchReport): SamplingSummary | undefi
 }
 
 // ---------------------------------------------------------------------------
+// Spend and judge audit
+// ---------------------------------------------------------------------------
+
+function sumDefined(values: Array<number | undefined>): number {
+  return values.reduce<number>((s, v) => s + (v ?? 0), 0);
+}
+
+function isRealArm(result: ArmResult): boolean {
+  return result.arm === MILO_ARM || (FIXED_ARMS as readonly string[]).includes(result.arm);
+}
+
+/**
+ * Every judge-graded verdict in the run, each counted once: the real arms
+ * plus the best-of-N samples. The synthetic best-of arms are excluded — each
+ * shares its chosen sample's grade object, already counted in the samples.
+ */
+function judgedGrades(report: BenchReport): Grade[] {
+  const fromArms = report.rows.flatMap((row) => row.results.filter(isRealArm).map((r) => r.grade));
+  const fromSamples = report.rows.flatMap((row) => (row.samples ?? []).map((s) => s.grade));
+  return [...fromArms, ...fromSamples].filter((g): g is Grade => g !== undefined && g.by === "judge");
+}
+
+/** What the run cost upstream, split by who spent it. All USD. */
+export type SpendSummary = {
+  /** The real arm calls: routed and fixed. Synthetic best-of arms re-count the samples, so they are excluded. */
+  armsUsd: number;
+  /** The best-of-N sample draws. */
+  samplesUsd: number;
+  /** Fresh judge calls, audit included. Cache hits carry no cost. */
+  judgeUsd: number;
+  totalUsd: number;
+};
+
+export function summarizeSpend(report: BenchReport): SpendSummary {
+  const armsUsd = sumDefined(
+    report.rows
+      .flatMap((row) => row.results)
+      .filter((r) => isRealArm(r) && isOk(r))
+      .map((r) => resultCostUsd(r, report.prices)),
+  );
+  const samplesUsd = sumDefined(
+    report.rows
+      .flatMap((row) => row.samples ?? [])
+      .filter((s) => s.error === undefined && s.status === 200)
+      .map((s) => s.costUsd),
+  );
+  const grades = judgedGrades(report);
+  const judgeUsd = sumDefined(grades.map((g) => g.judgeCostUsd)) + sumDefined(grades.map((g) => g.audit?.judgeCostUsd));
+  return { armsUsd, samplesUsd, judgeUsd, totalUsd: armsUsd + samplesUsd + judgeUsd };
+}
+
+/** How the cheap judge held up against the auditing judge on the audited subset. */
+export type JudgeAuditSummary = {
+  model: string;
+  fraction: number;
+  /** Judge-graded answers in the run, arms and samples. */
+  judged: number;
+  /** Of those, how many the audit re-graded. */
+  audited: number;
+  /** Same pass/fail from both judges, over the audited subset. NaN when nothing was audited. */
+  agreement: number;
+  /** Primary pass rate minus audit pass rate on the audited subset; positive means the cheap judge is more lenient. */
+  passRateDelta: number;
+  /** Fresh primary judge cost over every judged answer. */
+  primaryUsd: number;
+  /** Fresh audit judge cost. */
+  auditUsd: number;
+};
+
+export function summarizeJudgeAudit(report: BenchReport): JudgeAuditSummary | undefined {
+  if (report.judgeAudit === undefined) return undefined;
+  const grades = judgedGrades(report);
+  const audited = grades.filter((g) => g.audit !== undefined);
+  const agree = audited.filter((g) => g.pass === g.audit?.pass).length;
+  const primaryPass = rate(audited.filter((g) => g.pass).length, audited.length);
+  const auditPass = rate(audited.filter((g) => g.audit?.pass === true).length, audited.length);
+  return {
+    model: report.judgeAudit.model,
+    fraction: report.judgeAudit.fraction,
+    judged: grades.length,
+    audited: audited.length,
+    agreement: rate(agree, audited.length),
+    passRateDelta: audited.length === 0 ? NaN : primaryPass - auditPass,
+    primaryUsd: sumDefined(grades.map((g) => g.judgeCostUsd)),
+    auditUsd: sumDefined(audited.map((g) => g.audit?.judgeCostUsd)),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Markdown
 // ---------------------------------------------------------------------------
 
 function pct(value: number): string {
   return Number.isNaN(value) ? "n/a" : `${(value * 100).toFixed(1)}%`;
+}
+
+/** Percentage points with a sign, for deltas. */
+function pp(value: number): string {
+  if (Number.isNaN(value)) return "n/a";
+  const v = value * 100;
+  return `${v >= 0 ? "+" : ""}${v.toFixed(1)} pp`;
 }
 
 function ms(value: number): string {
@@ -320,9 +416,9 @@ export function formatBenchMarkdown(report: BenchReport): string {
   const arms = SUMMARY_ARMS.map((arm) => summarizeArm(report, arm)).filter((a) => a.calls > 0);
   const routing = summarizeRouting(report);
   const sampling = summarizeSampling(report);
-  const judgeCost = report.rows
-    .flatMap((row) => row.results)
-    .reduce((s, r) => s + (r.grade?.judgeCostUsd ?? 0), 0);
+  const spend = summarizeSpend(report);
+  const audit = summarizeJudgeAudit(report);
+  const cache = report.judgeCacheStats;
   const gradedIds = report.rows.filter((r) => r.hasGrader).length;
 
   const sections: string[] = [];
@@ -333,7 +429,13 @@ export function formatBenchMarkdown(report: BenchReport): string {
       `- Gateway: \`${report.gateway}\`, posture \`${report.posture}\``,
       `- Fixed arms: ${FIXED_ARMS.map((a) => `${a} = \`${report.fixedModels[a as FixedArm]}\``).join(", ")}`,
       `- Baseline (estimated, never called): \`${report.baseline.id}\` at $${report.baseline.inputUsdPerM}/M in, $${report.baseline.outputUsdPerM}/M out`,
-      `- Judge: \`${report.judgeModel}\`, total judge cost ${usd(judgeCost)}`,
+      `- Judge: \`${report.judgeModel}\`, judge cost ${usd(spend.judgeUsd)} (fresh calls only; ${cache === undefined ? "cache bypassed" : `cache ${cache.hits} hits, ${cache.misses} misses`})`,
+      ...(audit === undefined
+        ? []
+        : [
+            `- Judge audit: \`${audit.model}\` re-judged ${audit.audited} of ${audit.judged} judged answers (fraction ${pct(audit.fraction)}): agreement ${pct(audit.agreement)}, pass-rate delta ${pp(audit.passRateDelta)} (primary minus audit); primary judge ${usd(audit.primaryUsd)}, audit ${usd(audit.auditUsd)}`,
+          ]),
+      `- Spend: ${usd(spend.totalUsd)} upstream — arms ${usd(spend.armsUsd)}${report.sampling === undefined ? "" : `, samples ${usd(spend.samplesUsd)}`}, judge ${usd(spend.judgeUsd)}`,
       `- Providers: ${Object.keys(report.providerPins).length === 0 ? "OpenRouter's choice (unpinned)" : `pinned per model, no fallbacks — ${Object.entries(report.providerPins).map(([m, order]) => `${m}→${(order as string[])[0] ?? "?"}`).join(", ")}`}`,
       `- Examples: ${report.rows.length} (${gradedIds} with a grader)`,
     ].join("\n"),

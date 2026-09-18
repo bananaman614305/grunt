@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import type { CostPosture } from "@milo/core";
 import { COST_POSTURES, DEFAULT_ROSTER, JevClient } from "@milo/core";
 import { loadRoutingSet } from "../schema.js";
+import { JudgeCache } from "./cache.js";
 import { DEFAULT_GRADERS_PATH, loadGraders } from "./graders.js";
 import { BASELINE_FALLBACK_PRICE, BASELINE_MODEL_ID, fetchPrices } from "./prices.js";
 import { formatBenchMarkdown } from "./report.js";
@@ -31,7 +32,11 @@ const INVOKE_CWD = process.env["INIT_CWD"] ?? process.cwd();
 
 export const DEFAULT_GATEWAY = "http://127.0.0.1:8787/v1";
 export const DEFAULT_OPENROUTER = "https://openrouter.ai/api/v1";
-export const DEFAULT_JUDGE_MODEL = "anthropic/claude-sonnet-5";
+/** The default judge is a cheap model; `AUDIT_JUDGE_MODEL` keeps it honest on a sample. */
+export const DEFAULT_JUDGE_MODEL = "openai/gpt-5.6-luna";
+/** The auditing judge: re-grades `--judge-audit` of judged answers so the cheap judge can be trusted or caught drifting. */
+export const AUDIT_JUDGE_MODEL = "anthropic/claude-sonnet-5";
+export const DEFAULT_JUDGE_AUDIT_FRACTION = 0.1;
 export const DEFAULT_SAMPLE_TIMEOUT_MS = 90_000;
 
 export type BenchCliOptions = {
@@ -41,6 +46,10 @@ export type BenchCliOptions = {
   arms: ArmName[];
   judge: boolean;
   judgeModel: string;
+  /** Fraction of judged answers also graded by `AUDIT_JUDGE_MODEL`; 0 disables. */
+  judgeAudit: number;
+  /** False bypasses the on-disk judge verdict cache. */
+  judgeCache: boolean;
   limit: number | undefined;
   ids: string[] | undefined;
   concurrency: number;
@@ -68,6 +77,8 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     arms: [...ARM_NAMES],
     judge: true,
     judgeModel: DEFAULT_JUDGE_MODEL,
+    judgeAudit: DEFAULT_JUDGE_AUDIT_FRACTION,
+    judgeCache: true,
     limit: undefined,
     ids: undefined,
     concurrency: 3,
@@ -123,6 +134,18 @@ export function parseArgs(argv: string[]): BenchCliOptions {
         break;
       case "--judge-model":
         options.judgeModel = next();
+        break;
+      case "--judge-audit": {
+        const raw = next();
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < 0 || value > 1) {
+          throw new Error(`--judge-audit must be a fraction between 0 and 1, got "${raw}"`);
+        }
+        options.judgeAudit = value;
+        break;
+      }
+      case "--no-judge-cache":
+        options.judgeCache = false;
         break;
       case "--limit":
         options.limit = positiveInt(next(), "--limit");
@@ -199,7 +222,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
   const graders = loadGraders(options.graders);
 
   const fixedModels = fixedModelsFromRoster(DEFAULT_ROSTER);
-  const priceIds = [BASELINE_MODEL_ID, options.judgeModel, ...Object.values(fixedModels)];
+  const priceIds = [BASELINE_MODEL_ID, options.judgeModel, AUDIT_JUDGE_MODEL, ...Object.values(fixedModels)];
   let prices;
   try {
     prices = await fetchPrices(priceIds);
@@ -220,6 +243,9 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     fixedModels,
     judgeModel: options.judgeModel,
     judge: options.judge,
+    judgeAuditFraction: options.judgeAudit,
+    auditJudgeModel: AUDIT_JUDGE_MODEL,
+    ...(options.judgeCache ? { judgeCache: new JudgeCache() } : {}),
     prices,
     baseline,
     concurrency: options.concurrency,
