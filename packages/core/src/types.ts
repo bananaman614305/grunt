@@ -87,6 +87,13 @@ export type MiloRequestExtension = {
    * injection is the default.
    */
   brief?: boolean;
+  /**
+   * `false` skips the agentic gates (ADR-013 phase A: the completeness
+   * check and its failure-typed retry) for this one request. Absent means
+   * the gates run where they apply; there is no `true` opt-in because
+   * running is the default.
+   */
+  gates?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +187,15 @@ export type RouteDecision = {
    */
   samples?: number;
   unsampledTier?: Tier;
+  /**
+   * What a single unsampled call should run on when this decision's sampled
+   * model is not tier-derived (ADR-012: the deepseek compute controller
+   * samples a fixed family model, not the roster's fast tier). Read by the
+   * gateway's all-samples-failed fallback and by the sticky `milo.samples: 1`
+   * override; absent means "resolve `unsampledTier` against the roster",
+   * which is the ADR-010 behaviour, unchanged.
+   */
+  unsampledModel?: string;
   createdAt: string; // ISO 8601
 };
 
@@ -228,6 +244,28 @@ export type SampleUpstream = {
   picked?: boolean;
 };
 
+/**
+ * What the completeness gate did to one routed answer (ADR-013 phase A):
+ * the verdict, whether the failure-typed retry fired, and which answer was
+ * served. The retry's tokens and cost are folded into the row's aggregate
+ * usage alongside its own sub-record here. Never content.
+ */
+export type GateUpstream = {
+  /** `complete`, `incomplete`, `off_task`, `wrong_format` -- or `error` when the check itself failed and the answer was served as-is. */
+  verdict: string;
+  /** Jev's confidence on the verdict, when the check answered. */
+  confidence?: number;
+  /** The failure-typed retry fired (at most once). */
+  retried?: boolean;
+  /** Which answer was served after a retry. */
+  pick?: "original" | "retry";
+  /** Jev's expected quality for each answer, when both were rated. */
+  originalQuality?: number;
+  retryQuality?: number;
+  /** The retry call's own outcome; its usage is also in the aggregate. */
+  retry?: { status: number; latencyMs: number; inputTokens?: number; outputTokens?: number; costUsd?: number; error?: string };
+};
+
 export type DecisionRecord = RouteDecision & {
   /**
    * Set by the gateway after the upstream call completes. On a sampled
@@ -246,5 +284,11 @@ export type DecisionRecord = RouteDecision & {
     samples?: SampleUpstream[];
     samplePick?: number;
     sampleNote?: "ranking_failed" | "all_samples_failed";
+    /**
+     * The completeness gate's outcome (ADR-013 phase A), present only when
+     * the gate ran. On a retried answer the aggregate tokens/cost above
+     * include the retry's usage: the row bills what was actually generated.
+     */
+    gate?: GateUpstream;
   };
 };

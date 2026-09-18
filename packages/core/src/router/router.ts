@@ -35,13 +35,14 @@
 
 import { ulid } from "ulid";
 import type { JevClientLike, JevAnswer, SystemOneResult } from "../jev/types.js";
-import type { ChatMessage, RouteDecision, RouteRequest, RouteSignals, Roster, TaskType } from "../types.js";
+import type { ChatMessage, RouteDecision, RouteRequest, RouteSignals, Roster, TaskType, Tier } from "../types.js";
 import { DEFAULT_ROSTER, POLICY_VERSION, ROUTER_LIMITS, TASK_TYPES } from "../types.js";
 import { CircuitBreaker } from "./breaker.js";
 import type { BreakerStatus, CircuitBreakerOptions } from "./breaker.js";
 import { buildJevState, countUserTurns } from "./context.js";
 import { RoutingUnavailableError } from "./errors.js";
 import type { RoutingUnavailableCause } from "./errors.js";
+import { computeBand, computeBudget } from "./controller.js";
 import { chooseOutcome, clampSamples, JEV_PROFILE } from "./policy.js";
 import type { PolicyProfile } from "./policy.js";
 import { detectCapture, ROUTER_QUESTIONS_WITH_CAPTURE } from "../preferences/index.js";
@@ -50,9 +51,26 @@ import { resolveModel } from "./roster.js";
 import { StickyCache } from "./sticky.js";
 import type { StickyEntry, StickyStore } from "./sticky-store.js";
 
+/**
+ * How the router turns signals into a model (ADR-012).
+ *
+ * `"roster"` -- the shipped default -- is policy v4 over the tier-to-model
+ * roster, byte-for-byte the pre-ADR-012 behaviour. `"deepseek"` is the
+ * experimental compute controller: the same single Jev call produces the
+ * same signals (capture included), but the outcome is the measured band
+ * budget over the DeepSeek family (`controller.ts`) instead of a roster
+ * tier. Forced tiers and sticky reuse keep their semantics in both modes;
+ * per-request rosters (`RouteRequest.roster`, the ADR-008 per-key tables)
+ * are ignored in `"deepseek"` mode, because the controller's whole premise
+ * is one model family.
+ */
+export type RoutingMode = "roster" | "deepseek";
+
 export type RouterOptions = {
   jev: JevClientLike;
   roster?: Roster;
+  /** Routing mode (ADR-012). Defaults to `"roster"`, the shipped behaviour. */
+  mode?: RoutingMode;
   sticky?: StickyCache;
   /**
    * Durable backing for the sticky cache. Consulted on a memory miss and
@@ -295,9 +313,28 @@ type InFlight = Promise<{ signals: RouteSignals }>;
  */
 export const MAX_IN_FLIGHT = 1_000;
 
+/** What `decide` settles for one request: the model-bearing part of a decision. */
+type DecidedOutcome = {
+  tier: Tier;
+  model: string;
+  reason: string;
+  samples?: number;
+  unsampledTier?: Tier;
+  unsampledModel?: string;
+};
+
+/** The tier a controller band is disclosed as (`x-milo-tier`, decision rows). */
+const CONTROLLER_TIERS: Record<0 | 1 | 2 | 3, Tier> = {
+  0: "fast",
+  1: "fast",
+  2: "mid",
+  3: "frontier",
+};
+
 export class Router {
   private readonly jev: JevClientLike;
   private readonly roster: Roster;
+  private readonly mode: RoutingMode;
   private readonly sticky: StickyCache;
   private readonly stickyStore: StickyStore | undefined;
   private readonly clock: () => number;
@@ -318,6 +355,7 @@ export class Router {
   constructor(opts: RouterOptions) {
     this.jev = opts.jev;
     this.roster = opts.roster ?? DEFAULT_ROSTER;
+    this.mode = opts.mode ?? "roster";
     this.clock = opts.clock ?? Date.now;
     this.sticky =
       opts.sticky ??
@@ -341,6 +379,11 @@ export class Router {
    * constructor's roster stays the deployment-wide default.
    */
   private rosterFor(req: RouteRequest): Roster {
+    // Per-key rosters (ADR-008) are ignored under the deepseek controller:
+    // the mode's premise is one model family, and a stored tier table has
+    // nothing to say about it. Forced tiers and roster fallbacks resolve
+    // against the deployment's own table instead.
+    if (this.mode === "deepseek") return this.roster;
     return req.roster ?? this.roster;
   }
 
@@ -388,26 +431,18 @@ export class Router {
     const call = existing ?? this.startJevCall(key, req);
     const { signals } = await call;
 
-    const outcome = chooseOutcome(
-      signals,
-      req.posture,
-      this.profile,
-      this.samplingEnabled ? req.samples : 1,
-    );
-    const { tier, reason } = outcome;
-    const model = resolveModel(tier, this.rosterFor(req), req.candidates, {
-      longOutput: signals.longOutput,
-    });
+    const outcome = this.decide(signals, req);
 
     const decision: RouteDecision = {
       id: ulid(),
       fingerprint: req.fingerprint,
       signals,
-      tier,
-      model,
-      reason: `${signals.taskType} task, ${reason}; chose ${model}`,
+      tier: outcome.tier,
+      model: outcome.model,
+      reason: outcome.reason,
       ...(outcome.samples !== undefined ? { samples: outcome.samples } : {}),
       ...(outcome.unsampledTier !== undefined ? { unsampledTier: outcome.unsampledTier } : {}),
+      ...(outcome.unsampledModel !== undefined ? { unsampledModel: outcome.unsampledModel } : {}),
       policyVersion: POLICY_VERSION,
       // A caller that joined an in-flight call did not cause a Jev call of
       // its own, which is exactly what `sticky` means. Its own decision id
@@ -427,22 +462,95 @@ export class Router {
   }
 
   /**
+   * The routing outcome for one set of signals: tier, model, sampling, and
+   * the reason sentence, per this router's mode. `"roster"` is policy v4
+   * over the roster, unchanged; `"deepseek"` is the ADR-012 compute
+   * controller mapping.
+   */
+  private decide(signals: RouteSignals, req: RouteRequest): DecidedOutcome {
+    if (this.mode === "deepseek") {
+      const controller = this.decideController(signals, req);
+      if (controller !== undefined) return controller;
+    }
+    const outcome = chooseOutcome(
+      signals,
+      req.posture,
+      this.profile,
+      this.samplingEnabled ? req.samples : 1,
+    );
+    const model = resolveModel(outcome.tier, this.rosterFor(req), req.candidates, {
+      longOutput: signals.longOutput,
+    });
+    return {
+      tier: outcome.tier,
+      model,
+      reason: `${signals.taskType} task, ${outcome.reason}; chose ${model}`,
+      ...(outcome.samples !== undefined ? { samples: outcome.samples } : {}),
+      ...(outcome.unsampledTier !== undefined ? { unsampledTier: outcome.unsampledTier } : {}),
+    };
+  }
+
+  /**
+   * The ADR-012 compute controller: the difficulty band (same band-mass
+   * gates the bench measured, `controller.ts`) buys a compute budget over
+   * the DeepSeek family. Bands 0 and 1 are one v4-flash call, band 2
+   * best-of-5 on v4-flash, band 3 best-of-5 on v4.1-flash. Posture does not
+   * move the band -- the measured config did not read it -- but the
+   * disclosure tier (`CONTROLLER_TIERS`) still names the band's class.
+   *
+   * Existing semantics kept: `milo.samples` `1` (or sampling disabled)
+   * collapses a sampled band to one call on the same model, larger values
+   * change N on the bands that sample; `milo.candidates` is still an
+   * explicit model allow-list, so a list that excludes the controller's
+   * model falls back to roster resolution (returns `undefined`) rather than
+   * ignoring what the caller named.
+   */
+  private decideController(signals: RouteSignals, req: RouteRequest): DecidedOutcome | undefined {
+    const band = computeBand(signals, this.profile);
+    const budget = computeBudget(band);
+    if (req.candidates !== undefined && req.candidates.length > 0 && !req.candidates.includes(budget.model)) {
+      return undefined;
+    }
+
+    const override = this.samplingEnabled ? clampSamples(req.samples) : 1;
+    let samples = budget.samples;
+    if (override !== undefined) {
+      // `1` disables sampling; a larger override only re-sizes a band that
+      // samples, exactly as it only re-sizes cells the policy samples.
+      samples = override === 1 ? 1 : budget.samples > 1 ? override : budget.samples;
+    }
+
+    const tier = CONTROLLER_TIERS[band];
+    const call = samples > 1 ? `best-of-${samples} on ${budget.model}` : `one call to ${budget.model}`;
+    return {
+      tier,
+      model: budget.model,
+      reason: `${signals.taskType} task, difficulty band ${band} under the deepseek controller buys ${call}`,
+      ...(samples > 1 ? { samples, unsampledModel: budget.model } : {}),
+    };
+  }
+
+  /**
    * A sticky decision made under one `milo.samples` may be reused under
    * another, so the override is re-applied to the reused decision: `1` (or
    * sampling disabled on this router) turns a sampled decision back into its
    * unsampled one -- same signals, the tier the policy would have picked, the
-   * model re-resolved for it -- and a larger override just changes N. A
-   * request with no override reuses the decision exactly as pinned.
+   * model re-resolved for it (or `unsampledModel` verbatim when the decision
+   * carries one, ADR-012) -- and a larger override just changes N. A request
+   * with no override reuses the decision exactly as pinned.
    */
   private applySamplesOverride(decision: RouteDecision, req: RouteRequest): RouteDecision {
     const override = this.samplingEnabled ? clampSamples(req.samples) : 1;
     if (decision.samples === undefined || override === undefined) return decision;
     if (override === 1) {
+      const { samples: _samples, unsampledTier: _unsampled, unsampledModel: _unsampledModel, ...rest } = decision;
+      if (decision.unsampledModel !== undefined) {
+        return { ...rest, model: decision.unsampledModel };
+      }
       const tier = decision.unsampledTier ?? decision.tier;
       const model = resolveModel(tier, this.rosterFor(req), req.candidates, {
         longOutput: decision.signals?.longOutput ?? 0,
       });
-      const { samples: _samples, unsampledTier: _unsampled, ...rest } = decision;
       return { ...rest, tier, model };
     }
     return { ...decision, samples: override };

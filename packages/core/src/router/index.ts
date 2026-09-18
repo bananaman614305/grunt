@@ -96,7 +96,27 @@ export {
 } from "./breaker.js";
 export type { BreakerState, BreakerStatus, CircuitBreakerOptions } from "./breaker.js";
 
+export {
+  computeBand,
+  computeBudget,
+  sizeCompute,
+  DEEPSEEK_BRANCH_MODEL,
+  DEEPSEEK_ORCHESTRATOR_MODEL,
+  SIZING_BUDGET_MS,
+} from "./controller.js";
+export type { ComputeBand, ComputeBudget, ComputeSizing } from "./controller.js";
+
+export {
+  checkCompleteness,
+  retryMessages,
+  COMPLETENESS_QUESTIONS,
+  RETRY_TEMPLATES,
+  GATE_VERDICTS,
+  GATE_BUDGET_MS,
+} from "./gates.js";
+export type { GateCheck, GateFailureType, GateVerdict } from "./gates.js";
+
 export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT } from "./router.js";
-export type { RouterOptions } from "./router.js";
+export type { RouterOptions, RoutingMode } from "./router.js";
 export * from "./errors.js";
 export * from "./sticky-store.js";

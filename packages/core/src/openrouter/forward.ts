@@ -71,6 +71,11 @@ export function extractMilo(body: Record<string, unknown>): {
   if (source.brief === false) {
     extension.brief = false;
   }
+  // Same shape for the agentic gates (ADR-013): running is the default, so
+  // only `gates: false` means anything.
+  if (source.gates === false) {
+    extension.gates = false;
+  }
 
   return { extension, isRouted };
 }
