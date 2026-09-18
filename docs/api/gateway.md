@@ -56,8 +56,12 @@ No auth. Returns immediately so a health probe works before anyone has a key.
 
 ```
 GET /healthz
-200 { "ok": true, "policyVersion": "v4" }
+200 { "ok": true, "policyVersion": "v4", "decisionBackend": "jev", "mode": "roster" }
 ```
+
+`mode` names the routing mode this deployment runs (ADR-012): `"roster"`
+(the default) or `"deepseek"`, the experimental compute controller. `GET /`
+reports the same field.
 
 ## `POST /v1/chat/completions`
 
@@ -175,6 +179,36 @@ samples; `sampling: { "enabled": false }` in `milo.config.json` turns it off
 for the deployment. Sampling currently executes on this route only — routed
 `/v1/messages` and `/v1/responses` requests always take their single-model
 outcome.
+
+Under `"mode": "deepseek"` (ADR-012, `docs/routing.md`) the sampled
+decision comes from the compute controller instead of a policy cell — the
+model is a fixed DeepSeek family model rather than the roster's fast tier —
+and the all-samples-failed fallback is one call on that same model
+(`unsampledModel`), never a roster lookup.
+
+### The completeness gate (ADR-013 phase A)
+
+On this route only, in both routing modes, a routed answer on a non-trivial
+cell is checked before it is served: one Jev call on Milo's key asks
+whether the answer addresses every part of the request. The gate runs when
+the decision's difficulty band is 1 or above, the posture is not `low`, and
+the request did not send `milo: { "gates": false }`; forced tiers never
+gate. A gated request is buffered internally whatever the client asked for,
+and a streaming client gets the served answer replayed as well-formed SSE,
+exactly like a sampled decision.
+
+| Header | Meaning |
+|---|---|
+| `x-milo-completeness` | the verdict: `complete`, `incomplete`, `off_task`, or `wrong_format`. Also `complete` when the check itself failed — the gate never fails a request that has an answer (the decision record then says `error`). Absent when the gate did not run. |
+| `x-milo-retry` | `"1"` when a failing verdict bought the single retry (same model, the failure type's fixed template appended as a final system message). At most one, ever. |
+| `x-milo-gate-pick` | which answer was served after a retry: `original` or `retry`, per a second Jev call rating both. The original wins ties and wins whenever the rating fails. |
+
+Spend: the check is one Jev classification; a retry roughly doubles that
+request's generation cost on the cells where it fires, bounded by firing at
+most once. A Milo key is charged for both answers when a retry fired — the
+tokens were generated either way — and the decision record's `upstream`
+block aggregates them, stores the verdict and the retry's own usage under
+`gate`, and stores no content.
 
 An OpenRouter request that fails outright (network error, no response) on
 either path returns:

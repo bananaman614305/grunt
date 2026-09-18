@@ -30,6 +30,19 @@ which is still in the same band as the one mid-tier call it replaces; send
 `sampling: { "enabled": false }` in `milo.config.json` to turn it off for a
 deployment.
 
+Two newer mechanisms build on that. Routed chat answers on non-trivial tasks
+pass a completeness gate (ADR-013): one Jev call checks that the answer
+addresses every part of the request, and a failing answer buys exactly one
+retry, with the better of the two served and `x-milo-completeness`,
+`x-milo-retry` and `x-milo-gate-pick` headers disclosing what happened
+(`milo: { "gates": false }` opts a request out). And an experimental routing
+mode, `"mode": "deepseek"` in `milo.config.json` (ADR-012), replaces the
+roster with a compute controller over the DeepSeek family: the same routing
+signals buy a compute budget — one flash call on easy bands, best-of-5 on the
+hard ones — which benchmarked at frontier-tier quality for a fraction of the
+price. The default mode is still the roster until the ADR-012 gate passes;
+`docs/routing.md` has both mechanisms in full.
+
 ## Quickstart
 
 ```

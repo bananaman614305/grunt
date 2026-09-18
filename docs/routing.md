@@ -263,6 +263,70 @@ Sticky reuse keeps a sampled outcome pinned like any other decision, and a
 `samples: 1` override on a later turn converts the pinned decision back to
 its unsampled tier for that request.
 
+## The deepseek compute controller (mode `"deepseek"`, ADR-012)
+
+An experimental routing mode, off by default: set `"mode": "deepseek"` in
+`milo.config.json` (or `MILO_MODE=deepseek`) and the same single Jev call —
+same questions, same signals, capture included — buys a **compute budget**
+over the DeepSeek family instead of a roster tier. The difficulty band is
+read off the same masses `chooseTier` reads (the fast gate is band 0, the
+hard-mass gate band 3, the upper-mass gate band 2, the mid cell band 1;
+`packages/core/src/router/controller.ts`), and the mapping is exactly what
+the composed benchmark arm measured:
+
+| band | what it buys | disclosed tier |
+| ---- | ------------------------------------------- | -------------- |
+| 0    | one `deepseek/deepseek-v4-flash` call       | `fast`         |
+| 1    | one `deepseek/deepseek-v4-flash` call       | `fast`         |
+| 2    | best-of-5 on `deepseek/deepseek-v4-flash`   | `mid`          |
+| 3    | best-of-5 on `deepseek/deepseek-v4.1-flash` | `frontier`     |
+
+(Band 1 collapsed to a single call after gate 1 measured band-1 sampling
+buying nothing.) Sampled bands execute through the same best-of-N machinery
+as ADR-010, and the single-call fallback for a failed fan-out is the
+decision's own `unsampledModel` — the same family model, once — rather than
+a roster lookup. Posture does not move the band: the measured configuration
+never read it, and every budget is already cheap.
+
+Everything else keeps its meaning: forced tiers skip Jev and resolve
+against the deployment's roster as always; sticky reuse pins the controller
+decision; `milo.samples: 1` collapses a sampled band to one call on the
+same model and `2..8` re-sizes the bands that sample; `milo.candidates` is
+still an explicit allow-list, so a list that excludes the controller's
+model falls back to ordinary roster resolution rather than overriding what
+the caller named. **Per-key rosters (ADR-008) are ignored in this mode**:
+the controller's premise is one model family, and a stored tier table has
+nothing to say about it — `PUT /v1/roster` still stores, and applies again
+the moment the deployment runs roster mode. The shipped default stays
+`"roster"` until the ADR-012 gate passes; `/healthz` and `GET /` report
+which mode a deployment runs.
+
+## The completeness gate (ADR-013 phase A)
+
+After a routed chat answer is in hand — the single call's body, or the
+sampled pick — one more Jev call asks whether it addresses every part of
+the request, in **both** routing modes. It runs when the decision's signals
+put the difficulty band at 1 or above, the posture is not `low`, and the
+request did not send `milo: { gates: false }`; a forced tier has no signals
+and never gates. The verdict is a choice over `complete`, `incomplete`,
+`off_task` and `wrong_format` (`packages/core/src/router/gates.ts`).
+
+`complete` — and any gate failure at all: the gate can never fail a request
+that already has an answer — serves the answer as-is with
+`x-milo-completeness: complete`. A failing verdict buys exactly **one**
+retry: the same model, the original messages plus a fixed template for that
+failure type appended as a final system message. A second Jev call then
+rates both answers with the same ranking questions best-of-N uses, and the
+better one is served — the original wins ties, and wins outright when the
+rating itself fails. Headers disclose the verdict (`x-milo-completeness`),
+that the retry fired (`x-milo-retry: 1`), and which answer won
+(`x-milo-gate-pick`). The decision record stores the verdict and the
+retry's own usage, aggregates both generations into the row's tokens and
+cost — the caller is billed for what was actually generated — and stores no
+content. A gated request is buffered internally whatever the client asked
+for; a streaming client gets the served answer replayed as well-formed SSE,
+exactly like a sampled decision.
+
 ## Roster resolution
 
 ### Which roster

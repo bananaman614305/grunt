@@ -34,6 +34,7 @@ A starting point is checked in at the repo root as `milo.config.example.json`:
 |---|---|---|---|
 | `port` | positive integer | `8787` | Port the gateway listens on. Overridable per-run with `milo serve --port <n>`. |
 | `hostname` | non-empty string | *(unset — the server binds its own default)* | Hostname to bind. `milo serve`'s startup message shows `localhost` when unset. |
+| `mode` | `"roster"` \| `"deepseek"` | `"roster"` | Routing mode (ADR-012). `"roster"` is the shipped behaviour: policy v4 over the tier-to-model roster. `"deepseek"` runs the experimental compute controller: the difficulty band buys a compute budget over the DeepSeek family (`docs/routing.md`, "The deepseek compute controller"), and per-key rosters are ignored. Overridable from the environment as `MILO_MODE` (an unknown value refuses to start). `/healthz` and `GET /` report the running mode. |
 | `roster` | object, see below | `DEFAULT_ROSTER` (see below) | Maps each tier to an ordered list of OpenRouter model ids. The first entry in a tier's list is that tier's default model. |
 | `rateLimit.routedPerMinute` | positive integer | `120` | Token-bucket capacity and refill rate for routed (`milo/auto`) requests, keyed per hashed OpenRouter key (`docs/api/gateway.md` "Rate limiting"). |
 | `decisionLog` | non-empty string | `"file:./.milo/decisions.db"` | libsql URL for the decision log: `":memory:"` or `"file:<path>"`. Overridable per-run with `milo serve --db <url>`. |
@@ -164,7 +165,8 @@ container image — `docs/deploy.md`). `:memory:` is left alone.
 `port` and `decisionLog` can also be set from the environment as `PORT` and
 `MILO_DB`, for the container image, which ships no config file. Precedence
 is `--port`/`--db` beats `PORT`/`MILO_DB` beats `milo.config.json` beats the
-built-in default.
+built-in default. `mode` works the same way with `MILO_MODE` (there is no
+flag): environment beats config beats the `"roster"` default.
 
 ## `JEV_API_KEY` (environment variable, not config)
 
