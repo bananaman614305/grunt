@@ -7,6 +7,7 @@
     { "path": "packages/cli" },
     { "path": "packages/evals" },
     { "path": "packages/fleet" },
+    { "path": "packages/browse" },
     { "path": "packages/stripe" },
     { "path": "packages/provisioning" }
   ]
