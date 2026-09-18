@@ -102,5 +102,7 @@ export type BenchReport = {
   prices: Record<string, ModelPrice>;
   baseline: ModelPrice;
   judgeModel: string;
+  /** OpenRouter provider slugs every call was pinned to, in order; empty means OpenRouter's own choice. */
+  providers: string[];
   rows: BenchRow[];
 };

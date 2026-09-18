@@ -176,6 +176,16 @@ pnpm bench -- --posture low --ids r-013,r-049 --json ./tmp/bench.json
 pnpm bench -- --openrouter https://<squire-egress-proxy>/api/v1   # a key-injecting proxy in front of OpenRouter
 ```
 
+Every call, the routed arm and the judge included, is pinned to an
+OpenRouter provider (`--providers`, default `streamlake,openai,tencent,anthropic`,
+sent as `provider.order` with fallbacks off). OpenRouter takes the first
+entry that serves the model being called, so one list covers whichever
+model Milo picks. The pin is what makes two runs comparable: providers
+count prompt tokens differently (the same DeepSeek prompt measured 10
+tokens on one and 108 on another), which moves both the cost and the
+estimated baseline. `--providers none` lets OpenRouter choose, and the
+report names the provider each routed call actually used.
+
 The gateway supplies its own Jev key; the benchmark never sees it. A full run
 is 120 examples times four arms plus up to three judge calls per example,
 in the low single-digit dollars on the default roster. Reports land at

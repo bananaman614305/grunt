@@ -28,6 +28,12 @@ const PACKAGE_ROOT = resolve(__dirname, "../..");
 export const DEFAULT_GATEWAY = "http://127.0.0.1:8787/v1";
 export const DEFAULT_OPENROUTER = "https://openrouter.ai/api/v1";
 export const DEFAULT_JUDGE_MODEL = "anthropic/claude-sonnet-5";
+/**
+ * Default provider pins, one per model the default run calls (fast, mid,
+ * frontier, judge), chosen for uptime and for the token accounting seen in
+ * the first live runs. `--providers none` lets OpenRouter choose.
+ */
+export const DEFAULT_PROVIDERS = ["streamlake", "openai", "tencent", "anthropic"];
 
 export type BenchCliOptions = {
   gateway: string;
@@ -41,6 +47,7 @@ export type BenchCliOptions = {
   concurrency: number;
   timeoutMs: number;
   salt: string | undefined;
+  providers: string[];
   graders: string;
   out: string;
   json: string | undefined;
@@ -63,6 +70,7 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     concurrency: 3,
     timeoutMs: 180_000,
     salt: undefined,
+    providers: [...DEFAULT_PROVIDERS],
     graders: DEFAULT_GRADERS_PATH,
     out: resolve(PACKAGE_ROOT, "reports/bench-latest.md"),
     json: undefined,
@@ -124,6 +132,11 @@ export function parseArgs(argv: string[]): BenchCliOptions {
       case "--salt":
         options.salt = next();
         break;
+      case "--providers": {
+        const value = next();
+        options.providers = value === "none" ? [] : value.split(",").map((p) => p.trim()).filter((p) => p !== "");
+        break;
+      }
       case "--graders":
         options.graders = resolve(process.cwd(), next());
         break;
@@ -182,6 +195,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     concurrency: options.concurrency,
     timeoutMs: options.timeoutMs,
     ...(options.salt !== undefined ? { salt: options.salt } : {}),
+    providers: options.providers,
     onProgress: (line) => process.stderr.write(`${line}\n`),
   });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RoutingExample } from "../schema.js";
 import type { GraderRow } from "./graders.js";
-import { armOrder, fixedModelsFromRoster, runBench, saltMessages } from "./run.js";
+import { armOrder, fixedModelsFromRoster, providerField, runBench, saltMessages } from "./run.js";
 
 function sseResponse(text: string, usage: Record<string, unknown>, headers: Record<string, string> = {}): Response {
   const frames = [
@@ -35,6 +35,12 @@ describe("helpers", () => {
     );
     expect(out.map((m) => m.content)).toEqual(["s", "a\n\n[bench x1]", "b"]);
     expect(saltMessages([{ role: "user", content: "a" }], undefined)[0]?.content).toBe("a");
+  });
+
+  it("providerField pins with fallbacks off, or is absent", () => {
+    expect(providerField(["streamlake", "openai"])).toEqual({ provider: { order: ["streamlake", "openai"], allow_fallbacks: false } });
+    expect(providerField([])).toEqual({});
+    expect(providerField(undefined)).toEqual({});
   });
 
   it("armOrder is a permutation that varies with the index", () => {
@@ -98,9 +104,11 @@ describe("runBench", () => {
       baseline: { id: "b", inputUsdPerM: 10, outputUsdPerM: 50 },
       concurrency: 2,
       timeoutMs: 1000,
+      providers: ["streamlake", "openai"],
       fetchImpl,
       now: () => "2026-09-17T00:00:00.000Z",
     });
+    expect(report.providers).toEqual(["streamlake", "openai"]);
 
     expect(report.rows.map((r) => r.id)).toEqual(["r-1", "r-2"]);
     const r1 = report.rows[0];
@@ -117,6 +125,8 @@ describe("runBench", () => {
     // The routed call carried the posture and went to the gateway; direct calls did not carry `milo`.
     const routedCall = seen.find((s) => s.url === "http://gw/v1/chat/completions" && s.body?.["model"] === "milo/auto");
     expect(routedCall?.body?.["milo"]).toEqual({ posture: "balanced" });
+    expect(routedCall?.body?.["provider"]).toEqual({ order: ["streamlake", "openai"], allow_fallbacks: false });
+    expect(seen.every((s) => s.body === undefined || s.body["provider"] !== undefined)).toBe(true);
     expect(routedCall?.auth).toBe("Bearer sk-test");
     const direct = seen.filter((s) => s.url === "http://or/api/v1/chat/completions" && s.body?.["model"] !== "judge/model");
     expect(direct.every((s) => s.body?.["milo"] === undefined)).toBe(true);

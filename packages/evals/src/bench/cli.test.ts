@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GATEWAY, DEFAULT_JUDGE_MODEL, DEFAULT_OPENROUTER, main, parseArgs } from "./cli.js";
+import { DEFAULT_GATEWAY, DEFAULT_JUDGE_MODEL, DEFAULT_OPENROUTER, DEFAULT_PROVIDERS, main, parseArgs } from "./cli.js";
 
 describe("parseArgs", () => {
   it("has sensible defaults", () => {
@@ -12,7 +12,13 @@ describe("parseArgs", () => {
     expect(o.judge).toBe(true);
     expect(o.judgeModel).toBe(DEFAULT_JUDGE_MODEL);
     expect(o.concurrency).toBe(3);
+    expect(o.providers).toEqual(DEFAULT_PROVIDERS);
     expect(o.out.endsWith("reports/bench-latest.md")).toBe(true);
+  });
+
+  it("pins providers from a list and unpins with none", () => {
+    expect(parseArgs(["--providers", "deepinfra, openai"]).providers).toEqual(["deepinfra", "openai"]);
+    expect(parseArgs(["--providers", "none"]).providers).toEqual([]);
   });
 
   it("parses every flag and strips trailing slashes off base urls", () => {

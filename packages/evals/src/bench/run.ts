@@ -42,11 +42,25 @@ export type RunBenchOptions = {
   concurrency: number;
   timeoutMs: number;
   salt?: string;
+  /**
+   * OpenRouter provider slugs to pin every call to, in preference order, with
+   * fallbacks disabled. OpenRouter takes the first entry that serves the model
+   * being called, so one list covers the fixed arms, the judge, and whichever
+   * model Milo picks. Token counting and latency differ by provider, so a pin
+   * is what makes two runs comparable. Empty leaves the choice to OpenRouter.
+   */
+  providers?: string[];
   fetchImpl?: typeof fetch;
   onProgress?: (message: string) => void;
   /** Injectable for tests. */
   now?: () => string;
 };
+
+/** The `provider` body field for a pinned run, or nothing when no pin is set. */
+export function providerField(providers: string[] | undefined): Record<string, unknown> {
+  if (providers === undefined || providers.length === 0) return {};
+  return { provider: { order: providers, allow_fallbacks: false } };
+}
 
 /** Stands in for "this request looked agentic" without inviting a tool call. */
 export const BENCH_TOOLS: unknown[] = [
@@ -97,6 +111,7 @@ async function callArm(runner: Runner, example: RoutingExample, messages: ChatMe
     messages,
     ...(example.has_tools ? { tools: BENCH_TOOLS, tool_choice: "none" } : {}),
     ...(routed ? { milo: { posture: options.posture } } : {}),
+    ...providerField(options.providers),
   };
   const baseUrl = routed ? options.gatewayBaseUrl : options.openRouterBaseUrl;
   const base: ArmResult = { arm, model, tier: routed ? "mid" : arm, status: 0, ttfbMs: NaN, totalMs: NaN };
@@ -173,6 +188,7 @@ async function grade(runner: Runner, example: RoutingExample, task: ChatMessage[
       model: options.judgeModel,
       messages: buildJudgeMessages(task, answer, row.grader),
       temperature: 0,
+      ...providerField(options.providers),
     });
     if (verdict.status !== 200) {
       result.grade = { score: 0, pass: false, by: "judge", reason: `judge HTTP ${verdict.status}` };
@@ -241,6 +257,7 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     prices,
     baseline: options.baseline,
     judgeModel: options.judgeModel,
+    providers: options.providers ?? [],
     rows: rows.filter((r): r is BenchRow => r !== undefined),
   };
 }
