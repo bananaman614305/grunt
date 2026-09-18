@@ -14,7 +14,8 @@
   "scripts": {
     "build": "tsc -b",
     "eval": "tsx src/cli.ts",
-    "roster:refresh": "tsx scripts/roster-refresh.ts"
+    "roster:refresh": "tsx scripts/roster-refresh.ts",
+    "bench": "tsx src/bench/cli.ts"
   },
   "dependencies": {
     "@milo/core": "workspace:*",

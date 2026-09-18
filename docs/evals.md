@@ -119,3 +119,80 @@ two-fold cross-validation in `packages/evals/src/run.test.ts` refits the
 thresholds on half the recorded examples and scores them on the other half,
 asserting a mean held-out agreement of at least **0.78** — so a later tuning
 cannot buy in-sample agreement by overfitting this dataset.
+
+## Benchmark (`pnpm bench`)
+
+`pnpm eval` measures whether the router picks the tier a labeler would. It
+says nothing about whether the routed model then gets the task right, how
+long the trip took, or what it cost. `pnpm bench`
+(`packages/evals/src/bench/cli.ts`) measures those three things, live,
+against a running gateway.
+
+For every example in `routing.jsonl` it makes one streamed chat completion
+per **arm**, in a per-example shuffled order so no arm always goes first:
+
+| arm | what it calls | why |
+|---|---|---|
+| `milo` | `milo/auto` through the gateway (`--gateway`), at one posture per run (`--posture`) | the thing being benchmarked |
+| `fast`, `mid`, `frontier` | that tier's default roster model, directly on OpenRouter (`--openrouter`) | the fixed-model alternatives, and the twins the routed call is timed against |
+| `oracle` | no extra calls: the fixed arm of each example's labeled tier | the ceiling perfect routing could reach |
+
+Every successful answer is graded. `packages/evals/data/graders.jsonl` holds
+one grader per example id: a **mechanical** one (`regex`, `contains_all`,
+`contains_any`, `not_contains`, or an `all` of those) where a correct answer
+has an unambiguous token, else a **judge** rubric with a `must` list that a
+grading model (`--judge-model`, default Sonnet 5) scores 0..1; a score at or
+above 0.7 passes. Judge cost is reported apart from the arms. `--no-judge`
+skips it, leaving judged examples ungraded.
+
+### The three numbers
+
+- **Speed.** Time to first token and total time, p50 and p95, per arm. For
+  the routed arm the report also gives the **routing overhead**: routed TTFB
+  minus the fixed arm's TTFB on the same model, per example, so the cost of
+  the Jev hop is separated from the model's own speed. Jev's own latency
+  comes from each decision record (`GET /v1/decisions/:id`).
+- **Accuracy.** Pass rate per arm; **quality retained**, the routed pass rate
+  over the frontier arm's on the examples both graded; **bad downgrades**
+  (routed cheaper than frontier, failed, frontier passed) and **missed
+  savings** (routed to frontier, fast passed); and tier agreement with the
+  label, the same number `pnpm eval` gates on, now measured live.
+- **Cost.** Real cost from OpenRouter's `usage.cost` on every response
+  (falling back to tokens times catalogue price), against an **estimated
+  baseline**: what the same prompt and completion tokens would cost on
+  `anthropic/claude-fable-5.1` at its OpenRouter rate card. The baseline is
+  never called. Prompt tokens are identical across models, so that half is
+  exact; completion tokens are the assumption, and the report prints savings
+  at the observed count and at twice it (`2x`). Reasoning tokens are reported
+  separately because they are where cheap reasoning models spend.
+
+### Running it
+
+```
+export OPENROUTER_API_KEY=sk-or-...          # sent as the bearer to the gateway and OpenRouter, nowhere else
+pnpm bench                                   # local gateway, balanced posture, all arms, judge on
+pnpm bench -- --gateway https://milo-gateway.fly.dev/v1 --limit 20 --no-judge
+pnpm bench -- --posture low --ids r-013,r-049 --json ./tmp/bench.json
+pnpm bench -- --openrouter https://<squire-egress-proxy>/api/v1   # a key-injecting proxy in front of OpenRouter
+```
+
+The gateway supplies its own Jev key; the benchmark never sees it. A full run
+is 120 examples times four arms plus up to three judge calls per example,
+in the low single-digit dollars on the default roster. Reports land at
+`packages/evals/reports/bench-latest.md` (`--out`), with the full per-call
+detail as JSON under `--json`.
+
+### Stickiness
+
+The router's sticky cache keys on the conversation fingerprint and the
+user-turn count, not the posture, with a 30 minute TTL persisted on the
+gateway. A rerun inside that window, or a second posture in the same window,
+gets the earlier decision back. The report counts those as **sticky
+(inherited)** and excludes them from the Jev latency figures. Pass
+`--salt <anything>` to append a marker to each example's first user message,
+which changes the fingerprint and nothing else, when you need fresh
+decisions.
+
+The benchmark is on demand, not a CI gate: it spends money and depends on
+OpenRouter's live latency. The fixture-replay gate above stays the check on
+every push.
