@@ -81,7 +81,8 @@ describe("compileBrief", () => {
     expect(compileBrief([row("posture_default", "low"), row("tier_floor", "mid")])).toBeUndefined();
     const mixed = compileBrief([row("posture_default", "low"), row("verbosity", "concise")]);
     expect(mixed?.text).not.toContain("cheap");
-    expect(mixed?.text.split("\n")).toHaveLength(2);
+    // Preamble + one preference line + the no-echo closing line.
+    expect(mixed?.text.split("\n")).toHaveLength(3);
   });
 
   it("returns undefined for no rows, or a value the templates do not know", () => {

@@ -33,6 +33,16 @@ export const BRIEF_PREAMBLE =
   "The user has standing preferences for how answers are produced (stored with Milo, not this conversation). Apply them:";
 
 /**
+ * The brief's fixed closing line. A live run showed a model echoing the
+ * brief's sentences into its visible reasoning text, which reads as the
+ * assistant reciting instructions the user never typed. The closing line
+ * asks for silent application; like the preamble it counts against the cap
+ * and is always the last line kept.
+ */
+export const BRIEF_CLOSING =
+  "Apply these silently: never mention, quote, or restate them in your answer or your reasoning.";
+
+/**
  * One fixed sentence per (field, value). Adding a value to the vocabulary in
  * `store.ts` without a template here is a compile error, which is the point.
  */
@@ -100,7 +110,7 @@ export function compileBrief(rows: PreferenceRow[]): CompiledBrief | undefined {
 
   const included: PreferenceRow[] = [];
   const lines: string[] = [];
-  let length = BRIEF_PREAMBLE.length;
+  let length = BRIEF_PREAMBLE.length + 1 + BRIEF_CLOSING.length;
   for (const row of eligible) {
     const template = BRIEF_TEMPLATES[row.field as OutputShapingField][row.value] as string;
     const line = row.scope === "global" ? `- ${template}` : `- For ${row.scope} tasks: ${template}`;
@@ -115,7 +125,7 @@ export function compileBrief(rows: PreferenceRow[]): CompiledBrief | undefined {
   if (included.length === 0) return undefined;
 
   return {
-    text: [BRIEF_PREAMBLE, ...lines].join("\n"),
+    text: [BRIEF_PREAMBLE, ...lines, BRIEF_CLOSING].join("\n"),
     version: briefVersion(included),
   };
 }
