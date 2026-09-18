@@ -48,9 +48,13 @@ compute rather than silent acceptance:
 
 The mode ships as a default only if a composed deepseek-only benchmark arm
 matches or beats the current best arm (mid tier) on graded output at equal
-or lower cost, on both the 120-prompt set and a new long-horizon suite,
-with a real Fable subset run (~20 examples) grounding the comparison
-headline. Until then the shipped default stays ADR-006's roster.
+or lower cost, on both the 120-prompt set and the long-horizon suite. The
+Fable comparison stays an estimate by owner decision (2026-09-18): the
+same tokens priced at Fable's rate card, as every report already computes,
+because a real run spends multiple dollars to refine a number the 67-500x
+rate gap already settles. Any public claim therefore says "estimated
+against Fable's list price", never "beat Fable". Until the gate passes,
+the shipped default stays ADR-006's roster.
 
 ## Consequences
 
