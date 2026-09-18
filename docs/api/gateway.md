@@ -120,14 +120,23 @@ band, under `balanced` or `quality` posture — the decision resolves to
 best-of-5 on the fast tier instead of a single higher-tier call, and this
 route executes it:
 
-1. Five non-streaming upstream calls go out in parallel on the caller's key,
-   each with one of the varied framings appended to the system prompt and
-   each under its own wall-clock cap (60 s by default;
-   `sampling.sampleTimeoutMs` in `milo.config.json`).
-2. Every finished answer is scored by one Jev call on Milo's key (quality
-   0–3 plus a correctness probability), and the best answer — highest
-   expected quality, correctness breaking ties — goes back to the client.
-   Tool-call answers are ranked and picked like any other.
+1. Five upstream calls go out in parallel on the caller's key, each
+   internally streamed (SSE), each with one of the varied framings appended
+   to the system prompt and each under its own wall-clock cap (60 s by
+   default; `sampling.sampleTimeoutMs` in `milo.config.json`). Unless the
+   request carries a `provider` field of its own, each sampled call adds
+   `provider: { sort: "throughput" }` so OpenRouter's rolling window routes
+   it to the currently fastest provider; a caller-supplied `provider` passes
+   through untouched, and unsampled forwards are never touched.
+2. Each answer is scored the moment its stream completes, by one Jev call on
+   Milo's key (quality 0–3 plus a correctness probability). Once
+   `sampling.minRanked` answers (default 3) are ranked, a clear winner —
+   expected quality at or above 2.5, or the first success when ranking is
+   degraded — is returned immediately and the still-streaming samples are
+   aborted, which stops their token spend. Otherwise the fan-out runs to the
+   per-sample cap and the best answer — highest expected quality,
+   correctness breaking ties — goes back to the client. Tool-call answers
+   are ranked and picked like any other.
 3. Two more headers disclose it, on top of the six above:
 
    | Header | Meaning |
@@ -135,12 +144,13 @@ route executes it:
    | `x-milo-samples` | how many samples were drawn (`x-milo-tier` is `fast`) |
    | `x-milo-sample-pick` | the zero-based index of the sample returned |
 
-A non-streaming request gets the chosen upstream body verbatim. A streaming
-request is buffered until the pick and then replayed as well-formed SSE: one
-chunk carrying the whole answer as a delta, a final chunk with the finish
-reason and the chosen sample's usage, then `[DONE]`. Time-to-first-byte on a
-sampled request is therefore the slowest capped sample plus one Jev rank, not
-the fast model's own TTFT.
+A non-streaming request gets the chosen answer reassembled as one
+`chat.completion` body. A streaming request gets it replayed as well-formed
+SSE: one chunk carrying the whole answer as a delta, a final chunk with the
+finish reason and the chosen sample's usage, then `[DONE]`. Time-to-first-byte
+on a sampled request is therefore bounded by the `minRanked`-th fastest sample
+plus one Jev rank when a clear winner emerges — and by the slowest capped
+sample only when none does — not the fast model's own TTFT.
 
 **Spend:** a sampled request spends roughly N fast-tier calls of the caller's
 OpenRouter budget (plus N+1 Jev calls on Milo's), which the benchmark showed
@@ -149,7 +159,9 @@ below frontier. A Milo key (`mk_`) is charged the sum of every sample's usage
 as one usage row against the decision. The decision record at
 `GET /v1/decisions/:id` aggregates tokens and cost across samples in its
 `upstream` block and stores per-sample metadata — tokens, cost, Jev scores,
-the pick, failure classes — never content.
+the pick, failure classes — never content. A sample aborted by the early
+return carries `aborted: true` and only the partial usage its stream had
+reported; the aggregate sums only what was actually billed.
 
 Failure behavior: if every sample fails, the request is answered by one
 ordinary call on the decision's `unsampledTier` (the tier the policy would

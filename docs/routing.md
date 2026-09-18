@@ -236,7 +236,19 @@ the eval set's terms), the decision becomes
 
 `tier` is what will execute — five fast-tier draws, ranked by Jev, best
 answer returned (`docs/api/gateway.md`, "Best-of-N sampling") — and
-`unsampledTier` is what a single call would have used. The cells come from
+`unsampledTier` is what a single call would have used. Each draw is pinned
+to OpenRouter's currently fastest provider (`provider: { sort:
+"throughput" }`) unless the request carries a `provider` field of its own,
+and runs as an internal SSE stream so Jev ranks it the moment it finishes.
+Once `sampling.minRanked` draws (default 3) are ranked and a clear winner
+exists — expected quality at or above 2.5, or the first success when
+ranking is degraded — the winner is returned immediately and the
+still-streaming draws are aborted; an aborted generation stops billing at
+the tokens it had produced, appears in the decision record as
+`aborted: true` with any partial usage, and the aggregate cost sums only
+what was actually billed. Wall time on a sampled cell is therefore bounded
+by the `minRanked`-th fastest draw plus one Jev rank, falling back to the
+slowest capped draw only when no clear winner emerges. The cells come from
 two live benchmark runs (ADR-010): best-of-5 on fast beat the mid tier on
 `edit` (92% vs 77%) and `docs` (100% vs 92%) and lost on `feature`,
 `research` and `debug`, which keep their single-model outcome. `low` posture

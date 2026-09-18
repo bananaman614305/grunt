@@ -41,6 +41,7 @@ A starting point is checked in at the repo root as `milo.config.example.json`:
 | `title` | non-empty string | *(unset)* | Sent to OpenRouter as `X-Title`, same purpose. |
 | `sampling.enabled` | boolean | `true` | Whether policy v4's best-of-N cells may resolve to a sampled outcome (ADR-010, `docs/routing.md`). `false` makes every cell keep its single-model outcome. |
 | `sampling.sampleTimeoutMs` | positive integer | `60000` | Per-sample wall-clock cap on a best-of-N fan-out; a sample that exceeds it is dropped, not waited for. |
+| `sampling.minRanked` | positive integer | `3` | How many samples must be ranked before a best-of-N fan-out may return early: once this many are ranked and a clear winner exists (Jev expected quality at or above 2.5, or the first success when ranking is degraded), it is returned immediately and still-streaming samples are aborted, stopping their token spend. Capped at the decision's sample count. |
 
 ### `roster`
 
