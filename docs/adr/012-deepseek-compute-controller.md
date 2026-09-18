@@ -46,9 +46,13 @@ compute rather than silent acceptance:
 
 ## The gate
 
-The mode ships as a default only if a composed deepseek-only benchmark arm
-matches or beats the current best arm (mid tier) on graded output at equal
-or lower cost, on both the 120-prompt set and the long-horizon suite. The
+The gate is segmented (ratified 2026-09-18), because the hard-prompt
+ablation showed the mid tier is not a substitute there (23% pass on the
+hard 30 versus the controller's 73%): on bands 0-1 the controller must
+match the mid arm's cost at equal or better graded quality; on bands 2-3,
+where no sub-$5 arm competes, it must beat the frontier-arm quality of
+record and stay under the Fable rate-card estimate for its own tokens.
+Both must hold on the 120-prompt set and the long-horizon suite. The
 Fable comparison stays an estimate by owner decision (2026-09-18): the
 same tokens priced at Fable's rate card, as every report already computes,
 because a real run spends multiple dollars to refine a number the 67-500x
