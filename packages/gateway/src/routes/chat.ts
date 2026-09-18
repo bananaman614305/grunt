@@ -41,6 +41,8 @@ import {
   rateLimitBucket,
   upstreamHeadersFor,
 } from "../billing.js";
+import { applyBrief, briefHeaders, routedBrief } from "../brief.js";
+import { maybeCapture } from "../capture.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
@@ -218,17 +220,34 @@ async function routed(
   // shows up in that account's `/v1/decisions` and nobody else's.
   await noteDecisionAccount(c, deps, decision.id);
 
+  // Preference capture (ADR-011) is fire-and-forget: it can write a row,
+  // never delay or fail the response. The brief compiles from what is
+  // already stored and is appended to the outgoing body only.
+  void maybeCapture(deps.log, deps.jev, {
+    keyHash: callerScope(c),
+    messages,
+    signals: decision.signals,
+    provenance: decision.fingerprint,
+    logger: deps.logger,
+  });
+  const brief = await routedBrief(deps.log, callerScope(c), {
+    extension,
+    taskType: decision.signals?.taskType,
+    logger: deps.logger,
+  });
+  const outgoing = applyBrief(body, brief);
+
   // A sampled decision (ADR-010) fans out instead of forwarding once. Only
   // this surface executes sampling; the other dialects opt out at routing
   // time (see routes/messages.ts and routes/responses.ts).
   if (decision.samples !== undefined && decision.samples > 1) {
-    return forwardSampled(c, deps, body, decision, { candidates });
+    return forwardSampled(c, deps, outgoing, decision, { candidates, briefVersion: brief?.version });
   }
 
-  return forward(c, deps, body, decision);
+  return forward(c, deps, outgoing, decision, brief?.version);
 }
 
-async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision): Promise<Response> {
+async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision, briefVersion?: string): Promise<Response> {
   const forwarded = prepareBody(body, decision.model);
   const startedAt = deps.now();
 
@@ -243,6 +262,7 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
 
   // A streamed success is the only case where the body must not be touched.
   // An upstream error is JSON however the request was made, so it takes the

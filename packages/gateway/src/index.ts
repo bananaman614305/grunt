@@ -112,8 +112,9 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
   if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
   if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
-  // One client for the router's questions and the gateway's sample ranking
-  // (ADR-010): same key, same base URL, same injected fetch.
+  // One client for the router's questions, the gateway's sample ranking
+  // (ADR-010), and the preference-capture resolution call (ADR-011): same
+  // key, same base URL, same injected fetch, one retry discipline.
   const jev = new JevClient(jevOptions);
   const samplingEnabled = options.sampling?.enabled ?? true;
 
@@ -133,10 +134,6 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
 
   const log = await DecisionLog.open(options.decisionLogUrl ?? ":memory:");
   const writes = new WriteQueue(logger);
-
-  // One client for both the routing call and the preference-capture
-  // resolution call (ADR-011): one key, one retry discipline.
-  const jev = new JevClient(jevOptions);
 
   const routerOptions = {
     jev,
@@ -185,7 +182,6 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),
     log,
-    jev,
     rateLimiter: new RateLimiter(rateLimitOptions),
     logger,
     now: Date.now,

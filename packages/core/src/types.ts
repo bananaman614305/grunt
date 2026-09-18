@@ -80,6 +80,7 @@ export type MiloRequestExtension = {
    * capped at 8. Absent means the policy's own default applies.
    */
   samples?: number;
+  /**
    * `false` skips the injected preference brief for this one request
    * (ADR-011). Absent means "inject when the caller has stored
    * output-shaping preferences"; there is no `true` opt-in because

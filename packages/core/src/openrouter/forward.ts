@@ -65,6 +65,7 @@ export function extractMilo(body: Record<string, unknown>): {
   // count on cells the policy samples, capped. Anything malformed is dropped.
   if (typeof source.samples === "number" && Number.isInteger(source.samples) && source.samples >= 1) {
     extension.samples = Math.min(source.samples, MAX_SAMPLE_COUNT);
+  }
   // Only `false` means anything: injection is the default (ADR-011), so a
   // stray `brief: true` is the same as saying nothing.
   if (source.brief === false) {

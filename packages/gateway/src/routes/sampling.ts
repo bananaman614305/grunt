@@ -38,6 +38,7 @@ import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
 import { chargeBuffered, chargeStream, upstreamHeadersFor } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
+import { briefHeaders } from "../brief.js";
 import { applyMiloHeaders, onFinished, resolveRoster } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { readBodyUsage } from "./usage.js";
@@ -52,6 +53,8 @@ export const SAMPLE_PICK_HEADER = "x-milo-sample-pick";
 /** What the fan-out needs beyond the decision: the request's own knobs. */
 export type SamplingContext = {
   candidates?: string[] | undefined;
+  /** Version of the injected preference brief, for `x-milo-brief-version` (ADR-011). */
+  briefVersion?: string | undefined;
 };
 
 type Sample = {
@@ -274,6 +277,7 @@ export async function forwardSampled(
 
   const headers = chosen.response !== undefined ? passThroughHeaders(chosen.response) : new Headers();
   applyMiloHeaders(headers, decision);
+  for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   headers.set(SAMPLES_HEADER, String(n));
   headers.set(SAMPLE_PICK_HEADER, String(pickIndex));
 
@@ -391,6 +395,7 @@ async function fallbackUnsampled(
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   // The response the client got came from the fallback, not the sampled fast
   // model, and the headers must say what actually answered.
   headers.set("x-milo-model", model);

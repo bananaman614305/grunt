@@ -48,15 +48,15 @@ const JEV_ANSWERS = {
 };
 
 const STREAM_FRAMES = [
-  'data: {"id":"gen-e2e","object":"chat.completion.chunk","created":1,"model":"tencent/hy4-preview","choices":[{"index":0,"delta":{"role":"assistant","content":"race "}}]}\n\n',
-  'data: {"id":"gen-e2e","object":"chat.completion.chunk","created":1,"model":"tencent/hy4-preview","choices":[{"index":0,"delta":{"content":"condition"}}]}\n\n',
-  'data: {"id":"gen-e2e","object":"chat.completion.chunk","created":1,"model":"tencent/hy4-preview","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  'data: {"id":"gen-e2e","object":"chat.completion.chunk","created":1,"model":"z-ai/glm-5.3","choices":[{"index":0,"delta":{"role":"assistant","content":"race "}}]}\n\n',
+  'data: {"id":"gen-e2e","object":"chat.completion.chunk","created":1,"model":"z-ai/glm-5.3","choices":[{"index":0,"delta":{"content":"condition"}}]}\n\n',
+  'data: {"id":"gen-e2e","object":"chat.completion.chunk","created":1,"model":"z-ai/glm-5.3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
   "data: [DONE]\n\n",
 ];
 
 /** The Anthropic dialect's SSE frames, as OpenRouter's `/messages` emits them. */
 const ANTHROPIC_FRAMES = [
-  'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_e2e","type":"message","role":"assistant","model":"tencent/hy4-preview","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":940,"output_tokens":0}}}\n\n',
+  'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_e2e","type":"message","role":"assistant","model":"z-ai/glm-5.3","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":940,"output_tokens":0}}}\n\n',
   'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
   'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"race "}}\n\n',
   'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"condition"}}\n\n',
@@ -71,12 +71,12 @@ const ANTHROPIC_FRAMES = [
  * on `response.completed`, and no `[DONE]` sentinel.
  */
 const RESPONSES_FRAMES = [
-  'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_e2e","object":"response","status":"in_progress","model":"tencent/hy4-preview","output":[]}}\n\n',
+  'event: response.created\ndata: {"type":"response.created","sequence_number":0,"response":{"id":"resp_e2e","object":"response","status":"in_progress","model":"z-ai/glm-5.3","output":[]}}\n\n',
   'event: response.output_item.added\ndata: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_e2e","role":"assistant","status":"in_progress","content":[]}}\n\n',
   'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_e2e","output_index":0,"content_index":0,"delta":"race "}\n\n',
   'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_e2e","output_index":0,"content_index":0,"delta":"condition"}\n\n',
   'event: response.output_text.done\ndata: {"type":"response.output_text.done","sequence_number":4,"item_id":"msg_e2e","output_index":0,"content_index":0,"text":"race condition"}\n\n',
-  'event: response.completed\ndata: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_e2e","object":"response","status":"completed","model":"tencent/hy4-preview","output":[],"usage":{"input_tokens":940,"output_tokens":18,"total_tokens":958}}}\n\n',
+  'event: response.completed\ndata: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_e2e","object":"response","status":"completed","model":"z-ai/glm-5.3","output":[],"usage":{"input_tokens":940,"output_tokens":18,"total_tokens":958}}}\n\n',
 ];
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -252,9 +252,9 @@ describe("the OpenAI SDK against Milo", () => {
     // Difficulty 2.4 on a debug task under the default balanced posture is
     // frontier, and the default roster's frontier model is z-ai/glm-5.3
     // (ADR-006; packages/core/src/router/roster-default.json).
-    expect(data.model).toBe("tencent/hy4-preview");
+    expect(data.model).toBe("z-ai/glm-5.3");
 
-    expect(response.headers.get("x-milo-model")).toBe("tencent/hy4-preview");
+    expect(response.headers.get("x-milo-model")).toBe("z-ai/glm-5.3");
     expect(response.headers.get("x-milo-tier")).toBe("frontier");
     expect(response.headers.get("x-milo-task-type")).toBe("debug");
     expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
@@ -279,7 +279,7 @@ describe("the OpenAI SDK against Milo", () => {
     expect(decision).toMatchObject({
       id: decisionId,
       tier: "frontier",
-      model: "tencent/hy4-preview",
+      model: "z-ai/glm-5.3",
       policyVersion: POLICY_VERSION,
       signals: {
         taskType: "debug",
@@ -294,7 +294,7 @@ describe("the OpenAI SDK against Milo", () => {
     // 0.05 bar (ADR-002 revision 3).
     expect(decision.reason).toContain("debug task");
     expect(decision.reason).toContain("P(hard) 0.56 at or above 0.05");
-    expect(decision.reason).toContain("tencent/hy4-preview");
+    expect(decision.reason).toContain("z-ai/glm-5.3");
 
     await waitForUpstream(decisionId ?? "");
     const settled = await fetchDecision(decisionId ?? "");
@@ -306,7 +306,7 @@ describe("the OpenAI SDK against Milo", () => {
       .create({ model: "milo/auto", messages: MESSAGES, stream: true })
       .withResponse();
 
-    expect(response.headers.get("x-milo-model")).toBe("tencent/hy4-preview");
+    expect(response.headers.get("x-milo-model")).toBe("z-ai/glm-5.3");
     expect(response.headers.get("x-milo-tier")).toBe("frontier");
     expect(response.headers.get("x-milo-task-type")).toBe("debug");
     expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
@@ -327,7 +327,7 @@ describe("the OpenAI SDK against Milo", () => {
     const decisionId = response.headers.get("x-milo-decision-id") ?? "";
     await waitForUpstream(decisionId);
     const decision = await fetchDecision(decisionId);
-    expect(decision).toMatchObject({ sticky: true, model: "tencent/hy4-preview" });
+    expect(decision).toMatchObject({ sticky: true, model: "z-ai/glm-5.3" });
     expect(decision.upstream).toMatchObject({ status: 200 });
   });
 
@@ -373,9 +373,9 @@ describe("the Anthropic SDK against Milo", () => {
     // Difficulty 2.4 on a debug task under the default balanced posture is
     // frontier, and the default roster's frontier model is z-ai/glm-5.3
     // (ADR-006; packages/core/src/router/roster-default.json).
-    expect(data.model).toBe("tencent/hy4-preview");
+    expect(data.model).toBe("z-ai/glm-5.3");
 
-    expect(response.headers.get("x-milo-model")).toBe("tencent/hy4-preview");
+    expect(response.headers.get("x-milo-model")).toBe("z-ai/glm-5.3");
     expect(response.headers.get("x-milo-tier")).toBe("frontier");
     expect(response.headers.get("x-milo-task-type")).toBe("debug");
     expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
@@ -396,7 +396,7 @@ describe("the Anthropic SDK against Milo", () => {
     expect(decision).toMatchObject({
       id: decisionId,
       tier: "frontier",
-      model: "tencent/hy4-preview",
+      model: "z-ai/glm-5.3",
       policyVersion: POLICY_VERSION,
       signals: { taskType: "debug", difficulty: 2.4, jevRequestId: "req_e2e_0001" },
     });
@@ -420,7 +420,7 @@ describe("the Anthropic SDK against Milo", () => {
       })
       .withResponse();
 
-    expect(response.headers.get("x-milo-model")).toBe("tencent/hy4-preview");
+    expect(response.headers.get("x-milo-model")).toBe("z-ai/glm-5.3");
     expect(response.headers.get("x-milo-tier")).toBe("frontier");
     // Same fingerprint as the turn above, so this one costs no Jev call.
     expect(response.headers.get("x-milo-sticky")).toBe("true");
@@ -438,7 +438,7 @@ describe("the Anthropic SDK against Milo", () => {
     const decisionId = response.headers.get("x-milo-decision-id") ?? "";
     await waitForUpstream(decisionId);
     const decision = await fetchDecision(decisionId);
-    expect(decision).toMatchObject({ sticky: true, model: "tencent/hy4-preview" });
+    expect(decision).toMatchObject({ sticky: true, model: "z-ai/glm-5.3" });
     expect(decision.upstream).toMatchObject({ status: 200 });
   });
 
@@ -493,9 +493,9 @@ describe("the OpenAI SDK's Responses API against Milo", () => {
     expect(data.output_text).toBe("It is a race condition.");
     // Difficulty 2.4 on a debug task under the default balanced posture is
     // frontier, and the default roster's frontier model is Opus 5.
-    expect(data.model).toBe("tencent/hy4-preview");
+    expect(data.model).toBe("z-ai/glm-5.3");
 
-    expect(response.headers.get("x-milo-model")).toBe("tencent/hy4-preview");
+    expect(response.headers.get("x-milo-model")).toBe("z-ai/glm-5.3");
     expect(response.headers.get("x-milo-tier")).toBe("frontier");
     expect(response.headers.get("x-milo-task-type")).toBe("debug");
     expect(response.headers.get("x-milo-difficulty")).toBe("2.40");
@@ -505,7 +505,7 @@ describe("the OpenAI SDK's Responses API against Milo", () => {
     // Only `model` was rewritten; `store` travelled as sent and no `milo`
     // field reached OpenRouter.
     const sent = responsesRequests[0];
-    expect(sent?.["model"]).toBe("tencent/hy4-preview");
+    expect(sent?.["model"]).toBe("z-ai/glm-5.3");
     expect(sent?.["store"]).toBe(false);
     expect(sent).not.toHaveProperty("milo");
 
@@ -516,7 +516,7 @@ describe("the OpenAI SDK's Responses API against Milo", () => {
     expect(decision).toMatchObject({
       id: decisionId,
       tier: "frontier",
-      model: "tencent/hy4-preview",
+      model: "z-ai/glm-5.3",
       policyVersion: POLICY_VERSION,
       signals: { taskType: "debug", difficulty: 2.4, jevRequestId: "req_e2e_0001" },
     });
@@ -545,7 +545,7 @@ describe("the OpenAI SDK's Responses API against Milo", () => {
       })
       .withResponse();
 
-    expect(response.headers.get("x-milo-model")).toBe("tencent/hy4-preview");
+    expect(response.headers.get("x-milo-model")).toBe("z-ai/glm-5.3");
     expect(response.headers.get("x-milo-tier")).toBe("frontier");
     // Same fingerprint as the turn above, so this one costs no Jev call.
     expect(response.headers.get("x-milo-sticky")).toBe("true");
@@ -563,7 +563,7 @@ describe("the OpenAI SDK's Responses API against Milo", () => {
     const decisionId = response.headers.get("x-milo-decision-id") ?? "";
     await waitForUpstream(decisionId);
     const decision = await fetchDecision(decisionId);
-    expect(decision).toMatchObject({ sticky: true, model: "tencent/hy4-preview" });
+    expect(decision).toMatchObject({ sticky: true, model: "z-ai/glm-5.3" });
     expect(decision.upstream).toMatchObject({ status: 200 });
   });
 

@@ -919,7 +919,7 @@ describe("Router.route: the circuit breaker", () => {
 });
 
 describe("Router.route: happy path", () => {
-  it("sends the built state and the four questions under an abort signal", async () => {
+  it("sends the built state, the four routing questions, and the capture questions", async () => {
     const jev = stubJev(loadFixture("trivial-rename").answers);
     const router = new Router({ jev, roster: ROSTER });
 
@@ -927,7 +927,15 @@ describe("Router.route: happy path", () => {
 
     const call = jev.calls[0];
     expect(call).toBeDefined();
-    expect(Object.keys(call!.questions).sort()).toEqual(["difficulty", "long_output", "needs_reasoning", "task_type"]);
+    // The two preference-capture questions ride the routing call (ADR-011).
+    expect(Object.keys(call!.questions).sort()).toEqual([
+      "difficulty",
+      "long_output",
+      "needs_reasoning",
+      "preference_field",
+      "preference_stated",
+      "task_type",
+    ]);
     const state = call!.state as Record<string, unknown>;
     expect(state["has_tools"]).toBe(true);
     expect(state["tool_count"]).toBe(1);

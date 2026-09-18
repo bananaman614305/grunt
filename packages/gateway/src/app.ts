@@ -69,21 +69,14 @@ export type AppDeps = {
   anthropic: AnthropicUpstream;
   log: DecisionLog;
   /**
-   * Milo's own Jev client, for the preference-capture resolution call
-   * (ADR-011): the same client the router routes with, so one key, one
-   * breaker-adjacent budget discipline. Optional so a hand-built `AppDeps`
-   * without it simply captures nothing -- `maybeCapture` no-ops.
+   * Jev on Milo's own key, shared by the gateway's two non-routing uses:
+   * ranking best-of-N samples (ADR-010) and resolving preference capture
+   * (ADR-011). Optional so a hand-built `AppDeps` degrades softly -- a
+   * sampled decision answers with the first successful sample marked
+   * `ranking_failed`, and capture simply no-ops.
    */
   jev?: JevClientLike;
   rateLimiter: RateLimiter;
-  /**
-   * Jev, on Milo's own key, for ranking best-of-N samples (ADR-010). The
-   * router holds its own client for routing questions; this one is for the
-   * gateway's ranking calls. Absent (a hand-built `AppDeps`), a sampled
-   * decision still answers -- with the first successful sample, marked
-   * `ranking_failed` -- rather than failing the request.
-   */
-  jev?: JevClientLike;
   /** Best-of-N execution knobs (ADR-010). Absent means the defaults. */
   sampling?: { sampleTimeoutMs?: number };
   logger: Logger;

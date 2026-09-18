@@ -44,6 +44,7 @@ import { RoutingUnavailableError } from "./errors.js";
 import type { RoutingUnavailableCause } from "./errors.js";
 import { chooseOutcome, clampSamples, JEV_PROFILE } from "./policy.js";
 import type { PolicyProfile } from "./policy.js";
+import { detectCapture, ROUTER_QUESTIONS_WITH_CAPTURE } from "../preferences/index.js";
 import { ROUTER_QUESTIONS } from "./questions.js";
 import { resolveModel } from "./roster.js";
 import { StickyCache } from "./sticky.js";
@@ -203,7 +204,9 @@ export function toSignals(result: SystemOneResult, fallbackLatencyMs: number): R
   const needsReasoning = readNoul(answers["needs_reasoning"], "needs_reasoning");
   const longOutput = readNoul(answers["long_output"], "long_output");
 
+  const capture = detectCapture(result.answers);
   return {
+    ...(capture !== undefined ? { capture } : {}),
     taskType: task.taskType,
     difficulty: difficulty.difficulty,
     difficultyLevels: difficulty.levels,
@@ -554,7 +557,9 @@ export class Router {
 
     // The budget covers the client's retries and backoff too, so a retrying
     // client cannot outlive the router's own promise to answer within it.
-    const call = this.jev.systemone({ state, questions: ROUTER_QUESTIONS }, { signal, budgetMs: budget });
+    // Capture detection (ADR-011) rides the routing call: same request, two
+    // extra classification questions, no added latency on the common path.
+    const call = this.jev.systemone({ state, questions: ROUTER_QUESTIONS_WITH_CAPTURE }, { signal, budgetMs: budget });
     // If the deadline wins the race, this promise is still in flight and may
     // reject later with nobody listening. Swallow that; the decision is made.
     call.catch(() => undefined);
