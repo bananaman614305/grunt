@@ -28,7 +28,7 @@ function report(rows: BenchRow[]): BenchReport {
     prices: PRICES,
     baseline: FABLE,
     judgeModel: "judge/model",
-    providers: [],
+    providerPins: {},
     rows,
   };
 }

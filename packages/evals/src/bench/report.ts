@@ -334,7 +334,7 @@ export function formatBenchMarkdown(report: BenchReport): string {
       `- Fixed arms: ${FIXED_ARMS.map((a) => `${a} = \`${report.fixedModels[a as FixedArm]}\``).join(", ")}`,
       `- Baseline (estimated, never called): \`${report.baseline.id}\` at $${report.baseline.inputUsdPerM}/M in, $${report.baseline.outputUsdPerM}/M out`,
       `- Judge: \`${report.judgeModel}\`, total judge cost ${usd(judgeCost)}`,
-      `- Providers: ${report.providers.length === 0 ? "OpenRouter's choice (unpinned)" : `pinned to ${report.providers.map((p) => `\`${p}\``).join(", ")}, no fallbacks`}`,
+      `- Providers: ${Object.keys(report.providerPins).length === 0 ? "OpenRouter's choice (unpinned)" : `pinned per model, no fallbacks — ${Object.entries(report.providerPins).map(([m, order]) => `${m}→${(order as string[])[0] ?? "?"}`).join(", ")}`}`,
       `- Examples: ${report.rows.length} (${gradedIds} with a grader)`,
     ].join("\n"),
   );

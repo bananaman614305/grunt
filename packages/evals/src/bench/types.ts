@@ -140,8 +140,8 @@ export type BenchReport = {
   prices: Record<string, ModelPrice>;
   baseline: ModelPrice;
   judgeModel: string;
-  /** OpenRouter provider slugs every call was pinned to, in order; empty means OpenRouter's own choice. */
-  providers: string[];
+  /** Per-model OpenRouter provider pins in effect for the run. */
+  providerPins: Record<string, string[]>;
   sampling?: SamplingConfig;
   rows: BenchRow[];
 };

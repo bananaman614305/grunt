@@ -19,6 +19,8 @@ import type { ChatMessage, CostPosture, JevClientLike, Tier } from "@milo/core";
 import type { RoutingExample } from "../schema.js";
 import { buildJudgeMessages, gradeMechanically, isMechanical, parseJudgeVerdict } from "./graders.js";
 import type { GraderRow } from "./graders.js";
+import { DEFAULT_PROVIDER_PINS, pinsFor } from "./providers.js";
+import type { ProviderPins } from "./providers.js";
 import { applyVariant, pickByJev, pickByOracle, rankAnswer, variantFor } from "./sampling.js";
 import type { RankedSample } from "./sampling.js";
 import { measureChatCompletion } from "./sse.js";
@@ -54,7 +56,14 @@ export type RunBenchOptions = {
    * model Milo picks. Token counting and latency differ by provider, so a pin
    * is what makes two runs comparable. Empty leaves the choice to OpenRouter.
    */
-  providers?: string[];
+  /** Per-model OpenRouter provider pins. Defaults to `DEFAULT_PROVIDER_PINS`. */
+  providerPins?: ProviderPins;
+  /**
+   * Per-sample wall-clock cap for best-of-N draws, ms. A straggling sample is
+   * aborted at this bound and dropped, so one slow provider cannot define the
+   * arm's latency. Defaults to `timeoutMs`.
+   */
+  sampleTimeoutMs?: number;
   /**
    * Best-of-N: draw this many samples per example from `sampleTier`'s fixed
    * model, grade each, rank each with `jev`, and add the `bestof-*` arms.
@@ -73,10 +82,17 @@ export type RunBenchOptions = {
   now?: () => string;
 };
 
-/** The `provider` body field for a pinned run, or nothing when no pin is set. */
-export function providerField(providers: string[] | undefined): Record<string, unknown> {
-  if (providers === undefined || providers.length === 0) return {};
-  return { provider: { order: providers, allow_fallbacks: false } };
+/**
+ * The `provider` body field pinning `model` to its fast providers, or nothing
+ * when the model is not in the pin map. A model absent from the map (the
+ * routed `milo/auto`, whose downstream model the gateway picks) is left to
+ * OpenRouter's own choice, since a per-model pin cannot name a provider for a
+ * model that is not known until the gateway has routed.
+ */
+export function providerField(model: string, pins: ProviderPins): Record<string, unknown> {
+  const order = pinsFor(model, pins);
+  if (order.length === 0) return {};
+  return { provider: { order, allow_fallbacks: false } };
 }
 
 /** Stands in for "this request looked agentic" without inviting a tool call. */
@@ -116,7 +132,7 @@ function classify(error: unknown): string {
 
 type Runner = {
   options: RunBenchOptions;
-  measure: (baseUrl: string, body: Record<string, unknown>) => Promise<CallMeasurement>;
+  measure: (baseUrl: string, body: Record<string, unknown>, timeoutMs?: number) => Promise<CallMeasurement>;
 };
 
 async function callArm(runner: Runner, example: RoutingExample, messages: ChatMessage[], arm: ArmName): Promise<ArmResult> {
@@ -132,7 +148,7 @@ async function callArm(runner: Runner, example: RoutingExample, messages: ChatMe
     // placeholder tool is never worth calling.
     ...(example.has_tools ? { tools: BENCH_TOOLS, tool_choice: "auto" } : {}),
     ...(routed ? { milo: { posture: options.posture } } : {}),
-    ...providerField(options.providers),
+    ...providerField(model, options.providerPins ?? DEFAULT_PROVIDER_PINS),
   };
   const baseUrl = routed ? options.gatewayBaseUrl : options.openRouterBaseUrl;
   const base: ArmResult = { arm, model, tier: routed ? "mid" : arm, status: 0, ttfbMs: NaN, totalMs: NaN };
@@ -205,7 +221,7 @@ async function gradeAnswer(runner: Runner, example: RoutingExample, task: ChatMe
       model: options.judgeModel,
       messages: buildJudgeMessages(task, answer, row.grader),
       temperature: 0,
-      ...providerField(options.providers),
+      ...providerField(options.judgeModel, options.providerPins ?? DEFAULT_PROVIDER_PINS),
     });
     if (verdict.status !== 200) return { score: 0, pass: false, by: "judge", reason: `judge HTTP ${verdict.status}` };
     const parsed = parseJudgeVerdict(verdict.text);
@@ -239,11 +255,11 @@ async function drawSamples(runner: Runner, example: RoutingExample, messages: Ch
       model,
       messages: applyVariant(messages, variant),
       ...(example.has_tools ? { tools: BENCH_TOOLS, tool_choice: "auto" } : {}),
-      ...providerField(options.providers),
+      ...providerField(model, options.providerPins ?? DEFAULT_PROVIDER_PINS),
     };
     const base: SampleRecord = { index, variant, model, status: 0, ttfbMs: NaN, totalMs: NaN };
     try {
-      const m = await runner.measure(options.openRouterBaseUrl, body);
+      const m = await runner.measure(options.openRouterBaseUrl, body, options.sampleTimeoutMs ?? options.timeoutMs);
       const record: SampleRecord = {
         ...base,
         status: m.status,
@@ -356,12 +372,12 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
   }
   const runner: Runner = {
     options,
-    measure: (baseUrl, body) =>
+    measure: (baseUrl, body, timeoutMs) =>
       measureChatCompletion({
         baseUrl,
         apiKey: options.apiKey,
         body,
-        timeoutMs: options.timeoutMs,
+        timeoutMs: timeoutMs ?? options.timeoutMs,
         ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
       }),
   };
@@ -396,7 +412,7 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     prices,
     baseline: options.baseline,
     judgeModel: options.judgeModel,
-    providers: options.providers ?? [],
+    providerPins: options.providerPins ?? DEFAULT_PROVIDER_PINS,
     ...(sampling !== undefined ? { sampling } : {}),
     rows: rows.filter((r): r is BenchRow => r !== undefined),
   };

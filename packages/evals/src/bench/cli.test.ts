@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GATEWAY, DEFAULT_JUDGE_MODEL, DEFAULT_OPENROUTER, DEFAULT_PROVIDERS, main, parseArgs } from "./cli.js";
+import { DEFAULT_GATEWAY, DEFAULT_JUDGE_MODEL, DEFAULT_OPENROUTER, main, parseArgs } from "./cli.js";
+import { DEFAULT_PROVIDER_PINS } from "./providers.js";
 
 describe("parseArgs", () => {
   it("has sensible defaults", () => {
@@ -12,13 +13,16 @@ describe("parseArgs", () => {
     expect(o.judge).toBe(true);
     expect(o.judgeModel).toBe(DEFAULT_JUDGE_MODEL);
     expect(o.concurrency).toBe(3);
-    expect(o.providers).toEqual(DEFAULT_PROVIDERS);
+    expect(o.pins).toBe(DEFAULT_PROVIDER_PINS);
     expect(o.out.endsWith("reports/bench-latest.md")).toBe(true);
   });
 
-  it("pins providers from a list and unpins with none", () => {
-    expect(parseArgs(["--providers", "deepinfra, openai"]).providers).toEqual(["deepinfra", "openai"]);
-    expect(parseArgs(["--providers", "none"]).providers).toEqual([]);
+  it("--no-pins clears the per-model provider pins", () => {
+    expect(parseArgs(["--no-pins"]).pins).toEqual({});
+  });
+
+  it("--sample-timeout sets the per-sample cap", () => {
+    expect(parseArgs(["--sample-timeout", "60000"]).sampleTimeoutMs).toBe(60000);
   });
 
   it("parses every flag and strips trailing slashes off base urls", () => {

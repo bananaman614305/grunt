@@ -19,6 +19,8 @@ import { DEFAULT_GRADERS_PATH, loadGraders } from "./graders.js";
 import { BASELINE_FALLBACK_PRICE, BASELINE_MODEL_ID, fetchPrices } from "./prices.js";
 import { formatBenchMarkdown } from "./report.js";
 import { fixedModelsFromRoster, runBench } from "./run.js";
+import { DEFAULT_PROVIDER_PINS } from "./providers.js";
+import type { ProviderPins } from "./providers.js";
 import type { ArmName, FixedArm } from "./types.js";
 import { ARM_NAMES, FIXED_ARMS } from "./types.js";
 
@@ -28,12 +30,7 @@ const PACKAGE_ROOT = resolve(__dirname, "../..");
 export const DEFAULT_GATEWAY = "http://127.0.0.1:8787/v1";
 export const DEFAULT_OPENROUTER = "https://openrouter.ai/api/v1";
 export const DEFAULT_JUDGE_MODEL = "anthropic/claude-sonnet-5";
-/**
- * Default provider pins, one per model the default run calls (fast, mid,
- * frontier, judge), chosen for uptime and for the token accounting seen in
- * the first live runs. `--providers none` lets OpenRouter choose.
- */
-export const DEFAULT_PROVIDERS = ["streamlake", "openai", "tencent", "anthropic"];
+export const DEFAULT_SAMPLE_TIMEOUT_MS = 90_000;
 
 export type BenchCliOptions = {
   gateway: string;
@@ -47,7 +44,8 @@ export type BenchCliOptions = {
   concurrency: number;
   timeoutMs: number;
   salt: string | undefined;
-  providers: string[];
+  pins: ProviderPins;
+  sampleTimeoutMs: number;
   samples: number;
   sampleTier: FixedArm;
   vary: boolean;
@@ -73,7 +71,8 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     concurrency: 3,
     timeoutMs: 180_000,
     salt: undefined,
-    providers: [...DEFAULT_PROVIDERS],
+    pins: DEFAULT_PROVIDER_PINS,
+    sampleTimeoutMs: DEFAULT_SAMPLE_TIMEOUT_MS,
     samples: 1,
     sampleTier: "fast",
     vary: false,
@@ -138,11 +137,12 @@ export function parseArgs(argv: string[]): BenchCliOptions {
       case "--salt":
         options.salt = next();
         break;
-      case "--providers": {
-        const value = next();
-        options.providers = value === "none" ? [] : value.split(",").map((p) => p.trim()).filter((p) => p !== "");
+      case "--no-pins":
+        options.pins = {};
         break;
-      }
+      case "--sample-timeout":
+        options.sampleTimeoutMs = positiveInt(next(), "--sample-timeout");
+        break;
       case "--samples":
         options.samples = positiveInt(next(), "--samples");
         break;
@@ -223,7 +223,8 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     concurrency: options.concurrency,
     timeoutMs: options.timeoutMs,
     ...(options.salt !== undefined ? { salt: options.salt } : {}),
-    providers: options.providers,
+    providerPins: options.pins,
+    sampleTimeoutMs: options.sampleTimeoutMs,
     ...(options.samples > 1 && jev !== undefined ? { samples: options.samples, sampleTier: options.sampleTier, vary: options.vary, jev } : {}),
     onProgress: (line) => process.stderr.write(`${line}\n`),
   });

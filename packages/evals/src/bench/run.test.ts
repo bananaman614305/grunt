@@ -37,10 +37,11 @@ describe("helpers", () => {
     expect(saltMessages([{ role: "user", content: "a" }], undefined)[0]?.content).toBe("a");
   });
 
-  it("providerField pins with fallbacks off, or is absent", () => {
-    expect(providerField(["streamlake", "openai"])).toEqual({ provider: { order: ["streamlake", "openai"], allow_fallbacks: false } });
-    expect(providerField([])).toEqual({});
-    expect(providerField(undefined)).toEqual({});
+  it("providerField pins a known model by its list, and leaves an unknown model unpinned", () => {
+    const pins = { "deepseek/deepseek-v4-flash": ["alibaba", "baidu"] };
+    expect(providerField("deepseek/deepseek-v4-flash", pins)).toEqual({ provider: { order: ["alibaba", "baidu"], allow_fallbacks: false } });
+    expect(providerField("milo/auto", pins)).toEqual({});
+    expect(providerField("other/model", pins)).toEqual({});
   });
 
   it("armOrder is a permutation that varies with the index", () => {
@@ -104,11 +105,11 @@ describe("runBench", () => {
       baseline: { id: "b", inputUsdPerM: 10, outputUsdPerM: 50 },
       concurrency: 2,
       timeoutMs: 1000,
-      providers: ["streamlake", "openai"],
+      providerPins: { "fast/model": ["alibaba"], "frontier/model": ["baseten"], "judge/model": ["azure"] },
       fetchImpl,
       now: () => "2026-09-17T00:00:00.000Z",
     });
-    expect(report.providers).toEqual(["streamlake", "openai"]);
+    expect(report.providerPins).toEqual({ "fast/model": ["alibaba"], "frontier/model": ["baseten"], "judge/model": ["azure"] });
 
     expect(report.rows.map((r) => r.id)).toEqual(["r-1", "r-2"]);
     const r1 = report.rows[0];
@@ -125,8 +126,13 @@ describe("runBench", () => {
     // The routed call carried the posture and went to the gateway; direct calls did not carry `milo`.
     const routedCall = seen.find((s) => s.url === "http://gw/v1/chat/completions" && s.body?.["model"] === "milo/auto");
     expect(routedCall?.body?.["milo"]).toEqual({ posture: "balanced" });
-    expect(routedCall?.body?.["provider"]).toEqual({ order: ["streamlake", "openai"], allow_fallbacks: false });
-    expect(seen.every((s) => s.body === undefined || s.body["provider"] !== undefined)).toBe(true);
+    // The milo arm is unpinned (its downstream model is chosen by the gateway).
+    expect(routedCall?.body?.["provider"]).toBeUndefined();
+    // A fixed arm is pinned to its model's providers.
+    const fastCall = seen.find((s) => s.body?.["model"] === "fast/model");
+    expect(fastCall?.body?.["provider"]).toEqual({ order: ["alibaba"], allow_fallbacks: false });
+    const judgeCall = seen.find((s) => s.body?.["model"] === "judge/model");
+    expect(judgeCall?.body?.["provider"]).toEqual({ order: ["azure"], allow_fallbacks: false });
     expect(routedCall?.auth).toBe("Bearer sk-test");
     const direct = seen.filter((s) => s.url === "http://or/api/v1/chat/completions" && s.body?.["model"] !== "judge/model");
     expect(direct.every((s) => s.body?.["milo"] === undefined)).toBe(true);
@@ -157,6 +163,7 @@ describe("runBench", () => {
       baseline: { id: "b", inputUsdPerM: 1, outputUsdPerM: 1 },
       concurrency: 1,
       timeoutMs: 100,
+      providerPins: {},
       fetchImpl,
     });
     const [row] = report.rows;
