@@ -57,7 +57,7 @@ describe("computeBand", () => {
 describe("computeBudget", () => {
   it("maps bands to the ADR-012 phase 1 budgets", () => {
     expect(computeBudget(0)).toEqual({ band: 0, model: DEEPSEEK_BRANCH_MODEL, samples: 1 });
-    expect(computeBudget(1)).toEqual({ band: 1, model: DEEPSEEK_BRANCH_MODEL, samples: 3 });
+    expect(computeBudget(1)).toEqual({ band: 1, model: DEEPSEEK_BRANCH_MODEL, samples: 1 });
     expect(computeBudget(2)).toEqual({ band: 2, model: DEEPSEEK_BRANCH_MODEL, samples: 5 });
     expect(computeBudget(3)).toEqual({ band: 3, model: DEEPSEEK_ORCHESTRATOR_MODEL, samples: 5 });
   });

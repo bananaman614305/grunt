@@ -75,7 +75,10 @@ export function computeBudget(band: ComputeBand): ComputeBudget {
     case 0:
       return { band, model: DEEPSEEK_BRANCH_MODEL, samples: 1 };
     case 1:
-      return { band, model: DEEPSEEK_BRANCH_MODEL, samples: 3 };
+      // Gate 1 measured band-1 sampling buying nothing: a single fast call
+      // passed 89-90% of easy-band examples at $0.00011 while 3 samples
+      // matched that quality at 2x mid's cost. One call it is.
+      return { band, model: DEEPSEEK_BRANCH_MODEL, samples: 1 };
     case 2:
       return { band, model: DEEPSEEK_BRANCH_MODEL, samples: 5 };
     case 3:
