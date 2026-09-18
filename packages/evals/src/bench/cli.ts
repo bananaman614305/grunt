@@ -65,6 +65,8 @@ export type BenchCliOptions = {
   /** The labeled example set to run; defaults to the committed routing set. */
   data: string;
   dsReasoning: string | undefined;
+  dsBand3Model: "flash" | "v41" | undefined;
+  dsBand3Samples: number | undefined;
   out: string;
   json: string | undefined;
 };
@@ -97,6 +99,8 @@ export function parseArgs(argv: string[]): BenchCliOptions {
     graders: DEFAULT_GRADERS_PATH,
     data: DEFAULT_ROUTING_SET_PATH,
     dsReasoning: undefined,
+    dsBand3Model: undefined,
+    dsBand3Samples: undefined,
     out: resolve(PACKAGE_ROOT, "reports/bench-latest.md"),
     json: undefined,
   };
@@ -195,6 +199,15 @@ export function parseArgs(argv: string[]): BenchCliOptions {
       case "--data":
         options.data = resolve(INVOKE_CWD, next());
         break;
+      case "--ds-band3-model": {
+        const value = next();
+        if (value !== "flash" && value !== "v41") throw new Error(`--ds-band3-model must be flash|v41, got "${value}"`);
+        options.dsBand3Model = value;
+        break;
+      }
+      case "--ds-band3-samples":
+        options.dsBand3Samples = positiveInt(next(), "--ds-band3-samples");
+        break;
       case "--ds-reasoning": {
         const value = next();
         if (!["low", "medium", "high"].includes(value)) throw new Error(`--ds-reasoning must be low|medium|high, got "${value}"`);
@@ -279,6 +292,8 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     ...(options.salt !== undefined ? { salt: options.salt } : {}),
     providerPins: options.pins,
     ...(options.dsReasoning !== undefined ? { dsReasoning: options.dsReasoning } : {}),
+    ...(options.dsBand3Model !== undefined ? { dsBand3Model: options.dsBand3Model } : {}),
+    ...(options.dsBand3Samples !== undefined ? { dsBand3Samples: options.dsBand3Samples } : {}),
     sampleTimeoutMs: options.sampleTimeoutMs,
     ...(options.samples > 1 ? { samples: options.samples, sampleTier: options.sampleTier, vary: options.vary } : {}),
     ...(jev !== undefined ? { jev } : {}),

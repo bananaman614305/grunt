@@ -88,6 +88,12 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--ds-reasoning", "max"])).toThrow(/--ds-reasoning/);
   });
 
+  it("band-3 structural knobs parse and validate", () => {
+    expect(parseArgs(["--ds-band3-model", "flash"]).dsBand3Model).toBe("flash");
+    expect(parseArgs(["--ds-band3-samples", "3"]).dsBand3Samples).toBe(3);
+    expect(() => parseArgs(["--ds-band3-model", "pro"])).toThrow(/--ds-band3-model/);
+  });
+
   it("rejects bad values", () => {
     expect(() => parseArgs(["--posture", "cheap"])).toThrow(/--posture/);
     expect(() => parseArgs(["--arms", "milo,slow"])).toThrow(/--arms/);

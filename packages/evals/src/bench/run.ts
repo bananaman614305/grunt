@@ -104,6 +104,9 @@ export type RunBenchOptions = {
   sampleTier?: FixedArm;
   /** OpenRouter `reasoning.effort` for the deepseek arm's samples (ablation knob). */
   dsReasoning?: string;
+  /** Band-3 structural knobs: swap the orchestrator for the branch model, or cap its samples. */
+  dsBand3Model?: "flash" | "v41";
+  dsBand3Samples?: number;
   /** Cycle the prompt framings in `PROMPT_VARIANTS` across samples. */
   vary?: boolean;
   /** Ranks samples. Required when `samples` > 1. */
@@ -496,6 +499,13 @@ async function runDeepseekArm(runner: Runner, example: RoutingExample, messages:
   let sizing: ComputeSizing;
   try {
     sizing = await sizeCompute(jev, messages, example.has_tools ? BENCH_TOOLS : undefined);
+    // Structural band-3 cost knobs (the ablation showed reasoning.effort is
+    // ignored upstream): swap the orchestrator for the branch model, or cap
+    // the draw, and price what each concession costs in pass rate.
+    if (sizing.budget.band === 3) {
+      if (options.dsBand3Model === "flash") sizing = { ...sizing, budget: { ...sizing.budget, model: DEEPSEEK_BRANCH_MODEL } };
+      if (options.dsBand3Samples !== undefined) sizing = { ...sizing, budget: { ...sizing.budget, samples: options.dsBand3Samples } };
+    }
   } catch (error) {
     return { ...base, error: `sizing ${classify(error)}` };
   }
