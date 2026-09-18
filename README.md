@@ -35,7 +35,11 @@ pass a completeness gate (ADR-013): one Jev call checks that the answer
 addresses every part of the request, and a failing answer buys exactly one
 retry, with the better of the two served and `x-milo-completeness`,
 `x-milo-retry` and `x-milo-gate-pick` headers disclosing what happened
-(`milo: { "gates": false }` opts a request out). And an experimental routing
+(`milo: { "gates": false }` opts a request out). Long conversations can opt in
+to context pruning (ADR-014, off by default via `pruning.enabled` or per
+request with `milo: { "prune": true }`): one Jev call sheds finished older
+context before forwarding — never the system prompt, the latest turn, or a
+tool-call pair — disclosed on `x-milo-pruned` and `x-milo-pruned-tokens`. And an experimental routing
 mode, `"mode": "deepseek"` in `milo.config.json` (ADR-012), replaces the
 roster with a compute controller over the DeepSeek family: the same routing
 signals buy a compute budget — one flash call on easy bands, best-of-5 on the
@@ -155,6 +159,7 @@ optional appended system brief, off per request with one field.
 - `tier` — forces a tier (`"fast"`, `"mid"`, `"frontier"`) and skips the Jev call entirely; the decision is recorded with reason `"forced to the <tier> tier by the request"`.
 - `samples` — best-of-N control (ADR-010): `1` disables sampling for this request, a larger integer (capped at 8) sets the sample count on the cells the policy samples.
 - `brief: false` — skips the appended preference brief for this one request (`docs/memory.md`, ADR-011). Everything Milo remembers is listed at `GET /v1/preferences` and deletable at `DELETE /v1/preferences/:id`.
+- `prune` — context pruning (ADR-014): `true` opts this request in to shedding finished older context, `false` opts it out; off by default unless the deployment set `pruning.enabled`. `false` always wins.
 
 ## Why these models
 

@@ -70,6 +70,16 @@ export type GatewayOptions = {
    * The cells themselves are fixed in code for now (`policy.ts`).
    */
   sampling?: { enabled?: boolean; sampleTimeoutMs?: number; minRanked?: number };
+  /**
+   * Context pruning (ADR-014, ADR-013 phase C). Off by default: `enabled`
+   * (default false) lets the gate run on every routed request over the token
+   * floor; even off, a request opts in per call with `milo: { prune: true }`.
+   * `minContextTokens` (default 40,000) is the floor a conversation must
+   * exceed before pruning is considered; `contextWindowTokens` (default
+   * 128,000) is the fill-ratio denominator for a model whose context window
+   * is unknown. Set from `milo.config.json`'s `pruning`.
+   */
+  pruning?: { enabled?: boolean; minContextTokens?: number; contextWindowTokens?: number };
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
   /**
@@ -207,6 +217,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     mode,
     jev,
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
+    ...(options.pruning !== undefined ? { pruning: options.pruning } : {}),
     ...(billing !== undefined ? { billing } : {}),
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),

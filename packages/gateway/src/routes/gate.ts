@@ -79,6 +79,8 @@ import { passThroughHeaders } from "../app.js";
 import { chargeBuffered, upstreamHeadersFor } from "../billing.js";
 import { briefHeaders } from "../brief.js";
 import { errorMessage, errorResponse } from "../errors.js";
+import { applyPruneHeaders, pruneRecord } from "./prune.js";
+import type { PruneOutcome } from "./prune.js";
 import { answerText, replayAsSse } from "./sampling.js";
 import { applyMiloHeaders, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
@@ -365,6 +367,7 @@ export async function forwardGated(
   decision: RouteDecision,
   gate: GateRunner,
   briefVersion?: string,
+  prune?: PruneOutcome,
 ): Promise<Response> {
   const forwarded = prepareBody(body, decision.model);
   forwarded["stream"] = false;
@@ -383,12 +386,17 @@ export async function forwardGated(
   const text = await upstream.text();
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyPruneHeaders(headers, prune);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
 
   // An upstream error passes through with its own status, ungated, exactly
   // as the ordinary forward would answer it.
   if (!upstream.ok) {
-    deps.recordUpstream(decision.id, { status: upstream.status, latencyMs: deps.now() - startedAt });
+    deps.recordUpstream(decision.id, {
+      status: upstream.status,
+      latencyMs: deps.now() - startedAt,
+      ...pruneRecord(prune),
+    });
     return new Response(text, { status: upstream.status, headers });
   }
 
@@ -410,6 +418,7 @@ export async function forwardGated(
       status: upstream.status,
       latencyMs: deps.now() - startedAt,
       ...toUpstreamRecord(usage),
+      ...pruneRecord(prune),
     });
     await chargeBuffered(c, deps, headers, ctx, usage);
     return new Response(text, { status: upstream.status, headers });
@@ -424,6 +433,7 @@ export async function forwardGated(
     latencyMs: deps.now() - startedAt,
     ...toUpstreamRecord(total),
     gate: result.record,
+    ...pruneRecord(prune),
   };
   deps.recordUpstream(decision.id, record);
   await chargeBuffered(c, deps, headers, ctx, total);

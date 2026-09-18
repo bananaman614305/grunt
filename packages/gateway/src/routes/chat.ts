@@ -57,6 +57,8 @@ import {
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { forwardGated, gateFor } from "./gate.js";
+import { applyPruneHeaders, maybePrune, pruneRecord } from "./prune.js";
+import type { PruneOutcome } from "./prune.js";
 import { forwardSampled } from "./sampling.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
@@ -242,6 +244,12 @@ async function routed(
   const posture = extension?.posture ?? "balanced";
   const outgoing = applyProviderStrategy(applyBrief(body, brief), posture, decision.model);
 
+  // Context pruning (ADR-014, ADR-013 phase C) sheds safe older context from
+  // `outgoing.messages` in place before anything reads them: off by default,
+  // over a token floor, never on `low` posture. See prune.ts for the exact
+  // conditions; the outcome rides the forward as disclosure only.
+  const prune = await maybePrune(deps, outgoing, decision, posture, extension);
+
   // The completeness gate (ADR-013 phase A) applies to this surface only,
   // in both routing modes, on non-trivial cells: see gateFor for the exact
   // conditions (band >= 1, not low posture, no `milo: { gates: false }`).
@@ -251,19 +259,26 @@ async function routed(
   // this surface executes sampling; the other dialects opt out at routing
   // time (see routes/messages.ts and routes/responses.ts).
   if (decision.samples !== undefined && decision.samples > 1) {
-    return forwardSampled(c, deps, outgoing, decision, { candidates, briefVersion: brief?.version, gate });
+    return forwardSampled(c, deps, outgoing, decision, { candidates, briefVersion: brief?.version, gate, prune });
   }
 
   // A gated single call buffers, grades, maybe retries, then replays; an
   // ungated one keeps the pass-through fast path untouched.
   if (gate !== undefined) {
-    return forwardGated(c, deps, outgoing, decision, gate, brief?.version);
+    return forwardGated(c, deps, outgoing, decision, gate, brief?.version, prune);
   }
 
-  return forward(c, deps, outgoing, decision, brief?.version);
+  return forward(c, deps, outgoing, decision, brief?.version, prune);
 }
 
-async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision, briefVersion?: string): Promise<Response> {
+async function forward(
+  c: Context,
+  deps: AppDeps,
+  body: Body,
+  decision: RouteDecision,
+  briefVersion?: string,
+  prune?: PruneOutcome,
+): Promise<Response> {
   const forwarded = prepareBody(body, decision.model);
   const startedAt = deps.now();
 
@@ -278,6 +293,7 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyPruneHeaders(headers, prune);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
 
   // A streamed success is the only case where the body must not be touched.
@@ -288,7 +304,11 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
   if (isStreaming(body) && upstream.ok && upstream.body !== null) {
     const recorded = upstream.body.pipeThrough(
       onFinished(() => {
-        deps.recordUpstream(decision.id, { status: upstream.status, latencyMs: deps.now() - startedAt });
+        deps.recordUpstream(decision.id, {
+          status: upstream.status,
+          latencyMs: deps.now() - startedAt,
+          ...pruneRecord(prune),
+        });
       }),
     );
     // The charge settles from the usage in the stream's final frames, after
@@ -298,7 +318,7 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
 
   const text = await upstream.text();
   const usage = upstream.ok ? readBodyUsage("chat", text) : {};
-  const record: Upstream = { status: upstream.status, latencyMs: deps.now() - startedAt };
+  const record: Upstream = { status: upstream.status, latencyMs: deps.now() - startedAt, ...pruneRecord(prune) };
   if (upstream.ok) Object.assign(record, toUpstreamRecord(usage));
   deps.recordUpstream(decision.id, record);
   if (upstream.ok) await chargeBuffered(c, deps, headers, ctx, usage);

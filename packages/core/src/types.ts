@@ -94,6 +94,15 @@ export type MiloRequestExtension = {
    * running is the default.
    */
   gates?: boolean;
+  /**
+   * Context pruning (ADR-014, ADR-013 phase C): `true` opts this request in
+   * to shedding safe older context before it is forwarded, `false` opts it
+   * out. Unlike `brief`/`gates`, BOTH values are meaningful, because pruning
+   * is off by default: it edits the caller's own message history, so a
+   * deployment enables it with `pruning.enabled` and any request can force it
+   * on or off, with `false` always winning.
+   */
+  prune?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -266,6 +275,30 @@ export type GateUpstream = {
   retry?: { status: number; latencyMs: number; inputTokens?: number; outputTokens?: number; costUsd?: number; error?: string };
 };
 
+/**
+ * What context pruning did to a routed request before it was forwarded
+ * (ADR-014, ADR-013 phase C): how many older messages a contiguous range
+ * dropped, the approximate input tokens that saved, the range itself, and
+ * the verdict that authorised it. Counts only, never content -- the dropped
+ * messages leave no trace but a marker in the forwarded body and these
+ * numbers here.
+ */
+export type PruneUpstream = {
+  /** Messages dropped (replaced by one summary note). */
+  pruned: number;
+  /** Approximate input tokens saved: dropped characters minus the note, / 4. */
+  tokensSaved: number;
+  /** The dropped range as indices into the request's original `messages`. */
+  from: number;
+  to: number;
+  /** Jev's `oldest_finished` confidence, which cleared the sliding floor. */
+  confidence: number;
+  /** The sliding floor at this context fill. */
+  floor: number;
+  /** Estimated input tokens over the model's context window. */
+  fillRatio: number;
+};
+
 export type DecisionRecord = RouteDecision & {
   /**
    * Set by the gateway after the upstream call completes. On a sampled
@@ -290,5 +323,10 @@ export type DecisionRecord = RouteDecision & {
      * include the retry's usage: the row bills what was actually generated.
      */
     gate?: GateUpstream;
+    /**
+     * Context pruning's outcome (ADR-014), present only when the gate ran
+     * and dropped a range. Counts only, no content.
+     */
+    prune?: PruneUpstream;
   };
 };

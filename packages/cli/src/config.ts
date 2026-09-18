@@ -53,6 +53,23 @@ const samplingSchema = z
   .strict();
 
 /**
+ * Context pruning (ADR-014, ADR-013 phase C). Off by default: `enabled`
+ * (default false) lets the gate run on every routed request over the token
+ * floor, and a request can still opt in per call with `milo: { prune: true }`
+ * even when it is off. `minContextTokens` (default 40,000) is the floor a
+ * conversation must exceed before pruning is considered; `contextWindowTokens`
+ * (default 128,000) is the fill-ratio denominator for a model whose context
+ * window is unknown.
+ */
+const pruningSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    minContextTokens: z.number().int().positive().optional(),
+    contextWindowTokens: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/**
  * Routing mode (ADR-012). `"roster"` is the shipped default: policy v4 over
  * the tier-to-model roster, unchanged. `"deepseek"` is the experimental
  * compute controller: the difficulty band buys a compute budget over the
@@ -74,6 +91,7 @@ export const configSchema = z
     /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
     jevTimeoutMs: z.number().int().positive().optional(),
     sampling: samplingSchema.optional(),
+    pruning: pruningSchema.optional(),
   })
   .strict();
 

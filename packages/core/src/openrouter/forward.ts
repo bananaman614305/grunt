@@ -76,6 +76,11 @@ export function extractMilo(body: Record<string, unknown>): {
   if (source.gates === false) {
     extension.gates = false;
   }
+  // Context pruning (ADR-014) is off by default, so BOTH values matter: a
+  // `true` opts this request in, a `false` opts it out and always wins.
+  if (source.prune === true || source.prune === false) {
+    extension.prune = source.prune;
+  }
 
   return { extension, isRouted };
 }

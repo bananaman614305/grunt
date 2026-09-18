@@ -189,6 +189,19 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
           },
         }
       : {}),
+    ...(config.pruning !== undefined
+      ? {
+          pruning: {
+            enabled: config.pruning.enabled,
+            ...(config.pruning.minContextTokens !== undefined
+              ? { minContextTokens: config.pruning.minContextTokens }
+              : {}),
+            ...(config.pruning.contextWindowTokens !== undefined
+              ? { contextWindowTokens: config.pruning.contextWindowTokens }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   const gateway = await deps.createGateway(gatewayOptions);

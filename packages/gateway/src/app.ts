@@ -99,6 +99,15 @@ export type AppDeps = {
    * ranked samples the fan-out waits for before an early return may fire.
    */
   sampling?: { sampleTimeoutMs?: number; minRanked?: number };
+  /**
+   * Context pruning (ADR-014). Absent or `enabled` false means the gate is
+   * off for every request unless one opts in with `milo: { prune: true }`.
+   * `minContextTokens` is the token floor a conversation must exceed before
+   * pruning is considered (default 40,000); `contextWindowTokens` is the
+   * fill-ratio denominator for a model whose context window is unknown
+   * (default 128,000).
+   */
+  pruning?: { enabled?: boolean; minContextTokens?: number; contextWindowTokens?: number };
   logger: Logger;
   /** Injectable clock for upstream latency. */
   now: () => number;

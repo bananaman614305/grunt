@@ -64,6 +64,8 @@ import { chargeBuffered, chargeStream, upstreamHeadersFor } from "../billing.js"
 import { errorMessage, errorResponse } from "../errors.js";
 import { briefHeaders } from "../brief.js";
 import type { GateRunner } from "./gate.js";
+import { applyPruneHeaders, pruneRecord } from "./prune.js";
+import type { PruneOutcome } from "./prune.js";
 import { applyMiloHeaders, onFinished, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage } from "./usage.js";
@@ -126,6 +128,13 @@ export type SamplingContext = {
    * already the degraded path.
    */
   gate?: GateRunner | undefined;
+  /**
+   * Context pruning's outcome (ADR-014), when the gate shed older context
+   * from this request's messages before the fan-out. Disclosure only: the
+   * samples already drew on the pruned body, so this just sets the headers
+   * and the decision record's `prune` block.
+   */
+  prune?: PruneOutcome | undefined;
 };
 
 type Sample = {
@@ -628,11 +637,13 @@ export async function forwardSampled(
     samplePick: pickIndex,
     ...(note !== undefined ? { sampleNote: note } : {}),
     ...(gateRecord !== undefined ? { gate: gateRecord } : {}),
+    ...pruneRecord(ctx.prune),
   };
   deps.recordUpstream(decision.id, record);
 
   const headers = chosen.response !== undefined ? passThroughHeaders(chosen.response) : new Headers();
   applyMiloHeaders(headers, decision);
+  applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   headers.set(SAMPLES_HEADER, String(n));
   headers.set(SAMPLE_PICK_HEADER, String(pickIndex));
@@ -767,6 +778,7 @@ async function fallbackUnsampled(
       latencyMs: deps.now() - startedAt,
       samples: sampleMeta,
       sampleNote: "all_samples_failed",
+      ...pruneRecord(ctx.prune),
     });
     deps.logger.error("openrouter chat completions failed", { decisionId: decision.id, error: errorMessage(err) });
     return errorResponse(c, 502, "Upstream request to OpenRouter failed.", "api_error", "upstream_unavailable");
@@ -774,6 +786,7 @@ async function fallbackUnsampled(
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   // The response the client got came from the fallback, not the sampled fast
   // model, and the headers must say what actually answered.
@@ -791,6 +804,7 @@ async function fallbackUnsampled(
           latencyMs: deps.now() - startedAt,
           samples: sampleMeta,
           sampleNote: "all_samples_failed",
+          ...pruneRecord(ctx.prune),
         });
       }),
     );
@@ -807,6 +821,7 @@ async function fallbackUnsampled(
     ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
     samples: sampleMeta,
     sampleNote: "all_samples_failed",
+    ...pruneRecord(ctx.prune),
   };
   deps.recordUpstream(decision.id, record);
   if (upstream.ok) await chargeBuffered(c, deps, headers, chargeCtx, usage);

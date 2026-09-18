@@ -210,6 +210,26 @@ tokens were generated either way — and the decision record's `upstream`
 block aggregates them, stores the verdict and the retry's own usage under
 `gate`, and stores no content.
 
+### Context pruning (ADR-014, ADR-013 phase C)
+
+On this route only, when it is enabled (`pruning.enabled`, or `milo: {
+"prune": true }` on the request) and the history is over the token floor,
+Milo may shed a safe older range of messages before forwarding — replacing
+it with one system note, `[earlier context pruned by Milo: <n> messages]`.
+It never runs on `low` posture, never drops the system prompt, the latest
+user turn, or half of a tool-call/result pair. `milo: { "prune": false }`
+always opts out. See `docs/routing.md`, "Context pruning".
+
+| Header | Meaning |
+|---|---|
+| `x-milo-pruned` | how many older messages were dropped. Absent when nothing was pruned. |
+| `x-milo-pruned-tokens` | approximate input tokens saved by the drop (characters / 4). |
+
+Spend: one extra Jev classification on a request over the floor; the win is
+fewer input tokens forwarded on every subsequent turn. The decision record's
+`upstream.prune` block stores the counts (dropped, tokens saved, the range,
+the verdict confidence, the floor, the fill ratio) and no content.
+
 An OpenRouter request that fails outright (network error, no response) on
 either path returns:
 

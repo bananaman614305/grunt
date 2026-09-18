@@ -327,6 +327,40 @@ content. A gated request is buffered internally whatever the client asked
 for; a streaming client gets the served answer replayed as well-formed SSE,
 exactly like a sampled decision.
 
+## Context pruning (ADR-014, ADR-013 phase C)
+
+A routed chat request whose history has grown long re-sends -- and re-pays
+for -- its oldest turns on every turn, even when that early work is finished
+and no longer bears on the current request. Context pruning sheds a safe
+older range before the request is forwarded. It is **off by default**: a
+deployment turns it on with `pruning.enabled`, and any request opts in with
+`milo: { prune: true }` or out with `milo: { prune: false }` (`false` always
+wins). It never runs on `low` posture, never without a Jev client, and only
+once the history is over the token floor (`pruning.minContextTokens`, default
+40,000; tokens estimated as characters / 4).
+
+When it applies, one Jev call -- separate from the routing call -- asks two
+questions (`packages/core/src/router/pruning.ts`): a noul, **is the earliest
+unit of work finished and safe to drop?**, and a score (0..3) ranking **how
+prunable the older context is**. A **sliding threshold** decides whether to
+act: the confidence floor loosens as the context fills, from 0.90 at 10% of
+the model's context window used down to 0.50 at 90% used (linear). Milo
+prunes only when the noul clears the floor at the current fill and the score
+is at least 1.0; the score then sets how much of the safe window to drop
+(`score / 3` of it), snapped to a tool-group boundary.
+
+What it drops is chosen by pure, exhaustively tested functions
+(`prunableWindow`, `decidePrune`) that never violate the safety invariants:
+it never drops a system or developer message, never the latest user turn or
+anything after it, never splits an open tool-call/tool-result pair, and only
+ever a single contiguous older range. It **summarizes rather than deletes**:
+the dropped range is replaced by one system note,
+`[earlier context pruned by Milo: <n> messages]`. Disclosure is
+`x-milo-pruned` (messages dropped) and `x-milo-pruned-tokens` (approx input
+tokens saved); the decision record's `prune` block keeps the same counts and
+no content. Measure the saving on a long-history fixture with
+`pnpm --filter @milo/evals run prune:measure` (`docs/evals.md`).
+
 ## Roster resolution
 
 ### Which roster
