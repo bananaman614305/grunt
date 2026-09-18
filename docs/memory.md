@@ -108,8 +108,19 @@ guarantees, non-negotiable because this is PII:
 3. **One-call deletable.** `DELETE /v1/memory/:id` removes one fact.
 
 Each fact carries a **category** label — `address`, `contact`, `identifier`,
-`credential-hint`, `convention`, `other` — which is *not* content and rides
-alongside the ciphertext. The category is a label; the content is encrypted.
+`credential-hint`, `convention`, `correction`, `other` — which is *not* content
+and rides alongside the ciphertext. The category is a label; the content is
+encrypted.
+
+`convention` and `correction` are the **coding-experience** memory. A
+`convention` is a standing "this is how we do it" rule — "we use pnpm, not
+npm", "always run vitest before pushing", "our components go in `src/ui`". A
+`correction` is a durable don't/never/stop instruction — "stop using `var`,
+always use `const`", "don't touch generated files", "you keep breaking the
+build, run the tests first". Like every fact, both are lifted verbatim from
+your message (never generated), stored encrypted, and injected only when the
+relevance gate judges them relevant to the request — so a JavaScript
+correction is never fed into a Python task.
 
 ## How a fact gets learned
 
@@ -160,5 +171,15 @@ captured, nothing is injected, `GET /v1/memory` answers empty and says so,
 because a fact store with no envelope must not keep plaintext. Fact content
 never reaches a log line, a response header, a decision row, or an error
 message; the decision log stays content-free.
+
+Whether the coding-experience memory (`convention` and `correction`)
+*measurably* improves agentic outcomes is **unproven**, and it is hard to
+measure synthetically — the same lesson that shelved the loop-detection gate.
+A benchmark can show a correction is captured and injected on the right
+request, but not that remembering "stop using `var`" makes the next real
+session go better; that depends on a real agent, a real codebase, and a real
+mistake it would otherwise repeat. So this ships as a bet to be validated by
+real usage, not by a synthetic eval score, and the category is deliberately a
+narrow, additive extension of the fact store rather than new machinery.
 
 The binding decision: [`adr/017-personal-fact-memory.md`](adr/017-personal-fact-memory.md).

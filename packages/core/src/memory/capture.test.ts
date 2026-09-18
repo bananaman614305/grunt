@@ -57,6 +57,20 @@ describe("resolveFactCapture", () => {
     });
   });
 
+  it("resolves category correction with the text lifted from the user's message, never Jev-generated", () => {
+    // A bare "stop/always" coding correction: no remember/note frame, so the
+    // whole turn is the fact text -- and it is the user's words, not Jev's.
+    const message = "stop using var, always use const";
+    const answers: Record<string, JevAnswer> = {
+      [FACT_STATED_KEY]: noul(0.9),
+      [FACT_CATEGORY_KEY]: choice("correction", 0.85),
+    };
+    expect(resolveFactCapture(answers, message)).toEqual({
+      category: "correction",
+      text: "stop using var, always use const",
+    });
+  });
+
   it("drops a weak detection (noul below the floor)", () => {
     const answers: Record<string, JevAnswer> = {
       [FACT_STATED_KEY]: noul(0.5),

@@ -61,3 +61,29 @@ describe("selectRelevantFacts", () => {
     expect(selectRelevantFacts(undefined, FACTS)).toEqual([]);
   });
 });
+
+describe("a stored correction rides the same relevance gate", () => {
+  // A JS anti-pattern correction. It must be injected on a relevant JS task and
+  // withheld on an unrelated one -- so a Python task never sees a JS correction,
+  // exactly as ADR-017 promises corrections/conventions ride the gate unchanged.
+  const CORRECTION: InjectableFact = {
+    id: "f_corr",
+    category: "correction",
+    text: "stop using var, always use const",
+  };
+
+  it("injects the correction on a relevant coding request", () => {
+    // Jev judges the correction relevant to a JS refactor turn.
+    const answers: Record<string, JevAnswer> = { [relevanceKey("f_corr")]: noul(0.9) };
+    const relevant = selectRelevantFacts(answers, [CORRECTION]);
+    expect(relevant.map((f) => f.id)).toEqual(["f_corr"]);
+    expect(compileFactNote(relevant)).toContain("const");
+  });
+
+  it("does NOT inject the correction on an unrelated request", () => {
+    // Jev judges the JS correction irrelevant (e.g. a Python task): withheld.
+    const answers: Record<string, JevAnswer> = { [relevanceKey("f_corr")]: noul(0.1) };
+    expect(selectRelevantFacts(answers, [CORRECTION])).toEqual([]);
+    expect(compileFactNote(selectRelevantFacts(answers, [CORRECTION]))).toBeUndefined();
+  });
+});

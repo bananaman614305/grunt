@@ -59,9 +59,9 @@ export const factStatedQuestion: JevNoulQuestion = {
     "Does the latest user turn state a durable personal fact worth remembering across sessions -- either explicitly asking to be remembered, or stating a lasting fact about the user, their accounts, people, or conventions?",
   criteria: {
     true:
-      'The turn asks Milo to remember something, or states a durable personal fact: "remember that my deploy account is acct_4Q7", "my staging box is 10.2.0.7", "my co-founder is Dana, she owns billing", "we always spell it gray, never grey", "my timezone is CET". The fact is about the user and is meant to keep applying.',
+      'The turn asks Milo to remember something, or states a durable personal fact: "remember that my deploy account is acct_4Q7", "my staging box is 10.2.0.7", "my co-founder is Dana, she owns billing", "we always spell it gray, never grey", "my timezone is CET". It also counts a durable CODING CONVENTION meant to keep applying -- "we use pnpm, not npm", "always run vitest before pushing", "our components go in src/ui" -- and a durable CODING CORRECTION or anti-pattern the user states to stop or never do -- "stop using var, always use const", "don\'t touch generated files", "you keep breaking the build, run the tests first". The fact, convention, or correction is meant to keep applying across sessions, not just this one.',
     false:
-      "The turn is the task itself or a one-off: what to build, fix, or explain; an ephemeral value used only for this request; a preference about how to answer (that is ADR-011, not a fact); or anything not a lasting personal fact.",
+      "The turn is the task itself or a one-off: what to build, fix, or explain; a one-time fix or instruction that applies only to this request; an ephemeral value used only for this request; a preference about how to answer (that is ADR-011, not a fact); or anything not a lasting personal fact, convention, or correction.",
   },
 };
 
@@ -75,7 +75,9 @@ const CATEGORY_CRITERIA: Record<string, string> = {
   "credential-hint":
     "A non-secret hint about a credential: which key or profile to use, where a token lives, a username -- never a secret value itself.",
   convention:
-    "A standing convention or spelling: how the user names things, a preferred spelling, a house style rule about facts (not about answer shape).",
+    'A standing "this is how we do it" convention, especially a CODING or project convention: a tool or command to use ("pnpm, not npm", "run vitest before pushing"), where code lives ("components go in src/ui"), or a naming or spelling rule. It states the positive rule to follow (not about answer shape, and distinct from a "stop/never/don\'t" correction).',
+  correction:
+    'A durable CODING correction or anti-pattern the user has told Milo to STOP or NEVER do, or a mistake they say Milo keeps making: "stop using var", "don\'t touch generated files", "never edit types.ts without an ADR", "you keep forgetting to run the tests". A lasting don\'t/never/stop instruction about how NOT to code, distinct from a positive convention.',
   other: "A durable personal fact that fits none of the categories above.",
   [NO_FACT_CATEGORY]: "No durable personal fact is stated, or nothing worth remembering.",
 };

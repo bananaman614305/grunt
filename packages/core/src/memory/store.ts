@@ -42,6 +42,7 @@ export const FACT_CATEGORIES = [
   "identifier",
   "credential-hint",
   "convention",
+  "correction",
   "other",
 ] as const;
 

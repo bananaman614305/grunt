@@ -200,7 +200,8 @@ CREATE TABLE IF NOT EXISTS preference_settings (
     // the store refuses to write a fact when no encryptor is available, and
     // the migration names the column `_encrypted` so no future reader mistakes
     // it for cleartext. `category` is a closed-vocabulary LABEL (address,
-    // contact, identifier, credential-hint, convention, other) that rides
+    // contact, identifier, credential-hint, convention, correction, other)
+    // that rides
     // alongside the ciphertext; the label is not content. `provenance` is the
     // fingerprint of the capturing turn -- a digest, never content.
     //
