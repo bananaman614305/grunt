@@ -95,6 +95,16 @@ importers:
         specifier: ^4.19.2
         version: 4.23.13
 
+  packages/fleet:
+    dependencies:
+      '@milo/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.13
+
   packages/gateway:
     dependencies:
       '@hono/node-server':
