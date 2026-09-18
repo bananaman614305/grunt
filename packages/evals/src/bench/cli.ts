@@ -26,6 +26,8 @@ import { ARM_NAMES, FIXED_ARMS } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
+/** pnpm runs package scripts with cwd inside the package; INIT_CWD is where the user invoked pnpm. */
+const INVOKE_CWD = process.env["INIT_CWD"] ?? process.cwd();
 
 export const DEFAULT_GATEWAY = "http://127.0.0.1:8787/v1";
 export const DEFAULT_OPENROUTER = "https://openrouter.ai/api/v1";
@@ -156,13 +158,13 @@ export function parseArgs(argv: string[]): BenchCliOptions {
         options.vary = true;
         break;
       case "--graders":
-        options.graders = resolve(process.cwd(), next());
+        options.graders = resolve(INVOKE_CWD, next());
         break;
       case "--out":
-        options.out = resolve(process.cwd(), next());
+        options.out = resolve(INVOKE_CWD, next());
         break;
       case "--json":
-        options.json = resolve(process.cwd(), next());
+        options.json = resolve(INVOKE_CWD, next());
         break;
       default:
         throw new Error(`unknown argument: ${arg}`);
