@@ -1,6 +1,12 @@
 app = "milo-gateway"
 primary_region = "iad"
 
+# Route with the DeepSeek compute controller (ADR-012) rather than the
+# tier-to-model roster: `milo serve` reads MILO_MODE, and this is the one
+# place the deployed gateway's mode is set. Flip to "roster" to revert.
+[env]
+  MILO_MODE = "deepseek"
+
 # `flyctl deploy` builds this image locally (or with Fly's remote builder)
 # from the repo's Dockerfile. Deploying by the Machines API instead (see
 # docs/deploy.md) uses the published ghcr.io image and ignores this block.
