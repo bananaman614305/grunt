@@ -39,8 +39,27 @@ export {
   DIFFICULTY_CAP_OVERRIDE,
   REASONING_THRESHOLD,
   CAPPED_TASK_TYPES,
+  chooseOutcome,
+  clampSamples,
+  SAMPLING_TASK_TYPES,
+  DEFAULT_SAMPLE_COUNT,
+  MAX_SAMPLE_COUNT,
 } from "./policy.js";
-export type { PolicyProfile } from "./policy.js";
+export type { PolicyProfile, PolicyOutcome } from "./policy.js";
+
+export {
+  PROMPT_VARIANTS,
+  applyVariant,
+  variantFor,
+  RANK_QUESTIONS,
+  RANK_STATE_MAX_CHARS,
+  RANK_BUDGET_MS,
+  rankState,
+  rankAnswer,
+  compareRanked,
+  pickBest,
+} from "./sampling.js";
+export type { RankScore } from "./sampling.js";
 
 export {
   resolveModel,

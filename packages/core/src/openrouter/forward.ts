@@ -4,6 +4,7 @@
  * through untouched, per docs/PLAN.md and ADR-003.
  */
 
+import { MAX_SAMPLE_COUNT } from "../router/policy.js";
 import { COST_POSTURES, ROUTED_MODEL_ID, TIERS } from "../types.js";
 import type { CostPosture, MiloRequestExtension, Tier } from "../types.js";
 
@@ -59,6 +60,11 @@ export function extractMilo(body: Record<string, unknown>): {
   }
   if (typeof source.tier === "string" && isTier(source.tier)) {
     extension.tier = source.tier;
+  }
+  // Best-of-N override (ADR-010): 1 disables sampling, larger values set the
+  // count on cells the policy samples, capped. Anything malformed is dropped.
+  if (typeof source.samples === "number" && Number.isInteger(source.samples) && source.samples >= 1) {
+    extension.samples = Math.min(source.samples, MAX_SAMPLE_COUNT);
   }
 
   return { extension, isRouted };

@@ -74,6 +74,12 @@ export type MiloRequestExtension = {
   candidates?: string[];
   /** Force a tier and skip Jev. Recorded as a decision with reason "forced". */
   tier?: Tier;
+  /**
+   * Best-of-N override (ADR-010): `1` disables sampling for this request,
+   * any larger value sets the sample count on cells the policy samples,
+   * capped at 8. Absent means the policy's own default applies.
+   */
+  samples?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -105,6 +111,12 @@ export type RouteRequest = {
   forcedTier?: Tier;
   fingerprint: string;
   /**
+   * Per-request best-of-N override (ADR-010), from `milo.samples`: `1`
+   * disables sampling, larger values set the count on cells the policy
+   * samples (capped at `MAX_SAMPLE_COUNT`). Absent means the policy decides.
+   */
+  samples?: number;
+  /**
    * The tier-to-model table to resolve this one request against, overriding
    * the Router's own. Set by the gateway when the caller's key has a roster
    * stored against it (ADR-008); absent means "use the Router's", which is
@@ -129,6 +141,14 @@ export type RouteDecision = {
    * (and the same `jevRequestId`) as the call that produced it.
    */
   sticky: boolean;
+  /**
+   * Best-of-N sampling (ADR-010). When set (always > 1), the gateway fans out
+   * this many upstream calls on `tier` (always `fast`) and returns the answer
+   * Jev ranks best. `unsampledTier` is what the policy would have picked
+   * without sampling, and is what the eval gate measures.
+   */
+  samples?: number;
+  unsampledTier?: Tier;
   createdAt: string; // ISO 8601
 };
 
@@ -151,19 +171,49 @@ export const ROUTER_LIMITS = {
   recentUserTurns: 3,
 } as const;
 
-export const POLICY_VERSION = "v2";
+export const POLICY_VERSION = "v4";
 
 // ---------------------------------------------------------------------------
 // Decision log
 // ---------------------------------------------------------------------------
 
+/**
+ * One sample of a best-of-N fan-out as the decision log stores it (ADR-010):
+ * token counts, cost, Jev's scores, and the pick -- never content.
+ */
+export type SampleUpstream = {
+  index: number;
+  status: number;
+  latencyMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+  /** Jev's expected 0..3 quality score for this sample's answer. */
+  jevQuality?: number;
+  /** Jev's probability that this sample's answer is correct. */
+  jevCorrect?: number;
+  /** Failure class only ("timeout", "network", "http_500", "rank_failed"...). */
+  error?: string;
+  picked?: boolean;
+};
+
 export type DecisionRecord = RouteDecision & {
-  /** Set by the gateway after the upstream call completes. */
+  /**
+   * Set by the gateway after the upstream call completes. On a sampled
+   * decision (ADR-010) the token counts and cost aggregate across every
+   * sample, `samples` carries the per-sample metadata, `samplePick` the
+   * chosen index, and `sampleNote` marks a degraded pick: `ranking_failed`
+   * (Jev could not rank, first success returned) or `all_samples_failed`
+   * (one ordinary call on `unsampledTier` answered instead).
+   */
   upstream?: {
     status: number;
     latencyMs: number;
     inputTokens?: number;
     outputTokens?: number;
     costUsd?: number;
+    samples?: SampleUpstream[];
+    samplePick?: number;
+    sampleNote?: "ranking_failed" | "all_samples_failed";
   };
 };

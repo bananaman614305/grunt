@@ -79,6 +79,12 @@ function rowToRecord(row: Row): StoredDecision {
     sticky: Boolean(row.sticky),
     createdAt: String(row.created_at),
   };
+  if (row.samples !== null && row.samples !== undefined) {
+    record.samples = Number(row.samples);
+  }
+  if (row.unsampled_tier !== null && row.unsampled_tier !== undefined) {
+    record.unsampledTier = String(row.unsampled_tier) as Tier;
+  }
   if (row.signals_json !== null && row.signals_json !== undefined) {
     record.signals = JSON.parse(String(row.signals_json)) as RouteSignals;
   }
@@ -121,8 +127,9 @@ export class DecisionLog implements StickyStore, RosterStore {
     assertNoSecrets(record);
     await this.db.execute({
       sql: `INSERT INTO decisions
-              (id, fingerprint, tier, model, reason, policy_version, sticky, created_at, signals_json, upstream_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (id, fingerprint, tier, model, reason, policy_version, sticky, created_at, signals_json, upstream_json,
+               samples, unsampled_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         record.id,
         record.fingerprint,
@@ -134,6 +141,8 @@ export class DecisionLog implements StickyStore, RosterStore {
         record.createdAt,
         record.signals ? JSON.stringify(record.signals) : null,
         record.upstream ? JSON.stringify(record.upstream) : null,
+        record.samples ?? null,
+        record.unsampledTier ?? null,
       ],
     });
   }

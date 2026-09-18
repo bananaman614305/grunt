@@ -42,7 +42,7 @@ import type { BreakerStatus, CircuitBreakerOptions } from "./breaker.js";
 import { buildJevState, countUserTurns } from "./context.js";
 import { RoutingUnavailableError } from "./errors.js";
 import type { RoutingUnavailableCause } from "./errors.js";
-import { chooseTier, JEV_PROFILE } from "./policy.js";
+import { chooseOutcome, clampSamples, JEV_PROFILE } from "./policy.js";
 import type { PolicyProfile } from "./policy.js";
 import { ROUTER_QUESTIONS } from "./questions.js";
 import { resolveModel } from "./roster.js";
@@ -88,6 +88,13 @@ export type RouterOptions = {
   profile?: PolicyProfile;
   /** Circuit-breaker tuning. The clock defaults to the router's. */
   breaker?: CircuitBreakerOptions;
+  /**
+   * Whether policy v4's best-of-N cells may resolve to a sampled outcome
+   * (ADR-010). Defaults to true; a deployment that cannot execute a sampled
+   * decision (or turned it off in config) sets false and every cell resolves
+   * to its single-model outcome instead.
+   */
+  samplingEnabled?: boolean;
 };
 
 /** A Jev answer that does not match its question's shape. */
@@ -295,6 +302,7 @@ export class Router {
   private readonly onError: (err: unknown) => void;
   private readonly jevTimeoutMs: number;
   private readonly profile: PolicyProfile;
+  private readonly samplingEnabled: boolean;
   /** Exposed for a health endpoint; see `breakerState()`. */
   private readonly circuit: CircuitBreaker;
   /**
@@ -319,6 +327,7 @@ export class Router {
     this.onError = opts.onError ?? (() => undefined);
     this.jevTimeoutMs = opts.jevTimeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
     this.profile = opts.profile ?? JEV_PROFILE;
+    this.samplingEnabled = opts.samplingEnabled ?? true;
     this.circuit = new CircuitBreaker({ clock: this.clock, ...opts.breaker });
   }
 
@@ -365,7 +374,8 @@ export class Router {
     // 2. Sticky hit, but only for the same ask: see `StickyCache`.
     const hit = await this.stickyHit(req.fingerprint, userTurns);
     if (hit !== undefined) {
-      return this.emit({ ...hit.decision, id: ulid(), sticky: true, createdAt: this.nowIso() });
+      const reused = this.applySamplesOverride(hit.decision, req);
+      return this.emit({ ...reused, id: ulid(), sticky: true, createdAt: this.nowIso() });
     }
 
     // 3. Ask Jev, sharing the call with any identical ask already in flight.
@@ -375,7 +385,13 @@ export class Router {
     const call = existing ?? this.startJevCall(key, req);
     const { signals } = await call;
 
-    const { tier, reason } = chooseTier(signals, req.posture, this.profile);
+    const outcome = chooseOutcome(
+      signals,
+      req.posture,
+      this.profile,
+      this.samplingEnabled ? req.samples : 1,
+    );
+    const { tier, reason } = outcome;
     const model = resolveModel(tier, this.rosterFor(req), req.candidates, {
       longOutput: signals.longOutput,
     });
@@ -387,6 +403,8 @@ export class Router {
       tier,
       model,
       reason: `${signals.taskType} task, ${reason}; chose ${model}`,
+      ...(outcome.samples !== undefined ? { samples: outcome.samples } : {}),
+      ...(outcome.unsampledTier !== undefined ? { unsampledTier: outcome.unsampledTier } : {}),
       policyVersion: POLICY_VERSION,
       // A caller that joined an in-flight call did not cause a Jev call of
       // its own, which is exactly what `sticky` means. Its own decision id
@@ -403,6 +421,28 @@ export class Router {
     // just rewrite the same entry with a later expiry.
     if (!shared) await this.pin(req.fingerprint, decision, userTurns);
     return this.emit(decision);
+  }
+
+  /**
+   * A sticky decision made under one `milo.samples` may be reused under
+   * another, so the override is re-applied to the reused decision: `1` (or
+   * sampling disabled on this router) turns a sampled decision back into its
+   * unsampled one -- same signals, the tier the policy would have picked, the
+   * model re-resolved for it -- and a larger override just changes N. A
+   * request with no override reuses the decision exactly as pinned.
+   */
+  private applySamplesOverride(decision: RouteDecision, req: RouteRequest): RouteDecision {
+    const override = this.samplingEnabled ? clampSamples(req.samples) : 1;
+    if (decision.samples === undefined || override === undefined) return decision;
+    if (override === 1) {
+      const tier = decision.unsampledTier ?? decision.tier;
+      const model = resolveModel(tier, this.rosterFor(req), req.candidates, {
+        longOutput: decision.signals?.longOutput ?? 0,
+      });
+      const { samples: _samples, unsampledTier: _unsampled, ...rest } = decision;
+      return { ...rest, tier, model };
+    }
+    return { ...decision, samples: override };
   }
 
   /**

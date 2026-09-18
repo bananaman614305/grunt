@@ -389,3 +389,85 @@ export function chooseTier(
 
   return { tier, reason };
 }
+
+// ---------------------------------------------------------------------------
+// Best-of-N sampling cells (policy v4, ADR-010)
+// ---------------------------------------------------------------------------
+
+/**
+ * Task types whose non-fast cells resolve to best-of-N sampling on the fast
+ * tier instead of a single higher-tier call. `edit` and `docs` are the two
+ * stable winners across both benchmark runs (ADR-010); every other task type
+ * keeps its single-model outcome.
+ */
+export const SAMPLING_TASK_TYPES = ["edit", "docs"] as const;
+
+/** How many samples a sampled cell draws when the request does not say. */
+export const DEFAULT_SAMPLE_COUNT = 5;
+
+/** Hard cap on a per-request `milo.samples` override (ADR-010). */
+export const MAX_SAMPLE_COUNT = 8;
+
+/**
+ * What a policy cell resolves to: a tier, and -- on a sampled cell -- how
+ * many fast-tier samples to draw plus the tier the cell would have picked
+ * without sampling. `samples` is only ever set alongside `tier: "fast"`.
+ */
+export type PolicyOutcome = {
+  tier: Tier;
+  reason: string;
+  samples?: number;
+  unsampledTier?: Tier;
+};
+
+/**
+ * Normalizes a per-request `milo.samples` override: integers from 1 up are
+ * honored (capped at `MAX_SAMPLE_COUNT`), everything else reads as "no
+ * override". `1` is the opt-out.
+ */
+export function clampSamples(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isInteger(value) || value < 1) return undefined;
+  return Math.min(value, MAX_SAMPLE_COUNT);
+}
+
+/**
+ * Policy v4 (ADR-010): `chooseTier`'s answer, with the sampling cells laid on
+ * top. A cell samples when all of these hold:
+ *
+ *   - the task type is `edit` or `docs`;
+ *   - the posture is `balanced` or `quality` -- `low` never samples, because
+ *     N fast calls cost more than the one fast call `low` was promised;
+ *   - the same band-mass machinery `chooseTier` runs lifted the request above
+ *     `fast` -- difficulty bands 1..3 in the eval set's terms. Band 0 already
+ *     resolves to a single fast call, and sampling replaces *a higher tier*
+ *     (ADR-010), never multiplies the cheapest cell.
+ *
+ * A sampled cell resolves to `{ tier: "fast", samples: N }` with
+ * `unsampledTier` carrying what the cell used to pick, so the decision log
+ * and the eval gate can still see the underlying choice. `samplesOverride`
+ * is the request's `milo.samples`: `1` disables sampling, any larger value
+ * (capped at `MAX_SAMPLE_COUNT`) replaces the default N of
+ * `DEFAULT_SAMPLE_COUNT`.
+ */
+export function chooseOutcome(
+  signals: RouteSignals,
+  posture: CostPosture,
+  profile: PolicyProfile = JEV_PROFILE,
+  samplesOverride?: number,
+): PolicyOutcome {
+  const base = chooseTier(signals, posture, profile);
+
+  const override = clampSamples(samplesOverride);
+  if (override === 1) return base;
+  if (posture === "low") return base;
+  if (!(SAMPLING_TASK_TYPES as readonly string[]).includes(signals.taskType)) return base;
+  if (base.tier === "fast") return base;
+
+  const n = override ?? DEFAULT_SAMPLE_COUNT;
+  return {
+    tier: "fast",
+    samples: n,
+    unsampledTier: base.tier,
+    reason: `${base.reason}, and a ${signals.taskType} task above the fast band samples best-of-${n} on fast instead`,
+  };
+}

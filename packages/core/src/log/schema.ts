@@ -126,6 +126,28 @@ CREATE INDEX IF NOT EXISTS idx_rosters_updated_at ON rosters (updated_at);
       await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_account_id ON decisions (account_id)");
     },
   },
+  {
+    version: 5,
+    description: "add the sampling columns",
+    // Best-of-N sampling (ADR-010): a decision may resolve to N fast-tier
+    // samples, and the row then has to say both what executed (`tier`, the
+    // fast model) and what the policy would have picked without sampling
+    // (`unsampled_tier`), or the audit trail cannot explain the choice.
+    // Nullable: every unsampled decision, and every row written before this
+    // migration, has neither. Same `run` shape as migration 4, because
+    // SQLite has no `ADD COLUMN IF NOT EXISTS` and a partially-applied run
+    // must be re-appliable.
+    run: async (db) => {
+      const columns = await db.execute("PRAGMA table_info(decisions)");
+      const names = new Set(columns.rows.map((row) => String(row.name)));
+      if (!names.has("samples")) {
+        await db.execute("ALTER TABLE decisions ADD COLUMN samples INTEGER");
+      }
+      if (!names.has("unsampled_tier")) {
+        await db.execute("ALTER TABLE decisions ADD COLUMN unsampled_tier TEXT");
+      }
+    },
+  },
 ];
 
 /**

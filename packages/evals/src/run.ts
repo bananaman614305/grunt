@@ -74,6 +74,10 @@ async function scoreExample(
     }
 
     const { signals } = decision;
+    // A sampled decision (ADR-010) executes on `fast`, but the choice the
+    // dataset labels -- and the gate measures -- is the tier the policy would
+    // have picked without sampling. Score agreement on that.
+    const chosenTier = decision.unsampledTier ?? decision.tier;
     return {
       kind: "scored",
       ...base,
@@ -81,10 +85,10 @@ async function scoreExample(
       predictedDifficulty: signals.difficulty,
       difficultyLevels: signals.difficultyLevels,
       needsReasoning: signals.needsReasoning,
-      predictedTier: decision.tier,
+      predictedTier: chosenTier,
       reason: decision.reason,
       latencyMs: signals.latencyMs,
-      agree: decision.tier === example.expected_tier_balanced,
+      agree: chosenTier === example.expected_tier_balanced,
     };
   } catch (error) {
     // Anything unexpected (a bad custom roster, a router bug) still must not
