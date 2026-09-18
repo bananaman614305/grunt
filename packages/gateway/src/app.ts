@@ -32,6 +32,7 @@ import { registerChatRoute } from "./routes/chat.js";
 import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
+import { registerPreferencesRoutes } from "./routes/preferences.js";
 import { registerProxyRoute } from "./routes/proxy.js";
 import { registerRosterRoute } from "./routes/roster.js";
 import { registerResponsesRoute } from "./routes/responses.js";
@@ -67,6 +68,13 @@ export type AppDeps = {
   /** OpenRouter's Anthropic-compatible surface, for `/v1/messages`. */
   anthropic: AnthropicUpstream;
   log: DecisionLog;
+  /**
+   * Milo's own Jev client, for the preference-capture resolution call
+   * (ADR-011): the same client the router routes with, so one key, one
+   * breaker-adjacent budget discipline. Optional so a hand-built `AppDeps`
+   * without it simply captures nothing -- `maybeCapture` no-ops.
+   */
+  jev?: JevClientLike;
   rateLimiter: RateLimiter;
   /**
    * Jev, on Milo's own key, for ranking best-of-N samples (ADR-010). The
@@ -252,6 +260,7 @@ export function createApp(deps: AppDeps): Hono {
         "/v1/responses",
         "/v1/models",
         "/v1/roster",
+        "/v1/preferences",
         "/v1/decisions/:id",
       ],
       docs: "https://github.com/bananaman614305/milo",
@@ -276,6 +285,7 @@ export function createApp(deps: AppDeps): Hono {
   registerResponsesRoute(app, deps);
   registerModelsRoute(app, deps);
   registerRosterRoute(app, deps);
+  registerPreferencesRoutes(app, deps);
   registerDecisionsRoutes(app, deps);
   // billing JSON routes
   if (deps.billing !== undefined) registerBillingRoutes(app, deps);

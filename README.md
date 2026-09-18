@@ -121,7 +121,9 @@ decision is made.
 ## Per-request options
 
 A chat completions body can include a `milo` field to override routing for
-that request. It is stripped before the request reaches OpenRouter.
+that request. It is stripped before the request reaches OpenRouter. The
+pass-through contract (ADR-011): only the model field is rewritten, plus an
+optional appended system brief, off per request with one field.
 
 ```json
 {
@@ -139,6 +141,7 @@ that request. It is stripped before the request reaches OpenRouter.
 - `candidates` — restricts the roster to these model ids for this request.
 - `tier` — forces a tier (`"fast"`, `"mid"`, `"frontier"`) and skips the Jev call entirely; the decision is recorded with reason `"forced to the <tier> tier by the request"`.
 - `samples` — best-of-N control (ADR-010): `1` disables sampling for this request, a larger integer (capped at 8) sets the sample count on the cells the policy samples.
+- `brief: false` — skips the appended preference brief for this one request (`docs/memory.md`, ADR-011). Everything Milo remembers is listed at `GET /v1/preferences` and deletable at `DELETE /v1/preferences/:id`.
 
 ## Why these models
 
@@ -277,6 +280,7 @@ walkthrough, including the `milo billing` operator CLI.
 ## Docs
 
 - [`docs/api/gateway.md`](docs/api/gateway.md) — every route, request/response shape, headers, errors.
+- [`docs/memory.md`](docs/memory.md) — preference memory: what Milo remembers per key, the injected brief, and how to see or delete it.
 - [`docs/billing.md`](docs/billing.md) — Milo keys, prepaid credits, the account pages, and the `milo billing` CLI.
 - [`docs/cli.md`](docs/cli.md) — the `milo` CLI: `serve`, `explain`, `decisions`, `stats`, `roster`, `billing`.
 - [`docs/config.md`](docs/config.md) — `milo.config.json` reference and `JEV_API_KEY`.

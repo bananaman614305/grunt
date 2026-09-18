@@ -106,6 +106,7 @@ unmodified.
    | `x-milo-task-type` | Jev's classified task type |
    | `x-milo-difficulty` | Jev's difficulty score to two decimals |
    | `x-milo-sticky` | `"true"` if served from the fingerprint cache |
+   | `x-milo-brief-version` | Hash of the preference brief appended to this request (ADR-011). Absent when no brief was injected — no stored output-shaping preferences, `milo: { "brief": false }` on the request, or the key's brief switch off. |
 
    These headers are only ever present on a decision that actually routed;
    a request that could not be routed at all (see "Routing failures" below)
@@ -425,6 +426,70 @@ applies:
 `deleted` is `false` when there was nothing stored; the request still succeeds.
 One key's `DELETE` never touches another's row.
 
+## `GET /v1/preferences`
+
+Everything Milo remembers about how the calling key wants answers produced
+(ADR-011), plus that key's capture and brief switches. Rows are scoped by the
+same key-hash derivation as per-key rosters (ADR-008): the SHA-256 of the
+bearer credential, or the account key's hash for a Milo key — one caller can
+never see another's rows.
+
+```
+200 {
+  "data": [
+    {
+      "id": "01J8Z3NDEKTSV4RRFFQ69G5FAV",
+      "scope": "global",
+      "field": "verbosity",
+      "value": "concise",
+      "confidence": 0.87,
+      "version": 1,
+      "provenance": "3f9a…c1",
+      "createdAt": "2026-09-18T10:00:00.000Z",
+      "updatedAt": "2026-09-18T12:00:00.000Z"
+    }
+  ],
+  "settings": { "captureEnabled": true, "briefEnabled": true }
+}
+```
+
+Every row is a label from a closed vocabulary, never text the user wrote:
+
+- **scope** — `"global"`, or one task type (`edit`, `docs`, …) the
+  preference is limited to. A task-scoped row beats the global row for that
+  task type.
+- **field** — routing-shaping: `posture_default`, `tier_floor`, `sampling`;
+  output-shaping: `verbosity`, `format`, `evidence_style`, `testing_depth`.
+- **value** — a member of that field's fixed vocabulary (e.g. `verbosity`:
+  `concise` | `balanced` | `detailed`).
+- **confidence** — 0..1. Stating the same preference again raises it (capped
+  at 1); contradicting it replaces the value, bumps `version`, and resets it.
+- **provenance** — the fingerprint hash of the conversation that taught the
+  row. A digest, resolvable against the decision log, never content.
+
+Output-shaping rows compile into the injected brief (see
+`x-milo-brief-version` under `POST /v1/chat/completions`); routing-shaping
+rows set the caller's default posture, tier floor and sampling before the
+policy runs and never enter the prompt.
+
+## `DELETE /v1/preferences/:id`
+
+Removes one stored preference row.
+
+```
+200 { "deleted": true, "id": "01J8Z3NDEKTSV4RRFFQ69G5FAV" }
+404 { "error": { "message": "No preference with that id.", "type": "not_found_error", "code": "preference_not_found" } }
+```
+
+A row that exists under a *different* key gets the same 404 as one that does
+not exist at all, so the endpoint cannot be used to probe other callers'
+ids. The whole set also dies with the key hash: rotate the key and Milo has
+never heard of you.
+
+Turning capture or the brief off per key is a settings row
+(`captureEnabled`, `briefEnabled` above); per request, send
+`milo: { "brief": false }` to skip injection on that call.
+
 ## `GET /v1/decisions/:id`
 
 Returns one full decision record (the `DecisionRecord` type in
@@ -641,12 +706,16 @@ router bug) is a separate, unrecoverable case:
 
 ## Passthrough to OpenRouter
 
-Only the `model` field is ever rewritten, and only on the routed path. Every
-other field in a chat completions body — `messages`, `tools`, `stream`,
-`temperature`, sampling params, anything else — is forwarded exactly as
-received. The `milo` field is the one addition Milo's surface makes over
-OpenRouter's own API, and it is always stripped before the request leaves
-Milo.
+Only the model field is rewritten, plus an optional appended system brief,
+off per request with one field (ADR-011). In full: `model` is rewritten only
+on the routed path; a routed request from a key with stored output-shaping
+preferences gains one *appended* final system message (the brief, disclosed
+in `x-milo-brief-version` and skipped with `milo: { "brief": false }`); every
+other field in a chat completions body — `messages` as sent, `tools`,
+`stream`, `temperature`, sampling params, anything else — is forwarded
+exactly as received. The `milo` field is the one addition Milo's surface
+makes over OpenRouter's own API, and it is always stripped before the
+request leaves Milo.
 
 ## Errors
 
