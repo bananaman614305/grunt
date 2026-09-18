@@ -280,3 +280,21 @@ decisions.
 The benchmark is on demand, not a CI gate: it spends money and depends on
 OpenRouter's live latency. The fixture-replay gate above stays the check on
 every push.
+
+## Agentic benchmark
+
+`packages/evals/agentic/` is the instrument from ADR-013 Phase B: it drives
+the pi coding agent, configured to route through Milo (`PI_CODING_AGENT_DIR`
+pointing provider `milo` at the gateway with model `milo/auto`), over ten
+tiny broken repository tasks in `agentic/tasks/`. Each task is copied to a
+temp workdir, pi runs there non-interactively (`pi -p --mode json`), and the
+verdict is the task's own `node test.js` exiting 0 — the runner also parses
+pi's JSONL event stream for turns, tool calls, wall time, and tokens, and
+attributes gateway cost/tier/samples from `GET /v1/decisions` by the task's
+time window (labeled approximate in every report). The baseline command,
+with a gateway running and `OPENROUTER_API_KEY` set, is
+`pnpm --filter @milo/evals exec tsx agentic/run.ts --tasks all --gateway http://127.0.0.1:8787/v1`;
+reports (markdown + JSON) land in `packages/evals/agentic/reports/`
+(gitignored). ADR-013's rule is baseline-first: the current gateway is
+measured on this benchmark **before** any phase-C gate ships, so every gate
+lands against a number, the way the routing eval gates policy.
