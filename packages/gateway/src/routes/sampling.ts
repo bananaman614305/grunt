@@ -63,9 +63,10 @@ import { passThroughHeaders } from "../app.js";
 import { chargeBuffered, chargeStream, upstreamHeadersFor } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import { briefHeaders } from "../brief.js";
+import type { GateRunner } from "./gate.js";
 import { applyMiloHeaders, onFinished, resolveRoster } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
-import { readBodyUsage } from "./usage.js";
+import { addUsage, readBodyUsage } from "./usage.js";
 import type { UpstreamUsage } from "./usage.js";
 
 /** Per-sample wall-clock cap when the deployment configures none. */
@@ -85,6 +86,15 @@ export type SamplingContext = {
   candidates?: string[] | undefined;
   /** Version of the injected preference brief, for `x-milo-brief-version` (ADR-011). */
   briefVersion?: string | undefined;
+  /**
+   * The completeness gate (ADR-013 phase A), when it applies to this
+   * request: runs over the chosen sample before it is served, and may swap
+   * in a retried answer, add the retry's usage to the bill, and set the
+   * gate's disclosure headers. Absent means no gate (skipped, opted out, or
+   * not configured). The all-samples-failed fallback is never gated: it is
+   * already the degraded path.
+   */
+  gate?: GateRunner | undefined;
 };
 
 type Sample = {
@@ -128,7 +138,7 @@ function classify(error: unknown): string {
 }
 
 /** The text Jev ranks: the content, or the serialized tool calls. */
-function answerText(message: Record<string, unknown>): string {
+export function answerText(message: Record<string, unknown>): string {
   const content = message["content"];
   if (typeof content === "string" && content.trim() !== "") return content;
   const toolCalls = message["tool_calls"];
@@ -555,8 +565,24 @@ export async function forwardSampled(
   }
   const pickIndex = chosen.index;
 
-  // The audit row: aggregates across samples, per-sample metadata, the pick.
-  const usage = aggregateUsage(samples, chosen);
+  // The completeness gate (ADR-013) runs over the pick before anything is
+  // recorded or served: it may swap in a retried answer, and its retry's
+  // usage belongs in this decision's one aggregate.
+  let served: { json?: Record<string, unknown>; message?: Record<string, unknown>; text: string } = chosen;
+  let gateHeaders: Record<string, string> = {};
+  let gateRecord: Upstream["gate"] | undefined;
+  let gateUsage: UpstreamUsage | undefined;
+  if (ctx.gate !== undefined && chosen.json !== undefined && chosen.message !== undefined) {
+    const result = await ctx.gate({ json: chosen.json, message: chosen.message, text: chosen.text });
+    served = result.answer;
+    gateHeaders = result.headers;
+    gateRecord = result.record;
+    gateUsage = result.extraUsage;
+  }
+
+  // The audit row: aggregates across samples (plus the gate's retry, when
+  // one fired), per-sample metadata, the pick.
+  const usage = addUsage(aggregateUsage(samples, chosen), gateUsage);
   const record: Upstream = {
     status: chosen.status,
     latencyMs: deps.now() - startedAt,
@@ -566,6 +592,7 @@ export async function forwardSampled(
     samples: samples.map((s) => toSampleUpstream(s, s.index === pickIndex)),
     samplePick: pickIndex,
     ...(note !== undefined ? { sampleNote: note } : {}),
+    ...(gateRecord !== undefined ? { gate: gateRecord } : {}),
   };
   deps.recordUpstream(decision.id, record);
 
@@ -574,17 +601,18 @@ export async function forwardSampled(
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   headers.set(SAMPLES_HEADER, String(n));
   headers.set(SAMPLE_PICK_HEADER, String(pickIndex));
+  for (const [k, v] of Object.entries(gateHeaders)) headers.set(k, v);
 
-  // A Milo key pays for what was actually spent: the sum of every sample, as
-  // one usage row against this decision (ADR-010).
+  // A Milo key pays for what was actually spent: the sum of every sample
+  // (and the gate's retry), as one usage row against this decision (ADR-010).
   await chargeBuffered(c, deps, headers, { surface: "chat", model: decision.model, decisionId: decision.id }, usage);
 
   if (isStreaming(body)) {
     headers.set("content-type", "text/event-stream");
-    return new Response(replayAsSse(chosen), { status: 200, headers });
+    return new Response(replayAsSse(served), { status: 200, headers });
   }
   headers.set("content-type", "application/json");
-  return new Response(chosen.text, { status: 200, headers });
+  return new Response(served.text, { status: 200, headers });
 }
 
 // ---------------------------------------------------------------------------
@@ -592,11 +620,16 @@ export async function forwardSampled(
 // ---------------------------------------------------------------------------
 
 /**
- * The chosen (reassembled) completion as well-formed SSE in the OpenAI chunk
- * shape: one chunk carrying the whole message as a delta, one final chunk
- * with the finish reason and usage, then `[DONE]`.
+ * The chosen (reassembled or buffered) completion as well-formed SSE in the
+ * OpenAI chunk shape: one chunk carrying the whole message as a delta, one
+ * final chunk with the finish reason and usage, then `[DONE]`. Shared with
+ * the completeness gate's buffered forward (`gate.ts`), which replays a
+ * graded answer to a streaming client the same way.
  */
-function replayAsSse(chosen: Sample): ReadableStream<Uint8Array> {
+export function replayAsSse(chosen: {
+  json?: Record<string, unknown> | undefined;
+  message?: Record<string, unknown> | undefined;
+}): ReadableStream<Uint8Array> {
   const json = chosen.json ?? {};
   const message = chosen.message ?? {};
   const choices = Array.isArray(json["choices"]) ? json["choices"] : [];
@@ -654,15 +687,22 @@ async function fallbackUnsampled(
   startedAt: number,
 ): Promise<Response> {
   const tier: Tier = decision.unsampledTier ?? decision.tier;
-  const roster = await resolveRoster(c, deps);
   let model: string;
-  try {
-    model = resolveModel(tier, roster, ctx.candidates, {
-      longOutput: decision.signals?.longOutput ?? 0,
-    });
-  } catch (err) {
-    deps.logger.error("sampled fallback could not resolve a model", { decisionId: decision.id, error: errorMessage(err) });
-    model = decision.model;
+  if (decision.unsampledModel !== undefined) {
+    // The decision's sampled model is not tier-derived (ADR-012: the deepseek
+    // controller samples a fixed family model), so it names its own single-call
+    // fallback and the roster has nothing to resolve.
+    model = decision.unsampledModel;
+  } else {
+    const roster = await resolveRoster(c, deps);
+    try {
+      model = resolveModel(tier, roster, ctx.candidates, {
+        longOutput: decision.signals?.longOutput ?? 0,
+      });
+    } catch (err) {
+      deps.logger.error("sampled fallback could not resolve a model", { decisionId: decision.id, error: errorMessage(err) });
+      model = decision.model;
+    }
   }
   deps.logger.warn("every sample failed; falling back to one unsampled call", {
     decisionId: decision.id,

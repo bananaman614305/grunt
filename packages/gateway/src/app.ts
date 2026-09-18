@@ -19,7 +19,16 @@ import {
   TIERS,
   defaultRosterModel,
 } from "@milo/core";
-import type { DecisionRecord, DecisionLog, JevClientLike, OpenRouterClient, Roster, Router, Tier } from "@milo/core";
+import type {
+  DecisionRecord,
+  DecisionLog,
+  JevClientLike,
+  OpenRouterClient,
+  Roster,
+  Router,
+  RoutingMode,
+  Tier,
+} from "@milo/core";
 import type { AnthropicUpstream } from "./anthropic.js";
 import { billingAuth } from "./billing.js";
 import type { BillingRuntime } from "./billing.js";
@@ -57,6 +66,13 @@ const SIGNUP_PATH = "/v1/signup";
 
 export type AppDeps = {
   router: Router;
+  /**
+   * The routing mode this deployment runs (ADR-012), for the disclosure
+   * surfaces (`/healthz`, `GET /`). The router carries the mode that
+   * actually routes; this field only reports it, and defaults to
+   * `"roster"` like everything else.
+   */
+  mode?: RoutingMode;
   /**
    * The tier-to-model table this deployment is actually running, so `/` and
    * `/v1/roster` disclose what will be picked rather than what ships.
@@ -222,7 +238,7 @@ export function createApp(deps: AppDeps): Hono {
 
   // No auth: a health probe must work before anyone has a key.
   app.get("/healthz", (c) =>
-    c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: DECISION_BACKEND }),
+    c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: DECISION_BACKEND, mode: deps.mode ?? "roster" }),
   );
 
   // A landing answer for people who open the bare address. Browsers get a
@@ -242,6 +258,7 @@ export function createApp(deps: AppDeps): Hono {
       routedModel: ROUTED_MODEL_ID,
       policyVersion: POLICY_VERSION,
       decisionBackend: DECISION_BACKEND,
+      mode: deps.mode ?? "roster",
       roster: {
         version: DEFAULT_ROSTER_INFO.version,
         tiers: Object.fromEntries(TIERS.map((tier) => [tier, [...(roster[tier] ?? [])]])) as Record<

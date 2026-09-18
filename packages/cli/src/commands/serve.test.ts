@@ -325,7 +325,7 @@ describe("milo serve", () => {
 
     await run(["--db", ":memory:"], deps);
 
-    expect(stdout.toString()).toContain(`(policy ${POLICY_VERSION})`);
+    expect(stdout.toString()).toContain(`(policy ${POLICY_VERSION}, mode roster)`);
     expect(stdout.toString()).not.toContain("decisions via");
   });
 });

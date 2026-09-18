@@ -25,6 +25,8 @@ Environment:
   JEV_API_KEY             Milo's Jev key (required)
   PORT                    Port to listen on (overridden by --port; overrides config)
   MILO_DB                 Decision log libsql URL (overridden by --db; overrides config)
+  MILO_MODE               Routing mode: "roster" (default) or "deepseek" (the
+                          ADR-012 compute controller); overrides config "mode"
 
 Milo-issued keys and prepaid credits (all optional; without MILO_DATABASE_URL
 the deployment is bring-your-own-key only and an mk_ key gets a 401):
@@ -42,6 +44,7 @@ beats config file beats built-in default.
 const FILE_SCHEME = "file:";
 const PORT_ENV = "PORT";
 const DECISION_LOG_ENV = "MILO_DB";
+const MODE_ENV = "MILO_MODE";
 const BILLING_DB_ENV = "MILO_DATABASE_URL";
 const ENCRYPTION_KEY_ENV = "MILO_ENCRYPTION_KEY";
 const MARGIN_ENV = "MILO_MARGIN";
@@ -144,6 +147,19 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
   if (parsed.values.db !== undefined) decisionLogUrl = parsed.values.db;
   ensureLogDirectory(decisionLogUrl, process.cwd());
 
+  // Routing mode (ADR-012): MILO_MODE beats the config's "mode" beats the
+  // "roster" default. An unknown value is refused rather than guessed at,
+  // because the two modes route to different models entirely.
+  let mode = config.mode;
+  const envMode = deps.env[MODE_ENV]?.trim();
+  if (envMode !== undefined && envMode !== "") {
+    if (envMode !== "roster" && envMode !== "deepseek") {
+      deps.stderr.write(`milo serve: ${MODE_ENV} must be "roster" or "deepseek", got "${envMode}"\n`);
+      return 1;
+    }
+    mode = envMode;
+  }
+
   let billing: GatewayOptions["billing"];
   try {
     billing = await buildBilling(deps.env);
@@ -155,6 +171,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
   const gatewayOptions: GatewayOptions = {
     jevApiKey,
     decisionLogUrl,
+    mode,
     ...(billing !== undefined ? { billing } : {}),
     ...(config.roster !== undefined ? { roster: config.roster } : {}),
     ...(config.rateLimit !== undefined ? { rateLimit: config.rateLimit } : {}),
@@ -185,7 +202,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
 
   const displayHost = config.hostname ?? "localhost";
   const baseUrl = `http://${displayHost}:${port}`;
-  deps.stdout.write(`milo: gateway listening on ${baseUrl} (policy ${POLICY_VERSION})\n`);
+  deps.stdout.write(`milo: gateway listening on ${baseUrl} (policy ${POLICY_VERSION}, mode ${mode})\n`);
   if (billing !== undefined) {
     deps.stdout.write(
       `milo: Milo keys enabled (margin ${billing.pricing?.margin ?? DEFAULT_PRICING.margin}` +

@@ -656,12 +656,16 @@ describe("charging a buffered response", () => {
 });
 
 describe("charging a streamed response", () => {
+  // These stream through the ungated chat path: the completeness gate
+  // (ADR-013) buffers and replays instead, and its billing is covered in
+  // routes/gate.test.ts, so the opted-out requests here keep testing the
+  // pass-through streaming charge.
   it("passes the bytes through unchanged and charges when the stream ends", async () => {
     await start();
     const { secret } = await seedAccount(5);
     upstreams.inference = () => sse(CHAT_STREAM);
 
-    const res = await post("/v1/chat/completions", chatBody({ stream: true }), miloAuth(secret));
+    const res = await post("/v1/chat/completions", chatBody({ stream: true, milo: { gates: false } }), miloAuth(secret));
     const decisionId = res.headers.get("x-milo-decision-id");
 
     // Trailers are not available, so a streamed response carries the balance
@@ -712,7 +716,7 @@ describe("charging a streamed response", () => {
     const { secret } = await seedAccount(5);
     upstreams.inference = () => sse(CHAT_STREAM_NO_USAGE);
 
-    const res = await post("/v1/chat/completions", chatBody({ stream: true }), miloAuth(secret));
+    const res = await post("/v1/chat/completions", chatBody({ stream: true, milo: { gates: false } }), miloAuth(secret));
     const decisionId = res.headers.get("x-milo-decision-id");
     expect(await res.text()).toBe(CHAT_STREAM_NO_USAGE.join(""));
 
@@ -732,7 +736,7 @@ describe("charging a streamed response", () => {
     const { account, secret } = await seedAccount(0.06);
     upstreams.inference = () => sse(chatStreamCosting(0.2));
 
-    const res = await post("/v1/chat/completions", chatBody({ stream: true }), miloAuth(secret));
+    const res = await post("/v1/chat/completions", chatBody({ stream: true, milo: { gates: false } }), miloAuth(secret));
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(chatStreamCosting(0.2).join(""));
 
@@ -1086,7 +1090,9 @@ describe("key hygiene", () => {
     const res = await post("/v1/chat/completions", chatBody(), miloAuth(secret));
 
     upstreams.inference = () => sse(CHAT_STREAM);
-    const streamed = await post("/v1/chat/completions", chatBody({ stream: true }), miloAuth(secret));
+    // Ungated so the second charge settles off the stream; the gate's own
+    // hygiene rides the same helpers.
+    const streamed = await post("/v1/chat/completions", chatBody({ stream: true, milo: { gates: false } }), miloAuth(secret));
     await streamed.text();
     await waitFor("both charges", () => store.usage.length >= 2);
 

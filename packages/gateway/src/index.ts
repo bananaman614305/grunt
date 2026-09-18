@@ -16,6 +16,7 @@ import type {
   RouteDecision,
   Roster,
   RouterOptions,
+  RoutingMode,
   StickyStore,
 } from "@milo/core";
 import type { BillingStore, PricingConfig } from "@milo/core";
@@ -42,6 +43,17 @@ export type GatewayOptions = {
   jevApiKey: string;
   /** Tier to model mapping. Defaults to DEFAULT_ROSTER from core. */
   roster?: Roster;
+  /**
+   * Routing mode (ADR-012). `"roster"` (the default) is the shipped policy
+   * v4 over the roster, unchanged. `"deepseek"` routes every `milo/auto`
+   * request through the measured compute controller instead: the same one
+   * Jev call, but the difficulty band buys a budget over the DeepSeek
+   * family (bands 0-1 one v4-flash call, band 2 best-of-5 on v4-flash,
+   * band 3 best-of-5 on v4.1-flash). Per-key rosters (ADR-008) are ignored
+   * in this mode. Set from `milo.config.json`'s `mode`, overridable with
+   * `MILO_MODE`.
+   */
+  mode?: RoutingMode;
   /** libsql URL for the decision log: ":memory:" or "file:/path/milo.db". Default ":memory:". */
   decisionLogUrl?: string;
   /** Upstream base URLs, overridable for tests. */
@@ -137,9 +149,12 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const log = await DecisionLog.open(options.decisionLogUrl ?? ":memory:");
   const writes = new WriteQueue(logger);
 
+  const mode: RoutingMode = options.mode ?? "roster";
+
   const routerOptions = {
     jev,
     roster,
+    mode,
     samplingEnabled,
     ...(options.jevTimeoutMs !== undefined ? { jevTimeoutMs: options.jevTimeoutMs } : {}),
     sticky: new StickyCache(),
@@ -189,6 +204,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const app = createApp({
     router,
     roster,
+    mode,
     jev,
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
     ...(billing !== undefined ? { billing } : {}),

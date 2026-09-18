@@ -41,6 +41,25 @@ export type UpstreamUsage = {
   costUsd?: number;
 };
 
+/**
+ * Sums two usage readings into one: fields absent on both stay absent, and
+ * the first reading's response id (the served answer's) is kept. Used where
+ * one decision spends more than one upstream call -- a sampled fan-out, or
+ * the completeness gate's retry (ADR-013) -- and bills one aggregate row.
+ */
+export function addUsage(a: UpstreamUsage, b?: UpstreamUsage): UpstreamUsage {
+  if (b === undefined) return a;
+  const sum: UpstreamUsage = {};
+  if (a.id !== undefined) sum.id = a.id;
+  const inputs = [a.inputTokens, b.inputTokens].filter((v): v is number => v !== undefined);
+  const outputs = [a.outputTokens, b.outputTokens].filter((v): v is number => v !== undefined);
+  const costs = [a.costUsd, b.costUsd].filter((v): v is number => v !== undefined);
+  if (inputs.length > 0) sum.inputTokens = inputs.reduce((x, y) => x + y, 0);
+  if (outputs.length > 0) sum.outputTokens = outputs.reduce((x, y) => x + y, 0);
+  if (costs.length > 0) sum.costUsd = costs.reduce((x, y) => x + y, 0);
+  return sum;
+}
+
 /** The subset of a usage reading the decision log stores. */
 export function toUpstreamRecord(usage: UpstreamUsage): Partial<Upstream> {
   const record: Partial<Upstream> = {};

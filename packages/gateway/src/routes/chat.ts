@@ -56,6 +56,7 @@ import {
   applyProviderStrategy,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
+import { forwardGated, gateFor } from "./gate.js";
 import { forwardSampled } from "./sampling.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
@@ -238,13 +239,25 @@ async function routed(
   });
   // Posture-aware provider strategy for the upstream call; a caller-supplied
   // `provider` field always wins (see applyProviderStrategy).
-  const outgoing = applyProviderStrategy(applyBrief(body, brief), extension?.posture ?? "balanced", decision.model);
+  const posture = extension?.posture ?? "balanced";
+  const outgoing = applyProviderStrategy(applyBrief(body, brief), posture, decision.model);
+
+  // The completeness gate (ADR-013 phase A) applies to this surface only,
+  // in both routing modes, on non-trivial cells: see gateFor for the exact
+  // conditions (band >= 1, not low posture, no `milo: { gates: false }`).
+  const gate = gateFor(c, deps, outgoing, decision, posture, extension);
 
   // A sampled decision (ADR-010) fans out instead of forwarding once. Only
   // this surface executes sampling; the other dialects opt out at routing
   // time (see routes/messages.ts and routes/responses.ts).
   if (decision.samples !== undefined && decision.samples > 1) {
-    return forwardSampled(c, deps, outgoing, decision, { candidates, briefVersion: brief?.version });
+    return forwardSampled(c, deps, outgoing, decision, { candidates, briefVersion: brief?.version, gate });
+  }
+
+  // A gated single call buffers, grades, maybe retries, then replays; an
+  // ungated one keeps the pass-through fast path untouched.
+  if (gate !== undefined) {
+    return forwardGated(c, deps, outgoing, decision, gate, brief?.version);
   }
 
   return forward(c, deps, outgoing, decision, brief?.version);

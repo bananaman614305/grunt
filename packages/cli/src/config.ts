@@ -52,10 +52,20 @@ const samplingSchema = z
   })
   .strict();
 
+/**
+ * Routing mode (ADR-012). `"roster"` is the shipped default: policy v4 over
+ * the tier-to-model roster, unchanged. `"deepseek"` is the experimental
+ * compute controller: the difficulty band buys a compute budget over the
+ * DeepSeek family instead of a roster tier, and per-key rosters are
+ * ignored. `MILO_MODE` in the server environment overrides this field.
+ */
+const modeSchema = z.enum(["roster", "deepseek"]);
+
 export const configSchema = z
   .object({
     port: z.number().int().positive().default(DEFAULT_PORT),
     hostname: z.string().trim().min(1).optional(),
+    mode: modeSchema.default("roster"),
     roster: rosterSchema.optional(),
     rateLimit: rateLimitSchema.optional(),
     decisionLog: z.string().trim().min(1).default(DEFAULT_DECISION_LOG_URL),

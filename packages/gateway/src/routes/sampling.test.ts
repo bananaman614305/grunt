@@ -321,7 +321,9 @@ describe("sampled fan-out", () => {
     expect(res.headers.get("x-milo-decision-id")).toBe("01SAMPLEDECISION0000000000");
     expect(res.headers.get("x-milo-model")).toBe("test/fast");
     expect(res.headers.get("x-milo-tier")).toBe("fast");
-    expect(jev.calls).toBe(3);
+    // Three ranking calls, plus the completeness gate's check (ADR-013),
+    // which this stub cannot answer -- the pick is served as-is either way.
+    expect(jev.calls).toBe(4);
   });
 
   it("aggregates cost and tokens across samples and stores per-sample metadata, no content", async () => {

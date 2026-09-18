@@ -96,6 +96,15 @@ class Upstreams {
   jevCalls(): Call[] {
     return this.calls.filter((c) => c.url.host === "api.typesafe.ai");
   }
+
+  /**
+   * The Jev calls that *routed* something: the ones carrying the router's
+   * question set. The completeness gate (ADR-013) rides the same host with
+   * its own question, so tests about routing spend count these.
+   */
+  routingJevCalls(): Call[] {
+    return this.jevCalls().filter((c) => (c.body ?? "").includes('"task_type"'));
+  }
 }
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -378,8 +387,12 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(res.headers.get("x-request-id")).toBe("or-req-2");
 
     // Six headers explain a decision, and `x-milo-degraded` is not one of
-    // them any more: there is no degraded decision left to report.
+    // them any more: there is no degraded decision left to report. The
+    // seventh is the completeness gate's (ADR-013): this fixture's band is
+    // over the gate's bar, and a check the stub Jev cannot answer serves the
+    // response exactly as a passing one -- the gate never fails a request.
     expect([...res.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
+      "x-milo-completeness",
       "x-milo-decision-id",
       "x-milo-difficulty",
       "x-milo-model",
@@ -387,6 +400,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       "x-milo-task-type",
       "x-milo-tier",
     ]);
+    expect(res.headers.get("x-milo-completeness")).toBe("complete");
 
     const decisionId = res.headers.get("x-milo-decision-id");
     expect(decisionId).toBeTruthy();
@@ -435,7 +449,10 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     await start();
     upstreams.openRouter = () => sseResponse();
 
-    const res = await post("/v1/chat/completions", chatBody({ stream: true }));
+    // Opted out of the completeness gate (ADR-013), which buffers and
+    // replays instead of passing bytes through; the gated streaming shape
+    // is covered in routes/gate.test.ts.
+    const res = await post("/v1/chat/completions", chatBody({ stream: true, milo: { gates: false } }));
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream");
@@ -476,7 +493,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       }),
     );
 
-    expect(upstreams.jevCalls()).toHaveLength(1);
+    expect(upstreams.routingJevCalls()).toHaveLength(1);
     expect(second.headers.get("x-milo-sticky")).toBe("true");
     expect(second.headers.get("x-milo-model")).toBe(first.headers.get("x-milo-model"));
     expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
@@ -496,7 +513,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       chatBody({ extraMessages: [{ role: "assistant", content: "Done." }, { role: "user", content: "Now redesign the schema for multi-region writes." }] }),
     );
 
-    expect(upstreams.jevCalls()).toHaveLength(2);
+    expect(upstreams.routingJevCalls()).toHaveLength(2);
     expect(second.headers.get("x-milo-sticky")).toBe("false");
     expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
   });
@@ -523,7 +540,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
 
     // Only the first request spent a Jev call, and only it reached OpenRouter:
     // a refusal is not routed and not forwarded.
-    expect(upstreams.jevCalls()).toHaveLength(1);
+    expect(upstreams.routingJevCalls()).toHaveLength(1);
     expect(upstreams.openRouterCalls()).toHaveLength(1);
 
     // And it is not a decision, so the log has only the first request's row.
@@ -732,7 +749,7 @@ describe("GET /healthz", () => {
     expect(res.status).toBe(200);
     // Jev is the only backend now, but the key stays so dashboards reading it
     // keep working.
-    expect(await res.json()).toEqual({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: "jev" });
+    expect(await res.json()).toEqual({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: "jev", mode: "roster" });
     expect(upstreams.calls).toHaveLength(0);
   });
 
