@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GATEWAY, DEFAULT_JUDGE_MODEL, DEFAULT_OPENROUTER, main, parseArgs } from "./cli.js";
+import { AUDIT_JUDGE_MODEL, DEFAULT_GATEWAY, DEFAULT_JUDGE_AUDIT_FRACTION, DEFAULT_JUDGE_MODEL, DEFAULT_OPENROUTER, main, parseArgs } from "./cli.js";
 import { DEFAULT_PROVIDER_PINS } from "./providers.js";
 
 describe("parseArgs", () => {
@@ -12,6 +12,11 @@ describe("parseArgs", () => {
     expect(o.arms).toEqual(["milo", "fast", "mid", "frontier"]);
     expect(o.judge).toBe(true);
     expect(o.judgeModel).toBe(DEFAULT_JUDGE_MODEL);
+    expect(DEFAULT_JUDGE_MODEL).toBe("openai/gpt-5.6-luna");
+    expect(AUDIT_JUDGE_MODEL).toBe("anthropic/claude-sonnet-5");
+    expect(o.judgeAudit).toBe(DEFAULT_JUDGE_AUDIT_FRACTION);
+    expect(DEFAULT_JUDGE_AUDIT_FRACTION).toBe(0.1);
+    expect(o.judgeCache).toBe(true);
     expect(o.concurrency).toBe(3);
     expect(o.pins).toBe(DEFAULT_PROVIDER_PINS);
     expect(o.out.endsWith("reports/bench-latest.md")).toBe(true);
@@ -23,6 +28,18 @@ describe("parseArgs", () => {
 
   it("--sample-timeout sets the per-sample cap", () => {
     expect(parseArgs(["--sample-timeout", "60000"]).sampleTimeoutMs).toBe(60000);
+  });
+
+  it("--judge-audit takes a fraction, 0 disabling the audit", () => {
+    expect(parseArgs(["--judge-audit", "0.25"]).judgeAudit).toBe(0.25);
+    expect(parseArgs(["--judge-audit", "0"]).judgeAudit).toBe(0);
+    expect(() => parseArgs(["--judge-audit", "1.5"])).toThrow(/--judge-audit/);
+    expect(() => parseArgs(["--judge-audit", "lots"])).toThrow(/--judge-audit/);
+  });
+
+  it("--no-judge-cache bypasses the verdict cache", () => {
+    expect(parseArgs([]).judgeCache).toBe(true);
+    expect(parseArgs(["--no-judge-cache"]).judgeCache).toBe(false);
   });
 
   it("parses every flag and strips trailing slashes off base urls", () => {

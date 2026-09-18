@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatBenchMarkdown, percentile, summarizeArm, summarizeRouting } from "./report.js";
-import type { ArmResult, BenchReport, BenchRow } from "./types.js";
+import { formatBenchMarkdown, percentile, summarizeArm, summarizeJudgeAudit, summarizeRouting, summarizeSpend } from "./report.js";
+import type { ArmResult, BenchReport, BenchRow, Grade } from "./types.js";
 
 const FABLE = { id: "anthropic/claude-fable-5.1", inputUsdPerM: 10, outputUsdPerM: 50 };
 const PRICES = {
@@ -107,5 +107,88 @@ describe("summarizeArm", () => {
     expect(md).toContain("Bad downgrades (routed cheaper than frontier, failed, frontier passed): 1 of 2");
     expect(md).toContain("- **r-3** `milo` (x): HTTP 503");
     expect(md).toContain("| r-2 | chat | 0 | frontier | fast | fast/model | – | ✗ | ✓ | – | ✗ |");
+  });
+});
+
+describe("spend and judge audit", () => {
+  const judged = (over: Partial<Grade>): Grade => ({ score: 0.9, pass: true, by: "judge", ...over });
+
+  function auditedReport(): BenchReport {
+    const rows: BenchRow[] = [
+      row("r-1", "fast", [
+        result({ arm: "milo", model: "fast/model", tier: "fast", costUsd: 0.001, grade: judged({ judgeCostUsd: 0.0001, audit: { model: "judge/strong", score: 0.4, pass: false, judgeCostUsd: 0.002 } }) }),
+        result({ arm: "fast", model: "fast/model", tier: "fast", costUsd: 0.002, grade: judged({ judgeCostUsd: 0.0001 }) }),
+      ]),
+      row("r-2", "fast", [
+        // A cache hit: judged, no fresh cost; audited and agreeing.
+        result({ arm: "fast", model: "fast/model", tier: "fast", costUsd: 0.004, grade: judged({ audit: { model: "judge/strong", score: 0.9, pass: true } }) }),
+        // A failed call costs nothing and is not judged.
+        result({ arm: "milo", model: "x", tier: "mid", status: 503, error: "HTTP 503", costUsd: 9 }),
+      ]),
+    ];
+    const r = report(rows);
+    r.judgeAudit = { model: "judge/strong", fraction: 0.5 };
+    r.judgeCacheStats = { hits: 1, misses: 2 };
+    return r;
+  }
+
+  it("splits the spend into arms, samples, and fresh judge calls", () => {
+    const spend = summarizeSpend(auditedReport());
+    expect(spend.armsUsd).toBeCloseTo(0.007, 9); // the failed call's cost is not counted
+    expect(spend.samplesUsd).toBe(0);
+    expect(spend.judgeUsd).toBeCloseTo(0.0001 + 0.0001 + 0.002, 9); // two fresh primaries + one fresh audit; the hit is free
+    expect(spend.totalUsd).toBeCloseTo(0.007 + 0.0022, 9);
+  });
+
+  it("counts sample draws and their judge costs once, leaving the synthetic best-of arms out", () => {
+    const shared: Grade = judged({ judgeCostUsd: 0.0005 });
+    const rows: BenchRow[] = [
+      {
+        ...row("r-1", "fast", [
+          result({ arm: "fast", model: "fast/model", tier: "fast", costUsd: 0.001 }),
+          result({ arm: "bestof-jev", model: "fast/model", tier: "fast", costUsd: 0.02, grade: shared }),
+        ]),
+        samples: [
+          { index: 0, variant: "", model: "fast/model", status: 200, ttfbMs: 1, totalMs: 2, costUsd: 0.01, grade: shared },
+          { index: 1, variant: "", model: "fast/model", status: 200, ttfbMs: 1, totalMs: 2, costUsd: 0.01, grade: judged({ judgeCostUsd: 0.0005, pass: false, score: 0 }) },
+        ],
+      },
+    ];
+    const r = report(rows);
+    r.sampling = { n: 2, model: "fast/model", tier: "fast", vary: false, jevUsdPerCall: 0.00002 };
+    const spend = summarizeSpend(r);
+    expect(spend.armsUsd).toBeCloseTo(0.001, 9); // not the best-of arm's 0.02
+    expect(spend.samplesUsd).toBeCloseTo(0.02, 9);
+    expect(spend.judgeUsd).toBeCloseTo(0.001, 9); // each sample's judge call once, the shared grade not double-counted
+  });
+
+  it("summarizes the audit: agreement, pass-rate delta, both judges' costs", () => {
+    const audit = summarizeJudgeAudit(auditedReport());
+    expect(audit).toEqual({
+      model: "judge/strong",
+      fraction: 0.5,
+      judged: 3,
+      audited: 2,
+      agreement: 0.5, // r-2 agreed, r-1 did not
+      passRateDelta: 0.5, // primary 2/2 pass, audit 1/2
+      primaryUsd: 0.0002,
+      auditUsd: 0.002,
+    });
+    expect(summarizeJudgeAudit(report([]))).toBeUndefined();
+  });
+
+  it("prints the spend, judge-cost, and judge-audit header lines", () => {
+    const md = formatBenchMarkdown(auditedReport());
+    expect(md).toContain("- Judge: `judge/model`, judge cost $0.00220 (fresh calls only; cache 1 hits, 2 misses)");
+    expect(md).toContain(
+      "- Judge audit: `judge/strong` re-judged 2 of 3 judged answers (fraction 50.0%): agreement 50.0%, pass-rate delta +50.0 pp (primary minus audit); primary judge $0.00020, audit $0.00200",
+    );
+    expect(md).toContain("- Spend: $0.00920 upstream — arms $0.00700, judge $0.00220");
+  });
+
+  it("says the cache was bypassed when no stats were recorded", () => {
+    const md = formatBenchMarkdown(report([]));
+    expect(md).toContain("(fresh calls only; cache bypassed)");
+    expect(md).not.toContain("- Judge audit:");
   });
 });
