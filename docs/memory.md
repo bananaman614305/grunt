@@ -16,7 +16,7 @@ compaction — and can shape routing itself, which no prompt can.
 ## What gets stored
 
 One row per (your key hash, scope, field). The field vocabulary is closed —
-seven fields in two families:
+twelve fields in two families:
 
 | Family | Field | Values |
 |---|---|---|
@@ -27,6 +27,11 @@ seven fields in two families:
 | output-shaping | `format` | `prose`, `bullets`, `code_first` |
 | output-shaping | `evidence_style` | `citations`, `examples`, `assertions` |
 | output-shaping | `testing_depth` | `none`, `smoke`, `thorough` |
+| output-shaping | `tone` | `friendly`, `direct`, `jovial`, `professional` |
+| output-shaping | `working_style` | `test_first`, `code_first`, `plan_first`, `just_do` |
+| output-shaping | `change_autonomy` | `ask_first`, `autonomous` |
+| output-shaping | `verification_depth` | `light`, `standard`, `thorough` |
+| output-shaping | `explanation_style` | `code_first`, `explain_then_code`, `code_only` |
 
 `scope` is `global` or one task type (`edit`, `docs`, …); a task-scoped row
 beats the global one for that task type. Each row carries a confidence, a

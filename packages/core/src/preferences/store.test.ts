@@ -35,16 +35,34 @@ function candidate(overrides: Partial<PreferenceCandidate> = {}): PreferenceCand
 }
 
 describe("vocabulary", () => {
-  it("splits the seven fields into the two ADR-011 families", () => {
+  it("splits the twelve fields into the two ADR-011 families", () => {
     expect(ROUTING_SHAPING_FIELDS).toEqual(["posture_default", "tier_floor", "sampling"]);
-    expect(OUTPUT_SHAPING_FIELDS).toEqual(["verbosity", "format", "evidence_style", "testing_depth"]);
-    expect(PREFERENCE_FIELDS).toHaveLength(7);
+    expect(OUTPUT_SHAPING_FIELDS).toEqual([
+      "verbosity",
+      "format",
+      "evidence_style",
+      "testing_depth",
+      "tone",
+      "working_style",
+      "change_autonomy",
+      "verification_depth",
+      "explanation_style",
+    ]);
+    expect(PREFERENCE_FIELDS).toHaveLength(12);
   });
 
   it("gives every field a non-empty closed value list", () => {
     for (const field of PREFERENCE_FIELDS) {
       expect(PREFERENCE_VALUES[field].length).toBeGreaterThan(0);
     }
+  });
+
+  it("carries the new output-shaping vocabularies", () => {
+    expect(PREFERENCE_VALUES.tone).toEqual(["friendly", "direct", "jovial", "professional"]);
+    expect(PREFERENCE_VALUES.working_style).toEqual(["test_first", "code_first", "plan_first", "just_do"]);
+    expect(PREFERENCE_VALUES.change_autonomy).toEqual(["ask_first", "autonomous"]);
+    expect(PREFERENCE_VALUES.verification_depth).toEqual(["light", "standard", "thorough"]);
+    expect(PREFERENCE_VALUES.explanation_style).toEqual(["code_first", "explain_then_code", "code_only"]);
   });
 });
 
@@ -162,12 +180,20 @@ describe("DecisionLog as PreferenceStore", () => {
     await expect(log.listPreferences("Bearer sk-or-v1-oops")).rejects.toThrow(/digest/);
   });
 
+  it("stores a new-field value and refuses one outside its vocabulary", async () => {
+    const row = await log.upsertPreference(HASH_A, candidate({ field: "tone", value: "direct" }));
+    expect(row).toMatchObject({ field: "tone", value: "direct", version: 1 });
+    await expect(
+      log.upsertPreference(HASH_A, candidate({ field: "tone", value: "sardonic" })),
+    ).rejects.toThrow(/vocabulary/);
+  });
+
   it("refuses values and fields outside the closed vocabulary", async () => {
     await expect(log.upsertPreference(HASH_A, candidate({ value: "be very terse please" }))).rejects.toThrow(
       /vocabulary/,
     );
     await expect(
-      log.upsertPreference(HASH_A, candidate({ field: "tone" as never })),
+      log.upsertPreference(HASH_A, candidate({ field: "mood" as never })),
     ).rejects.toThrow(/unknown field/);
     await expect(
       log.upsertPreference(HASH_A, candidate({ scope: "everything" as never })),

@@ -38,7 +38,17 @@ export const ROUTING_SHAPING_FIELDS = ["posture_default", "tier_floor", "samplin
  * Fields that shape *output*: they compile into the injected brief
  * (`compileBrief` in `./brief.ts`) and never touch routing.
  */
-export const OUTPUT_SHAPING_FIELDS = ["verbosity", "format", "evidence_style", "testing_depth"] as const;
+export const OUTPUT_SHAPING_FIELDS = [
+  "verbosity",
+  "format",
+  "evidence_style",
+  "testing_depth",
+  "tone",
+  "working_style",
+  "change_autonomy",
+  "verification_depth",
+  "explanation_style",
+] as const;
 
 export const PREFERENCE_FIELDS = [...ROUTING_SHAPING_FIELDS, ...OUTPUT_SHAPING_FIELDS] as const;
 
@@ -60,6 +70,11 @@ export const PREFERENCE_VALUES: Record<PreferenceField, readonly string[]> = {
   format: ["prose", "bullets", "code_first"],
   evidence_style: ["citations", "examples", "assertions"],
   testing_depth: ["none", "smoke", "thorough"],
+  tone: ["friendly", "direct", "jovial", "professional"],
+  working_style: ["test_first", "code_first", "plan_first", "just_do"],
+  change_autonomy: ["ask_first", "autonomous"],
+  verification_depth: ["light", "standard", "thorough"],
+  explanation_style: ["code_first", "explain_then_code", "code_only"],
 };
 
 /** `"global"`, or one task type the preference is limited to. */

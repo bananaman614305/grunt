@@ -48,6 +48,25 @@ describe("templates", () => {
   });
 });
 
+describe("new output-shaping fields render into the brief", () => {
+  const cases: Array<{ field: PreferenceField; value: string }> = [
+    { field: "tone", value: "direct" },
+    { field: "working_style", value: "test_first" },
+    { field: "change_autonomy", value: "ask_first" },
+    { field: "verification_depth", value: "thorough" },
+    { field: "explanation_style", value: "code_first" },
+  ];
+
+  for (const { field, value } of cases) {
+    it(`includes the ${field}=${value} template when ranked in`, () => {
+      const template = BRIEF_TEMPLATES[field][value];
+      expect(template).toBeTypeOf("string");
+      const brief = compileBrief([row(field, value)]);
+      expect(brief?.text).toContain(template);
+    });
+  }
+});
+
 describe("compileBrief", () => {
   it("is deterministic: the same rows compile to the same text and version", () => {
     const rows = [row("verbosity", "concise"), row("testing_depth", "thorough", { confidence: 0.6 })];

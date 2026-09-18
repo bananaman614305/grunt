@@ -182,7 +182,7 @@ describe("maybeCapture", () => {
     const row = await maybeCapture(log, jev, {
       keyHash: HASH,
       messages: MESSAGES,
-      signals: signals({ capture: { field: "tone", detection: 0.95, fieldConfidence: 0.9 } }),
+      signals: signals({ capture: { field: "mood", detection: 0.95, fieldConfidence: 0.9 } }),
       provenance: FINGERPRINT,
     });
     expect(row).toBeUndefined();
