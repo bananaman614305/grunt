@@ -19,7 +19,8 @@ import type {
   RoutingMode,
   StickyStore,
 } from "@milo/core";
-import type { BillingStore, PricingConfig } from "@milo/core";
+import type { BillingStore, Encryptor, PricingConfig } from "@milo/core";
+import { decryptSecret as decryptBillingEnvelope, encryptSecret as encryptBillingEnvelope } from "@milo/billing";
 import type { OpenRouterProvisioningClient } from "@milo/provisioning";
 import type { StripeClient } from "@milo/stripe";
 import { AnthropicUpstream } from "./anthropic.js";
@@ -159,6 +160,20 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const log = await DecisionLog.open(options.decisionLogUrl ?? ":memory:");
   const writes = new WriteQueue(logger);
 
+  // Personal-fact memory (ADR-017) rides the billing encryption envelope: the
+  // fact text is sealed with the same AES-256-GCM key (MILO_ENCRYPTION_KEY)
+  // that protects the account's OpenRouter sub-key. No key -> no envelope ->
+  // the feature is disabled, exactly as documented.
+  const factMemory: { encryptor: Encryptor } | undefined =
+    billing === undefined
+      ? undefined
+      : {
+          encryptor: {
+            encrypt: (plain: string): string => encryptBillingEnvelope(plain, billing.encryptionKey),
+            decrypt: (stored: string): string => decryptBillingEnvelope(stored, billing.encryptionKey),
+          },
+        };
+
   const mode: RoutingMode = options.mode ?? "roster";
 
   const routerOptions = {
@@ -216,6 +231,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     roster,
     mode,
     jev,
+    ...(factMemory !== undefined ? { factMemory } : {}),
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
     ...(options.pruning !== undefined ? { pruning: options.pruning } : {}),
     ...(billing !== undefined ? { billing } : {}),

@@ -21,6 +21,15 @@ import type {
   PreferenceSettings,
   PreferenceStore,
 } from "../preferences/store.js";
+import { assertFactCandidate } from "../memory/store.js";
+import type {
+  Encryptor,
+  FactCandidate,
+  FactCategory,
+  FactRow,
+  FactSettings,
+  FactStore,
+} from "../memory/store.js";
 import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
 import type { DecisionRecord, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
 import { assertKeyHash, rosterModelCount } from "./roster-store.js";
@@ -138,7 +147,7 @@ const LIST_LIMIT_MAX = 500;
 const ROSTER_LIST_LIMIT_DEFAULT = 100;
 const ROSTER_LIST_LIMIT_MAX = 1000;
 
-export class DecisionLog implements StickyStore, RosterStore, PreferenceStore {
+export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, FactStore {
   private constructor(private readonly db: Client) {}
 
   /** `url` is `":memory:"` or `file:/path/to.db`. Runs migrations before returning. */
@@ -553,6 +562,96 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore {
               brief_enabled = excluded.brief_enabled,
               updated_at = excluded.updated_at`,
       args: [keyHash, next.captureEnabled ? 1 : 0, next.briefEnabled ? 1 : 0, new Date().toISOString()],
+    });
+    return next;
+  }
+
+  // -------------------------------------------------------------------------
+  // FactStore (ADR-017)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Encrypts the fact text through the injected envelope and inserts a row.
+   * The plaintext is encrypted *before* it touches SQL, so `content_encrypted`
+   * is never cleartext -- the one place Milo persists raw content, and it is
+   * ciphertext at rest (ADR-017). The category and provenance are labels and a
+   * digest; only the text is content, and only the text is encrypted.
+   */
+  async putFact(keyHash: string, candidate: FactCandidate, enc: Encryptor): Promise<FactRow> {
+    assertFactCandidate(keyHash, candidate);
+    const now = candidate.now ?? new Date().toISOString();
+    const row: FactRow = {
+      id: ulid(),
+      keyHash,
+      category: candidate.category,
+      text: candidate.text,
+      provenance: candidate.provenance,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.db.execute({
+      sql: `INSERT INTO facts
+              (id, key_hash, category, content_encrypted, provenance, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [row.id, row.keyHash, row.category, enc.encrypt(candidate.text), row.provenance, row.createdAt, row.updatedAt],
+    });
+    return row;
+  }
+
+  /** Every fact this key stored, newest first, decrypted for the owner. */
+  async listFacts(keyHash: string, enc: Encryptor): Promise<FactRow[]> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: `SELECT * FROM facts WHERE key_hash = ? ORDER BY created_at DESC, id DESC`,
+      args: [keyHash],
+    });
+    return rs.rows.map((row) => ({
+      id: String(row.id),
+      keyHash: String(row.key_hash),
+      category: String(row.category) as FactCategory,
+      text: enc.decrypt(String(row.content_encrypted)),
+      provenance: String(row.provenance),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    }));
+  }
+
+  /**
+   * Scoped by both id *and* key hash, so one caller cannot delete another's
+   * fact by guessing ids -- the same 404-shaped answer a missing row gets.
+   * Needs no envelope: a delete never reads the ciphertext.
+   */
+  async deleteFact(keyHash: string, id: string): Promise<boolean> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "DELETE FROM facts WHERE id = ? AND key_hash = ?",
+      args: [id, keyHash],
+    });
+    return rs.rowsAffected > 0;
+  }
+
+  /** The kill switch is on for a key that never stored a settings row. */
+  async getFactSettings(keyHash: string): Promise<FactSettings> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT enabled FROM fact_settings WHERE key_hash = ?",
+      args: [keyHash],
+    });
+    const row = rs.rows[0];
+    if (row === undefined) return { keyHash, enabled: true };
+    return { keyHash, enabled: Boolean(Number(row.enabled)) };
+  }
+
+  async setFactSettings(keyHash: string, patch: { enabled: boolean }): Promise<FactSettings> {
+    assertKeyHash(keyHash);
+    const next: FactSettings = { keyHash, enabled: patch.enabled };
+    await this.db.execute({
+      sql: `INSERT INTO fact_settings (key_hash, enabled, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key_hash) DO UPDATE SET
+              enabled = excluded.enabled,
+              updated_at = excluded.updated_at`,
+      args: [keyHash, next.enabled ? 1 : 0, new Date().toISOString()],
     });
     return next;
   }

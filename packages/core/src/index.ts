@@ -4,4 +4,5 @@ export * from "./log/index.js";
 export * from "./openrouter/index.js";
 export * from "./router/index.js";
 export * from "./preferences/index.js";
+export * from "./memory/index.js";
 export * from "./billing/types.js";

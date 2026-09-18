@@ -188,6 +188,44 @@ CREATE TABLE IF NOT EXISTS preference_settings (
 );
 `,
   },
+  {
+    version: 7,
+    description: "add the personal-fact tables",
+    // Personal-fact memory (ADR-017). Keyed like preferences and rosters by
+    // the SHA-256 of the bearer credential (ADR-008), because Milo stores no
+    // key material (ADR-003). Unlike the preference table, `content_encrypted`
+    // holds the user's own words -- the fact text -- through the billing
+    // AES-256-GCM envelope keyed by MILO_ENCRYPTION_KEY. This is the one place
+    // Milo persists raw content, and it is why the column is never plaintext:
+    // the store refuses to write a fact when no encryptor is available, and
+    // the migration names the column `_encrypted` so no future reader mistakes
+    // it for cleartext. `category` is a closed-vocabulary LABEL (address,
+    // contact, identifier, credential-hint, convention, other) that rides
+    // alongside the ciphertext; the label is not content. `provenance` is the
+    // fingerprint of the capturing turn -- a digest, never content.
+    //
+    // `fact_settings` carries the per-key kill switch ADR-017 promises: a key
+    // with no row has fact memory on (default 1), and the switch turns capture
+    // and injection off for everything from that key.
+    sql: `
+CREATE TABLE IF NOT EXISTS facts (
+  id TEXT PRIMARY KEY,
+  key_hash TEXT NOT NULL,
+  category TEXT NOT NULL,
+  content_encrypted TEXT NOT NULL,
+  provenance TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_facts_key_hash ON facts (key_hash);
+
+CREATE TABLE IF NOT EXISTS fact_settings (
+  key_hash TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+`,
+  },
 ];
 
 /**

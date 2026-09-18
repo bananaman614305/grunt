@@ -63,6 +63,8 @@ import { passThroughHeaders } from "../app.js";
 import { chargeBuffered, chargeStream, upstreamHeadersFor } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import { briefHeaders } from "../brief.js";
+import { factHeaders } from "../facts.js";
+import type { RoutedFacts } from "../facts.js";
 import type { GateRunner } from "./gate.js";
 import { applyPruneHeaders, pruneRecord } from "./prune.js";
 import type { PruneOutcome } from "./prune.js";
@@ -135,6 +137,12 @@ export type SamplingContext = {
    * and the decision record's `prune` block.
    */
   prune?: PruneOutcome | undefined;
+  /**
+   * The relevance-gated personal-fact note (ADR-017), when facts were injected
+   * into this request's body before the fan-out. Disclosure only: the samples
+   * already drew on the note; this sets `x-milo-facts-injected`.
+   */
+  facts?: RoutedFacts | undefined;
 };
 
 type Sample = {
@@ -645,6 +653,7 @@ export async function forwardSampled(
   applyMiloHeaders(headers, decision);
   applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
+  for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);
   headers.set(SAMPLES_HEADER, String(n));
   headers.set(SAMPLE_PICK_HEADER, String(pickIndex));
   for (const [k, v] of Object.entries(gateHeaders)) headers.set(k, v);
@@ -788,6 +797,7 @@ async function fallbackUnsampled(
   applyMiloHeaders(headers, decision);
   applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
+  for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);
   // The response the client got came from the fallback, not the sampled fast
   // model, and the headers must say what actually answered.
   headers.set("x-milo-model", model);

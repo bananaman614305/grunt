@@ -78,6 +78,8 @@ import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
 import { chargeBuffered, upstreamHeadersFor } from "../billing.js";
 import { briefHeaders } from "../brief.js";
+import { factHeaders } from "../facts.js";
+import type { RoutedFacts } from "../facts.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import { applyPruneHeaders, pruneRecord } from "./prune.js";
 import type { PruneOutcome } from "./prune.js";
@@ -368,6 +370,7 @@ export async function forwardGated(
   gate: GateRunner,
   briefVersion?: string,
   prune?: PruneOutcome,
+  facts?: RoutedFacts,
 ): Promise<Response> {
   const forwarded = prepareBody(body, decision.model);
   forwarded["stream"] = false;
@@ -388,6 +391,7 @@ export async function forwardGated(
   applyMiloHeaders(headers, decision);
   applyPruneHeaders(headers, prune);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
+  for (const [k, v] of Object.entries(factHeaders(facts))) headers.set(k, v);
 
   // An upstream error passes through with its own status, ungated, exactly
   // as the ordinary forward would answer it.

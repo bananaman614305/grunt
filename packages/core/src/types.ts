@@ -95,6 +95,14 @@ export type MiloRequestExtension = {
    */
   gates?: boolean;
   /**
+   * `false` skips the relevance-gated personal-fact note for this one request
+   * (ADR-017). Absent means "inject relevant facts when the caller has any
+   * stored and the key's kill switch is on"; there is no `true` opt-in
+   * because injection is the default. The per-key kill switch
+   * (`PUT /v1/memory/settings`) turns it off for every request.
+   */
+  facts?: boolean;
+  /**
    * Context pruning (ADR-014, ADR-013 phase C): `true` opts this request in
    * to shedding safe older context before it is forwarded, `false` opts it
    * out. Unlike `brief`/`gates`, BOTH values are meaningful, because pruning

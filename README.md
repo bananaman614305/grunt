@@ -139,8 +139,9 @@ decision is made.
 
 A chat completions body can include a `milo` field to override routing for
 that request. It is stripped before the request reaches OpenRouter. The
-pass-through contract (ADR-011): only the model field is rewritten, plus an
-optional appended system brief, off per request with one field.
+pass-through contract (ADR-011, ADR-017): only the model field is rewritten,
+plus up to two appended system messages — the preference brief and the
+relevance-gated fact note — each off per request with one field.
 
 ```json
 {
@@ -159,6 +160,7 @@ optional appended system brief, off per request with one field.
 - `tier` — forces a tier (`"fast"`, `"mid"`, `"frontier"`) and skips the Jev call entirely; the decision is recorded with reason `"forced to the <tier> tier by the request"`.
 - `samples` — best-of-N control (ADR-010): `1` disables sampling for this request, a larger integer (capped at 8) sets the sample count on the cells the policy samples.
 - `brief: false` — skips the appended preference brief for this one request (`docs/memory.md`, ADR-011). Everything Milo remembers is listed at `GET /v1/preferences` and deletable at `DELETE /v1/preferences/:id`.
+- `facts: false` — skips the relevance-gated personal-fact note for this one request (`docs/memory.md`, ADR-017). Personal-fact memory is on by default, stored **encrypted at rest**, injected only when relevant (`x-milo-facts-injected`); every stored fact is listed decrypted at `GET /v1/memory`, deletable at `DELETE /v1/memory/:id`, and the whole feature is killable per key with `PUT /v1/memory/settings { "enabled": false }`.
 - `prune` — context pruning (ADR-014): `true` opts this request in to shedding finished older context, `false` opts it out; off by default unless the deployment set `pruning.enabled`. `false` always wins.
 
 ## Why these models
@@ -298,7 +300,7 @@ walkthrough, including the `milo billing` operator CLI.
 ## Docs
 
 - [`docs/api/gateway.md`](docs/api/gateway.md) — every route, request/response shape, headers, errors.
-- [`docs/memory.md`](docs/memory.md) — preference memory: what Milo remembers per key, the injected brief, and how to see or delete it.
+- [`docs/memory.md`](docs/memory.md) — preference memory (ADR-011) and personal-fact memory (ADR-017): what Milo remembers per key, the injected brief and relevance-gated fact note, how facts are encrypted at rest, and how to list, delete, or kill either.
 - [`docs/billing.md`](docs/billing.md) — Milo keys, prepaid credits, the account pages, and the `milo billing` CLI.
 - [`docs/cli.md`](docs/cli.md) — the `milo` CLI: `serve`, `explain`, `decisions`, `stats`, `roster`, `billing`.
 - [`docs/config.md`](docs/config.md) — `milo.config.json` reference and `JEV_API_KEY`.

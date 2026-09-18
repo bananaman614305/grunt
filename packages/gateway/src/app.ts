@@ -22,6 +22,7 @@ import {
 import type {
   DecisionRecord,
   DecisionLog,
+  Encryptor,
   JevClientLike,
   OpenRouterClient,
   Roster,
@@ -42,6 +43,7 @@ import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerPreferencesRoutes } from "./routes/preferences.js";
+import { registerMemoryRoutes } from "./routes/memory.js";
 import { registerProxyRoute } from "./routes/proxy.js";
 import { registerRosterRoute } from "./routes/roster.js";
 import { registerResponsesRoute } from "./routes/responses.js";
@@ -92,6 +94,15 @@ export type AppDeps = {
    * `ranking_failed`, and capture simply no-ops.
    */
   jev?: JevClientLike;
+  /**
+   * Personal-fact memory (ADR-017). Present only when the deployment has an
+   * encryption key -- the gateway builds `encryptor` from the billing
+   * AES-256-GCM envelope keyed by `MILO_ENCRYPTION_KEY`. Absent means the
+   * feature degrades to disabled: no capture, no injection, and `GET
+   * /v1/memory` answers empty. A fact store with no envelope must not store
+   * plaintext, so it stores nothing.
+   */
+  factMemory?: { encryptor: Encryptor };
   rateLimiter: RateLimiter;
   /**
    * Best-of-N execution knobs (ADR-010). Absent means the defaults:
@@ -284,6 +295,7 @@ export function createApp(deps: AppDeps): Hono {
         "/v1/models",
         "/v1/roster",
         "/v1/preferences",
+        "/v1/memory",
         "/v1/decisions/:id",
       ],
       docs: "https://github.com/bananaman614305/milo",
@@ -309,6 +321,7 @@ export function createApp(deps: AppDeps): Hono {
   registerModelsRoute(app, deps);
   registerRosterRoute(app, deps);
   registerPreferencesRoutes(app, deps);
+  registerMemoryRoutes(app, deps);
   registerDecisionsRoutes(app, deps);
   // billing JSON routes
   if (deps.billing !== undefined) registerBillingRoutes(app, deps);

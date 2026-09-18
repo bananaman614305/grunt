@@ -43,6 +43,8 @@ import {
 } from "../billing.js";
 import { applyBrief, briefHeaders, routedBrief } from "../brief.js";
 import { maybeCapture } from "../capture.js";
+import { applyFactNote, factHeaders, maybeCaptureFact, routedFacts } from "../facts.js";
+import type { RoutedFacts } from "../facts.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
@@ -234,6 +236,15 @@ async function routed(
     provenance: decision.fingerprint,
     logger: deps.logger,
   });
+  // Personal-fact capture (ADR-017) is fire-and-forget too: its own Jev call,
+  // off the response path, storing an encrypted fact when the latest turn
+  // states one. It never delays or fails the response.
+  void maybeCaptureFact(deps.log, deps.jev, deps.factMemory?.encryptor, {
+    keyHash: callerScope(c),
+    messages,
+    provenance: decision.fingerprint,
+    logger: deps.logger,
+  });
   const brief = await routedBrief(deps.log, callerScope(c), {
     extension,
     taskType: decision.signals?.taskType,
@@ -242,7 +253,19 @@ async function routed(
   // Posture-aware provider strategy for the upstream call; a caller-supplied
   // `provider` field always wins (see applyProviderStrategy).
   const posture = extension?.posture ?? "balanced";
-  const outgoing = applyProviderStrategy(applyBrief(body, brief), posture, decision.model);
+  // The relevance-gated fact note (ADR-017): one Jev call classifies which
+  // stored facts, if any, belong in this request; only relevant ones are
+  // appended, and nothing is injected on `low` posture. This runs before the
+  // forward, so its cost is bounded and its result rides the outgoing body and
+  // `x-milo-facts-injected`.
+  const facts = await routedFacts(deps.log, deps.jev, deps.factMemory?.encryptor, {
+    keyHash: callerScope(c),
+    messages,
+    extension,
+    skip: posture === "low",
+    logger: deps.logger,
+  });
+  const outgoing = applyFactNote(applyProviderStrategy(applyBrief(body, brief), posture, decision.model), facts);
 
   // Context pruning (ADR-014, ADR-013 phase C) sheds safe older context from
   // `outgoing.messages` in place before anything reads them: off by default,
@@ -259,16 +282,22 @@ async function routed(
   // this surface executes sampling; the other dialects opt out at routing
   // time (see routes/messages.ts and routes/responses.ts).
   if (decision.samples !== undefined && decision.samples > 1) {
-    return forwardSampled(c, deps, outgoing, decision, { candidates, briefVersion: brief?.version, gate, prune });
+    return forwardSampled(c, deps, outgoing, decision, {
+      candidates,
+      briefVersion: brief?.version,
+      facts,
+      gate,
+      prune,
+    });
   }
 
   // A gated single call buffers, grades, maybe retries, then replays; an
   // ungated one keeps the pass-through fast path untouched.
   if (gate !== undefined) {
-    return forwardGated(c, deps, outgoing, decision, gate, brief?.version, prune);
+    return forwardGated(c, deps, outgoing, decision, gate, brief?.version, prune, facts);
   }
 
-  return forward(c, deps, outgoing, decision, brief?.version, prune);
+  return forward(c, deps, outgoing, decision, brief?.version, prune, facts);
 }
 
 async function forward(
@@ -278,6 +307,7 @@ async function forward(
   decision: RouteDecision,
   briefVersion?: string,
   prune?: PruneOutcome,
+  facts?: RoutedFacts,
 ): Promise<Response> {
   const forwarded = prepareBody(body, decision.model);
   const startedAt = deps.now();
@@ -295,6 +325,7 @@ async function forward(
   applyMiloHeaders(headers, decision);
   applyPruneHeaders(headers, prune);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
+  for (const [k, v] of Object.entries(factHeaders(facts))) headers.set(k, v);
 
   // A streamed success is the only case where the body must not be touched.
   // An upstream error is JSON however the request was made, so it takes the
