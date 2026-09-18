@@ -12,6 +12,7 @@ import {
   buildRosterFile,
   diffRosterFiles,
   foldPermaslug,
+  preReleaseSuffix,
   scrapeRankingRows,
   selectRoster,
   usdPerMillion,
@@ -89,8 +90,59 @@ describe("foldPermaslug", () => {
   });
 });
 
+describe("preReleaseSuffix", () => {
+  it("matches a pre-release marker on the id's final path segment", () => {
+    expect(preReleaseSuffix("tencent/hy4-preview")).toBe("-preview");
+    expect(preReleaseSuffix("vendor/model-beta")).toBe("-beta");
+    expect(preReleaseSuffix("vendor/model-alpha")).toBe("-alpha");
+    expect(preReleaseSuffix("vendor/model-rc")).toBe("-rc");
+  });
+
+  it("does not match a marker that merely appears mid-name", () => {
+    // "preview" is present but not as a hyphen-delimited suffix of the segment.
+    expect(preReleaseSuffix("vendor/preview-turbo")).toBeUndefined();
+    expect(preReleaseSuffix("openai/gpt-preview-mini")).toBeUndefined();
+    expect(preReleaseSuffix("some/betamax-9")).toBeUndefined();
+    expect(preReleaseSuffix("deepseek/deepseek-v4-flash")).toBeUndefined();
+    // The marker in the provider segment must not count either.
+    expect(preReleaseSuffix("preview/stable-model")).toBeUndefined();
+  });
+});
+
 describe("selectRoster", () => {
   const selection = selectRoster(MODELS, RANKING, DEFAULT_RULES);
+
+  it("skips a pre-release build and keeps a normal id that only contains 'preview'", () => {
+    const ranking: RankingSnapshot = {
+      ...RANKING,
+      rows: [
+        { model_permaslug: "tencent/hy4-preview", total_tokens: 99_000_000_000_000 },
+        { model_permaslug: "openai/gpt-5.6-luna", total_tokens: 42_000_000_000_000 },
+      ],
+    };
+    const result = selectRoster(MODELS, ranking, DEFAULT_RULES);
+    const all = TIER_ORDER.flatMap((tier) => result.tiers[tier]).map((m) => m.id);
+    // The pre-release frontier build is dropped even as the single most used.
+    expect(all).not.toContain("tencent/hy4-preview");
+    expect(result.skipped).toContainEqual({
+      id: "tencent/hy4-preview",
+      reason: "-preview pre-release build, never a default",
+    });
+    // gpt-5.6-luna carries no pre-release suffix, so it survives.
+    expect(all).toContain("openai/gpt-5.6-luna");
+  });
+
+  it("never lets a pre-release build be a tier default in the shipped roster", () => {
+    for (const tier of TIER_ORDER) {
+      for (const model of selection.tiers[tier]) {
+        expect(preReleaseSuffix(model.id)).toBeUndefined();
+      }
+    }
+    expect(selection.skipped).toContainEqual({
+      id: "tencent/hy4-preview",
+      reason: "-preview pre-release build, never a default",
+    });
+  });
 
   it("reproduces the roster that ships in roster-default.json", () => {
     expect(selection.tiers).toEqual(DEFAULT_ROSTER_INFO.tiers);
@@ -162,11 +214,15 @@ describe("selectRoster", () => {
       "xiaomi/mimo-v2.5",
       "tencent/hy3",
     ]);
-    expect(ids(selection.tiers.mid)).toEqual(["openai/gpt-5.6-luna", "deepseek/deepseek-v4.1-flash"]);
-    // hy4-preview is rank 3 and nemotron rank 8, but both cap output below
-    // 65,536, so they sort behind glm-5.3 (9) and gemini-3.8-flash (10).
+    expect(ids(selection.tiers.mid)).toEqual([
+      "openai/gpt-5.6-luna",
+      "deepseek/deepseek-v4.1-flash",
+      "minimax/minimax-m3",
+    ]);
+    // hy4-preview is the pre-release build that used to lead this tier; it is
+    // skipped now, so glm-5.3 (rank 8) leads. nemotron caps output below
+    // 65,536, so it sorts behind gemini-3.8-flash (rank 9).
     expect(ids(selection.tiers.frontier)).toEqual([
-      "tencent/hy4-preview",
       "z-ai/glm-5.3",
       "google/gemini-3.8-flash",
       "nvidia/nemotron-3-ultra-550b-a55b",
@@ -233,7 +289,9 @@ describe("diffRosterFiles", () => {
 
   it("names a reorder", () => {
     const next = structuredClone(base);
-    next.tiers.mid = [base.tiers.mid[1]!, base.tiers.mid[0]!];
+    // Same set of models, rotated, so the diff reports an order change rather
+    // than an add and a remove.
+    next.tiers.mid = [base.tiers.mid.at(-1)!, ...base.tiers.mid.slice(0, -1)];
     expect(diffRosterFiles(base, next)).toContain("~ mid  order:");
   });
 });

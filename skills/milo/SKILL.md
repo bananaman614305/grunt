@@ -307,26 +307,30 @@ Default roster `2026-09-17`:
 | Tier | Model | In $/M | Out $/M | Usage rank | Weekly tokens |
 |---|---|---|---|---|---|
 | fast | `deepseek/deepseek-v4-flash` | 0.07 | 0.14 | 2 | 15.4T |
-| fast | `z-ai/glm-5.3-flash` | 0.09 | 0.30 | 4 | 11.3T |
-| fast | `xiaomi/mimo-v2.5` | 0.14 | 0.28 | 6 | 7.8T |
-| fast | `tencent/hy3` | 0.0825 | 0.33 | 7 | 4.5T |
+| fast | `z-ai/glm-5.3-flash` | 0.09 | 0.30 | 3 | 11.3T |
+| fast | `xiaomi/mimo-v2.5` | 0.14 | 0.28 | 5 | 7.8T |
+| fast | `tencent/hy3` | 0.0825 | 0.33 | 6 | 4.5T |
 | mid | `openai/gpt-5.6-luna` | 0.20 | 1.20 | 1 | 17.3T |
-| mid | `deepseek/deepseek-v4.1-flash` | 0.15 | 0.60 | 5 | 10.3T |
-| frontier | `z-ai/glm-5.3` | 1.40 | 4.40 | 9 | 2.5T |
-| frontier | `google/gemini-3.8-flash` | 0.75 | 3.75 | 10 | 2.2T |
-| frontier | `tencent/hy4-preview` | 0.834 | 2.501 | 3 | 12.0T |
-| frontier | `nvidia/nemotron-3-ultra-550b-a55b` | 0.625 | 3.125 | 8 | 3.5T |
+| mid | `deepseek/deepseek-v4.1-flash` | 0.15 | 0.60 | 4 | 10.3T |
+| mid | `minimax/minimax-m3` | 0.30 | 1.20 | 10 | 1.2T |
+| frontier | `z-ai/glm-5.3` | 1.40 | 4.40 | 8 | 2.5T |
+| frontier | `google/gemini-3.8-flash` | 0.75 | 3.75 | 9 | 2.2T |
+| frontier | `nvidia/nemotron-3-ultra-550b-a55b` | 0.625 | 3.125 | 7 | 3.5T |
 
 `nvidia/nemotron-3-ultra-550b-a55b` caps output at 32,768 tokens, below the
 60,000 floor, so it sorts last in its tier and is skipped outright whenever a
-long answer is expected; `tencent/hy4-preview` (64,000) and
-`google/gemini-3.8-flash` (65,536) stay eligible.
+long answer is expected; `google/gemini-3.8-flash` (65,536) stays eligible.
+A pre-release build (an id ending `-preview`, `-beta`, `-alpha` or `-rc`) is
+never a default: `tencent/hy4-preview` led `frontier` in an earlier roster but
+a live benchmark found the mid tier more accurate at a tenth the cost, so
+`z-ai/glm-5.3` leads now.
 
 **How this list was made.** Collected 2026-09-17 from OpenRouter's weekly
 usage ranking for the programming category (week ending 2026-09-16) and its
 public model catalogue. Take the ten most-used models after folding dated
 builds into their current id and dropping `:free`, `:batch` and the other
-data-sharing plan variants, anything that cannot call a tool, and anything at
+data-sharing plan variants, a pre-release build (an id ending `-preview`,
+`-beta`, `-alpha` or `-rc`), anything that cannot call a tool, and anything at
 or above $5 per million output tokens. Tier them by output price: fast at most
 $0.35/M, mid at most $1.50/M, frontier at most $5/M. The roster is regenerated
 from OpenRouter's rankings every week, so this table moves as the rankings do.
