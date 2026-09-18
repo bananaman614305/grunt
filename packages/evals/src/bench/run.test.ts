@@ -130,9 +130,9 @@ describe("runBench", () => {
     expect(routedCall?.auth).toBe("Bearer sk-test");
     const direct = seen.filter((s) => s.url === "http://or/api/v1/chat/completions" && s.body?.["model"] !== "judge/model");
     expect(direct.every((s) => s.body?.["milo"] === undefined)).toBe(true);
-    // has_tools sends the placeholder tool with tool_choice none.
+    // has_tools sends the placeholder tool with tool_choice auto.
     const tooled = seen.find((s) => s.body?.["model"] === "frontier/model" && s.body?.["tools"] !== undefined);
-    expect(tooled?.body?.["tool_choice"]).toBe("none");
+    expect(tooled?.body?.["tool_choice"]).toBe("auto");
     // The judge was asked once per successful arm on r-2.
     expect(seen.filter((s) => s.body?.["model"] === "judge/model")).toHaveLength(3);
   });

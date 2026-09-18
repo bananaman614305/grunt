@@ -109,7 +109,11 @@ async function callArm(runner: Runner, example: RoutingExample, messages: ChatMe
   const body: Record<string, unknown> = {
     model,
     messages,
-    ...(example.has_tools ? { tools: BENCH_TOOLS, tool_choice: "none" } : {}),
+    // `tool_choice: "auto"` rather than `"none"`: OpenRouter's endpoint filter
+    // drops some providers (StreamLake, for one) for `"none"` and answers 404
+    // when fallbacks are off, while `"auto"` is accepted everywhere and the
+    // placeholder tool is never worth calling.
+    ...(example.has_tools ? { tools: BENCH_TOOLS, tool_choice: "auto" } : {}),
     ...(routed ? { milo: { posture: options.posture } } : {}),
     ...providerField(options.providers),
   };
