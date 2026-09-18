@@ -73,6 +73,89 @@ function ok(body: unknown): Response {
 }
 
 /**
+ * The same completion as OpenRouter would stream it: content (and tool-call
+ * arguments) split across chunks, usage on the final chunk, then `[DONE]`.
+ * Sub-requests are internally streamed, so this is what the fan-out consumes.
+ */
+function sse(body: ReturnType<typeof completionBody>): Response {
+  const message = body.choices[0]?.message as Record<string, unknown>;
+  const frame = { id: body.id, object: "chat.completion.chunk", created: body.created, model: body.model };
+  const chunks: Array<Record<string, unknown>> = [];
+
+  const content = message["content"];
+  if (typeof content === "string" && content.length > 0) {
+    const half = Math.ceil(content.length / 2);
+    chunks.push({ ...frame, choices: [{ index: 0, delta: { role: "assistant", content: content.slice(0, half) }, finish_reason: null }] });
+    chunks.push({ ...frame, choices: [{ index: 0, delta: { content: content.slice(half) }, finish_reason: null }] });
+  } else {
+    chunks.push({ ...frame, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
+  }
+
+  const toolCalls = message["tool_calls"];
+  if (Array.isArray(toolCalls)) {
+    for (const [i, raw] of toolCalls.entries()) {
+      const call = raw as { id: string; type: string; function: { name: string; arguments: string } };
+      const args = call.function.arguments;
+      const half = Math.ceil(args.length / 2);
+      chunks.push({
+        ...frame,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                { index: i, id: call.id, type: call.type, function: { name: call.function.name, arguments: args.slice(0, half) } },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      chunks.push({
+        ...frame,
+        choices: [{ index: 0, delta: { tool_calls: [{ index: i, function: { arguments: args.slice(half) } }] }, finish_reason: null }],
+      });
+    }
+  }
+
+  chunks.push({ ...frame, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: body.usage });
+  const text = chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+  return new Response(text, {
+    status: 200,
+    headers: { "content-type": "text/event-stream", "x-request-id": "or-req-1" },
+  });
+}
+
+/**
+ * A stream that sends one partial content chunk and then hangs forever: the
+ * production straggler. `cancelled()` reports whether the fan-out aborted it.
+ */
+function hangingSse(): { response: Response; cancelled: () => boolean } {
+  let cancelled = false;
+  const encoder = new TextEncoder();
+  const chunk = {
+    id: "gen-hang",
+    object: "chat.completion.chunk",
+    created: 1_700_000_000,
+    model: "test/fast",
+    choices: [{ index: 0, delta: { role: "assistant", content: "partial straggler text" }, finish_reason: null }],
+  };
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      // Never closes: only an abort ends this stream.
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return {
+    response: new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    cancelled: () => cancelled,
+  };
+}
+
+/**
  * A Jev that ranks by the quality each candidate answer's text encodes:
  * "answer-2 quality" beats "answer-0". The stub reads the candidate text out
  * of the rank state and answers with a quality distribution centred on the
@@ -157,7 +240,13 @@ afterEach(async () => {
   for (const log of logs) await log.close();
 });
 
-async function app(opts: { jev?: JevClientLike; decision?: RouteDecision } = {}): Promise<Hono> {
+async function app(
+  opts: {
+    jev?: JevClientLike;
+    decision?: RouteDecision;
+    sampling?: { sampleTimeoutMs?: number; minRanked?: number };
+  } = {},
+): Promise<Hono> {
   const log = await DecisionLog.open(":memory:");
   logs.push(log);
   const decision = opts.decision ?? sampledDecision();
@@ -176,6 +265,7 @@ async function app(opts: { jev?: JevClientLike; decision?: RouteDecision } = {})
       void log.setUpstream(id, upstream);
     },
     ...(opts.jev !== undefined ? { jev: opts.jev } : {}),
+    ...(opts.sampling !== undefined ? { sampling: opts.sampling } : {}),
   };
   return createApp(deps);
 }
@@ -193,21 +283,24 @@ function chatRequest(extra: Record<string, unknown> = {}): Request {
 // ---------------------------------------------------------------------------
 
 describe("sampled fan-out", () => {
-  it("draws N varied non-streaming samples and returns Jev's pick verbatim", async () => {
+  it("draws N varied streamed samples on throughput-sorted providers and returns Jev's pick", async () => {
     // Sample 1 encodes the highest quality; Jev must pick it.
     const contents = ["plain q1", "framed q3", "framed q0"];
-    openRouter.handler = (_body, index) => ok(completionBody(contents[index] as string));
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
     const jev = rankingJev();
     const a = await app({ jev });
 
     const res = await a.fetch(chatRequest());
     expect(res.status).toBe(200);
 
-    // Three upstream calls, each on the fast model, none streaming, framings cycled.
+    // Three upstream calls, each on the fast model, each internally streamed
+    // and pinned to OpenRouter's currently fastest provider, framings cycled.
     expect(openRouter.calls).toHaveLength(3);
     for (const [i, call] of openRouter.calls.entries()) {
       expect(call.body["model"]).toBe("test/fast");
-      expect(call.body["stream"]).toBeUndefined();
+      expect(call.body["stream"]).toBe(true);
+      expect(call.body["stream_options"]).toEqual({ include_usage: true });
+      expect(call.body["provider"]).toEqual({ sort: "throughput" });
       expect(call.body["milo"]).toBeUndefined();
       const messages = call.body["messages"] as ChatMessage[];
       const system = String(messages[0]?.content);
@@ -215,9 +308,14 @@ describe("sampled fan-out", () => {
       else expect(system).toBe(`You are a sub-agent.\n\n${PROMPT_VARIANTS[i] as string}`);
     }
 
-    // The chosen body comes back verbatim, with the disclosure headers.
+    // The chosen answer comes back as one well-formed completion, with the
+    // disclosure headers.
     const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.id).toBe("gen-framed q3");
+    expect(body.object).toBe("chat.completion");
     expect(body.choices[0]?.message["content"]).toBe("framed q3");
+    expect(body.choices[0]?.finish_reason).toBe("stop");
+    expect(body.usage).toMatchObject({ prompt_tokens: 100, completion_tokens: 10 });
     expect(res.headers.get("x-milo-samples")).toBe("3");
     expect(res.headers.get("x-milo-sample-pick")).toBe("1");
     expect(res.headers.get("x-milo-decision-id")).toBe("01SAMPLEDECISION0000000000");
@@ -228,7 +326,7 @@ describe("sampled fan-out", () => {
 
   it("aggregates cost and tokens across samples and stores per-sample metadata, no content", async () => {
     const contents = ["a q1", "b q3", "c q0"];
-    openRouter.handler = (_body, index) => ok(completionBody(contents[index] as string, { tokens: 10 + index, cost: 0.0001 }));
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string, { tokens: 10 + index, cost: 0.0001 }));
     const a = await app({ jev: rankingJev() });
     await a.fetch(chatRequest());
 
@@ -256,7 +354,7 @@ describe("sampled fan-out", () => {
 
   it("replays the chosen answer as well-formed SSE when the request streamed", async () => {
     const contents = ["a q0", "b q2", "c q1"];
-    openRouter.handler = (_body, index) => ok(completionBody(contents[index] as string));
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
     const a = await app({ jev: rankingJev() });
 
     const res = await a.fetch(chatRequest({ stream: true }));
@@ -291,7 +389,7 @@ describe("sampled fan-out", () => {
       { id: "call_1", type: "function", function: { name: "grep", arguments: '{"q":"q3"}' } },
     ];
     openRouter.handler = (_body, index) =>
-      index === 1 ? ok(completionBody("", { toolCalls })) : ok(completionBody(`text q0-${index}`));
+      index === 1 ? sse(completionBody("", { toolCalls })) : sse(completionBody(`text q0-${index}`));
     const a = await app({ jev: rankingJev() });
 
     const res = await a.fetch(chatRequest({ stream: true }));
@@ -326,9 +424,12 @@ describe("sampled fan-out", () => {
     expect(res.headers.get("x-milo-model")).toBe("test/mid");
     expect(res.headers.get("x-milo-tier")).toBe("mid");
 
-    // Three failed samples, then the one fallback call.
+    // Three failed samples, then the one fallback call -- which is an
+    // ordinary unsampled forward: no stream, no provider override.
     expect(openRouter.calls).toHaveLength(4);
     expect(openRouter.calls[3]?.body["model"]).toBe("test/mid");
+    expect(openRouter.calls[3]?.body["stream"]).toBeUndefined();
+    expect(openRouter.calls[3]?.body["provider"]).toBeUndefined();
 
     const upstream = recorded[0]?.upstream as Upstream;
     expect(upstream.sampleNote).toBe("all_samples_failed");
@@ -338,7 +439,7 @@ describe("sampled fan-out", () => {
 
   it("returns the first successful sample and marks the decision when Jev cannot rank", async () => {
     const contents = ["first q0", "second q3", "third q2"];
-    openRouter.handler = (_body, index) => ok(completionBody(contents[index] as string));
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
     const a = await app({ jev: failingJev() });
 
     const res = await a.fetch(chatRequest());
@@ -353,11 +454,105 @@ describe("sampled fan-out", () => {
   });
 
   it("also marks the decision when no Jev client is wired at all", async () => {
-    openRouter.handler = (_body, index) => ok(completionBody(`answer-${index}`));
+    openRouter.handler = (_body, index) => sse(completionBody(`answer-${index}`));
     const a = await app();
     const res = await a.fetch(chatRequest());
     expect(res.status).toBe(200);
     expect(res.headers.get("x-milo-sample-pick")).toBe("0");
     expect(recorded[0]?.upstream.sampleNote).toBe("ranking_failed");
+  });
+
+  it("passes a caller-supplied provider field through untouched on every sample", async () => {
+    openRouter.handler = () => sse(completionBody("answer q3"));
+    const a = await app({ jev: rankingJev() });
+
+    const res = await a.fetch(chatRequest({ provider: { order: ["cerebras"] } }));
+    expect(res.status).toBe(200);
+    expect(openRouter.calls).toHaveLength(3);
+    for (const call of openRouter.calls) {
+      expect(call.body["provider"]).toEqual({ order: ["cerebras"] });
+    }
+  });
+});
+
+describe("sampled fan-out: first-k early return", () => {
+  it("returns the clear winner once minRanked samples are ranked and aborts the straggler", async () => {
+    const hang = hangingSse();
+    openRouter.handler = (_body, index) => {
+      if (index === 2) return hang.response;
+      return sse(completionBody(index === 0 ? "a q1" : "b q3"));
+    };
+    const a = await app({ jev: rankingJev(), sampling: { minRanked: 2 } });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message["content"]).toBe("b q3");
+    expect(res.headers.get("x-milo-samples")).toBe("3");
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+
+    // The straggler's stream was cancelled: its token spend stops there.
+    expect(hang.cancelled()).toBe(true);
+
+    // The aborted-sample record: aborted marker, whatever partial usage the
+    // stream reported (none here -- usage arrives on the final chunk), no
+    // rank, no error class, and never any content.
+    const upstream = recorded[0]?.upstream as Upstream;
+    const aborted = upstream.samples?.[2] as Record<string, unknown>;
+    expect(aborted).toMatchObject({ index: 2, status: 200, aborted: true });
+    expect(aborted["error"]).toBeUndefined();
+    expect(aborted["jevQuality"]).toBeUndefined();
+    expect(aborted["picked"]).toBeUndefined();
+    expect(JSON.stringify(upstream)).not.toContain("partial straggler text");
+
+    // The aggregate bills only what was actually spent: the two completed
+    // samples; the aborted stream reported no usage before the abort.
+    expect(upstream.inputTokens).toBe(200);
+    expect(upstream.outputTokens).toBe(20);
+    expect(upstream.costUsd).toBeCloseTo(0.0002);
+    expect(upstream.samplePick).toBe(1);
+    expect(upstream.sampleNote).toBeUndefined();
+  });
+
+  it("keeps waiting when the best rank is below the threshold, then survives the straggler's timeout", async () => {
+    const hang = hangingSse();
+    openRouter.handler = (_body, index) => {
+      if (index === 2) return hang.response;
+      return sse(completionBody(index === 0 ? "a q1" : "b q2"));
+    };
+    const a = await app({ jev: rankingJev(), sampling: { minRanked: 2, sampleTimeoutMs: 250 } });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    // No early return at k=2 (best quality 2 < 2.5): the fan-out waited for
+    // the third sample, which timed out, and then picked the best of the two
+    // that succeeded.
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message["content"]).toBe("b q2");
+
+    const upstream = recorded[0]?.upstream as Upstream;
+    const straggler = upstream.samples?.[2] as Record<string, unknown>;
+    expect(straggler["error"]).toBe("timeout");
+    expect(straggler["aborted"]).toBeUndefined();
+  });
+
+  it("returns the first success early when ranking is degraded, aborting the straggler", async () => {
+    const hang = hangingSse();
+    openRouter.handler = (_body, index) => {
+      if (index === 2) return hang.response;
+      return sse(completionBody(`answer-${index}`));
+    };
+    const a = await app({ jev: failingJev(), sampling: { minRanked: 2 } });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message["content"]).toBe("answer-0");
+    expect(res.headers.get("x-milo-sample-pick")).toBe("0");
+    expect(hang.cancelled()).toBe(true);
+
+    const upstream = recorded[0]?.upstream as Upstream;
+    expect(upstream.sampleNote).toBe("ranking_failed");
+    expect((upstream.samples?.[2] as Record<string, unknown>)["aborted"]).toBe(true);
   });
 });

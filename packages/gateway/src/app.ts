@@ -77,8 +77,12 @@ export type AppDeps = {
    */
   jev?: JevClientLike;
   rateLimiter: RateLimiter;
-  /** Best-of-N execution knobs (ADR-010). Absent means the defaults. */
-  sampling?: { sampleTimeoutMs?: number };
+  /**
+   * Best-of-N execution knobs (ADR-010). Absent means the defaults:
+   * `sampleTimeoutMs` caps each sample's wall clock; `minRanked` is how many
+   * ranked samples the fan-out waits for before an early return may fire.
+   */
+  sampling?: { sampleTimeoutMs?: number; minRanked?: number };
   logger: Logger;
   /** Injectable clock for upstream latency. */
   now: () => number;

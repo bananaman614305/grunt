@@ -40,12 +40,15 @@ const rateLimitSchema = z
  * Best-of-N sampling (ADR-010). `enabled` defaults to true -- sampling is a
  * routing outcome, on by default for the cells the policy names; the cells
  * themselves are fixed in code for now. `sampleTimeoutMs` caps each sample's
- * wall clock (gateway default: 60,000 ms).
+ * wall clock (gateway default: 60,000 ms). `minRanked` is how many ranked
+ * samples the fan-out waits for before returning a clear winner early and
+ * aborting the still-streaming rest (gateway default: 3).
  */
 const samplingSchema = z
   .object({
     enabled: z.boolean().default(true),
     sampleTimeoutMs: z.number().int().positive().optional(),
+    minRanked: z.number().int().positive().optional(),
   })
   .strict();
 

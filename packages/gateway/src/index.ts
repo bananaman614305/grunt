@@ -53,9 +53,11 @@ export type GatewayOptions = {
    * Best-of-N sampling (ADR-010). `enabled` (default true) lets policy v4's
    * sampled cells resolve; false and every cell keeps its single-model
    * outcome. `sampleTimeoutMs` caps each sample's wall clock (default
-   * 60,000). The cells themselves are fixed in code for now (`policy.ts`).
+   * 60,000). `minRanked` (default 3) is how many ranked samples the fan-out
+   * waits for before returning a clear winner early and aborting the rest.
+   * The cells themselves are fixed in code for now (`policy.ts`).
    */
-  sampling?: { enabled?: boolean; sampleTimeoutMs?: number };
+  sampling?: { enabled?: boolean; sampleTimeoutMs?: number; minRanked?: number };
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
   /**
@@ -171,13 +173,24 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const rateLimitOptions: RateLimiterOptions = {};
   if (options.rateLimit !== undefined) rateLimitOptions.routedPerMinute = options.rateLimit.routedPerMinute;
 
+  // Execution knobs for the fan-out only; `enabled` was consumed above by
+  // the router and never reaches the executor.
+  const samplingOptions = options.sampling;
+  const samplingKnobs =
+    samplingOptions !== undefined && (samplingOptions.sampleTimeoutMs !== undefined || samplingOptions.minRanked !== undefined)
+      ? {
+          ...(samplingOptions.sampleTimeoutMs !== undefined
+            ? { sampleTimeoutMs: samplingOptions.sampleTimeoutMs }
+            : {}),
+          ...(samplingOptions.minRanked !== undefined ? { minRanked: samplingOptions.minRanked } : {}),
+        }
+      : undefined;
+
   const app = createApp({
     router,
     roster,
     jev,
-    ...(options.sampling?.sampleTimeoutMs !== undefined
-      ? { sampling: { sampleTimeoutMs: options.sampling.sampleTimeoutMs } }
-      : {}),
+    ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
     ...(billing !== undefined ? { billing } : {}),
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),

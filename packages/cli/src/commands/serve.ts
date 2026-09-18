@@ -168,6 +168,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
             ...(config.sampling.sampleTimeoutMs !== undefined
               ? { sampleTimeoutMs: config.sampling.sampleTimeoutMs }
               : {}),
+            ...(config.sampling.minRanked !== undefined ? { minRanked: config.sampling.minRanked } : {}),
           },
         }
       : {}),

@@ -3,32 +3,56 @@
  * `POST /v1/chat/completions` when policy v4 resolved a cell to
  * `{ tier: "fast", samples: N }`.
  *
- * The shape of the trade: N identical upstream calls on the user's key, each
- * with one of the varied framings from `PROMPT_VARIANTS` appended to the
- * system prompt and each under its own wall-clock cap, then one Jev
- * score+correctness call per finished answer on Milo's key, then the answer
- * with the highest expected quality (correctness breaking ties) goes back to
- * the client. Tool-call answers are ranked and picked like any other; the
- * client executes only what it receives.
+ * The shape of the trade: N upstream calls on the user's key, each with one
+ * of the varied framings from `PROMPT_VARIANTS` appended to the system
+ * prompt and each under its own wall-clock cap; one Jev score+correctness
+ * call per finished answer on Milo's key; the answer with the highest
+ * expected quality (correctness breaking ties) goes back to the client.
+ * Tool-call answers are ranked and picked like any other; the client
+ * executes only what it receives.
  *
- * Failure ladder, in order of preference:
+ * Two things keep the fan-out fast and cheap:
+ *
+ *   - Live-fast providers. Unless the caller sent a `provider` field of
+ *     their own, every sampled sub-request carries
+ *     `provider: { sort: "throughput" }`, so OpenRouter's rolling window
+ *     picks the currently fastest provider for each draw. A caller-supplied
+ *     provider preference always passes through untouched, and unsampled
+ *     forwards are never touched at all.
+ *
+ *   - First-k early return. Sub-requests are internally streamed (SSE),
+ *     whatever the client asked for, and each sample is ranked the moment
+ *     its stream completes. Once `sampling.minRanked` samples (default
+ *     `MIN_RANKED_DEFAULT`) are ranked, a clear winner -- best expected
+ *     quality at or above `EARLY_WIN_QUALITY`, or the first success when
+ *     ranking is degraded -- is returned immediately and the
+ *     still-streaming stragglers are aborted. Aborting a streamed
+ *     generation stops its token spend at that point (the user-cost win);
+ *     an aborted sample records `aborted: true` with whatever partial usage
+ *     its stream reported and never carries content. Wall time on the happy
+ *     path is bounded by the k-th fastest sample plus one Jev rank, not the
+ *     slowest of N.
+ *
+ * Failure ladder when no early winner emerges (fewer than k successes by
+ * the per-sample timeout included), in order of preference:
  *
  *   1. every sample failed -> one ordinary unsampled call on the decision's
  *      `unsampledTier`, exactly what policy v3 would have bought;
  *   2. samples succeeded but Jev could not rank any of them -> the first
  *      successful sample, and the decision record says `ranking_failed`;
- *   3. otherwise -> Jev's pick.
+ *   3. otherwise -> Jev's pick over every ranked sample.
  *
- * Every sample is buffered (the fan-out has to finish before there is
- * anything to choose), so a streaming request is answered by replaying the
- * chosen answer as well-formed SSE: one content chunk, one final chunk with
- * the finish reason and usage, then `[DONE]`.
+ * The client sees exactly one well-formed chat completion either way: a
+ * buffered request gets the chosen answer reassembled as one JSON body, a
+ * streaming request gets it replayed as well-formed SSE (one content chunk,
+ * one final chunk with the finish reason and usage, then `[DONE]`).
  *
  * Disclosure: `x-milo-samples` and `x-milo-sample-pick` on the response; the
- * decision record's upstream block aggregates tokens and cost across every
- * sample and stores per-sample metadata (tokens, cost, Jev scores, the pick)
- * with no content. A Milo key is charged the sum of all samples' usage in
- * one usage row (ADR-010's spend disclosure: roughly N fast-tier calls).
+ * decision record's upstream block stores per-sample metadata (tokens, cost,
+ * Jev scores, `aborted`, the pick) with no content, and its aggregate
+ * tokens/cost sum only what was actually billed: completed samples plus any
+ * partial usage an aborted stream reported. A Milo key is charged that same
+ * sum in one usage row (ADR-010's spend disclosure).
  */
 
 import type { Context } from "hono";
@@ -47,6 +71,12 @@ import type { UpstreamUsage } from "./usage.js";
 /** Per-sample wall-clock cap when the deployment configures none. */
 export const SAMPLE_TIMEOUT_MS_DEFAULT = 60_000;
 
+/** How many ranked samples the early return waits for (`sampling.minRanked`). */
+export const MIN_RANKED_DEFAULT = 3;
+
+/** Jev expected quality (0..3) at which an early pick is a clear winner. */
+export const EARLY_WIN_QUALITY = 2.5;
+
 export const SAMPLES_HEADER = "x-milo-samples";
 export const SAMPLE_PICK_HEADER = "x-milo-sample-pick";
 
@@ -61,21 +91,31 @@ type Sample = {
   index: number;
   status: number;
   latencyMs: number;
-  /** The raw upstream body, returned verbatim when this sample is picked. */
+  /** The sample's completion body, reassembled from its stream. */
   text: string;
   /** The upstream response, for its pass-through headers. */
   response?: Response;
   /** `choices[0].message` of a successful sample. */
   message?: Record<string, unknown>;
-  /** The parsed body of a successful sample. */
+  /** The reassembled completion body of a successful sample. */
   json?: Record<string, unknown>;
   usage: UpstreamUsage;
   rank?: RankScore;
+  /** Milo aborted this sample's stream after an early winner was found. */
+  aborted?: boolean;
   /** Failure class only -- never upstream text. */
   error?: string;
   /** The sample answered but Jev could not rank it. Failure class only. */
   rankError?: string;
 };
+
+/**
+ * One decision-log row. The `aborted` marker is a gateway-local, purely
+ * additive extension of the `SampleUpstream` contract
+ * (`packages/core/src/types.ts`), which predates the abort path; folding it
+ * into the type itself needs an ADR.
+ */
+type SampleRow = SampleUpstream & { aborted?: boolean };
 
 /** A failure class the decision log can hold: a name, never upstream text. */
 function classify(error: unknown): string {
@@ -101,7 +141,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** One sample's decision-log row: tokens, cost, Jev scores. No content. */
-function toSampleUpstream(sample: Sample, picked: boolean): SampleUpstream {
+function toSampleUpstream(sample: Sample, picked: boolean): SampleRow {
   return {
     index: sample.index,
     status: sample.status,
@@ -110,6 +150,7 @@ function toSampleUpstream(sample: Sample, picked: boolean): SampleUpstream {
     ...(sample.usage.outputTokens !== undefined ? { outputTokens: sample.usage.outputTokens } : {}),
     ...(sample.usage.costUsd !== undefined ? { costUsd: sample.usage.costUsd } : {}),
     ...(sample.rank !== undefined ? { jevQuality: sample.rank.quality, jevCorrect: sample.rank.correct } : {}),
+    ...(sample.aborted === true ? { aborted: true } : {}),
     ...(sample.error !== undefined
       ? { error: sample.error }
       : sample.rankError !== undefined
@@ -119,7 +160,11 @@ function toSampleUpstream(sample: Sample, picked: boolean): SampleUpstream {
   };
 }
 
-/** The sum of what every sample reported: what the user's key actually spent. */
+/**
+ * The sum of what was actually billed: every sample's reported usage -- full
+ * for completed samples, partial for an aborted stream that reported any --
+ * never an estimate for tokens an abort prevented.
+ */
 function aggregateUsage(samples: Sample[], chosen: Sample | undefined): UpstreamUsage {
   const usage: UpstreamUsage = {};
   let input = 0;
@@ -149,6 +194,136 @@ function aggregateUsage(samples: Sample[], chosen: Sample | undefined): Upstream
   return usage;
 }
 
+/** Highest expected quality wins; correctness, then index, break ties. */
+function bestRanked(ranked: Sample[]): Sample {
+  return [...ranked].sort((a, b) => {
+    const ra = a.rank as RankScore;
+    const rb = b.rank as RankScore;
+    if (ra.quality !== rb.quality) return rb.quality - ra.quality;
+    if (ra.correct !== rb.correct) return rb.correct - ra.correct;
+    return a.index - b.index;
+  })[0] as Sample;
+}
+
+/** The lowest-index success: the deterministic degraded-ranking pick. */
+function firstSuccess(successes: Sample[]): Sample {
+  return [...successes].sort((a, b) => a.index - b.index)[0] as Sample;
+}
+
+// ---------------------------------------------------------------------------
+// SSE accumulation
+// ---------------------------------------------------------------------------
+
+type ToolCallAccumulator = { id?: string; type?: string; name?: string; arguments: string };
+
+/** A sample's stream folded down as it arrives: metadata, text, usage. */
+type SseAccumulator = {
+  id?: string;
+  created?: number;
+  model?: string;
+  content: string;
+  toolCalls: Map<number, ToolCallAccumulator>;
+  finishReason?: unknown;
+  /** The newest raw `usage` object any frame carried. */
+  usage?: Record<string, unknown>;
+  sawChunk: boolean;
+};
+
+/** One SSE line into the accumulator. Non-data lines and `[DONE]` are ignored. */
+function feedSseLine(acc: SseAccumulator, rawLine: string): void {
+  const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+  if (!line.startsWith("data:")) return;
+  const data = line.slice("data:".length).trim();
+  if (data === "" || data === "[DONE]") return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return;
+  }
+  if (!isRecord(parsed)) return;
+
+  if (typeof parsed["id"] === "string") acc.id = parsed["id"];
+  if (typeof parsed["created"] === "number") acc.created = parsed["created"];
+  if (typeof parsed["model"] === "string") acc.model = parsed["model"];
+  if (isRecord(parsed["usage"])) acc.usage = parsed["usage"];
+
+  const choices = parsed["choices"];
+  if (!Array.isArray(choices)) return;
+  const choice = choices.find((entry) => isRecord(entry) && (entry["index"] === 0 || entry["index"] === undefined));
+  if (!isRecord(choice)) return;
+  acc.sawChunk = true;
+
+  const finish = choice["finish_reason"];
+  if (finish !== null && finish !== undefined) acc.finishReason = finish;
+
+  const delta = choice["delta"];
+  if (!isRecord(delta)) return;
+  if (typeof delta["content"] === "string") acc.content += delta["content"];
+
+  const toolCalls = delta["tool_calls"];
+  if (!Array.isArray(toolCalls)) return;
+  for (const call of toolCalls) {
+    if (!isRecord(call)) continue;
+    const index = typeof call["index"] === "number" ? call["index"] : 0;
+    const entry = acc.toolCalls.get(index) ?? { arguments: "" };
+    if (typeof call["id"] === "string") entry.id = call["id"];
+    if (typeof call["type"] === "string") entry.type = call["type"];
+    const fn = call["function"];
+    if (isRecord(fn)) {
+      if (typeof fn["name"] === "string") entry.name = fn["name"];
+      if (typeof fn["arguments"] === "string") entry.arguments += fn["arguments"];
+    }
+    acc.toolCalls.set(index, entry);
+  }
+}
+
+/** The finished stream reassembled as one `chat.completion` body. */
+function completionFromAccumulator(
+  acc: SseAccumulator,
+  fallbackModel: string,
+): { json: Record<string, unknown>; message: Record<string, unknown> } {
+  const toolCalls = [...acc.toolCalls.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, entry]) => ({
+      ...(entry.id !== undefined ? { id: entry.id } : {}),
+      type: entry.type ?? "function",
+      function: { name: entry.name ?? "", arguments: entry.arguments },
+    }));
+  const message: Record<string, unknown> = {
+    role: "assistant",
+    content: toolCalls.length > 0 && acc.content === "" ? null : acc.content,
+  };
+  if (toolCalls.length > 0) message["tool_calls"] = toolCalls;
+  const json: Record<string, unknown> = {
+    id: acc.id ?? "milo-sampled",
+    object: "chat.completion",
+    created: acc.created ?? Math.floor(Date.now() / 1000),
+    model: acc.model ?? fallbackModel,
+    choices: [{ index: 0, message, finish_reason: acc.finishReason ?? "stop" }],
+    ...(acc.usage !== undefined ? { usage: acc.usage } : {}),
+  };
+  return { json, message };
+}
+
+/** What the stream has reported about spend so far: id, tokens, cost. */
+function usageFromAccumulator(acc: SseAccumulator): UpstreamUsage {
+  const usage: UpstreamUsage = {};
+  if (acc.id !== undefined) usage.id = acc.id;
+  const raw = acc.usage;
+  if (raw !== undefined) {
+    if (typeof raw["prompt_tokens"] === "number") usage.inputTokens = raw["prompt_tokens"];
+    if (typeof raw["completion_tokens"] === "number") usage.outputTokens = raw["completion_tokens"];
+    if (typeof raw["cost"] === "number") usage.costUsd = raw["cost"];
+  }
+  return usage;
+}
+
+// ---------------------------------------------------------------------------
+// The fan-out
+// ---------------------------------------------------------------------------
+
 /**
  * Runs a sampled decision to completion and answers the client. Called by the
  * chat route instead of its ordinary forward when `decision.samples > 1`.
@@ -162,72 +337,174 @@ export async function forwardSampled(
 ): Promise<Response> {
   const n = decision.samples ?? 1;
   const timeoutMs = deps.sampling?.sampleTimeoutMs ?? SAMPLE_TIMEOUT_MS_DEFAULT;
+  const minRanked = Math.max(1, Math.min(deps.sampling?.minRanked ?? MIN_RANKED_DEFAULT, n));
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   const startedAt = deps.now();
 
-  // Draw N samples in parallel, each non-streaming (the pick needs whole
-  // answers) and each under its own cap so one slow provider cannot hold the
-  // rest hostage.
-  const draw = async (index: number): Promise<Sample> => {
+  // One streamed draw. Never throws: every outcome is a Sample row.
+  const draw = async (index: number, abort: AbortController): Promise<Sample> => {
     const sampleBody = prepareBody(body, decision.model);
     sampleBody["messages"] = applyVariant(messages, variantFor(index));
-    delete sampleBody["stream"];
-    delete sampleBody["stream_options"];
+    // Internally streamed, whatever the client asked for: a stream can be
+    // ranked the moment it completes and aborted while it is still running.
+    sampleBody["stream"] = true;
+    sampleBody["stream_options"] = { include_usage: true };
+    // Live-fast providers, sampled sub-requests only: OpenRouter's rolling
+    // throughput window picks the currently fastest provider for this draw.
+    // A caller-supplied `provider` field always wins, untouched.
+    if (sampleBody["provider"] === undefined) sampleBody["provider"] = { sort: "throughput" };
 
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = AbortSignal.any([abort.signal, timeout]);
     const sampleStart = deps.now();
     const base: Sample = { index, status: 0, latencyMs: 0, text: "", usage: {} };
+    const acc: SseAccumulator = { content: "", toolCalls: new Map(), sawChunk: false };
+    let response: Response | undefined;
+
+    /** The row for a stream Milo aborted: partial usage only, never content. */
+    const abortedRow = (): Sample => ({
+      ...base,
+      status: response?.status ?? 0,
+      latencyMs: deps.now() - sampleStart,
+      usage: usageFromAccumulator(acc),
+      aborted: true,
+    });
+
     try {
-      const response = await deps.openRouter.chatCompletions({
+      response = await deps.openRouter.chatCompletions({
         headers: upstreamHeadersFor(c),
         body: sampleBody,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
-      const text = await response.text();
-      const sample: Sample = {
-        ...base,
+      if (abort.signal.aborted) return abortedRow();
+      if (!response.ok) {
+        const text = await response.text();
+        return {
+          ...base,
+          status: response.status,
+          latencyMs: deps.now() - sampleStart,
+          response,
+          usage: readBodyUsage("chat", text),
+          error: `http_${response.status}`,
+        };
+      }
+      if (response.body === null) {
+        return { ...base, status: response.status, latencyMs: deps.now() - sampleStart, response, error: "malformed_body" };
+      }
+
+      // Drain the SSE stream line by line into the accumulator. The abort
+      // listener cancels the reader so a pending read settles promptly even
+      // under an injected fetch that ignores signals (tests); the real fetch
+      // additionally rejects the read, which the catch below classifies.
+      const reader = response.body.getReader();
+      const cancelOnAbort = (): void => {
+        void reader.cancel().catch(() => undefined);
+      };
+      signal.addEventListener("abort", cancelOnAbort, { once: true });
+      if (signal.aborted) cancelOnAbort();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const cut = buffer.lastIndexOf("\n");
+          if (cut === -1) continue;
+          for (const line of buffer.slice(0, cut).split("\n")) feedSseLine(acc, line);
+          buffer = buffer.slice(cut + 1);
+        }
+        feedSseLine(acc, buffer);
+      } finally {
+        signal.removeEventListener("abort", cancelOnAbort);
+        reader.releaseLock();
+      }
+
+      if (abort.signal.aborted) return abortedRow();
+      if (timeout.aborted) {
+        return {
+          ...base,
+          status: response.status,
+          latencyMs: deps.now() - sampleStart,
+          usage: usageFromAccumulator(acc),
+          error: "timeout",
+        };
+      }
+      if (!acc.sawChunk) {
+        return { ...base, status: response.status, latencyMs: deps.now() - sampleStart, response, error: "malformed_body" };
+      }
+
+      const { json, message } = completionFromAccumulator(acc, decision.model);
+      return {
+        index,
         status: response.status,
         latencyMs: deps.now() - sampleStart,
-        text,
+        text: JSON.stringify(json),
         response,
-        usage: readBodyUsage("chat", text),
+        message,
+        json,
+        usage: usageFromAccumulator(acc),
       };
-      if (!response.ok) {
-        sample.error = `http_${response.status}`;
-        return sample;
-      }
-      const parsed: unknown = JSON.parse(text);
-      const choices = isRecord(parsed) ? parsed["choices"] : undefined;
-      const message = Array.isArray(choices) && isRecord(choices[0]) ? choices[0]["message"] : undefined;
-      if (!isRecord(parsed) || !isRecord(message)) {
-        sample.error = "malformed_body";
-        return sample;
-      }
-      sample.json = parsed;
-      sample.message = message;
-      return sample;
     } catch (error) {
+      if (abort.signal.aborted) return abortedRow();
       return { ...base, latencyMs: deps.now() - sampleStart, error: classify(error) };
     }
   };
 
-  const samples = await Promise.all(Array.from({ length: n }, (_, i) => draw(i)));
-  const successes = samples.filter((s) => s.error === undefined && s.message !== undefined);
+  // Coordination: each sample streams, then ranks, then reports in.
+  // `evaluate` decides as soon as the early-return condition holds, or when
+  // every sample has settled.
+  type Slot = { controller: AbortController; streamed: Promise<Sample>; sample?: Sample; settled: boolean };
+  type Outcome = { pick?: Sample; note?: Upstream["sampleNote"] };
 
-  if (successes.length === 0) {
-    return fallbackUnsampled(c, deps, body, decision, ctx, samples, startedAt);
-  }
+  const slots: Slot[] = [];
+  let decided = false;
+  let decide: (outcome: Outcome) => void = () => undefined;
+  const outcomePromise = new Promise<Outcome>((resolve) => {
+    decide = (outcome) => {
+      if (decided) return;
+      decided = true;
+      resolve(outcome);
+    };
+  });
 
-  // Rank every finished answer with one Jev call each, on Milo's key. A
-  // failed rank marks the sample; a fully failed ranking falls back to the
-  // first success rather than failing a request that already has answers.
-  if (deps.jev !== undefined) {
-    const jev = deps.jev;
-    await Promise.all(
-      successes.map(async (sample) => {
+  const isSuccess = (sample: Sample): boolean =>
+    sample.error === undefined && sample.aborted !== true && sample.message !== undefined;
+
+  const evaluate = (): void => {
+    if (decided) return;
+    const settled = slots.filter((slot) => slot.settled).map((slot) => slot.sample as Sample);
+    const successes = settled.filter(isSuccess);
+    const ranked = successes.filter((sample) => sample.rank !== undefined);
+    if (ranked.length >= minRanked) {
+      const best = bestRanked(ranked);
+      if ((best.rank as RankScore).quality >= EARLY_WIN_QUALITY) {
+        decide({ pick: best });
+        return;
+      }
+    }
+    if (ranked.length === 0 && successes.length >= minRanked) {
+      // Ranking is degraded: more samples cannot change a pick Jev will
+      // never score, so the first success wins now.
+      decide({ pick: firstSuccess(successes), note: "ranking_failed" });
+      return;
+    }
+    if (settled.length === slots.length) decide({});
+  };
+
+  for (let index = 0; index < n; index += 1) {
+    const controller = new AbortController();
+    const slot: Slot = { controller, streamed: draw(index, controller), settled: false };
+    slots.push(slot);
+    // Rank as the stream completes; a failed rank marks the sample rather
+    // than failing a request that already has answers. After a decision no
+    // new ranks start: their verdicts could no longer matter.
+    void slot.streamed.then(async (sample) => {
+      slot.sample = sample;
+      if (isSuccess(sample) && deps.jev !== undefined && !decided) {
         try {
-          sample.rank = await rankAnswer(jev, messages, answerText(sample.message ?? {}));
+          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}));
         } catch (error) {
-          // The sample itself is fine; only its rank is missing.
           sample.rankError = `rank_${classify(error)}`;
           deps.logger.warn("jev sample ranking failed", {
             decisionId: decision.id,
@@ -235,31 +512,48 @@ export async function forwardSampled(
             error: sample.rankError,
           });
         }
-      }),
-    );
+      }
+      slot.settled = true;
+      evaluate();
+    });
   }
 
-  const ranked = successes.filter((s) => s.rank !== undefined);
-  let pickIndex: number;
-  let note: Upstream["sampleNote"];
-  if (ranked.length > 0) {
-    const best = [...ranked].sort((a, b) => {
-      const ra = a.rank as RankScore;
-      const rb = b.rank as RankScore;
-      if (ra.quality !== rb.quality) return rb.quality - ra.quality;
-      if (ra.correct !== rb.correct) return rb.correct - ra.correct;
-      return a.index - b.index;
-    })[0] as Sample;
-    pickIndex = best.index;
+  const outcome = await outcomePromise;
+
+  if (outcome.pick !== undefined) {
+    // A winner is in hand: stop paying for the stragglers. Aborting a
+    // finished sample's controller is a no-op; aborting a live stream stops
+    // its token spend at the point of the abort.
+    for (const slot of slots) slot.controller.abort();
+  }
+  // Aborted draws settle promptly (the abort cancels their read), so this
+  // wait adds microtasks, not wall time.
+  const samples = await Promise.all(slots.map((slot) => slot.streamed));
+  const successes = samples.filter(isSuccess);
+  if (successes.length === 0) {
+    return fallbackUnsampled(c, deps, body, decision, ctx, samples, startedAt);
+  }
+
+  let chosen: Sample;
+  let note = outcome.note;
+  if (outcome.pick !== undefined) {
+    chosen = outcome.pick;
   } else {
-    pickIndex = (successes[0] as Sample).index;
-    note = "ranking_failed";
+    const ranked = successes.filter((sample) => sample.rank !== undefined);
+    if (ranked.length > 0) {
+      chosen = bestRanked(ranked);
+    } else {
+      chosen = firstSuccess(successes);
+      note = "ranking_failed";
+    }
+  }
+  if (note === "ranking_failed") {
     deps.logger.warn("jev ranking unavailable; returning the first successful sample", {
       decisionId: decision.id,
       samples: n,
     });
   }
-  const chosen = samples[pickIndex] as Sample;
+  const pickIndex = chosen.index;
 
   // The audit row: aggregates across samples, per-sample metadata, the pick.
   const usage = aggregateUsage(samples, chosen);
@@ -298,7 +592,7 @@ export async function forwardSampled(
 // ---------------------------------------------------------------------------
 
 /**
- * The chosen (buffered) completion as well-formed SSE in the OpenAI chunk
+ * The chosen (reassembled) completion as well-formed SSE in the OpenAI chunk
  * shape: one chunk carrying the whole message as a delta, one final chunk
  * with the finish reason and usage, then `[DONE]`.
  */
@@ -347,8 +641,8 @@ function replayAsSse(chosen: Sample): ReadableStream<Uint8Array> {
 /**
  * Every sample failed, so the request gets what the policy would have bought
  * without sampling: one ordinary call on `unsampledTier`, streamed or
- * buffered exactly as asked. The decision record keeps the failed samples'
- * metadata and says `all_samples_failed`.
+ * buffered exactly as asked, with no provider override. The decision record
+ * keeps the failed samples' metadata and says `all_samples_failed`.
  */
 async function fallbackUnsampled(
   c: Context,
