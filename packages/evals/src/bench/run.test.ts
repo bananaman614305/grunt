@@ -433,7 +433,9 @@ describe("the deepseek arm (ADR-012 phase 1)", () => {
   });
 
   it("falls back to the first success when every rank fails, and says so per sample", async () => {
-    const jev = fakeJev({ "0": 0.5, "1": 0.5 }, () => new Error("rank down"));
+    // Band 3 (the hard-mass distribution): rank failure only matters where
+    // the budget draws several samples, and band 1 is single-call now.
+    const jev = fakeJev({ "2": 0.2, "3": 0.8 }, () => new Error("rank down"));
     let calls = 0;
     const fetchImpl: typeof fetch = async () => {
       calls += 1;
@@ -442,7 +444,7 @@ describe("the deepseek arm (ADR-012 phase 1)", () => {
     const report = await runBench(options(jev, fetchImpl));
     const result = report.rows[0]?.results.find((r) => r.arm === "deepseek");
     expect(result?.status).toBe(200);
-    expect(result?.compute).toMatchObject({ band: 1, budget: 3, pick: 0, jevCalls: 1 });
+    expect(result?.compute).toMatchObject({ band: 3, budget: 5, pick: 0, jevCalls: 1 });
     expect(result?.compute?.samples.every((s) => s.rankError !== undefined)).toBe(true);
     expect(result?.grade?.pass).toBe(true);
   });
