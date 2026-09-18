@@ -82,6 +82,7 @@ export async function readStream(stream: ReadableStream<Uint8Array>, elapsed: ()
     text: string;
     ttfbMs?: number;
     model?: string;
+    provider?: string;
     inputTokens?: number;
     outputTokens?: number;
     reasoningTokens?: number;
@@ -102,6 +103,7 @@ export async function readStream(stream: ReadableStream<Uint8Array>, elapsed: ()
     if (typeof frame !== "object" || frame === null) return;
     const chunk = frame as {
       model?: unknown;
+      provider?: unknown;
       choices?: Array<{ delta?: { content?: unknown; reasoning?: unknown } }>;
       usage?: {
         prompt_tokens?: unknown;
@@ -111,6 +113,7 @@ export async function readStream(stream: ReadableStream<Uint8Array>, elapsed: ()
       } | null;
     };
     if (typeof chunk.model === "string") result.model = chunk.model;
+    if (typeof chunk.provider === "string" && chunk.provider !== "") result.provider = chunk.provider;
     for (const choice of chunk.choices ?? []) {
       const content = choice.delta?.content;
       const reasoning = choice.delta?.reasoning;
@@ -150,6 +153,7 @@ export async function readStream(stream: ReadableStream<Uint8Array>, elapsed: ()
     ttfbMs: result.ttfbMs ?? totalMs,
     totalMs,
     ...(result.model !== undefined ? { model: result.model } : {}),
+    ...(result.provider !== undefined ? { provider: result.provider } : {}),
     ...(result.inputTokens !== undefined ? { inputTokens: result.inputTokens } : {}),
     ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
     ...(result.reasoningTokens !== undefined ? { reasoningTokens: result.reasoningTokens } : {}),

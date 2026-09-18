@@ -105,6 +105,6 @@ describe("summarizeArm", () => {
     expect(md).toContain("| `oracle` |");
     expect(md).toContain("Bad downgrades (routed cheaper than frontier, failed, frontier passed): 1 of 2");
     expect(md).toContain("- **r-3** `milo` (x): HTTP 503");
-    expect(md).toContain("| r-2 | chat | 0 | frontier | fast | fast/model | ✗ | ✓ | – | ✗ |");
+    expect(md).toContain("| r-2 | chat | 0 | frontier | fast | fast/model | – | ✗ | ✓ | – | ✗ |");
   });
 });

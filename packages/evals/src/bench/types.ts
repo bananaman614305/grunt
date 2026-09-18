@@ -31,6 +31,8 @@ export type CallMeasurement = {
   text: string;
   /** The model the response named, when it did. */
   model?: string;
+  /** OpenRouter's upstream provider for this response, when named. Token counts vary by provider. */
+  provider?: string;
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
@@ -47,6 +49,8 @@ export type ArmResult = {
   model: string;
   /** Milo's tier for the routed arm; the arm's own tier for a fixed one. */
   tier: Tier;
+  /** OpenRouter's upstream provider, when the response named one. */
+  provider?: string;
   status: number;
   ttfbMs: number;
   totalMs: number;

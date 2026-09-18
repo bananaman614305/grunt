@@ -317,7 +317,7 @@ export function formatBenchMarkdown(report: BenchReport): string {
   sections.push("## Per example");
   sections.push(
     table(
-      ["id", "type", "band", "label", "milo tier", "milo model", "milo", "frontier", "mid", "fast", "milo cost", "baseline est."],
+      ["id", "type", "band", "label", "milo tier", "milo model", "provider", "milo", "frontier", "mid", "fast", "milo cost", "baseline est."],
       report.rows.map((row) => {
         const milo = row.results.find((r) => r.arm === MILO_ARM);
         const cost = isOk(milo) ? resultCostUsd(milo, report.prices) : undefined;
@@ -329,6 +329,7 @@ export function formatBenchMarkdown(report: BenchReport): string {
           row.expectedTier,
           milo?.tier ?? "–",
           milo?.model ?? "–",
+          milo?.provider ?? "–",
           tierMark(milo),
           tierMark(row.results.find((r) => r.arm === "frontier")),
           tierMark(row.results.find((r) => r.arm === "mid")),

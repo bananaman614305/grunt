@@ -24,7 +24,7 @@ describe("readStream", () => {
       return tick;
     };
     const stream = sse([
-      { id: "gen-1", model: "deepseek/deepseek-v4-flash", choices: [{ delta: { role: "assistant", content: "" } }] },
+      { id: "gen-1", model: "deepseek/deepseek-v4-flash", provider: "StreamLake", choices: [{ delta: { role: "assistant", content: "" } }] },
       { id: "gen-1", choices: [{ delta: { reasoning: "thinking" } }] },
       { id: "gen-1", choices: [{ delta: { content: "Hi " } }] },
       { id: "gen-1", choices: [{ delta: { content: "there" } }] },
@@ -38,6 +38,7 @@ describe("readStream", () => {
     const result = await readStream(stream, elapsed);
     expect(result.text).toBe("Hi there");
     expect(result.model).toBe("deepseek/deepseek-v4-flash");
+    expect(result.provider).toBe("StreamLake");
     // The empty first delta does not count; the reasoning frame does.
     expect(result.ttfbMs).toBe(10);
     expect(result.totalMs).toBe(20);

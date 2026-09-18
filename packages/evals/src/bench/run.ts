@@ -113,6 +113,7 @@ async function callArm(runner: Runner, example: RoutingExample, messages: ChatMe
     status: measured.status,
     ttfbMs: measured.ttfbMs,
     totalMs: measured.totalMs,
+    ...(measured.provider !== undefined ? { provider: measured.provider } : {}),
     ...(measured.inputTokens !== undefined ? { inputTokens: measured.inputTokens } : {}),
     ...(measured.outputTokens !== undefined ? { outputTokens: measured.outputTokens } : {}),
     ...(measured.reasoningTokens !== undefined ? { reasoningTokens: measured.reasoningTokens } : {}),
