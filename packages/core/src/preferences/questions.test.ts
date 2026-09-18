@@ -21,6 +21,7 @@ import {
   resolveCapture,
 } from "./questions.js";
 import { PREFERENCE_FIELDS, PREFERENCE_VALUES } from "./store.js";
+import type { PreferenceField } from "./store.js";
 
 function noul(value: number): JevAnswer {
   return { type: "noul", noul: value };
@@ -87,7 +88,7 @@ describe("detectCapture", () => {
       detectCapture({ ...DETECTION_FIRED, [PREFERENCE_FIELD_KEY]: choice(NO_PREFERENCE_FIELD, 0.9) }),
     ).toBeUndefined();
     expect(
-      detectCapture({ ...DETECTION_FIRED, [PREFERENCE_FIELD_KEY]: choice("tone", 0.9) }),
+      detectCapture({ ...DETECTION_FIRED, [PREFERENCE_FIELD_KEY]: choice("mood", 0.9) }),
     ).toBeUndefined();
     expect(
       detectCapture({ ...DETECTION_FIRED, [PREFERENCE_FIELD_KEY]: choice("verbosity", 0.3) }),
@@ -150,6 +151,39 @@ describe("resolveCapture", () => {
     expect(resolveCapture(undefined, SIGNAL)).toBeUndefined();
     expect(resolveCapture({}, SIGNAL)).toBeUndefined();
     expect(resolveCapture({ [PREFERENCE_VALUE_KEY]: noul(1) }, SIGNAL)).toBeUndefined();
-    expect(resolveCapture(RESOLVED, { ...SIGNAL, field: "tone" })).toBeUndefined();
+    expect(resolveCapture(RESOLVED, { ...SIGNAL, field: "mood" })).toBeUndefined();
   });
+});
+
+describe("capture for the new output-shaping fields", () => {
+  // One representative (field, value) per newly added field: detection fires
+  // on that field, resolution maps the fixture answer onto the right row.
+  const cases: Array<{ field: PreferenceField; value: string }> = [
+    { field: "tone", value: "direct" },
+    { field: "working_style", value: "test_first" },
+    { field: "change_autonomy", value: "ask_first" },
+    { field: "verification_depth", value: "thorough" },
+    { field: "explanation_style", value: "code_first" },
+  ];
+
+  for (const { field, value } of cases) {
+    it(`detects and resolves ${field} -> ${value}`, () => {
+      const signal = detectCapture({
+        [PREFERENCE_STATED_KEY]: noul(0.9),
+        [PREFERENCE_FIELD_KEY]: choice(field, 0.85),
+      });
+      expect(signal).toEqual({ field, detection: 0.9, fieldConfidence: 0.85 });
+
+      // The resolution value must be a member of exactly this field's vocab.
+      expect(PREFERENCE_VALUES[field]).toContain(value);
+      const resolved = resolveCapture(
+        {
+          [PREFERENCE_VALUE_KEY]: choice(value, 0.8),
+          [PREFERENCE_SCOPE_KEY]: choice("global", 0.9),
+        },
+        signal!,
+      );
+      expect(resolved).toEqual({ field, scope: "global", value, confidence: 0.8 });
+    });
+  }
 });
