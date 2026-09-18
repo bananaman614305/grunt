@@ -285,13 +285,16 @@ every push.
 
 `packages/evals/agentic/` is the instrument from ADR-013 Phase B: it drives
 the pi coding agent, configured to route through Milo (`PI_CODING_AGENT_DIR`
-pointing provider `milo` at the gateway with model `milo/auto`), over twenty
+pointing provider `milo` at the gateway with model `milo/auto`), over thirty
 small broken repository tasks in `agentic/tasks/`: at-001..at-010 are the easy
 tier the baseline agent solves in four or five turns, and at-011..at-020 are a
 hard tier — misleading symptoms, fixes spread over several files, async
 ordering, dense specifications, and refactors under pinned behaviour — meant
 to land the baseline solve rate near half so the phase-C gates have something
-to move. Each task is copied to a
+to move. at-021..at-030 are an adversarial tier — oscillation traps, misleading
+error locations, and whack-a-mole cascades — each genuinely solvable but
+engineered so naive test-in-the-loop iteration thrashes, giving the loop-detection
+gate a signal to move. Each task is copied to a
 temp workdir, pi runs there non-interactively (`pi -p --mode json`), and the
 verdict is the task's own `node test.js` exiting 0 — the runner also parses
 pi's JSONL event stream for turns, tool calls, wall time, and tokens, and

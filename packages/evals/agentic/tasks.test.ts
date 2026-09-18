@@ -16,10 +16,12 @@ const EXPECTED_IDS = [
   "at-006", "at-007", "at-008", "at-009", "at-010",
   "at-011", "at-012", "at-013", "at-014", "at-015",
   "at-016", "at-017", "at-018", "at-019", "at-020",
+  "at-021", "at-022", "at-023", "at-024", "at-025",
+  "at-026", "at-027", "at-028", "at-029", "at-030",
 ];
 
 describe("agentic task fixtures", () => {
-  it("ships exactly at-001..at-020", () => {
+  it("ships exactly at-001..at-030", () => {
     expect(readdirSync(TASKS_DIR).sort()).toEqual(EXPECTED_IDS);
   });
 
