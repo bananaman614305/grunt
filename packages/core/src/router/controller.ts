@@ -29,7 +29,7 @@ import {
   DIFFICULTY_HIGH,
   DIFFICULTY_MID,
   fastGateMass,
-  hardMass,
+  isHardBand,
   JEV_PROFILE,
   upperMass,
 } from "./policy.js";
@@ -66,7 +66,9 @@ export function computeBand(signals: RouteSignals, profile: PolicyProfile = JEV_
     return 3;
   }
   if (fastGateMass(levels, profile.fastMassFromLevel) < profile.fastBelowMass) return 0;
-  if (hardMass(levels) >= profile.frontierHardMass) return 3;
+  // One definition of the hard-mass gate, shared with policy v4's sampling
+  // cells (`isHardBand`), so the two can never drift apart.
+  if (isHardBand(signals, profile)) return 3;
   if (upperMass(levels) >= profile.frontierUpperMass) return 2;
   return 1;
 }

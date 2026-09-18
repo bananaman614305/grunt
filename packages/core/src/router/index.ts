@@ -41,6 +41,7 @@ export {
   CAPPED_TASK_TYPES,
   chooseOutcome,
   clampSamples,
+  isHardBand,
   SAMPLING_TASK_TYPES,
   DEFAULT_SAMPLE_COUNT,
   MAX_SAMPLE_COUNT,
@@ -108,13 +109,17 @@ export type { ComputeBand, ComputeBudget, ComputeSizing } from "./controller.js"
 
 export {
   checkCompleteness,
+  escalationFor,
   retryMessages,
   COMPLETENESS_QUESTIONS,
   RETRY_TEMPLATES,
   GATE_VERDICTS,
   GATE_BUDGET_MS,
+  GATE_TRUST_CONFIDENCE,
+  GATE_SUSPECT_QUALITY,
+  LOW_CONFIDENCE_FAILURE,
 } from "./gates.js";
-export type { GateCheck, GateFailureType, GateVerdict } from "./gates.js";
+export type { GateCheck, GateEscalation, GateFailureType, GateVerdict } from "./gates.js";
 
 export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT } from "./router.js";
 export type { RouterOptions, RoutingMode } from "./router.js";
