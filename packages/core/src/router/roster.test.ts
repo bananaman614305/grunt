@@ -27,7 +27,7 @@ describe("resolveModel", () => {
   it("uses the default roster the gateway ships", () => {
     expect(resolveModel("fast", DEFAULT_ROSTER)).toBe("deepseek/deepseek-v4-flash");
     expect(resolveModel("mid", DEFAULT_ROSTER)).toBe("openai/gpt-5.6-luna");
-    expect(resolveModel("frontier", DEFAULT_ROSTER)).toBe("tencent/hy4-preview");
+    expect(resolveModel("frontier", DEFAULT_ROSTER)).toBe("z-ai/glm-5.3");
   });
 
   it("restricts the roster to the request's candidates", () => {
@@ -101,7 +101,7 @@ describe("resolveModel", () => {
           "deepseek/deepseek-v4-flash",
         );
         expect(resolveModel("mid", DEFAULT_ROSTER, undefined, { longOutput })).toBe("openai/gpt-5.6-luna");
-        expect(resolveModel("frontier", DEFAULT_ROSTER, undefined, { longOutput })).toBe("tencent/hy4-preview");
+        expect(resolveModel("frontier", DEFAULT_ROSTER, undefined, { longOutput })).toBe("z-ai/glm-5.3");
       }
     });
 

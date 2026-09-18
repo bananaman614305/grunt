@@ -17,7 +17,11 @@
  *    folded id.
  * 2. A model must be in the catalogue, must support tools -- Milo's users are
  *    running agents, and a model that cannot call a tool is no substitute --
- *    and must quote a usable price.
+ *    and must quote a usable price. A pre-release build (an id whose final
+ *    path segment ends in `-preview`, `-beta`, `-alpha` or `-rc`) is never a
+ *    default: it is a candidate the vendor has not shipped, and a live
+ *    benchmark found the mid tier beating one such frontier preview on
+ *    accuracy at a tenth the cost.
  * 3. Anything whose output price is at or above `excludedAbove` is never a
  *    default. That is what keeps Fable, Opus, Astra, Sonnet and the rest of
  *    the premium shelf out: people buy those on a subscription and orchestrate
@@ -118,6 +122,28 @@ export const DEFAULT_RULES: SelectionRules = {
  */
 export const DROPPED_VARIANTS = ["free", "batch", "contributor", "beta", "preview-free"];
 
+/**
+ * Pre-release markers a model id's final path segment can end in. These are
+ * name suffixes on the id itself (`tencent/hy4-preview`), not `:variant` plan
+ * tiers -- `DROPPED_VARIANTS` handles those. A build carrying one of these is
+ * a candidate the vendor has not shipped and must never be a roster default.
+ */
+export const PRE_RELEASE_MARKERS = ["preview", "beta", "alpha", "rc"] as const;
+
+const PRE_RELEASE_SUFFIX = new RegExp(`-(?:${PRE_RELEASE_MARKERS.join("|")})$`);
+
+/**
+ * The pre-release suffix on a model id's final path segment, or `undefined`.
+ * Only a hyphen-delimited suffix counts, so `tencent/hy4-preview` matches
+ * (`-preview`) while a model that merely contains the word mid-name, such as
+ * `vendor/preview-turbo`, does not.
+ */
+export function preReleaseSuffix(id: string): string | undefined {
+  const segment = id.slice(id.lastIndexOf("/") + 1);
+  const match = PRE_RELEASE_SUFFIX.exec(segment);
+  return match === null ? undefined : match[0];
+}
+
 /** `openai/gpt-5.6-luna-2026-08-12` -> `openai/gpt-5.6-luna`. */
 function stripDateSuffix(id: string): string {
   return id.replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{6,8}$/, "");
@@ -212,6 +238,11 @@ export function selectRoster(
   const survivors: Array<Omit<SelectedModel, "usageRank"> & { tier: Tier }> = [];
 
   for (const [id, weeklyTokens] of ordered) {
+    const preRelease = preReleaseSuffix(id);
+    if (preRelease !== undefined) {
+      skipped.push({ id, reason: `${preRelease} pre-release build, never a default` });
+      continue;
+    }
     if (survivors.length >= rules.topModels) {
       skipped.push({ id, reason: `outside the top ${rules.topModels} by weekly usage` });
       continue;

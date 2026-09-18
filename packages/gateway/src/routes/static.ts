@@ -380,12 +380,13 @@ ${rosterTable()}
 
 \`nvidia/nemotron-3-ultra-550b-a55b\` caps output at 32,768 tokens, below the
 ${DEFAULT_ROSTER_INFO.smallOutputBelowTokens} floor, so it sorts last in its tier and is skipped
-outright whenever a long answer is expected; \`tencent/hy4-preview\` (64,000) stays eligible.
+outright whenever a long answer is expected; \`google/gemini-3.8-flash\` (65,536) stays eligible.
 
 **How this list was made.** Collected ${DEFAULT_ROSTER_INFO.version} from
 ${DEFAULT_ROSTER_INFO.source.usage} and ${DEFAULT_ROSTER_INFO.source.pricing}. Take the
 ${DEFAULT_ROSTER_INFO.topModels} most-used models after folding dated builds into their current
 id and dropping \`:free\`, \`:batch\` and the other data-sharing plan variants,
+a pre-release build (an id ending \`-preview\`, \`-beta\`, \`-alpha\` or \`-rc\`),
 anything that cannot call a tool, and anything at or above
 $${DEFAULT_ROSTER_INFO.excludedAbove} per million output tokens. Tier them by output price:
 fast at most $${DEFAULT_ROSTER_INFO.bands.fast.maxOutputUsdPerM}/M, mid at most

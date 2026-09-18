@@ -122,9 +122,8 @@ describe("DEFAULT_ROSTER", () => {
         "xiaomi/mimo-v2.5",
         "tencent/hy3",
       ],
-      mid: ["openai/gpt-5.6-luna", "deepseek/deepseek-v4.1-flash"],
+      mid: ["openai/gpt-5.6-luna", "deepseek/deepseek-v4.1-flash", "minimax/minimax-m3"],
       frontier: [
-        "tencent/hy4-preview",
         "z-ai/glm-5.3",
         "google/gemini-3.8-flash",
         "nvidia/nemotron-3-ultra-550b-a55b",

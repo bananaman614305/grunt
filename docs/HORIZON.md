@@ -2,7 +2,7 @@
 
 Not in the MVP. Kept so the MVP's interfaces do not paint us into a corner.
 
-- **Preference memory.** Structured, scoped, versioned user preferences (verbosity, evidence style, testing depth, risk tolerance) captured from user turns with a Jev classifier, compiled into a bounded brief, and injected into every routed request and every spawned sub-agent. Draft v1 of the full design lives in git history at docs/PLAN.md before 2026-09-17 v2.
+- **Preference memory** (now ADR-011, in build). Structured, scoped, versioned user preferences (verbosity, evidence style, testing depth, risk tolerance) captured from user turns with a Jev classifier, compiled into a bounded brief, and injected into every routed request and every spawned sub-agent. Designed in ADR-011 (the v1 draft predates this repo and was never committed).
 - **Output grading.** Jev checks a model's output against the brief's checkable clauses and surfaces violations.
 - **Harness integrations.** Claude Code hooks and an MCP server so preferences flow into sub-agent prompts.
 - **Billing.** Metering per key, margin on OpenRouter usage, or subscription.

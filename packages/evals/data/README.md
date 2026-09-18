@@ -168,3 +168,14 @@ reasoning judgment call, with no cap.
   deliverable is infrastructure configuration (Terraform, Fly.io config, CI
   workflows, deployment pipelines) as `ops`, and anything whose deliverable
   is application code as `feature`, even when both involve design work.
+
+## `graders.jsonl`
+
+One row per `routing.jsonl` id, in the same order, used by `pnpm bench`
+(`docs/evals.md`, "Benchmark") to grade a model's *answer* rather than the
+router's tier choice. Each row is `{ "id", "grader", "why" }`. A grader is
+mechanical (`regex`, `contains_all`, `contains_any`, `not_contains`, or an
+`all` of those) when a correct answer has an unambiguous token, else a
+`judge` with a `rubric` and a `must` list for a grading model. Keep the two
+files in step: `graders.test.ts` fails when an id is missing, extra, or out
+of order.
