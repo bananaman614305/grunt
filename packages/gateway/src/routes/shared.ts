@@ -8,7 +8,7 @@
  * just its own translation layer.
  */
 
-import { DEFAULT_ROSTER } from "@milo/core";
+import { DEFAULT_ROSTER, DEFAULT_ROSTER_INFO } from "@milo/core";
 import type { DecisionRecord, Roster, RouteDecision, RoutingUnavailableError } from "@milo/core";
 import type { Context } from "hono";
 import type { AppDeps } from "../app.js";
@@ -146,7 +146,29 @@ export function onFinished(done: () => void): TransformStream<Uint8Array, Uint8A
  * price-first default. A caller-supplied `provider` field always passes
  * through untouched.
  */
-export function applyProviderStrategy<T extends Record<string, unknown>>(body: T, posture: "low" | "balanced" | "quality"): T {
+export function applyProviderStrategy<T extends Record<string, unknown>>(
+  body: T,
+  posture: "low" | "balanced" | "quality",
+  model?: string,
+): T {
   if (body["provider"] !== undefined || posture === "low") return body;
-  return { ...body, provider: { sort: "throughput" } };
+  return { ...body, provider: { sort: "throughput", ...maxPriceFor(model) } };
+}
+
+/**
+ * A price ceiling for the throughput sort: the model's listed default-roster
+ * rate with 10% headroom, so sorting by speed can never buy a premium
+ * variant of the same model (the first sorted run picked a $2.40/M "fast"
+ * variant of a $1.20/M model and doubled the routed cost). A model not in
+ * the default roster gets no ceiling; the sort alone still applies.
+ */
+export function maxPriceFor(model: string | undefined): { max_price?: { prompt: number; completion: number } } {
+  if (model === undefined) return {};
+  for (const tier of ["fast", "mid", "frontier"] as const) {
+    const entry = DEFAULT_ROSTER_INFO.tiers[tier].find((m) => m.id === model);
+    if (entry !== undefined) {
+      return { max_price: { prompt: entry.inputUsdPerM * 1.1, completion: entry.outputUsdPerM * 1.1 } };
+    }
+  }
+  return {};
 }

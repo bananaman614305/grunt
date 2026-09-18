@@ -219,7 +219,7 @@ async function routed(
 }
 
 async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision, posture: "low" | "balanced" | "quality" = "balanced"): Promise<Response> {
-  const forwarded = applyProviderStrategy(prepareBody(body, decision.model), posture);
+  const forwarded = applyProviderStrategy(prepareBody(body, decision.model), posture, decision.model);
   const startedAt = deps.now();
 
   let upstream: Response;
