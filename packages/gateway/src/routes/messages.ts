@@ -60,6 +60,7 @@ import {
   retryAfterFromBucket,
   retryAfterSeconds,
   routingUnavailableMessage,
+  applyProviderStrategy,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
@@ -214,11 +215,11 @@ async function routed(
   // shows up in that account's `/v1/decisions` and nobody else's.
   await noteDecisionAccount(c, deps, decision.id);
 
-  return forward(c, deps, body, decision);
+  return forward(c, deps, body, decision, extension?.posture ?? "balanced");
 }
 
-async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision): Promise<Response> {
-  const forwarded = prepareBody(body, decision.model);
+async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision, posture: "low" | "balanced" | "quality" = "balanced"): Promise<Response> {
+  const forwarded = applyProviderStrategy(prepareBody(body, decision.model), posture);
   const startedAt = deps.now();
 
   let upstream: Response;

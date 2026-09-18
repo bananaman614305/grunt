@@ -53,6 +53,7 @@ import {
   retryAfterFromBucket,
   retryAfterSeconds,
   routingUnavailableMessage,
+  applyProviderStrategy,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { forwardSampled } from "./sampling.js";
@@ -235,7 +236,9 @@ async function routed(
     taskType: decision.signals?.taskType,
     logger: deps.logger,
   });
-  const outgoing = applyBrief(body, brief);
+  // Posture-aware provider strategy for the upstream call; a caller-supplied
+  // `provider` field always wins (see applyProviderStrategy).
+  const outgoing = applyProviderStrategy(applyBrief(body, brief), extension?.posture ?? "balanced");
 
   // A sampled decision (ADR-010) fans out instead of forwarding once. Only
   // this surface executes sampling; the other dialects opt out at routing

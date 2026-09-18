@@ -178,9 +178,10 @@ export function summarizeRouting(report: BenchReport): RoutingSummary {
   for (const row of report.rows) {
     const milo = row.results.find((r) => r.arm === MILO_ARM);
     if (!isOk(milo)) continue;
-    tiers[milo.tier] += 1;
+    const chosenTier = milo.unsampledTier ?? milo.tier;
+    tiers[chosenTier] += 1;
     agreementN += 1;
-    if (milo.tier === row.expectedTier) agree += 1;
+    if (chosenTier === row.expectedTier) agree += 1;
     if (milo.sticky === true) sticky += 1;
     else if (milo.jevLatencyMs !== undefined) jev.push(milo.jevLatencyMs);
 
@@ -475,7 +476,8 @@ export function formatBenchMarkdown(report: BenchReport): string {
     [
       `- Tiers chosen: ${TIERS.map((t) => `${t} ${routing.tiers[t]}`).join(", ")}`,
       `- Tier agreement with the label: ${pct(routing.agreement)} (n=${routing.agreementN})`,
-      `- Sticky (inherited) decisions: ${routing.sticky}${routing.sticky > 0 ? " — excluded from the Jev latency figures; rerun with `--salt` or after the 30 minute TTL for fresh decisions" : ""}`,
+      `- Server-side sampled decisions: ${report.rows.filter((r) => { const m = r.results.find((x) => x.arm === MILO_ARM); return isOk(m) && (m.gatewaySamples ?? 0) > 1; }).length} (tier counts use the policy's unsampled choice)
+- Sticky (inherited) decisions: ${routing.sticky}${routing.sticky > 0 ? " — excluded from the Jev latency figures; rerun with `--salt` or after the 30 minute TTL for fresh decisions" : ""}`,
       `- Jev latency: mean ${ms(routing.jevLatencyMean)}, p95 ${ms(routing.jevLatencyP95)} (n=${routing.jevLatencyN})`,
       `- Routing overhead (routed TTFB minus the same model called directly): p50 ${ms(routing.overheadP50)}, p95 ${ms(routing.overheadP95)} (n=${routing.overheadN})`,
       `- Bad downgrades (routed cheaper than frontier, failed, frontier passed): ${routing.badDowngrades} of ${routing.comparedN}`,

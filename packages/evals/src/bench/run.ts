@@ -218,9 +218,19 @@ async function attachDecision(runner: Runner, result: ArmResult, decisionId: str
       headers: { Authorization: `Bearer ${options.apiKey}` },
     });
     if (!response.ok) return;
-    const record = (await response.json()) as { signals?: { latencyMs?: unknown }; upstream?: { latencyMs?: unknown } };
+    const record = (await response.json()) as {
+      signals?: { latencyMs?: unknown };
+      upstream?: { latencyMs?: unknown };
+      unsampledTier?: unknown;
+      samples?: unknown;
+    };
     if (typeof record.signals?.latencyMs === "number") result.jevLatencyMs = record.signals.latencyMs;
     if (typeof record.upstream?.latencyMs === "number") result.upstreamLatencyMs = record.upstream.latencyMs;
+    // A sampled decision (ADR-010) executes on fast while the policy's own
+    // choice is recorded as unsampledTier; agreement must judge the choice.
+    const unsampled = record.unsampledTier;
+    if (unsampled === "fast" || unsampled === "mid" || unsampled === "frontier") result.unsampledTier = unsampled;
+    if (typeof record.samples === "number" && record.samples > 1) result.gatewaySamples = record.samples;
   } catch {
     // Latency detail is optional; the measurement itself already succeeded.
   }

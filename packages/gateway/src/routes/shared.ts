@@ -135,3 +135,18 @@ export function onFinished(done: () => void): TransformStream<Uint8Array, Uint8A
     },
   });
 }
+
+/**
+ * Posture-aware provider strategy (extends ADR-010's sampled-path rule to
+ * every routed forward): when the caller's body names no `provider` of its
+ * own, `balanced` and `quality` postures sort OpenRouter's providers by
+ * live throughput -- the live benchmark showed unpinned routed calls riding
+ * the price-weighted default onto providers slow enough to blow a two-minute
+ * client timeout on hard tasks -- while `low` keeps OpenRouter's own
+ * price-first default. A caller-supplied `provider` field always passes
+ * through untouched.
+ */
+export function applyProviderStrategy<T extends Record<string, unknown>>(body: T, posture: "low" | "balanced" | "quality"): T {
+  if (body["provider"] !== undefined || posture === "low") return body;
+  return { ...body, provider: { sort: "throughput" } };
+}

@@ -424,12 +424,13 @@ describe("sampled fan-out", () => {
     expect(res.headers.get("x-milo-model")).toBe("test/mid");
     expect(res.headers.get("x-milo-tier")).toBe("mid");
 
-    // Three failed samples, then the one fallback call -- which is an
-    // ordinary unsampled forward: no stream, no provider override.
+    // Three failed samples, then the one fallback call -- an ordinary
+    // unsampled forward (no stream), carrying the posture-aware provider
+    // strategy routed() applies to every outgoing body under balanced.
     expect(openRouter.calls).toHaveLength(4);
     expect(openRouter.calls[3]?.body["model"]).toBe("test/mid");
     expect(openRouter.calls[3]?.body["stream"]).toBeUndefined();
-    expect(openRouter.calls[3]?.body["provider"]).toBeUndefined();
+    expect(openRouter.calls[3]?.body["provider"]).toEqual({ sort: "throughput" });
 
     const upstream = recorded[0]?.upstream as Upstream;
     expect(upstream.sampleNote).toBe("all_samples_failed");

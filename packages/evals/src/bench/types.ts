@@ -70,6 +70,10 @@ export type ArmResult = {
   costUsd?: number;
   /** Routed arm only: served from the sticky cache, so the decision was inherited. */
   sticky?: boolean;
+  /** Routed arm only: the tier policy v4 would have picked without sampling (ADR-010). */
+  unsampledTier?: Tier;
+  /** Routed arm only: the gateway drew this many samples server-side. */
+  gatewaySamples?: number;
   /** Routed arm only: Jev's own latency from the decision record. */
   jevLatencyMs?: number;
   /** Routed arm only: the gateway's measured upstream latency from the decision record. */

@@ -98,7 +98,7 @@ import {
   readJsonObject,
   retryAfterFromBucket,
   retryAfterSeconds,
-  routingUnavailableMessage, resolveRoster } from "./shared.js";
+  routingUnavailableMessage, resolveRoster, applyProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
@@ -261,15 +261,15 @@ async function routed(
   // shows up in that account's `/v1/decisions` and nobody else's.
   await noteDecisionAccount(c, deps, decision.id);
 
-  return forward(c, deps, body, decision);
+  return forward(c, deps, body, decision, extension?.posture ?? "balanced");
 }
 
-async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision): Promise<Response> {
+async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision, posture: "low" | "balanced" | "quality" = "balanced"): Promise<Response> {
   // Only `model` is rewritten and only `milo` is dropped. `previous_response_id`
   // and `store` travel exactly as they arrived: Milo has no opinion about a
   // client's conversation state, and OpenRouter's refusal of a stored
   // conversation is clearer than one invented here.
-  const forwarded = prepareBody(body, decision.model);
+  const forwarded = applyProviderStrategy(prepareBody(body, decision.model), posture);
   const startedAt = deps.now();
 
   let upstream: Response;

@@ -85,6 +85,15 @@ describe("summarizeArm", () => {
     expect(oracle.qualityRetained).toBe(1);
   });
 
+  it("scores agreement on the unsampled tier when the gateway sampled", () => {
+    const sampledRow = row("r-s", "mid", [
+      result({ arm: "milo", model: "fast/model", tier: "fast", unsampledTier: "mid", gatewaySamples: 5, grade: pass }),
+    ]);
+    const routing = summarizeRouting(report([sampledRow]));
+    expect(routing.tiers).toEqual({ fast: 0, mid: 1, frontier: 0 });
+    expect(routing.agreement).toBe(1);
+  });
+
   it("summarizes routing: agreement, overhead against the same model, jev latency, downgrades", () => {
     const routing = summarizeRouting(r);
     expect(routing.tiers).toEqual({ fast: 2, mid: 0, frontier: 0 });
