@@ -235,6 +235,23 @@ export function fastGateMass(levels: readonly number[], fastMassFromLevel: 1 | 2
   return fastMassFromLevel === 1 ? upperMassFromLevel1(levels) : upperMass(levels);
 }
 
+/**
+ * Whether the band-mass gates put this request in band 3 -- the hard-mass
+ * gate -- reading exactly what `computeBand` (`controller.ts`) reads: the
+ * fast gate first, then `P(hard)` against `frontierHardMass`. The raw
+ * profile, not the posture-adjusted one, because a band is a property of the
+ * work and the measured controller mapping never read posture either.
+ *
+ * Signals with no per-level distribution fall back to the v1 expected-score
+ * rule's top cell, the same fallback `computeBand` uses.
+ */
+export function isHardBand(signals: RouteSignals, profile: PolicyProfile = JEV_PROFILE): boolean {
+  const levels = signals.difficultyLevels;
+  if (levels.length === 0) return signals.difficulty >= DIFFICULTY_CAP_OVERRIDE;
+  if (fastGateMass(levels, profile.fastMassFromLevel) < profile.fastBelowMass) return false;
+  return hardMass(levels) >= profile.frontierHardMass;
+}
+
 /** The reason-sentence label for the fast gate's mass: "level 1+" or "level 2+". */
 function fastGateLabel(fastMassFromLevel: 1 | 2): string {
   return `level ${fastMassFromLevel}+`;
@@ -448,6 +465,25 @@ export function clampSamples(value: number | undefined): number | undefined {
  * is the request's `milo.samples`: `1` disables sampling, any larger value
  * (capped at `MAX_SAMPLE_COUNT`) replaces the default N of
  * `DEFAULT_SAMPLE_COUNT`.
+ *
+ * ## Band 3 is not a sampling cell
+ *
+ * A fourth condition, added against live evidence: the band-mass gates must
+ * not say band 3 (`isHardBand`). A long-horizon production run showed
+ * roster-mode band-3 `edit`/`docs` decisions drawing best-of-5 on the FAST
+ * tier while their own `unsampledTier` was `frontier`, and best-of-5 on a
+ * model that cannot do the task is five capability misses, not one: every
+ * sample on those decisions rated 0.57-0.85 expected quality. Two of them
+ * lost all five samples to the per-sample timeout and fell through to the
+ * degraded all-samples-failed path. The ADR-012 controller, measured on the
+ * same bands, already spends band 3 on its *stronger* model rather than more
+ * draws of the weaker one; this lines roster mode up with that finding.
+ *
+ * Band 3 therefore keeps its single-model outcome -- `chooseTier`'s tier,
+ * one call -- and bands 1 and 2 keep the ADR-010 best-of-N cells the
+ * benchmark validated. Only the cell assignment moves, not a threshold, so
+ * `POLICY_VERSION` stands and the eval gate (which scores
+ * `unsampledTier ?? tier`) reads exactly the same tier either way.
  */
 export function chooseOutcome(
   signals: RouteSignals,
@@ -462,6 +498,8 @@ export function chooseOutcome(
   if (posture === "low") return base;
   if (!(SAMPLING_TASK_TYPES as readonly string[]).includes(signals.taskType)) return base;
   if (base.tier === "fast") return base;
+  // Band 3 buys a stronger model, never more draws of a weaker one.
+  if (isHardBand(signals, profile)) return base;
 
   const n = override ?? DEFAULT_SAMPLE_COUNT;
   return {

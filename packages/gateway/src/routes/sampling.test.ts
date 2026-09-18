@@ -9,15 +9,24 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
-import { DecisionLog, OpenRouterClient, PROMPT_VARIANTS } from "@milo/core";
+import {
+  DecisionLog,
+  DEEPSEEK_BRANCH_MODEL,
+  DEFAULT_ROSTER,
+  DEFAULT_ROSTER_INFO,
+  OpenRouterClient,
+  PROMPT_VARIANTS,
+} from "@milo/core";
 import type {
   ChatMessage,
   DecisionRecord,
   JevClientLike,
+  Roster,
   RouteDecision,
   Router,
   SystemOneResult,
 } from "@milo/core";
+import { LARGE_PROMPT_CHARS, promptChars, sampleTimeoutFor, SAMPLE_TIMEOUT_MS_DEFAULT } from "./sampling.js";
 import { AnthropicUpstream } from "../anthropic.js";
 import { createApp } from "../app.js";
 import type { AppDeps } from "../app.js";
@@ -190,6 +199,30 @@ function failingJev(): JevClientLike {
   return { systemone: () => Promise.reject(new Error("jev down")) };
 }
 
+/**
+ * `rankingJev` plus the completeness gate's own question, so a test can drive
+ * the ADR-013 gate over a sampled pick.
+ */
+function gatingJev(verdict: string): JevClientLike {
+  const ranking = rankingJev();
+  return {
+    systemone: (req) => {
+      if ("completeness" in (req.questions as Record<string, unknown>)) {
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: {
+            completeness: { type: "choice", choice: verdict, confidence: 0.91, probabilities: { [verdict]: 0.91 } },
+          },
+          usage: { input_tokens: 400, output_tokens: 6 },
+          requestId: "req_check",
+          latencyMs: 20,
+        } satisfies SystemOneResult);
+      }
+      return ranking.systemone(req);
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -244,6 +277,7 @@ async function app(
   opts: {
     jev?: JevClientLike;
     decision?: RouteDecision;
+    roster?: Roster;
     sampling?: { sampleTimeoutMs?: number; minRanked?: number };
   } = {},
 ): Promise<Hono> {
@@ -253,7 +287,7 @@ async function app(
   await log.insert(decision);
   const deps: AppDeps = {
     router: { route: async () => decision } as unknown as Router,
-    roster: { fast: ["test/fast"], mid: ["test/mid"], frontier: ["test/frontier"] },
+    roster: opts.roster ?? { fast: ["test/fast"], mid: ["test/mid"], frontier: ["test/frontier"] },
     openRouter: new OpenRouterClient({ fetch: openRouter.fetch }),
     anthropic: new AnthropicUpstream({ fetch: openRouter.fetch }),
     log,
@@ -612,5 +646,145 @@ describe("a sampled decision whose model is not tier-derived (ADR-012)", () => {
 
     const upstream = recorded[0]?.upstream as Upstream;
     expect(upstream.sampleNote).toBe("all_samples_failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The all-samples-failed fallback's price ceiling (the live 404)
+// ---------------------------------------------------------------------------
+
+/** The `max_price` Milo's provider strategy computes for a roster model. */
+function ceilingFor(model: string): { prompt: number; completion: number } {
+  for (const tier of ["fast", "mid", "frontier"] as const) {
+    const entry = DEFAULT_ROSTER_INFO.tiers[tier].find((m) => m.id === model);
+    if (entry !== undefined) {
+      return { prompt: entry.inputUsdPerM * 1.1, completion: entry.outputUsdPerM * 1.1 };
+    }
+  }
+  throw new Error(`no roster entry for ${model}`);
+}
+
+const FALLBACK_MODEL = DEFAULT_ROSTER.frontier[0] as string;
+
+/**
+ * A decision shaped like the production ones that 404'd: sampled on a
+ * default-roster fast model whose listed price is a fraction of the frontier
+ * model the fallback resolves to.
+ */
+function pricedDecision(): RouteDecision {
+  return { ...sampledDecision(), model: DEEPSEEK_BRANCH_MODEL, unsampledTier: "frontier" };
+}
+
+/**
+ * OpenRouter's endpoint filter, as far as this matters: a `max_price` ceiling
+ * below the requested model's listed price leaves no allowed provider, and
+ * the API answers 404. This is the double that reproduces the live failure.
+ */
+function priceFilteringOpenRouter(): (body: Record<string, unknown>) => Response {
+  return (body) => {
+    const model = String(body["model"]);
+    const provider = body["provider"] as { max_price?: { prompt: number; completion: number } } | undefined;
+    const ceiling = provider?.max_price;
+    const listed = ceilingFor(model);
+    if (ceiling !== undefined && (ceiling.prompt < listed.prompt || ceiling.completion < listed.completion)) {
+      return new Response(
+        JSON.stringify({ error: { message: "No allowed providers are available for the selected model.", code: 404 } }),
+        { status: 404, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (model === DEEPSEEK_BRANCH_MODEL) {
+      return new Response(JSON.stringify({ error: { message: "boom" } }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return ok({ ...completionBody("fallback answer"), model });
+  };
+}
+
+describe("the all-samples-failed fallback's provider ceiling", () => {
+  it("re-points the price ceiling at the fallback model instead of 404ing on the sampled model's", async () => {
+    openRouter.handler = priceFilteringOpenRouter();
+    const a = await app({ jev: rankingJev(), decision: pricedDecision(), roster: DEFAULT_ROSTER });
+
+    const res = await a.fetch(chatRequest());
+    // Before the fix this was the live 404: the fast model's ceiling
+    // (0.077/0.154 per M) excluded every endpoint of the frontier fallback.
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-model")).toBe(FALLBACK_MODEL);
+
+    const fallback = openRouter.calls.at(-1);
+    expect(fallback?.body["model"]).toBe(FALLBACK_MODEL);
+    expect(fallback?.body["provider"]).toEqual({ sort: "throughput", max_price: ceilingFor(FALLBACK_MODEL) });
+    // The samples themselves still carried the sampled model's own ceiling.
+    expect(openRouter.calls[0]?.body["provider"]).toEqual({
+      sort: "throughput",
+      max_price: ceilingFor(DEEPSEEK_BRANCH_MODEL),
+    });
+    expect(recorded[0]?.upstream.sampleNote).toBe("all_samples_failed");
+  });
+
+  it("leaves a caller-supplied provider preference on the fallback untouched", async () => {
+    openRouter.handler = priceFilteringOpenRouter();
+    const a = await app({ jev: rankingJev(), decision: pricedDecision(), roster: DEFAULT_ROSTER });
+
+    const res = await a.fetch(chatRequest({ provider: { order: ["mine"] } }));
+    expect(res.status).toBe(200);
+    expect(openRouter.calls.at(-1)?.body["provider"]).toEqual({ order: ["mine"] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The per-sample cap for a large prompt
+// ---------------------------------------------------------------------------
+
+describe("sampleTimeoutFor", () => {
+  it("leaves an ordinary prompt's cap alone and doubles a large prompt's", () => {
+    expect(sampleTimeoutFor(SAMPLE_TIMEOUT_MS_DEFAULT, 500)).toBe(60_000);
+    expect(sampleTimeoutFor(SAMPLE_TIMEOUT_MS_DEFAULT, LARGE_PROMPT_CHARS)).toBe(60_000);
+    expect(sampleTimeoutFor(SAMPLE_TIMEOUT_MS_DEFAULT, LARGE_PROMPT_CHARS + 1)).toBe(120_000);
+    // A deployment that configured its own cap keeps its proportions.
+    expect(sampleTimeoutFor(30_000, LARGE_PROMPT_CHARS + 1)).toBe(60_000);
+  });
+
+  it("counts characters of message text across the whole conversation", () => {
+    expect(promptChars(MESSAGES)).toBe(
+      MESSAGES.reduce((n, m) => n + String(m.content).length, 0),
+    );
+    const big: ChatMessage[] = [{ role: "user", content: "x".repeat(LARGE_PROMPT_CHARS + 10) }];
+    expect(promptChars(big)).toBeGreaterThan(LARGE_PROMPT_CHARS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The gate's escalated retry over a sampled pick
+// ---------------------------------------------------------------------------
+
+describe("the completeness gate over a sampled pick", () => {
+  it("runs its one retry on the unsampled tier's model, not on the fast model that missed", async () => {
+    openRouter.handler = (body, index) =>
+      body["model"] === "test/fast"
+        ? sse(completionBody(`sample-${index} q1`))
+        : ok({ ...completionBody("retry q3"), model: "test/mid" });
+    const a = await app({ jev: gatingJev("incomplete") });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-retry")).toBe("1");
+    expect(res.headers.get("x-milo-retry-model")).toBe("test/mid");
+    expect(res.headers.get("x-milo-gate-pick")).toBe("retry");
+
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message["content"]).toBe("retry q3");
+
+    // Three samples on fast, then exactly ONE retry, on mid.
+    expect(openRouter.calls).toHaveLength(4);
+    expect(openRouter.calls.at(-1)?.body["model"]).toBe("test/mid");
+    expect(recorded[0]?.upstream.gate).toMatchObject({
+      verdict: "incomplete",
+      retried: true,
+      retryModel: "test/mid",
+      pick: "retry",
+    });
   });
 });

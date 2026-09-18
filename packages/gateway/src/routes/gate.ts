@@ -4,15 +4,32 @@
  *
  * After the final answer is in hand -- the single forward's body, or the
  * sampled fan-out's pick -- one Jev call on Milo's key asks whether it
- * addresses every part of the request (`checkCompleteness`, core). A
- * `complete` verdict, and any gate failure at all, serves the answer as-is:
- * the gate can spend Milo a classification call and the user a retry, but
- * it can never fail a request that already has an answer. A failing verdict
- * buys exactly ONE retry -- same model, the original messages plus the
- * failure type's fixed template as a final system message -- then a second
- * Jev call rates BOTH answers with the ranking questions ADR-010 validated,
- * and the better one is served (the original wins ties, and wins whenever
- * the rating itself fails).
+ * addresses every part of the request (`checkCompleteness`, core). Any gate
+ * failure at all serves the answer as-is: the gate can spend Milo a
+ * classification call and the user a retry, but it can never fail a request
+ * that already has an answer.
+ *
+ * Three outcomes:
+ *
+ *   - `complete` at or above `GATE_TRUST_CONFIDENCE` -- served as-is,
+ *     `x-milo-completeness: complete`, one Jev call spent;
+ *   - `complete` BELOW it -- suspect, not a pass. Production `complete`
+ *     verdicts at confidence 0.31-0.57 sat on answers whose own sampled
+ *     quality was 0.6-2.1, so the gate rates the answer itself: at or above
+ *     `GATE_SUSPECT_QUALITY` it is served with
+ *     `x-milo-completeness: complete-low-confidence`, below it the answer
+ *     buys a retry like a failing verdict does;
+ *   - a failing verdict -- exactly ONE retry.
+ *
+ * The retry runs on the strongest model the decision knows about
+ * (`escalationFor`: a sampled cell's `unsampledTier`, an `unsampledModel`, or
+ * the controller's band-3 orchestrator), not on the model that just missed --
+ * the one retry seen in production re-begged the same fast model whose five
+ * samples had all rated 0.57-0.85 and got 0.79 back. It carries the original
+ * messages plus the failure type's fixed template as a final system message.
+ * A second Jev call then rates BOTH answers with the ranking questions
+ * ADR-010 validated, and the better one is served (the original wins ties,
+ * and wins whenever the rating itself fails). Still at most one retry.
  *
  * The gate runs where all of these hold (`gateFor`):
  *
@@ -24,11 +41,11 @@
  *   - the deployment has a Jev client to ask.
  *
  * Disclosure: `x-milo-completeness` carries the verdict, `x-milo-retry: 1`
- * says the retry fired, `x-milo-gate-pick` which answer won. The decision
- * record's upstream block stores the verdict and the retry's own usage
- * (`gate`), with the retry's tokens folded into the row's aggregate -- the
- * caller is billed for what was actually generated, both answers included.
- * No content is stored.
+ * says the retry fired, `x-milo-retry-model` names the model it escalated to,
+ * `x-milo-gate-pick` which answer won. The decision record's upstream block
+ * stores the verdict, the retry's model and its own usage (`gate`), with the
+ * retry's tokens folded into the row's aggregate -- the caller is billed for
+ * what was actually generated, both answers included. No content is stored.
  *
  * A streaming client is answered by buffer-and-replay exactly like sampling:
  * the graded (or retried) completion goes out as well-formed SSE.
@@ -39,10 +56,14 @@ import {
   checkCompleteness,
   compareRanked,
   computeBand,
+  escalationFor,
   isStreaming,
   prepareBody,
   rankAnswer,
   retryMessages,
+  GATE_SUSPECT_QUALITY,
+  GATE_TRUST_CONFIDENCE,
+  LOW_CONFIDENCE_FAILURE,
 } from "@milo/core";
 import type {
   ChatMessage,
@@ -50,6 +71,7 @@ import type {
   GateFailureType,
   GateUpstream,
   MiloRequestExtension,
+  RankScore,
   RouteDecision,
 } from "@milo/core";
 import type { AppDeps } from "../app.js";
@@ -58,7 +80,7 @@ import { chargeBuffered, upstreamHeadersFor } from "../billing.js";
 import { briefHeaders } from "../brief.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import { answerText, replayAsSse } from "./sampling.js";
-import { applyMiloHeaders } from "./shared.js";
+import { applyMiloHeaders, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage, toUpstreamRecord } from "./usage.js";
 import type { UpstreamUsage } from "./usage.js";
@@ -66,6 +88,21 @@ import type { UpstreamUsage } from "./usage.js";
 export const COMPLETENESS_HEADER = "x-milo-completeness";
 export const RETRY_HEADER = "x-milo-retry";
 export const GATE_PICK_HEADER = "x-milo-gate-pick";
+/** The model an escalated retry ran on, when it was not the one that answered. */
+export const RETRY_MODEL_HEADER = "x-milo-retry-model";
+
+/** What `x-milo-completeness` says for a `complete` verdict Jev was unsure of. */
+export const LOW_CONFIDENCE_COMPLETENESS = "complete-low-confidence";
+
+/**
+ * The decision-log `gate` block plus two gateway-local, purely additive
+ * fields: which model the retry ran on, and whether the verdict was a
+ * low-confidence `complete` the gate re-rated itself. Like `SampleRow` in
+ * `sampling.ts`, folding them into the `GateUpstream` contract
+ * (`packages/core/src/types.ts`) needs an ADR; the log stores the block as
+ * JSON, so they round-trip either way.
+ */
+export type GateRecord = GateUpstream & { retryModel?: string; lowConfidence?: boolean };
 
 /** One finished answer as the gate handles it: body, message, serialized text. */
 export type GateAnswer = {
@@ -83,7 +120,7 @@ export type GateResult = {
   /** The retry call's usage, to fold into the row's aggregate and the bill. */
   extraUsage?: UpstreamUsage;
   /** The decision record's `gate` block. */
-  record: GateUpstream;
+  record: GateRecord;
 };
 
 export type GateRunner = (answer: GateAnswer) => Promise<GateResult>;
@@ -131,7 +168,8 @@ export function gateFor(
   if (decision.signals === undefined) return undefined;
   if (computeBand(decision.signals) < 1) return undefined;
   const jev = deps.jev;
-  return (answer) => runGate(c, deps, jev, body, decision, answer);
+  const candidates = extension?.candidates;
+  return (answer) => runGate(c, deps, jev, body, decision, answer, candidates);
 }
 
 /**
@@ -146,22 +184,14 @@ async function runGate(
   body: Body,
   decision: RouteDecision,
   answer: GateAnswer,
+  candidates?: string[],
 ): Promise<GateResult> {
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
+  const answered = answerText(answer.message);
 
-  let verdict: GateFailureType;
-  let confidence: number;
+  let check;
   try {
-    const check = await checkCompleteness(jev, messages, answerText(answer.message));
-    if (check.verdict === "complete") {
-      return {
-        answer,
-        headers: { [COMPLETENESS_HEADER]: "complete" },
-        record: { verdict: "complete", confidence: check.confidence },
-      };
-    }
-    verdict = check.verdict;
-    confidence = check.confidence;
+    check = await checkCompleteness(jev, messages, answered);
   } catch (error) {
     // The check itself failed: the answer goes out exactly as a passing one
     // would (never fail the request on a gate); the record says `error`.
@@ -169,16 +199,86 @@ async function runGate(
     return { answer, headers: { [COMPLETENESS_HEADER]: "complete" }, record: { verdict: "error" } };
   }
 
-  // A failing verdict buys exactly one retry: same model, the original
+  // The failure type the retry template comes from, the value
+  // `x-milo-completeness` carries, and the record the outcome is written
+  // into -- settled by the verdict AND, on a `complete` verdict, by how sure
+  // Jev was of it.
+  let verdict: GateFailureType;
+  let disclosed: string;
+  let record: GateRecord;
+  /** The original's rating, when the suspect path already paid for it. */
+  let originalRank: RankScore | undefined;
+
+  if (check.verdict === "complete") {
+    if (check.confidence >= GATE_TRUST_CONFIDENCE) {
+      return {
+        answer,
+        headers: { [COMPLETENESS_HEADER]: "complete" },
+        record: { verdict: "complete", confidence: check.confidence },
+      };
+    }
+
+    // A `complete` Jev is not sure of: rate the answer rather than trust the
+    // verdict (GATE_TRUST_CONFIDENCE names the evidence). A rating that
+    // cannot be had is not a reason to spend a retry, so it serves as-is.
+    try {
+      originalRank = await rankAnswer(jev, messages, answered);
+    } catch (error) {
+      deps.logger.warn("low-confidence gate re-rating failed; serving as-is", {
+        decisionId: decision.id,
+        error: classify(error),
+      });
+    }
+    if (originalRank === undefined || originalRank.quality >= GATE_SUSPECT_QUALITY) {
+      return {
+        answer,
+        headers: { [COMPLETENESS_HEADER]: LOW_CONFIDENCE_COMPLETENESS },
+        record: {
+          verdict: "complete",
+          confidence: check.confidence,
+          lowConfidence: true,
+          ...(originalRank !== undefined ? { originalQuality: originalRank.quality } : {}),
+        },
+      };
+    }
+    verdict = LOW_CONFIDENCE_FAILURE;
+    disclosed = LOW_CONFIDENCE_COMPLETENESS;
+    record = {
+      verdict: "complete",
+      confidence: check.confidence,
+      lowConfidence: true,
+      retried: true,
+      pick: "original",
+    };
+  } else {
+    verdict = check.verdict;
+    disclosed = check.verdict;
+    record = { verdict: check.verdict, confidence: check.confidence, retried: true, pick: "original" };
+  }
+
+  // Exactly ONE retry, on the strongest model this decision knows about
+  // rather than the one that just missed (`escalationFor`): the original
   // messages plus the failure type's fixed template as a final system
-  // message, buffered whatever the client asked for.
-  const retryBody = prepareBody(body, decision.model);
+  // message, buffered whatever the client asked for. When nothing stronger
+  // exists the retry is the same-model re-prompt it always was.
+  const escalation = escalationFor(decision, await resolveRoster(c, deps), candidates, {
+    longOutput: decision.signals?.longOutput ?? 0,
+  });
+  const retryModel = escalation?.model ?? decision.model;
+  // The outgoing body carries a provider price ceiling computed for the model
+  // that answered; a retry on a different model needs its own (see
+  // `retargetProviderStrategy` -- the wrong ceiling is a 404).
+  const retryBody = prepareBody(retargetProviderStrategy(body, decision.model, retryModel), retryModel);
   retryBody["messages"] = retryMessages(messages, verdict);
   retryBody["stream"] = false;
   delete retryBody["stream_options"];
 
-  const headers: Record<string, string> = { [COMPLETENESS_HEADER]: verdict, [RETRY_HEADER]: "1" };
-  const record: GateUpstream = { verdict, confidence, retried: true, pick: "original" };
+  const headers: Record<string, string> = {
+    [COMPLETENESS_HEADER]: disclosed,
+    [RETRY_HEADER]: "1",
+    ...(escalation !== undefined ? { [RETRY_MODEL_HEADER]: retryModel } : {}),
+  };
+  record.retryModel = retryModel;
   const serveOriginal = (): GateResult => ({ answer, headers: { ...headers, [GATE_PICK_HEADER]: "original" }, record });
 
   const retryStart = deps.now();
@@ -218,7 +318,8 @@ async function runGate(
   // winning outright when the rating itself fails.
   try {
     const [original, retry] = await Promise.all([
-      rankAnswer(jev, messages, answerText(answer.message)),
+      // The suspect path already rated the original; one Jev call is enough.
+      originalRank !== undefined ? Promise.resolve(originalRank) : rankAnswer(jev, messages, answered),
       rankAnswer(jev, messages, answerText(retryMessage)),
     ]);
     record.originalQuality = original.quality;

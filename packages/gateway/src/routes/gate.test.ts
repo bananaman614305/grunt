@@ -11,7 +11,14 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
-import { DecisionLog, OpenRouterClient, RETRY_TEMPLATES } from "@milo/core";
+import {
+  DecisionLog,
+  DEEPSEEK_BRANCH_MODEL,
+  DEEPSEEK_ORCHESTRATOR_MODEL,
+  DEFAULT_ROSTER_INFO,
+  OpenRouterClient,
+  RETRY_TEMPLATES,
+} from "@milo/core";
 import type {
   ChatMessage,
   DecisionRecord,
@@ -74,7 +81,7 @@ function ok(body: unknown): Response {
  * the digit after "q" in its text, so a test declares both in its fixture.
  */
 function gateJev(
-  opts: { verdict?: string; failCheck?: boolean; failRank?: boolean } = {},
+  opts: { verdict?: string; confidence?: number; failCheck?: boolean; failRank?: boolean } = {},
 ): JevClientLike & { checks: number; ranked: string[] } {
   const stub = {
     checks: 0,
@@ -87,10 +94,11 @@ function gateJev(
         stub.checks += 1;
         if (opts.failCheck === true) return Promise.reject(new Error("jev down"));
         const choice = opts.verdict ?? "complete";
+        const confidence = opts.confidence ?? 0.9;
         return Promise.resolve({
           model: "jev-latest",
           answers: {
-            completeness: { type: "choice", choice, confidence: 0.9, probabilities: { [choice]: 0.9 } },
+            completeness: { type: "choice", choice, confidence, probabilities: { [choice]: confidence } },
           },
           usage: { input_tokens: 400, output_tokens: 6 },
           requestId: "req_check",
@@ -369,6 +377,153 @@ describe("the completeness gate", () => {
       // The ungated single forward passes the body through untouched.
       expect(openRouter.calls[0]?.body["stream"]).toBeUndefined();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Fix 1: a `complete` verdict Jev is not sure of is suspect, not a pass
+  // -------------------------------------------------------------------------
+
+  it("re-rates a low-confidence complete verdict and serves a good answer with its own header", async () => {
+    openRouter.handler = () => ok(completionBody("original q3"));
+    const jev = gateJev({ verdict: "complete", confidence: 0.42 });
+    const a = await app({ jev });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-completeness")).toBe("complete-low-confidence");
+    expect(res.headers.get("x-milo-retry")).toBeNull();
+
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message.content).toBe("original q3");
+
+    // One generation, one check, one rating -- and no retry, because the
+    // answer rated above the suspect bar.
+    expect(openRouter.calls).toHaveLength(1);
+    expect(jev.checks).toBe(1);
+    expect(jev.ranked).toHaveLength(1);
+    expect(recorded[0]?.upstream.gate).toEqual({
+      verdict: "complete",
+      confidence: 0.42,
+      lowConfidence: true,
+      originalQuality: 3,
+    });
+  });
+
+  it("retries a low-confidence complete verdict whose answer rates below the suspect bar", async () => {
+    originalThenRetry("original q1", "retry q3");
+    const jev = gateJev({ verdict: "complete", confidence: 0.31 });
+    const a = await app({ jev });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.headers.get("x-milo-completeness")).toBe("complete-low-confidence");
+    expect(res.headers.get("x-milo-retry")).toBe("1");
+    expect(res.headers.get("x-milo-gate-pick")).toBe("retry");
+
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message.content).toBe("retry q3");
+
+    const retryMsgs = openRouter.calls[1]?.body["messages"] as ChatMessage[];
+    expect(retryMsgs.at(-1)?.content).toBe(RETRY_TEMPLATES.incomplete);
+
+    // The suspect rating is reused, so the pick costs one rating, not two.
+    expect(jev.ranked).toHaveLength(2);
+    expect(recorded[0]?.upstream.gate).toMatchObject({
+      verdict: "complete",
+      confidence: 0.31,
+      lowConfidence: true,
+      retried: true,
+      pick: "retry",
+      originalQuality: 1,
+      retryQuality: 3,
+    });
+  });
+
+  it("serves a low-confidence complete answer as-is when the re-rating itself fails", async () => {
+    openRouter.handler = () => ok(completionBody("original q1"));
+    const a = await app({ jev: gateJev({ verdict: "complete", confidence: 0.5, failRank: true }) });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-completeness")).toBe("complete-low-confidence");
+    expect(res.headers.get("x-milo-retry")).toBeNull();
+    expect(openRouter.calls).toHaveLength(1);
+    expect(recorded[0]?.upstream.gate).toEqual({ verdict: "complete", confidence: 0.5, lowConfidence: true });
+  });
+
+  it("trusts a complete verdict at or above the confidence bar without paying for a rating", async () => {
+    openRouter.handler = () => ok(completionBody("original q0"));
+    const jev = gateJev({ verdict: "complete", confidence: 0.6 });
+    const a = await app({ jev });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.headers.get("x-milo-completeness")).toBe("complete");
+    expect(jev.ranked).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Fix 2: the retry escalates instead of re-begging the same model
+  // -------------------------------------------------------------------------
+
+  it("runs the retry on the same model, and records it, when nothing stronger exists", async () => {
+    originalThenRetry("original q1", "retry q3");
+    const a = await app({ jev: gateJev({ verdict: "incomplete" }) });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.headers.get("x-milo-retry-model")).toBeNull();
+    expect(openRouter.calls[1]?.body["model"]).toBe("test/mid");
+    expect(recorded[0]?.upstream.gate).toMatchObject({ retryModel: "test/mid" });
+  });
+
+  it("escalates a controller decision's retry to the band-3 orchestrator model", async () => {
+    originalThenRetry("original q1", "retry q3");
+    const jev = gateJev({ verdict: "off_task" });
+    const a = await app({ jev, decision: decision({ tier: "fast", model: DEEPSEEK_BRANCH_MODEL }) });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-retry")).toBe("1");
+    expect(res.headers.get("x-milo-retry-model")).toBe(DEEPSEEK_ORCHESTRATOR_MODEL);
+
+    // Still exactly one retry, and it ran on the stronger model.
+    expect(openRouter.calls).toHaveLength(2);
+    expect(openRouter.calls[0]?.body["model"]).toBe(DEEPSEEK_BRANCH_MODEL);
+    expect(openRouter.calls[1]?.body["model"]).toBe(DEEPSEEK_ORCHESTRATOR_MODEL);
+    expect(recorded[0]?.upstream.gate).toMatchObject({
+      verdict: "off_task",
+      retried: true,
+      retryModel: DEEPSEEK_ORCHESTRATOR_MODEL,
+      pick: "retry",
+    });
+  });
+
+  it("gives the escalated retry a price ceiling computed for the model it actually calls", async () => {
+    originalThenRetry("original q1", "retry q3");
+    const jev = gateJev({ verdict: "incomplete" });
+    const a = await app({ jev, decision: decision({ tier: "fast", model: DEEPSEEK_BRANCH_MODEL }) });
+
+    await a.fetch(chatRequest());
+    const branch = DEFAULT_ROSTER_INFO.tiers.fast.find((m) => m.id === DEEPSEEK_BRANCH_MODEL);
+    const orchestrator = DEFAULT_ROSTER_INFO.tiers.mid.find((m) => m.id === DEEPSEEK_ORCHESTRATOR_MODEL);
+    expect(openRouter.calls[0]?.body["provider"]).toEqual({
+      sort: "throughput",
+      max_price: { prompt: (branch as { inputUsdPerM: number }).inputUsdPerM * 1.1, completion: (branch as { outputUsdPerM: number }).outputUsdPerM * 1.1 },
+    });
+    expect(openRouter.calls[1]?.body["provider"]).toEqual({
+      sort: "throughput",
+      max_price: {
+        prompt: (orchestrator as { inputUsdPerM: number }).inputUsdPerM * 1.1,
+        completion: (orchestrator as { outputUsdPerM: number }).outputUsdPerM * 1.1,
+      },
+    });
+  });
+
+  it("leaves a caller-supplied provider preference on the escalated retry untouched", async () => {
+    originalThenRetry("original q1", "retry q3");
+    const jev = gateJev({ verdict: "incomplete" });
+    const a = await app({ jev, decision: decision({ tier: "fast", model: DEEPSEEK_BRANCH_MODEL }) });
+
+    await a.fetch(chatRequest({ provider: { order: ["mine"] } }));
+    expect(openRouter.calls[1]?.body["provider"]).toEqual({ order: ["mine"] });
   });
 
   it("replays the served answer as well-formed SSE for a streaming client", async () => {

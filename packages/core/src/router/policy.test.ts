@@ -13,6 +13,7 @@ import {
   DEFAULT_PROFILE,
   fastGateMass,
   hardMass,
+  isHardBand,
   JEV_PROFILE,
   LOW_POSTURE_FAST_MASS,
   postureProfile,
@@ -426,9 +427,46 @@ describe("chooseOutcome: sampling cells", () => {
     expect(outcome.reason).toContain("best-of-5");
   });
 
-  it("samples a frontier-band edit cell too, remembering the frontier choice", () => {
-    const outcome = chooseOutcome(signals(VERY_HARD, "edit"), "balanced");
+  it("samples a band-2 edit cell, remembering the frontier choice the upper mass bought", () => {
+    // UPPER clears the frontier upper-mass gate (P2+ 0.70) without clearing
+    // the hard gate (P3 0.04), so it is band 2: still an ADR-010 cell.
+    expect(isHardBand(signals(UPPER, "edit"))).toBe(false);
+    const outcome = chooseOutcome(signals(UPPER, "edit"), "balanced");
     expect(outcome).toMatchObject({ tier: "fast", samples: 5, unsampledTier: "frontier" });
+  });
+
+  it.each(SAMPLING_TASK_TYPES)("does not sample a band-3 %s cell: it keeps its single frontier call", (taskType) => {
+    // The live long-horizon run sent band-3 edit/docs to best-of-5 on FAST
+    // while their own unsampledTier was frontier, and every sample came back
+    // at 0.57-0.85 quality. Band 3 buys the stronger model, not more draws.
+    expect(isHardBand(signals(VERY_HARD, taskType))).toBe(true);
+    const outcome = chooseOutcome(signals(VERY_HARD, taskType), "balanced");
+    expect(outcome).toEqual(chooseTier(signals(VERY_HARD, taskType), "balanced"));
+    expect(outcome.tier).toBe("frontier");
+    expect(outcome.samples).toBeUndefined();
+    expect(outcome.unsampledTier).toBeUndefined();
+  });
+
+  it("does not sample a band-3 cell whose hard mass only just clears the gate", () => {
+    // HARD is P1+ 0.70, P3 0.10: over frontierHardMass 0.05 by a whisker,
+    // and that is still the hard-mass gate.
+    expect(isHardBand(signals(HARD, "docs"))).toBe(true);
+    expect(chooseOutcome(signals(HARD, "docs"), "balanced").samples).toBeUndefined();
+  });
+
+  it("does not sample a band-3 cell on the expected-score path either", () => {
+    // No distribution: band 3 is the v1 rule's top cell, difficulty >= 2.5.
+    expect(isHardBand(scoreOnly(2.6, 0.9, "edit"))).toBe(true);
+    expect(chooseOutcome(scoreOnly(2.6, 0.9, "edit"), "balanced").samples).toBeUndefined();
+    expect(chooseOutcome(scoreOnly(1.5, 0.9, "edit"), "balanced").samples).toBe(DEFAULT_SAMPLE_COUNT);
+  });
+
+  it("reads the band off the raw profile, so posture cannot move a cell in or out of band 3", () => {
+    // MID under quality routes to frontier, but its hard mass (0.04) is
+    // still under the raw gate, so it is band 2 and it still samples --
+    // exactly what the ADR-012 controller means by a band.
+    expect(isHardBand(signals(MID, "docs"))).toBe(false);
+    expect(chooseOutcome(signals(MID, "docs"), "quality").samples).toBe(DEFAULT_SAMPLE_COUNT);
   });
 
   it("samples under quality posture", () => {

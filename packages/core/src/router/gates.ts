@@ -15,7 +15,11 @@
  */
 
 import type { JevClientLike, JevQuestion } from "../jev/types.js";
-import type { ChatMessage } from "../types.js";
+import type { ChatMessage, Roster, RouteDecision, Tier } from "../types.js";
+import { TIERS } from "../types.js";
+import { DEEPSEEK_BRANCH_MODEL, DEEPSEEK_ORCHESTRATOR_MODEL } from "./controller.js";
+import { resolveModel } from "./roster.js";
+import type { ResolveModelOptions } from "./roster.js";
 import { rankState } from "./sampling.js";
 
 /** The verdicts the completeness question can return. */
@@ -67,6 +71,98 @@ export const RETRY_TEMPLATES: Record<GateFailureType, string> = {
 
 /** Total budget for one completeness call, ms: same habit as ranking. */
 export const GATE_BUDGET_MS = 8_000;
+
+/**
+ * Below this confidence a `complete` verdict is SUSPECT rather than a pass.
+ *
+ * Live evidence (a long-horizon production run, read off `GET /v1/decisions`):
+ * `complete` verdicts at confidence 0.31-0.57 sat on answers whose own
+ * sampled `jevQuality` was 0.6-2.1, while genuinely complete answers were
+ * called at 0.82-0.99. The verdict's own confidence separates the two
+ * cleanly, and the gate was throwing it away. 0.6 sits in the empty gap
+ * between the two clusters.
+ *
+ * A suspect verdict does not fail the request and does not buy a retry on its
+ * own: the gateway rates the answer with the ranking question instead
+ * (`rankAnswer`) and only escalates when that rating comes back below
+ * `GATE_SUSPECT_QUALITY`.
+ */
+export const GATE_TRUST_CONFIDENCE = 0.6;
+
+/**
+ * Expected quality (0..3) at or above which a low-confidence `complete`
+ * verdict is served anyway. 2.0 is the ranking question's "right in substance
+ * with a minor flaw" level -- usable as it stands -- so anything below it is
+ * the "partly right, the user still has work to do" band the retry exists for.
+ */
+export const GATE_SUSPECT_QUALITY = 2.0;
+
+/**
+ * The retry template a low-confidence `complete` verdict uses. The verdict
+ * itself named no failure type (it claimed success), and what the evidence
+ * showed under it was answers missing required parts, so the retry asks for
+ * complete coverage.
+ */
+export const LOW_CONFIDENCE_FAILURE: GateFailureType = "incomplete";
+
+/**
+ * Where a warranted retry should run, when the decision knows about something
+ * stronger than what actually answered. Returns `undefined` when nothing
+ * stronger exists, and the caller re-prompts the same model.
+ *
+ * Live evidence: the one retry that fired in the long-horizon run re-prompted
+ * the same fast model whose five samples had all rated 0.57-0.85; the retry
+ * came back at 0.79. A same-model re-prompt cannot fix a capability miss, so
+ * the retry now escalates wherever the decision already names a stronger
+ * model:
+ *
+ *   - a decision carrying its own `unsampledModel` uses that when it differs
+ *     from what answered;
+ *   - a sampled roster decision (ADR-010) escalates to `unsampledTier`
+ *     resolved against this caller's roster -- the tier the cell would have
+ *     bought without sampling;
+ *   - failing both, a compute-controller decision (ADR-012) below band 3
+ *     answered on the branch model, and the measured mapping's own next step
+ *     up is band 3's orchestrator. The roster's fast tier leads with the same
+ *     model, so a roster-mode decision that got there with nothing else to
+ *     name escalates within the family too, which is the right move anyway.
+ *
+ * `candidates` is the request's `milo.candidates`, so an explicit allow-list
+ * still bounds the escalation.
+ */
+export type GateEscalation = { model: string; tier?: Tier };
+
+export function escalationFor(
+  decision: Pick<RouteDecision, "model" | "tier" | "unsampledTier" | "unsampledModel">,
+  roster: Roster,
+  candidates?: string[],
+  opts?: ResolveModelOptions,
+): GateEscalation | undefined {
+  if (decision.unsampledModel !== undefined && decision.unsampledModel !== decision.model) {
+    return { model: decision.unsampledModel };
+  }
+
+  const tier = decision.unsampledTier;
+  if (tier !== undefined && TIERS.indexOf(tier) > TIERS.indexOf(decision.tier)) {
+    let model: string | undefined;
+    try {
+      model = resolveModel(tier, roster, candidates, opts);
+    } catch {
+      // An unusable roster is not a reason to lose the retry.
+      model = undefined;
+    }
+    if (model !== undefined && model !== decision.model) return { model, tier };
+    return undefined;
+  }
+
+  if (decision.model === DEEPSEEK_BRANCH_MODEL) {
+    if (candidates !== undefined && candidates.length > 0 && !candidates.includes(DEEPSEEK_ORCHESTRATOR_MODEL)) {
+      return undefined;
+    }
+    return { model: DEEPSEEK_ORCHESTRATOR_MODEL };
+  }
+  return undefined;
+}
 
 export type GateCheck = {
   verdict: GateVerdict;

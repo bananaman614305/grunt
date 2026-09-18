@@ -56,7 +56,7 @@
  */
 
 import type { Context } from "hono";
-import { applyVariant, isStreaming, prepareBody, rankAnswer, resolveModel, variantFor } from "@milo/core";
+import { applyVariant, isStreaming, messageText, prepareBody, rankAnswer, resolveModel, variantFor } from "@milo/core";
 import type { ChatMessage, RankScore, RouteDecision, SampleUpstream, Tier } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
@@ -64,13 +64,44 @@ import { chargeBuffered, chargeStream, upstreamHeadersFor } from "../billing.js"
 import { errorMessage, errorResponse } from "../errors.js";
 import { briefHeaders } from "../brief.js";
 import type { GateRunner } from "./gate.js";
-import { applyMiloHeaders, onFinished, resolveRoster } from "./shared.js";
+import { applyMiloHeaders, onFinished, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage } from "./usage.js";
 import type { UpstreamUsage } from "./usage.js";
 
 /** Per-sample wall-clock cap when the deployment configures none. */
 export const SAMPLE_TIMEOUT_MS_DEFAULT = 60_000;
+
+/**
+ * A prompt longer than this (characters of message text) is a large prompt,
+ * and its samples get a longer wall-clock cap.
+ *
+ * Live evidence: two band-3 `docs` decisions in a long-horizon run lost ALL
+ * FIVE samples to the 60 s cap and fell through to the degraded
+ * all-samples-failed path. Their prompts were whole-file agent contexts; 60 s
+ * is a cap fitted to short chat turns, and a cap that every sample hits is
+ * not a cap, it is an outage. ~8k characters is roughly 2k tokens, the point
+ * above which first-token latency plus generation stops fitting in a minute
+ * on the fast tier.
+ */
+export const LARGE_PROMPT_CHARS = 8_000;
+
+/**
+ * What a large prompt multiplies the per-sample cap by: the 60 s default
+ * becomes 120 s. A multiplier rather than a floor, so a deployment that
+ * deliberately configured a short cap keeps its own proportions.
+ */
+export const LARGE_PROMPT_TIMEOUT_FACTOR = 2;
+
+/** Total characters of message text in a prompt: what `LARGE_PROMPT_CHARS` counts. */
+export function promptChars(messages: ChatMessage[]): number {
+  return messages.reduce((total, message) => total + messageText(message.content).length, 0);
+}
+
+/** The per-sample cap for this prompt: the configured one, doubled when the prompt is large. */
+export function sampleTimeoutFor(configuredMs: number, chars: number): number {
+  return chars > LARGE_PROMPT_CHARS ? configuredMs * LARGE_PROMPT_TIMEOUT_FACTOR : configuredMs;
+}
 
 /** How many ranked samples the early return waits for (`sampling.minRanked`). */
 export const MIN_RANKED_DEFAULT = 3;
@@ -346,9 +377,13 @@ export async function forwardSampled(
   ctx: SamplingContext = {},
 ): Promise<Response> {
   const n = decision.samples ?? 1;
-  const timeoutMs = deps.sampling?.sampleTimeoutMs ?? SAMPLE_TIMEOUT_MS_DEFAULT;
   const minRanked = Math.max(1, Math.min(deps.sampling?.minRanked ?? MIN_RANKED_DEFAULT, n));
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
+  // A large prompt gets a longer per-sample cap: see `LARGE_PROMPT_CHARS`.
+  const timeoutMs = sampleTimeoutFor(
+    deps.sampling?.sampleTimeoutMs ?? SAMPLE_TIMEOUT_MS_DEFAULT,
+    promptChars(messages),
+  );
   const startedAt = deps.now();
 
   // One streamed draw. Never throws: every outcome is a Sample row.
@@ -674,8 +709,18 @@ export function replayAsSse(chosen: {
 /**
  * Every sample failed, so the request gets what the policy would have bought
  * without sampling: one ordinary call on `unsampledTier`, streamed or
- * buffered exactly as asked, with no provider override. The decision record
- * keeps the failed samples' metadata and says `all_samples_failed`.
+ * buffered exactly as asked. The decision record keeps the failed samples'
+ * metadata and says `all_samples_failed`.
+ *
+ * The body still carries the posture-aware provider strategy `routed()`
+ * applied -- but that strategy's price ceiling was computed for the SAMPLED
+ * model, and this call goes to a different, dearer one. Shipping the fast
+ * model's ceiling to a frontier model excludes every endpoint it has and
+ * OpenRouter answers 404, which is exactly what the live run recorded on the
+ * two decisions that lost all five samples to the sample timeout. The
+ * ceiling is therefore recomputed for the model actually being called
+ * (`retargetProviderStrategy`); a caller-supplied `provider` still passes
+ * through untouched.
  */
 async function fallbackUnsampled(
   c: Context,
@@ -711,7 +756,7 @@ async function fallbackUnsampled(
   });
 
   const sampleMeta = samples.map((s) => toSampleUpstream(s, false));
-  const forwarded = prepareBody(body, model);
+  const forwarded = prepareBody(retargetProviderStrategy(body, decision.model, model), model);
 
   let upstream: Response;
   try {

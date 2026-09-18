@@ -162,6 +162,47 @@ export function applyProviderStrategy<T extends Record<string, unknown>>(
  * variant of a $1.20/M model and doubled the routed cost). A model not in
  * the default roster gets no ceiling; the sort alone still applies.
  */
+/**
+ * Re-points Milo's own provider strategy at a different model.
+ *
+ * `applyProviderStrategy` computes the price ceiling for the model the
+ * decision picked, and `prepareBody` only rewrites `model` -- so any path
+ * that forwards the same body to a DIFFERENT model (the all-samples-failed
+ * fallback to `unsampledTier`, the gate's escalated retry) used to ship a
+ * ceiling computed for the model that is no longer being called. A fast
+ * model's ceiling excludes every endpoint of a frontier model, and OpenRouter
+ * answers "no allowed providers" -- a 404 on a request that had nothing wrong
+ * with it. This recomputes the ceiling for the model actually being called.
+ *
+ * It only touches a `provider` field that is exactly what
+ * `applyProviderStrategy` would have produced for `fromModel`: a
+ * caller-supplied provider preference still passes through untouched, ceiling
+ * and all.
+ */
+export function retargetProviderStrategy<T extends Record<string, unknown>>(
+  body: T,
+  fromModel: string | undefined,
+  toModel: string,
+): T {
+  if (!isAppliedStrategy(body["provider"], fromModel)) return body;
+  return { ...body, provider: { sort: "throughput", ...maxPriceFor(toModel) } };
+}
+
+/** Whether `provider` is exactly the strategy Milo applies for `model`. */
+function isAppliedStrategy(provider: unknown, model: string | undefined): boolean {
+  if (typeof provider !== "object" || provider === null || Array.isArray(provider)) return false;
+  const applied = provider as Record<string, unknown>;
+  if (applied["sort"] !== "throughput") return false;
+  const keys = Object.keys(applied);
+  const ceiling = maxPriceFor(model).max_price;
+  if (ceiling === undefined) return keys.length === 1;
+  if (keys.length !== 2) return false;
+  const actual = applied["max_price"];
+  if (typeof actual !== "object" || actual === null) return false;
+  const price = actual as Record<string, unknown>;
+  return price["prompt"] === ceiling.prompt && price["completion"] === ceiling.completion;
+}
+
 export function maxPriceFor(model: string | undefined): { max_price?: { prompt: number; completion: number } } {
   if (model === undefined) return {};
   for (const tier of ["fast", "mid", "frontier"] as const) {
