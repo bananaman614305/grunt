@@ -179,3 +179,30 @@ mechanical (`regex`, `contains_all`, `contains_any`, `not_contains`, or an
 `judge` with a `rubric` and a `must` list for a grading model. Keep the two
 files in step: `graders.test.ts` fails when an id is missing, extra, or out
 of order.
+
+## `longhorizon.jsonl` / `longhorizon-graders.jsonl`
+
+The long-horizon suite: 16 examples (`lh-001`..`lh-016`) in the same schema
+as `routing.jsonl`, built for the ADR-012 benchmark gate to stress
+"Fable-like outcomes" — sustained instruction-following, large context, and
+multi-part deliverables — while remaining single request/response pairs the
+existing bench runs unchanged. Four groups of four: large-context synthesis
+over 2,000+ words of embedded material where the right answer hinges on a
+detail buried late in the input (conflicting design docs, an incident log,
+a cross-file code listing, a meeting transcript whose decision reverses at
+the end); multi-part deliverables with 5-8 numbered requirements that must
+all appear; sustained mechanical transformations whose completeness is
+countable (a 4-file rename, an INI-to-YAML conversion preserving comments,
+30 changelog entries, a 28-variable config); and long-form multi-constraint
+reasoning with verifiable properties (a rota and a schedule that must
+satisfy every stated constraint, a constraint set with a planted
+contradiction that must be called out, a deterministic capacity forecast).
+Labels use only bands 2-3 and expected tiers `mid`/`frontier`, per the band
+rules above. `longhorizon-graders.jsonl` holds one grader per id in the
+same union as `graders.jsonl`: 12 of 16 are mechanical (`all` combinations
+of `contains_all`/`not_contains`/`contains_any` over buried details,
+required tokens per numbered part, renamed symbols, or preserved ticket
+ids), and 4 use a `judge` with a 3-5 item `must` list where token checks
+would be fragile (minutes of the reversed decision, cost arithmetic, and
+the two schedules, whose rubrics carry a known-feasible solution).
+`longhorizon.test.ts` keeps the two files in step and under 400KB total.
