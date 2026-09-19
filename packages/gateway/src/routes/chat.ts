@@ -57,6 +57,7 @@ import {
   retryAfterSeconds,
   routingUnavailableMessage,
   applyProviderStrategy,
+  applyReasoningExclusion,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { forwardGated, gateFor } from "./gate.js";
@@ -293,7 +294,10 @@ async function routed(
     promptEmbedding,
     logger: deps.logger,
   });
-  const outgoing = applyFactNote(applyProviderStrategy(applyBrief(body, brief), posture, decision.model), facts);
+  const outgoing = applyFactNote(
+    applyReasoningExclusion(applyProviderStrategy(applyBrief(body, brief), posture, decision.model)),
+    facts,
+  );
 
   // Context pruning (ADR-014, ADR-013 phase C) sheds safe older context from
   // `outgoing.messages` in place before anything reads them: off by default,

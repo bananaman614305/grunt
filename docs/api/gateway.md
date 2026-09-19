@@ -211,6 +211,13 @@ tokens were generated either way — and the decision record's `upstream`
 block aggregates them, stores the verdict and the retry's own usage under
 `gate`, and stores no content.
 
+Routed chat completions default to `reasoning.exclude: true`. The selected
+model can still reason internally, but OpenRouter omits that trace from the
+response so a client cannot mistake it for answer text. Milo preserves an
+explicit `reasoning.exclude` value or legacy `include_reasoning` field;
+requests with an explicit model remain untouched apart from removing a
+Milo-only `milo` field.
+
 ### Context pruning (ADR-014, ADR-013 phase C)
 
 On this route only, when it is enabled (`pruning.enabled`, or `milo: {
