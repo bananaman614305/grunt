@@ -61,6 +61,7 @@ import {
   retryAfterSeconds,
   routingUnavailableMessage,
   applyProviderStrategy,
+  applyReasoningExclusion,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
@@ -219,7 +220,9 @@ async function routed(
 }
 
 async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision, posture: "low" | "balanced" | "quality" = "balanced"): Promise<Response> {
-  const forwarded = applyProviderStrategy(prepareBody(body, decision.model), posture, decision.model);
+  const forwarded = applyReasoningExclusion(
+    applyProviderStrategy(prepareBody(body, decision.model), posture, decision.model),
+  );
   const startedAt = deps.now();
 
   let upstream: Response;

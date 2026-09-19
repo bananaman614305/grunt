@@ -10,10 +10,13 @@
  *     `model`, forward, and answer with `x-milo-*` headers naming the choice.
  *
  * Invariants for both:
- *   - the response body is never rewritten. Non-streaming bodies are buffered
- *     only to read `usage` out of them and are re-sent verbatim; streaming
- *     bodies pass through an identity transform whose only job is to notice
- *     when the last byte went out.
+ *   - the response body is otherwise never rewritten. Non-streaming bodies are
+ *     buffered only to read `usage` out of them; streaming bodies pass through
+ *     a transform whose job is to notice when the last byte went out. On the
+ *     routed path, when the caller did not ask for a visible reasoning trace,
+ *     chat completions also strip `reasoning` / `reasoning_content` /
+ *     `reasoning_details` / `thinking` from `choices[].message` and
+ *     `choices[].delta` so an upstream that still emits them cannot leak CoT.
  *   - the decision is in the log before the upstream call starts, so the
  *     `x-milo-decision-id` a client reads off the response is always
  *     resolvable at `/v1/decisions/:id`.
@@ -60,6 +63,11 @@ import {
   applyReasoningExclusion,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
+import {
+  stripChatReasoningBody,
+  stripChatReasoningSse,
+  wantsVisibleReasoning,
+} from "./chat-reasoning.js";
 import { forwardGated, gateFor } from "./gate.js";
 import { applyPruneHeaders, maybePrune, pruneRecord } from "./prune.js";
 import type { PruneOutcome } from "./prune.js";
@@ -359,13 +367,14 @@ async function forward(
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(facts))) headers.set(k, v);
 
-  // A streamed success is the only case where the body must not be touched.
   // An upstream error is JSON however the request was made, so it takes the
-  // buffered path and passes through with its own status.
+  // buffered path and passes through with its own status. On success, scrub
+  // reasoning fields unless the caller explicitly asked to see them.
   const ctx = { surface: "chat" as const, model: decision.model, decisionId: decision.id };
+  const scrub = !wantsVisibleReasoning(body);
 
   if (isStreaming(body) && upstream.ok && upstream.body !== null) {
-    const recorded = upstream.body.pipeThrough(
+    let recorded: ReadableStream<Uint8Array> = upstream.body.pipeThrough(
       onFinished(() => {
         deps.recordUpstream(decision.id, {
           status: upstream.status,
@@ -374,12 +383,14 @@ async function forward(
         });
       }),
     );
+    if (scrub) recorded = recorded.pipeThrough(stripChatReasoningSse());
     // The charge settles from the usage in the stream's final frames, after
     // the client already has every byte.
     return new Response(chargeStream(c, deps, headers, ctx, recorded), { status: upstream.status, headers });
   }
 
-  const text = await upstream.text();
+  let text = await upstream.text();
+  if (scrub && upstream.ok) text = stripChatReasoningBody(text);
   const usage = upstream.ok ? readBodyUsage("chat", text) : {};
   const record: Upstream = { status: upstream.status, latencyMs: deps.now() - startedAt, ...pruneRecord(prune) };
   if (upstream.ok) Object.assign(record, toUpstreamRecord(usage));

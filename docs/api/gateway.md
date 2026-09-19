@@ -211,12 +211,18 @@ tokens were generated either way — and the decision record's `upstream`
 block aggregates them, stores the verdict and the retry's own usage under
 `gate`, and stores no content.
 
-Routed chat completions default to `reasoning.exclude: true`. The selected
-model can still reason internally, but OpenRouter omits that trace from the
-response so a client cannot mistake it for answer text. Milo preserves an
-explicit `reasoning.exclude` value or legacy `include_reasoning` field;
-requests with an explicit model remain untouched apart from removing a
-Milo-only `milo` field.
+Routed chat completions, messages, and responses default to
+`reasoning.exclude: true`. The selected model can still reason internally, but
+OpenRouter omits that trace from the response so a client cannot mistake it
+for answer text. Milo preserves an explicit `reasoning.exclude` value or
+legacy `include_reasoning` field; requests with an explicit model remain
+untouched apart from removing a Milo-only `milo` field.
+
+On chat completions only, when the caller did not ask for a visible trace,
+Milo also strips `reasoning`, `reasoning_content`, `reasoning_details`, and
+`thinking` from `choices[].message` and `choices[].delta` (streaming and
+non-streaming). That covers providers that still emit those fields despite
+the outbound exclude flag — the leak surface for openai-completions clients.
 
 ### Context pruning (ADR-014, ADR-013 phase C)
 
