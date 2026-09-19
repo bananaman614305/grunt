@@ -19,6 +19,24 @@ To share it:
 cloudflared tunnel --url http://127.0.0.1:4173
 ```
 
+## Verify it renders
+
+`verify-render.sh` proves the scene actually draws, rather than that the files
+were merely served. It serves the repo on a free port, loads the page in headless
+Chrome with software WebGL, waits for the page's own first-frame signal
+(`body.ready`, set by `main.js` after `renderer.render()`), screenshots the
+canvas, and decodes the PNG to reject a flat or near-uniform frame. It needs
+`chrome`, `python3` and `curl` — no npm install.
+
+```
+./trials/bird-sunset/verify-render.sh                 # serve the repo, then check
+./trials/bird-sunset/verify-render.sh <url>           # check a running url
+```
+
+Both the flag and the pixels are checked on purpose. A page that never draws
+still loads and serves fine, and a canvas that draws nothing still reports
+`ready`; either one alone would call a broken scene good.
+
 ## Controls
 
 - `m` — ambience on/off
