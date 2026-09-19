@@ -50,8 +50,10 @@ async function listFacts(c: Context, deps: AppDeps): Promise<Response> {
     }
     const rows = await deps.log.listFacts(keyHash, encryptor);
     return c.json({
-      // The caller knows their own key; the hash adds nothing but noise.
-      data: rows.map(({ keyHash: _keyHash, ...row }) => row),
+      // The caller knows their own key; the hash adds nothing but noise. The
+      // retrieval embedding (ADR-018) is an internal ranking artifact, not
+      // something the owner reads, so it is dropped from the listing too.
+      data: rows.map(({ keyHash: _keyHash, embedding: _embedding, ...row }) => row),
       settings: { enabled: settings.enabled },
     });
   } catch (err) {

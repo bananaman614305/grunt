@@ -202,6 +202,15 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
           },
         }
       : {}),
+    ...(config.factRetrieval !== undefined
+      ? {
+          factRetrieval: {
+            enabled: config.factRetrieval.enabled,
+            ...(config.factRetrieval.model !== undefined ? { model: config.factRetrieval.model } : {}),
+            ...(config.factRetrieval.baseUrl !== undefined ? { baseUrl: config.factRetrieval.baseUrl } : {}),
+          },
+        }
+      : {}),
   };
 
   const gateway = await deps.createGateway(gatewayOptions);

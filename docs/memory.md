@@ -142,9 +142,19 @@ relevant, nothing is injected and no fact reaches the model.
 
 This gate is both controls at once. **Privacy:** an irrelevant fact never
 leaves the vault. **Cost:** your prompt grows only on the requests a fact
-actually helps — the standing cost is one Jev relevance call per routed
-request when you have facts stored and the switch is on; input tokens grow
-only when a fact is injected. Injection is skipped on `low` posture.
+actually helps; input tokens grow only when a fact is injected. Injection is
+skipped on `low` posture.
+
+So that the gate's own cost does not grow with your vault, retrieval runs in
+**two stages** (see [`adr/018-fact-retrieval-scaling.md`](adr/018-fact-retrieval-scaling.md)).
+First a local, embedding-based pre-filter ranks your facts against the incoming
+turn by similarity — plain arithmetic, no network — and keeps only the closest
+handful. Then the Jev relevance gate above judges just those. A turn that
+matches nothing costs **zero** Jev calls; a turn against a huge vault costs a
+bounded few, not one per stored fact. The pre-filter only ever narrows what the
+gate is asked; the gate still has the final, fail-closed say on what reaches the
+model. The turn's embedding is computed in parallel with routing, so it adds no
+noticeable time.
 
 ## Seeing, skipping, deleting, killing
 
@@ -171,6 +181,15 @@ captured, nothing is injected, `GET /v1/memory` answers empty and says so,
 because a fact store with no envelope must not keep plaintext. Fact content
 never reaches a log line, a response header, a decision row, or an error
 message; the decision log stays content-free.
+
+One disclosure the two-stage retrieval adds: to rank a fact by similarity, Milo
+embeds its text once, at storage (and once per fact if an older, unvectored
+fact is backfilled). That embedding call goes to the same provider already
+serving your completions, under your own forwarded key, and returns a one-way
+vector — but it is a real moment your fact text leaves the vault, so it is named
+here rather than buried. The stored vector is kept as plain JSON (it is derived
+from content, not content), used server-side only for ranking, and is not
+returned in your `GET /v1/memory` listing.
 
 Whether the coding-experience memory (`convention` and `correction`)
 *measurably* improves agentic outcomes is **unproven**, and it is hard to

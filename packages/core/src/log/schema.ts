@@ -227,6 +227,24 @@ CREATE TABLE IF NOT EXISTS fact_settings (
 );
 `,
   },
+  {
+    version: 8,
+    description: "add the fact retrieval embedding column",
+    // Two-stage retrieval (ADR-018). `embedding` holds the fact text's
+    // retrieval vector as a JSON array of numbers, so the gateway can pre-rank
+    // a caller's whole vault against the incoming turn with local cosine
+    // arithmetic and spend a Jev relevance call only on the closest few. It is
+    // nullable on purpose: a fact stored before this migration, or one whose
+    // capture-time embedding failed, has NULL here and fails open through the
+    // pre-filter (it is still asked about) until a backfill sets it. The
+    // column is derived from the content, not content itself -- it is a
+    // one-way vector used only for local ranking -- so unlike
+    // `content_encrypted` it is not enveloped. ADR-018 records that embedding
+    // a fact sends its text to the embedding provider once, at storage.
+    sql: `
+ALTER TABLE facts ADD COLUMN embedding TEXT;
+`,
+  },
 ];
 
 /**

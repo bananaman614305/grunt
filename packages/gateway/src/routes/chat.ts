@@ -28,7 +28,7 @@
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
-import type { ChatMessage, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
+import type { ChatMessage, CostPosture, EmbedClientLike, EmbeddingVector, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { authorization, passThroughHeaders } from "../app.js";
 import {
@@ -43,7 +43,8 @@ import {
 } from "../billing.js";
 import { applyBrief, briefHeaders, routedBrief } from "../brief.js";
 import { maybeCapture } from "../capture.js";
-import { applyFactNote, factHeaders, maybeCaptureFact, routedFacts } from "../facts.js";
+import { applyFactNote, factHeaders, maybeCaptureFact, prepareQueryEmbedding, routedFacts } from "../facts.js";
+import { embedClientFor } from "../embed.js";
 import type { RoutedFacts } from "../facts.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
@@ -183,6 +184,27 @@ async function routed(
   if (forcedTier !== undefined) request.forcedTier = forcedTier;
   if (extension?.samples !== undefined) request.samples = extension.samples;
 
+  // Two-stage fact retrieval (ADR-018): prepare the turn's embedding IN
+  // PARALLEL with the routing Jev call below, so its ~50 ms round trip hides
+  // under the ~350 ms route and adds nothing to the critical path. Eligibility
+  // is decided from what we already know (fact memory on, not `low` posture,
+  // not opted out); the embed client authenticates with the RESOLVED upstream
+  // key -- the account sub-key for a Milo caller, the caller's own key for
+  // BYOK -- never the raw `mk_` bearer. `prepareQueryEmbedding` makes the
+  // cheap, decrypt-free checks (retrieval on for this key, at least one fact
+  // stored) before embedding, so a caller with no facts pays for no call. Any
+  // failure resolves to undefined and the gate falls open to every fact.
+  const posture: CostPosture = extension?.posture ?? "balanced";
+  const retrievalEligible = deps.factMemory !== undefined && posture !== "low" && extension?.facts !== false;
+  const embed: EmbedClientLike | undefined = retrievalEligible
+    ? embedClientFor(deps.factRetrieval, upstreamHeadersFor(c).get("authorization") ?? "")
+    : undefined;
+  const promptEmbedding: Promise<EmbeddingVector | undefined> = prepareQueryEmbedding(deps.log, embed, {
+    keyHash: callerScope(c),
+    messages,
+    logger: deps.logger,
+  });
+
   let decision: RouteDecision;
   try {
     decision = await deps.router.route(request);
@@ -243,6 +265,7 @@ async function routed(
     keyHash: callerScope(c),
     messages,
     provenance: decision.fingerprint,
+    ...(embed !== undefined ? { embed } : {}),
     logger: deps.logger,
   });
   const brief = await routedBrief(deps.log, callerScope(c), {
@@ -251,8 +274,8 @@ async function routed(
     logger: deps.logger,
   });
   // Posture-aware provider strategy for the upstream call; a caller-supplied
-  // `provider` field always wins (see applyProviderStrategy).
-  const posture = extension?.posture ?? "balanced";
+  // `provider` field always wins (see applyProviderStrategy). `posture` was
+  // resolved above, before routing, to gate retrieval eligibility.
   // The relevance-gated fact note (ADR-017): one Jev call classifies which
   // stored facts, if any, belong in this request; only relevant ones are
   // appended, and nothing is injected on `low` posture. This runs before the
@@ -263,6 +286,11 @@ async function routed(
     messages,
     extension,
     skip: posture === "low",
+    // Two-stage retrieval (ADR-018): the embed client for the pre-filter and
+    // any backfill, and the turn's embedding already in flight since before
+    // routing, so the gate rarely waits on it.
+    ...(embed !== undefined ? { embed } : {}),
+    promptEmbedding,
     logger: deps.logger,
   });
   const outgoing = applyFactNote(applyProviderStrategy(applyBrief(body, brief), posture, decision.model), facts);

@@ -26,6 +26,7 @@
  */
 
 import { assertKeyHash } from "../log/roster-store.js";
+import type { EmbeddingVector } from "./embed.js";
 
 // ---------------------------------------------------------------------------
 // Category vocabulary (a label; never the content)
@@ -82,6 +83,14 @@ export type FactRow = {
   text: string;
   /** Fingerprint hash of the capturing turn. A digest, never content. */
   provenance: string;
+  /**
+   * The retrieval embedding of `text` (ADR-018), or undefined for a fact
+   * stored before embeddings or when embedding failed. The vector is derived
+   * from the content but is not itself content the store protects: it is used
+   * only to pre-rank facts locally against the incoming turn. Absent here, a
+   * fact fails open through the pre-filter and the gateway can backfill it.
+   */
+  embedding?: EmbeddingVector;
   createdAt: string;
   updatedAt: string;
 };
@@ -93,6 +102,8 @@ export type FactCandidate = {
   text: string;
   /** Fingerprint-style hash of the turn that taught it. */
   provenance: string;
+  /** The retrieval embedding of `text` (ADR-018), when capture computed one. */
+  embedding?: EmbeddingVector;
   /** ISO 8601 write time; defaults to now. Injectable for tests. */
   now?: string;
 };
@@ -108,6 +119,20 @@ export type FactStore = {
   putFact(keyHash: string, candidate: FactCandidate, enc: Encryptor): Promise<FactRow>;
   /** Every fact this key stored, newest first, decrypted for the owner. */
   listFacts(keyHash: string, enc: Encryptor): Promise<FactRow[]>;
+  /**
+   * How many facts this key has stored. A cheap `COUNT(*)` that decrypts
+   * nothing, so the retrieval path (ADR-018) can decide whether to embed the
+   * incoming turn at all before paying to list and decrypt the vault.
+   */
+  countFacts(keyHash: string): Promise<number>;
+  /**
+   * Sets (or clears) the retrieval embedding of one already-stored fact
+   * (ADR-018), scoped by key hash. Used to backfill a vector for a fact that
+   * was stored before embeddings or whose capture-time embedding failed, off
+   * the response path. Returns true when the row existed and belonged to the
+   * key. Needs no envelope: it never touches the ciphertext.
+   */
+  setFactEmbedding(keyHash: string, id: string, embedding: EmbeddingVector | null): Promise<boolean>;
   /** True when the row existed *and* belonged to this key. Needs no crypto. */
   deleteFact(keyHash: string, id: string): Promise<boolean>;
   /** The kill switch; on for a key that never wrote a row. */

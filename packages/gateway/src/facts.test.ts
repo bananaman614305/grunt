@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 import { DecisionLog, relevanceKey } from "@milo/core";
-import type { ChatMessage, Encryptor, JevAnswer, JevClientLike, SystemOneResult } from "@milo/core";
+import type { ChatMessage, EmbedClientLike, EmbeddingVector, Encryptor, JevAnswer, JevClientLike, SystemOneResult } from "@milo/core";
 import { applyFactNote, maybeCaptureFact, routedFacts } from "./facts.js";
 
 const HASH = "a".repeat(64);
@@ -124,6 +124,170 @@ describe("routedFacts + applyFactNote", () => {
 
     await log.setFactSettings(HASH, { enabled: false });
     expect(await routedFacts(log, jev, enc, base)).toBeUndefined(); // kill switch
+    await log.close();
+  });
+});
+
+// --- Two-stage retrieval (ADR-018) -----------------------------------------
+
+/** An embed stub: fixed vectors by text, a zero vector for anything else. */
+function stubEmbed(map: Record<string, EmbeddingVector>): EmbedClientLike {
+  return { async embed(texts) { return texts.map((t) => map[t] ?? [0, 0]); } };
+}
+
+/** A Jev stub that also records every systemone call and the keys it saw. */
+function spyJev(answersFor: (keys: string[]) => Record<string, JevAnswer>): {
+  jev: JevClientLike;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  const jev: JevClientLike = {
+    async systemone(req): Promise<SystemOneResult> {
+      const keys = Object.keys(req.questions);
+      calls.push(keys);
+      return {
+        model: "jev-latest",
+        answers: answersFor(keys),
+        usage: { input_tokens: 1, output_tokens: 1 },
+        requestId: "req-test",
+        latencyMs: 1,
+      };
+    },
+  };
+  return { jev, calls };
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 20));
+
+describe("routedFacts two-stage retrieval (ADR-018)", () => {
+  const STAGING = "my staging box is 10.2.0.7";
+  const COFOUNDER = "my co-founder is Dana, she owns billing";
+
+  async function seedVectored(): Promise<{ log: DecisionLog; stagingId: string; cofounderId: string }> {
+    const log = await DecisionLog.open(":memory:");
+    const s = await log.putFact(HASH, { category: "address", text: STAGING, provenance: PROV, embedding: [1, 0] }, enc);
+    const c = await log.putFact(HASH, { category: "contact", text: COFOUNDER, provenance: PROV, embedding: [0, 1] }, enc);
+    return { log, stagingId: s.id, cofounderId: c.id };
+  }
+
+  it("asks Jev only about the facts the pre-filter kept", async () => {
+    const { log, stagingId, cofounderId } = await seedVectored();
+    const { jev, calls } = spyJev(() => ({ [relevanceKey(stagingId)]: noul(0.9) }));
+
+    const result = await routedFacts(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("what is the ip of my staging server?"),
+      embed: stubEmbed({}),
+      promptEmbedding: Promise.resolve([1, 0]), // aligned with STAGING, orthogonal to COFOUNDER
+    });
+
+    expect(result?.count).toBe(1);
+    expect(calls).toHaveLength(1); // one relevance call...
+    expect(calls[0]).toEqual([relevanceKey(stagingId)]); // ...about the near fact only
+    expect(calls[0]).not.toContain(relevanceKey(cofounderId)); // the far fact never reached Jev
+    await log.close();
+  });
+
+  it("spends ZERO Jev calls when nothing clears the similarity floor", async () => {
+    const { log } = await seedVectored();
+    const { jev, calls } = spyJev(() => ({}));
+
+    const result = await routedFacts(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("an utterly unrelated question about the weather"),
+      embed: stubEmbed({}),
+      promptEmbedding: Promise.resolve([1, 0, 0]), // orthogonal to both 2-D facts -> mismatch -> 0 sim
+    });
+
+    // The query is orthogonal to every stored vector, so the candidate set is
+    // empty and the gate returns without ever asking Jev.
+    expect(result).toBeUndefined();
+    expect(calls).toHaveLength(0);
+    await log.close();
+  });
+
+  it("fails open: a fact with no vector is still asked about even with a query", async () => {
+    const log = await DecisionLog.open(":memory:");
+    // No embedding on this fact.
+    const row = await log.putFact(HASH, { category: "address", text: STAGING, provenance: PROV }, enc);
+    const { jev, calls } = spyJev(() => ({ [relevanceKey(row.id)]: noul(0.9) }));
+
+    const result = await routedFacts(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("what is my staging ip?"),
+      embed: stubEmbed({ [STAGING]: [1, 0] }),
+      promptEmbedding: Promise.resolve([0, 1]), // orthogonal, but the fact is unvectored -> passes through
+    });
+
+    expect(result?.count).toBe(1);
+    expect(calls[0]).toEqual([relevanceKey(row.id)]);
+    await log.close();
+  });
+
+  it("backfills a missing vector off the response path", async () => {
+    const log = await DecisionLog.open(":memory:");
+    const row = await log.putFact(HASH, { category: "address", text: STAGING, provenance: PROV }, enc);
+    const { jev } = spyJev(() => ({ [relevanceKey(row.id)]: noul(0.1) }));
+
+    await routedFacts(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("hello"),
+      embed: stubEmbed({ [STAGING]: [0.6, 0.8] }),
+      promptEmbedding: Promise.resolve([1, 0]),
+    });
+
+    await flush(); // let the fire-and-forget backfill settle
+    const [stored] = await log.listFacts(HASH, enc);
+    expect(stored!.embedding).toEqual([0.6, 0.8]);
+    await log.close();
+  });
+
+  it("falls back to all facts when no embedding is available (pre-ADR-018 behaviour)", async () => {
+    const { log, stagingId, cofounderId } = await seedVectored();
+    const { jev, calls } = spyJev((keys) => Object.fromEntries(keys.map((k) => [k, noul(0.99)])));
+
+    // No embed client and no promptEmbedding: query is undefined, so every fact
+    // is a candidate and the gate behaves exactly as ADR-017 shipped.
+    const result = await routedFacts(log, jev, enc, { keyHash: HASH, messages: userTurn("anything") });
+    expect(result?.count).toBe(2);
+    expect(calls[0]!.sort()).toEqual([relevanceKey(stagingId), relevanceKey(cofounderId)].sort());
+    await log.close();
+  });
+});
+
+describe("maybeCaptureFact stores an embedding (ADR-018)", () => {
+  it("embeds the captured fact text when an embed client is present", async () => {
+    const log = await DecisionLog.open(":memory:");
+    const jev = stubJev(() => ({ fact_stated: noul(0.95), fact_category: choice("identifier", 0.9) }));
+
+    const row = await maybeCaptureFact(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("remember that my deploy account is acct_4Q7"),
+      provenance: PROV,
+      embed: stubEmbed({ "my deploy account is acct_4Q7": [0.2, 0.9] }),
+    });
+    expect(row).toBeDefined();
+
+    const [stored] = await log.listFacts(HASH, enc);
+    expect(stored!.embedding).toEqual([0.2, 0.9]);
+    await log.close();
+  });
+
+  it("still stores the fact (without a vector) when embedding fails", async () => {
+    const log = await DecisionLog.open(":memory:");
+    const jev = stubJev(() => ({ fact_stated: noul(0.95), fact_category: choice("identifier", 0.9) }));
+    const throwing: EmbedClientLike = { async embed() { throw new Error("embeddings down"); } };
+
+    const row = await maybeCaptureFact(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("remember that my deploy account is acct_4Q7"),
+      provenance: PROV,
+      embed: throwing,
+    });
+    expect(row).toBeDefined();
+    const [stored] = await log.listFacts(HASH, enc);
+    expect(stored!.text).toBe("my deploy account is acct_4Q7");
+    expect(stored!.embedding).toBeUndefined(); // fail-open: stored, just unvectored
     await log.close();
   });
 });

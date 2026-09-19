@@ -23,10 +23,15 @@ import {
   factRelevanceQuestions,
   latestUserText,
   resolveFactCapture,
+  selectCandidates,
   selectRelevantFacts,
+  unvectoredIds,
 } from "@milo/core";
 import type {
   ChatMessage,
+  EmbedClientLike,
+  EmbeddableFact,
+  EmbeddingVector,
   Encryptor,
   FactRow,
   FactStore,
@@ -36,6 +41,7 @@ import type {
 } from "@milo/core";
 import { FACT_CAPTURE_QUESTIONS } from "@milo/core";
 import type { Logger } from "./app.js";
+import { embedOne } from "./embed.js";
 import { errorMessage } from "./errors.js";
 import type { Body } from "./routes/shared.js";
 
@@ -56,6 +62,14 @@ export type FactCaptureOptions = {
   messages: ChatMessage[];
   /** The decision's fingerprint: the stored fact's provenance. */
   provenance: string;
+  /**
+   * The embedding client (ADR-018), bound to the caller's forwarded key. When
+   * present, the captured fact's text is embedded once at storage so the
+   * retrieval pre-filter can rank it later without a Jev call. Fail-open: if
+   * embedding fails the fact is still stored, just without a vector, and it
+   * fails open through the pre-filter until a backfill supplies one.
+   */
+  embed?: EmbedClientLike;
   budgetMs?: number;
   logger?: Logger;
 };
@@ -91,16 +105,51 @@ export async function maybeCaptureFact(
     const captured = resolveFactCapture(result.answers, message);
     if (captured === undefined) return undefined;
 
-    const row = await store.putFact(
-      opts.keyHash,
-      { category: captured.category, text: captured.text, provenance: opts.provenance },
-      enc,
-    );
+    // Embed the fact text once, at storage (ADR-018), so retrieval can later
+    // rank it locally. Fail-open: a failed embedding stores the fact without a
+    // vector rather than dropping it. This is the one point a fact's text is
+    // sent to the embedding provider, disclosed in the ADR.
+    const embedding = await embedOne(opts.embed, captured.text, opts.logger);
+
+    const candidate = { category: captured.category, text: captured.text, provenance: opts.provenance } as {
+      category: typeof captured.category;
+      text: string;
+      provenance: string;
+      embedding?: EmbeddingVector;
+    };
+    if (embedding !== undefined) candidate.embedding = embedding;
+    const row = await store.putFact(opts.keyHash, candidate, enc);
     // Category and id only -- never the fact text (ADR-017).
     opts.logger?.info("captured fact", { id: row.id, category: row.category });
     return row;
   } catch (err) {
     opts.logger?.warn("fact capture failed", { error: errorMessage(err) });
+    return undefined;
+  }
+}
+
+/**
+ * The turn's retrieval embedding, prepared in parallel with routing (ADR-018),
+ * or undefined when there is nothing to retrieve against. It first makes the
+ * cheap, decrypt-free checks -- retrieval on for this key, at least one fact
+ * stored -- and only then embeds the turn, so a caller with no facts pays for
+ * no embedding call. The result feeds `routedFacts.promptEmbedding`; the whole
+ * thing fails open to undefined, which the gate reads as "ask Jev about every
+ * fact". Kicked off before `router.route`, its ~50 ms hides under the route.
+ */
+export async function prepareQueryEmbedding(
+  store: FactStore,
+  embed: EmbedClientLike | undefined,
+  opts: { keyHash: string; messages: ChatMessage[]; logger?: Logger },
+): Promise<EmbeddingVector | undefined> {
+  if (embed === undefined) return undefined;
+  try {
+    const settings = await store.getFactSettings(opts.keyHash);
+    if (!settings.enabled) return undefined;
+    if ((await store.countFacts(opts.keyHash)) === 0) return undefined;
+    return await embedOne(embed, latestUserText(opts.messages), opts.logger);
+  } catch (err) {
+    opts.logger?.warn("query embedding prep failed; falling open", { error: errorMessage(err) });
     return undefined;
   }
 }
@@ -118,6 +167,21 @@ export type RoutedFactsOptions = {
   extension?: MiloRequestExtension | undefined;
   /** `true` on `low` posture: the gate is skipped, like the brief and gates. */
   skip?: boolean;
+  /**
+   * The embedding client (ADR-018), bound to the caller's forwarded key. When
+   * present, stage one of retrieval runs: the caller's facts are pre-ranked
+   * locally against this turn and only the closest few reach the Jev gate. Its
+   * absence, or any embedding failure, falls open to the ADR-017 behaviour of
+   * asking Jev about every fact.
+   */
+  embed?: EmbedClientLike;
+  /**
+   * The turn's embedding, already in flight (ADR-018). The gateway kicks this
+   * off in parallel with the routing Jev call so its ~50 ms hides under the
+   * ~350 ms route; by the time this gate runs the vector is usually ready. When
+   * omitted, the gate embeds the turn itself.
+   */
+  promptEmbedding?: Promise<EmbeddingVector | undefined>;
   budgetMs?: number;
   logger?: Logger;
 };
@@ -148,20 +212,86 @@ export async function routedFacts(
     const rows = await store.listFacts(opts.keyHash, enc);
     if (rows.length === 0) return undefined;
 
-    const facts: InjectableFact[] = rows.map((row) => ({ id: row.id, category: row.category, text: row.text }));
+    // Stage one (ADR-018): the turn's embedding, either the one already in
+    // flight (hidden under the routing call) or, failing that, embedded now.
+    // A failure here resolves to undefined, which the pre-filter reads as
+    // "fall open to every fact" -- exactly the pre-ADR-018 gate.
+    const query =
+      (opts.promptEmbedding !== undefined ? await opts.promptEmbedding : undefined) ??
+      (await embedOne(opts.embed, latestUserText(opts.messages), opts.logger));
+
+    const embeddable: EmbeddableFact[] = rows.map((row) => {
+      const f: EmbeddableFact = { id: row.id, category: row.category, text: row.text };
+      if (row.embedding !== undefined) f.embedding = row.embedding;
+      return f;
+    });
+
+    // Backfill any missing vectors off the response path (ADR-018), so the
+    // pre-filter grows complete and the Jev cost flattens. Fire-and-forget:
+    // it never delays or fails this request. Skipped when embedding is
+    // unavailable this request (query is undefined), since it would only fail.
+    if (query !== undefined && opts.embed !== undefined) {
+      void backfillEmbeddings(store, opts.embed, opts.keyHash, rows, opts.logger);
+    }
+
+    // The candidates worth a Jev question: the closest few by cosine, plus any
+    // unvectored fact (fail-open). An empty set means nothing cleared the
+    // similarity floor -- so this request spends ZERO Jev relevance calls, the
+    // whole point of the two stages.
+    const candidates: InjectableFact[] = selectCandidates(query, embeddable).map((c) => c.fact);
+    if (candidates.length === 0) return undefined;
+
     const { state } = buildJevState(opts.messages);
     const result = await jev.systemone(
-      { state, questions: factRelevanceQuestions(facts) },
+      { state, questions: factRelevanceQuestions(candidates) },
       { budgetMs: opts.budgetMs ?? FACT_RELEVANCE_BUDGET_MS },
     );
 
-    const relevant = selectRelevantFacts(result.answers, facts);
+    const relevant = selectRelevantFacts(result.answers, candidates);
     const note = compileFactNote(relevant);
     if (note === undefined) return undefined;
     return { note, count: relevant.length };
   } catch (err) {
     opts.logger?.warn("fact relevance gate failed", { error: errorMessage(err) });
     return undefined;
+  }
+}
+
+/**
+ * Embeds every fact still missing a vector, in one batched call, and writes
+ * each back (ADR-018). Fire-and-forget from the gate: it must never delay or
+ * fail a response, so it swallows every error and touches nothing on the hot
+ * path. After it runs, the caller's vault is fully vectored and the pre-filter
+ * is in full force for the next request.
+ */
+async function backfillEmbeddings(
+  store: FactStore,
+  embed: EmbedClientLike,
+  keyHash: string,
+  rows: FactRow[],
+  logger?: Logger,
+): Promise<void> {
+  try {
+    const missing = unvectoredIds(
+      rows.map((r) => {
+        const f: EmbeddableFact = { id: r.id, category: r.category, text: r.text };
+        if (r.embedding !== undefined) f.embedding = r.embedding;
+        return f;
+      }),
+    );
+    if (missing.length === 0) return;
+    const byId = new Map(rows.map((r) => [r.id, r.text] as const));
+    const texts = missing.map((id) => byId.get(id) ?? "");
+    const vectors = await embed.embed(texts);
+    if (vectors.length !== missing.length) return;
+    for (let i = 0; i < missing.length; i++) {
+      const id = missing[i] as string;
+      const vec = vectors[i] as EmbeddingVector;
+      await store.setFactEmbedding(keyHash, id, vec);
+    }
+    logger?.info("backfilled fact embeddings", { count: missing.length });
+  } catch (err) {
+    logger?.warn("fact embedding backfill failed", { error: errorMessage(err) });
   }
 }
 

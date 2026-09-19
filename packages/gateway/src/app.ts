@@ -103,6 +103,15 @@ export type AppDeps = {
    * plaintext, so it stores nothing.
    */
   factMemory?: { encryptor: Encryptor };
+  /**
+   * Two-stage fact retrieval (ADR-018). Present only alongside `factMemory`
+   * and when retrieval is enabled: `model` and `baseUrl` are the embeddings
+   * endpoint the gateway calls with the caller's forwarded key to pre-rank a
+   * caller's facts before the Jev gate. Absent means the pre-filter is off and
+   * the gate falls open to asking Jev about every fact, exactly as ADR-017
+   * shipped it.
+   */
+  factRetrieval?: { model: string; baseUrl: string; fetch?: (input: string, init?: RequestInit) => Promise<Response> };
   rateLimiter: RateLimiter;
   /**
    * Best-of-N execution knobs (ADR-010). Absent means the defaults:

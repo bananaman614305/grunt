@@ -39,6 +39,26 @@ import { applyMigrations } from "./schema.js";
 const MAX_FIELD_LENGTH = 2000;
 const LOOKS_LIKE_SECRET = /sk-or-|Bearer\s/i;
 
+/**
+ * Parses a stored fact embedding (ADR-018) back into a number array, or
+ * undefined for a NULL/absent/malformed value. A row written before migration
+ * 8, or one whose embedding never backfilled, has none; a garbled value is
+ * treated the same, so a bad column can never crash a read -- the fact just
+ * fails open through the pre-filter until it is re-embedded.
+ */
+function parseEmbedding(value: unknown): number[] | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+    if (!parsed.every((n) => typeof n === "number" && Number.isFinite(n))) return undefined;
+    return parsed as number[];
+  } catch {
+    return undefined;
+  }
+}
+
 function checkString(path: string, value: string): void {
   if (value.length > MAX_FIELD_LENGTH) {
     throw new Error(
@@ -589,11 +609,23 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
       createdAt: now,
       updatedAt: now,
     };
+    if (candidate.embedding !== undefined) row.embedding = candidate.embedding;
     await this.db.execute({
       sql: `INSERT INTO facts
-              (id, key_hash, category, content_encrypted, provenance, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [row.id, row.keyHash, row.category, enc.encrypt(candidate.text), row.provenance, row.createdAt, row.updatedAt],
+              (id, key_hash, category, content_encrypted, provenance, embedding, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        row.id,
+        row.keyHash,
+        row.category,
+        enc.encrypt(candidate.text),
+        row.provenance,
+        // The retrieval vector (ADR-018) is stored as JSON, or NULL when
+        // capture computed none; it is derived from the content, not content.
+        candidate.embedding === undefined ? null : JSON.stringify(candidate.embedding),
+        row.createdAt,
+        row.updatedAt,
+      ],
     });
     return row;
   }
@@ -605,15 +637,45 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
       sql: `SELECT * FROM facts WHERE key_hash = ? ORDER BY created_at DESC, id DESC`,
       args: [keyHash],
     });
-    return rs.rows.map((row) => ({
-      id: String(row.id),
-      keyHash: String(row.key_hash),
-      category: String(row.category) as FactCategory,
-      text: enc.decrypt(String(row.content_encrypted)),
-      provenance: String(row.provenance),
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at),
-    }));
+    return rs.rows.map((row) => {
+      const out: FactRow = {
+        id: String(row.id),
+        keyHash: String(row.key_hash),
+        category: String(row.category) as FactCategory,
+        text: enc.decrypt(String(row.content_encrypted)),
+        provenance: String(row.provenance),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      };
+      const embedding = parseEmbedding(row.embedding);
+      if (embedding !== undefined) out.embedding = embedding;
+      return out;
+    });
+  }
+
+  /** A cheap count of this key's facts; decrypts nothing (ADR-018). */
+  async countFacts(keyHash: string): Promise<number> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT COUNT(*) AS n FROM facts WHERE key_hash = ?",
+      args: [keyHash],
+    });
+    return Number(rs.rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Backfills (or clears with null) one fact's retrieval vector (ADR-018),
+   * scoped by id *and* key hash so one caller cannot touch another's row. The
+   * gateway calls this off the response path for a candidate it embedded but
+   * that had no stored vector, so the pre-filter grows complete over time.
+   */
+  async setFactEmbedding(keyHash: string, id: string, embedding: number[] | null): Promise<boolean> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "UPDATE facts SET embedding = ?, updated_at = ? WHERE id = ? AND key_hash = ?",
+      args: [embedding === null ? null : JSON.stringify(embedding), new Date().toISOString(), id, keyHash],
+    });
+    return rs.rowsAffected > 0;
   }
 
   /**

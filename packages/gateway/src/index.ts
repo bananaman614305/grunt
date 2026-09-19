@@ -8,7 +8,7 @@
  * the router cannot decide fails loudly in the route that asked.
  */
 import type { Hono } from "hono";
-import { DecisionLog, DEFAULT_PRICING, DEFAULT_ROSTER, JevClient, OpenRouterClient, Router, StickyCache } from "@milo/core";
+import { DecisionLog, DEFAULT_PRICING, DEFAULT_ROSTER, JevClient, OPENROUTER_BASE_URL, OpenRouterClient, Router, StickyCache } from "@milo/core";
 import type {
   DecisionRecord,
   JevClientOptions,
@@ -20,6 +20,7 @@ import type {
   StickyStore,
 } from "@milo/core";
 import type { BillingStore, Encryptor, PricingConfig } from "@milo/core";
+import { DEFAULT_EMBED_MODEL } from "./embed.js";
 import { decryptSecret as decryptBillingEnvelope, encryptSecret as encryptBillingEnvelope } from "@milo/billing";
 import type { OpenRouterProvisioningClient } from "@milo/provisioning";
 import type { StripeClient } from "@milo/stripe";
@@ -81,6 +82,17 @@ export type GatewayOptions = {
    * is unknown. Set from `milo.config.json`'s `pruning`.
    */
   pruning?: { enabled?: boolean; minContextTokens?: number; contextWindowTokens?: number };
+  /**
+   * Two-stage fact retrieval (ADR-018). `enabled` (default true) turns on the
+   * embedding pre-filter that narrows a caller's facts before the Jev
+   * relevance gate; it only ever runs when fact memory is on (billing/an
+   * encryption key present). `model` is the OpenAI-compatible embeddings model
+   * (default `openai/text-embedding-3-small`); `baseUrl` is the embeddings
+   * endpoint (default: the OpenRouter completions base URL). The caller's
+   * forwarded key pays for the embedding, so no server-side embedding key is
+   * needed. Set from `milo.config.json`'s `factRetrieval`.
+   */
+  factRetrieval?: { enabled?: boolean; model?: string; baseUrl?: string };
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
   /**
@@ -174,6 +186,22 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
           },
         };
 
+  // Two-stage fact retrieval (ADR-018): the embedding pre-filter for the
+  // relevance gate. Only meaningful when fact memory is on, and default-on
+  // when it is -- the caller's forwarded key pays for the embedding, so it
+  // adds no server-side key. `baseUrl` defaults to the completions endpoint,
+  // `model` to a small, widely-hosted embeddings model; a failed embedding
+  // falls open to the ADR-017 all-facts gate, so this can never break a call.
+  const factRetrievalEnabled = options.factRetrieval?.enabled ?? true;
+  const factRetrieval: { model: string; baseUrl: string; fetch?: typeof fetch } | undefined =
+    factMemory === undefined || !factRetrievalEnabled
+      ? undefined
+      : {
+          model: options.factRetrieval?.model ?? DEFAULT_EMBED_MODEL,
+          baseUrl: options.factRetrieval?.baseUrl ?? options.openRouterBaseUrl ?? OPENROUTER_BASE_URL,
+          ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
+        };
+
   const mode: RoutingMode = options.mode ?? "roster";
 
   const routerOptions = {
@@ -232,6 +260,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     mode,
     jev,
     ...(factMemory !== undefined ? { factMemory } : {}),
+    ...(factRetrieval !== undefined ? { factRetrieval } : {}),
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
     ...(options.pruning !== undefined ? { pruning: options.pruning } : {}),
     ...(billing !== undefined ? { billing } : {}),

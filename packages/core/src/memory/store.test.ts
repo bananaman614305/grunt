@@ -140,3 +140,57 @@ describe("the decision log stays content-free", () => {
     expect(dump).not.toContain("acct_ZZ9");
   });
 });
+
+describe("fact retrieval embeddings (ADR-018)", () => {
+  it("round-trips a stored embedding and stores it unenveloped", async () => {
+    const vec = [0.1, -0.2, 0.3];
+    const row = await log.putFact(HASH, candidate({ embedding: vec }), fakeEnc);
+    expect(row.embedding).toEqual(vec);
+
+    const [listed] = await log.listFacts(HASH, fakeEnc);
+    expect(listed!.embedding).toEqual(vec);
+
+    // The vector is derived from content but is not enveloped: it is stored as
+    // plain JSON in its own column, while the text stays ciphertext.
+    const raw = createClient({ url: `file:${dbPath}` });
+    const rs = await raw.execute("SELECT content_encrypted, embedding FROM facts");
+    raw.close();
+    expect(String(rs.rows[0]!.content_encrypted)).toMatch(/^ENC\(/);
+    expect(JSON.parse(String(rs.rows[0]!.embedding))).toEqual(vec);
+  });
+
+  it("stores no embedding when the candidate has none", async () => {
+    await log.putFact(HASH, candidate(), fakeEnc);
+    const [listed] = await log.listFacts(HASH, fakeEnc);
+    expect(listed!.embedding).toBeUndefined();
+  });
+
+  it("backfills a missing embedding, scoped by key hash", async () => {
+    const row = await log.putFact(HASH, candidate(), fakeEnc);
+    expect(await log.setFactEmbedding(HASH, row.id, [1, 2, 3])).toBe(true);
+    const [listed] = await log.listFacts(HASH, fakeEnc);
+    expect(listed!.embedding).toEqual([1, 2, 3]);
+
+    // A different key cannot touch this row.
+    expect(await log.setFactEmbedding(OTHER_HASH, row.id, [9, 9, 9])).toBe(false);
+    const [again] = await log.listFacts(HASH, fakeEnc);
+    expect(again!.embedding).toEqual([1, 2, 3]);
+  });
+
+  it("clears an embedding when set to null", async () => {
+    const row = await log.putFact(HASH, candidate({ embedding: [1, 2, 3] }), fakeEnc);
+    expect(await log.setFactEmbedding(HASH, row.id, null)).toBe(true);
+    const [listed] = await log.listFacts(HASH, fakeEnc);
+    expect(listed!.embedding).toBeUndefined();
+  });
+
+  it("reads a fact written before migration 8 as simply unvectored", async () => {
+    // Simulate a pre-embedding row: a NULL embedding column reads as undefined.
+    await log.putFact(HASH, candidate(), fakeEnc);
+    const raw = createClient({ url: `file:${dbPath}` });
+    await raw.execute("UPDATE facts SET embedding = NULL");
+    raw.close();
+    const [listed] = await log.listFacts(HASH, fakeEnc);
+    expect(listed!.embedding).toBeUndefined();
+  });
+});

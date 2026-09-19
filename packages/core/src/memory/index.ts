@@ -45,3 +45,18 @@ export {
   selectRelevantFacts,
 } from "./inject.js";
 export type { InjectableFact } from "./inject.js";
+
+export {
+  RETRIEVAL_SIM_FLOOR,
+  RETRIEVAL_TOP_K,
+  cosineSimilarity,
+  selectCandidates,
+  unvectoredIds,
+} from "./embed.js";
+export type {
+  EmbedClientLike,
+  EmbeddableFact,
+  EmbeddingVector,
+  ScoredCandidate,
+  SelectOptions,
+} from "./embed.js";
