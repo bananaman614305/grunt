@@ -407,6 +407,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
 
     const forwarded = JSON.parse(upstreams.openRouterCalls()[0]?.body ?? "{}") as Record<string, unknown>;
     expect(forwarded["model"]).toBe("test/frontier");
+    expect(forwarded["reasoning"]).toEqual({ exclude: true });
     expect(forwarded).not.toHaveProperty("milo");
 
     const record = await gateway.log.getDecision(decisionId ?? "");
@@ -425,6 +426,19 @@ describe("POST /v1/chat/completions, milo/auto", () => {
       outputTokens: 42,
       costUsd: 0.00123,
     });
+  });
+
+  it("preserves a caller's explicit request to receive reasoning", async () => {
+    await start();
+    upstreams.openRouter = () => jsonResponse(completion("test/frontier"));
+
+    await post(
+      "/v1/chat/completions",
+      chatBody({ reasoning: { effort: "high", exclude: false }, milo: { gates: false } }),
+    );
+
+    const forwarded = JSON.parse(upstreams.openRouterCalls()[0]?.body ?? "{}") as Record<string, unknown>;
+    expect(forwarded["reasoning"]).toEqual({ effort: "high", exclude: false });
   });
 
   it("routes onto the deepseek family in deepseek mode (ADR-012)", async () => {

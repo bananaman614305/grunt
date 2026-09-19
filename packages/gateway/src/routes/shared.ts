@@ -156,6 +156,26 @@ export function applyProviderStrategy<T extends Record<string, unknown>>(
 }
 
 /**
+ * Keeps a routed chat response's internal reasoning out of the client-visible
+ * payload by default. OpenRouter still lets the model reason; `exclude` only
+ * controls whether its trace is returned alongside the answer.
+ *
+ * A caller can explicitly request reasoning with either the current
+ * `reasoning.exclude` field or the legacy `include_reasoning` field. Invalid
+ * or null `reasoning` values are also left to OpenRouter to validate.
+ */
+export function applyReasoningExclusion<T extends Record<string, unknown>>(body: T): T {
+  const reasoning = body["reasoning"];
+  if (typeof reasoning === "object" && reasoning !== null && !Array.isArray(reasoning)) {
+    const config = reasoning as Record<string, unknown>;
+    if (config["exclude"] !== undefined) return body;
+    return { ...body, reasoning: { ...config, exclude: true } };
+  }
+  if (reasoning !== undefined || body["include_reasoning"] !== undefined) return body;
+  return { ...body, reasoning: { exclude: true } };
+}
+
+/**
  * A price ceiling for the throughput sort: the model's listed default-roster
  * rate with 10% headroom, so sorting by speed can never buy a premium
  * variant of the same model (the first sorted run picked a $2.40/M "fast"

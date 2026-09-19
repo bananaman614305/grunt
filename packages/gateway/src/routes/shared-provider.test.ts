@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ROSTER_INFO } from "@milo/core";
-import { applyProviderStrategy, maxPriceFor, retargetProviderStrategy } from "./shared.js";
+import {
+  applyProviderStrategy,
+  applyReasoningExclusion,
+  maxPriceFor,
+  retargetProviderStrategy,
+} from "./shared.js";
 
 describe("applyProviderStrategy", () => {
   it("sorts by throughput for balanced and quality", () => {
@@ -26,6 +31,32 @@ describe("applyProviderStrategy", () => {
   it("never overrides a caller-supplied provider field", () => {
     const body = { model: "m", provider: { order: ["mine"] } };
     expect(applyProviderStrategy(body, "quality")).toBe(body);
+  });
+});
+
+describe("applyReasoningExclusion", () => {
+  it("excludes reasoning from the response without disabling model reasoning", () => {
+    const body = { model: "m" };
+    expect(applyReasoningExclusion(body)).toEqual({ model: "m", reasoning: { exclude: true } });
+    expect(body).toEqual({ model: "m" });
+  });
+
+  it("preserves reasoning options while adding the safe visibility default", () => {
+    expect(applyReasoningExclusion({ reasoning: { effort: "high", summary: "auto" } })).toEqual({
+      reasoning: { effort: "high", summary: "auto", exclude: true },
+    });
+  });
+
+  it("never overrides an explicit current or legacy visibility choice", () => {
+    const visible = { reasoning: { effort: "high", exclude: false } };
+    const legacy = { include_reasoning: true };
+    expect(applyReasoningExclusion(visible)).toBe(visible);
+    expect(applyReasoningExclusion(legacy)).toBe(legacy);
+  });
+
+  it("leaves invalid reasoning values for OpenRouter to validate", () => {
+    const body = { reasoning: null };
+    expect(applyReasoningExclusion(body)).toBe(body);
   });
 });
 
