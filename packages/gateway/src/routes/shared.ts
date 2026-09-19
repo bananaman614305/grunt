@@ -162,6 +162,10 @@ export function applyProviderStrategy<T extends Record<string, unknown>>(
  * chat completions, messages, and responses — the same `reasoning` object
  * OpenRouter accepts on every dialect.
  *
+ * Chat completions also scrub those fields from the response body when this
+ * default applies (see `chat-reasoning.ts`); the outbound flag alone is not
+ * enough when a provider still emits them.
+ *
  * A caller can explicitly request reasoning with either the current
  * `reasoning.exclude` field or the legacy `include_reasoning` field. Invalid
  * or null `reasoning` values are also left to OpenRouter to validate.

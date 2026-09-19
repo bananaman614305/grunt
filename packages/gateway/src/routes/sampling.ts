@@ -68,6 +68,12 @@ import type { RoutedFacts } from "../facts.js";
 import type { GateRunner } from "./gate.js";
 import { applyPruneHeaders, pruneRecord } from "./prune.js";
 import type { PruneOutcome } from "./prune.js";
+import {
+  stripChatReasoningBody,
+  stripChatReasoningPayload,
+  stripChatReasoningSse,
+  wantsVisibleReasoning,
+} from "./chat-reasoning.js";
 import { applyMiloHeaders, onFinished, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage } from "./usage.js";
@@ -662,6 +668,20 @@ export async function forwardSampled(
   // (and the gate's retry), as one usage row against this decision (ADR-010).
   await chargeBuffered(c, deps, headers, { surface: "chat", model: decision.model, decisionId: decision.id }, usage);
 
+  if (!wantsVisibleReasoning(body)) {
+    const json =
+      served.json !== undefined ? (stripChatReasoningPayload(served.json) as Record<string, unknown>) : undefined;
+    const message =
+      json !== undefined && Array.isArray(json["choices"]) && isRecord(json["choices"][0])
+        ? ((json["choices"][0] as Record<string, unknown>)["message"] as Record<string, unknown> | undefined)
+        : served.message;
+    served = {
+      ...(json !== undefined ? { json } : {}),
+      ...(message !== undefined ? { message } : {}),
+      text: stripChatReasoningBody(served.text),
+    };
+  }
+
   if (isStreaming(body)) {
     headers.set("content-type", "text/event-stream");
     return new Response(replayAsSse(served), { status: 200, headers });
@@ -805,9 +825,10 @@ async function fallbackUnsampled(
   headers.set(SAMPLES_HEADER, String(decision.samples ?? 0));
 
   const chargeCtx = { surface: "chat" as const, model, decisionId: decision.id };
+  const scrub = !wantsVisibleReasoning(body);
 
   if (isStreaming(body) && upstream.ok && upstream.body !== null) {
-    const recorded = upstream.body.pipeThrough(
+    let recorded: ReadableStream<Uint8Array> = upstream.body.pipeThrough(
       onFinished(() => {
         deps.recordUpstream(decision.id, {
           status: upstream.status,
@@ -818,10 +839,12 @@ async function fallbackUnsampled(
         });
       }),
     );
+    if (scrub) recorded = recorded.pipeThrough(stripChatReasoningSse());
     return new Response(chargeStream(c, deps, headers, chargeCtx, recorded), { status: upstream.status, headers });
   }
 
-  const text = await upstream.text();
+  let text = await upstream.text();
+  if (scrub && upstream.ok) text = stripChatReasoningBody(text);
   const usage = upstream.ok ? readBodyUsage("chat", text) : {};
   const record: Upstream = {
     status: upstream.status,

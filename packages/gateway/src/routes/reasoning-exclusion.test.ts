@@ -1,10 +1,16 @@
 /**
- * Reproduction / regression: routed milo/auto must ask OpenRouter to omit
- * reasoning traces on every dialect's streaming and non-streaming path.
+ * Reproduction / regression: routed milo/auto must keep provider reasoning
+ * traces out of the client-visible chat completions body.
  *
- * Without that, providers emit delta.reasoning (chat), thinking blocks
- * (messages), or response.reasoning_text.* (responses) and clients surface
- * them as visible thinking even when the caller did not ask for them.
+ * Surface (pi / openai-completions): POST /v1/chat/completions. The route
+ * used to forward the upstream body byte-for-byte, so any reasoning /
+ * reasoning_content / reasoning_details / thinking field OpenRouter put on
+ * choices[].delta or choices[].message reached the client even when Milo
+ * had asked for reasoning.exclude. Request-side exclude alone is not enough
+ * when upstream still emits the field (or ignores the flag).
+ *
+ * Messages / responses still get the outbound exclude default; chat is the
+ * surface where the response is also scrubbed.
  */
 
 import { readFileSync } from "node:fs";
@@ -90,12 +96,29 @@ function sse(chunks: string[]): Response {
   });
 }
 
-/** Chat SSE that would leak CoT if OpenRouter were not told to exclude it. */
+/** Chat SSE that leaks CoT if the response is forwarded byte-for-byte. */
 const CHAT_REASONING_SSE = [
-  'data: {"id":"gen-1","choices":[{"delta":{"role":"assistant","reasoning":"secret chain of thought"}}]}\n\n',
-  'data: {"id":"gen-1","choices":[{"delta":{"content":"42"}}]}\n\n',
+  'data: {"id":"gen-1","choices":[{"delta":{"role":"assistant","reasoning":"secret chain of thought","reasoning_content":"also secret","thinking":"still secret"}}]}\n\n',
+  'data: {"id":"gen-1","choices":[{"delta":{"content":"42","reasoning_details":[{"type":"text","text":"detail secret"}]}}]}\n\n',
   "data: [DONE]\n\n",
 ];
+
+const CHAT_REASONING_JSON = {
+  id: "gen-1",
+  choices: [
+    {
+      message: {
+        role: "assistant",
+        content: "42",
+        reasoning: "secret chain of thought",
+        reasoning_content: "also secret",
+        reasoning_details: [{ type: "text", text: "detail secret" }],
+        thinking: "still secret",
+      },
+    },
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1 },
+};
 
 /** Anthropic Messages SSE with a thinking block (the dialect's leak shape). */
 const MESSAGES_THINKING_SSE = [
@@ -150,7 +173,7 @@ function forwardedReasoning(): unknown {
 }
 
 describe("routed reasoning exclusion (cross-dialect)", () => {
-  it("defaults chat completions streams to reasoning.exclude", async () => {
+  it("scrubs reasoning fields from chat completions streams", async () => {
     await start();
     upstreams.openRouter = () => sse(CHAT_REASONING_SSE);
 
@@ -167,11 +190,44 @@ describe("routed reasoning exclusion (cross-dialect)", () => {
 
     expect(res.status).toBe(200);
     expect(forwardedReasoning()).toEqual({ exclude: true });
-    // With exclusion on the request, OpenRouter omits the trace; this fixture
-    // still proves Milo asks for that. The client body is whatever upstream
-    // returned (byte-for-byte) — the contract is the outbound exclude flag.
     const client = await res.text();
     expect(client).toContain("42");
+    // Reproduction of the leak: without response scrubbing, this body still
+    // carries upstream reasoning even though the outbound request asked to
+    // exclude it. The regression asserts the client never sees those fields.
+    expect(client).not.toContain("secret");
+    expect(client).not.toMatch(/"reasoning"/);
+    expect(client).not.toMatch(/"reasoning_content"/);
+    expect(client).not.toMatch(/"reasoning_details"/);
+    expect(client).not.toMatch(/"thinking"/);
+  });
+
+  it("scrubs reasoning fields from buffered chat completions", async () => {
+    await start();
+    upstreams.openRouter = () =>
+      new Response(JSON.stringify(CHAT_REASONING_JSON), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+
+    const res = await gateway.app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: AUTH,
+      body: JSON.stringify({
+        model: "milo/auto",
+        milo: { gates: false },
+        messages: [{ role: "user", content: "Solve 17*23." }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(forwardedReasoning()).toEqual({ exclude: true });
+    const client = (await res.json()) as typeof CHAT_REASONING_JSON;
+    expect(client.choices[0]?.message.content).toBe("42");
+    expect(client.choices[0]?.message).not.toHaveProperty("reasoning");
+    expect(client.choices[0]?.message).not.toHaveProperty("reasoning_content");
+    expect(client.choices[0]?.message).not.toHaveProperty("reasoning_details");
+    expect(client.choices[0]?.message).not.toHaveProperty("thinking");
   });
 
   it("defaults messages streams to reasoning.exclude", async () => {
@@ -221,13 +277,13 @@ describe("routed reasoning exclusion (cross-dialect)", () => {
       new Response(
         JSON.stringify({
           id: "gen-1",
-          choices: [{ message: { role: "assistant", content: "ok" } }],
+          choices: [{ message: { role: "assistant", content: "ok", reasoning: "passthrough secret" } }],
           usage: { prompt_tokens: 1, completion_tokens: 1 },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
 
-    await gateway.app.request("/v1/chat/completions", {
+    const res = await gateway.app.request("/v1/chat/completions", {
       method: "POST",
       headers: AUTH,
       body: JSON.stringify({
@@ -239,5 +295,31 @@ describe("routed reasoning exclusion (cross-dialect)", () => {
     const body = JSON.parse(upstreams.openRouterCalls()[0]?.body ?? "{}") as Record<string, unknown>;
     expect(body["model"]).toBe("test/frontier");
     expect(body).not.toHaveProperty("reasoning");
+    // Explicit-model passthrough is byte-for-byte; scrubbing is routed-only.
+    const client = (await res.json()) as { choices: Array<{ message: Record<string, unknown> }> };
+    expect(client.choices[0]?.message).toHaveProperty("reasoning", "passthrough secret");
+  });
+
+  it("preserves reasoning on chat when the caller opts in", async () => {
+    await start();
+    upstreams.openRouter = () => sse(CHAT_REASONING_SSE);
+
+    const res = await gateway.app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: AUTH,
+      body: JSON.stringify({
+        model: "milo/auto",
+        stream: true,
+        reasoning: { exclude: false },
+        milo: { gates: false },
+        messages: [{ role: "user", content: "Solve 17*23." }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(forwardedReasoning()).toEqual({ exclude: false });
+    const client = await res.text();
+    expect(client).toContain("secret chain of thought");
+    expect(client).toContain("42");
   });
 });

@@ -89,6 +89,11 @@ import { applyPruneHeaders, pruneRecord } from "./prune.js";
 import type { PruneOutcome } from "./prune.js";
 import { answerText, replayAsSse } from "./sampling.js";
 import { parseVerifyInput } from "./verify.js";
+import {
+  stripChatReasoningBody,
+  stripChatReasoningPayload,
+  wantsVisibleReasoning,
+} from "./chat-reasoning.js";
 import { applyMiloHeaders, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage, toUpstreamRecord } from "./usage.js";
@@ -538,10 +543,25 @@ export async function forwardGated(
   deps.recordUpstream(decision.id, record);
   await chargeBuffered(c, deps, headers, ctx, total);
 
+  const scrub = !wantsVisibleReasoning(body);
+  let answer = result.answer;
+  if (scrub) {
+    const json = stripChatReasoningPayload(answer.json);
+    const message =
+      isRecord(json) && Array.isArray(json["choices"]) && isRecord(json["choices"][0])
+        ? (json["choices"][0] as Record<string, unknown>)["message"]
+        : answer.message;
+    answer = {
+      json: isRecord(json) ? json : answer.json,
+      message: isRecord(message) ? message : answer.message,
+      text: stripChatReasoningBody(answer.text),
+    };
+  }
+
   if (isStreaming(body)) {
     headers.set("content-type", "text/event-stream");
-    return new Response(replayAsSse(result.answer), { status: 200, headers });
+    return new Response(replayAsSse(answer), { status: 200, headers });
   }
   headers.set("content-type", "application/json");
-  return new Response(result.answer.text, { status: 200, headers });
+  return new Response(answer.text, { status: 200, headers });
 }

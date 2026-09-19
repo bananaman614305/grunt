@@ -218,6 +218,12 @@ for answer text. Milo preserves an explicit `reasoning.exclude` value or
 legacy `include_reasoning` field; requests with an explicit model remain
 untouched apart from removing a Milo-only `milo` field.
 
+On chat completions only, when the caller did not ask for a visible trace,
+Milo also strips `reasoning`, `reasoning_content`, `reasoning_details`, and
+`thinking` from `choices[].message` and `choices[].delta` (streaming and
+non-streaming). That covers providers that still emit those fields despite
+the outbound exclude flag — the leak surface for openai-completions clients.
+
 ### Context pruning (ADR-014, ADR-013 phase C)
 
 On this route only, when it is enabled (`pruning.enabled`, or `milo: {
