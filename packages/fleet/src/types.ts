@@ -10,6 +10,8 @@
  * No other metaphor or borrowed vernacular appears anywhere in this package.
  */
 
+import type { Receipt } from "@milo/core";
+import type { DoneVerification } from "./done-gate.js";
 import type { PiRunStats } from "./pi-events.js";
 
 /** One unit of work handed to a worker. */
@@ -54,6 +56,13 @@ export type WorkerResult = {
   diff: string;
   /** Aggregated pi turns / tool calls / usage (from the reused PiEventParser). */
   stats: PiRunStats;
+  /**
+   * Receipts of commands the worker's harness actually ran (tests, build),
+   * for the done-gate (ADR-019). The v0 node runtime leaves this empty -- it
+   * runs no test command of its own -- so the gate checks the diff alone; a
+   * runtime that captures receipts populates it and the gate weighs them too.
+   */
+  receipts?: Receipt[];
   /** A one-line note when something went wrong (spawn failure, timeout). */
   note?: string;
 };
@@ -69,13 +78,19 @@ export type WorkerState = {
   classification?: WorkerClassification;
   /** Present once the worker is finished or failed. */
   result?: WorkerResult;
+  /**
+   * The done-gate's verdict (ADR-019), present once a finished worker has been
+   * checked against its git diff and receipts. Absent while the worker runs,
+   * and when the gate itself could not run (Jev unavailable) -- fail-open.
+   */
+  doneVerification?: DoneVerification;
 };
 
 /** An entry in the fleet's attention list: why a worker needs a look. */
 export type AttentionItem = {
   id: string;
   task: Task;
-  reason: "wedged" | "idle" | "needs_human" | "failed";
+  reason: "wedged" | "idle" | "needs_human" | "failed" | "done_unverified";
   detail: string;
   /** The verdict confidence, when the reason came from a supervision pass. */
   confidence?: number;

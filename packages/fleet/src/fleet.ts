@@ -21,7 +21,9 @@
  * interval wrapper the CLI uses.
  */
 
-import type { JevClientLike } from "@milo/core";
+import type { JevClientLike, Receipt } from "@milo/core";
+import { verifyWorkerDone } from "./done-gate.js";
+import type { DoneVerification } from "./done-gate.js";
 import { classifyWorker } from "./supervisor.js";
 import type {
   AttentionItem,
@@ -41,6 +43,14 @@ export type FleetDeps = {
   window?: number;
   /** Reference clock for supervision idle gaps; defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Verify a finished worker's "done" against its git diff and receipts
+   * (ADR-019, the done-gate). Defaults to `verifyWorkerDone`; injectable so
+   * tests drive it with a fake. Set `false` to disable the gate entirely.
+   */
+  verifyDone?:
+    | false
+    | ((jev: JevClientLike, input: { task: Task; diff: string; receipts?: readonly Receipt[] }) => Promise<DoneVerification>);
 };
 
 const DEFAULT_WINDOW = 40;
@@ -50,16 +60,24 @@ type WorkerRecord = {
   classification?: WorkerClassification;
   /** A supervision error from the last pass, if any (kept, not thrown). */
   superviseError?: string;
+  /** The done-gate verdict, once a finished worker has been checked. */
+  doneVerification?: DoneVerification;
+  /** True once the done-gate has been attempted for a finished worker. */
+  doneChecked?: boolean;
 };
 
 export class Fleet {
   private readonly window: number;
   private readonly now: () => number;
+  private readonly verifyDone:
+    | false
+    | ((jev: JevClientLike, input: { task: Task; diff: string; receipts?: readonly Receipt[] }) => Promise<DoneVerification>);
   private readonly workers = new Map<string, WorkerRecord>();
 
   constructor(private readonly deps: FleetDeps) {
     this.window = deps.window ?? DEFAULT_WINDOW;
     this.now = deps.now ?? Date.now;
+    this.verifyDone = deps.verifyDone ?? verifyWorkerDone;
   }
 
   /** Spawn a worker per task. Ignores ids already in the fleet. */
@@ -84,9 +102,18 @@ export class Fleet {
    */
   async superviseOnce(): Promise<void> {
     const now = this.now();
-    const running = [...this.workers.values()].filter((r) => r.handle.lifecycle() === "running");
-    await Promise.all(
-      running.map(async (rec) => {
+    const records = [...this.workers.values()];
+    const running = records.filter((r) => r.handle.lifecycle() === "running");
+    // Finished workers that have not yet been through the done-gate (ADR-019):
+    // their "done" is self-reported (pi exited 0), so it is checked against the
+    // actual diff and receipts before the fleet reports the result as complete.
+    const toVerify =
+      this.verifyDone === false
+        ? []
+        : records.filter((r) => r.handle.lifecycle() === "finished" && r.doneChecked !== true);
+
+    await Promise.all([
+      ...running.map(async (rec) => {
         const events = rec.handle.events();
         const window = events.slice(Math.max(0, events.length - this.window));
         try {
@@ -96,7 +123,30 @@ export class Fleet {
           rec.superviseError = err instanceof Error ? err.message : String(err);
         }
       }),
-    );
+      ...toVerify.map((rec) => this.runDoneGate(rec)),
+    ]);
+  }
+
+  /**
+   * Run the done-gate over one finished worker. Fail-open: a Jev failure leaves
+   * the worker's process result untouched and simply retries next pass (the
+   * error is recorded in `superviseError`), so a hiccup never fails a worker.
+   */
+  private async runDoneGate(rec: WorkerRecord): Promise<void> {
+    if (this.verifyDone === false) return;
+    const result = rec.handle.result();
+    if (result === undefined) return;
+    try {
+      rec.doneVerification = await this.verifyDone(this.deps.jev, {
+        task: rec.handle.task,
+        diff: result.diff,
+        ...(result.receipts !== undefined ? { receipts: result.receipts } : {}),
+      });
+      rec.doneChecked = true;
+      delete rec.superviseError;
+    } catch (err) {
+      rec.superviseError = err instanceof Error ? err.message : String(err);
+    }
   }
 
   /** The public state of one worker, or `undefined` if unknown. */
@@ -138,7 +188,22 @@ export class Fleet {
         });
         continue;
       }
-      if (lifecycle !== "running") continue;
+      if (lifecycle !== "running") {
+        // A finished worker whose self-reported "done" the done-gate could not
+        // back (empty diff, failing receipts) is worth a look before its result
+        // is trusted (ADR-019). A `supported` verdict, or no gate at all, is not.
+        const done = rec.doneVerification;
+        if (done !== undefined && done.verdict !== "supported") {
+          items.push({
+            id,
+            task: rec.handle.task,
+            reason: "done_unverified",
+            detail: done.line,
+            confidence: done.confidence,
+          });
+        }
+        continue;
+      }
 
       const c = rec.classification;
       if (c === undefined) continue;
@@ -182,6 +247,7 @@ export class Fleet {
       branch: handle.branch,
       ...(rec.classification !== undefined ? { classification: rec.classification } : {}),
       ...(result !== undefined ? { result } : {}),
+      ...(rec.doneVerification !== undefined ? { doneVerification: rec.doneVerification } : {}),
     };
   }
 }

@@ -57,10 +57,12 @@ import {
   compareRanked,
   computeBand,
   escalationFor,
+  extractClaims,
   isStreaming,
   prepareBody,
   rankAnswer,
   retryMessages,
+  verifyClaims,
   GATE_SUSPECT_QUALITY,
   GATE_TRUST_CONFIDENCE,
   LOW_CONFIDENCE_FAILURE,
@@ -73,6 +75,8 @@ import type {
   MiloRequestExtension,
   RankScore,
   RouteDecision,
+  VerifyGroundTruth,
+  VerifyResult,
 } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
@@ -84,6 +88,7 @@ import { errorMessage, errorResponse } from "../errors.js";
 import { applyPruneHeaders, pruneRecord } from "./prune.js";
 import type { PruneOutcome } from "./prune.js";
 import { answerText, replayAsSse } from "./sampling.js";
+import { parseVerifyInput } from "./verify.js";
 import { applyMiloHeaders, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage, toUpstreamRecord } from "./usage.js";
@@ -94,6 +99,12 @@ export const RETRY_HEADER = "x-milo-retry";
 export const GATE_PICK_HEADER = "x-milo-gate-pick";
 /** The model an escalated retry ran on, when it was not the one that answered. */
 export const RETRY_MODEL_HEADER = "x-milo-retry-model";
+/**
+ * The ground-truth verification finding (ADR-019): `clean` | `unsupported` |
+ * `contradicted`, set only when the request supplied git/receipts ground truth
+ * via `milo: { verify: { git, receipts } }` on a coding/agentic turn.
+ */
+export const VERIFY_HEADER = "x-milo-verify";
 
 /** What `x-milo-completeness` says for a `complete` verdict Jev was unsure of. */
 export const LOW_CONFIDENCE_COMPLETENESS = "complete-low-confidence";
@@ -106,7 +117,17 @@ export const LOW_CONFIDENCE_COMPLETENESS = "complete-low-confidence";
  * (`packages/core/src/types.ts`) needs an ADR; the log stores the block as
  * JSON, so they round-trip either way.
  */
-export type GateRecord = GateUpstream & { retryModel?: string; lowConfidence?: boolean };
+export type GateRecord = GateUpstream & {
+  retryModel?: string;
+  lowConfidence?: boolean;
+  /**
+   * The ground-truth verification block (ADR-019), present only when the
+   * request supplied ground truth. Purely additive gateway-local metadata; the
+   * log stores the gate block as JSON, so it round-trips without a core-type
+   * change (the same reasoning as `retryModel`/`lowConfidence`).
+   */
+  verify?: { finding: string; supported: number; unsupported: number; contradicted: number; blocking: boolean };
+};
 
 /** One finished answer as the gate handles it: body, message, serialized text. */
 export type GateAnswer = {
@@ -141,6 +162,25 @@ function classify(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The ground truth a request opted into for Layer 3 (ADR-019): read
+ * `milo.verify` off the outgoing body (still present -- `prepareBody` strips
+ * `milo` only when it forwards) and parse its git/receipts. Returns `undefined`
+ * when the request supplied none, so an ordinary chat turn is never verified
+ * against ground truth it did not send. Reuses the /v1/verify parser so the two
+ * surfaces read the exact same shape.
+ */
+export function groundTruthFrom(body: Body): VerifyGroundTruth | undefined {
+  const milo = body["milo"];
+  if (!isRecord(milo)) return undefined;
+  const raw = milo["verify"];
+  if (!isRecord(raw)) return undefined;
+  const { ground } = parseVerifyInput(raw);
+  return ground.git !== undefined || (ground.receipts !== undefined && ground.receipts.length > 0)
+    ? ground
+    : undefined;
 }
 
 /** `choices[0].message` of a buffered chat completion, or undefined. */
@@ -193,38 +233,91 @@ async function runGate(
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   const answered = answerText(answer.message);
 
+  // Layer 3 (ADR-019): when the request supplied git/receipts ground truth via
+  // `milo: { verify: {...} }` on a coding/agentic turn, additionally check the
+  // answer's load-bearing claims against that ground truth -- not just the
+  // text's self-consistency. FAIL-OPEN: any hiccup here leaves the completeness
+  // flow exactly as it was. A CONFIDENT contradiction (`blocking`) is treated
+  // like a completeness failure and buys the SAME single retry; a non-blocking
+  // finding (`clean`/`unsupported`) is disclosure only, on `x-milo-verify`.
+  const ground = groundTruthFrom(body);
+  let verify: VerifyResult | undefined;
+  if (ground !== undefined) {
+    try {
+      verify = await verifyClaims(jev, extractClaims(answered), ground);
+    } catch (error) {
+      deps.logger.warn("ground-truth verification failed; disclosing nothing", {
+        decisionId: decision.id,
+        error: classify(error),
+      });
+    }
+  }
+  const verifyHeaders: Record<string, string> =
+    verify !== undefined ? { [VERIFY_HEADER]: verify.summary.finding } : {};
+  const verifyPatch: Pick<GateRecord, "verify"> =
+    verify !== undefined
+      ? {
+          verify: {
+            finding: verify.summary.finding,
+            supported: verify.summary.supported,
+            unsupported: verify.summary.unsupported,
+            contradicted: verify.summary.contradicted,
+            blocking: verify.summary.blocking,
+          },
+        }
+      : {};
+  const forceRetry = verify?.summary.blocking === true;
+  /** Merge the verify disclosure (header + record) into a served result. */
+  const withVerify = (result: GateResult): GateResult => ({
+    ...result,
+    headers: { ...result.headers, ...verifyHeaders },
+    record: { ...result.record, ...verifyPatch },
+  });
+
   let check;
   try {
     check = await checkCompleteness(jev, messages, answered);
   } catch (error) {
     // The check itself failed: the answer goes out exactly as a passing one
-    // would (never fail the request on a gate); the record says `error`.
+    // would (never fail the request on a gate); the record says `error`. A
+    // ground-truth contradiction still warrants the retry, even here.
     deps.logger.warn("completeness check failed", { decisionId: decision.id, error: classify(error) });
-    return { answer, headers: { [COMPLETENESS_HEADER]: "complete" }, record: { verdict: "error" } };
+    if (!forceRetry) {
+      return withVerify({ answer, headers: { [COMPLETENESS_HEADER]: "complete" }, record: { verdict: "error" } });
+    }
+    check = undefined;
   }
 
   // The failure type the retry template comes from, the value
   // `x-milo-completeness` carries, and the record the outcome is written
   // into -- settled by the verdict AND, on a `complete` verdict, by how sure
-  // Jev was of it.
+  // Jev was of it. A ground-truth contradiction (`forceRetry`) overrides a
+  // `complete` verdict and takes the retry.
   let verdict: GateFailureType;
   let disclosed: string;
   let record: GateRecord;
   /** The original's rating, when the suspect path already paid for it. */
   let originalRank: RankScore | undefined;
 
-  if (check.verdict === "complete") {
-    if (check.confidence >= GATE_TRUST_CONFIDENCE) {
-      return {
+  if (check === undefined) {
+    // The completeness check was unavailable but ground truth contradicted a
+    // load-bearing claim: retry as if incomplete, disclosing the check as such.
+    verdict = LOW_CONFIDENCE_FAILURE;
+    disclosed = "complete";
+    record = { verdict: "error", retried: true, pick: "original" };
+  } else if (check.verdict === "complete") {
+    if (check.confidence >= GATE_TRUST_CONFIDENCE && !forceRetry) {
+      return withVerify({
         answer,
         headers: { [COMPLETENESS_HEADER]: "complete" },
         record: { verdict: "complete", confidence: check.confidence },
-      };
+      });
     }
 
-    // A `complete` Jev is not sure of: rate the answer rather than trust the
-    // verdict (GATE_TRUST_CONFIDENCE names the evidence). A rating that
-    // cannot be had is not a reason to spend a retry, so it serves as-is.
+    // A `complete` Jev is not sure of (or one ground truth contradicts): rate
+    // the answer rather than trust the verdict (GATE_TRUST_CONFIDENCE names the
+    // evidence). A rating that cannot be had is not a reason to spend a retry,
+    // so absent a contradiction it serves as-is.
     try {
       originalRank = await rankAnswer(jev, messages, answered);
     } catch (error) {
@@ -233,24 +326,25 @@ async function runGate(
         error: classify(error),
       });
     }
-    if (originalRank === undefined || originalRank.quality >= GATE_SUSPECT_QUALITY) {
-      return {
+    const trusted = check.confidence >= GATE_TRUST_CONFIDENCE;
+    if (!forceRetry && (originalRank === undefined || originalRank.quality >= GATE_SUSPECT_QUALITY)) {
+      return withVerify({
         answer,
-        headers: { [COMPLETENESS_HEADER]: LOW_CONFIDENCE_COMPLETENESS },
+        headers: { [COMPLETENESS_HEADER]: trusted ? "complete" : LOW_CONFIDENCE_COMPLETENESS },
         record: {
           verdict: "complete",
           confidence: check.confidence,
-          lowConfidence: true,
+          ...(trusted ? {} : { lowConfidence: true }),
           ...(originalRank !== undefined ? { originalQuality: originalRank.quality } : {}),
         },
-      };
+      });
     }
     verdict = LOW_CONFIDENCE_FAILURE;
-    disclosed = LOW_CONFIDENCE_COMPLETENESS;
+    disclosed = trusted ? "complete" : LOW_CONFIDENCE_COMPLETENESS;
     record = {
       verdict: "complete",
       confidence: check.confidence,
-      lowConfidence: true,
+      ...(trusted ? {} : { lowConfidence: true }),
       retried: true,
       pick: "original",
     };
@@ -280,9 +374,11 @@ async function runGate(
   const headers: Record<string, string> = {
     [COMPLETENESS_HEADER]: disclosed,
     [RETRY_HEADER]: "1",
+    ...verifyHeaders,
     ...(escalation !== undefined ? { [RETRY_MODEL_HEADER]: retryModel } : {}),
   };
   record.retryModel = retryModel;
+  if (verifyPatch.verify !== undefined) record.verify = verifyPatch.verify;
   const serveOriginal = (): GateResult => ({ answer, headers: { ...headers, [GATE_PICK_HEADER]: "original" }, record });
 
   const retryStart = deps.now();

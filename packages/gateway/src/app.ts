@@ -47,6 +47,7 @@ import { registerMemoryRoutes } from "./routes/memory.js";
 import { registerProxyRoute } from "./routes/proxy.js";
 import { registerRosterRoute } from "./routes/roster.js";
 import { registerResponsesRoute } from "./routes/responses.js";
+import { registerVerifyRoute } from "./routes/verify.js";
 import { registerStaticRoutes } from "./routes/static.js";
 
 /** Structurally identical to `GatewayOptions["logger"]`, which is pinned. */
@@ -331,6 +332,7 @@ export function createApp(deps: AppDeps): Hono {
   registerRosterRoute(app, deps);
   registerPreferencesRoutes(app, deps);
   registerMemoryRoutes(app, deps);
+  registerVerifyRoute(app, deps);
   registerDecisionsRoutes(app, deps);
   // billing JSON routes
   if (deps.billing !== undefined) registerBillingRoutes(app, deps);

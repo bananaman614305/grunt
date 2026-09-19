@@ -68,8 +68,23 @@ function doneResult(): WorkerResult {
 function gradingJev(): JevClientLike & { count: number } {
   const jev = {
     count: 0,
-    systemone(req: { state: unknown }) {
+    systemone(req: { state: unknown; questions: Record<string, unknown> }) {
       jev.count += 1;
+      // A done-gate call (ADR-019) carries a `done:<id>` question over a
+      // git-ground-truth state; answer it from whether a diff landed.
+      const doneKey = Object.keys(req.questions).find((k) => k.startsWith("done:"));
+      if (doneKey !== undefined) {
+        const git = (req.state as { git?: { filesChanged?: number } }).git;
+        const supported = (git?.filesChanged ?? 0) > 0;
+        const choice = supported ? "supported" : "contradicted";
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: { [doneKey]: { type: "choice", choice, confidence: 0.9, probabilities: { [choice]: 0.9 } } },
+          usage: { input_tokens: 10, output_tokens: 2 },
+          requestId: "req",
+          latencyMs: 15,
+        } satisfies SystemOneResult);
+      }
       const s = req.state as unknown as WindowSummary;
       if (s.eventCount === 0) return Promise.reject(new Error("empty window"));
       let choice: string;
@@ -158,19 +173,65 @@ describe("Fleet", () => {
     expect(attention[0]?.confidence).toBe(0.9);
   });
 
-  it("does not supervise finished workers and returns them as results", async () => {
+  it("runs the done-gate once on a finished worker, then quiesces (ADR-019)", async () => {
     const done = new FakeHandle("d", { id: "d", prompt: "p" }, "/wt/d", "fleet/d");
     const jev = gradingJev();
     const fleet = fleetOf({ d: done }, jev);
     fleet.start([{ id: "d", prompt: "p" }]);
-    done.finish(doneResult());
+    done.finish(doneResult()); // a real diff landed
 
     await fleet.superviseOnce();
-    expect(jev.count).toBe(0); // settled workers cost no Jev calls
+    expect(jev.count).toBe(1); // exactly one done-gate call the first pass
+    expect(fleet.worker("d")?.doneVerification?.verdict).toBe("supported");
+    await fleet.superviseOnce();
+    expect(jev.count).toBe(1); // no further Jev calls: the fleet has quiesced
+
     expect(fleet.allSettled()).toBe(true);
     expect(fleet.results().map((r) => r.id)).toEqual(["d"]);
     expect(fleet.results()[0]?.result?.diff).toBe("diff --git a/x b/x");
-    expect(fleet.needsAttention()).toEqual([]);
+    expect(fleet.needsAttention()).toEqual([]); // a supported done needs no look
+  });
+
+  it("surfaces a finished worker whose done the diff refutes (ADR-019)", async () => {
+    const empty = new FakeHandle("e", { id: "e", prompt: "p" }, "/wt/e", "fleet/e");
+    const jev = gradingJev();
+    const fleet = fleetOf({ e: empty }, jev);
+    fleet.start([{ id: "e", prompt: "p" }]);
+    // pi exited 0 but produced NO diff -- a self-reported "done" ground truth refutes.
+    empty.finish({ exitCode: 0, timedOut: false, diff: "", stats: emptyStats() });
+
+    await fleet.superviseOnce();
+    expect(fleet.worker("e")?.doneVerification?.verdict).toBe("contradicted");
+    const attention = fleet.needsAttention();
+    expect(attention).toHaveLength(1);
+    expect(attention[0]).toMatchObject({ id: "e", reason: "done_unverified" });
+  });
+
+  it("fails open when the done-gate errors, leaving the result intact", async () => {
+    const done = new FakeHandle("d", { id: "d", prompt: "p" }, "/wt/d", "fleet/d");
+    const throwingJev: JevClientLike = { systemone: () => Promise.reject(new Error("jev down")) };
+    const fleet = new Fleet({
+      jev: throwingJev,
+      now: () => 1_000,
+      spawn: () => done,
+    });
+    fleet.start([{ id: "d", prompt: "p" }]);
+    done.finish(doneResult());
+    await expect(fleet.superviseOnce()).resolves.toBeUndefined();
+    expect(fleet.worker("d")?.doneVerification).toBeUndefined(); // no verdict
+    expect(fleet.results().map((r) => r.id)).toEqual(["d"]); // result still there
+    expect(fleet.needsAttention()).toEqual([]); // a hiccup never invents attention
+  });
+
+  it("skips the done-gate entirely when disabled", async () => {
+    const done = new FakeHandle("d", { id: "d", prompt: "p" }, "/wt/d", "fleet/d");
+    const jev = gradingJev();
+    const fleet = new Fleet({ jev, now: () => 1_000, verifyDone: false, spawn: () => done });
+    fleet.start([{ id: "d", prompt: "p" }]);
+    done.finish(doneResult());
+    await fleet.superviseOnce();
+    expect(jev.count).toBe(0);
+    expect(fleet.worker("d")?.doneVerification).toBeUndefined();
   });
 
   it("lists a failed worker for attention", async () => {
