@@ -98,7 +98,7 @@ import {
   readJsonObject,
   retryAfterFromBucket,
   retryAfterSeconds,
-  routingUnavailableMessage, resolveRoster, applyProviderStrategy } from "./shared.js";
+  routingUnavailableMessage, resolveRoster, applyProviderStrategy, applyReasoningExclusion } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
@@ -269,7 +269,9 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
   // and `store` travel exactly as they arrived: Milo has no opinion about a
   // client's conversation state, and OpenRouter's refusal of a stored
   // conversation is clearer than one invented here.
-  const forwarded = applyProviderStrategy(prepareBody(body, decision.model), posture, decision.model);
+  const forwarded = applyReasoningExclusion(
+    applyProviderStrategy(prepareBody(body, decision.model), posture, decision.model),
+  );
   const startedAt = deps.now();
 
   let upstream: Response;

@@ -156,9 +156,11 @@ export function applyProviderStrategy<T extends Record<string, unknown>>(
 }
 
 /**
- * Keeps a routed chat response's internal reasoning out of the client-visible
+ * Keeps a routed response's internal reasoning out of the client-visible
  * payload by default. OpenRouter still lets the model reason; `exclude` only
- * controls whether its trace is returned alongside the answer.
+ * controls whether its trace is returned alongside the answer. Applies to
+ * chat completions, messages, and responses — the same `reasoning` object
+ * OpenRouter accepts on every dialect.
  *
  * A caller can explicitly request reasoning with either the current
  * `reasoning.exclude` field or the legacy `include_reasoning` field. Invalid
