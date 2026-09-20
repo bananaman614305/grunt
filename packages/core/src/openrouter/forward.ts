@@ -76,6 +76,16 @@ export function extractMilo(body: Record<string, unknown>): {
   if (source.gates === false) {
     extension.gates = false;
   }
+  // Same shape for the personal-fact note (ADR-017): injection is the default,
+  // so only `facts: false` means anything.
+  if (source.facts === false) {
+    extension.facts = false;
+  }
+  // Context pruning (ADR-014) is off by default, so BOTH values matter: a
+  // `true` opts this request in, a `false` opts it out and always wins.
+  if (source.prune === true || source.prune === false) {
+    extension.prune = source.prune;
+  }
 
   return { extension, isRouted };
 }

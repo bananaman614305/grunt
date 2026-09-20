@@ -10,10 +10,13 @@
  *     `model`, forward, and answer with `x-milo-*` headers naming the choice.
  *
  * Invariants for both:
- *   - the response body is never rewritten. Non-streaming bodies are buffered
- *     only to read `usage` out of them and are re-sent verbatim; streaming
- *     bodies pass through an identity transform whose only job is to notice
- *     when the last byte went out.
+ *   - the response body is otherwise never rewritten. Non-streaming bodies are
+ *     buffered only to read `usage` out of them; streaming bodies pass through
+ *     a transform whose job is to notice when the last byte went out. On the
+ *     routed path, when the caller did not ask for a visible reasoning trace,
+ *     chat completions also strip `reasoning` / `reasoning_content` /
+ *     `reasoning_details` / `thinking` from `choices[].message` and
+ *     `choices[].delta` so an upstream that still emits them cannot leak CoT.
  *   - the decision is in the log before the upstream call starts, so the
  *     `x-milo-decision-id` a client reads off the response is always
  *     resolvable at `/v1/decisions/:id`.
@@ -28,7 +31,7 @@
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
-import type { ChatMessage, CostPosture, RouteDecision, RouteRequest } from "@milo/core";
+import type { ChatMessage, CostPosture, EmbedClientLike, EmbeddingVector, RouteDecision, RouteRequest } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { authorization, passThroughHeaders } from "../app.js";
 import {
@@ -43,6 +46,9 @@ import {
 } from "../billing.js";
 import { applyBrief, briefHeaders, routedBrief } from "../brief.js";
 import { maybeCapture } from "../capture.js";
+import { applyFactNote, factHeaders, maybeCaptureFact, prepareQueryEmbedding, routedFacts } from "../facts.js";
+import { embedClientFor } from "../embed.js";
+import type { RoutedFacts } from "../facts.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
@@ -54,9 +60,17 @@ import {
   retryAfterSeconds,
   routingUnavailableMessage,
   applyProviderStrategy,
+  applyReasoningExclusion,
 } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
+import {
+  stripChatReasoningBody,
+  stripChatReasoningSse,
+  wantsVisibleReasoning,
+} from "./chat-reasoning.js";
 import { forwardGated, gateFor } from "./gate.js";
+import { applyPruneHeaders, maybePrune, pruneRecord } from "./prune.js";
+import type { PruneOutcome } from "./prune.js";
 import { forwardSampled } from "./sampling.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
@@ -179,6 +193,27 @@ async function routed(
   if (forcedTier !== undefined) request.forcedTier = forcedTier;
   if (extension?.samples !== undefined) request.samples = extension.samples;
 
+  // Two-stage fact retrieval (ADR-018): prepare the turn's embedding IN
+  // PARALLEL with the routing Jev call below, so its ~50 ms round trip hides
+  // under the ~350 ms route and adds nothing to the critical path. Eligibility
+  // is decided from what we already know (fact memory on, not `low` posture,
+  // not opted out); the embed client authenticates with the RESOLVED upstream
+  // key -- the account sub-key for a Milo caller, the caller's own key for
+  // BYOK -- never the raw `mk_` bearer. `prepareQueryEmbedding` makes the
+  // cheap, decrypt-free checks (retrieval on for this key, at least one fact
+  // stored) before embedding, so a caller with no facts pays for no call. Any
+  // failure resolves to undefined and the gate falls open to every fact.
+  const posture: CostPosture = extension?.posture ?? "balanced";
+  const retrievalEligible = deps.factMemory !== undefined && posture !== "low" && extension?.facts !== false;
+  const embed: EmbedClientLike | undefined = retrievalEligible
+    ? embedClientFor(deps.factRetrieval, upstreamHeadersFor(c).get("authorization") ?? "")
+    : undefined;
+  const promptEmbedding: Promise<EmbeddingVector | undefined> = prepareQueryEmbedding(deps.log, embed, {
+    keyHash: callerScope(c),
+    messages,
+    logger: deps.logger,
+  });
+
   let decision: RouteDecision;
   try {
     decision = await deps.router.route(request);
@@ -232,15 +267,51 @@ async function routed(
     provenance: decision.fingerprint,
     logger: deps.logger,
   });
+  // Personal-fact capture (ADR-017) is fire-and-forget too: its own Jev call,
+  // off the response path, storing an encrypted fact when the latest turn
+  // states one. It never delays or fails the response.
+  void maybeCaptureFact(deps.log, deps.jev, deps.factMemory?.encryptor, {
+    keyHash: callerScope(c),
+    messages,
+    provenance: decision.fingerprint,
+    ...(embed !== undefined ? { embed } : {}),
+    logger: deps.logger,
+  });
   const brief = await routedBrief(deps.log, callerScope(c), {
     extension,
     taskType: decision.signals?.taskType,
     logger: deps.logger,
   });
   // Posture-aware provider strategy for the upstream call; a caller-supplied
-  // `provider` field always wins (see applyProviderStrategy).
-  const posture = extension?.posture ?? "balanced";
-  const outgoing = applyProviderStrategy(applyBrief(body, brief), posture, decision.model);
+  // `provider` field always wins (see applyProviderStrategy). `posture` was
+  // resolved above, before routing, to gate retrieval eligibility.
+  // The relevance-gated fact note (ADR-017): one Jev call classifies which
+  // stored facts, if any, belong in this request; only relevant ones are
+  // appended, and nothing is injected on `low` posture. This runs before the
+  // forward, so its cost is bounded and its result rides the outgoing body and
+  // `x-milo-facts-injected`.
+  const facts = await routedFacts(deps.log, deps.jev, deps.factMemory?.encryptor, {
+    keyHash: callerScope(c),
+    messages,
+    extension,
+    skip: posture === "low",
+    // Two-stage retrieval (ADR-018): the embed client for the pre-filter and
+    // any backfill, and the turn's embedding already in flight since before
+    // routing, so the gate rarely waits on it.
+    ...(embed !== undefined ? { embed } : {}),
+    promptEmbedding,
+    logger: deps.logger,
+  });
+  const outgoing = applyFactNote(
+    applyReasoningExclusion(applyProviderStrategy(applyBrief(body, brief), posture, decision.model)),
+    facts,
+  );
+
+  // Context pruning (ADR-014, ADR-013 phase C) sheds safe older context from
+  // `outgoing.messages` in place before anything reads them: off by default,
+  // over a token floor, never on `low` posture. See prune.ts for the exact
+  // conditions; the outcome rides the forward as disclosure only.
+  const prune = await maybePrune(deps, outgoing, decision, posture, extension);
 
   // The completeness gate (ADR-013 phase A) applies to this surface only,
   // in both routing modes, on non-trivial cells: see gateFor for the exact
@@ -251,19 +322,33 @@ async function routed(
   // this surface executes sampling; the other dialects opt out at routing
   // time (see routes/messages.ts and routes/responses.ts).
   if (decision.samples !== undefined && decision.samples > 1) {
-    return forwardSampled(c, deps, outgoing, decision, { candidates, briefVersion: brief?.version, gate });
+    return forwardSampled(c, deps, outgoing, decision, {
+      candidates,
+      briefVersion: brief?.version,
+      facts,
+      gate,
+      prune,
+    });
   }
 
   // A gated single call buffers, grades, maybe retries, then replays; an
   // ungated one keeps the pass-through fast path untouched.
   if (gate !== undefined) {
-    return forwardGated(c, deps, outgoing, decision, gate, brief?.version);
+    return forwardGated(c, deps, outgoing, decision, gate, brief?.version, prune, facts);
   }
 
-  return forward(c, deps, outgoing, decision, brief?.version);
+  return forward(c, deps, outgoing, decision, brief?.version, prune, facts);
 }
 
-async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDecision, briefVersion?: string): Promise<Response> {
+async function forward(
+  c: Context,
+  deps: AppDeps,
+  body: Body,
+  decision: RouteDecision,
+  briefVersion?: string,
+  prune?: PruneOutcome,
+  facts?: RoutedFacts,
+): Promise<Response> {
   const forwarded = prepareBody(body, decision.model);
   const startedAt = deps.now();
 
@@ -278,27 +363,36 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyPruneHeaders(headers, prune);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
+  for (const [k, v] of Object.entries(factHeaders(facts))) headers.set(k, v);
 
-  // A streamed success is the only case where the body must not be touched.
   // An upstream error is JSON however the request was made, so it takes the
-  // buffered path and passes through with its own status.
+  // buffered path and passes through with its own status. On success, scrub
+  // reasoning fields unless the caller explicitly asked to see them.
   const ctx = { surface: "chat" as const, model: decision.model, decisionId: decision.id };
+  const scrub = !wantsVisibleReasoning(body);
 
   if (isStreaming(body) && upstream.ok && upstream.body !== null) {
-    const recorded = upstream.body.pipeThrough(
+    let recorded: ReadableStream<Uint8Array> = upstream.body.pipeThrough(
       onFinished(() => {
-        deps.recordUpstream(decision.id, { status: upstream.status, latencyMs: deps.now() - startedAt });
+        deps.recordUpstream(decision.id, {
+          status: upstream.status,
+          latencyMs: deps.now() - startedAt,
+          ...pruneRecord(prune),
+        });
       }),
     );
+    if (scrub) recorded = recorded.pipeThrough(stripChatReasoningSse());
     // The charge settles from the usage in the stream's final frames, after
     // the client already has every byte.
     return new Response(chargeStream(c, deps, headers, ctx, recorded), { status: upstream.status, headers });
   }
 
-  const text = await upstream.text();
+  let text = await upstream.text();
+  if (scrub && upstream.ok) text = stripChatReasoningBody(text);
   const usage = upstream.ok ? readBodyUsage("chat", text) : {};
-  const record: Upstream = { status: upstream.status, latencyMs: deps.now() - startedAt };
+  const record: Upstream = { status: upstream.status, latencyMs: deps.now() - startedAt, ...pruneRecord(prune) };
   if (upstream.ok) Object.assign(record, toUpstreamRecord(usage));
   deps.recordUpstream(decision.id, record);
   if (upstream.ok) await chargeBuffered(c, deps, headers, ctx, usage);

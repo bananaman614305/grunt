@@ -15,6 +15,7 @@
     "build": "tsc -b",
     "eval": "tsx src/cli.ts",
     "roster:refresh": "tsx scripts/roster-refresh.ts",
+    "prune:measure": "tsx scripts/prune-measure.ts",
     "bench": "tsx src/bench/cli.ts"
   },
   "dependencies": {

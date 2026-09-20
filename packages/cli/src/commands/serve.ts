@@ -189,6 +189,28 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
           },
         }
       : {}),
+    ...(config.pruning !== undefined
+      ? {
+          pruning: {
+            enabled: config.pruning.enabled,
+            ...(config.pruning.minContextTokens !== undefined
+              ? { minContextTokens: config.pruning.minContextTokens }
+              : {}),
+            ...(config.pruning.contextWindowTokens !== undefined
+              ? { contextWindowTokens: config.pruning.contextWindowTokens }
+              : {}),
+          },
+        }
+      : {}),
+    ...(config.factRetrieval !== undefined
+      ? {
+          factRetrieval: {
+            enabled: config.factRetrieval.enabled,
+            ...(config.factRetrieval.model !== undefined ? { model: config.factRetrieval.model } : {}),
+            ...(config.factRetrieval.baseUrl !== undefined ? { baseUrl: config.factRetrieval.baseUrl } : {}),
+          },
+        }
+      : {}),
   };
 
   const gateway = await deps.createGateway(gatewayOptions);

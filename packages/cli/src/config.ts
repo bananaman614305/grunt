@@ -53,6 +53,41 @@ const samplingSchema = z
   .strict();
 
 /**
+ * Context pruning (ADR-014, ADR-013 phase C). Off by default: `enabled`
+ * (default false) lets the gate run on every routed request over the token
+ * floor, and a request can still opt in per call with `milo: { prune: true }`
+ * even when it is off. `minContextTokens` (default 40,000) is the floor a
+ * conversation must exceed before pruning is considered; `contextWindowTokens`
+ * (default 128,000) is the fill-ratio denominator for a model whose context
+ * window is unknown.
+ */
+const pruningSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    minContextTokens: z.number().int().positive().optional(),
+    contextWindowTokens: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/**
+ * Two-stage fact retrieval (ADR-018). `enabled` (default true) turns on the
+ * embedding pre-filter that narrows a caller's stored facts before the Jev
+ * relevance gate; it only ever runs when fact memory is on (billing and an
+ * encryption key configured). `model` is the OpenAI-compatible embeddings
+ * model (default `openai/text-embedding-3-small`); `baseUrl` is the embeddings
+ * endpoint, defaulting to the OpenRouter completions base URL. The caller's
+ * forwarded key pays for the embedding, so no server-side embedding key is
+ * needed, and any embedding failure falls open to the all-facts gate.
+ */
+const factRetrievalSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    model: z.string().trim().min(1).optional(),
+    baseUrl: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+/**
  * Routing mode (ADR-012). `"roster"` is the shipped default: policy v4 over
  * the tier-to-model roster, unchanged. `"deepseek"` is the experimental
  * compute controller: the difficulty band buys a compute budget over the
@@ -74,6 +109,8 @@ export const configSchema = z
     /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
     jevTimeoutMs: z.number().int().positive().optional(),
     sampling: samplingSchema.optional(),
+    pruning: pruningSchema.optional(),
+    factRetrieval: factRetrievalSchema.optional(),
   })
   .strict();
 

@@ -8,7 +8,7 @@
  * the router cannot decide fails loudly in the route that asked.
  */
 import type { Hono } from "hono";
-import { DecisionLog, DEFAULT_PRICING, DEFAULT_ROSTER, JevClient, OpenRouterClient, Router, StickyCache } from "@milo/core";
+import { DecisionLog, DEFAULT_PRICING, DEFAULT_ROSTER, JevClient, OPENROUTER_BASE_URL, OpenRouterClient, Router, StickyCache } from "@milo/core";
 import type {
   DecisionRecord,
   JevClientOptions,
@@ -19,7 +19,9 @@ import type {
   RoutingMode,
   StickyStore,
 } from "@milo/core";
-import type { BillingStore, PricingConfig } from "@milo/core";
+import type { BillingStore, Encryptor, PricingConfig } from "@milo/core";
+import { DEFAULT_EMBED_MODEL } from "./embed.js";
+import { decryptSecret as decryptBillingEnvelope, encryptSecret as encryptBillingEnvelope } from "@milo/billing";
 import type { OpenRouterProvisioningClient } from "@milo/provisioning";
 import type { StripeClient } from "@milo/stripe";
 import { AnthropicUpstream } from "./anthropic.js";
@@ -70,6 +72,27 @@ export type GatewayOptions = {
    * The cells themselves are fixed in code for now (`policy.ts`).
    */
   sampling?: { enabled?: boolean; sampleTimeoutMs?: number; minRanked?: number };
+  /**
+   * Context pruning (ADR-014, ADR-013 phase C). Off by default: `enabled`
+   * (default false) lets the gate run on every routed request over the token
+   * floor; even off, a request opts in per call with `milo: { prune: true }`.
+   * `minContextTokens` (default 40,000) is the floor a conversation must
+   * exceed before pruning is considered; `contextWindowTokens` (default
+   * 128,000) is the fill-ratio denominator for a model whose context window
+   * is unknown. Set from `milo.config.json`'s `pruning`.
+   */
+  pruning?: { enabled?: boolean; minContextTokens?: number; contextWindowTokens?: number };
+  /**
+   * Two-stage fact retrieval (ADR-018). `enabled` (default true) turns on the
+   * embedding pre-filter that narrows a caller's facts before the Jev
+   * relevance gate; it only ever runs when fact memory is on (billing/an
+   * encryption key present). `model` is the OpenAI-compatible embeddings model
+   * (default `openai/text-embedding-3-small`); `baseUrl` is the embeddings
+   * endpoint (default: the OpenRouter completions base URL). The caller's
+   * forwarded key pays for the embedding, so no server-side embedding key is
+   * needed. Set from `milo.config.json`'s `factRetrieval`.
+   */
+  factRetrieval?: { enabled?: boolean; model?: string; baseUrl?: string };
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
   /**
@@ -149,6 +172,36 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const log = await DecisionLog.open(options.decisionLogUrl ?? ":memory:");
   const writes = new WriteQueue(logger);
 
+  // Personal-fact memory (ADR-017) rides the billing encryption envelope: the
+  // fact text is sealed with the same AES-256-GCM key (MILO_ENCRYPTION_KEY)
+  // that protects the account's OpenRouter sub-key. No key -> no envelope ->
+  // the feature is disabled, exactly as documented.
+  const factMemory: { encryptor: Encryptor } | undefined =
+    billing === undefined
+      ? undefined
+      : {
+          encryptor: {
+            encrypt: (plain: string): string => encryptBillingEnvelope(plain, billing.encryptionKey),
+            decrypt: (stored: string): string => decryptBillingEnvelope(stored, billing.encryptionKey),
+          },
+        };
+
+  // Two-stage fact retrieval (ADR-018): the embedding pre-filter for the
+  // relevance gate. Only meaningful when fact memory is on, and default-on
+  // when it is -- the caller's forwarded key pays for the embedding, so it
+  // adds no server-side key. `baseUrl` defaults to the completions endpoint,
+  // `model` to a small, widely-hosted embeddings model; a failed embedding
+  // falls open to the ADR-017 all-facts gate, so this can never break a call.
+  const factRetrievalEnabled = options.factRetrieval?.enabled ?? true;
+  const factRetrieval: { model: string; baseUrl: string; fetch?: typeof fetch } | undefined =
+    factMemory === undefined || !factRetrievalEnabled
+      ? undefined
+      : {
+          model: options.factRetrieval?.model ?? DEFAULT_EMBED_MODEL,
+          baseUrl: options.factRetrieval?.baseUrl ?? options.openRouterBaseUrl ?? OPENROUTER_BASE_URL,
+          ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
+        };
+
   const mode: RoutingMode = options.mode ?? "roster";
 
   const routerOptions = {
@@ -206,7 +259,10 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     roster,
     mode,
     jev,
+    ...(factMemory !== undefined ? { factMemory } : {}),
+    ...(factRetrieval !== undefined ? { factRetrieval } : {}),
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
+    ...(options.pruning !== undefined ? { pruning: options.pruning } : {}),
     ...(billing !== undefined ? { billing } : {}),
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),

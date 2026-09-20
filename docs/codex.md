@@ -130,11 +130,13 @@ x-milo-sticky: false
 | `GET /v1/responses/<id>`, `POST /v1/responses/<id>/cancel`, `GET /v1/responses/<id>/input_items` | The generic `/v1/*` proxy: method, path, query and body unchanged. OpenRouter's Responses API is stateless, so these mostly 404 upstream — Codex does not need them for an ordinary session |
 | `GET /v1/models` | Served by Milo's models route (OpenRouter's catalogue with `milo/auto` first) |
 
-Only the `model` field is ever rewritten, and only on the routed path. Every
-other field — `input`, `instructions`, `tools`, `tool_choice`, `reasoning`,
-`text`, `include`, sampling parameters, `previous_response_id`, `store` — is
-forwarded exactly as received. The Milo-only `milo` field is the one thing
-stripped.
+Only the `model` field is rewritten on this surface. Every other field —
+`input`, `instructions`, `tools`, `tool_choice`, `reasoning`, `text`, `include`,
+sampling parameters, `previous_response_id`, `store` — is forwarded exactly
+as received. The Milo-only `milo` field is the one thing stripped. Routed
+requests on this surface (and on chat completions and messages) default to
+`reasoning.exclude: true` so clients do not display an internal trace; a caller
+can explicitly set `reasoning.exclude: false` to receive it.
 
 ### `previous_response_id` and `store`
 

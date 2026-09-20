@@ -22,6 +22,7 @@ import {
 import type {
   DecisionRecord,
   DecisionLog,
+  Encryptor,
   JevClientLike,
   OpenRouterClient,
   Roster,
@@ -42,9 +43,11 @@ import { registerDecisionsRoutes } from "./routes/decisions.js";
 import { registerMessagesRoute } from "./routes/messages.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerPreferencesRoutes } from "./routes/preferences.js";
+import { registerMemoryRoutes } from "./routes/memory.js";
 import { registerProxyRoute } from "./routes/proxy.js";
 import { registerRosterRoute } from "./routes/roster.js";
 import { registerResponsesRoute } from "./routes/responses.js";
+import { registerVerifyRoute } from "./routes/verify.js";
 import { registerStaticRoutes } from "./routes/static.js";
 
 /** Structurally identical to `GatewayOptions["logger"]`, which is pinned. */
@@ -92,6 +95,24 @@ export type AppDeps = {
    * `ranking_failed`, and capture simply no-ops.
    */
   jev?: JevClientLike;
+  /**
+   * Personal-fact memory (ADR-017). Present only when the deployment has an
+   * encryption key -- the gateway builds `encryptor` from the billing
+   * AES-256-GCM envelope keyed by `MILO_ENCRYPTION_KEY`. Absent means the
+   * feature degrades to disabled: no capture, no injection, and `GET
+   * /v1/memory` answers empty. A fact store with no envelope must not store
+   * plaintext, so it stores nothing.
+   */
+  factMemory?: { encryptor: Encryptor };
+  /**
+   * Two-stage fact retrieval (ADR-018). Present only alongside `factMemory`
+   * and when retrieval is enabled: `model` and `baseUrl` are the embeddings
+   * endpoint the gateway calls with the caller's forwarded key to pre-rank a
+   * caller's facts before the Jev gate. Absent means the pre-filter is off and
+   * the gate falls open to asking Jev about every fact, exactly as ADR-017
+   * shipped it.
+   */
+  factRetrieval?: { model: string; baseUrl: string; fetch?: (input: string, init?: RequestInit) => Promise<Response> };
   rateLimiter: RateLimiter;
   /**
    * Best-of-N execution knobs (ADR-010). Absent means the defaults:
@@ -99,6 +120,15 @@ export type AppDeps = {
    * ranked samples the fan-out waits for before an early return may fire.
    */
   sampling?: { sampleTimeoutMs?: number; minRanked?: number };
+  /**
+   * Context pruning (ADR-014). Absent or `enabled` false means the gate is
+   * off for every request unless one opts in with `milo: { prune: true }`.
+   * `minContextTokens` is the token floor a conversation must exceed before
+   * pruning is considered (default 40,000); `contextWindowTokens` is the
+   * fill-ratio denominator for a model whose context window is unknown
+   * (default 128,000).
+   */
+  pruning?: { enabled?: boolean; minContextTokens?: number; contextWindowTokens?: number };
   logger: Logger;
   /** Injectable clock for upstream latency. */
   now: () => number;
@@ -275,6 +305,7 @@ export function createApp(deps: AppDeps): Hono {
         "/v1/models",
         "/v1/roster",
         "/v1/preferences",
+        "/v1/memory",
         "/v1/decisions/:id",
       ],
       docs: "https://github.com/bananaman614305/milo",
@@ -300,6 +331,8 @@ export function createApp(deps: AppDeps): Hono {
   registerModelsRoute(app, deps);
   registerRosterRoute(app, deps);
   registerPreferencesRoutes(app, deps);
+  registerMemoryRoutes(app, deps);
+  registerVerifyRoute(app, deps);
   registerDecisionsRoutes(app, deps);
   // billing JSON routes
   if (deps.billing !== undefined) registerBillingRoutes(app, deps);

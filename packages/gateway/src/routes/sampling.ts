@@ -63,7 +63,17 @@ import { passThroughHeaders } from "../app.js";
 import { chargeBuffered, chargeStream, upstreamHeadersFor } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import { briefHeaders } from "../brief.js";
+import { factHeaders } from "../facts.js";
+import type { RoutedFacts } from "../facts.js";
 import type { GateRunner } from "./gate.js";
+import { applyPruneHeaders, pruneRecord } from "./prune.js";
+import type { PruneOutcome } from "./prune.js";
+import {
+  stripChatReasoningBody,
+  stripChatReasoningPayload,
+  stripChatReasoningSse,
+  wantsVisibleReasoning,
+} from "./chat-reasoning.js";
 import { applyMiloHeaders, onFinished, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage } from "./usage.js";
@@ -126,6 +136,19 @@ export type SamplingContext = {
    * already the degraded path.
    */
   gate?: GateRunner | undefined;
+  /**
+   * Context pruning's outcome (ADR-014), when the gate shed older context
+   * from this request's messages before the fan-out. Disclosure only: the
+   * samples already drew on the pruned body, so this just sets the headers
+   * and the decision record's `prune` block.
+   */
+  prune?: PruneOutcome | undefined;
+  /**
+   * The relevance-gated personal-fact note (ADR-017), when facts were injected
+   * into this request's body before the fan-out. Disclosure only: the samples
+   * already drew on the note; this sets `x-milo-facts-injected`.
+   */
+  facts?: RoutedFacts | undefined;
 };
 
 type Sample = {
@@ -628,12 +651,15 @@ export async function forwardSampled(
     samplePick: pickIndex,
     ...(note !== undefined ? { sampleNote: note } : {}),
     ...(gateRecord !== undefined ? { gate: gateRecord } : {}),
+    ...pruneRecord(ctx.prune),
   };
   deps.recordUpstream(decision.id, record);
 
   const headers = chosen.response !== undefined ? passThroughHeaders(chosen.response) : new Headers();
   applyMiloHeaders(headers, decision);
+  applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
+  for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);
   headers.set(SAMPLES_HEADER, String(n));
   headers.set(SAMPLE_PICK_HEADER, String(pickIndex));
   for (const [k, v] of Object.entries(gateHeaders)) headers.set(k, v);
@@ -641,6 +667,20 @@ export async function forwardSampled(
   // A Milo key pays for what was actually spent: the sum of every sample
   // (and the gate's retry), as one usage row against this decision (ADR-010).
   await chargeBuffered(c, deps, headers, { surface: "chat", model: decision.model, decisionId: decision.id }, usage);
+
+  if (!wantsVisibleReasoning(body)) {
+    const json =
+      served.json !== undefined ? (stripChatReasoningPayload(served.json) as Record<string, unknown>) : undefined;
+    const message =
+      json !== undefined && Array.isArray(json["choices"]) && isRecord(json["choices"][0])
+        ? ((json["choices"][0] as Record<string, unknown>)["message"] as Record<string, unknown> | undefined)
+        : served.message;
+    served = {
+      ...(json !== undefined ? { json } : {}),
+      ...(message !== undefined ? { message } : {}),
+      text: stripChatReasoningBody(served.text),
+    };
+  }
 
   if (isStreaming(body)) {
     headers.set("content-type", "text/event-stream");
@@ -767,6 +807,7 @@ async function fallbackUnsampled(
       latencyMs: deps.now() - startedAt,
       samples: sampleMeta,
       sampleNote: "all_samples_failed",
+      ...pruneRecord(ctx.prune),
     });
     deps.logger.error("openrouter chat completions failed", { decisionId: decision.id, error: errorMessage(err) });
     return errorResponse(c, 502, "Upstream request to OpenRouter failed.", "api_error", "upstream_unavailable");
@@ -774,7 +815,9 @@ async function fallbackUnsampled(
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
+  for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);
   // The response the client got came from the fallback, not the sampled fast
   // model, and the headers must say what actually answered.
   headers.set("x-milo-model", model);
@@ -782,22 +825,26 @@ async function fallbackUnsampled(
   headers.set(SAMPLES_HEADER, String(decision.samples ?? 0));
 
   const chargeCtx = { surface: "chat" as const, model, decisionId: decision.id };
+  const scrub = !wantsVisibleReasoning(body);
 
   if (isStreaming(body) && upstream.ok && upstream.body !== null) {
-    const recorded = upstream.body.pipeThrough(
+    let recorded: ReadableStream<Uint8Array> = upstream.body.pipeThrough(
       onFinished(() => {
         deps.recordUpstream(decision.id, {
           status: upstream.status,
           latencyMs: deps.now() - startedAt,
           samples: sampleMeta,
           sampleNote: "all_samples_failed",
+          ...pruneRecord(ctx.prune),
         });
       }),
     );
+    if (scrub) recorded = recorded.pipeThrough(stripChatReasoningSse());
     return new Response(chargeStream(c, deps, headers, chargeCtx, recorded), { status: upstream.status, headers });
   }
 
-  const text = await upstream.text();
+  let text = await upstream.text();
+  if (scrub && upstream.ok) text = stripChatReasoningBody(text);
   const usage = upstream.ok ? readBodyUsage("chat", text) : {};
   const record: Upstream = {
     status: upstream.status,
@@ -807,6 +854,7 @@ async function fallbackUnsampled(
     ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
     samples: sampleMeta,
     sampleNote: "all_samples_failed",
+    ...pruneRecord(ctx.prune),
   };
   deps.recordUpstream(decision.id, record);
   if (upstream.ok) await chargeBuffered(c, deps, headers, chargeCtx, usage);

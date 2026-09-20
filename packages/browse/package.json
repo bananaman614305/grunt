@@ -1,0 +1,27 @@
+{
+  "name": "@milo/browse",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "milo-browse": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "browse": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@milo/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

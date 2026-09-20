@@ -10,6 +10,7 @@ import * as explain from "./commands/explain.js";
 import * as roster from "./commands/roster.js";
 import * as serve from "./commands/serve.js";
 import * as stats from "./commands/stats.js";
+import * as verify from "./commands/verify.js";
 import type { CliDeps } from "./deps.js";
 
 export type { CliDeps } from "./deps.js";
@@ -20,7 +21,7 @@ type Command = {
   run: (args: string[], deps: CliDeps) => Promise<number | undefined>;
 };
 
-const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, roster, billing };
+const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, roster, billing, verify };
 
 export const TOP_LEVEL_HELP = `Usage: milo <command> [options]
 
@@ -33,6 +34,7 @@ Commands:
   stats       Summarize the decision log
   roster      Show the effective tier-to-model roster
   billing     Operate the billing database, Stripe, and provisioning
+  verify      Install the ground-truth verification Stop hook into a harness
 
 Run "milo <command> --help" for command-specific options.
 `;

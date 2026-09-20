@@ -21,14 +21,43 @@ import type {
   PreferenceSettings,
   PreferenceStore,
 } from "../preferences/store.js";
+import { assertFactCandidate } from "../memory/store.js";
+import type {
+  Encryptor,
+  FactCandidate,
+  FactCategory,
+  FactRow,
+  FactSettings,
+  FactStore,
+} from "../memory/store.js";
 import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
-import type { DecisionRecord, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
+import type { DecisionRecord, Modality, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
 import { assertKeyHash, rosterModelCount } from "./roster-store.js";
 import type { RosterMeta, RosterSource, RosterStore, StoredRoster, StoredRosterSummary } from "./roster-store.js";
 import { applyMigrations } from "./schema.js";
 
 const MAX_FIELD_LENGTH = 2000;
 const LOOKS_LIKE_SECRET = /sk-or-|Bearer\s/i;
+
+/**
+ * Parses a stored fact embedding (ADR-018) back into a number array, or
+ * undefined for a NULL/absent/malformed value. A row written before migration
+ * 8, or one whose embedding never backfilled, has none; a garbled value is
+ * treated the same, so a bad column can never crash a read -- the fact just
+ * fails open through the pre-filter until it is re-embedded.
+ */
+function parseEmbedding(value: unknown): number[] | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+    if (!parsed.every((n) => typeof n === "number" && Number.isFinite(n))) return undefined;
+    return parsed as number[];
+  } catch {
+    return undefined;
+  }
+}
 
 function checkString(path: string, value: string): void {
   if (value.length > MAX_FIELD_LENGTH) {
@@ -95,6 +124,9 @@ function rowToRecord(row: Row): StoredDecision {
   if (row.unsampled_tier !== null && row.unsampled_tier !== undefined) {
     record.unsampledTier = String(row.unsampled_tier) as Tier;
   }
+  if (row.modality !== null && row.modality !== undefined) {
+    record.modality = String(row.modality) as Modality;
+  }
   if (row.signals_json !== null && row.signals_json !== undefined) {
     record.signals = JSON.parse(String(row.signals_json)) as RouteSignals;
   }
@@ -138,7 +170,7 @@ const LIST_LIMIT_MAX = 500;
 const ROSTER_LIST_LIMIT_DEFAULT = 100;
 const ROSTER_LIST_LIMIT_MAX = 1000;
 
-export class DecisionLog implements StickyStore, RosterStore, PreferenceStore {
+export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, FactStore {
   private constructor(private readonly db: Client) {}
 
   /** `url` is `":memory:"` or `file:/path/to.db`. Runs migrations before returning. */
@@ -153,8 +185,8 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore {
     await this.db.execute({
       sql: `INSERT INTO decisions
               (id, fingerprint, tier, model, reason, policy_version, sticky, created_at, signals_json, upstream_json,
-               samples, unsampled_tier)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               samples, unsampled_tier, modality)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         record.id,
         record.fingerprint,
@@ -168,6 +200,7 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore {
         record.upstream ? JSON.stringify(record.upstream) : null,
         record.samples ?? null,
         record.unsampledTier ?? null,
+        record.modality ?? null,
       ],
     });
   }
@@ -553,6 +586,138 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore {
               brief_enabled = excluded.brief_enabled,
               updated_at = excluded.updated_at`,
       args: [keyHash, next.captureEnabled ? 1 : 0, next.briefEnabled ? 1 : 0, new Date().toISOString()],
+    });
+    return next;
+  }
+
+  // -------------------------------------------------------------------------
+  // FactStore (ADR-017)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Encrypts the fact text through the injected envelope and inserts a row.
+   * The plaintext is encrypted *before* it touches SQL, so `content_encrypted`
+   * is never cleartext -- the one place Milo persists raw content, and it is
+   * ciphertext at rest (ADR-017). The category and provenance are labels and a
+   * digest; only the text is content, and only the text is encrypted.
+   */
+  async putFact(keyHash: string, candidate: FactCandidate, enc: Encryptor): Promise<FactRow> {
+    assertFactCandidate(keyHash, candidate);
+    const now = candidate.now ?? new Date().toISOString();
+    const row: FactRow = {
+      id: ulid(),
+      keyHash,
+      category: candidate.category,
+      text: candidate.text,
+      provenance: candidate.provenance,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (candidate.embedding !== undefined) row.embedding = candidate.embedding;
+    await this.db.execute({
+      sql: `INSERT INTO facts
+              (id, key_hash, category, content_encrypted, provenance, embedding, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        row.id,
+        row.keyHash,
+        row.category,
+        enc.encrypt(candidate.text),
+        row.provenance,
+        // The retrieval vector (ADR-018) is stored as JSON, or NULL when
+        // capture computed none; it is derived from the content, not content.
+        candidate.embedding === undefined ? null : JSON.stringify(candidate.embedding),
+        row.createdAt,
+        row.updatedAt,
+      ],
+    });
+    return row;
+  }
+
+  /** Every fact this key stored, newest first, decrypted for the owner. */
+  async listFacts(keyHash: string, enc: Encryptor): Promise<FactRow[]> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: `SELECT * FROM facts WHERE key_hash = ? ORDER BY created_at DESC, id DESC`,
+      args: [keyHash],
+    });
+    return rs.rows.map((row) => {
+      const out: FactRow = {
+        id: String(row.id),
+        keyHash: String(row.key_hash),
+        category: String(row.category) as FactCategory,
+        text: enc.decrypt(String(row.content_encrypted)),
+        provenance: String(row.provenance),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      };
+      const embedding = parseEmbedding(row.embedding);
+      if (embedding !== undefined) out.embedding = embedding;
+      return out;
+    });
+  }
+
+  /** A cheap count of this key's facts; decrypts nothing (ADR-018). */
+  async countFacts(keyHash: string): Promise<number> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT COUNT(*) AS n FROM facts WHERE key_hash = ?",
+      args: [keyHash],
+    });
+    return Number(rs.rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Backfills (or clears with null) one fact's retrieval vector (ADR-018),
+   * scoped by id *and* key hash so one caller cannot touch another's row. The
+   * gateway calls this off the response path for a candidate it embedded but
+   * that had no stored vector, so the pre-filter grows complete over time.
+   */
+  async setFactEmbedding(keyHash: string, id: string, embedding: number[] | null): Promise<boolean> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "UPDATE facts SET embedding = ?, updated_at = ? WHERE id = ? AND key_hash = ?",
+      args: [embedding === null ? null : JSON.stringify(embedding), new Date().toISOString(), id, keyHash],
+    });
+    return rs.rowsAffected > 0;
+  }
+
+  /**
+   * Scoped by both id *and* key hash, so one caller cannot delete another's
+   * fact by guessing ids -- the same 404-shaped answer a missing row gets.
+   * Needs no envelope: a delete never reads the ciphertext.
+   */
+  async deleteFact(keyHash: string, id: string): Promise<boolean> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "DELETE FROM facts WHERE id = ? AND key_hash = ?",
+      args: [id, keyHash],
+    });
+    return rs.rowsAffected > 0;
+  }
+
+  /** The kill switch is on for a key that never stored a settings row. */
+  async getFactSettings(keyHash: string): Promise<FactSettings> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT enabled FROM fact_settings WHERE key_hash = ?",
+      args: [keyHash],
+    });
+    const row = rs.rows[0];
+    if (row === undefined) return { keyHash, enabled: true };
+    return { keyHash, enabled: Boolean(Number(row.enabled)) };
+  }
+
+  async setFactSettings(keyHash: string, patch: { enabled: boolean }): Promise<FactSettings> {
+    assertKeyHash(keyHash);
+    const next: FactSettings = { keyHash, enabled: patch.enabled };
+    await this.db.execute({
+      sql: `INSERT INTO fact_settings (key_hash, enabled, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key_hash) DO UPDATE SET
+              enabled = excluded.enabled,
+              updated_at = excluded.updated_at`,
+      args: [keyHash, next.enabled ? 1 : 0, new Date().toISOString()],
     });
     return next;
   }

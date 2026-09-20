@@ -67,6 +67,32 @@ export const BRIEF_TEMPLATES: Record<OutputShapingField, Record<string, string>>
     smoke: "Add a minimal smoke test for changed behaviour; nothing exhaustive.",
     thorough: "Cover changes with thorough tests, including edge cases.",
   },
+  tone: {
+    friendly: "Keep a warm, approachable tone; be encouraging.",
+    direct: "Be direct and concise; skip pleasantries and hedging.",
+    jovial: "Keep the tone light and good-humoured; a little wit is welcome.",
+    professional: "Keep a measured, professional tone throughout.",
+  },
+  working_style: {
+    test_first: "Write or update tests before implementing; show the failing test first.",
+    code_first: "Write the implementation first, then add tests to cover it.",
+    plan_first: "Lay out a short plan and confirm the approach before writing code.",
+    just_do: "Skip planning overhead; make the change directly.",
+  },
+  change_autonomy: {
+    ask_first: "Confirm before large or destructive changes; describe the plan first.",
+    autonomous: "Proceed without asking; make reasonable decisions and report what you did.",
+  },
+  verification_depth: {
+    light: "A quick sanity check is enough; do not run the full suite unless asked.",
+    standard: "Build and run the affected tests before finishing.",
+    thorough: "Run the tests and lint after changes and report results before finishing.",
+  },
+  explanation_style: {
+    code_first: "Lead with the code or diff; keep prose after it brief.",
+    explain_then_code: "Explain the approach briefly, then show the code.",
+    code_only: "Return the code or diff with minimal explanation.",
+  },
 };
 
 export type CompiledBrief = {

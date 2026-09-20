@@ -306,3 +306,25 @@ reports (markdown + JSON) land in `packages/evals/agentic/reports/`
 (gitignored). ADR-013's rule is baseline-first: the current gateway is
 measured on this benchmark **before** any phase-C gate ships, so every gate
 lands against a number, the way the routing eval gates policy.
+
+## Context-pruning measurement (ADR-014)
+
+Context pruning's payoff is fewer input tokens re-sent every turn, so it
+ships with a tiny script that prices that on a long-history conversation. It
+runs the same pure pipeline the gateway runs (`prunableWindow` +
+`decidePrune`) with a simulated Jev verdict, so it needs no network and no
+key, and prints tokens-before vs tokens-after and the saving:
+
+```
+pnpm --filter @milo/evals run prune:measure
+```
+
+By default it uses a synthetic long agent session (a system brief, three
+finished tool loops, then the current request) and reports around a 96%
+input-token reduction. Point it at your own history with
+`--fixture <path.json>` (a JSON array of OpenAI chat messages), and steer the
+simulated verdict with `--finished <0..1>`, `--prunable <0..3>`, and
+`--fill <0..1>` (the context-fill ratio that sets the sliding floor). The
+gateway's live behaviour is exercised by the unit tests
+(`packages/gateway/src/routes/prune.test.ts`); this script is only for
+sizing the saving before enabling the gate.

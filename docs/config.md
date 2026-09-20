@@ -43,6 +43,9 @@ A starting point is checked in at the repo root as `milo.config.example.json`:
 | `sampling.enabled` | boolean | `true` | Whether policy v4's best-of-N cells may resolve to a sampled outcome (ADR-010, `docs/routing.md`). `false` makes every cell keep its single-model outcome. |
 | `sampling.sampleTimeoutMs` | positive integer | `60000` | Per-sample wall-clock cap on a best-of-N fan-out; a sample that exceeds it is dropped, not waited for. |
 | `sampling.minRanked` | positive integer | `3` | How many samples must be ranked before a best-of-N fan-out may return early: once this many are ranked and a clear winner exists (Jev expected quality at or above 2.5, or the first success when ranking is degraded), it is returned immediately and still-streaming samples are aborted, stopping their token spend. Capped at the decision's sample count. |
+| `pruning.enabled` | boolean | `false` | Whether context pruning (ADR-014, ADR-013 phase C, `docs/routing.md`) runs on routed chat requests over the token floor. Off by default because it edits the caller's message history; even off, a request opts in per call with `milo: { "prune": true }`, and `milo: { "prune": false }` always opts out. Never runs on `low` posture. |
+| `pruning.minContextTokens` | positive integer | `40000` | The token floor a conversation must exceed before pruning is considered (tokens estimated as characters / 4). Below it, the request is forwarded unchanged. |
+| `pruning.contextWindowTokens` | positive integer | `128000` | Fill-ratio denominator for a picked model whose context window is unknown; a model in the default roster uses its own `contextLength` instead. The fill ratio sets the sliding confidence floor (0.90 at 10% full down to 0.50 at 90% full). |
 
 ### `roster`
 

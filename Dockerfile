@@ -23,6 +23,8 @@ COPY packages/evals/package.json packages/evals/package.json
 COPY packages/billing/package.json packages/billing/package.json
 COPY packages/stripe/package.json packages/stripe/package.json
 COPY packages/provisioning/package.json packages/provisioning/package.json
+COPY packages/browse/package.json packages/browse/package.json
+COPY packages/fleet/package.json packages/fleet/package.json
 # Every workspace package must be listed above or pnpm will not link it and
 # its build cannot resolve @milo/core.
 RUN pnpm install --frozen-lockfile

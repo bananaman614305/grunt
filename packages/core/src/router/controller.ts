@@ -21,7 +21,7 @@
  * gate is measured against exactly this table).
  */
 
-import type { ChatMessage, RouteSignals } from "../types.js";
+import type { ChatMessage, Modality, RouteSignals } from "../types.js";
 import type { JevClientLike } from "../jev/types.js";
 import { buildJevState } from "./context.js";
 import {
@@ -41,6 +41,25 @@ import { toSignals } from "./router.js";
 export const DEEPSEEK_BRANCH_MODEL = "deepseek/deepseek-v4-flash";
 /** The orchestrator/hard-task model band 3 samples instead. */
 export const DEEPSEEK_ORCHESTRATOR_MODEL = "deepseek/deepseek-v4.1-flash";
+
+/**
+ * The vision-capable branch model the multimodal gate pins for image input
+ * (ADR-020). `deepseek/deepseek-v4-flash` (bands 0-2) is text-only and goes
+ * blind on an image; `deepseek/deepseek-v4.1-flash` accepts `text` + `image`
+ * (verified live against OpenRouter's model metadata) and is already the
+ * band-3 orchestrator, so an image simply borrows it. Output stays text.
+ */
+export const DEEPSEEK_VISION_MODEL = DEEPSEEK_ORCHESTRATOR_MODEL;
+
+/**
+ * The free omni model the multimodal gate routes audio or video to (ADR-020).
+ * Verified live against `https://openrouter.ai/api/v1/models`:
+ * `input_modalities` are `["text","audio","image","video"]`, output `["text"]`,
+ * and prompt/completion price are both `0`. It also handles images, so the
+ * gate sends any non-image modality here and pins a single call -- no
+ * best-of-N on a free model.
+ */
+export const NEMOTRON_OMNI_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
 
 /** Total budget for the sizing call, retries included: the router's own habit. */
 export const SIZING_BUDGET_MS = 8_000;
@@ -87,6 +106,49 @@ export function computeBudget(band: ComputeBand): ComputeBudget {
       return { band, model: DEEPSEEK_BRANCH_MODEL, samples: 5 };
     case 3:
       return { band, model: DEEPSEEK_ORCHESTRATOR_MODEL, samples: 5 };
+  }
+}
+
+/**
+ * What a non-text modality forces on the compute controller (ADR-020): the
+ * capable model, how many samples of it, and -- for an image -- whether the
+ * visual task was hard. `hard` is only meaningful for `"image"`.
+ */
+export type ModalityBudget = { model: string; samples: number; hard: boolean };
+
+/**
+ * The forced compute budget for a detected input modality, or `undefined` for
+ * `"text"` (the band's own budget stands, unchanged). This is the multimodal
+ * pre-gate's core rule:
+ *
+ *   - **image** -> pin the vision branch model. Default one call; escalate to
+ *     the band-3 sampling budget (best-of-5) only when Jev flags the *visual*
+ *     task as hard, read off the same `isHardBand` gate the controller uses,
+ *     so vision sampling and text sampling can never drift apart.
+ *   - **audio / video** -> pin the free omni model at a single call. No
+ *     best-of-N on a free model; the omni model also reads images, so any
+ *     non-image modality lands here.
+ *
+ * Pure: no Jev call, no I/O. `signals` is only read for the image hardness
+ * gate; the caller has already sized difficulty for its own reasons.
+ */
+export function modalityBudget(
+  modality: Modality,
+  signals: RouteSignals,
+  profile: PolicyProfile = JEV_PROFILE,
+): ModalityBudget | undefined {
+  switch (modality) {
+    case "image": {
+      const hard = isHardBand(signals, profile);
+      // The hard budget is the band-3 sample count, read from the same table
+      // so a change to band 3's N carries to hard visual tasks too.
+      return { model: DEEPSEEK_VISION_MODEL, samples: hard ? computeBudget(3).samples : 1, hard };
+    }
+    case "audio":
+    case "video":
+      return { model: NEMOTRON_OMNI_MODEL, samples: 1, hard: false };
+    case "text":
+      return undefined;
   }
 }
 

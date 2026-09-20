@@ -100,12 +100,17 @@ export type { BreakerState, BreakerStatus, CircuitBreakerOptions } from "./break
 export {
   computeBand,
   computeBudget,
+  modalityBudget,
   sizeCompute,
   DEEPSEEK_BRANCH_MODEL,
   DEEPSEEK_ORCHESTRATOR_MODEL,
+  DEEPSEEK_VISION_MODEL,
+  NEMOTRON_OMNI_MODEL,
   SIZING_BUDGET_MS,
 } from "./controller.js";
-export type { ComputeBand, ComputeBudget, ComputeSizing } from "./controller.js";
+export type { ComputeBand, ComputeBudget, ComputeSizing, ModalityBudget } from "./controller.js";
+
+export { detectModality } from "./modality.js";
 
 export {
   checkCompleteness,
@@ -120,6 +125,25 @@ export {
   LOW_CONFIDENCE_FAILURE,
 } from "./gates.js";
 export type { GateCheck, GateEscalation, GateFailureType, GateVerdict } from "./gates.js";
+
+export {
+  checkPrune,
+  decidePrune,
+  prunableWindow,
+  pruningFloor,
+  pruneNote,
+  estimatePromptTokens,
+  oldestFinishedQuestion,
+  prunableQuestion,
+  PRUNING_QUESTIONS,
+  PRUNE_BUDGET_MS,
+  PRUNE_FLOOR_MAX,
+  PRUNE_FLOOR_MIN,
+  PRUNE_FILL_LOW,
+  PRUNE_FILL_HIGH,
+  PRUNE_MIN_SCORE,
+} from "./pruning.js";
+export type { PruneAnswers, PruneDecision, PruneWindow } from "./pruning.js";
 
 export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT } from "./router.js";
 export type { RouterOptions, RoutingMode } from "./router.js";

@@ -86,6 +86,16 @@ const FIELD_CRITERIA: Record<string, string> = {
     'How claims should be supported, as a rule: "always cite your sources", "give me a concrete example", "just state the conclusion, skip the justification".',
   testing_depth:
     'How much testing should accompany changes, as a rule: "always write tests", "a smoke test is enough", "never add tests unless I ask".',
+  tone:
+    'The personality or tone answers should carry, as a rule: "be more casual", "just be direct", "keep it professional", "lighten up a bit".',
+  working_style:
+    'How work should be sequenced, as a rule: "write the tests first", "just start coding", "always plan before you code", "skip the ceremony and just do it".',
+  change_autonomy:
+    'Whether to act without confirmation, as a rule: "always ask before big changes", "just go ahead and do it without checking with me".',
+  verification_depth:
+    'How much to verify changes before finishing, as a rule: "always run the tests and lint", "a quick check is fine", "don\'t bother running the whole suite".',
+  explanation_style:
+    'How much explanation should accompany code, as a rule: "just give me the code", "show the code first", "explain the approach before the code".',
   [NO_PREFERENCE_FIELD]:
     "No durable preference is stated, or what is stated fits none of the fields above.",
 };
@@ -155,6 +165,32 @@ const VALUE_CRITERIA: Record<PreferenceField, Record<string, string>> = {
     none: "Do not add tests unless explicitly asked.",
     smoke: "A minimal smoke test for changed behaviour; nothing exhaustive.",
     thorough: "Cover changes with thorough tests, including edge cases.",
+  },
+  tone: {
+    friendly: "Warm and approachable; encouraging in tone.",
+    direct: "Blunt and concise; no pleasantries or hedging.",
+    jovial: "Light-hearted and good-humoured; a little wit welcome.",
+    professional: "Measured, neutral, and businesslike.",
+  },
+  working_style: {
+    test_first: "Write or update tests before implementing; the failing test first.",
+    code_first: "Implement first, then add tests afterwards.",
+    plan_first: "Lay out a plan and confirm the approach before coding.",
+    just_do: "Skip planning; make the change directly.",
+  },
+  change_autonomy: {
+    ask_first: "Confirm before large or destructive changes; plan first.",
+    autonomous: "Proceed without asking; decide and report afterwards.",
+  },
+  verification_depth: {
+    light: "A quick sanity check is enough; no full suite.",
+    standard: "Build and run the affected tests before finishing.",
+    thorough: "Run the full tests and lint, and report results, before finishing.",
+  },
+  explanation_style: {
+    code_first: "Lead with the code or diff; brief prose after.",
+    explain_then_code: "Explain the approach briefly, then show the code.",
+    code_only: "Just the code or diff, with minimal explanation.",
   },
 };
 

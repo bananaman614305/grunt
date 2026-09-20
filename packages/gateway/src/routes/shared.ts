@@ -85,6 +85,9 @@ export function applyMiloHeaders(headers: Headers, decision: RouteDecision): voi
   headers.set("x-milo-task-type", decision.signals?.taskType ?? "unknown");
   headers.set("x-milo-difficulty", decision.signals ? decision.signals.difficulty.toFixed(2) : "unknown");
   headers.set("x-milo-sticky", decision.sticky ? "true" : "false");
+  // The multimodal gate's route (ADR-020): absent means the request was text
+  // and the compute controller's own band budget stood.
+  headers.set("x-milo-modality", decision.modality ?? "text");
 }
 
 /** `Retry-After` when Milo could not route at all, in seconds. */
@@ -153,6 +156,32 @@ export function applyProviderStrategy<T extends Record<string, unknown>>(
 ): T {
   if (body["provider"] !== undefined || posture === "low") return body;
   return { ...body, provider: { sort: "throughput", ...maxPriceFor(model) } };
+}
+
+/**
+ * Keeps a routed response's internal reasoning out of the client-visible
+ * payload by default. OpenRouter still lets the model reason; `exclude` only
+ * controls whether its trace is returned alongside the answer. Applies to
+ * chat completions, messages, and responses — the same `reasoning` object
+ * OpenRouter accepts on every dialect.
+ *
+ * Chat completions also scrub those fields from the response body when this
+ * default applies (see `chat-reasoning.ts`); the outbound flag alone is not
+ * enough when a provider still emits them.
+ *
+ * A caller can explicitly request reasoning with either the current
+ * `reasoning.exclude` field or the legacy `include_reasoning` field. Invalid
+ * or null `reasoning` values are also left to OpenRouter to validate.
+ */
+export function applyReasoningExclusion<T extends Record<string, unknown>>(body: T): T {
+  const reasoning = body["reasoning"];
+  if (typeof reasoning === "object" && reasoning !== null && !Array.isArray(reasoning)) {
+    const config = reasoning as Record<string, unknown>;
+    if (config["exclude"] !== undefined) return body;
+    return { ...body, reasoning: { ...config, exclude: true } };
+  }
+  if (reasoning !== undefined || body["include_reasoning"] !== undefined) return body;
+  return { ...body, reasoning: { exclude: true } };
 }
 
 /**

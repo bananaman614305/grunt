@@ -46,6 +46,16 @@ importers:
         specifier: ^4.19.2
         version: 4.23.13
 
+  packages/browse:
+    dependencies:
+      '@milo/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.13
+
   packages/cli:
     dependencies:
       '@hono/node-server':
@@ -90,6 +100,16 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+    devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.13
+
+  packages/fleet:
+    dependencies:
+      '@milo/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       tsx:
         specifier: ^4.19.2

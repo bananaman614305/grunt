@@ -111,6 +111,7 @@ unmodified.
    | `x-milo-difficulty` | Jev's difficulty score to two decimals |
    | `x-milo-sticky` | `"true"` if served from the fingerprint cache |
    | `x-milo-brief-version` | Hash of the preference brief appended to this request (ADR-011). Absent when no brief was injected — no stored output-shaping preferences, `milo: { "brief": false }` on the request, or the key's brief switch off. |
+   | `x-milo-facts-injected` | How many stored personal facts the relevance gate found relevant to this request and appended (ADR-017). Absent when none were injected — no stored facts, none relevant, `milo: { "facts": false }`, the key's kill switch off, or `low` posture. |
 
    These headers are only ever present on a decision that actually routed;
    a request that could not be routed at all (see "Routing failures" below)
@@ -209,6 +210,39 @@ most once. A Milo key is charged for both answers when a retry fired — the
 tokens were generated either way — and the decision record's `upstream`
 block aggregates them, stores the verdict and the retry's own usage under
 `gate`, and stores no content.
+
+Routed chat completions, messages, and responses default to
+`reasoning.exclude: true`. The selected model can still reason internally, but
+OpenRouter omits that trace from the response so a client cannot mistake it
+for answer text. Milo preserves an explicit `reasoning.exclude` value or
+legacy `include_reasoning` field; requests with an explicit model remain
+untouched apart from removing a Milo-only `milo` field.
+
+On chat completions only, when the caller did not ask for a visible trace,
+Milo also strips `reasoning`, `reasoning_content`, `reasoning_details`, and
+`thinking` from `choices[].message` and `choices[].delta` (streaming and
+non-streaming). That covers providers that still emit those fields despite
+the outbound exclude flag — the leak surface for openai-completions clients.
+
+### Context pruning (ADR-014, ADR-013 phase C)
+
+On this route only, when it is enabled (`pruning.enabled`, or `milo: {
+"prune": true }` on the request) and the history is over the token floor,
+Milo may shed a safe older range of messages before forwarding — replacing
+it with one system note, `[earlier context pruned by Milo: <n> messages]`.
+It never runs on `low` posture, never drops the system prompt, the latest
+user turn, or half of a tool-call/result pair. `milo: { "prune": false }`
+always opts out. See `docs/routing.md`, "Context pruning".
+
+| Header | Meaning |
+|---|---|
+| `x-milo-pruned` | how many older messages were dropped. Absent when nothing was pruned. |
+| `x-milo-pruned-tokens` | approximate input tokens saved by the drop (characters / 4). |
+
+Spend: one extra Jev classification on a request over the floor; the win is
+fewer input tokens forwarded on every subsequent turn. The decision record's
+`upstream.prune` block stores the counts (dropped, tokens saved, the range,
+the verdict confidence, the floor, the fill ratio) and no content.
 
 An OpenRouter request that fails outright (network error, no response) on
 either path returns:
@@ -532,6 +566,70 @@ not exist at all, so the endpoint cannot be used to probe other callers'
 ids. The whole set also dies with the key hash: rotate the key and Milo has
 never heard of you.
 
+## `GET /v1/memory`
+
+Every personal fact Milo has stored for the calling key (ADR-017), **decrypted**,
+plus that key's kill switch. Scoped by the same key-hash derivation as
+preferences and rosters — one caller can never see another's facts. Unlike
+preferences, a fact row carries the user's own words: the `text` is decrypted
+here for the owner, and is ciphertext at rest.
+
+```
+200 {
+  "data": [
+    {
+      "id": "01J8Z4P0EKTSV4RRFFQ69G5FBW",
+      "category": "address",
+      "text": "my staging box is 10.2.0.7",
+      "provenance": "3f9a…c1",
+      "createdAt": "2026-09-18T10:00:00.000Z",
+      "updatedAt": "2026-09-18T10:00:00.000Z"
+    }
+  ],
+  "settings": { "enabled": true }
+}
+```
+
+- **category** — a closed-vocabulary label (`address`, `contact`, `identifier`,
+  `credential-hint`, `convention`, `other`). The category is a label; the
+  `text` is the content, and only the content is encrypted at rest.
+- **text** — the fact, decrypted for the owner. Never appears in a log, a
+  header, a decision row, or an error message.
+- **provenance** — the fingerprint hash of the capturing turn. A digest, never
+  content.
+
+When the deployment has no encryption key (billing, and thus
+`MILO_ENCRYPTION_KEY`, is not configured), fact memory is disabled: the
+response is `{ "data": [], "settings": { "enabled": … }, "disabled": true }`.
+A fact store with no envelope must not decrypt or keep anything.
+
+## `DELETE /v1/memory/:id`
+
+Removes one stored fact.
+
+```
+200 { "deleted": true, "id": "01J8Z4P0EKTSV4RRFFQ69G5FBW" }
+404 { "error": { "message": "No fact with that id.", "type": "not_found_error", "code": "fact_not_found" } }
+```
+
+A fact under a *different* key gets the same 404 as a missing one, so the
+endpoint cannot probe other callers' ids. The whole set dies with the key
+hash.
+
+## `PUT /v1/memory/settings`
+
+The per-key kill switch (ADR-017). `enabled: false` turns fact capture and
+injection off for everything from the calling key; the stored facts remain
+listable and deletable so a user can still see and remove them.
+
+```
+PUT /v1/memory/settings
+{ "enabled": false }
+
+200 { "settings": { "enabled": false } }
+400 { "error": { "message": "Body must be a JSON object with a boolean \"enabled\".", … } }
+```
+
 Turning capture or the brief off per key is a settings row
 (`captureEnabled`, `briefEnabled` above); per request, send
 `milo: { "brief": false }` to skip injection on that call.
@@ -752,16 +850,17 @@ router bug) is a separate, unrecoverable case:
 
 ## Passthrough to OpenRouter
 
-Only the model field is rewritten, plus an optional appended system brief,
-off per request with one field (ADR-011). In full: `model` is rewritten only
-on the routed path; a routed request from a key with stored output-shaping
-preferences gains one *appended* final system message (the brief, disclosed
-in `x-milo-brief-version` and skipped with `milo: { "brief": false }`); every
-other field in a chat completions body — `messages` as sent, `tools`,
-`stream`, `temperature`, sampling params, anything else — is forwarded
-exactly as received. The `milo` field is the one addition Milo's surface
-makes over OpenRouter's own API, and it is always stripped before the
-request leaves Milo.
+Only the model field is rewritten, plus at most two *appended* system
+messages, each off per request with one field. In full: `model` is rewritten
+only on the routed path; a routed request may gain the preference brief (a
+final system message, disclosed in `x-milo-brief-version`, skipped with
+`milo: { "brief": false }`, ADR-011) and a relevance-gated personal-fact note
+(another appended system message, disclosed in `x-milo-facts-injected`,
+skipped with `milo: { "facts": false }`, ADR-017); every other field in a chat
+completions body — `messages` as sent, `tools`, `stream`, `temperature`,
+sampling params, anything else — is forwarded exactly as received. The `milo`
+field is the one addition Milo's surface makes over OpenRouter's own API, and
+it is always stripped before the request leaves Milo.
 
 ## Errors
 
