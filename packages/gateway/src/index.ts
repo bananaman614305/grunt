@@ -8,11 +8,12 @@
  * the router cannot decide fails loudly in the route that asked.
  */
 import type { Hono } from "hono";
-import { DecisionLog, DEFAULT_PRICING, DEFAULT_ROSTER, JevClient, OPENROUTER_BASE_URL, OpenRouterClient, Router, StickyCache } from "@milo/core";
+import { DecisionLog, DEFAULT_MAX_CONCURRENT_PER_MODEL, DEFAULT_PRICING, DEFAULT_RETRY, DEFAULT_ROSTER, JevClient, OPENROUTER_BASE_URL, OpenRouterClient, Router, StickyCache } from "@milo/core";
 import type {
   DecisionRecord,
   JevClientOptions,
   OpenRouterClientOptions,
+  RetryOptions,
   RouteDecision,
   Roster,
   RouterOptions,
@@ -95,6 +96,16 @@ export type GatewayOptions = {
   factRetrieval?: { enabled?: boolean; model?: string; baseUrl?: string };
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
+  /**
+   * Upstream rate-limit resilience for OpenRouter calls. `maxConcurrentPerModel`
+   * bounds concurrent in-flight requests per upstream model so a burst cannot
+   * self-inflict a 429 (default `DEFAULT_MAX_CONCURRENT_PER_MODEL`; a
+   * non-positive value means no limit). `retry` retries a throttled or briefly
+   * broken upstream (429/5xx) with exponential backoff and jitter, honouring a
+   * `Retry-After` header (defaults from `DEFAULT_RETRY`). Set from
+   * `milo.config.json`'s `upstream`.
+   */
+  upstream?: { maxConcurrentPerModel?: number; retry?: RetryOptions };
   /**
    * Persistence for sticky decisions, so a redeploy does not re-ask Jev for
    * every live conversation. Defaults to memory only.
@@ -228,7 +239,14 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
 
   const router = new Router(routerOptions);
 
-  const openRouterOptions: OpenRouterClientOptions = {};
+  const openRouterOptions: OpenRouterClientOptions = {
+    // Resilience is on by default in a real deployment (the bare client is
+    // still a single-attempt pass-through). A burst is bounded per upstream
+    // model, and a throttled or briefly broken upstream is retried with
+    // backoff before it becomes a failed response. Both are overridable.
+    maxConcurrentPerModel: options.upstream?.maxConcurrentPerModel ?? DEFAULT_MAX_CONCURRENT_PER_MODEL,
+    retry: options.upstream?.retry ?? DEFAULT_RETRY,
+  };
   if (options.openRouterBaseUrl !== undefined) openRouterOptions.baseUrl = options.openRouterBaseUrl;
   if (options.fetch !== undefined) openRouterOptions.fetch = options.fetch;
   if (options.referer !== undefined) openRouterOptions.referer = options.referer;

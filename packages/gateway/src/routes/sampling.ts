@@ -420,7 +420,7 @@ export async function forwardSampled(
     // Live-fast providers, sampled sub-requests only: OpenRouter's rolling
     // throughput window picks the currently fastest provider for this draw.
     // A caller-supplied `provider` field always wins, untouched.
-    if (sampleBody["provider"] === undefined) sampleBody["provider"] = { sort: "throughput" };
+    if (sampleBody["provider"] === undefined) sampleBody["provider"] = { sort: "throughput", allow_fallbacks: true };
 
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = AbortSignal.any([abort.signal, timeout]);

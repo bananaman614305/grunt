@@ -1,3 +1,4 @@
 export * from "./forward.js";
 export * from "./client.js";
 export * from "./sse.js";
+export * from "./resilience.js";

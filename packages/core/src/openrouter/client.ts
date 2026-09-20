@@ -5,6 +5,11 @@
  */
 
 import { forwardHeaders, OPENROUTER_BASE_URL } from "./forward.js";
+import { ConcurrencyLimiter, retryFetch } from "./resilience.js";
+import type { ResilienceDeps, RetryOptions } from "./resilience.js";
+
+/** A single attempt: the bare client does not retry unless a policy is set. */
+const NO_RETRY: RetryOptions = { maxAttempts: 1 };
 
 type FetchLike = typeof fetch;
 
@@ -33,6 +38,20 @@ export type OpenRouterClientOptions = {
   referer?: string;
   /** Sent as `X-Title` for OpenRouter app attribution. */
   title?: string;
+  /**
+   * Retry policy for a throttled or briefly broken upstream (`429`/`5xx`).
+   * Defaults to {@link DEFAULT_RETRY}. Every inference call -- including each
+   * best-of-N sample -- retries independently.
+   */
+  retry?: RetryOptions;
+  /**
+   * Ceiling on concurrent in-flight requests per upstream model, so a burst
+   * cannot self-inflict a `429`. Default {@link DEFAULT_MAX_CONCURRENT_PER_MODEL};
+   * a non-positive value means no limit.
+   */
+  maxConcurrentPerModel?: number;
+  /** Injectable clock/entropy for tests; defaults to real timers and `Math.random`. */
+  resilience?: ResilienceDeps;
 };
 
 const MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -45,12 +64,22 @@ export class OpenRouterClient {
   private readonly referer?: string;
   private readonly title?: string;
   private modelsCache?: ModelsCacheEntry;
+  private readonly retry?: RetryOptions;
+  private readonly resilience?: ResilienceDeps;
+  private readonly limiter: ConcurrencyLimiter;
 
   constructor(opts: OpenRouterClientOptions = {}) {
     this.baseUrl = opts.baseUrl ?? OPENROUTER_BASE_URL;
     this.fetchImpl = opts.fetch ?? fetch;
     if (opts.referer !== undefined) this.referer = opts.referer;
     if (opts.title !== undefined) this.title = opts.title;
+    if (opts.retry !== undefined) this.retry = opts.retry;
+    if (opts.resilience !== undefined) this.resilience = opts.resilience;
+    // Both resilience policies are opt-in on the bare client -- a deployment
+    // wires them (see the gateway's `createGateway`), so a client built with
+    // no options is the same single-attempt, unbounded pass-through it always
+    // was. `?? 0` means the limiter imposes no cap until one is asked for.
+    this.limiter = new ConcurrencyLimiter(opts.maxConcurrentPerModel ?? 0);
   }
 
   /**
@@ -74,7 +103,7 @@ export class OpenRouterClient {
     };
     if (opts.signal) init.signal = opts.signal;
 
-    return this.doFetch(`${this.baseUrl}/chat/completions`, init, "chat completions");
+    return this.doFetch(`${this.baseUrl}/chat/completions`, init, "chat completions", modelKey(opts.body));
   }
 
   /**
@@ -98,7 +127,7 @@ export class OpenRouterClient {
     };
     if (opts.signal) init.signal = opts.signal;
 
-    return this.doFetch(`${this.baseUrl}/responses`, init, "responses");
+    return this.doFetch(`${this.baseUrl}/responses`, init, "responses", modelKey(opts.body));
   }
 
   /**
@@ -169,13 +198,36 @@ export class OpenRouterClient {
     return forwardHeaders(incoming, opts);
   }
 
-  private async doFetch(url: string, init: RequestInit, label: string): Promise<Response> {
+  /**
+   * One upstream call with rate-limit resilience: bounded by the per-model
+   * concurrency limiter, retried on `429`/`5xx` with backoff. The raw fetch
+   * runs inside the limiter so a request waiting on a backoff frees its slot;
+   * an abort on `init.signal` (e.g. a sampling timeout) is never retried. A
+   * genuine network failure that outlasts the retries is wrapped as an
+   * {@link OpenRouterError}, exactly as before; a retryable HTTP status that
+   * survives them is returned so the caller passes the real upstream error
+   * through.
+   */
+  private async doFetch(url: string, init: RequestInit, label: string, model?: string): Promise<Response> {
+    const opts: { retry?: RetryOptions; signal?: AbortSignal; deps?: ResilienceDeps } = {
+      retry: this.retry ?? NO_RETRY,
+    };
+    if (init.signal instanceof AbortSignal) opts.signal = init.signal;
+    if (this.resilience !== undefined) opts.deps = this.resilience;
     try {
-      return await this.fetchImpl(url, init);
+      return await retryFetch(() => this.limiter.run(model, () => this.fetchImpl(url, init)), opts);
     } catch (err) {
+      // Let an intentional abort surface as itself; wrap only real failures.
+      if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) throw err;
       throw new OpenRouterError(`OpenRouter ${label} request failed: ${toErrorMessage(err)}`, 0);
     }
   }
+}
+
+/** The per-model concurrency key: the resolved OpenRouter model id, if any. */
+function modelKey(body: Record<string, unknown>): string | undefined {
+  const model = body["model"];
+  return typeof model === "string" && model !== "" ? model : undefined;
 }
 
 function toErrorMessage(err: unknown): string {

@@ -506,10 +506,12 @@ describe("the completeness gate", () => {
     const orchestrator = DEFAULT_ROSTER_INFO.tiers.mid.find((m) => m.id === DEEPSEEK_ORCHESTRATOR_MODEL);
     expect(openRouter.calls[0]?.body["provider"]).toEqual({
       sort: "throughput",
+      allow_fallbacks: true,
       max_price: { prompt: (branch as { inputUsdPerM: number }).inputUsdPerM * 1.1, completion: (branch as { outputUsdPerM: number }).outputUsdPerM * 1.1 },
     });
     expect(openRouter.calls[1]?.body["provider"]).toEqual({
       sort: "throughput",
+      allow_fallbacks: true,
       max_price: {
         prompt: (orchestrator as { inputUsdPerM: number }).inputUsdPerM * 1.1,
         completion: (orchestrator as { outputUsdPerM: number }).outputUsdPerM * 1.1,

@@ -173,3 +173,26 @@ describe("sampling config (ADR-010)", () => {
     expect(() => configSchema.parse({ sampling: { sampleTimeoutMs: -1 } })).toThrow();
   });
 });
+
+describe("upstream resilience config", () => {
+  it("parses the concurrency cap and retry policy", () => {
+    const parsed = configSchema.parse({
+      upstream: { maxConcurrentPerModel: 12, retry: { maxAttempts: 5, baseDelayMs: 100, maxDelayMs: 4000 } },
+    });
+    expect(parsed.upstream).toEqual({
+      maxConcurrentPerModel: 12,
+      retry: { maxAttempts: 5, baseDelayMs: 100, maxDelayMs: 4000 },
+    });
+  });
+
+  it("accepts a concurrency cap of 0 (no limit) and a partial retry policy", () => {
+    const parsed = configSchema.parse({ upstream: { maxConcurrentPerModel: 0, retry: { maxAttempts: 6 } } });
+    expect(parsed.upstream).toEqual({ maxConcurrentPerModel: 0, retry: { maxAttempts: 6 } });
+  });
+
+  it("rejects unknown keys and non-positive retry attempts", () => {
+    expect(() => configSchema.parse({ upstream: { concurrency: 3 } })).toThrow();
+    expect(() => configSchema.parse({ upstream: { retry: { maxAttempts: 0 } } })).toThrow();
+    expect(() => configSchema.parse({ upstream: { maxConcurrentPerModel: -1 } })).toThrow();
+  });
+});

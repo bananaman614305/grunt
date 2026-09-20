@@ -9,8 +9,14 @@ import {
 
 describe("applyProviderStrategy", () => {
   it("sorts by throughput for balanced and quality", () => {
-    expect(applyProviderStrategy({ model: "m" }, "balanced")).toEqual({ model: "m", provider: { sort: "throughput" } });
-    expect(applyProviderStrategy({ model: "m" }, "quality")).toEqual({ model: "m", provider: { sort: "throughput" } });
+    expect(applyProviderStrategy({ model: "m" }, "balanced")).toEqual({
+      model: "m",
+      provider: { sort: "throughput", allow_fallbacks: true },
+    });
+    expect(applyProviderStrategy({ model: "m" }, "quality")).toEqual({
+      model: "m",
+      provider: { sort: "throughput", allow_fallbacks: true },
+    });
   });
 
   it("leaves low posture on OpenRouter's price-first default", () => {
@@ -22,6 +28,7 @@ describe("applyProviderStrategy", () => {
     const out = applyProviderStrategy({ model: fast.id }, "balanced", fast.id) as Record<string, unknown>;
     expect(out["provider"]).toEqual({
       sort: "throughput",
+      allow_fallbacks: true,
       max_price: { prompt: fast.inputUsdPerM * 1.1, completion: fast.outputUsdPerM * 1.1 },
     });
     expect(maxPriceFor("not/in-roster")).toEqual({});
@@ -69,6 +76,7 @@ describe("retargetProviderStrategy", () => {
     const out = retargetProviderStrategy(body, fast.id, frontier.id) as Record<string, unknown>;
     expect(out["provider"]).toEqual({
       sort: "throughput",
+      allow_fallbacks: true,
       max_price: { prompt: frontier.inputUsdPerM * 1.1, completion: frontier.outputUsdPerM * 1.1 },
     });
   });
@@ -76,7 +84,7 @@ describe("retargetProviderStrategy", () => {
   it("drops the ceiling entirely for a model the default roster does not price", () => {
     const body = applyProviderStrategy({ model: fast.id }, "balanced", fast.id);
     const out = retargetProviderStrategy(body, fast.id, "off/roster") as Record<string, unknown>;
-    expect(out["provider"]).toEqual({ sort: "throughput" });
+    expect(out["provider"]).toEqual({ sort: "throughput", allow_fallbacks: true });
   });
 
   it("never touches a caller-supplied provider field, or a body with none", () => {
