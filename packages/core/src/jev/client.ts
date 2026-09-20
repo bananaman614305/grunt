@@ -39,9 +39,22 @@ import type {
   SystemOneResponse,
   SystemOneResult,
 } from "./types.js";
-import { JEV_BASE_URL, JEV_DEFAULT_MODEL } from "./types.js";
+import type { JevTransport } from "./types.js";
+import {
+  JEV_BASE_URL,
+  JEV_DEFAULT_MODEL,
+  JEV_OPENROUTER_BASE_URL,
+  JEV_OPENROUTER_DECISIONS_PATH,
+  JEV_OPENROUTER_MODEL,
+} from "./types.js";
 
+/**
+ * Where the request id is exposed, per transport. TypeSafe returns its own
+ * `x-typesafe-request-id`; OpenRouter's Decisions router returns
+ * `x-generation-id` (the same `gen-dec-…` id it also echoes in the body).
+ */
 const REQUEST_ID_HEADER = "x-typesafe-request-id";
+const OPENROUTER_REQUEST_ID_HEADER = "x-generation-id";
 
 export type JevErrorKind = "timeout" | "network" | "http" | "validation";
 
@@ -74,7 +87,20 @@ export class JevError extends Error {
 }
 
 export type JevClientOptions = {
-  apiKey: string;
+  /**
+   * The configured bearer. Required for the `"typesafe"` transport (Milo's own
+   * Jev key). For the `"openrouter"` transport it is optional and usually
+   * empty: the caller's forwarded OpenRouter key is passed per call
+   * (`systemone`'s `opts.apiKey`), and a call with neither is rejected.
+   */
+  apiKey?: string;
+  /**
+   * Which endpoint to talk to (ADR-021). `"typesafe"` (the default) is the
+   * direct `POST https://api.typesafe.ai/v1/systemone` path with Milo's key.
+   * `"openrouter"` is `POST https://openrouter.ai/api/alpha/decisions` with the
+   * caller's forwarded OpenRouter key; the systemone wire shape is identical.
+   */
+  transport?: JevTransport;
   baseUrl?: string;
   model?: string;
   /**
@@ -160,8 +186,10 @@ class CallerAbort extends Error {}
 
 export class JevClient implements JevClientLike {
   private readonly apiKey: string;
+  private readonly transport: JevTransport;
   private readonly baseUrl: string;
   private readonly model: string;
+  private readonly requestIdHeader: string;
   private readonly timeoutMs: number;
   private readonly retries: number;
   private readonly retryBaseMs: number;
@@ -172,12 +200,20 @@ export class JevClient implements JevClientLike {
   private readonly random: () => number;
 
   constructor(options: JevClientOptions) {
-    if (!options.apiKey) {
+    this.transport = options.transport ?? "typesafe";
+    // The TypeSafe transport needs Milo's key at construction. The OpenRouter
+    // transport is authenticated per call with the forwarded user key, so an
+    // empty configured key is fine there; a call with no key is caught below.
+    if (this.transport === "typesafe" && !options.apiKey) {
       throw new JevError("apiKey is required", "validation");
     }
-    this.apiKey = options.apiKey;
-    this.baseUrl = (options.baseUrl ?? JEV_BASE_URL).replace(/\/+$/, "");
-    this.model = options.model ?? JEV_DEFAULT_MODEL;
+    this.apiKey = options.apiKey ?? "";
+    const defaultBaseUrl = this.transport === "openrouter" ? JEV_OPENROUTER_BASE_URL : JEV_BASE_URL;
+    this.baseUrl = (options.baseUrl ?? defaultBaseUrl).replace(/\/+$/, "");
+    const defaultModel = this.transport === "openrouter" ? JEV_OPENROUTER_MODEL : JEV_DEFAULT_MODEL;
+    this.model = options.model ?? defaultModel;
+    this.requestIdHeader =
+      this.transport === "openrouter" ? OPENROUTER_REQUEST_ID_HEADER : REQUEST_ID_HEADER;
     this.timeoutMs = options.timeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
     this.retries = options.retries ?? ROUTER_LIMITS.jevRetries;
     this.retryBaseMs = options.retryBaseMs ?? RETRY_BASE_MS;
@@ -190,25 +226,62 @@ export class JevClient implements JevClientLike {
 
   async systemone(
     req: Omit<SystemOneRequest, "model"> & { model?: string },
-    opts?: { signal?: AbortSignal; budgetMs?: number },
+    opts?: { signal?: AbortSignal; budgetMs?: number; apiKey?: string },
   ): Promise<SystemOneResult> {
     const body: SystemOneRequest = {
-      model: req.model ?? this.model,
+      model: this.resolveModel(req.model),
       state: req.state,
       questions: req.questions,
     };
+    const url =
+      this.transport === "openrouter"
+        ? `${this.baseUrl}${JEV_OPENROUTER_DECISIONS_PATH}`
+        : `${this.baseUrl}/v1/systemone`;
     const start = this.now();
     const { response, requestId } = await this.send(
       "POST",
-      `${this.baseUrl}/v1/systemone`,
+      url,
       JSON.stringify(body),
+      this.callKey(opts?.apiKey),
       opts?.signal,
       opts?.budgetMs,
     );
     const latencyMs = this.now() - start;
     const parsed = await this.readJson<SystemOneResponse>(response, requestId);
     assertSystemOneResponse(parsed, requestId);
-    return { ...parsed, requestId, latencyMs };
+    // OpenRouter's Decisions router also echoes the request id in the body as
+    // `id`; the header is authoritative, but fall back to it when the header
+    // is stripped by a proxy so a decision row is never left without one.
+    const resolvedId = requestId !== "" ? requestId : bodyRequestId(parsed);
+    return { ...parsed, requestId: resolvedId, latencyMs };
+  }
+
+  /**
+   * The model slug to send. The OpenRouter transport pins the tilde alias
+   * (`~typesafe/jev-latest`), which always resolves to the latest released
+   * Jev and never a preview; a bare `jev-latest` is rewritten to it so the
+   * `jev-latest`-only rule holds on either transport.
+   */
+  private resolveModel(model: string | undefined): string {
+    const chosen = model ?? this.model;
+    if (this.transport === "openrouter" && chosen === JEV_DEFAULT_MODEL) return JEV_OPENROUTER_MODEL;
+    return chosen;
+  }
+
+  /**
+   * The bearer for one call. The OpenRouter transport prefers the per-call
+   * forwarded key and falls back to any configured one; a call with neither is
+   * a request error, not something to send unauthenticated. The TypeSafe
+   * transport always uses its own configured key and never a forwarded one, so
+   * a user's OpenRouter key can never reach `api.typesafe.ai`.
+   */
+  private callKey(perCall: string | undefined): string {
+    if (this.transport !== "openrouter") return this.apiKey;
+    const key = perCall !== undefined && perCall !== "" ? perCall : this.apiKey;
+    if (key === "") {
+      throw new JevError("openrouter transport requires a per-call apiKey", "validation");
+    }
+    return key;
   }
 
   async listModels(opts?: { budgetMs?: number }): Promise<JevModelMetadata[]> {
@@ -216,6 +289,7 @@ export class JevClient implements JevClientLike {
       "GET",
       `${this.baseUrl}/v1/models`,
       undefined,
+      this.apiKey,
       undefined,
       opts?.budgetMs,
     );
@@ -240,6 +314,7 @@ export class JevClient implements JevClientLike {
     method: string,
     url: string,
     body: string | undefined,
+    apiKey: string,
     callerSignal?: AbortSignal,
     budgetMs?: number,
   ): Promise<{ response: Response; requestId: string }> {
@@ -258,8 +333,8 @@ export class JevClient implements JevClientLike {
 
       try {
         // Never let one attempt outlive the whole budget.
-        const response = await this.attempt(method, url, body, callerSignal, remaining);
-        const requestId = response.headers.get(REQUEST_ID_HEADER) ?? "";
+        const response = await this.attempt(method, url, body, apiKey, callerSignal, remaining);
+        const requestId = response.headers.get(this.requestIdHeader) ?? "";
         if (response.ok) {
           return { response, requestId };
         }
@@ -320,6 +395,7 @@ export class JevClient implements JevClientLike {
     method: string,
     url: string,
     body: string | undefined,
+    apiKey: string,
     callerSignal: AbortSignal | undefined,
     attemptBudgetMs: number,
   ): Promise<Response> {
@@ -342,7 +418,7 @@ export class JevClient implements JevClientLike {
     }
     try {
       const headers: Record<string, string> = {
-        authorization: `Bearer ${this.apiKey}`,
+        authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
       };
       const init: RequestInit = { method, headers, signal: controller.signal };
@@ -380,6 +456,17 @@ export class JevClient implements JevClientLike {
       });
     }
   }
+}
+
+/**
+ * The request id echoed in the response body, when present. OpenRouter's
+ * Decisions router returns a top-level `id` (the same `gen-dec-…` id as the
+ * `x-generation-id` header); native TypeSafe does not, so this only ever
+ * fires as a fallback when the header was stripped in transit.
+ */
+function bodyRequestId(value: unknown): string {
+  const id = (value as { id?: unknown }).id;
+  return typeof id === "string" ? id : "";
 }
 
 function assertSystemOneResponse(value: unknown, requestId: string): asserts value is SystemOneResponse {

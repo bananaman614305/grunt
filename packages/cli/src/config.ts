@@ -96,11 +96,23 @@ const factRetrievalSchema = z
  */
 const modeSchema = z.enum(["roster", "deepseek"]);
 
+/**
+ * Jev transport (ADR-021). `"typesafe"` (the default) calls TypeSafe directly
+ * with Milo's `JEV_API_KEY`. `"openrouter"` routes the classification call
+ * through OpenRouter's Decisions endpoint on the caller's own forwarded
+ * OpenRouter key, so Jev spend lands on the user's key and a Milo-key outage
+ * cannot stop routing. `MILO_JEV_TRANSPORT` in the environment overrides this
+ * field. `JEV_API_KEY` is still required either way (ranking and capture keep
+ * running on Milo's key).
+ */
+const jevTransportSchema = z.enum(["typesafe", "openrouter"]);
+
 export const configSchema = z
   .object({
     port: z.number().int().positive().default(DEFAULT_PORT),
     hostname: z.string().trim().min(1).optional(),
     mode: modeSchema.default("roster"),
+    jevTransport: jevTransportSchema.default("typesafe"),
     roster: rosterSchema.optional(),
     rateLimit: rateLimitSchema.optional(),
     decisionLog: z.string().trim().min(1).default(DEFAULT_DECISION_LOG_URL),

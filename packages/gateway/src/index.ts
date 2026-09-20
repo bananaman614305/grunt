@@ -12,6 +12,7 @@ import { DecisionLog, DEFAULT_PRICING, DEFAULT_ROSTER, JevClient, OPENROUTER_BAS
 import type {
   DecisionRecord,
   JevClientOptions,
+  JevTransport,
   OpenRouterClientOptions,
   RouteDecision,
   Roster,
@@ -43,6 +44,20 @@ export type GatewayOptions = {
    * `createGateway` with a message that names the environment variable.
    */
   jevApiKey: string;
+  /**
+   * Which transport carries the router's Jev classification call (ADR-021).
+   * `"typesafe"` (the default) calls `api.typesafe.ai/v1/systemone` with
+   * Milo's own `jevApiKey`, unchanged. `"openrouter"` routes the
+   * classification call through OpenRouter's Decisions endpoint
+   * (`~typesafe/jev-latest`) on the caller's own forwarded OpenRouter key, so
+   * Jev spend lands on the user's single key and a Milo-key outage cannot stop
+   * routing. `jevApiKey` is still required in either mode: the gateway's
+   * non-routing Jev uses -- best-of-N ranking (ADR-010) and preference capture
+   * (ADR-011) -- keep running on Milo's key regardless of the transport.
+   * Set from `milo.config.json`'s `jevTransport`, overridable with
+   * `MILO_JEV_TRANSPORT`.
+   */
+  jevTransport?: JevTransport;
   /** Tier to model mapping. Defaults to DEFAULT_ROSTER from core. */
   roster?: Roster;
   /**
@@ -149,10 +164,25 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
   if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
   if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
-  // One client for the router's questions, the gateway's sample ranking
-  // (ADR-010), and the preference-capture resolution call (ADR-011): same
-  // key, same base URL, same injected fetch, one retry discipline.
+  // Milo's own TypeSafe Jev client: the gateway's sample ranking (ADR-010)
+  // and preference-capture resolution (ADR-011) always run on it, and it is
+  // also the router's classification client under the default transport.
   const jev = new JevClient(jevOptions);
+
+  // The router's classification client (ADR-021). Under `"openrouter"` it
+  // talks to OpenRouter's Decisions endpoint and authenticates per request
+  // with the caller's forwarded OpenRouter key (threaded as `RouteRequest`'s
+  // `jevKey`), so it is built with an empty configured key. Under the default
+  // `"typesafe"` transport it is the very same TypeSafe client as `jev`.
+  const jevTransport: JevTransport = options.jevTransport ?? "typesafe";
+  let jevRouter = jev;
+  if (jevTransport === "openrouter") {
+    const routerJevOptions: JevClientOptions = { apiKey: "", transport: "openrouter" };
+    if (options.jevBaseUrl !== undefined) routerJevOptions.baseUrl = options.jevBaseUrl;
+    if (options.jevTimeoutMs !== undefined) routerJevOptions.timeoutMs = options.jevTimeoutMs;
+    if (options.fetch !== undefined) routerJevOptions.fetch = options.fetch;
+    jevRouter = new JevClient(routerJevOptions);
+  }
   const samplingEnabled = options.sampling?.enabled ?? true;
 
   // Normalised once: the pricing default lives here rather than at every
@@ -205,7 +235,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const mode: RoutingMode = options.mode ?? "roster";
 
   const routerOptions = {
-    jev,
+    jev: jevRouter,
     roster,
     mode,
     samplingEnabled,
@@ -259,6 +289,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     roster,
     mode,
     jev,
+    ...(jevTransport === "openrouter" ? { forwardJevKey: true } : {}),
     ...(factMemory !== undefined ? { factMemory } : {}),
     ...(factRetrieval !== undefined ? { factRetrieval } : {}),
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),

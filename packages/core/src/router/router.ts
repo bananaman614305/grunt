@@ -682,7 +682,7 @@ export class Router {
 
     const startedAt = this.clock();
     try {
-      const result = await this.callJev(req.messages, req.tools);
+      const result = await this.callJev(req.messages, req.tools, req.jevKey);
       const signals = toSignals(result, this.clock() - startedAt);
       this.circuit.recordSuccess();
       return { signals };
@@ -697,7 +697,11 @@ export class Router {
     }
   }
 
-  private async callJev(messages: ChatMessage[], tools: unknown[] | undefined): Promise<SystemOneResult> {
+  private async callJev(
+    messages: ChatMessage[],
+    tools: unknown[] | undefined,
+    jevKey: string | undefined,
+  ): Promise<SystemOneResult> {
     const { state } = buildJevState(messages, tools);
     const budget = this.jevTimeoutMs;
     const signal = AbortSignal.timeout(budget);
@@ -711,7 +715,10 @@ export class Router {
     // client cannot outlive the router's own promise to answer within it.
     // Capture detection (ADR-011) rides the routing call: same request, two
     // extra classification questions, no added latency on the common path.
-    const call = this.jev.systemone({ state, questions: ROUTER_QUESTIONS_WITH_CAPTURE }, { signal, budgetMs: budget });
+    const call = this.jev.systemone(
+      { state, questions: ROUTER_QUESTIONS_WITH_CAPTURE },
+      { signal, budgetMs: budget, ...(jevKey !== undefined && jevKey !== "" ? { apiKey: jevKey } : {}) },
+    );
     // If the deadline wins the race, this promise is still in flight and may
     // reject later with nobody listening. Swallow that; the decision is made.
     call.catch(() => undefined);

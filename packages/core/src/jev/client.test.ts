@@ -10,7 +10,7 @@ import {
 } from "./client.js";
 import { fixtureFetch } from "./fixtures.js";
 import { choice, noul, score } from "./questions.js";
-import { JEV_DEFAULT_MODEL } from "./types.js";
+import { JEV_DEFAULT_MODEL, JEV_OPENROUTER_MODEL } from "./types.js";
 
 const FIXTURES_DIR = new URL("./__fixtures__", import.meta.url).pathname;
 const SECRET_KEY = "sk-jev-do-not-leak-this-9f2e1c";
@@ -533,5 +533,116 @@ describe("JevClient: the API key never leaks", () => {
     const serialized = `${err.message} ${JSON.stringify(err)}`;
     expect(serialized).not.toContain(SECRET_KEY);
     expect(serialized).not.toContain("Bearer");
+  });
+});
+
+describe("JevClient: OpenRouter transport (ADR-021)", () => {
+  const FORWARDED_KEY = "sk-or-v1-forwarded-user-key-abc123";
+
+  /** Captures the url, auth header and JSON body of each fetch call. */
+  function capturingFetch(response: Response): {
+    fetch: typeof fetch;
+    calls: Array<{ url: string; authorization: string | undefined; body: unknown }>;
+  } {
+    const calls: Array<{ url: string; authorization: string | undefined; body: unknown }> = [];
+    const fn = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        authorization: headers.get("authorization") ?? undefined,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      });
+      return response;
+    });
+    return { fetch: fn as unknown as typeof fetch, calls };
+  }
+
+  function decisionResponse(body: Record<string, unknown>, headers: Record<string, string> = {}): Response {
+    return jsonResponse(
+      200,
+      {
+        model: "typesafe/jev-1.13-20260917",
+        answers: { a: { type: "noul", noul: 0.7 } },
+        usage: { input_tokens: 393, output_tokens: 72, cost: 0.0000165 },
+        provider: "TypeSafe",
+        ...body,
+      },
+      headers,
+    );
+  }
+
+  it("POSTs to /api/alpha/decisions with the tilde slug and the forwarded key", async () => {
+    const cap = capturingFetch(
+      decisionResponse({ id: "gen-dec-1" }, { "x-generation-id": "gen-dec-1" }),
+    );
+    const client = new JevClient({ apiKey: "", transport: "openrouter", fetch: cap.fetch });
+
+    const result = await client.systemone(ask, { apiKey: FORWARDED_KEY });
+
+    expect(cap.calls).toHaveLength(1);
+    expect(cap.calls[0]?.url).toBe("https://openrouter.ai/api/alpha/decisions");
+    expect(cap.calls[0]?.authorization).toBe(`Bearer ${FORWARDED_KEY}`);
+    expect((cap.calls[0]?.body as { model?: string }).model).toBe(JEV_OPENROUTER_MODEL);
+    expect(result.requestId).toBe("gen-dec-1");
+  });
+
+  it("rewrites a bare jev-latest model to the tilde slug", async () => {
+    const cap = capturingFetch(decisionResponse({}, { "x-generation-id": "gen-dec-2" }));
+    const client = new JevClient({ apiKey: "", transport: "openrouter", fetch: cap.fetch });
+
+    await client.systemone({ ...ask, model: JEV_DEFAULT_MODEL }, { apiKey: FORWARDED_KEY });
+
+    expect((cap.calls[0]?.body as { model?: string }).model).toBe(JEV_OPENROUTER_MODEL);
+  });
+
+  it("reads the request id from the body's id when the header is absent", async () => {
+    const cap = capturingFetch(decisionResponse({ id: "gen-dec-body" }));
+    const client = new JevClient({ apiKey: "", transport: "openrouter", fetch: cap.fetch });
+
+    const result = await client.systemone(ask, { apiKey: FORWARDED_KEY });
+
+    expect(result.requestId).toBe("gen-dec-body");
+  });
+
+  it("prefers the per-call key over any configured one", async () => {
+    const cap = capturingFetch(decisionResponse({}, { "x-generation-id": "g" }));
+    const client = new JevClient({ apiKey: "configured", transport: "openrouter", fetch: cap.fetch });
+
+    await client.systemone(ask, { apiKey: FORWARDED_KEY });
+
+    expect(cap.calls[0]?.authorization).toBe(`Bearer ${FORWARDED_KEY}`);
+  });
+
+  it("rejects a call with neither a per-call nor a configured key", async () => {
+    const cap = capturingFetch(decisionResponse({}, { "x-generation-id": "g" }));
+    const client = new JevClient({ apiKey: "", transport: "openrouter", fetch: cap.fetch });
+
+    const err = (await client.systemone(ask).catch((e: unknown) => e)) as JevError;
+    expect(err).toBeInstanceOf(JevError);
+    expect(err.kind).toBe("validation");
+    expect(cap.calls).toHaveLength(0);
+  });
+
+  it("allows construction without a key (the key arrives per call)", () => {
+    expect(() => new JevClient({ transport: "openrouter" })).not.toThrow();
+  });
+});
+
+describe("JevClient: the TypeSafe transport ignores a forwarded key", () => {
+  it("uses the configured Jev key and the /v1/systemone path, never the forwarded key", async () => {
+    const calls: Array<{ url: string; authorization: string | undefined }> = [];
+    const fetchFn = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({ url: String(input), authorization: headers.get("authorization") ?? undefined });
+      return okResponse();
+    });
+    const client = new JevClient({ apiKey: SECRET_KEY, fetch: fetchFn as unknown as typeof fetch });
+
+    // A forwarded OpenRouter key is offered but MUST be ignored by TypeSafe.
+    await client.systemone(ask, { apiKey: "sk-or-v1-should-never-be-sent-to-typesafe" });
+
+    expect(calls[0]?.url).toBe("https://api.typesafe.ai/v1/systemone");
+    expect(calls[0]?.authorization).toBe(`Bearer ${SECRET_KEY}`);
+    expect(calls[0]?.authorization).not.toContain("sk-or-v1");
   });
 });

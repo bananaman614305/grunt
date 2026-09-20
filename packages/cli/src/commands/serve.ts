@@ -27,6 +27,10 @@ Environment:
   MILO_DB                 Decision log libsql URL (overridden by --db; overrides config)
   MILO_MODE               Routing mode: "roster" (default) or "deepseek" (the
                           ADR-012 compute controller); overrides config "mode"
+  MILO_JEV_TRANSPORT      Jev transport: "typesafe" (default) or "openrouter"
+                          (route the classification call through OpenRouter on
+                          the caller's own key, ADR-021); overrides config
+                          "jevTransport". JEV_API_KEY is still required.
 
 Milo-issued keys and prepaid credits (all optional; without MILO_DATABASE_URL
 the deployment is bring-your-own-key only and an mk_ key gets a 401):
@@ -45,6 +49,7 @@ const FILE_SCHEME = "file:";
 const PORT_ENV = "PORT";
 const DECISION_LOG_ENV = "MILO_DB";
 const MODE_ENV = "MILO_MODE";
+const JEV_TRANSPORT_ENV = "MILO_JEV_TRANSPORT";
 const BILLING_DB_ENV = "MILO_DATABASE_URL";
 const ENCRYPTION_KEY_ENV = "MILO_ENCRYPTION_KEY";
 const MARGIN_ENV = "MILO_MARGIN";
@@ -160,6 +165,21 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     mode = envMode;
   }
 
+  // Jev transport (ADR-021): MILO_JEV_TRANSPORT beats the config's
+  // "jevTransport" beats the "typesafe" default. An unknown value is refused
+  // rather than guessed at, because the two transports call different hosts.
+  let jevTransport = config.jevTransport;
+  const envJevTransport = deps.env[JEV_TRANSPORT_ENV]?.trim();
+  if (envJevTransport !== undefined && envJevTransport !== "") {
+    if (envJevTransport !== "typesafe" && envJevTransport !== "openrouter") {
+      deps.stderr.write(
+        `milo serve: ${JEV_TRANSPORT_ENV} must be "typesafe" or "openrouter", got "${envJevTransport}"\n`,
+      );
+      return 1;
+    }
+    jevTransport = envJevTransport;
+  }
+
   let billing: GatewayOptions["billing"];
   try {
     billing = await buildBilling(deps.env);
@@ -172,6 +192,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     jevApiKey,
     decisionLogUrl,
     mode,
+    jevTransport,
     ...(billing !== undefined ? { billing } : {}),
     ...(config.roster !== undefined ? { roster: config.roster } : {}),
     ...(config.rateLimit !== undefined ? { rateLimit: config.rateLimit } : {}),

@@ -45,6 +45,7 @@ import {
   chargeBuffered,
   chargeStream,
   creditGate,
+  forwardedUpstreamKey,
   isMetered,
   noteDecisionAccount,
   rateLimitBucket,
@@ -179,6 +180,12 @@ async function routed(
   // (ADR-010): this dialect opts out at routing time, so its decisions keep
   // their single-model outcome instead of a sampled one it cannot run.
   request.samples = 1;
+  // ADR-021: under the OpenRouter Jev transport, bill the classification call
+  // to the caller's own forwarded OpenRouter key. Left unset otherwise.
+  if (deps.forwardJevKey === true) {
+    const jevKey = forwardedUpstreamKey(c);
+    if (jevKey !== "") request.jevKey = jevKey;
+  }
 
   let decision: RouteDecision;
   try {
