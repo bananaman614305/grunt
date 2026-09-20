@@ -32,6 +32,7 @@ import type {
 } from "../memory/store.js";
 import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
 import type { DecisionRecord, Modality, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
+import { aggregateCost, type CostBreakdown, type CostInputDecision } from "./cost.js";
 import { assertKeyHash, rosterModelCount } from "./roster-store.js";
 import type { RosterMeta, RosterSource, RosterStore, StoredRoster, StoredRosterSummary } from "./roster-store.js";
 import { applyMigrations } from "./schema.js";
@@ -264,6 +265,12 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
     byModel: Record<string, number>;
     sticky: number;
     avgJevLatencyMs: number | null;
+    /**
+     * Spend rolled up from the `upstream.costUsd` each decision already stores
+     * (cost observability). `byTier`/`byModel` above are decision *counts*;
+     * this object's are dollar sums, so both live side by side.
+     */
+    cost: CostBreakdown;
   }> {
     const clauses: string[] = [];
     const args: string[] = [];
@@ -277,7 +284,7 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rs = await this.db.execute({
-      sql: `SELECT tier, model, sticky, signals_json FROM decisions ${where}`,
+      sql: `SELECT tier, model, sticky, signals_json, samples, upstream_json FROM decisions ${where}`,
       args,
     });
 
@@ -286,6 +293,7 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
     let sticky = 0;
     let latencySum = 0;
     let latencyCount = 0;
+    const costInputs: CostInputDecision[] = [];
 
     for (const row of rs.rows) {
       const tier = String(row.tier);
@@ -300,6 +308,13 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
           latencyCount += 1;
         }
       }
+
+      const input: CostInputDecision = { tier, model };
+      if (row.samples !== null && row.samples !== undefined) input.samples = Number(row.samples);
+      if (row.upstream_json !== null && row.upstream_json !== undefined) {
+        input.upstream = JSON.parse(String(row.upstream_json)) as NonNullable<DecisionRecord["upstream"]>;
+      }
+      costInputs.push(input);
     }
 
     return {
@@ -308,6 +323,7 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
       byModel,
       sticky,
       avgJevLatencyMs: latencyCount > 0 ? latencySum / latencyCount : null,
+      cost: aggregateCost(costInputs),
     };
   }
 
