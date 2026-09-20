@@ -39,6 +39,7 @@ import {
   chargeBuffered,
   chargeStream,
   creditGate,
+  forwardedUpstreamKey,
   isMetered,
   noteDecisionAccount,
   rateLimitBucket,
@@ -192,6 +193,12 @@ async function routed(
   if (candidates !== undefined) request.candidates = candidates;
   if (forcedTier !== undefined) request.forcedTier = forcedTier;
   if (extension?.samples !== undefined) request.samples = extension.samples;
+  // ADR-021: under the OpenRouter Jev transport, bill the classification call
+  // to the caller's own forwarded OpenRouter key. Left unset otherwise.
+  if (deps.forwardJevKey === true) {
+    const jevKey = forwardedUpstreamKey(c);
+    if (jevKey !== "") request.jevKey = jevKey;
+  }
 
   // Two-stage fact retrieval (ADR-018): prepare the turn's embedding IN
   // PARALLEL with the routing Jev call below, so its ~50 ms round trip hides

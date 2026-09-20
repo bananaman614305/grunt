@@ -96,6 +96,15 @@ export type AppDeps = {
    */
   jev?: JevClientLike;
   /**
+   * Whether the router's Jev classification call runs on the caller's
+   * forwarded OpenRouter key (ADR-021). True only under the `"openrouter"`
+   * Jev transport; when true, each routed request carries its resolved
+   * upstream key as `RouteRequest.jevKey`. False (the default) leaves
+   * `jevKey` unset, so no key is ever attached to a routing request under the
+   * TypeSafe transport.
+   */
+  forwardJevKey?: boolean;
+  /**
    * Personal-fact memory (ADR-017). Present only when the deployment has an
    * encryption key -- the gateway builds `encryptor` from the billing
    * AES-256-GCM envelope keyed by `MILO_ENCRYPTION_KEY`. Absent means the

@@ -1391,3 +1391,56 @@ describe("deepseek mode (ADR-012)", () => {
     expect(decision.reason).not.toContain("deepseek");
   });
 });
+
+describe("Router.route: forwarded Jev key (ADR-021)", () => {
+  const fixture = loadFixture("trivial-rename");
+
+  /** A stub that records the per-call `apiKey` opt each systemone call saw. */
+  function keyCapturingJev(
+    answers: SystemOneResult["answers"],
+  ): JevClientLike & { keys: Array<string | undefined> } {
+    const keys: Array<string | undefined> = [];
+    return {
+      keys,
+      systemone: (_req, opts) => {
+        keys.push(opts?.apiKey);
+        return Promise.resolve({
+          model: "jev-latest",
+          answers,
+          usage: { input_tokens: 1200, output_tokens: 24 },
+          requestId: "req_stub",
+          latencyMs: 64,
+        });
+      },
+    };
+  }
+
+  it("forwards RouteRequest.jevKey to the classification call as opts.apiKey", async () => {
+    const jev = keyCapturingJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+
+    await router.route(request({ jevKey: FAKE_KEY }));
+
+    expect(jev.keys).toEqual([FAKE_KEY]);
+  });
+
+  it("passes no apiKey when the request carries no jevKey", async () => {
+    const jev = keyCapturingJev(fixture.answers);
+    const router = new Router({ jev, roster: ROSTER });
+
+    await router.route(request());
+
+    expect(jev.keys).toEqual([undefined]);
+  });
+
+  it("never puts the forwarded key on the decision it returns or logs", async () => {
+    const jev = keyCapturingJev(fixture.answers);
+    const decisions: RouteDecision[] = [];
+    const router = new Router({ jev, roster: ROSTER, onDecision: (d) => decisions.push(d) });
+
+    const decision = await router.route(request({ jevKey: FAKE_KEY }));
+
+    expect(JSON.stringify(decision)).not.toContain(FAKE_KEY);
+    expect(JSON.stringify(decisions)).not.toContain(FAKE_KEY);
+  });
+});

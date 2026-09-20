@@ -23,6 +23,7 @@ describe("loadConfig", () => {
       port: DEFAULT_PORT,
       decisionLog: DEFAULT_DECISION_LOG_URL,
       mode: "roster",
+      jevTransport: "typesafe",
     });
   });
 

@@ -188,6 +188,16 @@ export type RouteRequest = {
    * filters within whichever table is used.
    */
   roster?: Roster;
+  /**
+   * The caller's forwarded OpenRouter key, used only when the router's Jev
+   * client runs the `"openrouter"` transport (ADR-021): the classification
+   * call is then billed to the user's own OpenRouter key. The default
+   * TypeSafe client ignores it and authenticates with Milo's Jev key, so this
+   * can be set unconditionally by the gateway. Never stored or logged: it is
+   * read once to authenticate the Jev call and never placed on a
+   * `RouteDecision`.
+   */
+  jevKey?: string;
 };
 
 export type RouteDecision = {

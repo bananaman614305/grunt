@@ -75,8 +75,15 @@ export interface JevClientLike {
      * wait for an answer, retries and backoff included. The router passes its
      * own `jevTimeoutMs` as the budget so a retrying client cannot outlive the
      * router's promise to answer within it.
+     *
+     * `apiKey` is a per-call bearer used **only** by the OpenRouter transport
+     * (ADR-021): it is the caller's forwarded OpenRouter key, so the Jev
+     * classification call is billed to the user's own OpenRouter key rather
+     * than Milo's Jev key. The default TypeSafe transport **ignores** it and
+     * always authenticates with its configured Jev key, so a forwarded user
+     * key can never be sent to `api.typesafe.ai`.
      */
-    opts?: { signal?: AbortSignal; budgetMs?: number },
+    opts?: { signal?: AbortSignal; budgetMs?: number; apiKey?: string },
   ): Promise<SystemOneResult>;
 }
 
@@ -89,3 +96,27 @@ export const JEV_BASE_URL = "https://api.typesafe.ai";
  * transfer between scorers, so Milo pins it (ADR-002 revision 3).
  */
 export const JEV_DEFAULT_MODEL = "jev-latest";
+
+/**
+ * The OpenRouter transport (ADR-021). TypeSafe's Jev is also served through
+ * OpenRouter's alpha "Decisions" router with the same systemone wire shape
+ * (`{ model, state, questions }` in, `{ model, answers, usage }` out, question
+ * types `noul`/`choice`/`score`). Routing the classification call through it
+ * on the caller's forwarded OpenRouter key offloads Jev spend to the user's
+ * single key and removes Milo's single-Jev-key outage risk. Selected by
+ * config; the direct TypeSafe path stays the default.
+ */
+export const JEV_OPENROUTER_BASE_URL = "https://openrouter.ai";
+/** OpenRouter's alpha Decisions endpoint path (the systemone protocol). */
+export const JEV_OPENROUTER_DECISIONS_PATH = "/api/alpha/decisions";
+/**
+ * The OpenRouter slug for the latest Jev. The `~typesafe/jev-latest` alias
+ * always resolves to the newest released Jev (observed: `typesafe/jev-1.13-20260917`)
+ * and never to a preview, so it honours the `jev-latest`-only rule the policy
+ * profile is fitted against. The bare `typesafe/jev-latest` (no tilde) is not
+ * a valid slug; the tilde alias is required for "latest".
+ */
+export const JEV_OPENROUTER_MODEL = "~typesafe/jev-latest";
+
+/** Which endpoint the Jev client talks to (ADR-021). */
+export type JevTransport = "typesafe" | "openrouter";

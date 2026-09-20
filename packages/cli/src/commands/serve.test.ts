@@ -186,6 +186,41 @@ describe("milo serve", () => {
     expect(invalid.calls).toHaveLength(0);
   });
 
+  it("prefers MILO_JEV_TRANSPORT over the config file, and rejects an unknown value (ADR-021)", async () => {
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(configPath, JSON.stringify({ jevTransport: "typesafe" }));
+
+    const overridden = fakeGateway();
+    await run(
+      ["--config", configPath, "--db", ":memory:"],
+      createTestDeps({
+        env: { JEV_API_KEY: "k", MILO_JEV_TRANSPORT: "openrouter" },
+        createGateway: overridden.createGateway,
+        serve: fakeServe().serve,
+      }).deps,
+    );
+    expect(overridden.calls[0]?.jevTransport).toBe("openrouter");
+
+    const invalid = fakeGateway();
+    const { deps, stderr } = createTestDeps({
+      env: { JEV_API_KEY: "k", MILO_JEV_TRANSPORT: "banana" },
+      createGateway: invalid.createGateway,
+      serve: fakeServe().serve,
+    });
+    const code = await run(["--db", ":memory:"], deps);
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("MILO_JEV_TRANSPORT");
+    expect(invalid.calls).toHaveLength(0);
+  });
+
+  it("defaults jevTransport to typesafe when neither env nor config sets it", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+    await run(["--db", ":memory:"], deps);
+    expect(calls[0]?.jevTransport).toBe("typesafe");
+  });
+
   // -------------------------------------------------------------------------
   // PORT / MILO_DB environment fallbacks
   // -------------------------------------------------------------------------

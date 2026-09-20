@@ -273,6 +273,20 @@ export function upstreamHeadersFor(c: Context, auth: AuthMode = authOf(c)): Head
   return headers;
 }
 
+/**
+ * The bare OpenRouter key that pays for this request upstream -- the account's
+ * sub-key for a Milo caller, the caller's own key for a BYOK request -- with
+ * the `Bearer ` prefix stripped. This is the key Jev-via-OpenRouter (ADR-021)
+ * authenticates its classification call with, so the same key that pays for
+ * the completion also pays for its routing decision. Returns `""` when no key
+ * is present, and never exposes an `mk_` bearer (that is swapped for the
+ * sub-key first, exactly as `upstreamHeadersFor` does for the completion).
+ */
+export function forwardedUpstreamKey(c: Context): string {
+  const auth = upstreamHeadersFor(c).get("authorization") ?? "";
+  return auth.replace(/^Bearer\s+/i, "").trim();
+}
+
 // ---------------------------------------------------------------------------
 // The credit gate
 // ---------------------------------------------------------------------------
