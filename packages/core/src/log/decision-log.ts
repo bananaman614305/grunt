@@ -638,7 +638,15 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
   async listFacts(keyHash: string, enc: Encryptor): Promise<FactRow[]> {
     assertKeyHash(keyHash);
     const rs = await this.db.execute({
-      sql: `SELECT * FROM facts WHERE key_hash = ? ORDER BY created_at DESC, id DESC`,
+      // `created_at` is millisecond ISO text: two facts inserted in the same
+      // millisecond tie on it, and `id` (a ulid) is not a safe tiebreaker --
+      // plain `ulid()` is only timestamp-ordered to the millisecond, and two
+      // ids minted in the same millisecond carry independent random suffixes
+      // that don't reflect insertion order. SQLite's implicit `rowid` on this
+      // table (it has no `INTEGER PRIMARY KEY`, so `id` doesn't alias it) is
+      // assigned strictly in insertion order, so it breaks the tie
+      // deterministically and matches "newest first" on a true tie.
+      sql: `SELECT *, rowid FROM facts WHERE key_hash = ? ORDER BY created_at DESC, rowid DESC`,
       args: [keyHash],
     });
     return rs.rows.map((row) => {
