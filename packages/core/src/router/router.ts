@@ -35,14 +35,15 @@
 
 import { ulid } from "ulid";
 import type { JevClientLike, JevAnswer, SystemOneResult } from "../jev/types.js";
-import type { ChatMessage, RouteDecision, RouteRequest, RouteSignals, Roster, TaskType, Tier } from "../types.js";
+import type { ChatMessage, Modality, RouteDecision, RouteRequest, RouteSignals, Roster, TaskType, Tier } from "../types.js";
 import { DEFAULT_ROSTER, POLICY_VERSION, ROUTER_LIMITS, TASK_TYPES } from "../types.js";
 import { CircuitBreaker } from "./breaker.js";
 import type { BreakerStatus, CircuitBreakerOptions } from "./breaker.js";
 import { buildJevState, countUserTurns } from "./context.js";
 import { RoutingUnavailableError } from "./errors.js";
 import type { RoutingUnavailableCause } from "./errors.js";
-import { computeBand, computeBudget } from "./controller.js";
+import { computeBand, computeBudget, modalityBudget, NEMOTRON_OMNI_MODEL } from "./controller.js";
+import { detectModality } from "./modality.js";
 import { chooseOutcome, clampSamples, JEV_PROFILE } from "./policy.js";
 import type { PolicyProfile } from "./policy.js";
 import { detectCapture, ROUTER_QUESTIONS_WITH_CAPTURE } from "../preferences/index.js";
@@ -321,6 +322,8 @@ type DecidedOutcome = {
   samples?: number;
   unsampledTier?: Tier;
   unsampledModel?: string;
+  /** Set by the controller's multimodal gate (ADR-020); absent means text. */
+  modality?: Modality;
 };
 
 /** The tier a controller band is disclosed as (`x-milo-tier`, decision rows). */
@@ -330,6 +333,19 @@ const CONTROLLER_TIERS: Record<0 | 1 | 2 | 3, Tier> = {
   2: "mid",
   3: "frontier",
 };
+
+/**
+ * The one-sentence reason for a modality-forced route (ADR-020). Image says
+ * whether the visual task was hard, since that is what gated its sampling;
+ * audio and video always name a single call on the free omni model.
+ */
+function modalityReason(modality: Modality, model: string, samples: number, hard: boolean): string {
+  const call = samples > 1 ? `best-of-${samples}` : "single call";
+  if (modality === "image") {
+    return `image input -> ${model}, ${call} (visual task ${hard ? "hard" : "not hard"})`;
+  }
+  return `${modality} input -> ${model} (free omni), single call`;
+}
 
 export class Router {
   private readonly jev: JevClientLike;
@@ -443,6 +459,7 @@ export class Router {
       ...(outcome.samples !== undefined ? { samples: outcome.samples } : {}),
       ...(outcome.unsampledTier !== undefined ? { unsampledTier: outcome.unsampledTier } : {}),
       ...(outcome.unsampledModel !== undefined ? { unsampledModel: outcome.unsampledModel } : {}),
+      ...(outcome.modality !== undefined ? { modality: outcome.modality } : {}),
       policyVersion: POLICY_VERSION,
       // A caller that joined an in-flight call did not cause a Jev call of
       // its own, which is exactly what `sticky` means. Its own decision id
@@ -506,27 +523,54 @@ export class Router {
    * ignoring what the caller named.
    */
   private decideController(signals: RouteSignals, req: RouteRequest): DecidedOutcome | undefined {
+    // The multimodal pre-gate (ADR-020) runs first: it reads the request's own
+    // content parts -- no Jev needed -- and, when a non-text media part is
+    // present, forces a capable model over the band's text-only branch model.
+    // Difficulty is still sized (the band gates image sampling), so the Jev
+    // call and its signals are unchanged; only the model and sample count move.
+    const modality = detectModality(req.messages);
+    const forced = modalityBudget(modality, signals, this.profile);
+
     const band = computeBand(signals, this.profile);
     const budget = computeBudget(band);
-    if (req.candidates !== undefined && req.candidates.length > 0 && !req.candidates.includes(budget.model)) {
+
+    const model = forced?.model ?? budget.model;
+    const baseSamples = forced?.samples ?? budget.samples;
+
+    // `milo.candidates` is still an explicit allow-list; a list that excludes
+    // the model this request resolves to -- the forced one, or the band's --
+    // falls back to roster resolution rather than ignoring what was named.
+    if (req.candidates !== undefined && req.candidates.length > 0 && !req.candidates.includes(model)) {
       return undefined;
     }
 
-    const override = this.samplingEnabled ? clampSamples(req.samples) : 1;
-    let samples = budget.samples;
-    if (override !== undefined) {
-      // `1` disables sampling; a larger override only re-sizes a band that
-      // samples, exactly as it only re-sizes cells the policy samples.
-      samples = override === 1 ? 1 : budget.samples > 1 ? override : budget.samples;
+    // The free omni model (audio/video) is pinned to one call: no best-of-N on
+    // a free model, and `milo.samples` cannot re-size it. Every other cell --
+    // text bands and the image route -- honours the override exactly as before.
+    const pinned = forced !== undefined && model === NEMOTRON_OMNI_MODEL;
+    let samples = baseSamples;
+    if (!pinned) {
+      const override = this.samplingEnabled ? clampSamples(req.samples) : 1;
+      if (override !== undefined) {
+        // `1` disables sampling; a larger override only re-sizes a cell that
+        // already samples, exactly as it only re-sizes cells the policy samples.
+        samples = override === 1 ? 1 : baseSamples > 1 ? override : baseSamples;
+      }
     }
 
     const tier = CONTROLLER_TIERS[band];
-    const call = samples > 1 ? `best-of-${samples} on ${budget.model}` : `one call to ${budget.model}`;
+    const reason =
+      forced !== undefined
+        ? modalityReason(modality, model, samples, forced.hard)
+        : `${signals.taskType} task, difficulty band ${band} under the deepseek controller buys ${
+            samples > 1 ? `best-of-${samples} on ${model}` : `one call to ${model}`
+          }`;
     return {
       tier,
-      model: budget.model,
-      reason: `${signals.taskType} task, difficulty band ${band} under the deepseek controller buys ${call}`,
-      ...(samples > 1 ? { samples, unsampledModel: budget.model } : {}),
+      model,
+      reason,
+      ...(forced !== undefined ? { modality } : {}),
+      ...(samples > 1 ? { samples, unsampledModel: model } : {}),
     };
   }
 

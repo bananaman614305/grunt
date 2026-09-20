@@ -100,12 +100,17 @@ export type { BreakerState, BreakerStatus, CircuitBreakerOptions } from "./break
 export {
   computeBand,
   computeBudget,
+  modalityBudget,
   sizeCompute,
   DEEPSEEK_BRANCH_MODEL,
   DEEPSEEK_ORCHESTRATOR_MODEL,
+  DEEPSEEK_VISION_MODEL,
+  NEMOTRON_OMNI_MODEL,
   SIZING_BUDGET_MS,
 } from "./controller.js";
-export type { ComputeBand, ComputeBudget, ComputeSizing } from "./controller.js";
+export type { ComputeBand, ComputeBudget, ComputeSizing, ModalityBudget } from "./controller.js";
+
+export { detectModality } from "./modality.js";
 
 export {
   checkCompleteness,

@@ -388,13 +388,14 @@ describe("POST /v1/chat/completions, milo/auto", () => {
 
     // Six headers explain a decision, and `x-milo-degraded` is not one of
     // them any more: there is no degraded decision left to report. The
-    // seventh is the completeness gate's (ADR-013): this fixture's band is
+    // eighth is the completeness gate's (ADR-013): this fixture's band is
     // over the gate's bar, and a check the stub Jev cannot answer serves the
     // response exactly as a passing one -- the gate never fails a request.
     expect([...res.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
       "x-milo-completeness",
       "x-milo-decision-id",
       "x-milo-difficulty",
+      "x-milo-modality",
       "x-milo-model",
       "x-milo-sticky",
       "x-milo-task-type",

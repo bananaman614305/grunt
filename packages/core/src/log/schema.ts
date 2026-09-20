@@ -245,6 +245,25 @@ CREATE TABLE IF NOT EXISTS fact_settings (
 ALTER TABLE facts ADD COLUMN embedding TEXT;
 `,
   },
+  {
+    version: 9,
+    description: "add the decision modality column",
+    // The multimodal routing gate (ADR-020): a decision now says which input
+    // modality drove its model, so the audit trail can explain why an image or
+    // audio request left the compute controller's text-only branch model.
+    // Nullable: a text request, and every row written before this migration,
+    // has no modality here -- which reads as "text", the ordinary case. It is
+    // a closed-vocabulary label (text/image/audio/video), never content, so it
+    // goes through no envelope. Same `run` shape as migrations 4 and 5,
+    // because SQLite has no `ADD COLUMN IF NOT EXISTS` and a partially-applied
+    // run must be re-appliable.
+    run: async (db) => {
+      const columns = await db.execute("PRAGMA table_info(decisions)");
+      if (!columns.rows.some((row) => String(row.name) === "modality")) {
+        await db.execute("ALTER TABLE decisions ADD COLUMN modality TEXT");
+      }
+    },
+  },
 ];
 
 /**

@@ -261,11 +261,12 @@ describe("the OpenAI SDK against Milo", () => {
     expect(response.headers.get("x-milo-sticky")).toBe("false");
     expect(response.headers.get("x-request-id")).toBe("or-e2e-1");
 
-    // Six headers explain the choice; `x-milo-degraded` is not among them,
+    // Seven headers explain the choice; `x-milo-degraded` is not among them,
     // because there is no degraded decision to report any more.
     expect([...response.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
       "x-milo-decision-id",
       "x-milo-difficulty",
+      "x-milo-modality",
       "x-milo-model",
       "x-milo-sticky",
       "x-milo-task-type",

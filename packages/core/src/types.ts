@@ -27,6 +27,15 @@ export type Tier = (typeof TIERS)[number];
 export const COST_POSTURES = ["low", "balanced", "quality"] as const;
 export type CostPosture = (typeof COST_POSTURES)[number];
 
+/**
+ * Input modality a request carries, read straight off its message content
+ * parts by the multimodal pre-gate (ADR-020). `"text"` is the ordinary case;
+ * the others mean a non-text media part was present and pinned a capable
+ * model. Output is always text -- this names *input* only.
+ */
+export const MODALITIES = ["text", "image", "audio", "video"] as const;
+export type Modality = (typeof MODALITIES)[number];
+
 /** Ordered OpenRouter model ids per tier. The first entry is the default. */
 export type Roster = Record<Tier, string[]>;
 
@@ -213,6 +222,15 @@ export type RouteDecision = {
    * which is the ADR-010 behaviour, unchanged.
    */
   unsampledModel?: string;
+  /**
+   * The input modality that drove this route (ADR-020's multimodal gate),
+   * set only when a non-text media part pinned a vision- or omni-capable
+   * model instead of the compute controller's text-only branch model. Absent
+   * means the request was text and the band's own budget stood; the gateway
+   * then discloses `x-milo-modality: text`. Carries a closed-vocabulary
+   * label, never message content.
+   */
+  modality?: Modality;
   createdAt: string; // ISO 8601
 };
 

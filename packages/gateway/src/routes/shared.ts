@@ -85,6 +85,9 @@ export function applyMiloHeaders(headers: Headers, decision: RouteDecision): voi
   headers.set("x-milo-task-type", decision.signals?.taskType ?? "unknown");
   headers.set("x-milo-difficulty", decision.signals ? decision.signals.difficulty.toFixed(2) : "unknown");
   headers.set("x-milo-sticky", decision.sticky ? "true" : "false");
+  // The multimodal gate's route (ADR-020): absent means the request was text
+  // and the compute controller's own band budget stood.
+  headers.set("x-milo-modality", decision.modality ?? "text");
 }
 
 /** `Retry-After` when Milo could not route at all, in seconds. */

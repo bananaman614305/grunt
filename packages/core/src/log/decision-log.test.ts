@@ -69,6 +69,15 @@ describe("DecisionLog", () => {
     expect(await log.getDecision("does-not-exist")).toBeUndefined();
   });
 
+  it("round-trips the modality of a multimodal route, and reads a text row as undefined", async () => {
+    await log.insert(record({ id: "img", modality: "image" }));
+    await log.insert(record({ id: "aud", modality: "audio" }));
+    await log.insert(record({ id: "txt" }));
+    expect((await log.getDecision("img"))?.modality).toBe("image");
+    expect((await log.getDecision("aud"))?.modality).toBe("audio");
+    expect((await log.getDecision("txt"))?.modality).toBeUndefined();
+  });
+
   it("listRecent orders newest first", async () => {
     await log.insert(record({ id: "a", createdAt: "2026-09-17T00:00:01.000Z" }));
     await log.insert(record({ id: "b", createdAt: "2026-09-17T00:00:03.000Z" }));

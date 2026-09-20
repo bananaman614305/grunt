@@ -31,7 +31,7 @@ import type {
   FactStore,
 } from "../memory/store.js";
 import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
-import type { DecisionRecord, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
+import type { DecisionRecord, Modality, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
 import { assertKeyHash, rosterModelCount } from "./roster-store.js";
 import type { RosterMeta, RosterSource, RosterStore, StoredRoster, StoredRosterSummary } from "./roster-store.js";
 import { applyMigrations } from "./schema.js";
@@ -124,6 +124,9 @@ function rowToRecord(row: Row): StoredDecision {
   if (row.unsampled_tier !== null && row.unsampled_tier !== undefined) {
     record.unsampledTier = String(row.unsampled_tier) as Tier;
   }
+  if (row.modality !== null && row.modality !== undefined) {
+    record.modality = String(row.modality) as Modality;
+  }
   if (row.signals_json !== null && row.signals_json !== undefined) {
     record.signals = JSON.parse(String(row.signals_json)) as RouteSignals;
   }
@@ -182,8 +185,8 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
     await this.db.execute({
       sql: `INSERT INTO decisions
               (id, fingerprint, tier, model, reason, policy_version, sticky, created_at, signals_json, upstream_json,
-               samples, unsampled_tier)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               samples, unsampled_tier, modality)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         record.id,
         record.fingerprint,
@@ -197,6 +200,7 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
         record.upstream ? JSON.stringify(record.upstream) : null,
         record.samples ?? null,
         record.unsampledTier ?? null,
+        record.modality ?? null,
       ],
     });
   }
