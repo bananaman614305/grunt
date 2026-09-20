@@ -148,6 +148,12 @@ export function onFinished(done: () => void): TransformStream<Uint8Array, Uint8A
  * client timeout on hard tasks -- while `low` keeps OpenRouter's own
  * price-first default. A caller-supplied `provider` field always passes
  * through untouched.
+ *
+ * `allow_fallbacks: true` rides along so OpenRouter reroutes a throttled or
+ * failing provider to another one serving the same model, turning a 429 into a
+ * different provider's answer instead of a failed response (the upstream
+ * rate-limit incident that motivated this). It is OpenRouter's own default, so
+ * this only makes the intent explicit and survives a future default change.
  */
 export function applyProviderStrategy<T extends Record<string, unknown>>(
   body: T,
@@ -155,7 +161,7 @@ export function applyProviderStrategy<T extends Record<string, unknown>>(
   model?: string,
 ): T {
   if (body["provider"] !== undefined || posture === "low") return body;
-  return { ...body, provider: { sort: "throughput", ...maxPriceFor(model) } };
+  return { ...body, provider: { sort: "throughput", allow_fallbacks: true, ...maxPriceFor(model) } };
 }
 
 /**
@@ -214,18 +220,18 @@ export function retargetProviderStrategy<T extends Record<string, unknown>>(
   toModel: string,
 ): T {
   if (!isAppliedStrategy(body["provider"], fromModel)) return body;
-  return { ...body, provider: { sort: "throughput", ...maxPriceFor(toModel) } };
+  return { ...body, provider: { sort: "throughput", allow_fallbacks: true, ...maxPriceFor(toModel) } };
 }
 
 /** Whether `provider` is exactly the strategy Milo applies for `model`. */
 function isAppliedStrategy(provider: unknown, model: string | undefined): boolean {
   if (typeof provider !== "object" || provider === null || Array.isArray(provider)) return false;
   const applied = provider as Record<string, unknown>;
-  if (applied["sort"] !== "throughput") return false;
+  if (applied["sort"] !== "throughput" || applied["allow_fallbacks"] !== true) return false;
   const keys = Object.keys(applied);
   const ceiling = maxPriceFor(model).max_price;
-  if (ceiling === undefined) return keys.length === 1;
-  if (keys.length !== 2) return false;
+  if (ceiling === undefined) return keys.length === 2;
+  if (keys.length !== 3) return false;
   const actual = applied["max_price"];
   if (typeof actual !== "object" || actual === null) return false;
   const price = actual as Record<string, unknown>;

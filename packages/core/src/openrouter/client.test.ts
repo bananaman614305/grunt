@@ -216,3 +216,107 @@ describe("OpenRouterClient.proxy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("OpenRouterClient upstream resilience", () => {
+  const immediate = { sleep: async (): Promise<void> => undefined, random: () => 0.5 };
+
+  it("does not retry a 429 by default -- the bare client is a single attempt", async () => {
+    const upstream = new Response("", { status: 429 });
+    const fetchMock = vi.fn(async () => upstream);
+    const client = new OpenRouterClient({ fetch: fetchMock as unknown as typeof fetch });
+
+    const res = await client.chatCompletions({ headers: new Headers(), body: { model: "a/b" } });
+
+    expect(res.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a throttled upstream when a retry policy is configured", async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call += 1;
+      return call < 3 ? new Response("", { status: 429 }) : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const client = new OpenRouterClient({
+      fetch: fetchMock as unknown as typeof fetch,
+      retry: { maxAttempts: 4 },
+      resilience: immediate,
+    });
+
+    const res = await client.chatCompletions({ headers: new Headers(), body: { model: "a/b" } });
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("wraps a network failure that outlasts the retries as an OpenRouterError", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("ECONNRESET");
+    });
+    const client = new OpenRouterClient({
+      fetch: fetchMock as unknown as typeof fetch,
+      retry: { maxAttempts: 3 },
+      resilience: immediate,
+    });
+
+    await expect(
+      client.chatCompletions({ headers: new Headers(), body: { model: "a/b" } }),
+    ).rejects.toBeInstanceOf(OpenRouterError);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("bounds concurrent in-flight requests per upstream model", async () => {
+    let active = 0;
+    let peak = 0;
+    const release: Array<() => void> = [];
+    const fetchMock = vi.fn(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => release.push(resolve));
+      active -= 1;
+      return new Response("ok", { status: 200 });
+    });
+    const client = new OpenRouterClient({
+      fetch: fetchMock as unknown as typeof fetch,
+      maxConcurrentPerModel: 2,
+      resilience: immediate,
+    });
+
+    const calls = [0, 1, 2, 3].map(() =>
+      client.chatCompletions({ headers: new Headers(), body: { model: "same/model" } }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(peak).toBe(2);
+
+    // Drain: release each in turn until all four have run.
+    while (release.length > 0) {
+      release.shift()?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    await Promise.all(calls);
+    expect(peak).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not retry once the caller's abort signal fires (e.g. a sampling timeout)", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async () => {
+      controller.abort();
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    });
+    const client = new OpenRouterClient({
+      fetch: fetchMock as unknown as typeof fetch,
+      retry: { maxAttempts: 4 },
+      resilience: immediate,
+    });
+
+    await expect(
+      client.chatCompletions({ headers: new Headers(), body: { model: "a/b" }, signal: controller.signal }),
+    ).rejects.toHaveProperty("name", "AbortError");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

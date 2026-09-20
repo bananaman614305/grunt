@@ -334,7 +334,7 @@ describe("sampled fan-out", () => {
       expect(call.body["model"]).toBe("test/fast");
       expect(call.body["stream"]).toBe(true);
       expect(call.body["stream_options"]).toEqual({ include_usage: true });
-      expect(call.body["provider"]).toEqual({ sort: "throughput" });
+      expect(call.body["provider"]).toEqual({ sort: "throughput", allow_fallbacks: true });
       expect(call.body["milo"]).toBeUndefined();
       const messages = call.body["messages"] as ChatMessage[];
       const system = String(messages[0]?.content);
@@ -466,7 +466,7 @@ describe("sampled fan-out", () => {
     expect(openRouter.calls).toHaveLength(4);
     expect(openRouter.calls[3]?.body["model"]).toBe("test/mid");
     expect(openRouter.calls[3]?.body["stream"]).toBeUndefined();
-    expect(openRouter.calls[3]?.body["provider"]).toEqual({ sort: "throughput" });
+    expect(openRouter.calls[3]?.body["provider"]).toEqual({ sort: "throughput", allow_fallbacks: true });
 
     const upstream = recorded[0]?.upstream as Upstream;
     expect(upstream.sampleNote).toBe("all_samples_failed");
@@ -715,10 +715,11 @@ describe("the all-samples-failed fallback's provider ceiling", () => {
 
     const fallback = openRouter.calls.at(-1);
     expect(fallback?.body["model"]).toBe(FALLBACK_MODEL);
-    expect(fallback?.body["provider"]).toEqual({ sort: "throughput", max_price: ceilingFor(FALLBACK_MODEL) });
+    expect(fallback?.body["provider"]).toEqual({ sort: "throughput", allow_fallbacks: true, max_price: ceilingFor(FALLBACK_MODEL) });
     // The samples themselves still carried the sampled model's own ceiling.
     expect(openRouter.calls[0]?.body["provider"]).toEqual({
       sort: "throughput",
+      allow_fallbacks: true,
       max_price: ceilingFor(DEEPSEEK_BRANCH_MODEL),
     });
     expect(recorded[0]?.upstream.sampleNote).toBe("all_samples_failed");

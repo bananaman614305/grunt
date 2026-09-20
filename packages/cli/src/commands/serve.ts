@@ -175,6 +175,30 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     ...(billing !== undefined ? { billing } : {}),
     ...(config.roster !== undefined ? { roster: config.roster } : {}),
     ...(config.rateLimit !== undefined ? { rateLimit: config.rateLimit } : {}),
+    ...(config.upstream !== undefined
+      ? {
+          upstream: {
+            ...(config.upstream.maxConcurrentPerModel !== undefined
+              ? { maxConcurrentPerModel: config.upstream.maxConcurrentPerModel }
+              : {}),
+            ...(config.upstream.retry !== undefined
+              ? {
+                  retry: {
+                    ...(config.upstream.retry.maxAttempts !== undefined
+                      ? { maxAttempts: config.upstream.retry.maxAttempts }
+                      : {}),
+                    ...(config.upstream.retry.baseDelayMs !== undefined
+                      ? { baseDelayMs: config.upstream.retry.baseDelayMs }
+                      : {}),
+                    ...(config.upstream.retry.maxDelayMs !== undefined
+                      ? { maxDelayMs: config.upstream.retry.maxDelayMs }
+                      : {}),
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
     ...(config.referer !== undefined ? { referer: config.referer } : {}),
     ...(config.title !== undefined ? { title: config.title } : {}),
     ...(config.jevTimeoutMs !== undefined ? { jevTimeoutMs: config.jevTimeoutMs } : {}),

@@ -88,6 +88,29 @@ const factRetrievalSchema = z
   .strict();
 
 /**
+ * Upstream rate-limit resilience for OpenRouter calls. All fields are
+ * optional and fall back to safe defaults in the gateway.
+ * `maxConcurrentPerModel` bounds concurrent in-flight requests per upstream
+ * model so a burst cannot self-inflict a 429 (default 8; 0 means no limit).
+ * `retry` tunes the 429/5xx backoff-and-jitter retry: `maxAttempts` (default
+ * 4, counting the first try), `baseDelayMs` (default 250) and `maxDelayMs`
+ * (default 8000, also the cap on a honoured `Retry-After`).
+ */
+const upstreamSchema = z
+  .object({
+    maxConcurrentPerModel: z.number().int().nonnegative().optional(),
+    retry: z
+      .object({
+        maxAttempts: z.number().int().positive().optional(),
+        baseDelayMs: z.number().int().positive().optional(),
+        maxDelayMs: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+/**
  * Routing mode (ADR-012). `"roster"` is the shipped default: policy v4 over
  * the tier-to-model roster, unchanged. `"deepseek"` is the experimental
  * compute controller: the difficulty band buys a compute budget over the
@@ -103,6 +126,7 @@ export const configSchema = z
     mode: modeSchema.default("roster"),
     roster: rosterSchema.optional(),
     rateLimit: rateLimitSchema.optional(),
+    upstream: upstreamSchema.optional(),
     decisionLog: z.string().trim().min(1).default(DEFAULT_DECISION_LOG_URL),
     referer: z.string().trim().min(1).optional(),
     title: z.string().trim().min(1).optional(),
