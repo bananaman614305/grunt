@@ -5,6 +5,7 @@
  * thin `#!/usr/bin/env node` wrapper around this, wired to `defaultDeps()`.
  */
 import * as billing from "./commands/billing.js";
+import * as cost from "./commands/cost.js";
 import * as decisions from "./commands/decisions.js";
 import * as explain from "./commands/explain.js";
 import * as roster from "./commands/roster.js";
@@ -21,7 +22,7 @@ type Command = {
   run: (args: string[], deps: CliDeps) => Promise<number | undefined>;
 };
 
-const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, roster, billing, verify };
+const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, cost, roster, billing, verify };
 
 export const TOP_LEVEL_HELP = `Usage: milo <command> [options]
 
@@ -32,6 +33,7 @@ Commands:
   explain     Explain one routing decision
   decisions   List recent routing decisions
   stats       Summarize the decision log
+  cost        Show routed-request spend from the decision log
   roster      Show the effective tier-to-model roster
   billing     Operate the billing database, Stripe, and provisioning
   verify      Install the ground-truth verification Stop hook into a harness

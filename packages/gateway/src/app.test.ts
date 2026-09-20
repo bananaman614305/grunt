@@ -725,7 +725,12 @@ describe("GET /v1/decisions", () => {
     expect(listed.data.map((d) => d.id)).toContain(decisionId);
 
     const stats = await gateway.app.request("/v1/decisions/stats", { headers: AUTH });
-    expect(await stats.json()).toMatchObject({ total: 1, byTier: { frontier: 1 } });
+    expect(await stats.json()).toMatchObject({
+      total: 1,
+      byTier: { frontier: 1 },
+      // Cost observability: the per-request cost the log stored, rolled up.
+      cost: { total: 0.00123, withCost: 1, byTier: { frontier: 0.00123 }, samplingTax: 0, avgPerRequest: 0.00123 },
+    });
   });
 
   it("404s an unknown id in the OpenAI error shape", async () => {

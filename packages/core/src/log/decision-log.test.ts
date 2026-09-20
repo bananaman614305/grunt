@@ -187,6 +187,30 @@ describe("DecisionLog", () => {
     expect(stats.total).toBe(1);
   });
 
+  it("rolls the stored per-request cost up into stats.cost, sampling tax and all", async () => {
+    await log.insert(record({ id: "c1", tier: "fast", model: "anthropic/claude-haiku-4.5" }));
+    await log.setUpstream("c1", { status: 200, latencyMs: 100, costUsd: 0.0002 });
+
+    await log.insert(record({ id: "c2", tier: "frontier", model: "anthropic/claude-opus-4.8" }));
+    await log.setUpstream("c2", { status: 200, latencyMs: 900, costUsd: 0.02 });
+
+    // A best-of-3 sampled decision: the aggregate cost covers all three calls.
+    await log.insert(record({ id: "c3", tier: "fast", model: "anthropic/claude-haiku-4.5", samples: 3 }));
+    await log.setUpstream("c3", { status: 200, latencyMs: 300, costUsd: 0.0009 });
+
+    // A decision that never reported a cost is counted nowhere in cost.
+    await log.insert(record({ id: "c4", tier: "mid" }));
+
+    const stats = await log.stats();
+    expect(stats.total).toBe(4);
+    expect(stats.cost.total).toBe(0.0211);
+    expect(stats.cost.withCost).toBe(3);
+    expect(stats.cost.byTier).toEqual({ fast: 0.0011, frontier: 0.02 });
+    expect(stats.cost.samplingTax).toBe(0.0006);
+    // 0.0211 / 3 = 0.0070333..., rounded to six decimals.
+    expect(stats.cost.avgPerRequest).toBe(0.007033);
+  });
+
   it("exportJsonl yields one line per record", async () => {
     for (let i = 0; i < 5; i++) {
       await log.insert(record({ id: `line-${i}`, createdAt: `2026-09-17T00:00:${String(i).padStart(2, "0")}.000Z` }));
