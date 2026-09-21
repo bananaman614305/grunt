@@ -71,6 +71,13 @@ export type FactCaptureOptions = {
    */
   embed?: EmbedClientLike;
   budgetMs?: number;
+  /**
+   * The caller's forwarded OpenRouter key (ADR-022): under the `"openrouter"`
+   * Jev transport it authenticates this capture call so it bills to the user's
+   * key, never Milo's `JEV_API_KEY`. Absent under the TypeSafe transport, where
+   * Milo's key is used.
+   */
+  jevKey?: string;
   logger?: Logger;
 };
 
@@ -99,7 +106,10 @@ export async function maybeCaptureFact(
     const { state } = buildJevState(opts.messages);
     const result = await jev.systemone(
       { state, questions: FACT_CAPTURE_QUESTIONS },
-      { budgetMs: opts.budgetMs ?? FACT_CAPTURE_BUDGET_MS },
+      {
+        budgetMs: opts.budgetMs ?? FACT_CAPTURE_BUDGET_MS,
+        ...(opts.jevKey !== undefined && opts.jevKey !== "" ? { apiKey: opts.jevKey } : {}),
+      },
     );
 
     const captured = resolveFactCapture(result.answers, message);
@@ -183,6 +193,12 @@ export type RoutedFactsOptions = {
    */
   promptEmbedding?: Promise<EmbeddingVector | undefined>;
   budgetMs?: number;
+  /**
+   * The caller's forwarded OpenRouter key (ADR-022): under the `"openrouter"`
+   * Jev transport it authenticates the relevance call so it bills to the user's
+   * key, never Milo's `JEV_API_KEY`. Absent under the TypeSafe transport.
+   */
+  jevKey?: string;
   logger?: Logger;
 };
 
@@ -244,7 +260,10 @@ export async function routedFacts(
     const { state } = buildJevState(opts.messages);
     const result = await jev.systemone(
       { state, questions: factRelevanceQuestions(candidates) },
-      { budgetMs: opts.budgetMs ?? FACT_RELEVANCE_BUDGET_MS },
+      {
+        budgetMs: opts.budgetMs ?? FACT_RELEVANCE_BUDGET_MS,
+        ...(opts.jevKey !== undefined && opts.jevKey !== "" ? { apiKey: opts.jevKey } : {}),
+      },
     );
 
     const relevant = selectRelevantFacts(result.answers, candidates);

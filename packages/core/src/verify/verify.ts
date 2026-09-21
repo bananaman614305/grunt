@@ -134,12 +134,18 @@ export function emptyResult(line = "Verification unavailable; nothing blocked.")
  * a Jev failure or a malformed answer; the caller decides what that means. A
  * claim whose answer is missing or the wrong shape is skipped rather than
  * failing the whole pass.
+ *
+ * `apiKey` is the caller's forwarded OpenRouter key (ADR-022): under the
+ * `"openrouter"` Jev transport it authenticates this call so it bills to the
+ * user's key, not Milo's `JEV_API_KEY`. The TypeSafe transport ignores it, so
+ * it can be passed unconditionally.
  */
 export async function verifyClaims(
   jev: JevClientLike,
   claims: readonly Claim[],
   ground: VerifyGroundTruth,
   budgetMs = VERIFY_BUDGET_MS,
+  apiKey?: string,
 ): Promise<VerifyResult> {
   const selected = claims.slice(0, MAX_CLAIMS_PER_CALL);
   if (selected.length === 0) return { ...emptyResult("No load-bearing claims to verify."), latencyMs: 0 };
@@ -147,7 +153,10 @@ export async function verifyClaims(
   const questions: Record<string, ReturnType<typeof claimQuestion>> = {};
   for (const claim of selected) questions[claim.id] = claimQuestion(claim);
 
-  const result = await jev.systemone({ state: buildGroundState(ground), questions }, { budgetMs });
+  const result = await jev.systemone(
+    { state: buildGroundState(ground), questions },
+    { budgetMs, ...(apiKey !== undefined && apiKey !== "" ? { apiKey } : {}) },
+  );
 
   const results: ClaimResult[] = [];
   for (const claim of selected) {

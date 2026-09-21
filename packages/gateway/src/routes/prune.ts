@@ -91,6 +91,7 @@ export async function maybePrune(
   decision: RouteDecision,
   posture: CostPosture,
   extension: MiloRequestExtension | undefined,
+  jevKey?: string,
 ): Promise<PruneOutcome | undefined> {
   const jev = deps.jev;
   if (jev === undefined) return undefined;
@@ -109,7 +110,9 @@ export async function maybePrune(
 
   let answers;
   try {
-    answers = await checkPrune(jev, messages);
+    // ADR-022: under the OpenRouter Jev transport, bill this pruning call to
+    // the caller's forwarded key. `PRUNE_BUDGET_MS` is `checkPrune`'s default.
+    answers = await checkPrune(jev, messages, undefined, jevKey);
   } catch (error) {
     deps.logger.warn("context pruning check failed; forwarding unpruned", {
       decisionId: decision.id,

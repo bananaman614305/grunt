@@ -37,6 +37,26 @@ function stubJev(answersFor: (keys: string[]) => Record<string, JevAnswer>): Jev
   };
 }
 
+/** A stub that records the per-call `apiKey` opt each systemone call saw. */
+function keyRecordingJev(
+  answersFor: (keys: string[]) => Record<string, JevAnswer>,
+): JevClientLike & { keys: Array<string | undefined> } {
+  const keys: Array<string | undefined> = [];
+  return {
+    keys,
+    async systemone(req, opts): Promise<SystemOneResult> {
+      keys.push(opts?.apiKey);
+      return {
+        model: "jev-latest",
+        answers: answersFor(Object.keys(req.questions)),
+        usage: { input_tokens: 1, output_tokens: 1 },
+        requestId: "req-test",
+        latencyMs: 1,
+      };
+    },
+  };
+}
+
 const noul = (v: number): JevAnswer => ({ type: "noul", noul: v });
 const choice = (c: string, conf: number): JevAnswer => ({ type: "choice", choice: c, confidence: conf, probabilities: { [c]: conf } });
 
@@ -56,6 +76,28 @@ describe("maybeCaptureFact", () => {
 
     const facts = await log.listFacts(HASH, enc);
     expect(facts.map((f) => f.text)).toEqual(["my deploy account is acct_4Q7"]);
+    await log.close();
+  });
+
+  it("threads the forwarded Jev key to the capture call under openrouter (ADR-022)", async () => {
+    const log = await DecisionLog.open(":memory:");
+    const jev = keyRecordingJev(() => ({ fact_stated: noul(0.95), fact_category: choice("identifier", 0.9) }));
+
+    await maybeCaptureFact(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("remember that my deploy account is acct_4Q7"),
+      provenance: PROV,
+      jevKey: "sk-or-v1-forwarded",
+    });
+    expect(jev.keys).toEqual(["sk-or-v1-forwarded"]);
+
+    const jev2 = keyRecordingJev(() => ({ fact_stated: noul(0.95), fact_category: choice("identifier", 0.9) }));
+    await maybeCaptureFact(log, jev2, enc, {
+      keyHash: HASH,
+      messages: userTurn("remember that my deploy account is acct_4Q7"),
+      provenance: PROV,
+    });
+    expect(jev2.keys).toEqual([undefined]); // TypeSafe default: Milo's key
     await log.close();
   });
 
@@ -85,6 +127,21 @@ describe("routedFacts + applyFactNote", () => {
     );
     return log;
   }
+
+  it("threads the forwarded Jev key to the relevance call under openrouter (ADR-022)", async () => {
+    const log = await seed();
+    const facts = await log.listFacts(HASH, enc);
+    const answers = Object.fromEntries(facts.map((f) => [relevanceKey(f.id), noul(0.99)]));
+    const jev = keyRecordingJev(() => answers);
+
+    await routedFacts(log, jev, enc, {
+      keyHash: HASH,
+      messages: userTurn("what is the ip of my staging server?"),
+      jevKey: "sk-or-v1-forwarded",
+    });
+    expect(jev.keys).toEqual(["sk-or-v1-forwarded"]);
+    await log.close();
+  });
 
   it("appends the RELEVANT fact and NOT the irrelevant one", async () => {
     const log = await seed();

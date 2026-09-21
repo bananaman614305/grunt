@@ -30,12 +30,14 @@ import { maybePrune } from "./prune.js";
 
 function pruneJev(
   opts: { finishedSafe?: number; prunable?: number; fail?: boolean } = {},
-): JevClientLike & { calls: number } {
+): JevClientLike & { calls: number; keys: Array<string | undefined> } {
   const stub = {
     calls: 0,
-    systemone: (req: { questions: Record<string, unknown> }): Promise<SystemOneResult> => {
+    keys: [] as Array<string | undefined>,
+    systemone: (req: { questions: Record<string, unknown> }, callOpts?: { apiKey?: string }): Promise<SystemOneResult> => {
       if ("oldest_finished" in req.questions) {
         stub.calls += 1;
+        stub.keys.push(callOpts?.apiKey);
         if (opts.fail === true) return Promise.reject(new Error("jev down"));
         const finishedSafe = opts.finishedSafe ?? 0.95;
         const prunable = opts.prunable ?? 3;
@@ -100,6 +102,16 @@ function bodyOf(messages: ChatMessage[]): Record<string, unknown> {
 
 describe("maybePrune fires and skips", () => {
   const decision = { id: "d1", model: decisionModel } as unknown as RouteDecision;
+
+  it("threads the forwarded Jev key to the pruning call under openrouter (ADR-022)", async () => {
+    const jevWithKey = pruneJev();
+    await maybePrune(pruneDeps({ jev: jevWithKey }), bodyOf(longHistory()), decision, "balanced", undefined, "sk-or-v1-forwarded");
+    expect(jevWithKey.keys).toEqual(["sk-or-v1-forwarded"]);
+
+    const jevNoKey = pruneJev();
+    await maybePrune(pruneDeps({ jev: jevNoKey }), bodyOf(longHistory()), decision, "balanced", undefined);
+    expect(jevNoKey.keys).toEqual([undefined]); // TypeSafe default: Milo's key
+  });
 
   it("prunes a long history when enabled, over the floor, and not low posture", async () => {
     const body = bodyOf(longHistory());

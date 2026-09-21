@@ -38,6 +38,7 @@ import type {
   VerifyResult,
 } from "@milo/core";
 import type { AppDeps } from "../app.js";
+import { forwardedJevKey } from "../billing.js";
 import { errorMessage } from "../errors.js";
 import { readJsonObject } from "./shared.js";
 
@@ -190,7 +191,9 @@ async function handleVerify(c: Context, deps: AppDeps): Promise<Response> {
   }
 
   try {
-    const result = await verifyClaims(deps.jev, input.claims, input.ground);
+    // ADR-022: under the OpenRouter Jev transport, bill this verification call
+    // to the caller's forwarded key.
+    const result = await verifyClaims(deps.jev, input.claims, input.ground, undefined, forwardedJevKey(c, deps));
     return c.json(toResponse(result, crossFamily), 200);
   } catch (err) {
     // A Jev failure/timeout must never stall the agent whose turn this is.

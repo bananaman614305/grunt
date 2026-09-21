@@ -175,21 +175,27 @@ function isVerdict(value: string): value is GateVerdict {
 }
 
 /**
- * Asks Jev (on Milo's key) for the completeness verdict over one (task,
- * answer) pair. The state is `rankState`'s: the clipped transcript and the
- * clipped candidate answer, exactly what ranking sends. Throws on a Jev
- * failure or a malformed answer; the caller decides what that means (the
- * gateway serves the answer as-is and records `error`).
+ * Asks Jev for the completeness verdict over one (task, answer) pair. The
+ * state is `rankState`'s: the clipped transcript and the clipped candidate
+ * answer, exactly what ranking sends. Throws on a Jev failure or a malformed
+ * answer; the caller decides what that means (the gateway serves the answer
+ * as-is and records `error`).
+ *
+ * `apiKey` is the caller's forwarded OpenRouter key (ADR-022): under the
+ * `"openrouter"` Jev transport it authenticates this call so it bills to the
+ * user's key, not Milo's `JEV_API_KEY`. The TypeSafe transport ignores it, so
+ * it can be passed unconditionally.
  */
 export async function checkCompleteness(
   jev: JevClientLike,
   task: ChatMessage[],
   answer: string,
   budgetMs = GATE_BUDGET_MS,
+  apiKey?: string,
 ): Promise<GateCheck> {
   const result = await jev.systemone(
     { state: rankState(task, answer), questions: COMPLETENESS_QUESTIONS },
-    { budgetMs },
+    { budgetMs, ...(apiKey !== undefined && apiKey !== "" ? { apiKey } : {}) },
   );
   const verdict = result.answers["completeness"];
   if (verdict?.type !== "choice" || !isVerdict(verdict.choice)) {

@@ -22,15 +22,18 @@ Options:
   -h, --help        Show this help
 
 Environment:
-  JEV_API_KEY             Milo's Jev key (required)
+  JEV_API_KEY             Milo's Jev key (required under the "typesafe"
+                          transport; unused, and optional, under "openrouter")
   PORT                    Port to listen on (overridden by --port; overrides config)
   MILO_DB                 Decision log libsql URL (overridden by --db; overrides config)
   MILO_MODE               Routing mode: "roster" (default) or "deepseek" (the
                           ADR-012 compute controller); overrides config "mode"
   MILO_JEV_TRANSPORT      Jev transport: "typesafe" (default) or "openrouter"
-                          (route the classification call through OpenRouter on
-                          the caller's own key, ADR-021); overrides config
-                          "jevTransport". JEV_API_KEY is still required.
+                          (route EVERY Jev call -- classification and every
+                          auxiliary feature -- through OpenRouter on the
+                          caller's own forwarded key, ADR-021/ADR-022);
+                          overrides config "jevTransport". Under "openrouter",
+                          JEV_API_KEY is unused and need not be set.
 
 Milo-issued keys and prepaid credits (all optional; without MILO_DATABASE_URL
 the deployment is bring-your-own-key only and an mk_ key gets a 401):
@@ -116,11 +119,31 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
   }
   const { config } = loaded;
 
+  // Jev transport (ADR-021): MILO_JEV_TRANSPORT beats the config's
+  // "jevTransport" beats the "typesafe" default. An unknown value is refused
+  // rather than guessed at, because the two transports call different hosts.
+  // Resolved before the JEV_API_KEY check below, because whether Milo's own
+  // key is required depends on it (ADR-022).
+  let jevTransport = config.jevTransport;
+  const envJevTransport = deps.env[JEV_TRANSPORT_ENV]?.trim();
+  if (envJevTransport !== undefined && envJevTransport !== "") {
+    if (envJevTransport !== "typesafe" && envJevTransport !== "openrouter") {
+      deps.stderr.write(
+        `milo serve: ${JEV_TRANSPORT_ENV} must be "typesafe" or "openrouter", got "${envJevTransport}"\n`,
+      );
+      return 1;
+    }
+    jevTransport = envJevTransport;
+  }
+
+  // Milo's own Jev key is required ONLY under the "typesafe" transport. Under
+  // "openrouter" (ADR-022) every Jev call authenticates with the caller's own
+  // forwarded OpenRouter key, so Milo's key is never used and need not be set.
   const jevApiKey = deps.env["JEV_API_KEY"] ?? "";
-  if (!jevApiKey) {
+  if (jevTransport === "typesafe" && !jevApiKey) {
     deps.stderr.write(
       `milo serve: JEV_API_KEY is not set. Export JEV_API_KEY with Milo's Jev key before running ` +
-        `\`milo serve\`.\n`,
+        `\`milo serve\`, or set ${JEV_TRANSPORT_ENV}=openrouter to bill Jev to the caller's forwarded key.\n`,
     );
     return 1;
   }
@@ -163,21 +186,6 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
       return 1;
     }
     mode = envMode;
-  }
-
-  // Jev transport (ADR-021): MILO_JEV_TRANSPORT beats the config's
-  // "jevTransport" beats the "typesafe" default. An unknown value is refused
-  // rather than guessed at, because the two transports call different hosts.
-  let jevTransport = config.jevTransport;
-  const envJevTransport = deps.env[JEV_TRANSPORT_ENV]?.trim();
-  if (envJevTransport !== undefined && envJevTransport !== "") {
-    if (envJevTransport !== "typesafe" && envJevTransport !== "openrouter") {
-      deps.stderr.write(
-        `milo serve: ${JEV_TRANSPORT_ENV} must be "typesafe" or "openrouter", got "${envJevTransport}"\n`,
-      );
-      return 1;
-    }
-    jevTransport = envJevTransport;
   }
 
   let billing: GatewayOptions["billing"];

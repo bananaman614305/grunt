@@ -18,11 +18,15 @@ import { parseVerifyInput } from "./verify.js";
 const AUTH = { authorization: "Bearer sk-or-v1-VERIFYTEST0123456789abcdef", "content-type": "application/json" };
 
 /** A Jev that answers every claim question with a verdict from a map by claim text. */
-function verifyJev(verdicts: Record<string, { choice: ClaimVerdict; confidence: number }>): JevClientLike & { calls: number } {
+function verifyJev(
+  verdicts: Record<string, { choice: ClaimVerdict; confidence: number }>,
+): JevClientLike & { calls: number; keys: Array<string | undefined> } {
   const jev = {
     calls: 0,
-    systemone(req: { questions: Record<string, { instructions?: string }> }) {
+    keys: [] as Array<string | undefined>,
+    systemone(req: { questions: Record<string, { instructions?: string }> }, opts?: { apiKey?: string }) {
       jev.calls += 1;
+      jev.keys.push(opts?.apiKey);
       const answers: SystemOneResult["answers"] = {};
       for (const [key, q] of Object.entries(req.questions)) {
         const match = Object.entries(verdicts).find(([text]) => (q.instructions ?? "").includes(text));
@@ -47,7 +51,7 @@ afterEach(async () => {
   logs.length = 0;
 });
 
-async function app(opts: { jev?: JevClientLike } = {}): Promise<Hono> {
+async function app(opts: { jev?: JevClientLike; forwardJevKey?: boolean } = {}): Promise<Hono> {
   const log = await DecisionLog.open(":memory:");
   logs.push(log);
   const deps: AppDeps = {
@@ -61,6 +65,7 @@ async function app(opts: { jev?: JevClientLike } = {}): Promise<Hono> {
     now: Date.now,
     recordUpstream: () => undefined,
     ...(opts.jev !== undefined ? { jev: opts.jev } : {}),
+    ...(opts.forwardJevKey !== undefined ? { forwardJevKey: opts.forwardJevKey } : {}),
   };
   return createApp(deps);
 }
@@ -120,6 +125,24 @@ describe("POST /v1/verify", () => {
     expect(body.blocking).toBe(false);
     expect(body.crossFamily).toBe(true);
     expect(jev.calls).toBe(1);
+  });
+
+  it("threads the caller's forwarded key to the verification call under forwardJevKey (ADR-022)", async () => {
+    const jev = verifyJev({ "tests pass": { choice: "supported", confidence: 0.95 } });
+    const res = await (await app({ jev, forwardJevKey: true })).request(
+      post({ turn: "All tests pass.", git: "diff --git a/p b/p\n+x\n" }),
+    );
+    expect(res.status).toBe(200);
+    expect(jev.keys).toEqual(["sk-or-v1-VERIFYTEST0123456789abcdef"]);
+  });
+
+  it("threads NO key to the verification call under the default TypeSafe transport (ADR-022)", async () => {
+    const jev = verifyJev({ "tests pass": { choice: "supported", confidence: 0.95 } });
+    const res = await (await app({ jev })).request(
+      post({ turn: "All tests pass.", git: "diff --git a/p b/p\n+x\n" }),
+    );
+    expect(res.status).toBe(200);
+    expect(jev.keys).toEqual([undefined]);
   });
 
   it("flags a confident contradiction as blocking and demands no oracle for it", async () => {

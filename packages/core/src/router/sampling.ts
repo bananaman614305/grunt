@@ -100,16 +100,26 @@ export type RankScore = {
 export const RANK_BUDGET_MS = 8_000;
 
 /**
- * Asks Jev (on Milo's key) to score one candidate answer. Throws on a Jev
- * failure; the caller decides what a failed rank means.
+ * Asks Jev to score one candidate answer. Throws on a Jev failure; the caller
+ * decides what a failed rank means.
+ *
+ * `apiKey` is the caller's forwarded OpenRouter key (ADR-022): under the
+ * `"openrouter"` Jev transport it authenticates this call, so the user's own
+ * key pays for the ranking and Milo's `JEV_API_KEY` is never used. The TypeSafe
+ * transport ignores it and authenticates with Milo's key, so it can be passed
+ * unconditionally. Omitted, the call falls back to the client's configured key.
  */
 export async function rankAnswer(
   jev: JevClientLike,
   task: ChatMessage[],
   answer: string,
   budgetMs = RANK_BUDGET_MS,
+  apiKey?: string,
 ): Promise<RankScore> {
-  const result = await jev.systemone({ state: rankState(task, answer), questions: RANK_QUESTIONS }, { budgetMs });
+  const result = await jev.systemone(
+    { state: rankState(task, answer), questions: RANK_QUESTIONS },
+    { budgetMs, ...(apiKey !== undefined && apiKey !== "" ? { apiKey } : {}) },
+  );
   const quality = result.answers["quality"];
   const correct = result.answers["correct"];
   if (quality?.type !== "score" || correct?.type !== "noul") {
