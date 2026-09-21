@@ -76,7 +76,8 @@ import { errorMessage, errorResponse } from "../errors.js";
 import { briefHeaders } from "../brief.js";
 import { factHeaders } from "../facts.js";
 import type { RoutedFacts } from "../facts.js";
-import type { GateRunner } from "./gate.js";
+import { storedGate } from "./gate.js";
+import type { GateAnswer, GateRunner } from "./gate.js";
 import { applyPruneHeaders, pruneRecord } from "./prune.js";
 import type { PruneOutcome } from "./prune.js";
 import {
@@ -856,10 +857,20 @@ export async function forwardSampled(
   let gateRecord: Upstream["gate"] | undefined;
   let gateUsage: UpstreamUsage | undefined;
   if (ctx.gate !== undefined && chosen.json !== undefined && chosen.message !== undefined) {
-    const result = await ctx.gate({ json: chosen.json, message: chosen.message, text: chosen.text });
+    // The other finished samples, ranked best-first, so the gate can reuse a
+    // complete one instead of spending a fresh retry (ADR-027 change 3). Only
+    // fully-parsed candidates (json + message present) can be served as-is.
+    const siblings: GateAnswer[] = orderSuccesses(successes)
+      .filter((s) => s.index !== chosen.index && s.json !== undefined && s.message !== undefined)
+      .map((s) => ({
+        json: s.json as Record<string, unknown>,
+        message: s.message as Record<string, unknown>,
+        text: s.text,
+      }));
+    const result = await ctx.gate({ json: chosen.json, message: chosen.message, text: chosen.text }, siblings);
     served = result.answer;
     gateHeaders = result.headers;
-    gateRecord = result.record;
+    gateRecord = storedGate(result.record);
     gateUsage = result.extraUsage;
   }
 

@@ -827,6 +827,41 @@ describe("the completeness gate over a sampled pick", () => {
       pick: "retry",
     });
   });
+
+  it("reuses a complete sibling instead of a fresh retry when the pick fails the gate (ADR-027 change 3)", async () => {
+    // The best-ranked pick ("chosen q3") ends on a digit, so it reaches the Jev
+    // check and fails (`incomplete`). A lower-ranked sibling ("second best q2.")
+    // is complete by the cheap local test, so it is served instead of spending a
+    // fresh escalated retry: no 4th upstream call.
+    const contents = ["chosen q3", "second best q2.", "other q1"];
+    openRouter.handler = (body, index) =>
+      body["model"] === "test/fast"
+        ? sse(completionBody(contents[index] as string))
+        : ok({ ...completionBody("retry q3"), model: "test/mid" });
+    const a = await app({ jev: gatingJev("incomplete") });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-completeness")).toBe("incomplete");
+    expect(res.headers.get("x-milo-gate-pick")).toBe("sibling");
+    expect(res.headers.get("x-milo-retry")).toBeNull();
+    expect(res.headers.get("x-milo-retry-model")).toBeNull();
+
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message["content"]).toBe("second best q2.");
+
+    // Exactly the three samples, never a fourth (fresh-retry) upstream call.
+    expect(openRouter.calls).toHaveLength(3);
+    for (const call of openRouter.calls) expect(call.body["model"]).toBe("test/fast");
+    expect(recorded[0]?.upstream.gate).toMatchObject({
+      verdict: "incomplete",
+      pick: "sibling",
+      checkSkipped: true,
+    });
+    // A reused sibling generated nothing new, so the retry block is absent.
+    expect(recorded[0]?.upstream.gate).not.toHaveProperty("retry");
+    expect(recorded[0]?.upstream.gate).not.toHaveProperty("retryModel");
+  });
 });
 
 // ---------------------------------------------------------------------------
