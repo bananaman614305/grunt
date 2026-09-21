@@ -51,6 +51,7 @@ export type { PolicyProfile, PolicyOutcome } from "./policy.js";
 export {
   PROMPT_VARIANTS,
   applyVariant,
+  applyVariantSuffix,
   variantFor,
   RANK_QUESTIONS,
   RANK_STATE_MAX_CHARS,
@@ -61,6 +62,9 @@ export {
   pickBest,
 } from "./sampling.js";
 export type { RankScore } from "./sampling.js";
+
+export { checkCandidate, expectsJsonResponse } from "./candidate-check.js";
+export type { CandidateCheck, CandidateFlaw, CandidateInput } from "./candidate-check.js";
 
 export {
   resolveModel,
@@ -148,7 +152,7 @@ export {
 } from "./pruning.js";
 export type { PruneAnswers, PruneDecision, PruneWindow } from "./pruning.js";
 
-export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT } from "./router.js";
-export type { RouterOptions, RoutingMode } from "./router.js";
+export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT, SPECULATION_MAX_PROMPT_CHARS } from "./router.js";
+export type { RouterOptions, RoutingMode, SpeculationOptions } from "./router.js";
 export * from "./errors.js";
 export * from "./sticky-store.js";

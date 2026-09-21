@@ -56,7 +56,18 @@
  */
 
 import type { Context } from "hono";
-import { applyVariant, isStreaming, messageText, prepareBody, rankAnswer, resolveModel, variantFor } from "@milo/core";
+import {
+  applyVariant,
+  applyVariantSuffix,
+  checkCandidate,
+  expectsJsonResponse,
+  isStreaming,
+  messageText,
+  prepareBody,
+  rankAnswer,
+  resolveModel,
+  variantFor,
+} from "@milo/core";
 import type { ChatMessage, RankScore, RouteDecision, SampleUpstream, Tier } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
@@ -119,8 +130,39 @@ export const MIN_RANKED_DEFAULT = 3;
 /** Jev expected quality (0..3) at which an early pick is a clear winner. */
 export const EARLY_WIN_QUALITY = 2.5;
 
+/**
+ * Adaptive-N (ADR-024, opt-in): the drawing knobs the fan-out reads when
+ * `sampling.adaptive.enabled` is true. Default OFF -- absent, the fan-out draws
+ * the full budgeted N up front exactly as ADR-010 shipped it. When on, samples
+ * are drawn incrementally and drawing stops once the top ranked answer is
+ * confidently good enough, so the tail samples are never started (not merely
+ * aborted). None of the thresholds is measured by ADR-010's benchmark, so a
+ * deployment validates a chosen set with `milo canary`/`pnpm bench` before
+ * enabling it in production; the numbers here are only the shape's defaults.
+ */
+export type AdaptiveSamplingConfig = {
+  enabled?: boolean;
+  /** Initial concurrent batch drawn before the first stop check. Default `minRanked`. */
+  minSamples?: number;
+  /** Hard cap on samples drawn, never above the budgeted N. Default N. */
+  maxSamples?: number;
+  /** Top ranked expected quality (0..3) that ends drawing. Default `EARLY_WIN_QUALITY`. */
+  qualityBar?: number;
+  /** A lead of this much over the runner-up (0..3) ends drawing. Default `ADAPTIVE_LEAD_MARGIN_DEFAULT`. */
+  leadMargin?: number;
+};
+
+/**
+ * Default decisive-lead margin (0..3): once the top ranked answer leads the
+ * runner-up by this much expected quality, more samples are unlikely to change
+ * the pick, so drawing stops. Only consulted when adaptive-N is enabled.
+ */
+export const ADAPTIVE_LEAD_MARGIN_DEFAULT = 1;
+
 export const SAMPLES_HEADER = "x-milo-samples";
 export const SAMPLE_PICK_HEADER = "x-milo-sample-pick";
+/** How many ranked candidates were returned as `choices[]` (ADR-026 top-K). */
+export const EXPOSED_HEADER = "x-milo-exposed";
 
 /** What the fan-out needs beyond the decision: the request's own knobs. */
 export type SamplingContext = {
@@ -165,6 +207,15 @@ type Sample = {
   json?: Record<string, unknown>;
   usage: UpstreamUsage;
   rank?: RankScore;
+  /**
+   * Static candidate verification (ADR-026): true when the structural check
+   * found a high-confidence defect (truncation, unbalanced code, bad diff/JSON).
+   * Only ever set when `sampling.verifyCandidates` is on; a broken candidate is
+   * demoted below every structurally-valid one by `bySampleRank`.
+   */
+  broken?: boolean;
+  /** The structural defect classes found (ADR-026). Format names, never content. */
+  flaws?: string[];
   /** Milo aborted this sample's stream after an early winner was found. */
   aborted?: boolean;
   /** Failure class only -- never upstream text. */
@@ -179,7 +230,7 @@ type Sample = {
  * (`packages/core/src/types.ts`), which predates the abort path; folding it
  * into the type itself needs an ADR.
  */
-type SampleRow = SampleUpstream & { aborted?: boolean };
+type SampleRow = SampleUpstream & { aborted?: boolean; broken?: boolean; flaws?: string[] };
 
 /** A failure class the decision log can hold: a name, never upstream text. */
 function classify(error: unknown): string {
@@ -204,6 +255,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * How many ranked candidates the client asked to see (ADR-026), from the OpenAI
+ * `n` field: `1` (or absent/invalid) is the default single best choice, larger
+ * values expose the top-K, clamped to the budgeted sample count `n` since Milo
+ * can return no more candidates than it drew.
+ */
+export function requestedChoices(body: Body, drawn: number): number {
+  const requested = body["n"];
+  if (typeof requested !== "number" || !Number.isInteger(requested) || requested < 1) return 1;
+  return Math.min(requested, Math.max(1, drawn));
+}
+
+/** `choices[0].finish_reason` of a reassembled completion, when present. */
+function finishReasonOf(json: Record<string, unknown> | undefined): unknown {
+  if (json === undefined) return undefined;
+  const choices = json["choices"];
+  if (!Array.isArray(choices) || !isRecord(choices[0])) return undefined;
+  return (choices[0] as Record<string, unknown>)["finish_reason"];
+}
+
+/** The choice `{message, finish_reason}` a completion body carries at index 0. */
+function choiceParts(
+  json: Record<string, unknown> | undefined,
+  fallbackMessage: Record<string, unknown> | undefined,
+): { message: Record<string, unknown>; finish_reason: unknown } {
+  const message = fallbackMessage ?? {};
+  const choices = json?.["choices"];
+  const first = Array.isArray(choices) && isRecord(choices[0]) ? (choices[0] as Record<string, unknown>) : undefined;
+  const msg = first !== undefined && isRecord(first["message"]) ? (first["message"] as Record<string, unknown>) : message;
+  return { message: msg, finish_reason: first?.["finish_reason"] ?? "stop" };
+}
+
 /** One sample's decision-log row: tokens, cost, Jev scores. No content. */
 function toSampleUpstream(sample: Sample, picked: boolean): SampleRow {
   return {
@@ -214,6 +297,8 @@ function toSampleUpstream(sample: Sample, picked: boolean): SampleRow {
     ...(sample.usage.outputTokens !== undefined ? { outputTokens: sample.usage.outputTokens } : {}),
     ...(sample.usage.costUsd !== undefined ? { costUsd: sample.usage.costUsd } : {}),
     ...(sample.rank !== undefined ? { jevQuality: sample.rank.quality, jevCorrect: sample.rank.correct } : {}),
+    ...(sample.broken === true ? { broken: true } : {}),
+    ...(sample.flaws !== undefined && sample.flaws.length > 0 ? { flaws: sample.flaws } : {}),
     ...(sample.aborted === true ? { aborted: true } : {}),
     ...(sample.error !== undefined
       ? { error: sample.error }
@@ -258,15 +343,44 @@ function aggregateUsage(samples: Sample[], chosen: Sample | undefined): Upstream
   return usage;
 }
 
+/**
+ * Orders two ranked samples, best first: highest expected quality wins,
+ * correctness then index break ties. The single comparator behind both the
+ * fixed and adaptive pickers, so an adaptive stop and the final selection can
+ * never disagree about which sample is best.
+ */
+function bySampleRank(a: Sample, b: Sample): number {
+  // Static verification gate (ADR-026): a structurally-broken candidate sorts
+  // below every valid one regardless of its Jev score, so it cannot win on the
+  // text judgment alone. `broken` is only ever set when `verifyCandidates` is
+  // on; with the gate off no sample carries it, so this comparison is always a
+  // tie and the ordering below is byte-identical to ADR-010's.
+  const ba = a.broken === true;
+  const bb = b.broken === true;
+  if (ba !== bb) return ba ? 1 : -1;
+  const ra = a.rank as RankScore;
+  const rb = b.rank as RankScore;
+  if (ra.quality !== rb.quality) return rb.quality - ra.quality;
+  if (ra.correct !== rb.correct) return rb.correct - ra.correct;
+  return a.index - b.index;
+}
+
+/**
+ * Successful samples ordered best-first for top-K exposure (ADR-026): ranked
+ * samples by `bySampleRank` (valid before broken, then Jev), then any samples
+ * Jev could not rank, by index. Never sorts a rank-less sample through
+ * `bySampleRank` (which would read an undefined rank), so it is safe on the
+ * degraded-ranking path.
+ */
+function orderSuccesses(successes: Sample[]): Sample[] {
+  const ranked = successes.filter((s) => s.rank !== undefined).sort(bySampleRank);
+  const unranked = successes.filter((s) => s.rank === undefined).sort((a, b) => a.index - b.index);
+  return [...ranked, ...unranked];
+}
+
 /** Highest expected quality wins; correctness, then index, break ties. */
 function bestRanked(ranked: Sample[]): Sample {
-  return [...ranked].sort((a, b) => {
-    const ra = a.rank as RankScore;
-    const rb = b.rank as RankScore;
-    if (ra.quality !== rb.quality) return rb.quality - ra.quality;
-    if (ra.correct !== rb.correct) return rb.correct - ra.correct;
-    return a.index - b.index;
-  })[0] as Sample;
+  return [...ranked].sort(bySampleRank)[0] as Sample;
 }
 
 /** The lowest-index success: the deterministic degraded-ranking pick. */
@@ -405,6 +519,43 @@ export async function forwardSampled(
   // on. Undefined under the TypeSafe transport (Milo's key ranks, as before).
   const jevKey = forwardedJevKey(c, deps);
   const minRanked = Math.max(1, Math.min(deps.sampling?.minRanked ?? MIN_RANKED_DEFAULT, n));
+
+  // Adaptive-N (ADR-024). Default OFF: with no `adaptive` block, or `enabled`
+  // not true, the scheduler below launches the full budgeted N up front and
+  // the behaviour is byte-identical to ADR-010's fixed best-of-N. When on,
+  // `maxN` caps drawing (never above N), `initialN` is the concurrent probe,
+  // and `qualityBar`/`leadMargin` are the confident-stop thresholds.
+  const adaptive: AdaptiveSamplingConfig | undefined = deps.sampling?.adaptive;
+  const adaptiveOn = adaptive?.enabled === true;
+  const maxN = adaptiveOn ? Math.max(1, Math.min(adaptive?.maxSamples ?? n, n)) : n;
+  const initialN = adaptiveOn ? Math.max(1, Math.min(adaptive?.minSamples ?? minRanked, maxN)) : n;
+  const qualityBar = adaptive?.qualityBar ?? EARLY_WIN_QUALITY;
+  const leadMargin = adaptive?.leadMargin ?? ADAPTIVE_LEAD_MARGIN_DEFAULT;
+
+  // Cache-friendly framings (ADR-024). Default OFF: the benchmarked
+  // system-prompt placement (`applyVariant`) stands, so the varied samples
+  // diverge at the head of the token sequence and a provider prompt cache
+  // cannot reuse the conversation body across them. When on, the framing rides
+  // the last message's tail (`applyVariantSuffix`), keeping the whole prefix
+  // byte-stable and cache-eligible; the framing text -- and thus the sample
+  // diversity -- is unchanged either way.
+  const applyFraming = deps.sampling?.cacheFriendlyVariants === true ? applyVariantSuffix : applyVariant;
+
+  // Static candidate verification (ADR-026). Default OFF: with the gate off no
+  // sample is ever marked broken, so `bySampleRank` orders exactly as ADR-010
+  // does and the pick is byte-identical. When on, each successful sample gets a
+  // cheap structural check and a broken candidate is demoted below valid ones.
+  const verifyOn = deps.sampling?.verifyCandidates === true;
+  const expectJson = expectsJsonResponse(body);
+
+  // Top-K candidate exposure (ADR-026), opt-in via the OpenAI `n` field. Default
+  // 1 (a single best choice, exactly as ADR-010): only an explicit `n > 1` asks
+  // for the top ranked candidates as multiple `choices[]`, so a client with its
+  // own workspace can run real tests over them. Capped at the budgeted N -- more
+  // choices than samples cannot exist. The `milo` field is already stripped
+  // before the forward, so `n` is the request-visible knob here.
+  const exposeK = requestedChoices(body, n);
+
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   // A large prompt gets a longer per-sample cap: see `LARGE_PROMPT_CHARS`.
   const timeoutMs = sampleTimeoutFor(
@@ -416,7 +567,13 @@ export async function forwardSampled(
   // One streamed draw. Never throws: every outcome is a Sample row.
   const draw = async (index: number, abort: AbortController): Promise<Sample> => {
     const sampleBody = prepareBody(body, decision.model);
-    sampleBody["messages"] = applyVariant(messages, variantFor(index));
+    sampleBody["messages"] = applyFraming(messages, variantFor(index));
+    // Top-K exposure (ADR-026): Milo synthesizes the multiple `choices[]` from
+    // the top ranked SAMPLES, so each draw generates a single completion. Force
+    // `n = 1` on the sub-request when the client asked for top-K, so a client
+    // `n` never fans each draw out into n upstream generations. Untouched when
+    // top-K is not requested, so the default draw is byte-identical to ADR-010.
+    if (exposeK > 1) sampleBody["n"] = 1;
     // Internally streamed, whatever the client asked for: a stream can be
     // ranked the moment it completes and aborted while it is still running.
     sampleBody["stream"] = true;
@@ -543,6 +700,55 @@ export async function forwardSampled(
   const isSuccess = (sample: Sample): boolean =>
     sample.error === undefined && sample.aborted !== true && sample.message !== undefined;
 
+  // Assigned once both evaluators exist (below); a launched draw reports in
+  // through this indirection so `launch` need not know which mode is running.
+  let onSettled: () => void = () => undefined;
+
+  // Start one draw: stream it, rank it as it completes, then report in. A
+  // failed rank marks the sample rather than failing a request that already
+  // has answers; after a decision no new ranks start, since their verdicts
+  // could no longer matter. This is ADR-010's per-sample loop body verbatim,
+  // lifted into a helper so the adaptive scheduler can call it on demand.
+  const launch = (index: number): void => {
+    const controller = new AbortController();
+    const slot: Slot = { controller, streamed: draw(index, controller), settled: false };
+    slots.push(slot);
+    void slot.streamed.then(async (sample) => {
+      slot.sample = sample;
+      // Static verification (ADR-026): score the candidate's structural validity
+      // before it can be ranked or picked. Sync and independent of Jev, so it is
+      // set the moment the stream settles and is visible to every selector.
+      if (verifyOn && isSuccess(sample)) {
+        const check = checkCandidate({
+          text: answerText(sample.message ?? {}),
+          finishReason: finishReasonOf(sample.json),
+          expectJson,
+        });
+        if (!check.ok) {
+          sample.broken = true;
+          sample.flaws = check.flaws;
+        }
+      }
+      if (isSuccess(sample) && deps.jev !== undefined && !decided) {
+        try {
+          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}), undefined, jevKey);
+        } catch (error) {
+          sample.rankError = `rank_${classify(error)}`;
+          deps.logger.warn("jev sample ranking failed", {
+            decisionId: decision.id,
+            index: sample.index,
+            error: sample.rankError,
+          });
+        }
+      }
+      slot.settled = true;
+      onSettled();
+    });
+  };
+
+  // Fixed best-of-N (ADR-010): every sample is already drawn, so the only
+  // choices are an early clear winner, a degraded-ranking pick, or -- once all
+  // have settled -- the outcome over whatever ranked.
   const evaluate = (): void => {
     if (decided) return;
     const settled = slots.filter((slot) => slot.settled).map((slot) => slot.sample as Sample);
@@ -564,31 +770,46 @@ export async function forwardSampled(
     if (settled.length === slots.length) decide({});
   };
 
-  for (let index = 0; index < n; index += 1) {
-    const controller = new AbortController();
-    const slot: Slot = { controller, streamed: draw(index, controller), settled: false };
-    slots.push(slot);
-    // Rank as the stream completes; a failed rank marks the sample rather
-    // than failing a request that already has answers. After a decision no
-    // new ranks start: their verdicts could no longer matter.
-    void slot.streamed.then(async (sample) => {
-      slot.sample = sample;
-      if (isSuccess(sample) && deps.jev !== undefined && !decided) {
-        try {
-          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}), undefined, jevKey);
-        } catch (error) {
-          sample.rankError = `rank_${classify(error)}`;
-          deps.logger.warn("jev sample ranking failed", {
-            decisionId: decision.id,
-            index: sample.index,
-            error: sample.rankError,
-          });
-        }
+  // Adaptive-N (ADR-024): the same stop conditions, but drawing is
+  // incremental. Once the in-flight batch has all settled without a confident
+  // top answer, one more sample is drawn until the max-N cap; a confident
+  // top answer (clears the quality bar, or leads the runner-up decisively)
+  // ends drawing so the tail samples are never started.
+  const evaluateAdaptive = (): void => {
+    if (decided) return;
+    const settled = slots.filter((slot) => slot.settled).map((slot) => slot.sample as Sample);
+    const successes = settled.filter(isSuccess);
+    const ranked = successes.filter((sample) => sample.rank !== undefined);
+    if (ranked.length >= minRanked) {
+      const ordered = [...ranked].sort(bySampleRank);
+      const best = ordered[0] as Sample;
+      const bestQuality = (best.rank as RankScore).quality;
+      const runnerUp = ordered[1];
+      const decisiveLead = runnerUp !== undefined && bestQuality - (runnerUp.rank as RankScore).quality >= leadMargin;
+      if (bestQuality >= qualityBar || decisiveLead) {
+        decide({ pick: best });
+        return;
       }
-      slot.settled = true;
-      evaluate();
-    });
-  }
+    }
+    if (ranked.length === 0 && successes.length >= minRanked) {
+      decide({ pick: firstSuccess(successes), note: "ranking_failed" });
+      return;
+    }
+    if (settled.length === slots.length) {
+      // The whole in-flight batch has settled and no winner is clear: draw one
+      // more if the budget allows, otherwise finish with the best in hand.
+      if (slots.length < maxN) {
+        launch(slots.length);
+        return;
+      }
+      decide({});
+    }
+  };
+
+  onSettled = adaptiveOn ? evaluateAdaptive : evaluate;
+  // Fixed mode launches the full budgeted N up front (byte-identical to
+  // ADR-010); adaptive mode launches only the initial probe and grows it.
+  for (let index = 0; index < initialN; index += 1) launch(index);
 
   const outcome = await outcomePromise;
 
@@ -665,7 +886,10 @@ export async function forwardSampled(
   applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);
-  headers.set(SAMPLES_HEADER, String(n));
+  // The count actually drawn. In fixed mode every budgeted sample is drawn, so
+  // this is `n` (byte-identical to ADR-010); under adaptive-N an early stop
+  // draws fewer, and the header discloses what was really spent.
+  headers.set(SAMPLES_HEADER, String(adaptiveOn ? samples.length : n));
   headers.set(SAMPLE_PICK_HEADER, String(pickIndex));
   for (const [k, v] of Object.entries(gateHeaders)) headers.set(k, v);
 
@@ -685,6 +909,39 @@ export async function forwardSampled(
       ...(message !== undefined ? { message } : {}),
       text: stripChatReasoningBody(served.text),
     };
+  }
+
+  // Top-K exposure (ADR-026): when the client asked for more than one choice
+  // (`n > 1`) and more than one candidate survives, return the top ranked
+  // candidates as multiple `choices[]`, best-first. These are candidates the
+  // user already paid to generate; nothing beyond their completion text is
+  // exposed. Choice 0 is the served pick (gate-applied and reasoning-scrubbed
+  // above); the rest are the next-best ranked successes, each reasoning-scrubbed
+  // the same way. When only one candidate survives, the single-best path below
+  // runs exactly as ADR-010.
+  const exposed = exposeK > 1 ? orderSuccesses(successes).filter((s) => s.index !== chosen.index) : [];
+  if (exposeK > 1 && exposed.length > 0) {
+    const scrub = !wantsVisibleReasoning(body);
+    const head = choiceParts(served.json, served.message);
+    const choices: Array<Record<string, unknown>> = [
+      { index: 0, message: head.message, finish_reason: head.finish_reason },
+    ];
+    for (const sample of exposed.slice(0, exposeK - 1)) {
+      const json =
+        scrub && sample.json !== undefined
+          ? (stripChatReasoningPayload(sample.json) as Record<string, unknown>)
+          : sample.json;
+      const part = choiceParts(json, sample.message);
+      choices.push({ index: choices.length, message: part.message, finish_reason: part.finish_reason });
+    }
+    headers.set(EXPOSED_HEADER, String(choices.length));
+    const multi: Record<string, unknown> = { ...(served.json ?? chosen.json ?? {}), choices };
+    if (isStreaming(body)) {
+      headers.set("content-type", "text/event-stream");
+      return new Response(replayChoicesAsSse(multi, choices), { status: 200, headers });
+    }
+    headers.set("content-type", "application/json");
+    return new Response(JSON.stringify(multi), { status: 200, headers });
   }
 
   if (isStreaming(body)) {
@@ -733,6 +990,59 @@ export function replayAsSse(chosen: {
   const finalChunk = {
     ...frame,
     choices: [{ index: 0, delta: {}, finish_reason: first["finish_reason"] ?? "stop" }],
+    ...(isRecord(json["usage"]) ? { usage: json["usage"] } : {}),
+  };
+
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(contentChunk)}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+}
+
+/**
+ * The top-K exposure (ADR-026) as well-formed multi-choice SSE: one chunk
+ * carrying every choice's message as its delta (each on its own `index`), one
+ * final chunk closing every choice with its finish reason and the aggregate
+ * usage, then `[DONE]`. The OpenAI streaming shape for `n > 1`: a client reads
+ * each candidate off `choices[].index`.
+ */
+export function replayChoicesAsSse(
+  json: Record<string, unknown>,
+  choices: Array<Record<string, unknown>>,
+): ReadableStream<Uint8Array> {
+  const frame = {
+    id: typeof json["id"] === "string" ? json["id"] : "milo-sampled",
+    object: "chat.completion.chunk",
+    created: typeof json["created"] === "number" ? json["created"] : Math.floor(Date.now() / 1000),
+    model: typeof json["model"] === "string" ? json["model"] : "",
+  };
+
+  const deltaFor = (message: Record<string, unknown>): Record<string, unknown> => {
+    const delta: Record<string, unknown> = { role: "assistant" };
+    if (typeof message["content"] === "string") delta["content"] = message["content"];
+    const toolCalls = message["tool_calls"];
+    if (Array.isArray(toolCalls)) {
+      delta["tool_calls"] = toolCalls.map((call, index) => (isRecord(call) ? { index, ...call } : call));
+    }
+    return delta;
+  };
+
+  const contentChunk = {
+    ...frame,
+    choices: choices.map((choice, index) => ({
+      index,
+      delta: deltaFor(isRecord(choice["message"]) ? (choice["message"] as Record<string, unknown>) : {}),
+      finish_reason: null,
+    })),
+  };
+  const finalChunk = {
+    ...frame,
+    choices: choices.map((choice, index) => ({ index, delta: {}, finish_reason: choice["finish_reason"] ?? "stop" })),
     ...(isRecord(json["usage"]) ? { usage: json["usage"] } : {}),
   };
 

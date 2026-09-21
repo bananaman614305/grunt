@@ -78,6 +78,29 @@ import type { PruneOutcome } from "./prune.js";
 import { forwardSampled } from "./sampling.js";
 import { readBodyUsage, toUpstreamRecord } from "./usage.js";
 
+/**
+ * Speculative routing disclosure (ADR-025): `hit` when the response came from
+ * a call started in parallel with the Jev classification, `miss` when such a
+ * call was started but discarded because the decision picked something else,
+ * `off` when speculation was enabled but this request was not eligible. Absent
+ * entirely when the deployment did not opt into speculation.
+ */
+export const SPECULATION_HEADER = "x-milo-speculation";
+
+type SpeculationState = "off" | "hit" | "miss";
+
+/** A single cheap call started in parallel with the Jev classification. */
+type Speculation = {
+  /** The model it was started on -- the request's resolved fast-tier default. */
+  model: string;
+  /** The exact forwarded body, for the byte-equality guard the hit test uses. */
+  forwarded: Body;
+  /** When the upstream call began, so `forward` can time it truthfully on a hit. */
+  startedAt: number;
+  abort: AbortController;
+  upstream: Promise<Response>;
+};
+
 export function registerChatRoute(app: Hono, deps: AppDeps): void {
   app.post("/v1/chat/completions", (c) => handleChat(c, deps));
 }
@@ -233,10 +256,21 @@ async function routed(
     logger: deps.logger,
   });
 
+  // Speculative routing (ADR-025): before Jev answers, maybe start the single
+  // cheapest fast-tier call so its wall time overlaps the classification (and
+  // the brief/facts/prune Jev calls that follow) instead of stacking after it.
+  // The router decides eligibility (probably-easy, cache-miss, roster mode);
+  // the result is used only if the decision below resolves to this exact model
+  // as a single, ungated call, and aborted otherwise, so routing never changes.
+  const speculation = beginSpeculation(c, deps, body, request, posture);
+
   let decision: RouteDecision;
   try {
     decision = await deps.router.route(request);
   } catch (err) {
+    // No decision means no forward, speculative or otherwise: stop paying for
+    // the in-flight call before returning the error.
+    discardSpeculation(speculation);
     // Jev could not answer, and there is no second backend and no mid-tier
     // guess left to make: `milo/auto` without a decision is a 503, and the
     // client is told to retry or name a model itself.
@@ -345,8 +379,11 @@ async function routed(
 
   // A sampled decision (ADR-010) fans out instead of forwarding once. Only
   // this surface executes sampling; the other dialects opt out at routing
-  // time (see routes/messages.ts and routes/responses.ts).
+  // time (see routes/messages.ts and routes/responses.ts). A speculative call
+  // is a single fast call, never best-of-N, so it cannot be reused here.
   if (decision.samples !== undefined && decision.samples > 1) {
+    recordSpeculation(deps, speculation, "miss", decision.id);
+    discardSpeculation(speculation);
     return forwardSampled(c, deps, outgoing, decision, {
       candidates,
       briefVersion: brief?.version,
@@ -357,12 +394,47 @@ async function routed(
   }
 
   // A gated single call buffers, grades, maybe retries, then replays; an
-  // ungated one keeps the pass-through fast path untouched.
+  // ungated one keeps the pass-through fast path untouched. A gated call is
+  // never served from a speculative result (the grade/retry has to run over
+  // the answer first), so speculation cannot be reused here either.
   if (gate !== undefined) {
+    recordSpeculation(deps, speculation, "miss", decision.id);
+    discardSpeculation(speculation);
     return forwardGated(c, deps, outgoing, decision, gate, brief?.version, prune, facts);
   }
 
-  return forward(c, deps, outgoing, decision, brief?.version, prune, facts);
+  // The plain single-call forward: the only path a speculative result can be
+  // reused on. It is a hit only when the decision resolves to the exact model
+  // we speculated, as a single call, AND the fully-enriched body we would now
+  // forward is byte-identical to what the speculative call already sent -- so
+  // any brief/fact/prune enrichment that changed the body safely degrades to a
+  // miss rather than serving a differently-built response. Correctness: the
+  // served answer is always the one Jev's decision dictates.
+  let state: SpeculationState | undefined = speculationBaseState(deps);
+  let inflight: { upstream: Promise<Response>; startedAt: number } | undefined;
+  if (speculation !== undefined) {
+    const realForwarded = prepareBody(outgoing, decision.model);
+    const hit =
+      decision.model === speculation.model &&
+      (decision.samples === undefined || decision.samples <= 1) &&
+      sameBody(realForwarded, speculation.forwarded);
+    if (hit) {
+      state = "hit";
+      inflight = { upstream: speculation.upstream, startedAt: speculation.startedAt };
+    } else {
+      state = "miss";
+      discardSpeculation(speculation);
+    }
+    recordSpeculation(deps, speculation, state, decision.id);
+  }
+
+  return forward(c, deps, outgoing, decision, {
+    ...(brief?.version !== undefined ? { briefVersion: brief.version } : {}),
+    ...(prune !== undefined ? { prune } : {}),
+    ...(facts !== undefined ? { facts } : {}),
+    ...(state !== undefined ? { speculation: state } : {}),
+    ...(inflight !== undefined ? { inflight } : {}),
+  });
 }
 
 async function forward(
@@ -370,16 +442,31 @@ async function forward(
   deps: AppDeps,
   body: Body,
   decision: RouteDecision,
-  briefVersion?: string,
-  prune?: PruneOutcome,
-  facts?: RoutedFacts,
+  opts: {
+    briefVersion?: string;
+    prune?: PruneOutcome;
+    facts?: RoutedFacts;
+    /** Speculative-routing disclosure for `x-milo-speculation` (ADR-025). */
+    speculation?: SpeculationState;
+    /**
+     * A speculative call started before Jev answered (a hit): its response is
+     * awaited here instead of making a fresh one, so its wall time overlapped
+     * the classification. The body that produced it is byte-identical to the
+     * one this forward would build (the caller's hit test guarantees it).
+     */
+    inflight?: { upstream: Promise<Response>; startedAt: number };
+  } = {},
 ): Promise<Response> {
+  const { briefVersion, prune, facts } = opts;
   const forwarded = prepareBody(body, decision.model);
-  const startedAt = deps.now();
+  const startedAt = opts.inflight?.startedAt ?? deps.now();
 
   let upstream: Response;
   try {
-    upstream = await deps.openRouter.chatCompletions({ headers: upstreamHeadersFor(c), body: forwarded });
+    upstream =
+      opts.inflight !== undefined
+        ? await opts.inflight.upstream
+        : await deps.openRouter.chatCompletions({ headers: upstreamHeadersFor(c), body: forwarded });
   } catch (err) {
     deps.recordUpstream(decision.id, { status: 502, latencyMs: deps.now() - startedAt });
     deps.logger.error("openrouter chat completions failed", { decisionId: decision.id, error: errorMessage(err) });
@@ -390,6 +477,7 @@ async function forward(
   applyMiloHeaders(headers, decision);
   applyJevTransportHeader(headers, deps);
   applyPruneHeaders(headers, prune);
+  if (opts.speculation !== undefined) headers.set(SPECULATION_HEADER, opts.speculation);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(facts))) headers.set(k, v);
 
@@ -432,4 +520,84 @@ async function forward(
 
 function upstreamUnavailable(c: Context): Response {
   return errorResponse(c, 502, "Upstream request to OpenRouter failed.", "api_error", "upstream_unavailable");
+}
+
+// ---------------------------------------------------------------------------
+// Speculative routing (ADR-025)
+// ---------------------------------------------------------------------------
+
+/** The `x-milo-speculation` value when speculation is on but nothing was started. */
+function speculationBaseState(deps: AppDeps): SpeculationState | undefined {
+  return deps.speculation?.enabled === true ? "off" : undefined;
+}
+
+/**
+ * Starts the single cheapest fast-tier call in parallel with the Jev
+ * classification when this deployment opted in and the router judges the
+ * request eligible (`Router.speculativeModel`). Returns `undefined` when no
+ * call was started -- speculation off, or the request ineligible.
+ *
+ * The body is built with exactly the non-decision-dependent transforms the
+ * plain forward applies (`applyProviderStrategy` for the speculated model, plus
+ * the default reasoning exclusion), so a later hit is byte-identical when no
+ * brief/fact/prune enrichment fired. The call carries an abort signal so a miss
+ * can stop its token spend promptly, and its rejection is pre-handled so an
+ * abort never surfaces as an unhandled rejection.
+ */
+function beginSpeculation(
+  c: Context,
+  deps: AppDeps,
+  body: Body,
+  request: RouteRequest,
+  posture: CostPosture,
+): Speculation | undefined {
+  if (deps.speculation?.enabled !== true) return undefined;
+  const model = deps.router.speculativeModel(request);
+  if (model === undefined) return undefined;
+
+  const forwarded = prepareBody(applyReasoningExclusion(applyProviderStrategy(body, posture, model)), model);
+  const abort = new AbortController();
+  const startedAt = deps.now();
+  const upstream = deps.openRouter.chatCompletions({
+    headers: upstreamHeadersFor(c),
+    body: forwarded,
+    signal: abort.signal,
+  });
+  // A miss aborts and never awaits this promise; a hit re-awaits it in
+  // `forward`. Either way it already has a rejection handler, so an abort or an
+  // upstream error can never become an unhandled rejection while it is pending.
+  upstream.catch(() => undefined);
+
+  return { model, forwarded, startedAt, abort, upstream };
+}
+
+/**
+ * Discards a speculative call: aborts it (stopping any in-flight token spend at
+ * once, so a miss does not keep consuming an upstream concurrency slot) and
+ * cancels its body if it already arrived, so nothing leaks a reader.
+ */
+function discardSpeculation(speculation: Speculation | undefined): void {
+  if (speculation === undefined) return;
+  speculation.abort.abort();
+  void speculation.upstream.then((response) => response.body?.cancel()).catch(() => undefined);
+}
+
+/** Discloses a speculation outcome to the operator log, so hit-rate and wasted calls are computable. */
+function recordSpeculation(
+  deps: AppDeps,
+  speculation: Speculation | undefined,
+  state: SpeculationState,
+  decisionId: string,
+): void {
+  if (speculation === undefined) return;
+  deps.logger.info("speculation", { decisionId, state, model: speculation.model });
+}
+
+/** Whether two prepared bodies are byte-identical, and so the same request. */
+function sameBody(a: Body, b: Body): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
 }

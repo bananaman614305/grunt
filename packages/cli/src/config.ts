@@ -65,11 +65,31 @@ const tenantLimitsSchema = z
  * samples the fan-out waits for before returning a clear winner early and
  * aborting the still-streaming rest (gateway default: 3).
  */
+const adaptiveSamplingSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    minSamples: z.number().int().positive().optional(),
+    maxSamples: z.number().int().positive().optional(),
+    qualityBar: z.number().min(0).max(3).optional(),
+    leadMargin: z.number().min(0).max(3).optional(),
+  })
+  .strict();
+
 const samplingSchema = z
   .object({
     enabled: z.boolean().default(true),
     sampleTimeoutMs: z.number().int().positive().optional(),
     minRanked: z.number().int().positive().optional(),
+    // Adaptive-N and cache-friendly framings (ADR-024). Both default off:
+    // they are benchmark-gated prompt/compute changes, validated with
+    // `milo canary`/`pnpm bench` before a deployment turns them on.
+    adaptive: adaptiveSamplingSchema.optional(),
+    cacheFriendlyVariants: z.boolean().optional(),
+    // Static candidate verification (ADR-026). Default off: folds a cheap
+    // structural check into the best-of-N ranking so a broken candidate is
+    // demoted below valid ones. A ranking change, validated with `milo
+    // canary`/`pnpm bench` before a deployment turns it on.
+    verifyCandidates: z.boolean().optional(),
   })
   .strict();
 
@@ -87,6 +107,23 @@ const pruningSchema = z
     enabled: z.boolean().default(false),
     minContextTokens: z.number().int().positive().optional(),
     contextWindowTokens: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/**
+ * Speculative routing (ADR-024). Off by default: `enabled` (default false)
+ * starts the single cheapest fast-tier call in parallel with the Jev
+ * classification on the OpenAI chat surface, to hide its latency. The result
+ * is used only when the real Jev decision resolves to that same single call,
+ * and aborted otherwise, so routing is never changed -- only latency, at the
+ * cost of one cheap wasted call per miss. `maxPromptChars` (default 2,000)
+ * tunes the probably-easy heuristic below which a request is a speculation
+ * candidate.
+ */
+const speculationSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxPromptChars: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -214,6 +251,7 @@ export const configSchema = z
     /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
     jevTimeoutMs: z.number().int().positive().optional(),
     sampling: samplingSchema.optional(),
+    speculation: speculationSchema.optional(),
     pruning: pruningSchema.optional(),
     factRetrieval: factRetrievalSchema.optional(),
     classificationCache: classificationCacheSchema.optional(),

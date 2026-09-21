@@ -147,11 +147,48 @@ export type AppDeps = {
    */
   tenantLimits?: TenantLimits;
   /**
-   * Best-of-N execution knobs (ADR-010). Absent means the defaults:
+   * Best-of-N execution knobs (ADR-010, ADR-024). Absent means the defaults:
    * `sampleTimeoutMs` caps each sample's wall clock; `minRanked` is how many
    * ranked samples the fan-out waits for before an early return may fire.
+   * `adaptive` (default off) draws samples incrementally and stops early on a
+   * confident lead; `cacheFriendlyVariants` (default off) moves each sample's
+   * framing to a trailing suffix so the shared prompt prefix stays
+   * cache-eligible. Both are prompt/compute changes ADR-010's benchmark has
+   * not measured, so they default off and are validated before production use.
+   *
+   * `verifyCandidates` (ADR-026, default off) adds a cheap, language-agnostic
+   * static structural check to the best-of-N ranking so a truncated or
+   * structurally-broken candidate is demoted below valid ones instead of
+   * winning on Jev's text score alone. Off, the ranking is byte-identical to
+   * ADR-010; on, it is a ranking change to validate with `milo canary`/`pnpm
+   * bench` before production use. (Top-K exposure is per-request via `n`, not a
+   * deployment knob.)
    */
-  sampling?: { sampleTimeoutMs?: number; minRanked?: number };
+  sampling?: {
+    sampleTimeoutMs?: number;
+    minRanked?: number;
+    adaptive?: {
+      enabled?: boolean;
+      minSamples?: number;
+      maxSamples?: number;
+      qualityBar?: number;
+      leadMargin?: number;
+    };
+    cacheFriendlyVariants?: boolean;
+    verifyCandidates?: boolean;
+  };
+  /**
+   * Speculative routing (ADR-024). Absent means off: the OpenAI chat route
+   * takes its exact pre-speculation path and never asks the router to
+   * speculate. When present and `enabled`, that route starts the router's
+   * single cheapest fast-tier call in parallel with the Jev classification and
+   * reuses it only when the real decision resolves to that same single,
+   * ungated call -- otherwise the speculative call is aborted and the normal
+   * forward runs, so routing is never changed. The router owns the eligibility
+   * heuristic (`Router.speculativeModel`); this flag only gates whether the
+   * gateway wires it up. Set from `GatewayOptions.speculation`.
+   */
+  speculation?: { enabled?: boolean; maxPromptChars?: number };
   /**
    * Context pruning (ADR-014). Absent or `enabled` false means the gate is
    * off for every request unless one opts in with `milo: { prune: true }`.

@@ -282,6 +282,41 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
               ? { sampleTimeoutMs: config.sampling.sampleTimeoutMs }
               : {}),
             ...(config.sampling.minRanked !== undefined ? { minRanked: config.sampling.minRanked } : {}),
+            ...(config.sampling.adaptive !== undefined
+              ? {
+                  adaptive: {
+                    enabled: config.sampling.adaptive.enabled,
+                    ...(config.sampling.adaptive.minSamples !== undefined
+                      ? { minSamples: config.sampling.adaptive.minSamples }
+                      : {}),
+                    ...(config.sampling.adaptive.maxSamples !== undefined
+                      ? { maxSamples: config.sampling.adaptive.maxSamples }
+                      : {}),
+                    ...(config.sampling.adaptive.qualityBar !== undefined
+                      ? { qualityBar: config.sampling.adaptive.qualityBar }
+                      : {}),
+                    ...(config.sampling.adaptive.leadMargin !== undefined
+                      ? { leadMargin: config.sampling.adaptive.leadMargin }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(config.sampling.cacheFriendlyVariants !== undefined
+              ? { cacheFriendlyVariants: config.sampling.cacheFriendlyVariants }
+              : {}),
+            ...(config.sampling.verifyCandidates !== undefined
+              ? { verifyCandidates: config.sampling.verifyCandidates }
+              : {}),
+          },
+        }
+      : {}),
+    ...(config.speculation !== undefined
+      ? {
+          speculation: {
+            enabled: config.speculation.enabled,
+            ...(config.speculation.maxPromptChars !== undefined
+              ? { maxPromptChars: config.speculation.maxPromptChars }
+              : {}),
           },
         }
       : {}),

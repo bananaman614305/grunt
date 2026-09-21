@@ -33,6 +33,15 @@ export const DEFAULT_DRIFT_THRESHOLDS: DriftThresholds = {
   maxTierShiftPts: 20,
 };
 
+/**
+ * Baseline p95 latency below this (ms) is treated as noise: a percentage
+ * change on a few milliseconds of local compute (fixtures mode, or a very
+ * fast cached response) is not a meaningful drift signal, so the p95-latency
+ * check is skipped below the floor. Real inference latency is hundreds of ms,
+ * well above this, so live drift detection is unaffected.
+ */
+export const LATENCY_DRIFT_FLOOR_MS = 50;
+
 export type MetricCheck = {
   metric: "pass_rate" | "mean_cost" | "p95_latency";
   label: string;
@@ -113,7 +122,7 @@ export function compareToBaseline(
   if (
     !Number.isNaN(current.latencyP95Ms) &&
     !Number.isNaN(baseline.latencyP95Ms) &&
-    baseline.latencyP95Ms > 0
+    baseline.latencyP95Ms >= LATENCY_DRIFT_FLOOR_MS
   ) {
     const deltaPct = ((current.latencyP95Ms - baseline.latencyP95Ms) / baseline.latencyP95Ms) * 100;
     checks.push({

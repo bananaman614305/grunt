@@ -186,6 +186,28 @@ describe("sampling config (ADR-010)", () => {
   });
 });
 
+describe("speculation config (ADR-024)", () => {
+  it("parses the speculation block and defaults enabled to false", () => {
+    const parsed = configSchema.parse({ speculation: { maxPromptChars: 1500 } });
+    expect(parsed.speculation).toEqual({ enabled: false, maxPromptChars: 1500 });
+  });
+
+  it("accepts an explicit opt-in", () => {
+    const parsed = configSchema.parse({ speculation: { enabled: true } });
+    expect(parsed.speculation?.enabled).toBe(true);
+  });
+
+  it("is absent when unset (default off, path unchanged)", () => {
+    const parsed = configSchema.parse({});
+    expect(parsed.speculation).toBeUndefined();
+  });
+
+  it("rejects unknown keys and non-positive prompt caps", () => {
+    expect(() => configSchema.parse({ speculation: { model: "x" } })).toThrow();
+    expect(() => configSchema.parse({ speculation: { maxPromptChars: 0 } })).toThrow();
+  });
+});
+
 describe("upstream resilience config", () => {
   it("parses the concurrency cap and retry policy", () => {
     const parsed = configSchema.parse({

@@ -126,8 +126,47 @@ export type GatewayOptions = {
    * 60,000). `minRanked` (default 3) is how many ranked samples the fan-out
    * waits for before returning a clear winner early and aborting the rest.
    * The cells themselves are fixed in code for now (`policy.ts`).
+   *
+   * `adaptive` (ADR-024, default off) draws samples incrementally and stops
+   * early on a confident lead instead of always drawing the full N;
+   * `cacheFriendlyVariants` (default off) keeps the shared prompt prefix stable
+   * across a request's samples so a provider prompt cache can reuse it. Both
+   * are benchmark-gated: validate with `milo canary`/`pnpm bench` before
+   * enabling in production (ADR-012's measurement discipline).
    */
-  sampling?: { enabled?: boolean; sampleTimeoutMs?: number; minRanked?: number };
+  sampling?: {
+    enabled?: boolean;
+    sampleTimeoutMs?: number;
+    minRanked?: number;
+    adaptive?: {
+      enabled?: boolean;
+      minSamples?: number;
+      maxSamples?: number;
+      qualityBar?: number;
+      leadMargin?: number;
+    };
+    cacheFriendlyVariants?: boolean;
+    /**
+     * Static candidate verification (ADR-026, default off): fold a cheap
+     * structural check into the best-of-N ranking so a broken candidate is
+     * demoted below valid ones. A ranking change, benchmark-gated like the
+     * ADR-024 knobs.
+     */
+    verifyCandidates?: boolean;
+  };
+  /**
+   * Speculative routing (ADR-024). Off by default. `enabled` starts the single
+   * cheapest fast-tier call in parallel with the Jev classification on the
+   * OpenAI chat surface, to hide the classification's latency. The result is
+   * used only when the real Jev-driven decision resolves to that same single,
+   * ungated call, and discarded (the call aborted) otherwise -- so the answer
+   * a client gets is always the one Jev's decision dictates, never a different
+   * routing outcome. A miss costs one cheap, promptly-cancelled call; a hit
+   * costs nothing extra (the call becomes the real one). `maxPromptChars`
+   * (default `SPECULATION_MAX_PROMPT_CHARS`) tunes the probably-easy heuristic.
+   * Set from `milo.config.json`'s `speculation`.
+   */
+  speculation?: { enabled?: boolean; maxPromptChars?: number };
   /**
    * Context pruning (ADR-014, ADR-013 phase C). Off by default: `enabled`
    * (default false) lets the gate run on every routed request over the token
@@ -360,6 +399,9 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     roster,
     mode,
     samplingEnabled,
+    // Speculative routing (ADR-024). Off unless configured; the Router's own
+    // default is also off, so an absent block never speculates.
+    ...(options.speculation !== undefined ? { speculation: options.speculation } : {}),
     ...(options.jevTimeoutMs !== undefined ? { jevTimeoutMs: options.jevTimeoutMs } : {}),
     sticky: new StickyCache(),
     // `stickyStore` arrives in core's RouterOptions with the persistent sticky
@@ -416,12 +458,24 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   // the router and never reaches the executor.
   const samplingOptions = options.sampling;
   const samplingKnobs =
-    samplingOptions !== undefined && (samplingOptions.sampleTimeoutMs !== undefined || samplingOptions.minRanked !== undefined)
+    samplingOptions !== undefined &&
+    (samplingOptions.sampleTimeoutMs !== undefined ||
+      samplingOptions.minRanked !== undefined ||
+      samplingOptions.adaptive !== undefined ||
+      samplingOptions.cacheFriendlyVariants !== undefined ||
+      samplingOptions.verifyCandidates !== undefined)
       ? {
           ...(samplingOptions.sampleTimeoutMs !== undefined
             ? { sampleTimeoutMs: samplingOptions.sampleTimeoutMs }
             : {}),
           ...(samplingOptions.minRanked !== undefined ? { minRanked: samplingOptions.minRanked } : {}),
+          ...(samplingOptions.adaptive !== undefined ? { adaptive: samplingOptions.adaptive } : {}),
+          ...(samplingOptions.cacheFriendlyVariants !== undefined
+            ? { cacheFriendlyVariants: samplingOptions.cacheFriendlyVariants }
+            : {}),
+          ...(samplingOptions.verifyCandidates !== undefined
+            ? { verifyCandidates: samplingOptions.verifyCandidates }
+            : {}),
         }
       : undefined;
 
@@ -440,6 +494,10 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     ...(factMemory !== undefined ? { factMemory } : {}),
     ...(factRetrieval !== undefined ? { factRetrieval } : {}),
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
+    // The gateway only needs to know whether to wire speculation up; the
+    // router owns the heuristic and thresholds. Passed only when enabled, so an
+    // unconfigured or explicitly-off deployment takes the exact prior path.
+    ...(options.speculation?.enabled === true ? { speculation: { enabled: true } } : {}),
     ...(options.pruning !== undefined ? { pruning: options.pruning } : {}),
     ...(billing !== undefined ? { billing } : {}),
     ...(tenantLimits !== undefined ? { tenantLimits } : {}),
