@@ -23,13 +23,15 @@ NAME="milo-smoke-$$"
 # unnecessary at boot -- the user's OpenRouter key is per-request -- so the
 # gateway boots and serves /healthz with nothing configured. MILO_MODE matches
 # prod; MILO_DB is a throwaway file so no volume is needed.
-echo "smoke: pulling $IMAGE"
-# In CI the image lives in registry.fly.io; pull is authoritative. Locally the
-# image may already be built, so fall back to an existing image if the pull
-# can't reach a registry -- but a genuinely missing image still fails below.
-docker pull --quiet "$IMAGE" 2>/dev/null || docker image inspect "$IMAGE" >/dev/null 2>&1 || {
-  echo "smoke: FAIL -- cannot pull or find image $IMAGE"; exit 1;
-}
+# The pipeline builds the image locally in the runner and smoke-tests it before
+# pushing, so prefer an already-present image; only pull if it isn't local
+# (e.g. when testing a ref that lives only in a registry).
+if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "smoke: using local image $IMAGE"
+else
+  echo "smoke: pulling $IMAGE"
+  docker pull --quiet "$IMAGE" || { echo "smoke: FAIL -- cannot pull or find image $IMAGE"; exit 1; }
+fi
 
 echo "smoke: starting container $NAME"
 docker run -d --name "$NAME" \
