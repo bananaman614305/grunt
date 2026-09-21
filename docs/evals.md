@@ -89,6 +89,34 @@ The gate defaults to **0.85** (`MIN_TIER_AGREEMENT` in
 
 CI runs the fixture replay at `--gate 0.80` with no extra environment: fixtures are keyed by the request's API path and body, not the recording address, so replay never touches the network
 
+## The continuous canary (`milo canary`)
+
+`pnpm eval` is a point-in-time check you run by hand. `milo canary`
+(`packages/cli/src/commands/canary.ts`, library in
+`packages/evals/src/canary/`) is the same idea shaped to run unattended, on
+a schedule: it replays a small, deterministic, stratified subset of
+`routing.jsonl` (default 24 examples, `selectCanarySubset`), reduces the run
+to a **snapshot** — pass rate, an estimated cost, latency p50/p95, and the
+tier/model mix — and compares it to a **baseline** (either the rolling mean
+of the last few runs, or one pinned "known good" snapshot). It exits
+non-zero when a metric drifts past a configurable threshold, so cron or a CI
+job can page on provider drift (ADR-021's alpha endpoint churns; provider
+routing on OpenRouter itself has been measured to churn in well under a day)
+or a policy regression without anyone watching a dashboard.
+
+```
+milo canary                                   # fixtures mode, first run: PASS (no baseline)
+milo canary                                   # second run: compares against the rolling baseline
+milo canary --save-baseline .milo/canary-baseline.json
+milo canary --baseline .milo/canary-baseline.json --max-pass-drop 5
+milo canary --live                            # needs JEV_API_KEY, same rule as --mode live above
+```
+
+There is no scheduler inside Milo; `milo canary --help` documents cron and
+CI invocation. Exit codes: **0** pass (or no baseline yet), **1** a usage or
+setup error, **2** drift detected. See `docs/cli.md`'s `milo canary` section
+for the full option list and a sample drift report.
+
 ## Refreshing the default roster
 
 The same package holds the job that regenerates Milo's default roster, since

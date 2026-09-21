@@ -17,8 +17,11 @@ Commands:
   explain     Explain one routing decision
   decisions   List recent routing decisions
   stats       Summarize the decision log
+  cost        Show routed-request spend from the decision log
   roster      Show the effective tier-to-model roster
+  canary      Run the continuous eval canary and check for drift
   billing     Operate the billing database, Stripe, and provisioning
+  verify      Install the ground-truth verification Stop hook into a harness
 
 Run "milo <command> --help" for command-specific options.
 ```
@@ -146,6 +149,79 @@ are in use, and how many models each names, without reading anybody's list.
 so a key cannot be passed here by accident; get the hash from `list`. An
 unknown hash exits **1**. Both read `--db` (default
 `file:./.milo/decisions.db`) rather than the config file's roster.
+
+## `milo canary`
+
+The continuous eval canary (`docs/PLAN.md`, `docs/evals.md`'s "The
+continuous canary" section): runs a small labeled subset of the routing eval
+set through the router, records a snapshot (pass rate, cost, latency,
+tier/model mix), and compares it to a baseline. There is no scheduler here
+-- point cron or a CI step at this command.
+
+```
+Usage: milo canary [options]
+
+Options:
+  --mode <fixtures|record|live>     Jev source (default: fixtures)
+  --live                            Shorthand for --mode live
+  --size <n>                        Subset size (default: 24)
+  --posture <low|balanced|quality>  Cost posture (default: balanced)
+  --history <path>                  Snapshot history file (default: ./.milo/canary-history.json)
+  --baseline <rolling|path>         "rolling" (default), or a path to a pinned baseline snapshot
+  --baseline-window <n>             Rolling baseline window, in prior runs (default: 5)
+  --save-baseline <path>            After this run, save its snapshot as a pinned baseline at <path>
+  --max-pass-drop <pts>             Drift threshold: pass-rate drop, in points (default: 10)
+  --max-cost-increase <pct>         Drift threshold: mean-cost increase, in percent (default: 25)
+  --max-latency-increase <pct>      Drift threshold: p95-latency increase, in percent (default: 50)
+  --max-tier-shift <pts>            Drift threshold: any tier's share moving, in points (default: 20)
+  --skip-save                       Do not append this run to the history file
+  --json <path>                     Also write the snapshot and drift result as JSON
+  -h, --help                        Show this help
+```
+
+Sample output, first run (no history yet, so nothing to compare against; a
+tiny `--size 8` subset for a short doc example -- the default of 24 spreads
+tier agreement over more examples and is less noisy):
+
+```
+$ milo canary --size 8 --history /tmp/milo-doctest/canary-history.json
+Milo canary -- 2026-09-21T01:55:55.139Z
+Mode: fixtures  Posture: balanced  Policy: v4  Subset: 8 requested, 8 run (8 scored, 0 unscored)
+
+Snapshot
+  Pass rate     62.5% (8 scored)
+  Mean cost     $0.000628 (n=8 priced, estimated)
+  Latency       p50 2 ms, p95 13 ms
+  Tiers         fast 3, mid 5, frontier 0
+  Models        openai/gpt-5.6-luna 5, deepseek/deepseek-v4-flash 3
+
+Baseline: none yet -- this is the first recorded run, so nothing to drift against.
+
+Result: PASS (no baseline)
+```
+
+A later run against the rolling baseline the first run wrote, with a metric
+that regressed past its threshold:
+
+```
+Result: DRIFT DETECTED
+  - Pass rate moved -12.5 pp (threshold 10)
+  - Mean cost moved +38.1% (threshold 25)
+```
+
+"Cost" is a proxy, not a real spend: the canary only exercises the routing
+decision (it never calls OpenRouter), so it prices the chosen model's known
+roster rate against a fixed nominal token profile
+(`CANARY_NOMINAL_INPUT_TOKENS`/`CANARY_NOMINAL_OUTPUT_TOKENS`,
+`packages/evals/src/canary/snapshot.ts`). It still moves for the reasons a
+real cost would -- a tier-mix shift, a roster price change -- without
+spending anything.
+
+Exit codes: **0** pass (drift-free, or no baseline yet), **1** a usage or
+setup error (bad flag, missing `JEV_API_KEY` under `--live`/`--mode
+record`, a pinned `--baseline` path that does not exist or does not parse),
+**2** drift detected. `--history` and `--baseline`/`--save-baseline` files
+are plain JSON with no message content, same rule as the decision log.
 
 ## `milo explain <decision-id>`
 
@@ -408,7 +484,8 @@ database.
 | Code | Meaning |
 |---|---|
 | 0 | Success, or `--help` |
-| 1 | No command, unknown command, bad flag, missing `JEV_API_KEY`, missing/invalid config, not-found decision, invalid `--limit`/`--port`/`--since`, missing `--db`/`MILO_DATABASE_URL`, a `milo billing` usage error |
+| 1 | No command, unknown command, bad flag, missing `JEV_API_KEY`, missing/invalid config, not-found decision, invalid `--limit`/`--port`/`--since`, missing `--db`/`MILO_DATABASE_URL`, a `milo billing` usage error, a `milo canary` usage/setup error |
+| 2 | `milo canary` only: drift detected against the baseline |
 | *(none)* | `serve` on a successful start — the process keeps running |
 
 There is no `milo eval` subcommand. The eval runner is a separate package
