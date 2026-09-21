@@ -560,6 +560,25 @@ export async function noteDecisionAccount(c: Context, deps: AppDeps, decisionId:
   }
 }
 
+/**
+ * Stamps the caller's key hash on a decision, the same way `noteDecisionAccount`
+ * stamps an account: the router logs the decision before the gateway's
+ * tenant-limits guard has anywhere to put it, so this is an update after the
+ * fact. Only writes when a deployment tracks per-key spend (`tenantLimits`'s
+ * spend cap), so an unconfigured deployment's decisions carry no key hash and
+ * this never touches the database. A failure is logged rather than raised: a
+ * missing stamp costs the spend cap one under-counted row, not the caller's
+ * answer.
+ */
+export async function noteDecisionKeyHash(c: Context, deps: AppDeps, decisionId: string): Promise<void> {
+  if (deps.tenantLimits?.spendCapEnabled !== true) return;
+  try {
+    await deps.log.setKeyHash(decisionId, callerScope(c));
+  } catch (err) {
+    deps.logger.error("decision key-hash stamp failed", { decisionId, error: errorMessage(err) });
+  }
+}
+
 /** The account whose decisions this caller may read, or undefined for BYOK. */
 export function decisionScope(c: Context): AccountId | undefined {
   const auth = authOf(c);

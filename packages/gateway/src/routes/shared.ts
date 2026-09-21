@@ -13,7 +13,9 @@ import type { DecisionRecord, Roster, RouteDecision, RoutingUnavailableError } f
 import type { Context } from "hono";
 import type { AppDeps } from "../app.js";
 import { callerScope } from "../billing.js";
-import { errorMessage } from "../errors.js";
+import { anthropicErrorResponse, errorMessage, errorResponse } from "../errors.js";
+import { checkShape, estimateRequestTokens, setTenantStatus } from "../tenant-limits.js";
+import type { TenantStatus } from "../tenant-limits.js";
 
 /** A parsed request body. Both dialects are JSON objects at the top level. */
 export type Body = Record<string, unknown>;
@@ -67,6 +69,98 @@ export async function resolveRoster(c: Context, deps: AppDeps): Promise<Roster> 
     deps.logger.error("per-key roster read failed", { error: errorMessage(err) });
   }
   return deps.roster ?? DEFAULT_ROSTER;
+}
+
+/**
+ * Runs the tenant-limits guard (request shape, request/token rate, spend
+ * cap) for one request, in that order -- cheapest and synchronous first, the
+ * spend cap's database read last, so a request already over budget on a free
+ * check never pays for the expensive one. Returns a refusal `Response` in the
+ * caller's dialect on the first violation, or `undefined` when every
+ * configured check passed (or none are configured at all, `deps.tenantLimits`
+ * being absent). Either way, whatever ran is recorded via `setTenantStatus`
+ * so the response-header middleware in `app.ts` can disclose it -- a refusal
+ * carries the same `x-milo-ratelimit-*` / `x-milo-spend-*` headers a success
+ * would.
+ *
+ * Called once per request, before `creditGate`: a request that cannot be
+ * paid for should not cost Milo a Jev call, and neither should one that is
+ * over its own rate or spend limit.
+ */
+export async function enforceTenantLimits(
+  c: Context,
+  deps: AppDeps,
+  body: Body,
+  dialect: "openai" | "anthropic",
+): Promise<Response | undefined> {
+  const limits = deps.tenantLimits;
+  if (limits === undefined) return undefined;
+
+  const fail = (
+    httpStatus: 400 | 402 | 429,
+    message: string,
+    openAiType: "invalid_request_error" | "rate_limit_error" | "insufficient_quota",
+    openAiCode: string,
+    anthropicType: "invalid_request_error" | "rate_limit_error" | "billing_error",
+    headers: Record<string, string> | undefined,
+    status: TenantStatus,
+  ): Response => {
+    setTenantStatus(c, status);
+    return dialect === "anthropic"
+      ? anthropicErrorResponse(c, httpStatus, message, anthropicType, headers)
+      : errorResponse(c, httpStatus, message, openAiType, openAiCode, headers);
+  };
+
+  const shapeViolation = checkShape(body, limits.config);
+  if (shapeViolation !== undefined) {
+    const message =
+      shapeViolation.limit === "messages"
+        ? `Request carries ${shapeViolation.count} messages, over the ${shapeViolation.max}-message limit Milo allows.`
+        : `Request is about ${shapeViolation.count} tokens, over the ${shapeViolation.max}-token limit Milo allows.`;
+    return fail(400, message, "invalid_request_error", "request_too_large", "invalid_request_error", undefined, {});
+  }
+
+  const keyHash = callerScope(c);
+  const status: TenantStatus = {};
+
+  const requests = limits.checkRequestRate(keyHash);
+  if (requests !== undefined) {
+    status.requests = requests;
+    if (!requests.allowed) {
+      const retryAfter = retryAfterFromBucket(requests.retryAfterMs);
+      const message = `Milo allows at most ${requests.limit} requests a minute for one key. Retry shortly.`;
+      return fail(429, message, "rate_limit_error", "tenant_rate_limited", "rate_limit_error", {
+        "retry-after": retryAfter,
+      }, status);
+    }
+  }
+
+  const tokens = estimateRequestTokens(body);
+  const tokenStatus = limits.checkTokenRate(keyHash, tokens);
+  if (tokenStatus !== undefined) {
+    status.tokens = tokenStatus;
+    if (!tokenStatus.allowed) {
+      const retryAfter = retryAfterFromBucket(tokenStatus.retryAfterMs);
+      const message = `Milo allows at most ${tokenStatus.limit} request tokens a minute for one key. Retry shortly.`;
+      return fail(429, message, "rate_limit_error", "tenant_rate_limited", "rate_limit_error", {
+        "retry-after": retryAfter,
+      }, status);
+    }
+  }
+
+  const spend = await limits.checkSpend(deps.log, keyHash);
+  if (spend !== undefined) {
+    status.spend = spend;
+    if (!spend.allowed) {
+      const message =
+        `This key has spent $${spend.spendUsd.toFixed(2)} of its $${spend.capUsd.toFixed(2)} cap for the ` +
+        "current window. Retry once the window rolls over, or raise the cap.";
+      return fail(402, message, "insufficient_quota", "spend_cap_exceeded", "billing_error", undefined, status);
+    }
+  }
+
+  setTenantStatus(c, status);
+  return undefined;
 }
 
 /**

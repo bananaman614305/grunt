@@ -264,6 +264,32 @@ ALTER TABLE facts ADD COLUMN embedding TEXT;
       }
     },
   },
+  {
+    version: 10,
+    description: "add the decision key_hash column",
+    // Per-key spend caps (tenant limits): a spend cap has to sum
+    // `upstream.costUsd` for one caller over a rolling window, and the row
+    // had nothing to scope that query by -- `account_id` is only ever set for
+    // a Milo-key caller (ADR-007), and a bring-your-own-key request has none.
+    // `key_hash` is the same SHA-256 the rate limiter, rosters (ADR-008),
+    // preferences and facts already key on, stamped here the same way
+    // `account_id` is: the router logs a decision before the gateway knows
+    // anything about the caller's identity, so this is an update after the
+    // fact rather than a column the insert fills in. Nullable, because a row
+    // written before this migration has none, and the write only happens when
+    // a deployment configures a spend cap -- an unconfigured deployment writes
+    // nothing new to every decision. Indexed with `created_at` together,
+    // since every read is "this key's rows since some time".
+    run: async (db) => {
+      const columns = await db.execute("PRAGMA table_info(decisions)");
+      if (!columns.rows.some((row) => String(row.name) === "key_hash")) {
+        await db.execute("ALTER TABLE decisions ADD COLUMN key_hash TEXT");
+      }
+      await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_decisions_key_hash_created_at ON decisions (key_hash, created_at)",
+      );
+    },
+  },
 ];
 
 /**

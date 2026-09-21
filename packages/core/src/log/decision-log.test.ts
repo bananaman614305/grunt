@@ -1,4 +1,5 @@
 import { createClient } from "@libsql/client";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -289,6 +290,69 @@ describe("DecisionLog and accounts", () => {
 
   it("ignores an account stamp for a decision that does not exist", async () => {
     await expect(log.setAccount("missing", "acc_1")).resolves.toBeUndefined();
+  });
+});
+
+describe("DecisionLog and key hashes (tenant spend caps)", () => {
+  let log: DecisionLog;
+
+  const keyA = createHash("sha256").update("caller-a").digest("hex");
+  const keyB = createHash("sha256").update("caller-b").digest("hex");
+
+  beforeEach(async () => {
+    log = await DecisionLog.open(":memory:");
+  });
+
+  afterEach(async () => {
+    await log.close();
+  });
+
+  it("stamps a key hash on a decision", async () => {
+    await log.insert(record({ id: "a1", fingerprint: "fp-a" }));
+    await log.setKeyHash("a1", keyA);
+    expect((await log.getDecision("a1"))?.keyHash).toBe(keyA);
+  });
+
+  it("rejects a value that is not a SHA-256 hex digest", async () => {
+    await log.insert(record({ id: "a1", fingerprint: "fp-a" }));
+    await expect(log.setKeyHash("a1", "Bearer sk-or-not-a-hash")).rejects.toThrow(/SHA-256/);
+  });
+
+  it("ignores a key-hash stamp for a decision that does not exist", async () => {
+    await expect(log.setKeyHash("missing", keyA)).resolves.toBeUndefined();
+  });
+
+  it("sums costUsd for one key's decisions since a timestamp, ignoring other keys and undated cost", async () => {
+    await log.insert(
+      record({ id: "a1", fingerprint: "fp-a", createdAt: "2026-09-17T00:00:00.000Z", upstream: { status: 200, latencyMs: 1, costUsd: 0.01 } }),
+    );
+    await log.insert(
+      record({ id: "a2", fingerprint: "fp-a", createdAt: "2026-09-18T00:00:00.000Z", upstream: { status: 200, latencyMs: 1, costUsd: 0.02 } }),
+    );
+    // Before the window: excluded even though it is the same key.
+    await log.insert(
+      record({ id: "a0", fingerprint: "fp-a", createdAt: "2026-09-10T00:00:00.000Z", upstream: { status: 200, latencyMs: 1, costUsd: 5 } }),
+    );
+    // A different key: never counted toward keyA's total.
+    await log.insert(
+      record({ id: "b1", fingerprint: "fp-b", createdAt: "2026-09-18T00:00:00.000Z", upstream: { status: 200, latencyMs: 1, costUsd: 100 } }),
+    );
+    // No upstream cost recorded yet (in-flight or failed): contributes 0.
+    await log.insert(record({ id: "a3", fingerprint: "fp-a", createdAt: "2026-09-18T01:00:00.000Z" }));
+
+    await log.setKeyHash("a1", keyA);
+    await log.setKeyHash("a2", keyA);
+    await log.setKeyHash("a0", keyA);
+    await log.setKeyHash("a3", keyA);
+    await log.setKeyHash("b1", keyB);
+
+    const total = await log.spendSince(keyA, "2026-09-17T00:00:00.000Z");
+    expect(total).toBeCloseTo(0.03, 6);
+    expect(await log.spendSince(keyB, "2026-09-17T00:00:00.000Z")).toBeCloseTo(100, 6);
+  });
+
+  it("answers 0 for a key with no rows", async () => {
+    expect(await log.spendSince(keyA, "2026-09-17T00:00:00.000Z")).toBe(0);
   });
 });
 

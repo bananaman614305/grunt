@@ -34,6 +34,8 @@ import type { BillingRuntime, UsageListing } from "./billing.js";
 import { errorMessage } from "./errors.js";
 import { RateLimiter } from "./rate-limit.js";
 import type { RateLimiterOptions } from "./rate-limit.js";
+import { TenantLimits } from "./tenant-limits.js";
+import type { TenantLimitsConfig } from "./tenant-limits.js";
 
 export type GatewayOptions = {
   /**
@@ -116,6 +118,16 @@ export type GatewayOptions = {
   factRetrieval?: { enabled?: boolean; model?: string; baseUrl?: string };
   /** Routed requests allowed per minute per OpenRouter-key hash. Default 120. */
   rateLimit?: { routedPerMinute: number };
+  /**
+   * Tenant guardrails: per-key request/token rate limits, a rolling-window
+   * USD spend cap read from the decision log's own cost figures, and sane
+   * request-shape bounds (message count, an estimated token ceiling, and a
+   * `Content-Length` ceiling). Every field is independently optional and
+   * unset (unlimited/off) by default, so an unconfigured deployment's
+   * behaviour is unchanged: set only the fields a deployment wants bounded.
+   * Set from `milo.config.json`'s `tenantLimits`.
+   */
+  tenantLimits?: TenantLimitsConfig;
   /**
    * Upstream rate-limit resilience for OpenRouter calls. `maxConcurrentPerModel`
    * bounds concurrent in-flight requests per upstream model so a burst cannot
@@ -312,6 +324,11 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
         }
       : undefined;
 
+  // Tenant guardrails (request/token rate, spend cap, request-shape bounds):
+  // absent entirely unless `options.tenantLimits` sets at least one field, so
+  // an unconfigured deployment neither builds nor consults this at all.
+  const tenantLimits = options.tenantLimits !== undefined ? new TenantLimits(options.tenantLimits) : undefined;
+
   const app = createApp({
     router,
     roster,
@@ -323,6 +340,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
     ...(options.pruning !== undefined ? { pruning: options.pruning } : {}),
     ...(billing !== undefined ? { billing } : {}),
+    ...(tenantLimits !== undefined ? { tenantLimits } : {}),
     openRouter: new OpenRouterClient(openRouterOptions),
     anthropic: new AnthropicUpstream(anthropicOptions),
     log,
