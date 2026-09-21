@@ -51,6 +51,7 @@ export type { PolicyProfile, PolicyOutcome } from "./policy.js";
 export {
   PROMPT_VARIANTS,
   applyVariant,
+  applyVariantSuffix,
   variantFor,
   RANK_QUESTIONS,
   RANK_STATE_MAX_CHARS,

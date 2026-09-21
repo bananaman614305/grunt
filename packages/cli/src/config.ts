@@ -65,11 +65,26 @@ const tenantLimitsSchema = z
  * samples the fan-out waits for before returning a clear winner early and
  * aborting the still-streaming rest (gateway default: 3).
  */
+const adaptiveSamplingSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    minSamples: z.number().int().positive().optional(),
+    maxSamples: z.number().int().positive().optional(),
+    qualityBar: z.number().min(0).max(3).optional(),
+    leadMargin: z.number().min(0).max(3).optional(),
+  })
+  .strict();
+
 const samplingSchema = z
   .object({
     enabled: z.boolean().default(true),
     sampleTimeoutMs: z.number().int().positive().optional(),
     minRanked: z.number().int().positive().optional(),
+    // Adaptive-N and cache-friendly framings (ADR-024). Both default off:
+    // they are benchmark-gated prompt/compute changes, validated with
+    // `milo canary`/`pnpm bench` before a deployment turns them on.
+    adaptive: adaptiveSamplingSchema.optional(),
+    cacheFriendlyVariants: z.boolean().optional(),
   })
   .strict();
 

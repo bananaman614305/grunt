@@ -56,7 +56,16 @@
  */
 
 import type { Context } from "hono";
-import { applyVariant, isStreaming, messageText, prepareBody, rankAnswer, resolveModel, variantFor } from "@milo/core";
+import {
+  applyVariant,
+  applyVariantSuffix,
+  isStreaming,
+  messageText,
+  prepareBody,
+  rankAnswer,
+  resolveModel,
+  variantFor,
+} from "@milo/core";
 import type { ChatMessage, RankScore, RouteDecision, SampleUpstream, Tier } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
@@ -118,6 +127,35 @@ export const MIN_RANKED_DEFAULT = 3;
 
 /** Jev expected quality (0..3) at which an early pick is a clear winner. */
 export const EARLY_WIN_QUALITY = 2.5;
+
+/**
+ * Adaptive-N (ADR-024, opt-in): the drawing knobs the fan-out reads when
+ * `sampling.adaptive.enabled` is true. Default OFF -- absent, the fan-out draws
+ * the full budgeted N up front exactly as ADR-010 shipped it. When on, samples
+ * are drawn incrementally and drawing stops once the top ranked answer is
+ * confidently good enough, so the tail samples are never started (not merely
+ * aborted). None of the thresholds is measured by ADR-010's benchmark, so a
+ * deployment validates a chosen set with `milo canary`/`pnpm bench` before
+ * enabling it in production; the numbers here are only the shape's defaults.
+ */
+export type AdaptiveSamplingConfig = {
+  enabled?: boolean;
+  /** Initial concurrent batch drawn before the first stop check. Default `minRanked`. */
+  minSamples?: number;
+  /** Hard cap on samples drawn, never above the budgeted N. Default N. */
+  maxSamples?: number;
+  /** Top ranked expected quality (0..3) that ends drawing. Default `EARLY_WIN_QUALITY`. */
+  qualityBar?: number;
+  /** A lead of this much over the runner-up (0..3) ends drawing. Default `ADAPTIVE_LEAD_MARGIN_DEFAULT`. */
+  leadMargin?: number;
+};
+
+/**
+ * Default decisive-lead margin (0..3): once the top ranked answer leads the
+ * runner-up by this much expected quality, more samples are unlikely to change
+ * the pick, so drawing stops. Only consulted when adaptive-N is enabled.
+ */
+export const ADAPTIVE_LEAD_MARGIN_DEFAULT = 1;
 
 export const SAMPLES_HEADER = "x-milo-samples";
 export const SAMPLE_PICK_HEADER = "x-milo-sample-pick";
@@ -258,15 +296,23 @@ function aggregateUsage(samples: Sample[], chosen: Sample | undefined): Upstream
   return usage;
 }
 
+/**
+ * Orders two ranked samples, best first: highest expected quality wins,
+ * correctness then index break ties. The single comparator behind both the
+ * fixed and adaptive pickers, so an adaptive stop and the final selection can
+ * never disagree about which sample is best.
+ */
+function bySampleRank(a: Sample, b: Sample): number {
+  const ra = a.rank as RankScore;
+  const rb = b.rank as RankScore;
+  if (ra.quality !== rb.quality) return rb.quality - ra.quality;
+  if (ra.correct !== rb.correct) return rb.correct - ra.correct;
+  return a.index - b.index;
+}
+
 /** Highest expected quality wins; correctness, then index, break ties. */
 function bestRanked(ranked: Sample[]): Sample {
-  return [...ranked].sort((a, b) => {
-    const ra = a.rank as RankScore;
-    const rb = b.rank as RankScore;
-    if (ra.quality !== rb.quality) return rb.quality - ra.quality;
-    if (ra.correct !== rb.correct) return rb.correct - ra.correct;
-    return a.index - b.index;
-  })[0] as Sample;
+  return [...ranked].sort(bySampleRank)[0] as Sample;
 }
 
 /** The lowest-index success: the deterministic degraded-ranking pick. */
@@ -405,6 +451,28 @@ export async function forwardSampled(
   // on. Undefined under the TypeSafe transport (Milo's key ranks, as before).
   const jevKey = forwardedJevKey(c, deps);
   const minRanked = Math.max(1, Math.min(deps.sampling?.minRanked ?? MIN_RANKED_DEFAULT, n));
+
+  // Adaptive-N (ADR-024). Default OFF: with no `adaptive` block, or `enabled`
+  // not true, the scheduler below launches the full budgeted N up front and
+  // the behaviour is byte-identical to ADR-010's fixed best-of-N. When on,
+  // `maxN` caps drawing (never above N), `initialN` is the concurrent probe,
+  // and `qualityBar`/`leadMargin` are the confident-stop thresholds.
+  const adaptive: AdaptiveSamplingConfig | undefined = deps.sampling?.adaptive;
+  const adaptiveOn = adaptive?.enabled === true;
+  const maxN = adaptiveOn ? Math.max(1, Math.min(adaptive?.maxSamples ?? n, n)) : n;
+  const initialN = adaptiveOn ? Math.max(1, Math.min(adaptive?.minSamples ?? minRanked, maxN)) : n;
+  const qualityBar = adaptive?.qualityBar ?? EARLY_WIN_QUALITY;
+  const leadMargin = adaptive?.leadMargin ?? ADAPTIVE_LEAD_MARGIN_DEFAULT;
+
+  // Cache-friendly framings (ADR-024). Default OFF: the benchmarked
+  // system-prompt placement (`applyVariant`) stands, so the varied samples
+  // diverge at the head of the token sequence and a provider prompt cache
+  // cannot reuse the conversation body across them. When on, the framing rides
+  // the last message's tail (`applyVariantSuffix`), keeping the whole prefix
+  // byte-stable and cache-eligible; the framing text -- and thus the sample
+  // diversity -- is unchanged either way.
+  const applyFraming = deps.sampling?.cacheFriendlyVariants === true ? applyVariantSuffix : applyVariant;
+
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   // A large prompt gets a longer per-sample cap: see `LARGE_PROMPT_CHARS`.
   const timeoutMs = sampleTimeoutFor(
@@ -416,7 +484,7 @@ export async function forwardSampled(
   // One streamed draw. Never throws: every outcome is a Sample row.
   const draw = async (index: number, abort: AbortController): Promise<Sample> => {
     const sampleBody = prepareBody(body, decision.model);
-    sampleBody["messages"] = applyVariant(messages, variantFor(index));
+    sampleBody["messages"] = applyFraming(messages, variantFor(index));
     // Internally streamed, whatever the client asked for: a stream can be
     // ranked the moment it completes and aborted while it is still running.
     sampleBody["stream"] = true;
@@ -543,6 +611,41 @@ export async function forwardSampled(
   const isSuccess = (sample: Sample): boolean =>
     sample.error === undefined && sample.aborted !== true && sample.message !== undefined;
 
+  // Assigned once both evaluators exist (below); a launched draw reports in
+  // through this indirection so `launch` need not know which mode is running.
+  let onSettled: () => void = () => undefined;
+
+  // Start one draw: stream it, rank it as it completes, then report in. A
+  // failed rank marks the sample rather than failing a request that already
+  // has answers; after a decision no new ranks start, since their verdicts
+  // could no longer matter. This is ADR-010's per-sample loop body verbatim,
+  // lifted into a helper so the adaptive scheduler can call it on demand.
+  const launch = (index: number): void => {
+    const controller = new AbortController();
+    const slot: Slot = { controller, streamed: draw(index, controller), settled: false };
+    slots.push(slot);
+    void slot.streamed.then(async (sample) => {
+      slot.sample = sample;
+      if (isSuccess(sample) && deps.jev !== undefined && !decided) {
+        try {
+          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}), undefined, jevKey);
+        } catch (error) {
+          sample.rankError = `rank_${classify(error)}`;
+          deps.logger.warn("jev sample ranking failed", {
+            decisionId: decision.id,
+            index: sample.index,
+            error: sample.rankError,
+          });
+        }
+      }
+      slot.settled = true;
+      onSettled();
+    });
+  };
+
+  // Fixed best-of-N (ADR-010): every sample is already drawn, so the only
+  // choices are an early clear winner, a degraded-ranking pick, or -- once all
+  // have settled -- the outcome over whatever ranked.
   const evaluate = (): void => {
     if (decided) return;
     const settled = slots.filter((slot) => slot.settled).map((slot) => slot.sample as Sample);
@@ -564,31 +667,46 @@ export async function forwardSampled(
     if (settled.length === slots.length) decide({});
   };
 
-  for (let index = 0; index < n; index += 1) {
-    const controller = new AbortController();
-    const slot: Slot = { controller, streamed: draw(index, controller), settled: false };
-    slots.push(slot);
-    // Rank as the stream completes; a failed rank marks the sample rather
-    // than failing a request that already has answers. After a decision no
-    // new ranks start: their verdicts could no longer matter.
-    void slot.streamed.then(async (sample) => {
-      slot.sample = sample;
-      if (isSuccess(sample) && deps.jev !== undefined && !decided) {
-        try {
-          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}), undefined, jevKey);
-        } catch (error) {
-          sample.rankError = `rank_${classify(error)}`;
-          deps.logger.warn("jev sample ranking failed", {
-            decisionId: decision.id,
-            index: sample.index,
-            error: sample.rankError,
-          });
-        }
+  // Adaptive-N (ADR-024): the same stop conditions, but drawing is
+  // incremental. Once the in-flight batch has all settled without a confident
+  // top answer, one more sample is drawn until the max-N cap; a confident
+  // top answer (clears the quality bar, or leads the runner-up decisively)
+  // ends drawing so the tail samples are never started.
+  const evaluateAdaptive = (): void => {
+    if (decided) return;
+    const settled = slots.filter((slot) => slot.settled).map((slot) => slot.sample as Sample);
+    const successes = settled.filter(isSuccess);
+    const ranked = successes.filter((sample) => sample.rank !== undefined);
+    if (ranked.length >= minRanked) {
+      const ordered = [...ranked].sort(bySampleRank);
+      const best = ordered[0] as Sample;
+      const bestQuality = (best.rank as RankScore).quality;
+      const runnerUp = ordered[1];
+      const decisiveLead = runnerUp !== undefined && bestQuality - (runnerUp.rank as RankScore).quality >= leadMargin;
+      if (bestQuality >= qualityBar || decisiveLead) {
+        decide({ pick: best });
+        return;
       }
-      slot.settled = true;
-      evaluate();
-    });
-  }
+    }
+    if (ranked.length === 0 && successes.length >= minRanked) {
+      decide({ pick: firstSuccess(successes), note: "ranking_failed" });
+      return;
+    }
+    if (settled.length === slots.length) {
+      // The whole in-flight batch has settled and no winner is clear: draw one
+      // more if the budget allows, otherwise finish with the best in hand.
+      if (slots.length < maxN) {
+        launch(slots.length);
+        return;
+      }
+      decide({});
+    }
+  };
+
+  onSettled = adaptiveOn ? evaluateAdaptive : evaluate;
+  // Fixed mode launches the full budgeted N up front (byte-identical to
+  // ADR-010); adaptive mode launches only the initial probe and grows it.
+  for (let index = 0; index < initialN; index += 1) launch(index);
 
   const outcome = await outcomePromise;
 
@@ -665,7 +783,10 @@ export async function forwardSampled(
   applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);
-  headers.set(SAMPLES_HEADER, String(n));
+  // The count actually drawn. In fixed mode every budgeted sample is drawn, so
+  // this is `n` (byte-identical to ADR-010); under adaptive-N an early stop
+  // draws fewer, and the header discloses what was really spent.
+  headers.set(SAMPLES_HEADER, String(adaptiveOn ? samples.length : n));
   headers.set(SAMPLE_PICK_HEADER, String(pickIndex));
   for (const [k, v] of Object.entries(gateHeaders)) headers.set(k, v);
 

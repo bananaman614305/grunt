@@ -147,11 +147,27 @@ export type AppDeps = {
    */
   tenantLimits?: TenantLimits;
   /**
-   * Best-of-N execution knobs (ADR-010). Absent means the defaults:
+   * Best-of-N execution knobs (ADR-010, ADR-024). Absent means the defaults:
    * `sampleTimeoutMs` caps each sample's wall clock; `minRanked` is how many
    * ranked samples the fan-out waits for before an early return may fire.
+   * `adaptive` (default off) draws samples incrementally and stops early on a
+   * confident lead; `cacheFriendlyVariants` (default off) moves each sample's
+   * framing to a trailing suffix so the shared prompt prefix stays
+   * cache-eligible. Both are prompt/compute changes ADR-010's benchmark has
+   * not measured, so they default off and are validated before production use.
    */
-  sampling?: { sampleTimeoutMs?: number; minRanked?: number };
+  sampling?: {
+    sampleTimeoutMs?: number;
+    minRanked?: number;
+    adaptive?: {
+      enabled?: boolean;
+      minSamples?: number;
+      maxSamples?: number;
+      qualityBar?: number;
+      leadMargin?: number;
+    };
+    cacheFriendlyVariants?: boolean;
+  };
   /**
    * Context pruning (ADR-014). Absent or `enabled` false means the gate is
    * off for every request unless one opts in with `milo: { prune: true }`.

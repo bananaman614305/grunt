@@ -126,8 +126,27 @@ export type GatewayOptions = {
    * 60,000). `minRanked` (default 3) is how many ranked samples the fan-out
    * waits for before returning a clear winner early and aborting the rest.
    * The cells themselves are fixed in code for now (`policy.ts`).
+   *
+   * `adaptive` (ADR-024, default off) draws samples incrementally and stops
+   * early on a confident lead instead of always drawing the full N;
+   * `cacheFriendlyVariants` (default off) keeps the shared prompt prefix stable
+   * across a request's samples so a provider prompt cache can reuse it. Both
+   * are benchmark-gated: validate with `milo canary`/`pnpm bench` before
+   * enabling in production (ADR-012's measurement discipline).
    */
-  sampling?: { enabled?: boolean; sampleTimeoutMs?: number; minRanked?: number };
+  sampling?: {
+    enabled?: boolean;
+    sampleTimeoutMs?: number;
+    minRanked?: number;
+    adaptive?: {
+      enabled?: boolean;
+      minSamples?: number;
+      maxSamples?: number;
+      qualityBar?: number;
+      leadMargin?: number;
+    };
+    cacheFriendlyVariants?: boolean;
+  };
   /**
    * Context pruning (ADR-014, ADR-013 phase C). Off by default: `enabled`
    * (default false) lets the gate run on every routed request over the token
@@ -416,12 +435,20 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   // the router and never reaches the executor.
   const samplingOptions = options.sampling;
   const samplingKnobs =
-    samplingOptions !== undefined && (samplingOptions.sampleTimeoutMs !== undefined || samplingOptions.minRanked !== undefined)
+    samplingOptions !== undefined &&
+    (samplingOptions.sampleTimeoutMs !== undefined ||
+      samplingOptions.minRanked !== undefined ||
+      samplingOptions.adaptive !== undefined ||
+      samplingOptions.cacheFriendlyVariants !== undefined)
       ? {
           ...(samplingOptions.sampleTimeoutMs !== undefined
             ? { sampleTimeoutMs: samplingOptions.sampleTimeoutMs }
             : {}),
           ...(samplingOptions.minRanked !== undefined ? { minRanked: samplingOptions.minRanked } : {}),
+          ...(samplingOptions.adaptive !== undefined ? { adaptive: samplingOptions.adaptive } : {}),
+          ...(samplingOptions.cacheFriendlyVariants !== undefined
+            ? { cacheFriendlyVariants: samplingOptions.cacheFriendlyVariants }
+            : {}),
         }
       : undefined;
 

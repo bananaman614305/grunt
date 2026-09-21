@@ -35,6 +35,12 @@ export function variantFor(index: number): string {
  * Returns the conversation with the framing appended to (or added as) the
  * system message. The empty framing returns the messages untouched, so the
  * first sample is always the request exactly as the user sent it.
+ *
+ * This is the benchmarked placement (ADR-010): the framing rides the *system*
+ * message, which sits at the head of the token sequence. That means the N
+ * samples of one request diverge before any of the (usually much larger) user
+ * turns, so a provider prompt cache cannot reuse the conversation body across
+ * them -- see `applyVariantSuffix` for the cache-friendly alternative.
  */
 export function applyVariant(messages: ChatMessage[], variant: string): ChatMessage[] {
   if (variant === "") return messages;
@@ -43,6 +49,34 @@ export function applyVariant(messages: ChatMessage[], variant: string): ChatMess
   const system = messages[index] as ChatMessage;
   const content = typeof system.content === "string" ? `${system.content}\n\n${variant}` : variant;
   return messages.map((m, i) => (i === index ? { ...m, content } : m));
+}
+
+/**
+ * The cache-friendly placement of the same framing (ADR-024, opt-in): append
+ * it to the *end* of the last message instead of the system message, so every
+ * message before the tail -- the system prompt and the whole conversation --
+ * is byte-identical across the N samples. A provider that prompt-caches on the
+ * shared prefix (the DeepSeek family; ADR-012's "shared prompt caches across
+ * samples and turns") can then reuse the expensive conversation body and only
+ * re-encode the short varying framing at the very end. The empty framing
+ * returns the messages untouched, exactly like `applyVariant`, so sample 0 is
+ * still the request as the user sent it.
+ *
+ * The framing text is unchanged, so sample diversity is unchanged; only where
+ * it sits moves. That relocation is still a prompt change the ADR-010
+ * benchmark has not measured, which is why the gateway keeps this behind a
+ * default-off config gate.
+ */
+export function applyVariantSuffix(messages: ChatMessage[], variant: string): ChatMessage[] {
+  if (variant === "") return messages;
+  if (messages.length === 0) return [{ role: "system", content: variant }];
+  const last = messages[messages.length - 1] as ChatMessage;
+  // Only a string tail can carry an appended suffix while keeping the prefix
+  // stable; a structured (e.g. multimodal) last message gets the framing as a
+  // fresh trailing turn instead, which leaves every prior message untouched.
+  if (typeof last.content !== "string") return [...messages, { role: "user", content: variant }];
+  const content = `${last.content}\n\n${variant}`;
+  return messages.map((m, i) => (i === messages.length - 1 ? { ...m, content } : m));
 }
 
 /**
