@@ -88,6 +88,7 @@ export function defaultDeps(): CliDeps {
     serve,
     fetch: (input, init) => fetch(input, init),
     prompt,
+    isTTY: stdin.isTTY === true,
     openBillingStore: (url: string) => PgBillingStore.open({ url }),
     createStripeClient: (opts) => createStripeClient(opts),
     createProvisioningClient: () => new OpenRouterProvisioningClient(),

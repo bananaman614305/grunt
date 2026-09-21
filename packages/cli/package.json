@@ -5,7 +5,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./onboarding": { "types": "./dist/onboarding/index.d.ts", "import": "./dist/onboarding/index.js" }
+  },
   "bin": { "milo": "./dist/cli.js" },
   "scripts": { "build": "tsc -b" },
   "dependencies": {
