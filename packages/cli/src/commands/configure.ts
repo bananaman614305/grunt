@@ -24,9 +24,9 @@
  *     `x-milo-model` response header — proof that Jev classified, policy
  *     chose, and OpenRouter answered.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { DEFAULT_ROSTER, PI_PROVIDER_ID, piProviderBlock } from "@milo/core";
 import type { Roster } from "@milo/core";
@@ -76,6 +76,26 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Writes `text` to `path`, creating any missing parent directories first (a
+ * fresh home has no `~/.pi/agent/` yet, and `--config` may point into a
+ * directory that does not exist). A failed write is reported to stderr and
+ * returns false instead of throwing an uncaught error.
+ */
+function writeFileSafely(path: string, text: string, deps: CliDeps): boolean {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+    return true;
+  } catch (error) {
+    deps.stderr.write(
+      `milo configure: could not write "${path}": ${error instanceof Error ? error.message : String(error)}
+`,
+    );
+    return false;
+  }
+}
+
+/**
  * Step 1: additive merge of the config file with a backup. Returns the merged
  * raw object, or writes an error and returns `null`.
  */
@@ -119,7 +139,7 @@ function writeConfig(path: string, deps: CliDeps): ConfigOutcome | null {
 
     // Backup the exact bytes, not a re-serialization, so nothing the user
     // wrote -- formatting included -- is lost.
-    writeFileSync(`${path}${CONFIG_BACKUP_SUFFIX}`, text);
+    if (!writeFileSafely(`${path}${CONFIG_BACKUP_SUFFIX}`, text, deps)) return null;
     backedUp = true;
     raw = parsed;
   }
@@ -136,7 +156,7 @@ function writeConfig(path: string, deps: CliDeps): ConfigOutcome | null {
     merged.decisionLog = DEFAULT_DECISION_LOG_URL;
   }
 
-  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`);
+  if (!writeFileSafely(path, `${JSON.stringify(merged, null, 2)}\n`, deps)) return null;
   return { merged, backedUp, hadRoster };
 }
 
@@ -178,7 +198,7 @@ function writePiProvider(piPath: string, baseUrl: string, roster: Roster, deps: 
       deps.stderr.write(`milo configure: "${piPath}" must contain a JSON object\n`);
       return false;
     }
-    writeFileSync(`${piPath}${PI_BACKUP_SUFFIX}`, text);
+    if (!writeFileSafely(`${piPath}${PI_BACKUP_SUFFIX}`, text, deps)) return false;
     existing = parsed;
   }
 
@@ -187,7 +207,7 @@ function writePiProvider(piPath: string, baseUrl: string, roster: Roster, deps: 
     ...existing,
     providers: { ...providers, [PI_PROVIDER_ID]: piProviderBlock(`${baseUrl.replace(/\/+$/, "")}/v1`, roster) },
   };
-  writeFileSync(piPath, `${JSON.stringify(merged, null, 2)}\n`);
+  if (!writeFileSafely(piPath, `${JSON.stringify(merged, null, 2)}\n`, deps)) return false;
   return true;
 }
 

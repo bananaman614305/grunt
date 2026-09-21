@@ -187,6 +187,45 @@ describe("milo configure", () => {
     expect(parsed.providers[PI_PROVIDER_ID].baseUrl).toBe("https://milo.example.com/v1");
   });
 
+  it("creates the pi models directory on a fresh home", async () => {
+    // A fresh machine has no ~/.pi/agent/ at all; the wizard must create it
+    // instead of crashing with an uncaught ENOENT.
+    const nested = join(dir, "home", "user", ".pi", "agent", "models.json");
+
+    const { deps, stderr } = createTestDeps();
+    const code = await run(["--config", config(), "--pi-config", nested, "--no-verify"], deps);
+
+    expect(code).toBe(0);
+    expect(existsSync(nested)).toBe(true);
+    expect(JSON.parse(readFileSync(nested, "utf8"))).toBeTruthy();
+    expect(stderr.toString()).toBe("");
+  });
+
+  it("creates parent directories for --config too", async () => {
+    const nested = join(dir, "configs", "deep", "milo.config.json");
+
+    const { deps } = createTestDeps();
+    const code = await run(["--config", nested, "--no-pi", "--no-verify"], deps);
+
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(nested, "utf8"))).toBeTruthy();
+  });
+
+  it("reports a write failure cleanly instead of crashing", async () => {
+    // `blocked` is a file, so nothing can be created under it: the backup
+    // write must fail and the error must reach stderr with exit 1.
+    const blocked = join(dir, "blocked");
+    writeFileSync(blocked, "i am a file");
+
+    const { deps, stderr } = createTestDeps();
+    const code = await run(["--config", join(blocked, "milo.config.json"), "--no-pi", "--no-verify"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("could not write");
+    // No uncaught exception propagates; the original file is untouched.
+    expect(readFileSync(blocked, "utf8")).toBe("i am a file");
+  });
+
   it("leaves pi's models.json alone under --no-pi", async () => {
     const piPath = join(dir, "pi.json");
     writeFileSync(piPath, JSON.stringify({ providers: { ollama: {} } }));
