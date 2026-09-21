@@ -29,14 +29,19 @@ describe("piModels", () => {
     expect(gpt?.cost).toEqual({ input: 0.2, output: 1.2, cacheRead: 0, cacheWrite: 0 });
 
     // Milo ships no price for an id it does not ship, so none is invented.
-    expect(custom?.contextWindow).toBe(200_000);
-    expect(custom?.maxTokens).toBe(128_000);
+    // Generic bounds are the room-verified known-good values: 128000/32000.
+    expect(custom?.contextWindow).toBe(128_000);
+    expect(custom?.maxTokens).toBe(32_000);
     expect(custom?.cost).toBeUndefined();
 
-    // milo/auto: present once, first, with a name and no cost.
+    // milo/auto: present once, first, with a name, the known-good bounds, and
+    // no cost.
     const auto = models.filter((m) => m.id === ROUTED_MODEL_ID);
     expect(auto).toHaveLength(1);
     expect(auto[0].name).toBe("Milo (auto-routed)");
+    expect(auto[0].reasoning).toBe(false);
+    expect(auto[0].contextWindow).toBe(128_000);
+    expect(auto[0].maxTokens).toBe(32_000);
     expect(auto[0].cost).toBeUndefined();
   });
 });

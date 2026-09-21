@@ -118,6 +118,22 @@ describe("onboarding pi harness", () => {
     }
     expect((milo.models as Array<{ id: string }>)[0]?.id).toBe("milo/auto");
 
+    // The routed entry carries the room-verified known-good values: id
+    // milo/auto, reasoning false, contextWindow 128000, maxTokens 32000.
+    const auto = (milo.models as Array<{
+      id: string;
+      name?: string;
+      reasoning?: boolean;
+      contextWindow?: number;
+      maxTokens?: number;
+    }>)[0];
+    expect(auto).toMatchObject({
+      id: "milo/auto",
+      reasoning: false,
+      contextWindow: 128_000,
+      maxTokens: 32_000,
+    });
+
     // No legacy usemilo-0.3.0 keys (type/base_url/api_key_env) may leak in.
     const flat = milo as unknown as Record<string, unknown>;
     expect(flat["type"]).toBeUndefined();

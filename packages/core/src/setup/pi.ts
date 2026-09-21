@@ -69,8 +69,10 @@ export type PiSetup = {
 };
 
 /** Fallbacks pi needs for a model Milo has no numbers for. */
-const UNKNOWN_CONTEXT_WINDOW = 200_000;
-const UNKNOWN_MAX_TOKENS = 128_000;
+// Room-verified known-good values for the routed entry (usemilo setup
+// failure report): contextWindow 128000, maxTokens 32000.
+const UNKNOWN_CONTEXT_WINDOW = 128_000;
+const UNKNOWN_MAX_TOKENS = 32_000;
 
 /**
  * The pi model list for a roster: `milo/auto` first, then every tier's
