@@ -98,8 +98,12 @@ async function scoreExample(
   }
 }
 
-/** Runs `fn` over `items` with at most `limit` in flight at once, preserving order. */
-async function mapWithConcurrency<T, R>(
+/**
+ * Runs `fn` over `items` with at most `limit` in flight at once, preserving
+ * order. Exported for `./canary/run.ts`, which runs the same bounded-fan-out
+ * shape over a smaller subset.
+ */
+export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T, index: number) => Promise<R>,

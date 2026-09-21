@@ -5,6 +5,7 @@
  * thin `#!/usr/bin/env node` wrapper around this, wired to `defaultDeps()`.
  */
 import * as billing from "./commands/billing.js";
+import * as canary from "./commands/canary.js";
 import * as cost from "./commands/cost.js";
 import * as decisions from "./commands/decisions.js";
 import * as explain from "./commands/explain.js";
@@ -23,7 +24,7 @@ type Command = {
   run: (args: string[], deps: CliDeps) => Promise<number | undefined>;
 };
 
-const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, cost, tune, roster, billing, verify };
+const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, cost, tune, roster, canary, billing, verify };
 
 export const TOP_LEVEL_HELP = `Usage: milo <command> [options]
 
@@ -37,6 +38,7 @@ Commands:
   cost        Show routed-request spend from the decision log
   tune        Propose tuned routing-policy settings from the decision log
   roster      Show the effective tier-to-model roster
+  canary      Run the continuous eval canary and check for drift
   billing     Operate the billing database, Stripe, and provisioning
   verify      Install the ground-truth verification Stop hook into a harness
 

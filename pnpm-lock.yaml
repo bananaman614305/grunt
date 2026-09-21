@@ -67,6 +67,9 @@ importers:
       '@milo/core':
         specifier: workspace:*
         version: link:../core
+      '@milo/evals':
+        specifier: workspace:*
+        version: link:../evals
       '@milo/gateway':
         specifier: workspace:*
         version: link:../gateway

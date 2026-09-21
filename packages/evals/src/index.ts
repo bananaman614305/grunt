@@ -1,6 +1,7 @@
 export const PACKAGE = "@milo/evals";
 
 export * from "./schema.js";
+export * from "./canary/index.js";
 
 export { runRoutingEval } from "./run.js";
 export type { RunRoutingEvalOptions } from "./run.js";

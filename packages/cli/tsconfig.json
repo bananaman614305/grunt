@@ -5,6 +5,7 @@
   "exclude": ["src/**/*.test.ts", "src/test-support.ts"],
   "references": [
     { "path": "../core" },
+    { "path": "../evals" },
     { "path": "../gateway" },
     { "path": "../billing" },
     { "path": "../provisioning" },

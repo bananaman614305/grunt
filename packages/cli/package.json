@@ -12,6 +12,7 @@
     "@hono/node-server": "^1",
     "@milo/billing": "workspace:*",
     "@milo/core": "workspace:*",
+    "@milo/evals": "workspace:*",
     "@milo/gateway": "workspace:*",
     "@milo/provisioning": "workspace:*",
     "@milo/stripe": "workspace:*",
