@@ -5,7 +5,6 @@
  * thin `#!/usr/bin/env node` wrapper around this, wired to `defaultDeps()`.
  */
 import * as billing from "./commands/billing.js";
-import * as canary from "./commands/canary.js";
 import * as cost from "./commands/cost.js";
 import * as decisions from "./commands/decisions.js";
 import * as explain from "./commands/explain.js";
@@ -22,6 +21,21 @@ export { defaultDeps } from "./default-deps.js";
 type Command = {
   help: string;
   run: (args: string[], deps: CliDeps) => Promise<number | undefined>;
+};
+
+// The canary command imports @milo/evals, a dev/CI-only package that
+// `pnpm deploy --prod` prunes from the runtime image. Load it on demand so
+// `milo serve` -- and everything else the deployed gateway runs -- never
+// imports it (and never crashes on its absence) at startup.
+const canary: Command = {
+  help:
+    "Run the continuous eval canary and check for drift.\n\n" +
+    "Requires the dev eval package (@milo/evals); intended for cron/CI, not the deployed gateway.\n" +
+    'Run "milo canary --help" for options.',
+  run: async (args, deps) => {
+    const mod = await import("./commands/canary.js");
+    return mod.run(args, deps);
+  },
 };
 
 const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, cost, tune, roster, canary, billing, verify };
