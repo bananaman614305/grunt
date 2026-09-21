@@ -1,10 +1,17 @@
-# Deploys the gateway to Fly.io by building on Fly's remote builder and
-# pushing to registry.fly.io, so the image never has to be public.
+# Deploys the gateway to Fly.io. The image is built on Fly's remote builder and
+# pushed to registry.fly.io (so it never has to be public), boot-smoke-tested in
+# the runner, and only then cut over onto the running machine.
 #
-# Needs one repository secret: FLY_API_TOKEN (a Fly deploy token scoped to
-# the milo-gateway app, or an org token). Create it in GitHub under
-# Settings > Secrets and variables > Actions. The token never leaves
-# GitHub's runner.
+# Why the smoke-test gate: Milo runs a SINGLE machine on a single volume
+# (fly.toml -- "one app, one machine", the SQLite decision log can't be shared),
+# so a plain `flyctl deploy` that ships a broken image replaces the only machine
+# and takes prod down instead of failing safe. A pruned dev-only import once
+# crash-looped the gateway on boot for ~15 min this way. The gate runs the real
+# image with no secrets and requires /healthz before the cutover step, so a boot
+# bug fails the deploy and leaves the current version serving.
+#
+# Needs one repository secret: FLY_API_TOKEN (a Fly deploy token scoped to the
+# milo-gateway app, or an org token). The token never leaves GitHub's runner.
 name: deploy
 on:
   workflow_dispatch:
@@ -17,9 +24,26 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     concurrency: deploy-milo-gateway
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      IMAGE: registry.fly.io/milo-gateway:smoke-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only --ha=false
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # 1. Build + push the candidate image WITHOUT touching the running machine.
+      - name: Build and push image
+        run: flyctl deploy --remote-only --build-only --push --image-label "smoke-${{ github.sha }}"
+
+      # 2. Boot smoke-test the candidate. Fails the job (no cutover) if the image
+      #    can't boot and serve /healthz -- prod keeps serving the old version.
+      - name: Smoke-test image boot
+        run: |
+          flyctl auth docker
+          ./scripts/fly-smoke.sh "$IMAGE"
+
+      # 3. Cut the production machine over to the smoke-tested image. `--ha=false`
+      #    keeps it to one machine; deploying the pre-built --image reconciles the
+      #    machine under flyctl and updates it in place.
+      - name: Deploy (cutover)
+        run: flyctl deploy --remote-only --ha=false --image "$IMAGE"
