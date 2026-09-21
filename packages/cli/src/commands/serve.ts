@@ -264,6 +264,17 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
           },
         }
       : {}),
+    ...(config.classificationCache !== undefined
+      ? {
+          classificationCache: {
+            enabled: config.classificationCache.enabled,
+            ...(config.classificationCache.ttlMs !== undefined ? { ttlMs: config.classificationCache.ttlMs } : {}),
+            ...(config.classificationCache.maxEntries !== undefined
+              ? { maxEntries: config.classificationCache.maxEntries }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   const gateway = await deps.createGateway(gatewayOptions);

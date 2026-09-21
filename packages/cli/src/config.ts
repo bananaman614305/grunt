@@ -132,6 +132,24 @@ const modeSchema = z.enum(["roster", "deepseek"]);
  */
 const jevTransportSchema = z.enum(["typesafe", "openrouter"]);
 
+/**
+ * The Jev classification cache (ADR-023). `enabled` (default true) skips a
+ * repeat Jev call for the exact same fingerprint and user-turn count, at a
+ * short TTL, complementing stickiness rather than replacing it (see
+ * `RouterOptions.classificationCache` in `@milo/core`). `ttlMs` (default five
+ * minutes) is deliberately shorter than stickiness' thirty: a stale cached
+ * *classification* only costs an occasionally-outdated difficulty guess,
+ * never a wrong user or conversation. `maxEntries` (default 5,000) bounds
+ * memory.
+ */
+const classificationCacheSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    ttlMs: z.number().int().positive().optional(),
+    maxEntries: z.number().int().positive().optional(),
+  })
+  .strict();
+
 export const configSchema = z
   .object({
     port: z.number().int().positive().default(DEFAULT_PORT),
@@ -149,6 +167,7 @@ export const configSchema = z
     sampling: samplingSchema.optional(),
     pruning: pruningSchema.optional(),
     factRetrieval: factRetrievalSchema.optional(),
+    classificationCache: classificationCacheSchema.optional(),
   })
   .strict();
 

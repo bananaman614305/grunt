@@ -131,6 +131,18 @@ export type GatewayOptions = {
    * every live conversation. Defaults to memory only.
    */
   stickyStore?: StickyStore;
+  /**
+   * The Jev classification cache (ADR-023): a short-TTL, in-process,
+   * LRU-bounded cache of a request's classification signals, keyed on its
+   * fingerprint (already scoped to the caller, ADR-008) and user-turn count.
+   * Complements stickiness (`x-milo-sticky`) rather than replacing it: a hit
+   * skips the Jev call but still runs policy fresh, and is disclosed
+   * separately as `x-milo-cache: hit|miss`. `enabled` (default true) turns
+   * it off outright; `ttlMs` (default 5 minutes) and `maxEntries` (default
+   * 5,000) tune its window and bound. Set from `milo.config.json`'s
+   * `classificationCache`.
+   */
+  classificationCache?: { enabled?: boolean; ttlMs?: number; maxEntries?: number };
   /** OpenRouter app attribution headers. */
   referer?: string;
   title?: string;
@@ -265,6 +277,19 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     // `stickyStore` arrives in core's RouterOptions with the persistent sticky
     // store; the cast keeps this compiling on either side of that change.
     ...(options.stickyStore !== undefined ? { stickyStore: options.stickyStore } : {}),
+    // The classification cache (ADR-023). `enabled` defaults to true inside
+    // the Router itself, so an absent `options.classificationCache` still
+    // gets a live, default-tuned cache -- only an explicit `enabled: false`
+    // turns it off.
+    ...(options.classificationCache?.enabled !== undefined
+      ? { classificationCacheEnabled: options.classificationCache.enabled }
+      : {}),
+    ...(options.classificationCache?.ttlMs !== undefined
+      ? { classificationCacheTtlMs: options.classificationCache.ttlMs }
+      : {}),
+    ...(options.classificationCache?.maxEntries !== undefined
+      ? { classificationCacheMaxEntries: options.classificationCache.maxEntries }
+      : {}),
     // Every decision the router makes is logged: a decision that never reaches
     // the log cannot explain a response header. The router awaits this itself,
     // so `route()` does not resolve until the row exists -- no separate wait is

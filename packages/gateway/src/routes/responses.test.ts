@@ -424,10 +424,12 @@ describe("POST /v1/responses, milo/auto", () => {
     expect(res.headers.get("x-milo-task-type")).toBe("debug");
     expect(res.headers.get("x-milo-difficulty")).toBe("2.31");
     expect(res.headers.get("x-milo-sticky")).toBe("false");
+    expect(res.headers.get("x-milo-cache")).toBe("miss");
     expect(res.headers.get("x-request-id")).toBe("or-req-2");
 
-    // The same seven headers as the other two dialects, and no eighth.
+    // The same eight headers as the other two dialects, and no ninth.
     expect([...res.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
+      "x-milo-cache",
       "x-milo-decision-id",
       "x-milo-difficulty",
       "x-milo-modality",
