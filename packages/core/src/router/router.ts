@@ -46,7 +46,7 @@ import type { BreakerStatus, CircuitBreakerOptions } from "./breaker.js";
 import { buildJevState, countUserTurns, messageText } from "./context.js";
 import { RoutingUnavailableError } from "./errors.js";
 import type { RoutingUnavailableCause } from "./errors.js";
-import { computeBand, computeBudget, modalityBudget, NEMOTRON_OMNI_MODEL } from "./controller.js";
+import { computeBand, computeBudget, DEEPSEEK_BRANCH_MODEL, modalityBudget, NEMOTRON_OMNI_MODEL } from "./controller.js";
 import { detectModality } from "./modality.js";
 import { chooseOutcome, clampSamples, JEV_PROFILE } from "./policy.js";
 import type { PolicyProfile } from "./policy.js";
@@ -505,8 +505,6 @@ export class Router {
    * whether that gamble is worth taking, and it is deliberately conservative:
    *
    *   - off unless enabled (default off);
-   *   - `"roster"` mode only -- the deepseek compute controller's own band
-   *     budget is out of scope for this feature;
    *   - never for a forced tier, which makes no Jev call and so has no latency
    *     to hide;
    *   - only when a fresh Jev call would actually happen: an in-memory sticky
@@ -518,17 +516,31 @@ export class Router {
    *   - only for a request a cheap heuristic marks probably-easy -- no tools, a
    *     short prompt, not `quality` posture -- because those are the requests
    *     that overwhelmingly route to the fast tier, and speculating an uncertain
-   *     request would mostly miss;
-   *   - always the request's own resolved FAST-tier model: the cheapest branch,
-   *     never a mid/frontier model and never best-of-N (the gateway also
-   *     requires the decision to be a single call before it reuses the result).
+   *     request would mostly miss.
+   *
+   * The speculated model is mode-aware, chosen after the shared guards above:
+   *
+   *   - `"roster"` mode: the request's own resolved FAST-tier model -- the
+   *     cheapest branch, never a mid/frontier model and never best-of-N (the
+   *     gateway also requires the decision to be a single call before it reuses
+   *     the result).
+   *   - `"deepseek"` mode (ADR-028): the DeepSeek branch model
+   *     (`DEEPSEEK_BRANCH_MODEL`) for a probably-easy TEXT request -- what an
+   *     easy text request actually resolves to under the compute controller,
+   *     whose band 0 is a single ungated call to exactly this model. The
+   *     gateway reuses the speculative answer only on that ungated band-0
+   *     forward; a band-1 single call and the sampled bands (2-3) discard it as
+   *     a bounded, aborted cheap-call miss. Per-request candidates/rosters are
+   *     ignored here (the controller ignores them too). A non-`"text"` modality
+   *     is excluded outright: the ADR-020 multimodal pre-gate pins a different,
+   *     capable model for image/audio/video, so speculating the text branch
+   *     model would always miss.
    *
    * It never calls Jev, never mutates state, and is safe to call on the hot
    * path before `route`.
    */
   speculativeModel(req: RouteRequest): string | undefined {
     if (!this.speculation.enabled) return undefined;
-    if (this.mode !== "roster") return undefined;
     if (req.forcedTier !== undefined) return undefined;
     if (Array.isArray(req.tools) && req.tools.length > 0) return undefined;
     if (req.posture === "quality") return undefined;
@@ -539,12 +551,26 @@ export class Router {
     if (local !== undefined && local.userTurns === userTurns) return undefined;
     if (this.classificationCache.get(`${req.fingerprint} ${userTurns}`) !== undefined) return undefined;
 
-    // Strictly the FAST tier -- the first fast model this request's candidates
-    // allow. Deliberately NOT `resolveModel("fast", ...)`, whose tier fallback
-    // could climb to a mid/frontier model when candidates exclude every fast
-    // one; a speculative call must never be a hard-tier call, so we decline to
-    // speculate instead. When Jev then routes an easy request to the fast tier,
-    // `resolveModel` picks this same first allowed fast model, so a hit matches.
+    // The shared guards above hold in both modes; the model choice is where the
+    // two modes diverge (ADR-028).
+    if (this.mode === "deepseek") {
+      // The compute controller ignores per-request candidates/roster -- its
+      // premise is one model family -- so an easy TEXT request resolves to the
+      // band-0 branch model regardless of what the request named. But a
+      // non-text request is pinned to a different, capable model by the ADR-020
+      // pre-gate, so speculating the text branch model would always miss:
+      // decline instead.
+      if (detectModality(req.messages) !== "text") return undefined;
+      return DEEPSEEK_BRANCH_MODEL;
+    }
+
+    // Roster mode: strictly the FAST tier -- the first fast model this
+    // request's candidates allow. Deliberately NOT `resolveModel("fast", ...)`,
+    // whose tier fallback could climb to a mid/frontier model when candidates
+    // exclude every fast one; a speculative call must never be a hard-tier
+    // call, so we decline to speculate instead. When Jev then routes an easy
+    // request to the fast tier, `resolveModel` picks this same first allowed
+    // fast model, so a hit matches.
     const fast = this.rosterFor(req).fast ?? [];
     const allowed =
       req.candidates !== undefined && req.candidates.length > 0 ? new Set(req.candidates) : undefined;
