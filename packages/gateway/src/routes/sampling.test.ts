@@ -283,7 +283,7 @@ async function app(
     jev?: JevClientLike;
     decision?: RouteDecision;
     roster?: Roster;
-    sampling?: { sampleTimeoutMs?: number; minRanked?: number };
+    sampling?: AppDeps["sampling"];
     forwardJevKey?: boolean;
   } = {},
 ): Promise<Hono> {
@@ -822,5 +822,192 @@ describe("the completeness gate over a sampled pick", () => {
       retryModel: "test/mid",
       pick: "retry",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adaptive-N / early stopping (ADR-024)
+// ---------------------------------------------------------------------------
+
+describe("adaptive-N (ADR-024)", () => {
+  it("is off by default: draws the full budgeted N even when an early winner clears the bar", async () => {
+    // samples: 5, best (q3) clears EARLY_WIN_QUALITY. The fixed path returns
+    // early but has already DRAWN all five up front -- adaptive off means no
+    // draw is skipped, only the stragglers' streams are aborted.
+    const contents = ["a q1", "b q3", "c q0", "d q2", "e q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), decision: sampledDecision({ samples: 5 }) });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(openRouter.calls).toHaveLength(5);
+    expect(res.headers.get("x-milo-samples")).toBe("5");
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+  });
+
+  it("stops early on a confident lead: draws the initial probe, not the full N", async () => {
+    // Initial probe of 3; the 3rd-drawn answer clears the quality bar, so the
+    // 4th and 5th budgeted samples are NEVER launched (not merely aborted).
+    const contents = ["a q1", "b q2", "c q3", "d q3", "e q3"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({
+      jev: rankingJev(),
+      decision: sampledDecision({ samples: 5 }),
+      sampling: { adaptive: { enabled: true, minSamples: 3, maxSamples: 5, qualityBar: 2.5 } },
+    });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    // Only three upstream calls were ever made: samples 4 and 5 were saved.
+    expect(openRouter.calls).toHaveLength(3);
+    expect(res.headers.get("x-milo-samples")).toBe("3");
+    expect(res.headers.get("x-milo-sample-pick")).toBe("2");
+    // The decision log records only the samples actually drawn, no content.
+    const upstream = recorded[0]?.upstream as Upstream;
+    expect(upstream.samples).toHaveLength(3);
+    expect(upstream.samplePick).toBe(2);
+  });
+
+  it("respects maxSamples when no sample ever clears the bar", async () => {
+    // All answers are low quality and tie, so no confident stop ever fires;
+    // drawing must halt at maxSamples (4), below the budgeted N (5).
+    const contents = ["a q0", "b q0", "c q0", "d q0", "e q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({
+      jev: rankingJev(),
+      decision: sampledDecision({ samples: 5 }),
+      sampling: { adaptive: { enabled: true, minSamples: 2, maxSamples: 4 } },
+    });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(openRouter.calls).toHaveLength(4);
+    expect(res.headers.get("x-milo-samples")).toBe("4");
+  });
+
+  it("respects minSamples: never stops before the initial probe is drawn", async () => {
+    // The very first answer is a perfect q3, but minSamples/minRanked hold the
+    // stop back until the whole probe of 3 has been drawn and ranked.
+    const contents = ["a q3", "b q0", "c q0", "d q0", "e q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({
+      jev: rankingJev(),
+      decision: sampledDecision({ samples: 5 }),
+      sampling: { adaptive: { enabled: true, minSamples: 3, maxSamples: 5, qualityBar: 2.5 } },
+    });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    // Three drawn (the probe), not one: minSamples was honoured. The q3 wins.
+    expect(openRouter.calls).toHaveLength(3);
+    expect(res.headers.get("x-milo-sample-pick")).toBe("0");
+  });
+
+  it("clamps maxSamples to the budgeted N", async () => {
+    // maxSamples 10 but only 3 budgeted: drawing cannot exceed N.
+    const contents = ["a q0", "b q0", "c q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({
+      jev: rankingJev(),
+      decision: sampledDecision({ samples: 3 }),
+      sampling: { adaptive: { enabled: true, minSamples: 2, maxSamples: 10 } },
+    });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(openRouter.calls).toHaveLength(3);
+  });
+
+  it("picks identically to fixed-N when it never stops early", async () => {
+    const contents = ["a q1", "b q3", "c q0", "d q2", "e q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+
+    // Fixed best-of-5.
+    const fixed = await app({ jev: rankingJev(), decision: sampledDecision({ samples: 5 }) });
+    const fixedRes = await fixed.fetch(chatRequest());
+    const fixedBody = (await fixedRes.json()) as ReturnType<typeof completionBody>;
+
+    // Adaptive with unreachable stop thresholds: it must draw all five and
+    // return the same pick as the fixed path.
+    openRouter = new FakeOpenRouter();
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const adaptive = await app({
+      jev: rankingJev(),
+      decision: sampledDecision({ samples: 5 }),
+      sampling: { adaptive: { enabled: true, minSamples: 3, maxSamples: 5, qualityBar: 3.5, leadMargin: 3.5 } },
+    });
+    const adaptiveRes = await adaptive.fetch(chatRequest());
+    const adaptiveBody = (await adaptiveRes.json()) as ReturnType<typeof completionBody>;
+
+    expect(openRouter.calls).toHaveLength(5);
+    expect(adaptiveRes.headers.get("x-milo-sample-pick")).toBe(fixedRes.headers.get("x-milo-sample-pick"));
+    expect(adaptiveBody.choices[0]?.message["content"]).toBe(fixedBody.choices[0]?.message["content"]);
+    expect(adaptiveBody.id).toBe(fixedBody.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cache-friendly framings (ADR-024)
+// ---------------------------------------------------------------------------
+
+describe("cache-friendly framings (ADR-024)", () => {
+  it("off by default: the framing varies the SYSTEM message, so the prefix diverges early", async () => {
+    const contents = ["a q1", "b q3", "c q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev() });
+    await a.fetch(chatRequest());
+
+    expect(openRouter.calls).toHaveLength(3);
+    for (const [i, call] of openRouter.calls.entries()) {
+      const messages = call.body["messages"] as ChatMessage[];
+      const system = String(messages[0]?.content);
+      const last = String(messages[messages.length - 1]?.content);
+      // The system message carries the framing (diverges); the user turn is
+      // untouched -- today's behaviour, unchanged.
+      if (i === 0) expect(system).toBe("You are a sub-agent.");
+      else expect(system).toBe(`You are a sub-agent.\n\n${PROMPT_VARIANTS[i] as string}`);
+      expect(last).toBe("Apply the described diff.");
+    }
+  });
+
+  it("on: keeps the shared prefix byte-stable and moves the framing to the tail", async () => {
+    const contents = ["a q1", "b q3", "c q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), sampling: { cacheFriendlyVariants: true } });
+    await a.fetch(chatRequest());
+
+    expect(openRouter.calls).toHaveLength(3);
+    const systems = new Set<string>();
+    for (const [i, call] of openRouter.calls.entries()) {
+      const messages = call.body["messages"] as ChatMessage[];
+      const system = String(messages[0]?.content);
+      const last = String(messages[messages.length - 1]?.content);
+      systems.add(system);
+      // The whole prefix (system + every earlier turn) is identical across
+      // samples; only the last message's tail carries the varying framing, so
+      // a provider prompt cache can reuse everything before it.
+      expect(system).toBe("You are a sub-agent.");
+      if (i === 0) expect(last).toBe("Apply the described diff.");
+      else expect(last).toBe(`Apply the described diff.\n\n${PROMPT_VARIANTS[i] as string}`);
+    }
+    // One and only one system prefix across all samples: cache-eligible.
+    expect(systems.size).toBe(1);
+  });
+
+  it("preserves sample diversity: the same framings, only relocated", async () => {
+    const contents = ["a q1", "b q3", "c q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), sampling: { cacheFriendlyVariants: true } });
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+
+    // Each non-empty framing still appears in exactly its own sample's body.
+    for (const [i, call] of openRouter.calls.entries()) {
+      const variant = PROMPT_VARIANTS[i] as string;
+      if (variant === "") continue;
+      expect(JSON.stringify(call.body["messages"])).toContain(variant);
+    }
+    // The chosen answer is still Jev's best (q3), unchanged by relocation.
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
   });
 });
