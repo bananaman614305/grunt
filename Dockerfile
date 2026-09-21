@@ -80,6 +80,12 @@ COPY --from=build --chown=node:node /app/packages/provisioning/package.json pack
 COPY --from=build --chown=node:node /app/packages/provisioning/dist packages/provisioning/dist
 COPY --from=build --chown=node:node /app/packages/provisioning/node_modules packages/provisioning/node_modules
 
+# The gateway's routing feature flags. `milo serve` auto-loads
+# ./milo.config.json from its working directory (/app), so this turns on the
+# sampling speedups (adaptive-N, cache-friendly variants, candidate verification
+# and speculative routing). No Jev offload here -- jevTransport stays "typesafe".
+COPY --chown=node:node milo.config.json ./milo.config.json
+
 # `GET /skill.md` on the gateway serves this file verbatim (see
 # packages/gateway/src/routes/static.ts), so it has to sit at the same
 # repo-root-relative path in the image as it does in the source tree.

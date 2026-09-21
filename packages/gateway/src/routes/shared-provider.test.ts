@@ -4,6 +4,7 @@ import {
   applyProviderStrategy,
   applyReasoningExclusion,
   maxPriceFor,
+  MAX_PRICE_MULTIPLIER,
   retargetProviderStrategy,
 } from "./shared.js";
 
@@ -23,13 +24,16 @@ describe("applyProviderStrategy", () => {
     expect(applyProviderStrategy({ model: "m" }, "low")).toEqual({ model: "m" });
   });
 
-  it("caps the sort at the roster's listed price with 10% headroom", () => {
+  it("caps the sort at the roster's listed price with the max-price headroom", () => {
     const fast = DEFAULT_ROSTER_INFO.tiers.fast[0]!;
     const out = applyProviderStrategy({ model: fast.id }, "balanced", fast.id) as Record<string, unknown>;
     expect(out["provider"]).toEqual({
       sort: "throughput",
       allow_fallbacks: true,
-      max_price: { prompt: fast.inputUsdPerM * 1.1, completion: fast.outputUsdPerM * 1.1 },
+      max_price: {
+        prompt: fast.inputUsdPerM * MAX_PRICE_MULTIPLIER,
+        completion: fast.outputUsdPerM * MAX_PRICE_MULTIPLIER,
+      },
     });
     expect(maxPriceFor("not/in-roster")).toEqual({});
     expect(maxPriceFor(undefined)).toEqual({});
@@ -77,7 +81,7 @@ describe("retargetProviderStrategy", () => {
     expect(out["provider"]).toEqual({
       sort: "throughput",
       allow_fallbacks: true,
-      max_price: { prompt: frontier.inputUsdPerM * 1.1, completion: frontier.outputUsdPerM * 1.1 },
+      max_price: { prompt: frontier.inputUsdPerM * MAX_PRICE_MULTIPLIER, completion: frontier.outputUsdPerM * MAX_PRICE_MULTIPLIER },
     });
   });
 

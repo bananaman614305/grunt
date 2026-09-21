@@ -31,6 +31,7 @@ import { AnthropicUpstream } from "../anthropic.js";
 import { createApp } from "../app.js";
 import type { AppDeps } from "../app.js";
 import { RateLimiter } from "../rate-limit.js";
+import { MAX_PRICE_MULTIPLIER } from "./shared.js";
 
 const KEY = "sk-or-v1-NEVERLEAKTHIS0123456789abcdef";
 const AUTH = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
@@ -510,14 +511,14 @@ describe("the completeness gate", () => {
     expect(openRouter.calls[0]?.body["provider"]).toEqual({
       sort: "throughput",
       allow_fallbacks: true,
-      max_price: { prompt: (branch as { inputUsdPerM: number }).inputUsdPerM * 1.1, completion: (branch as { outputUsdPerM: number }).outputUsdPerM * 1.1 },
+      max_price: { prompt: (branch as { inputUsdPerM: number }).inputUsdPerM * MAX_PRICE_MULTIPLIER, completion: (branch as { outputUsdPerM: number }).outputUsdPerM * MAX_PRICE_MULTIPLIER },
     });
     expect(openRouter.calls[1]?.body["provider"]).toEqual({
       sort: "throughput",
       allow_fallbacks: true,
       max_price: {
-        prompt: (orchestrator as { inputUsdPerM: number }).inputUsdPerM * 1.1,
-        completion: (orchestrator as { outputUsdPerM: number }).outputUsdPerM * 1.1,
+        prompt: (orchestrator as { inputUsdPerM: number }).inputUsdPerM * MAX_PRICE_MULTIPLIER,
+        completion: (orchestrator as { outputUsdPerM: number }).outputUsdPerM * MAX_PRICE_MULTIPLIER,
       },
     });
   });

@@ -357,12 +357,26 @@ function isAppliedStrategy(provider: unknown, model: string | undefined): boolea
   return price["prompt"] === ceiling.prompt && price["completion"] === ceiling.completion;
 }
 
+/**
+ * How far above a model's roster price Milo still lets OpenRouter pick a
+ * provider. `sort: "throughput"` only ranks providers UNDER this ceiling, so a
+ * tight ceiling can exclude the fastest (pricier) endpoints and strand a
+ * request on a slow cheap one. 2x keeps a real cost guardrail while giving the
+ * throughput sort enough headroom to reach the fast providers.
+ */
+export const MAX_PRICE_MULTIPLIER = 2;
+
 export function maxPriceFor(model: string | undefined): { max_price?: { prompt: number; completion: number } } {
   if (model === undefined) return {};
   for (const tier of ["fast", "mid", "frontier"] as const) {
     const entry = DEFAULT_ROSTER_INFO.tiers[tier].find((m) => m.id === model);
     if (entry !== undefined) {
-      return { max_price: { prompt: entry.inputUsdPerM * 1.1, completion: entry.outputUsdPerM * 1.1 } };
+      return {
+        max_price: {
+          prompt: entry.inputUsdPerM * MAX_PRICE_MULTIPLIER,
+          completion: entry.outputUsdPerM * MAX_PRICE_MULTIPLIER,
+        },
+      };
     }
   }
   return {};

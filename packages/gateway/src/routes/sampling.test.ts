@@ -27,6 +27,7 @@ import type {
   SystemOneResult,
 } from "@milo/core";
 import { LARGE_PROMPT_CHARS, promptChars, sampleTimeoutFor, SAMPLE_TIMEOUT_MS_DEFAULT } from "./sampling.js";
+import { MAX_PRICE_MULTIPLIER } from "./shared.js";
 import { AnthropicUpstream } from "../anthropic.js";
 import { createApp } from "../app.js";
 import type { AppDeps } from "../app.js";
@@ -693,7 +694,10 @@ function ceilingFor(model: string): { prompt: number; completion: number } {
   for (const tier of ["fast", "mid", "frontier"] as const) {
     const entry = DEFAULT_ROSTER_INFO.tiers[tier].find((m) => m.id === model);
     if (entry !== undefined) {
-      return { prompt: entry.inputUsdPerM * 1.1, completion: entry.outputUsdPerM * 1.1 };
+      return {
+        prompt: entry.inputUsdPerM * MAX_PRICE_MULTIPLIER,
+        completion: entry.outputUsdPerM * MAX_PRICE_MULTIPLIER,
+      };
     }
   }
   throw new Error(`no roster entry for ${model}`);

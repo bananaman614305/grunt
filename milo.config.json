@@ -1,0 +1,10 @@
+{
+  "mode": "deepseek",
+  "sampling": {
+    "adaptive": { "enabled": true },
+    "cacheFriendlyVariants": true,
+    "verifyCandidates": true
+  },
+  "speculation": { "enabled": true },
+  "classificationCache": { "enabled": true }
+}
