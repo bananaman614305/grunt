@@ -90,6 +90,34 @@ fly volumes create milo_data --region iad --size 1
 fly deploy
 ```
 
+### CI deploys (`.github/workflows/deploy.yml`)
+
+Pushes to `main` (and manual `workflow_dispatch`) deploy through the workflow,
+which does **not** run a plain `flyctl deploy`. Because the app is one machine on
+one volume, a rolling deploy of a broken image has no standby to fall back to — a
+boot bug becomes an outage rather than a failed deploy. So the workflow builds
+the image in the runner, smoke-tests it, and only then pushes and cuts over:
+
+1. `docker build` — build the candidate image in the runner from the same
+   `Dockerfile` Fly would use, so the exact bytes tested are the exact bytes
+   deployed.
+2. `scripts/fly-smoke.sh` — boot that image with no secrets
+   (`MILO_JEV_TRANSPORT=openrouter`, so Milo's own Jev key isn't needed),
+   requiring `/healthz` to answer. A boot failure (e.g. a pruned dev-only import)
+   fails the job here — nothing is pushed or cut over, and the running version
+   keeps serving.
+3. `flyctl auth docker && docker push` — push the smoke-tested image to Fly's
+   private registry. (The gate only ever *pushes* to `registry.fly.io`; pulling
+   images back from it in CI is unreliable.)
+4. `flyctl deploy --ha=false --image <the smoke-tested image>` — cut the machine
+   over to the exact image that passed the smoke test.
+
+A machine edited out-of-band via the Machines API can lose the flyctl release
+metadata (`fly_release_id` / `fly_release_version` in its `config.metadata`);
+without it `flyctl deploy` builds a release but skips the machine. Restore those
+keys (copy them from a `machines list` of a healthy release) so the next deploy
+cuts over in place instead of spawning a second machine.
+
 ### Deploying the published image by the Machines API instead
 
 The point of publishing to GHCR is deploying without `flyctl` or a local
