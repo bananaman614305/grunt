@@ -169,6 +169,18 @@ export type AppDeps = {
     cacheFriendlyVariants?: boolean;
   };
   /**
+   * Speculative routing (ADR-024). Absent means off: the OpenAI chat route
+   * takes its exact pre-speculation path and never asks the router to
+   * speculate. When present and `enabled`, that route starts the router's
+   * single cheapest fast-tier call in parallel with the Jev classification and
+   * reuses it only when the real decision resolves to that same single,
+   * ungated call -- otherwise the speculative call is aborted and the normal
+   * forward runs, so routing is never changed. The router owns the eligibility
+   * heuristic (`Router.speculativeModel`); this flag only gates whether the
+   * gateway wires it up. Set from `GatewayOptions.speculation`.
+   */
+  speculation?: { enabled?: boolean; maxPromptChars?: number };
+  /**
    * Context pruning (ADR-014). Absent or `enabled` false means the gate is
    * off for every request unless one opts in with `milo: { prune: true }`.
    * `minContextTokens` is the token floor a conversation must exceed before

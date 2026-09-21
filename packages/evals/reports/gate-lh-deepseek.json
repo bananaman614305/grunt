@@ -1,0 +1,619 @@
+{
+  "generatedAt": "2026-09-18T19:48:15.069Z",
+  "gateway": "https://milo-gateway.fly.dev/v1",
+  "posture": "balanced",
+  "fixedModels": {
+    "fast": "deepseek/deepseek-v4-flash",
+    "mid": "openai/gpt-5.6-luna",
+    "frontier": "z-ai/glm-5.3"
+  },
+  "prices": {
+    "anthropic/claude-fable-5.1": {
+      "id": "anthropic/claude-fable-5.1",
+      "inputUsdPerM": 10,
+      "outputUsdPerM": 50
+    },
+    "z-ai/glm-5.3": {
+      "id": "z-ai/glm-5.3",
+      "inputUsdPerM": 0.91,
+      "outputUsdPerM": 2.86
+    },
+    "openai/gpt-5.6-luna": {
+      "id": "openai/gpt-5.6-luna",
+      "inputUsdPerM": 0.2,
+      "outputUsdPerM": 1.2
+    },
+    "anthropic/claude-sonnet-5": {
+      "id": "anthropic/claude-sonnet-5",
+      "inputUsdPerM": 2,
+      "outputUsdPerM": 10
+    },
+    "deepseek/deepseek-v4-flash": {
+      "id": "deepseek/deepseek-v4-flash",
+      "inputUsdPerM": 0.049,
+      "outputUsdPerM": 0.098
+    }
+  },
+  "baseline": {
+    "id": "anthropic/claude-fable-5.1",
+    "inputUsdPerM": 10,
+    "outputUsdPerM": 50
+  },
+  "judgeModel": "openai/gpt-5.6-luna",
+  "judgeAudit": {
+    "model": "anthropic/claude-sonnet-5",
+    "fraction": 0.1
+  },
+  "judgeCacheStats": {
+    "hits": 0,
+    "misses": 4
+  },
+  "providerPins": {
+    "deepseek/deepseek-v4-flash": [
+      "alibaba",
+      "baidu",
+      "phala"
+    ],
+    "z-ai/glm-5.3-flash": [
+      "baseten",
+      "friendli"
+    ],
+    "xiaomi/mimo-v2.5": [
+      "xiaomi"
+    ],
+    "tencent/hy3": [
+      "atlas-cloud",
+      "novita",
+      "phala"
+    ],
+    "openai/gpt-5.6-luna": [
+      "amazon-bedrock",
+      "openai",
+      "azure"
+    ],
+    "deepseek/deepseek-v4.1-flash": [
+      "together",
+      "modal",
+      "makora"
+    ],
+    "minimax/minimax-m3": [
+      "modelrun",
+      "coreweave",
+      "together"
+    ],
+    "z-ai/glm-5.3": [
+      "baseten",
+      "mistral"
+    ],
+    "google/gemini-3.8-flash": [
+      "google-ai-studio",
+      "google-vertex"
+    ],
+    "nvidia/nemotron-3-ultra-550b-a55b": [
+      "baseten",
+      "venice"
+    ],
+    "anthropic/claude-sonnet-5": [
+      "azure",
+      "google-vertex",
+      "anthropic"
+    ]
+  },
+  "rows": [
+    {
+      "id": "lh-001",
+      "taskType": "research",
+      "difficultyBand": 3,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 122103.420828,
+          "totalMs": 241647.547539,
+          "provider": "Alibaba",
+          "inputTokens": 3244,
+          "outputTokens": 17983,
+          "reasoningTokens": 15588,
+          "costUsd": 0.0112764,
+          "sticky": false,
+          "decisionId": "01M2V08CNQ7X352EHQS7F06JF0",
+          "jevLatencyMs": 569,
+          "upstreamLatencyMs": 240756,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "every check passed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-002",
+      "taskType": "debug",
+      "difficultyBand": 3,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 121917.97284199999,
+          "totalMs": 349290.435866,
+          "provider": "DeepInfra",
+          "inputTokens": 7304,
+          "outputTokens": 10901,
+          "reasoningTokens": 9463,
+          "costUsd": 0.0046101832,
+          "sticky": false,
+          "decisionId": "01M2V08CRP7DEZ3HPXSYSPPV3A",
+          "jevLatencyMs": 515,
+          "upstreamLatencyMs": 348375,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "all values present"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-003",
+      "taskType": "review",
+      "difficultyBand": 2,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 122555.744039,
+          "totalMs": 275502.84633900004,
+          "provider": "Alibaba",
+          "inputTokens": 3683,
+          "outputTokens": 4611,
+          "reasoningTokens": 4611,
+          "costUsd": 0,
+          "sticky": false,
+          "decisionId": "01M2V08D9VRES9KKRPSC5G4TGM",
+          "jevLatencyMs": 1198,
+          "upstreamLatencyMs": 274037,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 0,
+            "pass": false,
+            "by": "mechanical",
+            "reason": "missing: findSlot, recentIds, releaseExpired, sorted, touch"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-004",
+      "taskType": "research",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4-flash",
+          "tier": "fast",
+          "status": 200,
+          "ttfbMs": 19037.774619000003,
+          "totalMs": 19038.064886000007,
+          "inputTokens": 2889,
+          "outputTokens": 1717,
+          "reasoningTokens": 829,
+          "costUsd": 0.00031071222,
+          "sticky": false,
+          "decisionId": "01M2V0FRT44B0D6FF9XRHVWE4G",
+          "jevLatencyMs": 508,
+          "upstreamLatencyMs": 18337,
+          "grade": {
+            "score": 0.93,
+            "pass": true,
+            "by": "judge",
+            "reason": "The minutes accurately capture the reversed ClickHouse Cloud direction, final Postgres decision, deferred capped self-hosted spike and June revisit, key owners, cancellation, and rationale, with only minor unsupported specificity such as a few invented deadlines and carrying over lag alerting from the abandoned dual-write plan.",
+            "judgeCostUsd": 0.0017369
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-005",
+      "taskType": "ops",
+      "difficultyBand": 3,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 284119.143883,
+          "totalMs": 284121.30606900004,
+          "inputTokens": 643,
+          "outputTokens": 33935,
+          "reasoningTokens": 27234,
+          "costUsd": 0.02045745,
+          "sticky": false,
+          "decisionId": "01M2V0GJ5MD70M3QFCF3E78EDP",
+          "jevLatencyMs": 484,
+          "upstreamLatencyMs": 283401,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "all values present"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-006",
+      "taskType": "feature",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 61244.778131,
+          "totalMs": 169332.08825100004,
+          "provider": "Alibaba",
+          "inputTokens": 447,
+          "outputTokens": 16960,
+          "reasoningTokens": 9029,
+          "costUsd": 0.01024305,
+          "sticky": false,
+          "decisionId": "01M2V0GSMDG6NVJJHBTJT1MM1W",
+          "jevLatencyMs": 416,
+          "upstreamLatencyMs": 168786,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "all values present"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-007",
+      "taskType": "docs",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4-flash",
+          "tier": "fast",
+          "status": 200,
+          "ttfbMs": 13912.193388999964,
+          "totalMs": 13914.108868999989,
+          "inputTokens": 432,
+          "outputTokens": 1429,
+          "reasoningTokens": 213,
+          "costUsd": 0.000151606728,
+          "sticky": false,
+          "decisionId": "01M2V0K1PJXB6EH01AHFM1XGWZ",
+          "jevLatencyMs": 424,
+          "upstreamLatencyMs": 13361,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "all values present"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-008",
+      "taskType": "research",
+      "difficultyBand": 3,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 61477.374748,
+          "totalMs": 183781.469981,
+          "provider": "Alibaba",
+          "inputTokens": 628,
+          "outputTokens": 19492,
+          "reasoningTokens": 16764,
+          "costUsd": 0.0117894,
+          "sticky": false,
+          "decisionId": "01M2V0KFH24QMQZR9ZH195GKG6",
+          "jevLatencyMs": 393,
+          "upstreamLatencyMs": 183173,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 0.98,
+            "pass": true,
+            "by": "judge",
+            "reason": "The answer satisfies all five required parts with visible arithmetic, explicit discount/growth assumptions, appropriate treatment of missing Foglight pricing, a single clear Openlens recommendation, concrete migration mitigations, and numerous vendor questions; only minor ambiguity remains around whether Openlens's included log allowance covers retained storage.",
+            "judgeCostUsd": 0.0028526
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-009",
+      "taskType": "edit",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4-flash",
+          "tier": "fast",
+          "status": 200,
+          "ttfbMs": 13480.738455999992,
+          "totalMs": 13482.423509999993,
+          "inputTokens": 845,
+          "outputTokens": 1194,
+          "reasoningTokens": 556,
+          "costUsd": 0.00015886962,
+          "sticky": false,
+          "decisionId": "01M2V0NZA8X0WKB66HHESMM4VW",
+          "jevLatencyMs": 442,
+          "upstreamLatencyMs": 12901,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "every check passed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-010",
+      "taskType": "edit",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4-flash",
+          "tier": "fast",
+          "status": 200,
+          "ttfbMs": 38615.98629500001,
+          "totalMs": 38616.19419000001,
+          "inputTokens": 807,
+          "outputTokens": 3982,
+          "reasoningTokens": 3316,
+          "costUsd": 0.00043100694,
+          "sticky": false,
+          "decisionId": "01M2V0PDA1J1F9W4SF6TGQFC75",
+          "jevLatencyMs": 1110,
+          "upstreamLatencyMs": 37384,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "all values present"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-011",
+      "taskType": "docs",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4-flash",
+          "tier": "fast",
+          "status": 200,
+          "ttfbMs": 20232.924060999998,
+          "totalMs": 20233.13380900002,
+          "inputTokens": 888,
+          "outputTokens": 2054,
+          "reasoningTokens": 1476,
+          "costUsd": 0.00024550344,
+          "sticky": false,
+          "decisionId": "01M2V0QJA8NSPY423Z4H6VNR5Q",
+          "jevLatencyMs": 207,
+          "upstreamLatencyMs": 19903,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "every check passed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-012",
+      "taskType": "edit",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4-flash",
+          "tier": "fast",
+          "status": 200,
+          "ttfbMs": 24703.244243000052,
+          "totalMs": 24703.489736999967,
+          "inputTokens": 547,
+          "outputTokens": 2569,
+          "reasoningTokens": 905,
+          "costUsd": 0.0002793609,
+          "sticky": false,
+          "decisionId": "01M2V0R69AARDC9WERBDDDTZ1B",
+          "jevLatencyMs": 235,
+          "upstreamLatencyMs": 24345,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "all values present"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-013",
+      "taskType": "ops",
+      "difficultyBand": 3,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 37580.17379999999,
+          "totalMs": 37580.55790899997,
+          "inputTokens": 407,
+          "outputTokens": 3615,
+          "reasoningTokens": 2776,
+          "costUsd": 0.00223005,
+          "sticky": false,
+          "decisionId": "01M2V0RYSS1YE36Y9ZDD2J3TAZ",
+          "jevLatencyMs": 275,
+          "upstreamLatencyMs": 37176,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "judge",
+            "reason": "The rota satisfies all five constraints, including cross-region coverage, no consecutive-week assignments, Priya's leave, Sam's onboarding restriction, and 2–3 assignments per engineer, with explicit verification.",
+            "judgeCostUsd": 0.0006194
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-014",
+      "taskType": "feature",
+      "difficultyBand": 3,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 61183.34913800005,
+          "totalMs": 219761.31900699995,
+          "provider": "Alibaba",
+          "inputTokens": 528,
+          "outputTokens": 20171,
+          "reasoningTokens": 17492,
+          "costUsd": 0.0121818,
+          "sticky": false,
+          "decisionId": "01M2V0S7M1XF1E5H32EAQK3EAX",
+          "jevLatencyMs": 266,
+          "upstreamLatencyMs": 219375,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "every check passed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-015",
+      "taskType": "research",
+      "difficultyBand": 3,
+      "expectedTier": "frontier",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4.1-flash",
+          "tier": "frontier",
+          "status": 200,
+          "ttfbMs": 43499.95501299994,
+          "totalMs": 43500.211416999926,
+          "inputTokens": 559,
+          "outputTokens": 5773,
+          "reasoningTokens": 5647,
+          "costUsd": 0.00354765,
+          "sticky": false,
+          "decisionId": "01M2V0SF8BWN0N5NEQ18ZMFWQS",
+          "jevLatencyMs": 514,
+          "upstreamLatencyMs": 42797,
+          "gatewaySamples": 5,
+          "grade": {
+            "score": 0,
+            "pass": false,
+            "by": "judge",
+            "reason": "The answer provides no full slot-by-room grid or rule-by-rule constraint check and therefore fails the rubric's mandatory deliverables.",
+            "judgeCostUsd": 0.0009399
+          }
+        }
+      ]
+    },
+    {
+      "id": "lh-016",
+      "taskType": "ops",
+      "difficultyBand": 2,
+      "expectedTier": "mid",
+      "hasGrader": true,
+      "results": [
+        {
+          "arm": "milo",
+          "model": "deepseek/deepseek-v4-flash",
+          "tier": "fast",
+          "status": 200,
+          "ttfbMs": 56406.986971999984,
+          "totalMs": 56407.19214099995,
+          "inputTokens": 373,
+          "outputTokens": 3591,
+          "reasoningTokens": 2941,
+          "costUsd": 0.000370195,
+          "sticky": false,
+          "decisionId": "01M2V0T5YJV1R0P25ZMEGE1588",
+          "jevLatencyMs": 242,
+          "upstreamLatencyMs": 56042,
+          "grade": {
+            "score": 1,
+            "pass": true,
+            "by": "mechanical",
+            "reason": "all values present"
+          }
+        }
+      ]
+    }
+  ]
+}
