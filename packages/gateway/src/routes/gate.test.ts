@@ -46,6 +46,8 @@ type Call = { url: URL; body: Record<string, unknown> };
 
 class FakeOpenRouter {
   readonly calls: Call[] = [];
+  /** The abort signal each upstream call carried, by call index (ADR-027). */
+  readonly signals: Array<AbortSignal | undefined> = [];
   handler: (body: Record<string, unknown>, index: number) => Response = () =>
     new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
 
@@ -54,17 +56,18 @@ class FakeOpenRouter {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     const call: Call = { url: new URL(href), body };
     this.calls.push(call);
+    this.signals.push(init?.signal ?? undefined);
     return this.handler(body, this.calls.length - 1);
   }) as typeof fetch;
 }
 
-function completionBody(content: string, tokens = 10) {
+function completionBody(content: string, tokens = 10, finishReason = "stop") {
   return {
     id: `gen-${content}`,
     object: "chat.completion",
     created: 1_700_000_000,
     model: "test/mid",
-    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: finishReason }],
     usage: { prompt_tokens: 100, completion_tokens: tokens, total_tokens: 100 + tokens, cost: 0.0001 },
   };
 }
@@ -551,6 +554,106 @@ describe("the completeness gate", () => {
     expect(first["object"]).toBe("chat.completion.chunk");
     const choices = first["choices"] as Array<Record<string, unknown>>;
     expect((choices[0]?.["delta"] as Record<string, unknown>)["content"]).toBe("retry q3");
+  });
+
+  // -------------------------------------------------------------------------
+  // ADR-027: local fast paths and a bounded retry
+  // -------------------------------------------------------------------------
+
+  it("skips the Jev completeness check when a clean stop is well-formed (ADR-027 change 1)", async () => {
+    // A non-truncated answer that ends on a sentence terminator with balanced
+    // fences is complete by inspection: no Jev call, served as `complete`.
+    openRouter.handler = () => ok(completionBody("All three risks are mitigated below."));
+    const jev = gateJev({ verdict: "incomplete" });
+    const a = await app({ jev });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-completeness")).toBe("complete");
+    expect(res.headers.get("x-milo-retry")).toBeNull();
+    expect(res.headers.get("x-milo-gate-pick")).toBeNull();
+
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message.content).toBe("All three risks are mitigated below.");
+
+    // One upstream call and, crucially, ZERO Jev calls: the check was skipped.
+    expect(openRouter.calls).toHaveLength(1);
+    expect(jev.checks).toBe(0);
+    expect(jev.ranked).toHaveLength(0);
+    expect(recorded[0]?.upstream.gate).toEqual({ verdict: "complete", checkSkipped: true });
+  });
+
+  it("does not fast-path an answer that stops on an unfinished ending (ADR-027 change 1)", async () => {
+    // Clean stop, but the text ends mid-thought (no terminator): it must fall
+    // through to the Jev check rather than take the complete fast path.
+    openRouter.handler = () => ok(completionBody("The first risk is"));
+    const jev = gateJev({ verdict: "complete", confidence: 0.9 });
+    const a = await app({ jev });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.headers.get("x-milo-completeness")).toBe("complete");
+    expect(jev.checks).toBe(1);
+    expect(recorded[0]?.upstream.gate).toEqual({ verdict: "complete", confidence: 0.9 });
+  });
+
+  it("serves a max_tokens truncation as `truncated` with no retry and no Jev call (ADR-027 change 2)", async () => {
+    // finish_reason `length` means the caller's own cap cut the answer off; a
+    // retry would only re-truncate, so serve as-is and never call Jev.
+    openRouter.handler = () => ok(completionBody("Here is the beginning of a long", 10, "length"));
+    const jev = gateJev({ verdict: "incomplete" });
+    const a = await app({ jev });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-completeness")).toBe("truncated");
+    expect(res.headers.get("x-milo-retry")).toBeNull();
+
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message.content).toBe("Here is the beginning of a long");
+
+    // No retry and no Jev call: exactly one upstream call.
+    expect(openRouter.calls).toHaveLength(1);
+    expect(jev.checks).toBe(0);
+    expect(recorded[0]?.upstream.gate).toEqual({ verdict: "truncated" });
+  });
+
+  it("bounds the fresh retry with an abort signal (ADR-027 change 4)", async () => {
+    // The original ends on a digit, so it reaches the Jev check; the verdict
+    // fails and the retry fires -- carrying the gate's time-budget signal.
+    originalThenRetry("original q1", "retry q3");
+    const a = await app({ jev: gateJev({ verdict: "incomplete" }) });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-retry")).toBe("1");
+
+    expect(openRouter.calls).toHaveLength(2);
+    // The original forward carries no gate budget; the retry is bounded.
+    expect(openRouter.signals[0]).toBeUndefined();
+    expect(openRouter.signals[1]).toBeInstanceOf(AbortSignal);
+  });
+
+  it("serves the original when the bounded retry aborts on its time budget (ADR-027 change 4)", async () => {
+    // Simulate the budget firing: the retry call rejects with an AbortError,
+    // which `classify`s as `timeout`; the original is served, retry recorded.
+    openRouter.handler = (_body, index) => {
+      if (index === 0) return ok(completionBody("original q1"));
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      throw err;
+    };
+    const a = await app({ jev: gateJev({ verdict: "off_task" }) });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ReturnType<typeof completionBody>;
+    expect(body.choices[0]?.message.content).toBe("original q1");
+    expect(res.headers.get("x-milo-gate-pick")).toBe("original");
+    expect(recorded[0]?.upstream.gate).toMatchObject({
+      verdict: "off_task",
+      pick: "original",
+      retry: { status: 0, error: "timeout" },
+    });
   });
 });
 

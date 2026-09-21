@@ -115,6 +115,17 @@ export const VERIFY_HEADER = "x-milo-verify";
 export const LOW_CONFIDENCE_COMPLETENESS = "complete-low-confidence";
 
 /**
+ * The wall-clock budget a fresh escalated retry runs under (ADR-027 change 4).
+ * A retry normally finishes well under this; the cap exists so a slow escalated
+ * retry on the strongest model cannot blow up the tail latency of a request that
+ * already holds a serviceable answer. On timeout the abort serves the original.
+ */
+export const GATE_RETRY_BUDGET_MS = 30000;
+
+/** The characters a complete answer's last non-whitespace char may be (ADR-027). */
+const COMPLETE_ENDINGS = new Set([".", "!", "?", ")", "]", "}", '"', "'", "`"]);
+
+/**
  * The decision-log `gate` block plus two gateway-local, purely additive
  * fields: which model the retry ran on, and whether the verdict was a
  * low-confidence `complete` the gate re-rated itself. Like `SampleRow` in
@@ -122,9 +133,25 @@ export const LOW_CONFIDENCE_COMPLETENESS = "complete-low-confidence";
  * (`packages/core/src/types.ts`) needs an ADR; the log stores the block as
  * JSON, so they round-trip either way.
  */
-export type GateRecord = GateUpstream & {
+export type GateRecord = Omit<GateUpstream, "pick"> & {
+  /**
+   * Which answer was served. Widens `GateUpstream.pick` (`original`/`retry`)
+   * with the gateway-local `sibling` (ADR-027 change 3): a reused best-of-N
+   * candidate. The widening is gateway-local -- the log stores the block as
+   * JSON, so it round-trips, and folding `sibling` into the core contract would
+   * need its own ADR, the same reasoning as `retryModel`.
+   */
+  pick?: "original" | "retry" | "sibling";
   retryModel?: string;
   lowConfidence?: boolean;
+  /**
+   * The Jev completeness check was skipped: the answer was served from a local
+   * fast path (ADR-027) -- a `finish_reason`-clean, well-formed completion, a
+   * `max_tokens` truncation, or a reused complete sibling -- without spending a
+   * `checkCompleteness` call. Purely additive gateway-local metadata, same
+   * reasoning as `retryModel`.
+   */
+  checkSkipped?: boolean;
   /**
    * The ground-truth verification block (ADR-019), present only when the
    * request supplied ground truth. Purely additive gateway-local metadata; the
@@ -133,6 +160,16 @@ export type GateRecord = GateUpstream & {
    */
   verify?: { finding: string; supported: number; unsupported: number; contradicted: number; blocking: boolean };
 };
+
+/**
+ * The gate record as the decision log's `gate` slot (core `GateUpstream`) takes
+ * it. The only gap is the gateway-local `pick: "sibling"` widening (ADR-027);
+ * the slot stores the block as JSON, so the string round-trips. A localized
+ * assertion here keeps the widening gateway-local without a core-type change.
+ */
+export function storedGate(record: GateRecord): GateUpstream {
+  return record as GateUpstream;
+}
 
 /** One finished answer as the gate handles it: body, message, serialized text. */
 export type GateAnswer = {
@@ -153,7 +190,13 @@ export type GateResult = {
   record: GateRecord;
 };
 
-export type GateRunner = (answer: GateAnswer) => Promise<GateResult>;
+/**
+ * Runs the gate over one finished answer. On a sampled request `siblings`
+ * carries the OTHER finished sample answers, ranked best-first, so the gate can
+ * reuse a complete one instead of spending a fresh retry (ADR-027 change 3). The
+ * single forward passes none.
+ */
+export type GateRunner = (answer: GateAnswer, siblings?: GateAnswer[]) => Promise<GateResult>;
 
 /** A failure class for the record: a name, never upstream text. */
 function classify(error: unknown): string {
@@ -199,6 +242,35 @@ export function completionMessage(json: Record<string, unknown>): Record<string,
 }
 
 /**
+ * `choices[0].finish_reason` of a buffered chat completion as a string, or
+ * undefined. Read on the local pre-gate (ADR-027) to tell a `max_tokens`
+ * truncation (`"length"`) and a clean stop (`"stop"`) apart before any Jev call.
+ */
+export function finishReason(json: Record<string, unknown>): string | undefined {
+  const choices = json["choices"];
+  if (!Array.isArray(choices)) return undefined;
+  const first = choices[0];
+  if (!isRecord(first)) return undefined;
+  const reason = first["finish_reason"];
+  return typeof reason === "string" ? reason : undefined;
+}
+
+/**
+ * A cheap, conservative "this reads as a finished answer" test (ADR-027): the
+ * trimmed text is non-empty, its ``` fences are balanced (an even count), and it
+ * ends on a sentence terminator, a closing bracket/quote, or a backtick. A false
+ * negative merely falls through to the Jev completeness check, so a valid answer
+ * is never demoted; only an obviously-complete answer takes the fast path.
+ */
+export function looksComplete(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === "") return false;
+  const fences = trimmed.match(/```/g);
+  if (fences !== null && fences.length % 2 !== 0) return false;
+  return COMPLETE_ENDINGS.has(trimmed[trimmed.length - 1] as string);
+}
+
+/**
  * Whether the gate applies to this decision, and the runner for it when it
  * does. `body` is the outgoing (brief-applied) request body; its messages
  * are the task the gate and the retry both read.
@@ -222,7 +294,7 @@ export function gateFor(
   // completeness check, the low-confidence re-rating, the both-answers rating,
   // and ground-truth verification) bills to the caller's forwarded key.
   const jevKey = forwardedJevKey(c, deps);
-  return (answer) => runGate(c, deps, jev, body, decision, answer, candidates, jevKey);
+  return (answer, siblings) => runGate(c, deps, jev, body, decision, answer, candidates, jevKey, siblings);
 }
 
 /**
@@ -239,6 +311,7 @@ async function runGate(
   answer: GateAnswer,
   candidates?: string[],
   jevKey?: string,
+  siblings?: GateAnswer[],
 ): Promise<GateResult> {
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   const answered = answerText(answer.message);
@@ -283,6 +356,34 @@ async function runGate(
     headers: { ...result.headers, ...verifyHeaders },
     record: { ...result.record, ...verifyPatch },
   });
+
+  // Free local pre-gate (ADR-027): before spending a Jev completeness call,
+  // inspect the buffered answer's `finish_reason`. This runs ONLY when a
+  // ground-truth contradiction has not already forced a retry (`!forceRetry`),
+  // so ADR-019's behaviour is preserved exactly.
+  if (!forceRetry) {
+    const reason = finishReason(answer.json);
+    // Change 2: a `max_tokens` truncation. The caller's own cap cut the answer
+    // off; a retry runs under the same cap and only re-truncates, so serve it
+    // as-is -- no Jev call, no retry.
+    if (reason === "length") {
+      return withVerify({
+        answer,
+        headers: { [COMPLETENESS_HEADER]: "truncated" },
+        record: { verdict: "truncated" },
+      });
+    }
+    // Change 1: an obviously-complete answer. A clean stop on a well-formed
+    // completion is complete by inspection, so serve it exactly as a passing
+    // check would -- no Jev call.
+    if (reason === "stop" && looksComplete(answered)) {
+      return withVerify({
+        answer,
+        headers: { [COMPLETENESS_HEADER]: "complete" },
+        record: { verdict: "complete", checkSkipped: true },
+      });
+    }
+  }
 
   let check;
   try {
@@ -364,6 +465,29 @@ async function runGate(
     record = { verdict: check.verdict, confidence: check.confidence, retried: true, pick: "original" };
   }
 
+  // Reuse a best-of-N sibling before a fresh retry (ADR-027 change 3): on a
+  // sampled request the other finished samples are already generated, ranked,
+  // and paid for. If one of them is complete by the SAME cheap local test as
+  // the pre-gate, serve it instead of spending a fresh escalated retry. No
+  // upstream retry happens and nothing new is generated, so there is no
+  // `extraUsage` and `x-milo-retry` is not set.
+  if (siblings !== undefined) {
+    // The SAME cheap test as the pre-gate (change 1): `finish_reason` clean and
+    // the MESSAGE text well-formed. `GateAnswer.text` is the full serialized
+    // completion body (it ends on `}` and would always "look complete"), so the
+    // test reads the message content via `answerText`, exactly as change 1 does.
+    const reuse = siblings.find((s) => finishReason(s.json) === "stop" && looksComplete(answerText(s.message)));
+    if (reuse !== undefined) {
+      const siblingRecord: GateRecord = { ...record, pick: "sibling", checkSkipped: true, ...verifyPatch };
+      delete siblingRecord.retried;
+      return {
+        answer: reuse,
+        headers: { [COMPLETENESS_HEADER]: disclosed, [GATE_PICK_HEADER]: "sibling", ...verifyHeaders },
+        record: siblingRecord,
+      };
+    }
+  }
+
   // Exactly ONE retry, on the strongest model this decision knows about
   // rather than the one that just missed (`escalationFor`): the original
   // messages plus the failure type's fixed template as a final system
@@ -391,13 +515,25 @@ async function runGate(
   if (verifyPatch.verify !== undefined) record.verify = verifyPatch.verify;
   const serveOriginal = (): GateResult => ({ answer, headers: { ...headers, [GATE_PICK_HEADER]: "original" }, record });
 
+  // Bound the fresh retry with a hard time budget (ADR-027 change 4): a slow
+  // escalated retry on the strongest model must not blow up tail latency on a
+  // request that already holds a serviceable answer. On timeout the abort is
+  // classified as "timeout" by the catch below, which serves the original.
+  const retryAbort = new AbortController();
+  const retryTimeout = setTimeout(() => retryAbort.abort(), GATE_RETRY_BUDGET_MS);
   const retryStart = deps.now();
   let retryResponse: Response;
   try {
-    retryResponse = await deps.openRouter.chatCompletions({ headers: upstreamHeadersFor(c), body: retryBody });
+    retryResponse = await deps.openRouter.chatCompletions({
+      headers: upstreamHeadersFor(c),
+      body: retryBody,
+      signal: retryAbort.signal,
+    });
   } catch (error) {
     record.retry = { status: 0, latencyMs: deps.now() - retryStart, error: classify(error) };
     return serveOriginal();
+  } finally {
+    clearTimeout(retryTimeout);
   }
   const retryText = await retryResponse.text();
   const retryLatencyMs = deps.now() - retryStart;
@@ -543,7 +679,7 @@ export async function forwardGated(
     status: upstream.status,
     latencyMs: deps.now() - startedAt,
     ...toUpstreamRecord(total),
-    gate: result.record,
+    gate: storedGate(result.record),
     ...pruneRecord(prune),
   };
   deps.recordUpstream(decision.id, record);
