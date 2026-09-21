@@ -63,6 +63,9 @@ export {
 } from "./sampling.js";
 export type { RankScore } from "./sampling.js";
 
+export { checkCandidate, expectsJsonResponse } from "./candidate-check.js";
+export type { CandidateCheck, CandidateFlaw, CandidateInput } from "./candidate-check.js";
+
 export {
   resolveModel,
   tierSearchOrder,

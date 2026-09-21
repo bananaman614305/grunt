@@ -85,6 +85,11 @@ const samplingSchema = z
     // `milo canary`/`pnpm bench` before a deployment turns them on.
     adaptive: adaptiveSamplingSchema.optional(),
     cacheFriendlyVariants: z.boolean().optional(),
+    // Static candidate verification (ADR-026). Default off: folds a cheap
+    // structural check into the best-of-N ranking so a broken candidate is
+    // demoted below valid ones. A ranking change, validated with `milo
+    // canary`/`pnpm bench` before a deployment turns it on.
+    verifyCandidates: z.boolean().optional(),
   })
   .strict();
 

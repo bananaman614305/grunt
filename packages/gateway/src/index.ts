@@ -146,6 +146,13 @@ export type GatewayOptions = {
       leadMargin?: number;
     };
     cacheFriendlyVariants?: boolean;
+    /**
+     * Static candidate verification (ADR-026, default off): fold a cheap
+     * structural check into the best-of-N ranking so a broken candidate is
+     * demoted below valid ones. A ranking change, benchmark-gated like the
+     * ADR-024 knobs.
+     */
+    verifyCandidates?: boolean;
   };
   /**
    * Speculative routing (ADR-024). Off by default. `enabled` starts the single
@@ -455,7 +462,8 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     (samplingOptions.sampleTimeoutMs !== undefined ||
       samplingOptions.minRanked !== undefined ||
       samplingOptions.adaptive !== undefined ||
-      samplingOptions.cacheFriendlyVariants !== undefined)
+      samplingOptions.cacheFriendlyVariants !== undefined ||
+      samplingOptions.verifyCandidates !== undefined)
       ? {
           ...(samplingOptions.sampleTimeoutMs !== undefined
             ? { sampleTimeoutMs: samplingOptions.sampleTimeoutMs }
@@ -464,6 +472,9 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
           ...(samplingOptions.adaptive !== undefined ? { adaptive: samplingOptions.adaptive } : {}),
           ...(samplingOptions.cacheFriendlyVariants !== undefined
             ? { cacheFriendlyVariants: samplingOptions.cacheFriendlyVariants }
+            : {}),
+          ...(samplingOptions.verifyCandidates !== undefined
+            ? { verifyCandidates: samplingOptions.verifyCandidates }
             : {}),
         }
       : undefined;

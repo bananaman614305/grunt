@@ -1011,3 +1011,173 @@ describe("cache-friendly framings (ADR-024)", () => {
     expect(res.headers.get("x-milo-sample-pick")).toBe("1");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Static candidate verification (ADR-026)
+// ---------------------------------------------------------------------------
+
+const FENCE = "```";
+
+/** A stream that ends with `finish_reason: "length"`: a length-truncated draw. */
+function sseTruncated(content: string): Response {
+  const frame = { id: `gen-${content}`, object: "chat.completion.chunk", created: 1_700_000_000, model: "test/fast" };
+  const chunks = [
+    { ...frame, choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }] },
+    {
+      ...frame,
+      choices: [{ index: 0, delta: {}, finish_reason: "length" }],
+      usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.0001 },
+    },
+  ];
+  const text = chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+  return new Response(text, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+type BrokenRow = { broken?: boolean; flaws?: string[] };
+
+describe("static candidate verification (ADR-026)", () => {
+  it("default off: a structurally-broken candidate still wins on Jev's score alone (byte-identical)", async () => {
+    const contents = [`broken q3\n${FENCE}js\nconst x = 1`, "valid q1", "valid q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev() }); // verifyCandidates absent
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+
+    // The broken index-0 (q3) still outranks the valid ones: ranking unchanged.
+    expect(res.headers.get("x-milo-sample-pick")).toBe("0");
+    const upstream = recorded[0]?.upstream as Upstream;
+    expect(upstream.samples?.[0] as BrokenRow).not.toHaveProperty("broken");
+  });
+
+  it("on: an unterminated code fence is demoted below a valid candidate", async () => {
+    const contents = [`broken q3\n${FENCE}js\nconst x = 1`, "valid q1", "valid q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), sampling: { verifyCandidates: true } });
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+
+    // The broken q3 is gated below the valid q1: the pick is index 1, not 0.
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+    const body = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+    expect(body.choices[0]?.message.content).toBe("valid q1");
+
+    const upstream = recorded[0]?.upstream as Upstream;
+    const s0 = upstream.samples?.[0] as BrokenRow;
+    expect(s0.broken).toBe(true);
+    expect(s0.flaws).toContain("unterminated_code_fence");
+    // No candidate content is ever stored: only the flaw classes.
+    expect(JSON.stringify(upstream)).not.toContain("const x = 1");
+  });
+
+  it("on: a malformed unified diff is demoted below a valid candidate", async () => {
+    // Header claims 3 old / 4 new lines; the body supplies 1 / 2.
+    const contents = ["diff q3\n@@ -1,3 +1,4 @@\n a\n+b", "valid q1", "valid q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), sampling: { verifyCandidates: true } });
+    const res = await a.fetch(chatRequest());
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+    const s0 = (recorded[0]?.upstream as Upstream).samples?.[0] as BrokenRow;
+    expect(s0.flaws).toContain("malformed_diff");
+  });
+
+  it("on: invalid JSON in a json fence is demoted below a valid candidate", async () => {
+    const contents = [`json q3\n${FENCE}json\n{ oops }\n${FENCE}`, "valid q1", "valid q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), sampling: { verifyCandidates: true } });
+    const res = await a.fetch(chatRequest());
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+    const s0 = (recorded[0]?.upstream as Upstream).samples?.[0] as BrokenRow;
+    expect(s0.flaws).toContain("invalid_json");
+  });
+
+  it("on: a length-truncated candidate is demoted below a valid candidate", async () => {
+    openRouter.handler = (_body, index) =>
+      index === 0 ? sseTruncated("truncated q3") : sse(completionBody(index === 1 ? "valid q1" : "valid q0"));
+    const a = await app({ jev: rankingJev(), sampling: { verifyCandidates: true } });
+    const res = await a.fetch(chatRequest());
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+    const s0 = (recorded[0]?.upstream as Upstream).samples?.[0] as BrokenRow;
+    expect(s0.broken).toBe(true);
+    expect(s0.flaws).toContain("truncated_length");
+  });
+
+  it("on: valid-vs-valid still ranks by Jev, unchanged by the gate", async () => {
+    const contents = ["valid q1", "valid q3", "valid q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev(), sampling: { verifyCandidates: true } });
+    const res = await a.fetch(chatRequest());
+    // Every candidate is valid, so Jev's best (q3 at index 1) wins as always.
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+    const upstream = recorded[0]?.upstream as Upstream;
+    for (const s of upstream.samples ?? []) expect(s as BrokenRow).not.toHaveProperty("broken");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Top-K candidate exposure (ADR-026)
+// ---------------------------------------------------------------------------
+
+describe("top-K candidate exposure (ADR-026)", () => {
+  it("returns a single best choice by default (no n)", async () => {
+    const contents = ["plain q1", "framed q3", "framed q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev() });
+    const res = await a.fetch(chatRequest());
+    const body = (await res.json()) as { choices: unknown[] };
+    expect(body.choices).toHaveLength(1);
+    expect(res.headers.get("x-milo-exposed")).toBeNull();
+  });
+
+  it("returns the top-K ranked candidates best-first when n>1", async () => {
+    const contents = ["plain q1", "framed q3", "framed q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev() });
+    const res = await a.fetch(chatRequest({ n: 2 }));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { choices: Array<{ index: number; message: { content: string } }> };
+    expect(body.choices).toHaveLength(2);
+    // Best-first: Jev's pick (q3) leads, the runner-up (q1) follows.
+    expect(body.choices[0]?.message.content).toBe("framed q3");
+    expect(body.choices[1]?.message.content).toBe("plain q1");
+    expect(body.choices.map((ch) => ch.index)).toEqual([0, 1]);
+    expect(res.headers.get("x-milo-exposed")).toBe("2");
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+    // Each draw generated a single completion; the client `n` never fans a draw
+    // out into n upstream generations.
+    for (const call of openRouter.calls) expect(call.body["n"]).toBe(1);
+  });
+
+  it("caps K at the number of candidates actually drawn", async () => {
+    const contents = ["plain q1", "framed q3", "framed q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev() });
+    const res = await a.fetch(chatRequest({ n: 5 }));
+    const body = (await res.json()) as { choices: unknown[] };
+    expect(body.choices).toHaveLength(3);
+    expect(res.headers.get("x-milo-exposed")).toBe("3");
+  });
+
+  it("streams top-K as well-formed multi-choice SSE", async () => {
+    const contents = ["plain q1", "framed q3", "framed q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const a = await app({ jev: rankingJev() });
+    const res = await a.fetch(chatRequest({ n: 2, stream: true }));
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+
+    const text = await res.text();
+    const frames = text
+      .split("\n\n")
+      .map((block) => block.trim())
+      .filter((block) => block.startsWith("data: "))
+      .map((block) => block.slice("data: ".length))
+      .filter((data) => data !== "[DONE]")
+      .map((data) => JSON.parse(data) as { choices: Array<{ index: number; delta: { content?: string } }> });
+
+    const contentFrame = frames[0];
+    expect(contentFrame?.choices).toHaveLength(2);
+    expect(contentFrame?.choices[0]?.delta.content).toBe("framed q3");
+    expect(contentFrame?.choices[1]?.delta.content).toBe("plain q1");
+    expect(res.headers.get("x-milo-exposed")).toBe("2");
+  });
+});
