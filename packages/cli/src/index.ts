@@ -6,6 +6,7 @@
  */
 import * as billing from "./commands/billing.js";
 import * as canary from "./commands/canary.js";
+import * as configure from "./commands/configure.js";
 import * as cost from "./commands/cost.js";
 import * as decisions from "./commands/decisions.js";
 import * as explain from "./commands/explain.js";
@@ -24,7 +25,19 @@ type Command = {
   run: (args: string[], deps: CliDeps) => Promise<number | undefined>;
 };
 
-const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, cost, tune, roster, canary, billing, verify };
+const COMMANDS: Record<string, Command> = {
+  serve,
+  explain,
+  decisions,
+  stats,
+  cost,
+  tune,
+  roster,
+  canary,
+  billing,
+  verify,
+  configure,
+};
 
 export const TOP_LEVEL_HELP = `Usage: milo <command> [options]
 
@@ -41,6 +54,7 @@ Commands:
   canary      Run the continuous eval canary and check for drift
   billing     Operate the billing database, Stripe, and provisioning
   verify      Install the ground-truth verification Stop hook into a harness
+  configure   Set up a local Milo: config, pi provider, smoke verify
 
 Run "milo <command> --help" for command-specific options.
 `;

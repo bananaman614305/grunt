@@ -12,6 +12,16 @@ import type { StripeClient } from "@milo/stripe";
 
 export type Writer = { write(chunk: string): void };
 
+/** The subset of `fetch` `milo configure` uses for its smoke request. */
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/**
+ * `milo configure`'s interactive prompt: `label` is the question, `secret`
+ * hides what is typed. Returns `undefined` when the user answers nothing
+ * (empty line or EOF), so an unattended run simply skips the step.
+ */
+export type PromptFn = (label: string, secret?: boolean) => Promise<string | undefined>;
+
 /**
  * What `milo billing` needs beyond the pinned `BillingStore` contract:
  * `listAccounts` (an operator listing, not part of the per-account API) and
@@ -46,6 +56,10 @@ export type CliDeps = {
   stdout: Writer;
   stderr: Writer;
   serve: ServeFn;
+  /** HTTP client for the configure smoke request (real `fetch` in production). */
+  fetch: FetchLike;
+  /** Interactive input for `milo configure`'s key prompts (readline in production). */
+  prompt: PromptFn;
   /** Opens (and migrates) the billing database at `url`, for `milo billing`. */
   openBillingStore: (url: string) => Promise<BillingAdminStore>;
   /**

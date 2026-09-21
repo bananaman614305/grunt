@@ -11,6 +11,21 @@ Every `/v1/*` request must carry a bearer token, and there are two kinds
 (ADR-003, ADR-007). Which one you sent decides everything else on this page:
 who pays, what the response headers say, and whose decisions you can read.
 
+## Keyless onboarding routes
+
+`GET /healthz`, `GET /setup.md`, `GET /setup/pi.json`, `GET /skill.md` and
+`GET /llms.txt` need no token at all, so an agent (or a bare `curl`) can read
+them before it has an OpenRouter key.
+
+`GET /setup/pi.json` is the pi coding agent's setup as data: the same setup
+`/setup.md` explains in prose, generated from the request's own origin and the
+roster the gateway is actually running. The `providers` object is a ready
+`~/.pi/agent/models.json` provider block -- a `milo` provider with the
+OpenAI-completions API, `model: "milo/auto"` (plus every roster model), and an
+`apiKey` of `$OPENROUTER_API_KEY`, an environment-variable reference rather
+than a literal key, so the document is safe to serve to anyone. `milo
+configure` merges the same block into a local `models.json` additively.
+
 ```
 Authorization: Bearer <your OpenRouter key>     # bring your own key (BYOK)
 Authorization: Bearer mk_<your Milo key>        # a Milo account

@@ -969,10 +969,11 @@ describe("GET /", () => {
     await start();
     const res = await gateway.app.request("http://milo.test/");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { baseUrl: string; routedModel: string; setup: string; skill: string };
+    const body = (await res.json()) as { baseUrl: string; routedModel: string; setup: string; piSetup: string; skill: string };
     expect(body.routedModel).toBe("milo/auto");
     expect(body.baseUrl).toBe("http://milo.test/v1");
     expect(body.setup).toBe("http://milo.test/setup.md");
+    expect(body.piSetup).toBe("http://milo.test/setup/pi.json");
     expect(body.skill).toBe("http://milo.test/skill.md");
     expect(upstreams.calls).toHaveLength(0);
   });
@@ -1179,6 +1180,54 @@ describe("agent-facing static routes", () => {
     const text = await res.text();
     expect(text).toContain("https://milo.test/v1");
     expect(text).not.toContain("http://milo.test");
+  });
+
+  it("serves /setup/pi.json without a key: the pi provider block for the running roster", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/setup/pi.json");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as {
+      baseUrl: string;
+      apiBaseUrl: string;
+      model: string;
+      apiKeyEnv: string;
+      providerId: string;
+      providers: Record<string, { baseUrl: string; api: string; apiKey: string; models: Array<{ id: string }> }>;
+      roster: Record<string, string[]>;
+    };
+
+    expect(body.baseUrl).toBe("http://milo.test");
+    expect(body.apiBaseUrl).toBe("http://milo.test/v1");
+    expect(body.model).toBe("milo/auto");
+    expect(body.apiKeyEnv).toBe("OPENROUTER_API_KEY");
+    expect(body.providerId).toBe("milo");
+
+    // The provider block points pi at this deployment and names the key by
+    // env var, never by value -- safe to serve without auth.
+    const provider = body.providers.milo;
+    expect(provider.baseUrl).toBe("http://milo.test/v1");
+    expect(provider.api).toBe("openai-completions");
+    expect(provider.apiKey).toBe("$OPENROUTER_API_KEY");
+    expect(JSON.stringify(body)).not.toContain("sk-");
+    expect(provider.models[0].id).toBe("milo/auto");
+
+    // The models come from the roster the gateway is actually running.
+    for (const id of ["test/fast", "test/mid", "test/frontier"]) {
+      expect(provider.models.map((m) => m.id)).toContain(id);
+    }
+    expect(body.roster).toEqual({ fast: ["test/fast"], mid: ["test/mid"], frontier: ["test/frontier"] });
+    expect(upstreams.calls).toHaveLength(0);
+  });
+
+  it("honors the forwarded protocol on /setup/pi.json behind a TLS-terminating proxy", async () => {
+    await start();
+    const res = await gateway.app.request("http://milo.test/setup/pi.json", {
+      headers: { "x-forwarded-proto": "https" },
+    });
+    const body = (await res.json()) as { apiBaseUrl: string; baseUrl: string };
+    expect(body.baseUrl).toBe("https://milo.test");
+    expect(body.apiBaseUrl).toBe("https://milo.test/v1");
   });
 
   it("serves /llms.txt without a key, pointing at /setup.md, /healthz, and the repo", async () => {
