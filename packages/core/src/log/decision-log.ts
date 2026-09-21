@@ -746,21 +746,38 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
     return next;
   }
 
-  /** One JSON record per line, oldest first, paginated internally. */
-  async *exportJsonl(): AsyncIterable<string> {
-    const pageSize = 200;
+  /**
+   * Every decision, oldest first, a page at a time.
+   *
+   * `listRecent` caps at 500 rows because a listing is for reading; an
+   * analysis (`milo tune`) has to walk the whole log, which is tens of
+   * thousands of rows, so it needs a cursor rather than a bigger limit.
+   * Paginated internally at `pageSize`, so the caller never holds more than
+   * one page in memory.
+   */
+  async *iterate(opts?: { sinceIso?: string; pageSize?: number }): AsyncIterable<StoredDecision> {
+    const pageSize = Math.max(1, Math.min(opts?.pageSize ?? 200, 1000));
+    const since = opts?.sinceIso;
+    const where = since !== undefined ? "WHERE created_at >= ?" : "";
     let offset = 0;
     for (;;) {
       const rs = await this.db.execute({
-        sql: "SELECT * FROM decisions ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?",
-        args: [pageSize, offset],
+        sql: `SELECT * FROM decisions ${where} ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`,
+        args: since !== undefined ? [since, pageSize, offset] : [pageSize, offset],
       });
       if (rs.rows.length === 0) return;
       for (const row of rs.rows) {
-        yield `${JSON.stringify(rowToRecord(row))}\n`;
+        yield rowToRecord(row);
       }
       offset += rs.rows.length;
       if (rs.rows.length < pageSize) return;
+    }
+  }
+
+  /** One JSON record per line, oldest first, paginated internally. */
+  async *exportJsonl(): AsyncIterable<string> {
+    for await (const record of this.iterate()) {
+      yield `${JSON.stringify(record)}\n`;
     }
   }
 
