@@ -148,7 +148,7 @@ export {
 } from "./pruning.js";
 export type { PruneAnswers, PruneDecision, PruneWindow } from "./pruning.js";
 
-export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT } from "./router.js";
-export type { RouterOptions, RoutingMode } from "./router.js";
+export { Router, toSignals, classifyFailure, MAX_IN_FLIGHT, SPECULATION_MAX_PROMPT_CHARS } from "./router.js";
+export type { RouterOptions, RoutingMode, SpeculationOptions } from "./router.js";
 export * from "./errors.js";
 export * from "./sticky-store.js";

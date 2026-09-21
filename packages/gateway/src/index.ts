@@ -129,6 +129,19 @@ export type GatewayOptions = {
    */
   sampling?: { enabled?: boolean; sampleTimeoutMs?: number; minRanked?: number };
   /**
+   * Speculative routing (ADR-024). Off by default. `enabled` starts the single
+   * cheapest fast-tier call in parallel with the Jev classification on the
+   * OpenAI chat surface, to hide the classification's latency. The result is
+   * used only when the real Jev-driven decision resolves to that same single,
+   * ungated call, and discarded (the call aborted) otherwise -- so the answer
+   * a client gets is always the one Jev's decision dictates, never a different
+   * routing outcome. A miss costs one cheap, promptly-cancelled call; a hit
+   * costs nothing extra (the call becomes the real one). `maxPromptChars`
+   * (default `SPECULATION_MAX_PROMPT_CHARS`) tunes the probably-easy heuristic.
+   * Set from `milo.config.json`'s `speculation`.
+   */
+  speculation?: { enabled?: boolean; maxPromptChars?: number };
+  /**
    * Context pruning (ADR-014, ADR-013 phase C). Off by default: `enabled`
    * (default false) lets the gate run on every routed request over the token
    * floor; even off, a request opts in per call with `milo: { prune: true }`.
@@ -360,6 +373,9 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     roster,
     mode,
     samplingEnabled,
+    // Speculative routing (ADR-024). Off unless configured; the Router's own
+    // default is also off, so an absent block never speculates.
+    ...(options.speculation !== undefined ? { speculation: options.speculation } : {}),
     ...(options.jevTimeoutMs !== undefined ? { jevTimeoutMs: options.jevTimeoutMs } : {}),
     sticky: new StickyCache(),
     // `stickyStore` arrives in core's RouterOptions with the persistent sticky
@@ -440,6 +456,10 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     ...(factMemory !== undefined ? { factMemory } : {}),
     ...(factRetrieval !== undefined ? { factRetrieval } : {}),
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),
+    // The gateway only needs to know whether to wire speculation up; the
+    // router owns the heuristic and thresholds. Passed only when enabled, so an
+    // unconfigured or explicitly-off deployment takes the exact prior path.
+    ...(options.speculation?.enabled === true ? { speculation: { enabled: true } } : {}),
     ...(options.pruning !== undefined ? { pruning: options.pruning } : {}),
     ...(billing !== undefined ? { billing } : {}),
     ...(tenantLimits !== undefined ? { tenantLimits } : {}),

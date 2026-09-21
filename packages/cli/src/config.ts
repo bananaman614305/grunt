@@ -91,6 +91,23 @@ const pruningSchema = z
   .strict();
 
 /**
+ * Speculative routing (ADR-024). Off by default: `enabled` (default false)
+ * starts the single cheapest fast-tier call in parallel with the Jev
+ * classification on the OpenAI chat surface, to hide its latency. The result
+ * is used only when the real Jev decision resolves to that same single call,
+ * and aborted otherwise, so routing is never changed -- only latency, at the
+ * cost of one cheap wasted call per miss. `maxPromptChars` (default 2,000)
+ * tunes the probably-easy heuristic below which a request is a speculation
+ * candidate.
+ */
+const speculationSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxPromptChars: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/**
  * Two-stage fact retrieval (ADR-018). `enabled` (default true) turns on the
  * embedding pre-filter that narrows a caller's stored facts before the Jev
  * relevance gate; it only ever runs when fact memory is on (billing and an
@@ -214,6 +231,7 @@ export const configSchema = z
     /** Jev budget in ms per routed request. Default ROUTER_LIMITS.jevTimeoutMs (800). */
     jevTimeoutMs: z.number().int().positive().optional(),
     sampling: samplingSchema.optional(),
+    speculation: speculationSchema.optional(),
     pruning: pruningSchema.optional(),
     factRetrieval: factRetrievalSchema.optional(),
     classificationCache: classificationCacheSchema.optional(),

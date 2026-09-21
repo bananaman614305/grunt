@@ -285,6 +285,16 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
           },
         }
       : {}),
+    ...(config.speculation !== undefined
+      ? {
+          speculation: {
+            enabled: config.speculation.enabled,
+            ...(config.speculation.maxPromptChars !== undefined
+              ? { maxPromptChars: config.speculation.maxPromptChars }
+              : {}),
+          },
+        }
+      : {}),
     ...(config.pruning !== undefined
       ? {
           pruning: {

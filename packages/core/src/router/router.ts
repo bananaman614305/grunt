@@ -43,7 +43,7 @@ import type { ChatMessage, Modality, RouteDecision, RouteRequest, RouteSignals, 
 import { DEFAULT_ROSTER, POLICY_VERSION, ROUTER_LIMITS, TASK_TYPES } from "../types.js";
 import { CircuitBreaker } from "./breaker.js";
 import type { BreakerStatus, CircuitBreakerOptions } from "./breaker.js";
-import { buildJevState, countUserTurns } from "./context.js";
+import { buildJevState, countUserTurns, messageText } from "./context.js";
 import { RoutingUnavailableError } from "./errors.js";
 import type { RoutingUnavailableCause } from "./errors.js";
 import { computeBand, computeBudget, modalityBudget, NEMOTRON_OMNI_MODEL } from "./controller.js";
@@ -72,6 +72,31 @@ import type { ClassificationCacheOptions } from "./classification-cache.js";
  * is one model family.
  */
 export type RoutingMode = "roster" | "deepseek";
+
+/**
+ * Default cap on total prompt characters for the speculative-routing
+ * "probably-easy" heuristic (ADR-024). Roughly 500 tokens: below it a request
+ * overwhelmingly routes to the fast tier, which is what makes speculating its
+ * single cheap call worth the bet. A longer prompt is not treated as easy and
+ * is never speculated.
+ */
+export const SPECULATION_MAX_PROMPT_CHARS = 2_000;
+
+/**
+ * Speculative routing (ADR-024). Off by default: starting the likely model
+ * call before Jev answers is a latency win that costs a wasted cheap call on a
+ * miss, so a deployment opts into it.
+ */
+export type SpeculationOptions = {
+  /** Turns speculation on. Defaults to false. */
+  enabled?: boolean;
+  /**
+   * A request whose prompt is longer than this (total characters of message
+   * text) is not treated as probably-easy and is never speculated. Defaults to
+   * `SPECULATION_MAX_PROMPT_CHARS`.
+   */
+  maxPromptChars?: number;
+};
 
 export type RouterOptions = {
   jev: JevClientLike;
@@ -152,6 +177,14 @@ export type RouterOptions = {
    * to its single-model outcome instead.
    */
   samplingEnabled?: boolean;
+  /**
+   * Speculative routing (ADR-024). Off by default. When enabled, the gateway
+   * asks `speculativeModel` whether to start a single cheap call in parallel
+   * with the Jev classification for a given request. This never changes what
+   * the router decides -- it only tells the gateway when the latency gamble is
+   * worth taking. See `speculativeModel`.
+   */
+  speculation?: SpeculationOptions;
 };
 
 /** A Jev answer that does not match its question's shape. */
@@ -397,6 +430,7 @@ export class Router {
   private readonly jevTimeoutMs: number;
   private readonly profile: PolicyProfile;
   private readonly samplingEnabled: boolean;
+  private readonly speculation: { enabled: boolean; maxPromptChars: number };
   /** Exposed for a health endpoint; see `breakerState()`. */
   private readonly circuit: CircuitBreaker;
   /**
@@ -433,6 +467,10 @@ export class Router {
     this.jevTimeoutMs = opts.jevTimeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
     this.profile = opts.profile ?? JEV_PROFILE;
     this.samplingEnabled = opts.samplingEnabled ?? true;
+    this.speculation = {
+      enabled: opts.speculation?.enabled ?? false,
+      maxPromptChars: opts.speculation?.maxPromptChars ?? SPECULATION_MAX_PROMPT_CHARS,
+    };
     this.circuit = new CircuitBreaker({ clock: this.clock, ...opts.breaker });
   }
 
@@ -454,6 +492,70 @@ export class Router {
   /** What the circuit breaker is doing. For the gateway's health endpoint. */
   breakerState(): BreakerStatus {
     return this.circuit.state();
+  }
+
+  /**
+   * The single cheap model to start in parallel with the Jev classification
+   * for this request (ADR-024), or `undefined` to not speculate.
+   *
+   * Speculation is a pure LATENCY optimisation and never a routing change: the
+   * gateway starts this one call before Jev answers, then uses its result only
+   * when the real Jev-driven decision resolves to this exact model as a single,
+   * ungated call, and discards (aborts) it otherwise. This method only decides
+   * whether that gamble is worth taking, and it is deliberately conservative:
+   *
+   *   - off unless enabled (default off);
+   *   - `"roster"` mode only -- the deepseek compute controller's own band
+   *     budget is out of scope for this feature;
+   *   - never for a forced tier, which makes no Jev call and so has no latency
+   *     to hide;
+   *   - only when a fresh Jev call would actually happen: an in-memory sticky
+   *     hit at this same ask, or a classification-cache hit, already has Jev's
+   *     answer, so speculating would only waste a call (the async sticky STORE
+   *     is deliberately not consulted -- reading it would itself add latency to
+   *     the hot path, and a rare store-only hit costs at most one wasted cheap
+   *     call, never a wrong answer);
+   *   - only for a request a cheap heuristic marks probably-easy -- no tools, a
+   *     short prompt, not `quality` posture -- because those are the requests
+   *     that overwhelmingly route to the fast tier, and speculating an uncertain
+   *     request would mostly miss;
+   *   - always the request's own resolved FAST-tier model: the cheapest branch,
+   *     never a mid/frontier model and never best-of-N (the gateway also
+   *     requires the decision to be a single call before it reuses the result).
+   *
+   * It never calls Jev, never mutates state, and is safe to call on the hot
+   * path before `route`.
+   */
+  speculativeModel(req: RouteRequest): string | undefined {
+    if (!this.speculation.enabled) return undefined;
+    if (this.mode !== "roster") return undefined;
+    if (req.forcedTier !== undefined) return undefined;
+    if (Array.isArray(req.tools) && req.tools.length > 0) return undefined;
+    if (req.posture === "quality") return undefined;
+    if (this.promptChars(req.messages) > this.speculation.maxPromptChars) return undefined;
+
+    const userTurns = countUserTurns(req.messages);
+    const local = this.sticky.get(req.fingerprint);
+    if (local !== undefined && local.userTurns === userTurns) return undefined;
+    if (this.classificationCache.get(`${req.fingerprint} ${userTurns}`) !== undefined) return undefined;
+
+    // Strictly the FAST tier -- the first fast model this request's candidates
+    // allow. Deliberately NOT `resolveModel("fast", ...)`, whose tier fallback
+    // could climb to a mid/frontier model when candidates exclude every fast
+    // one; a speculative call must never be a hard-tier call, so we decline to
+    // speculate instead. When Jev then routes an easy request to the fast tier,
+    // `resolveModel` picks this same first allowed fast model, so a hit matches.
+    const fast = this.rosterFor(req).fast ?? [];
+    const allowed =
+      req.candidates !== undefined && req.candidates.length > 0 ? new Set(req.candidates) : undefined;
+    return fast.find((model) => allowed === undefined || allowed.has(model));
+  }
+
+  /** Total characters of message text in a prompt: what the heuristic counts. */
+  private promptChars(messages: ChatMessage[]): number {
+    let total = 0;
+    for (const message of messages) total += messageText(message.content).length;
+    return total;
   }
 
   /**
