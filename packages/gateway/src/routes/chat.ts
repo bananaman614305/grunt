@@ -42,6 +42,7 @@ import {
   forwardedJevKey,
   isMetered,
   noteDecisionAccount,
+  noteDecisionKeyHash,
   rateLimitBucket,
   upstreamHeadersFor,
 } from "../billing.js";
@@ -53,6 +54,7 @@ import type { RoutedFacts } from "../facts.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
+  enforceTenantLimits,
   onFinished,
   rateLimitedMessage,
   readJsonObject,
@@ -90,6 +92,13 @@ async function handleChat(c: Context, deps: AppDeps): Promise<Response> {
       "invalid_request_body",
     );
   }
+
+  // Tenant guardrails (request shape, request/token rate, spend cap) run
+  // before anything else costs money: a request already over its own budget
+  // should not reach the credit gate, Jev, or OpenRouter. No-ops entirely
+  // when this deployment configures no `tenantLimits`.
+  const tenantRefusal = await enforceTenantLimits(c, deps, body, "openai");
+  if (tenantRefusal !== undefined) return tenantRefusal;
 
   // A Milo key with no credit is refused here, before Jev and before
   // OpenRouter: a request that cannot be paid for should not cost Milo a
@@ -265,6 +274,9 @@ async function routed(
   // Stamps the account on the row the router just wrote, so this decision
   // shows up in that account's `/v1/decisions` and nobody else's.
   await noteDecisionAccount(c, deps, decision.id);
+  // Stamps the caller's key hash too, so a configured spend cap can sum this
+  // key's cost later (a no-op when no cap is configured).
+  await noteDecisionKeyHash(c, deps, decision.id);
 
   // Preference capture (ADR-011) is fire-and-forget: it can write a row,
   // never delay or fail the response. The brief compiles from what is

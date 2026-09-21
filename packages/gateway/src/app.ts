@@ -36,6 +36,8 @@ import type { BillingRuntime } from "./billing.js";
 import { anthropicErrorResponse, errorResponse } from "./errors.js";
 import { hashKey } from "./rate-limit.js";
 import type { RateLimiter } from "./rate-limit.js";
+import { applyTenantHeaders, bodyTooLarge, getTenantStatus } from "./tenant-limits.js";
+import type { TenantLimits } from "./tenant-limits.js";
 import { registerAccountPages } from "./routes/account-pages.js";
 import { registerBillingRoutes } from "./routes/billing-api.js";
 import { registerChatRoute } from "./routes/chat.js";
@@ -123,6 +125,14 @@ export type AppDeps = {
    */
   factRetrieval?: { model: string; baseUrl: string; fetch?: (input: string, init?: RequestInit) => Promise<Response> };
   rateLimiter: RateLimiter;
+  /**
+   * Tenant guardrails: per-key request/token rate limits, a rolling-window
+   * spend cap, and request-shape bounds, all independently optional. Absent
+   * means none of it runs -- the pre-existing `rateLimiter` above (Jev spend
+   * on the routed path only, ADR-003) is untouched either way. Set from
+   * `GatewayOptions.tenantLimits`.
+   */
+  tenantLimits?: TenantLimits;
   /**
    * Best-of-N execution knobs (ADR-010). Absent means the defaults:
    * `sampleTimeoutMs` caps each sample's wall clock; `minRanked` is how many
@@ -272,6 +282,45 @@ const requireKey: MiddlewareHandler = async (c, next) => {
   return;
 };
 
+/**
+ * Abuse protection's cheapest check: a `Content-Length` over the configured
+ * ceiling is refused before the body is even read, so an oversized upload
+ * costs Milo nothing but a header comparison. Only checks what
+ * `tenantLimits.maxBodyBytes` names; absent (the default) this middleware
+ * does nothing for every request, which is the "unconfigured deployment is
+ * unchanged" guarantee tenant limits promise everywhere else.
+ */
+function tenantBodySizeGuard(deps: AppDeps): MiddlewareHandler {
+  return async (c, next) => {
+    const maxBytes = deps.tenantLimits?.config.maxBodyBytes;
+    if (maxBytes !== undefined && bodyTooLarge(c.req.header("content-length"), maxBytes)) {
+      const message = `Request body exceeds the ${maxBytes}-byte limit Milo allows for this deployment.`;
+      return isAnthropicPath(new URL(c.req.url).pathname)
+        ? anthropicErrorResponse(c, 413, message, "invalid_request_error")
+        : errorResponse(c, 413, message, "invalid_request_error", "request_too_large");
+    }
+    await next();
+    return;
+  };
+}
+
+/**
+ * Discloses whatever the tenant-limits guard found for this request as
+ * `x-milo-ratelimit-*` / `x-milo-spend-*` headers, on every response --
+ * refusal or success -- once a route has run it (`enforceTenantLimits` in
+ * `routes/shared.ts`). A request that never reached a guarded route (a
+ * passthrough that failed before parsing, `/healthz`, the proxy route) simply
+ * recorded no status, and this middleware then does nothing: `c.res.headers`
+ * is mutated only when there is something to disclose.
+ */
+function tenantHeadersMiddleware(): MiddlewareHandler {
+  return async (c, next) => {
+    await next();
+    const status = getTenantStatus(c);
+    if (status !== undefined) applyTenantHeaders(c.res.headers, status);
+  };
+}
+
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
@@ -330,9 +379,15 @@ export function createApp(deps: AppDeps): Hono {
   registerStaticRoutes(app);
 
   app.use("/v1/*", requireKey);
+  // Cheapest abuse check first: an oversized body is refused before a
+  // billing lookup is even attempted.
+  app.use("/v1/*", tenantBodySizeGuard(deps));
   // Resolves `mk_` keys to an account and everything else to BYOK, once per
   // request, before any route reads the caller (ADR-007).
   app.use("/v1/*", billingAuth(deps));
+  // Wraps every route below: applies whatever tenant-limits status a route
+  // recorded to the outgoing response, refusal or success alike.
+  app.use("/v1/*", tenantHeadersMiddleware());
 
   registerChatRoute(app, deps);
   registerMessagesRoute(app, deps);

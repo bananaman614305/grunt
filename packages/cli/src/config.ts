@@ -37,6 +37,27 @@ const rateLimitSchema = z
   .strict();
 
 /**
+ * Tenant guardrails: per-key request/token rate limits, a rolling-window USD
+ * spend cap read from the decision log's own cost figures, and request-shape
+ * bounds. Every field is independently optional and unset (unlimited/off) by
+ * default, so a deployment turns on only what it wants bounded -- unlike
+ * `rateLimit` above, which is Milo's own Jev-spend limiter on the routed path
+ * only (ADR-003), this bounds every metered surface and every caller's own
+ * spend, not just Milo's.
+ */
+const tenantLimitsSchema = z
+  .object({
+    requestsPerMinute: z.number().int().positive().optional(),
+    tokensPerMinute: z.number().int().positive().optional(),
+    maxBodyBytes: z.number().int().positive().optional(),
+    maxMessages: z.number().int().positive().optional(),
+    maxRequestTokens: z.number().int().positive().optional(),
+    spendCapUsd: z.number().positive().optional(),
+    spendWindowHours: z.number().positive().optional(),
+  })
+  .strict();
+
+/**
  * Best-of-N sampling (ADR-010). `enabled` defaults to true -- sampling is a
  * routing outcome, on by default for the cells the policy names; the cells
  * themselves are fixed in code for now. `sampleTimeoutMs` caps each sample's
@@ -158,6 +179,7 @@ export const configSchema = z
     jevTransport: jevTransportSchema.default("typesafe"),
     roster: rosterSchema.optional(),
     rateLimit: rateLimitSchema.optional(),
+    tenantLimits: tenantLimitsSchema.optional(),
     upstream: upstreamSchema.optional(),
     decisionLog: z.string().trim().min(1).default(DEFAULT_DECISION_LOG_URL),
     referer: z.string().trim().min(1).optional(),

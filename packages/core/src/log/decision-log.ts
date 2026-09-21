@@ -106,7 +106,7 @@ function assertNoSecrets(record: RouteDecision): void {
  * a property of the *row*, not of the routing decision, and a bring-your-own
  * key request has no account at all.
  */
-export type StoredDecision = DecisionRecord & { accountId?: string };
+export type StoredDecision = DecisionRecord & { accountId?: string; keyHash?: string };
 
 function rowToRecord(row: Row): StoredDecision {
   const record: StoredDecision = {
@@ -136,6 +136,9 @@ function rowToRecord(row: Row): StoredDecision {
   }
   if (row.account_id !== null && row.account_id !== undefined) {
     record.accountId = String(row.account_id);
+  }
+  if (row.key_hash !== null && row.key_hash !== undefined) {
+    record.keyHash = String(row.key_hash);
   }
   return record;
 }
@@ -228,6 +231,41 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
    */
   async setAccount(id: string, accountId: string): Promise<void> {
     await this.db.execute({ sql: "UPDATE decisions SET account_id = ? WHERE id = ?", args: [accountId, id] });
+  }
+
+  /**
+   * Attaches the caller's key hash to a decision that has already been
+   * written, the same way `setAccount` attaches an account: the router logs
+   * the decision before the gateway's tenant-limits check has anywhere to put
+   * it. Only called when a deployment tracks per-key spend (tenant limits),
+   * so an unconfigured deployment writes nothing new here. A no-op (does not
+   * throw) if `id` does not exist.
+   */
+  async setKeyHash(id: string, keyHash: string): Promise<void> {
+    assertKeyHash(keyHash);
+    await this.db.execute({ sql: "UPDATE decisions SET key_hash = ? WHERE id = ?", args: [keyHash, id] });
+  }
+
+  /**
+   * This key's total `upstream.costUsd` for decisions created at or after
+   * `sinceIso` -- a rolling-window spend total for the tenant spend cap.
+   * `json_extract` on the stored `upstream_json` blob keeps this one indexed
+   * aggregate query (on `(key_hash, created_at)`, added alongside the column)
+   * rather than a row-by-row scan pulled into application code; callers still
+   * cache the result themselves rather than run this per request (see
+   * `packages/gateway/src/tenant-limits.ts`), since even an indexed aggregate
+   * is a database round trip.
+   */
+  async spendSince(keyHash: string, sinceIso: string): Promise<number> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: `SELECT COALESCE(SUM(json_extract(upstream_json, '$.costUsd')), 0) AS total
+            FROM decisions WHERE key_hash = ? AND created_at >= ?`,
+      args: [keyHash, sinceIso],
+    });
+    const total = rs.rows[0]?.total;
+    const n = typeof total === "number" ? total : Number(total ?? 0);
+    return Number.isFinite(n) ? n : 0;
   }
 
   /** Newest first. `accountId` scopes the list to one account's decisions. */

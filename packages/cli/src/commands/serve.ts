@@ -204,6 +204,33 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     ...(billing !== undefined ? { billing } : {}),
     ...(config.roster !== undefined ? { roster: config.roster } : {}),
     ...(config.rateLimit !== undefined ? { rateLimit: config.rateLimit } : {}),
+    ...(config.tenantLimits !== undefined
+      ? {
+          tenantLimits: {
+            ...(config.tenantLimits.requestsPerMinute !== undefined
+              ? { requestsPerMinute: config.tenantLimits.requestsPerMinute }
+              : {}),
+            ...(config.tenantLimits.tokensPerMinute !== undefined
+              ? { tokensPerMinute: config.tenantLimits.tokensPerMinute }
+              : {}),
+            ...(config.tenantLimits.maxBodyBytes !== undefined
+              ? { maxBodyBytes: config.tenantLimits.maxBodyBytes }
+              : {}),
+            ...(config.tenantLimits.maxMessages !== undefined
+              ? { maxMessages: config.tenantLimits.maxMessages }
+              : {}),
+            ...(config.tenantLimits.maxRequestTokens !== undefined
+              ? { maxRequestTokens: config.tenantLimits.maxRequestTokens }
+              : {}),
+            ...(config.tenantLimits.spendCapUsd !== undefined
+              ? { spendCapUsd: config.tenantLimits.spendCapUsd }
+              : {}),
+            ...(config.tenantLimits.spendWindowHours !== undefined
+              ? { spendWindowHours: config.tenantLimits.spendWindowHours }
+              : {}),
+          },
+        }
+      : {}),
     ...(config.upstream !== undefined
       ? {
           upstream: {

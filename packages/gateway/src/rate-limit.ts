@@ -60,12 +60,27 @@ export class RateLimiter {
 
   /** As `tryConsume`, for a key that is already hashed. */
   tryConsumeHashed(key: string): boolean {
+    return this.tryConsumeWeightedHashed(key, 1);
+  }
+
+  /**
+   * As `tryConsumeHashed`, but spends `weight` tokens at once rather than
+   * exactly one -- for a bucket whose unit is not "one request" (tokens/min,
+   * say). `weight` over the bucket's whole capacity can never succeed, so it
+   * is clamped so a single oversized request cannot wedge a key forever: it
+   * still costs the bucket everything it has, but the caller gets a false
+   * back eventually rather than a permanent refusal (the abuse-shape check
+   * ahead of this one is what actually bounds a single request's size).
+   */
+  tryConsumeWeightedHashed(key: string, weight: number): boolean {
+    const spend = Math.min(Math.max(0, weight), this.capacity);
     const now = this.clock();
     const existing = this.buckets.get(key);
 
     if (existing === undefined) {
       this.evictIfFull(now);
-      this.buckets.set(key, { tokens: this.capacity - 1, updatedAt: now });
+      if (spend > this.capacity) return false;
+      this.buckets.set(key, { tokens: this.capacity - spend, updatedAt: now });
       return true;
     }
 
@@ -74,8 +89,8 @@ export class RateLimiter {
     this.buckets.delete(key);
     this.buckets.set(key, bucket);
 
-    if (bucket.tokens < 1) return false;
-    bucket.tokens -= 1;
+    if (bucket.tokens < spend) return false;
+    bucket.tokens -= spend;
     return true;
   }
 
@@ -90,13 +105,28 @@ export class RateLimiter {
 
   /** As `retryAfterMs`, for a key that is already hashed. */
   retryAfterMsHashed(key: string): number {
+    return this.retryAfterMsForWeightHashed(key, 1);
+  }
+
+  /** As `retryAfterMsHashed`, for the wait until `weight` tokens are free. */
+  retryAfterMsForWeightHashed(key: string, weight: number): number {
     const bucket = this.buckets.get(key);
     if (bucket === undefined) return 0;
     const tokens = this.refilled(bucket, this.clock());
-    if (tokens >= 1) return 0;
+    if (tokens >= weight) return 0;
     // Tokens arrive at `capacity` a minute, so the wait for the missing
-    // fraction of one is that fraction of a minute's worth of refill.
-    return Math.ceil(((1 - tokens) * MINUTE_MS) / this.capacity);
+    // fraction is that fraction of a minute's worth of refill.
+    return Math.ceil(((weight - tokens) * MINUTE_MS) / this.capacity);
+  }
+
+  /**
+   * Tokens this key could spend right now, without spending any (a key never
+   * seen reads as a full bucket). For disclosure headers only.
+   */
+  remainingHashed(key: string): number {
+    const bucket = this.buckets.get(key);
+    if (bucket === undefined) return this.capacity;
+    return Math.floor(this.refilled(bucket, this.clock()));
   }
 
   /** Tracked keys. Exposed for tests asserting the bound holds. */

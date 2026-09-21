@@ -18,6 +18,15 @@
   "rateLimit": {
     "routedPerMinute": 120
   },
+  "tenantLimits": {
+    "requestsPerMinute": 60,
+    "tokensPerMinute": 200000,
+    "maxBodyBytes": 2000000,
+    "maxMessages": 500,
+    "maxRequestTokens": 100000,
+    "spendCapUsd": 25,
+    "spendWindowHours": 24
+  },
   "decisionLog": "file:./.milo/decisions.db",
   "referer": "https://your-app.example.com",
   "title": "Your App Name",

@@ -88,12 +88,14 @@ import {
   forwardedUpstreamKey,
   isMetered,
   noteDecisionAccount,
+  noteDecisionKeyHash,
   rateLimitBucket,
   upstreamHeadersFor,
 } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
   applyMiloHeaders,
+  enforceTenantLimits,
   onFinished,
   rateLimitedMessage,
   readJsonObject,
@@ -118,6 +120,11 @@ async function handleResponses(c: Context, deps: AppDeps): Promise<Response> {
       "invalid_request_body",
     );
   }
+
+  // Tenant guardrails run first, same as the other two surfaces: a no-op
+  // unless this deployment configures `tenantLimits`.
+  const tenantRefusal = await enforceTenantLimits(c, deps, body, "openai");
+  if (tenantRefusal !== undefined) return tenantRefusal;
 
   // A Milo key with no credit is refused before Jev and before OpenRouter
   // (ADR-007); a BYOK request never reaches the gate.
@@ -267,6 +274,9 @@ async function routed(
   // Stamps the account on the row the router just wrote, so this decision
   // shows up in that account's `/v1/decisions` and nobody else's.
   await noteDecisionAccount(c, deps, decision.id);
+  // Stamps the caller's key hash too, so a configured spend cap can sum this
+  // key's cost later (a no-op when no cap is configured).
+  await noteDecisionKeyHash(c, deps, decision.id);
 
   return forward(c, deps, body, decision, extension?.posture ?? "balanced");
 }
