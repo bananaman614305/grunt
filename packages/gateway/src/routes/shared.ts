@@ -88,6 +88,12 @@ export function applyMiloHeaders(headers: Headers, decision: RouteDecision): voi
   // The multimodal gate's route (ADR-020): absent means the request was text
   // and the compute controller's own band budget stood.
   headers.set("x-milo-modality", decision.modality ?? "text");
+  // The Jev classification cache (ADR-023): distinct from `x-milo-sticky`,
+  // which also covers a sticky-cache/store hit and an in-flight-coalescing
+  // join. "hit" means this decision's signals came from the cache rather
+  // than a fresh Jev call; every other case -- forced tier included -- is
+  // "miss".
+  headers.set("x-milo-cache", decision.cached === true ? "hit" : "miss");
 }
 
 /** `Retry-After` when Milo could not route at all, in seconds. */

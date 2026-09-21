@@ -6,8 +6,12 @@
  *   2. a sticky hit on the fingerprint *at the same user-turn count* reuses
  *      the decision -- from memory, else from the `StickyStore` if one is
  *      configured;
- *   3. an identical ask already in flight is joined rather than duplicated;
- *   4. otherwise one Jev `/v1/systemone` call under a hard
+ *   3. a classification-cache hit on the same key reuses Jev's classification
+ *      (not the decision) and runs policy fresh against it -- a short-TTL,
+ *      independently-configurable complement to stickiness, see
+ *      `ClassificationCache` in `./classification-cache.ts` (ADR-023);
+ *   4. an identical ask already in flight is joined rather than duplicated;
+ *   5. otherwise one Jev `/v1/systemone` call under a hard
  *      `jevTimeoutMs` budget (retries and backoff included), then Policy v2
  *      and the roster.
  *
@@ -51,6 +55,8 @@ import { ROUTER_QUESTIONS } from "./questions.js";
 import { resolveModel } from "./roster.js";
 import { StickyCache } from "./sticky.js";
 import type { StickyEntry, StickyStore } from "./sticky-store.js";
+import { ClassificationCache } from "./classification-cache.js";
+import type { ClassificationCacheOptions } from "./classification-cache.js";
 
 /**
  * How the router turns signals into a model (ADR-012).
@@ -85,6 +91,37 @@ export type RouterOptions = {
    * that cache carries its own TTL.
    */
   stickyTtlMs?: number;
+  /**
+   * The Jev classification cache (ADR-023): a short-TTL, LRU-bounded cache of
+   * `RouteSignals` keyed on the caller's fingerprint and user-turn count,
+   * checked after a sticky miss and before a fresh Jev call. Defaults to a
+   * new `ClassificationCache` built from `classificationCacheTtlMs` /
+   * `classificationCacheMaxEntries` / `classificationCacheEnabled` below; pass
+   * an instance directly to share one across routers or to inject a clock.
+   */
+  classificationCache?: ClassificationCache;
+  /**
+   * How long a cached classification stays live. Defaults to
+   * `CLASSIFICATION_CACHE_TTL_MS` (5 minutes) -- short relative to
+   * stickiness' 30, because a stale *classification* replayed for a few
+   * minutes only costs the policy an occasionally-outdated difficulty guess,
+   * never a wrong user or a wrong conversation. Ignored when
+   * `classificationCache` is passed; that cache carries its own TTL.
+   */
+  classificationCacheTtlMs?: number;
+  /**
+   * Hard bound on live classification-cache entries. Defaults to
+   * `CLASSIFICATION_CACHE_MAX_ENTRIES` (5,000). Ignored when
+   * `classificationCache` is passed.
+   */
+  classificationCacheMaxEntries?: number;
+  /**
+   * `false` disables the classification cache outright: every request falls
+   * through to Jev (or a sticky/in-flight hit) exactly as it did before this
+   * cache existed. Defaults to true. Ignored when `classificationCache` is
+   * passed; construct that cache with `enabled: false` instead.
+   */
+  classificationCacheEnabled?: boolean;
   /** Injectable for tests; defaults to Date.now. */
   clock?: () => number;
   /**
@@ -353,6 +390,7 @@ export class Router {
   private readonly mode: RoutingMode;
   private readonly sticky: StickyCache;
   private readonly stickyStore: StickyStore | undefined;
+  private readonly classificationCache: ClassificationCache;
   private readonly clock: () => number;
   private readonly onDecision: ((decision: RouteDecision) => void | Promise<void>) | undefined;
   private readonly onError: (err: unknown) => void;
@@ -380,6 +418,16 @@ export class Router {
         ...(opts.stickyTtlMs !== undefined ? { ttlMs: opts.stickyTtlMs } : {}),
       });
     this.stickyStore = opts.stickyStore;
+    this.classificationCache =
+      opts.classificationCache ??
+      new ClassificationCache({
+        ...(opts.clock ? { clock: opts.clock } : {}),
+        ...(opts.classificationCacheTtlMs !== undefined ? { ttlMs: opts.classificationCacheTtlMs } : {}),
+        ...(opts.classificationCacheMaxEntries !== undefined
+          ? { maxEntries: opts.classificationCacheMaxEntries }
+          : {}),
+        ...(opts.classificationCacheEnabled !== undefined ? { enabled: opts.classificationCacheEnabled } : {}),
+      } satisfies ClassificationCacheOptions);
     this.onDecision = opts.onDecision;
     this.onError = opts.onError ?? (() => undefined);
     this.jevTimeoutMs = opts.jevTimeoutMs ?? ROUTER_LIMITS.jevTimeoutMs;
@@ -440,12 +488,33 @@ export class Router {
       return this.emit({ ...reused, id: ulid(), sticky: true, createdAt: this.nowIso() });
     }
 
-    // 3. Ask Jev, sharing the call with any identical ask already in flight.
+    // The same key in-flight coalescing already used: exact fingerprint (and
+    // so exact caller, since the gateway scopes it) and exact user-turn
+    // count. The classification cache checked next (step 3, ADR-023) reuses
+    // this same key rather than inventing a looser one.
     const key = `${req.fingerprint} ${userTurns}`;
-    const existing = this.inFlight.get(key);
-    const shared = existing !== undefined;
-    const call = existing ?? this.startJevCall(key, req);
-    const { signals } = await call;
+
+    // 3. Classification-cache hit: Jev already answered this exact ask
+    // recently. Reuse its signals but still decide fresh against this
+    // request's own posture/candidates/roster/samples (unlike a sticky hit,
+    // which replays the whole decision unchanged).
+    const cachedSignals = this.classificationCache.get(key);
+    let signals: RouteSignals;
+    let cacheHit = false;
+    let shared = false;
+    if (cachedSignals !== undefined) {
+      signals = cachedSignals;
+      cacheHit = true;
+    } else {
+      // 4. Ask Jev, sharing the call with any identical ask already in flight.
+      const existing = this.inFlight.get(key);
+      shared = existing !== undefined;
+      const call = existing ?? this.startJevCall(key, req);
+      ({ signals } = await call);
+      // Only the caller that actually made the call populates the cache; a
+      // joiner reusing a shared in-flight answer has nothing new to store.
+      if (!shared) this.classificationCache.set(key, signals);
+    }
 
     const outcome = this.decide(signals, req);
 
@@ -461,19 +530,26 @@ export class Router {
       ...(outcome.unsampledModel !== undefined ? { unsampledModel: outcome.unsampledModel } : {}),
       ...(outcome.modality !== undefined ? { modality: outcome.modality } : {}),
       policyVersion: POLICY_VERSION,
-      // A caller that joined an in-flight call did not cause a Jev call of
-      // its own, which is exactly what `sticky` means. Its own decision id
-      // keeps the log one row per request -- the gateway attaches each
-      // request's upstream outcome to its own row -- while the shared
-      // `signals.jevRequestId` still says which single Jev call answered
-      // them all, so the log stays honest about what was spent. See
-      // ADR-002 revision 3.
-      sticky: shared,
+      // A caller that joined an in-flight call, or one served from the
+      // classification cache, did not cause a Jev call of its own, which is
+      // exactly what `sticky` means. Its own decision id keeps the log one
+      // row per request -- the gateway attaches each request's upstream
+      // outcome to its own row -- while the shared `signals.jevRequestId`
+      // still says which single Jev call answered them all, so the log stays
+      // honest about what was spent. See ADR-002 revision 3.
+      sticky: cacheHit || shared,
+      // Distinct from `sticky` (ADR-023): set only for a classification-cache
+      // hit, so the gateway can disclose `x-milo-cache: hit` specifically,
+      // without confusing it with a sticky-cache/store hit or an in-flight
+      // join.
+      ...(cacheHit ? { cached: true } : {}),
       createdAt: this.nowIso(),
     };
 
     // Only the caller that actually made the call pins it; the others would
-    // just rewrite the same entry with a later expiry.
+    // just rewrite the same entry with a later expiry. A cache hit still
+    // pins: the fresh decision it produced is exactly as valid to reuse for
+    // the next continuation of this same ask as a Jev-answered one would be.
     if (!shared) await this.pin(req.fingerprint, decision, userTurns);
     return this.emit(decision);
   }

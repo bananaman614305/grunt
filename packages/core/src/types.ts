@@ -241,6 +241,18 @@ export type RouteDecision = {
    * label, never message content.
    */
   modality?: Modality;
+  /**
+   * Set only when this decision's `signals` were served from the router's
+   * short-TTL classification cache (ADR-023) rather than a fresh Jev call --
+   * distinct from `sticky`, which also covers a sticky-cache/store hit and an
+   * in-flight-coalescing join. Unlike those, a `cached` decision still ran
+   * policy fresh against the reused signals, so its tier/model can differ
+   * from whatever request first produced them. Absent (never `false`) means
+   * the classification came from Jev on this call, or `signals` is absent
+   * because the tier was forced. The gateway discloses it as
+   * `x-milo-cache: hit|miss`; it is not persisted to the decision log.
+   */
+  cached?: boolean;
   createdAt: string; // ISO 8601
 };
 

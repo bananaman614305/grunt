@@ -197,3 +197,31 @@ describe("upstream resilience config", () => {
     expect(() => configSchema.parse({ upstream: { maxConcurrentPerModel: -1 } })).toThrow();
   });
 });
+
+describe("classification cache config (ADR-023)", () => {
+  it("parses the block and defaults enabled to true", () => {
+    const parsed = configSchema.parse({ classificationCache: { ttlMs: 120000 } });
+    expect(parsed.classificationCache).toEqual({ enabled: true, ttlMs: 120000 });
+  });
+
+  it("accepts an explicit opt-out", () => {
+    const parsed = configSchema.parse({ classificationCache: { enabled: false } });
+    expect(parsed.classificationCache?.enabled).toBe(false);
+  });
+
+  it("accepts maxEntries alongside ttlMs", () => {
+    const parsed = configSchema.parse({ classificationCache: { ttlMs: 60000, maxEntries: 1000 } });
+    expect(parsed.classificationCache).toEqual({ enabled: true, ttlMs: 60000, maxEntries: 1000 });
+  });
+
+  it("is absent, not defaulted, when the file says nothing about it", () => {
+    const parsed = configSchema.parse({});
+    expect(parsed.classificationCache).toBeUndefined();
+  });
+
+  it("rejects unknown keys and non-positive ttlMs/maxEntries", () => {
+    expect(() => configSchema.parse({ classificationCache: { cells: [] } })).toThrow();
+    expect(() => configSchema.parse({ classificationCache: { ttlMs: 0 } })).toThrow();
+    expect(() => configSchema.parse({ classificationCache: { maxEntries: -1 } })).toThrow();
+  });
+});

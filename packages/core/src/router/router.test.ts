@@ -9,6 +9,7 @@ import { isRoutingUnavailable, RoutingUnavailableError } from "./errors.js";
 import { fingerprint } from "./fingerprint.js";
 import { classifyFailure, Router } from "./router.js";
 import type { RouterOptions } from "./router.js";
+import { ClassificationCache } from "./classification-cache.js";
 import { StickyCache } from "./sticky.js";
 import type { StickyEntry, StickyStore } from "./sticky-store.js";
 
@@ -286,7 +287,18 @@ describe("Router.route: stickiness", () => {
   it("takes a stickyTtlMs option, so the pin window is tunable", async () => {
     let now = 1_700_000_000_000;
     const jev = stubJev(fixture.answers);
-    const router = new Router({ jev, roster: ROSTER, clock: () => now, stickyTtlMs: 1_000 });
+    // The classification cache (ADR-023) is disabled here so this test keeps
+    // isolating stickiness' own TTL: left on, its default five-minute window
+    // would still answer the second call from cache, which is correct new
+    // behaviour (see "the classification cache" below) but not what this
+    // test means to exercise.
+    const router = new Router({
+      jev,
+      roster: ROSTER,
+      clock: () => now,
+      stickyTtlMs: 1_000,
+      classificationCacheEnabled: false,
+    });
 
     await router.route(request());
     now += 1_001;
@@ -357,6 +369,136 @@ describe("Router.route: user-turn-aware stickiness", () => {
 
     expect(jev.calls).toHaveLength(2);
     expect(third.sticky).toBe(true);
+  });
+});
+
+describe("Router.route: the classification cache (ADR-023)", () => {
+  const fixture = loadFixture("trivial-rename");
+
+  // Under default config a same-fingerprint, same-user-turn repeat is
+  // already a sticky hit (30-minute window) before the classification cache
+  // (5-minute default) is ever consulted, so these tests disable stickiness'
+  // pinning window (`stickyTtlMs: 0`) to exercise the cache on its own --
+  // exactly the deployment shape that wants cost savings without conversation
+  // continuity pinning.
+  function noStickyRouter(jev: StubJev, extra: Partial<RouterOptions> = {}): Router {
+    return new Router({ jev, roster: ROSTER, stickyTtlMs: 0, ...extra });
+  }
+
+  it("skips Jev on a hit and marks the decision cached", async () => {
+    const jev = stubJev(fixture.answers);
+    const router = noStickyRouter(jev);
+
+    const first = await router.route(request());
+    const second = await router.route(request());
+
+    expect(jev.calls).toHaveLength(1);
+    expect(first.cached).toBeUndefined();
+    expect(second.cached).toBe(true);
+    // Distinct from, but layered under, stickiness' own flag: no Jev call
+    // was made for either decision, so both count as `sticky` in the sense
+    // every other reader of that field already relies on.
+    expect(first.sticky).toBe(false);
+    expect(second.sticky).toBe(true);
+    expect(second.signals).toEqual(first.signals);
+  });
+
+  it("decides fresh on a hit, so a changed request-level knob is honoured", async () => {
+    const jev = stubJev(fixture.answers);
+    const router = noStickyRouter(jev);
+
+    const first = await router.route(request());
+    // A sticky hit would have replayed `first.model` unchanged; the
+    // classification cache instead reuses only the classification and lets
+    // `candidates` filter the roster again.
+    const second = await router.route(request({ candidates: ["mid-model"] }));
+
+    expect(jev.calls).toHaveLength(1);
+    expect(second.cached).toBe(true);
+    expect(second.model).toBe("mid-model");
+    expect(second.model).not.toBe(first.model);
+  });
+
+  it("expires a cached classification after its own (shorter) TTL", async () => {
+    let now = 1_700_000_000_000;
+    const jev = stubJev(fixture.answers);
+    const router = noStickyRouter(jev, { classificationCacheTtlMs: 1_000, clock: () => now });
+
+    await router.route(request());
+    now += 1_001;
+    const after = await router.route(request());
+
+    expect(jev.calls).toHaveLength(2);
+    expect(after.cached).toBeUndefined();
+  });
+
+  it("does not leak a classification across two callers' scoped fingerprints", async () => {
+    const jev = stubJev(fixture.answers);
+    const router = noStickyRouter(jev);
+
+    await router.route(request({ fingerprint: fingerprint(MESSAGES, "key-hash-a") }));
+    await router.route(request({ fingerprint: fingerprint(MESSAGES, "key-hash-b") }));
+
+    expect(jev.calls).toHaveLength(2);
+  });
+
+  it("classificationCacheEnabled: false always falls through to Jev", async () => {
+    const jev = stubJev(fixture.answers);
+    const router = noStickyRouter(jev, { classificationCacheEnabled: false });
+
+    await router.route(request());
+    const second = await router.route(request());
+
+    expect(jev.calls).toHaveLength(2);
+    expect(second.cached).toBeUndefined();
+  });
+
+  it("takes a classificationCache instance directly, so it can be shared or clocked", async () => {
+    const cache = new ClassificationCache({ ttlMs: 1_000 });
+    const jev = stubJev(fixture.answers);
+    const router = noStickyRouter(jev, { classificationCache: cache });
+
+    await router.route(request());
+    expect(cache.size).toBe(1);
+
+    const second = await router.route(request());
+    expect(jev.calls).toHaveLength(1);
+    expect(second.cached).toBe(true);
+  });
+
+  it("pins a cache hit into stickiness, so its own next continuation is a sticky hit", async () => {
+    const jev = stubJev(fixture.answers);
+    // Stickiness stays live here, unlike the other tests in this block, to
+    // show the two caches layering: a cache hit still produces a decision
+    // worth pinning for the conversation it just answered.
+    const router = new Router({ jev, roster: ROSTER, classificationCacheTtlMs: 5 * 60 * 1000 });
+    const fp = fingerprint(MESSAGES);
+
+    await router.route(request());
+    const continued = await router.route(request({ messages: TOOL_CONTINUATION, fingerprint: fp }));
+
+    expect(jev.calls).toHaveLength(1);
+    expect(continued.sticky).toBe(true);
+    expect(continued.cached).toBeUndefined();
+  });
+
+  it("a joiner of an in-flight call does not populate the cache on the sharer's behalf", async () => {
+    const jev = gatedJev(fixture.answers);
+    const router = noStickyRouter(jev);
+
+    const all = Promise.all([router.route(request()), router.route(request())]);
+    await Promise.resolve();
+    jev.release();
+    const [a, b] = await all;
+
+    expect(jev.calls).toHaveLength(1);
+    expect(a.cached).toBeUndefined();
+    expect(b.cached).toBeUndefined();
+    // ...but the call that answered them both did populate it, so the next
+    // request is a cache hit rather than a third Jev call.
+    const third = await router.route(request());
+    expect(jev.calls).toHaveLength(1);
+    expect(third.cached).toBe(true);
   });
 });
 
@@ -560,7 +702,11 @@ describe("Router.route: coalescing identical asks", () => {
   it("clears the entry on settle, so a later ask is not served a stale promise", async () => {
     const jev = gatedJev(fixture.answers);
     const sticky = new StickyCache({ ttlMs: 0 }); // never a sticky hit
-    const router = new Router({ jev, roster: ROSTER, sticky });
+    // The classification cache (ADR-023) is disabled here for the same
+    // reason as stickiness' own TTL test above: it would otherwise correctly
+    // answer the second wave from cache, which is not what this test means
+    // to exercise -- whether a settled in-flight entry is cleared.
+    const router = new Router({ jev, roster: ROSTER, sticky, classificationCacheEnabled: false });
 
     const first = Promise.all([router.route(request()), router.route(request())]);
     await Promise.resolve();

@@ -466,10 +466,12 @@ describe("POST /v1/messages, milo/auto", () => {
     expect(res.headers.get("x-milo-task-type")).toBe("debug");
     expect(res.headers.get("x-milo-difficulty")).toBe("2.31");
     expect(res.headers.get("x-milo-sticky")).toBe("false");
+    expect(res.headers.get("x-milo-cache")).toBe("miss");
     expect(res.headers.get("x-request-id")).toBe("or-req-2");
 
-    // The same seven headers the OpenAI surface sets, and no eighth.
+    // The same eight headers the OpenAI surface sets, and no ninth.
     expect([...res.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
+      "x-milo-cache",
       "x-milo-decision-id",
       "x-milo-difficulty",
       "x-milo-modality",

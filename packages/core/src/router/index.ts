@@ -89,6 +89,9 @@ export type { RosterBand, RosterInfo, RosterModel } from "./roster-default.js";
 export { StickyCache, STICKY_MAX_ENTRIES } from "./sticky.js";
 export type { StickyCacheOptions } from "./sticky.js";
 
+export { ClassificationCache, CLASSIFICATION_CACHE_MAX_ENTRIES, CLASSIFICATION_CACHE_TTL_MS } from "./classification-cache.js";
+export type { ClassificationCacheOptions } from "./classification-cache.js";
+
 export {
   CircuitBreaker,
   isTransportFailure,

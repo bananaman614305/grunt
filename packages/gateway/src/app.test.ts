@@ -384,6 +384,7 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     expect(res.headers.get("x-milo-task-type")).toBe("debug");
     expect(res.headers.get("x-milo-difficulty")).toBe("2.31");
     expect(res.headers.get("x-milo-sticky")).toBe("false");
+    expect(res.headers.get("x-milo-cache")).toBe("miss");
     expect(res.headers.get("x-request-id")).toBe("or-req-2");
 
     // Six headers explain a decision, and `x-milo-degraded` is not one of
@@ -391,7 +392,9 @@ describe("POST /v1/chat/completions, milo/auto", () => {
     // eighth is the completeness gate's (ADR-013): this fixture's band is
     // over the gate's bar, and a check the stub Jev cannot answer serves the
     // response exactly as a passing one -- the gate never fails a request.
+    // The ninth is the classification cache's (ADR-023).
     expect([...res.headers.keys()].filter((k) => k.startsWith("x-milo-")).sort()).toEqual([
+      "x-milo-cache",
       "x-milo-completeness",
       "x-milo-decision-id",
       "x-milo-difficulty",
@@ -529,6 +532,9 @@ describe("POST /v1/chat/completions, milo/auto", () => {
 
     expect(upstreams.routingJevCalls()).toHaveLength(1);
     expect(second.headers.get("x-milo-sticky")).toBe("true");
+    // A sticky hit, not a classification-cache hit -- distinct headers for a
+    // distinct mechanism (ADR-023).
+    expect(second.headers.get("x-milo-cache")).toBe("miss");
     expect(second.headers.get("x-milo-model")).toBe(first.headers.get("x-milo-model"));
     expect(second.headers.get("x-milo-decision-id")).not.toBe(first.headers.get("x-milo-decision-id"));
 
