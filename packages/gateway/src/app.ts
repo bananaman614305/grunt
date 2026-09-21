@@ -155,6 +155,14 @@ export type AppDeps = {
    * framing to a trailing suffix so the shared prompt prefix stays
    * cache-eligible. Both are prompt/compute changes ADR-010's benchmark has
    * not measured, so they default off and are validated before production use.
+   *
+   * `verifyCandidates` (ADR-026, default off) adds a cheap, language-agnostic
+   * static structural check to the best-of-N ranking so a truncated or
+   * structurally-broken candidate is demoted below valid ones instead of
+   * winning on Jev's text score alone. Off, the ranking is byte-identical to
+   * ADR-010; on, it is a ranking change to validate with `milo canary`/`pnpm
+   * bench` before production use. (Top-K exposure is per-request via `n`, not a
+   * deployment knob.)
    */
   sampling?: {
     sampleTimeoutMs?: number;
@@ -167,6 +175,7 @@ export type AppDeps = {
       leadMargin?: number;
     };
     cacheFriendlyVariants?: boolean;
+    verifyCandidates?: boolean;
   };
   /**
    * Speculative routing (ADR-024). Absent means off: the OpenAI chat route

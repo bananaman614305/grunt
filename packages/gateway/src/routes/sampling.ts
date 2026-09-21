@@ -59,6 +59,8 @@ import type { Context } from "hono";
 import {
   applyVariant,
   applyVariantSuffix,
+  checkCandidate,
+  expectsJsonResponse,
   isStreaming,
   messageText,
   prepareBody,
@@ -159,6 +161,8 @@ export const ADAPTIVE_LEAD_MARGIN_DEFAULT = 1;
 
 export const SAMPLES_HEADER = "x-milo-samples";
 export const SAMPLE_PICK_HEADER = "x-milo-sample-pick";
+/** How many ranked candidates were returned as `choices[]` (ADR-026 top-K). */
+export const EXPOSED_HEADER = "x-milo-exposed";
 
 /** What the fan-out needs beyond the decision: the request's own knobs. */
 export type SamplingContext = {
@@ -203,6 +207,15 @@ type Sample = {
   json?: Record<string, unknown>;
   usage: UpstreamUsage;
   rank?: RankScore;
+  /**
+   * Static candidate verification (ADR-026): true when the structural check
+   * found a high-confidence defect (truncation, unbalanced code, bad diff/JSON).
+   * Only ever set when `sampling.verifyCandidates` is on; a broken candidate is
+   * demoted below every structurally-valid one by `bySampleRank`.
+   */
+  broken?: boolean;
+  /** The structural defect classes found (ADR-026). Format names, never content. */
+  flaws?: string[];
   /** Milo aborted this sample's stream after an early winner was found. */
   aborted?: boolean;
   /** Failure class only -- never upstream text. */
@@ -217,7 +230,7 @@ type Sample = {
  * (`packages/core/src/types.ts`), which predates the abort path; folding it
  * into the type itself needs an ADR.
  */
-type SampleRow = SampleUpstream & { aborted?: boolean };
+type SampleRow = SampleUpstream & { aborted?: boolean; broken?: boolean; flaws?: string[] };
 
 /** A failure class the decision log can hold: a name, never upstream text. */
 function classify(error: unknown): string {
@@ -242,6 +255,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * How many ranked candidates the client asked to see (ADR-026), from the OpenAI
+ * `n` field: `1` (or absent/invalid) is the default single best choice, larger
+ * values expose the top-K, clamped to the budgeted sample count `n` since Milo
+ * can return no more candidates than it drew.
+ */
+export function requestedChoices(body: Body, drawn: number): number {
+  const requested = body["n"];
+  if (typeof requested !== "number" || !Number.isInteger(requested) || requested < 1) return 1;
+  return Math.min(requested, Math.max(1, drawn));
+}
+
+/** `choices[0].finish_reason` of a reassembled completion, when present. */
+function finishReasonOf(json: Record<string, unknown> | undefined): unknown {
+  if (json === undefined) return undefined;
+  const choices = json["choices"];
+  if (!Array.isArray(choices) || !isRecord(choices[0])) return undefined;
+  return (choices[0] as Record<string, unknown>)["finish_reason"];
+}
+
+/** The choice `{message, finish_reason}` a completion body carries at index 0. */
+function choiceParts(
+  json: Record<string, unknown> | undefined,
+  fallbackMessage: Record<string, unknown> | undefined,
+): { message: Record<string, unknown>; finish_reason: unknown } {
+  const message = fallbackMessage ?? {};
+  const choices = json?.["choices"];
+  const first = Array.isArray(choices) && isRecord(choices[0]) ? (choices[0] as Record<string, unknown>) : undefined;
+  const msg = first !== undefined && isRecord(first["message"]) ? (first["message"] as Record<string, unknown>) : message;
+  return { message: msg, finish_reason: first?.["finish_reason"] ?? "stop" };
+}
+
 /** One sample's decision-log row: tokens, cost, Jev scores. No content. */
 function toSampleUpstream(sample: Sample, picked: boolean): SampleRow {
   return {
@@ -252,6 +297,8 @@ function toSampleUpstream(sample: Sample, picked: boolean): SampleRow {
     ...(sample.usage.outputTokens !== undefined ? { outputTokens: sample.usage.outputTokens } : {}),
     ...(sample.usage.costUsd !== undefined ? { costUsd: sample.usage.costUsd } : {}),
     ...(sample.rank !== undefined ? { jevQuality: sample.rank.quality, jevCorrect: sample.rank.correct } : {}),
+    ...(sample.broken === true ? { broken: true } : {}),
+    ...(sample.flaws !== undefined && sample.flaws.length > 0 ? { flaws: sample.flaws } : {}),
     ...(sample.aborted === true ? { aborted: true } : {}),
     ...(sample.error !== undefined
       ? { error: sample.error }
@@ -303,11 +350,32 @@ function aggregateUsage(samples: Sample[], chosen: Sample | undefined): Upstream
  * never disagree about which sample is best.
  */
 function bySampleRank(a: Sample, b: Sample): number {
+  // Static verification gate (ADR-026): a structurally-broken candidate sorts
+  // below every valid one regardless of its Jev score, so it cannot win on the
+  // text judgment alone. `broken` is only ever set when `verifyCandidates` is
+  // on; with the gate off no sample carries it, so this comparison is always a
+  // tie and the ordering below is byte-identical to ADR-010's.
+  const ba = a.broken === true;
+  const bb = b.broken === true;
+  if (ba !== bb) return ba ? 1 : -1;
   const ra = a.rank as RankScore;
   const rb = b.rank as RankScore;
   if (ra.quality !== rb.quality) return rb.quality - ra.quality;
   if (ra.correct !== rb.correct) return rb.correct - ra.correct;
   return a.index - b.index;
+}
+
+/**
+ * Successful samples ordered best-first for top-K exposure (ADR-026): ranked
+ * samples by `bySampleRank` (valid before broken, then Jev), then any samples
+ * Jev could not rank, by index. Never sorts a rank-less sample through
+ * `bySampleRank` (which would read an undefined rank), so it is safe on the
+ * degraded-ranking path.
+ */
+function orderSuccesses(successes: Sample[]): Sample[] {
+  const ranked = successes.filter((s) => s.rank !== undefined).sort(bySampleRank);
+  const unranked = successes.filter((s) => s.rank === undefined).sort((a, b) => a.index - b.index);
+  return [...ranked, ...unranked];
 }
 
 /** Highest expected quality wins; correctness, then index, break ties. */
@@ -473,6 +541,21 @@ export async function forwardSampled(
   // diversity -- is unchanged either way.
   const applyFraming = deps.sampling?.cacheFriendlyVariants === true ? applyVariantSuffix : applyVariant;
 
+  // Static candidate verification (ADR-026). Default OFF: with the gate off no
+  // sample is ever marked broken, so `bySampleRank` orders exactly as ADR-010
+  // does and the pick is byte-identical. When on, each successful sample gets a
+  // cheap structural check and a broken candidate is demoted below valid ones.
+  const verifyOn = deps.sampling?.verifyCandidates === true;
+  const expectJson = expectsJsonResponse(body);
+
+  // Top-K candidate exposure (ADR-026), opt-in via the OpenAI `n` field. Default
+  // 1 (a single best choice, exactly as ADR-010): only an explicit `n > 1` asks
+  // for the top ranked candidates as multiple `choices[]`, so a client with its
+  // own workspace can run real tests over them. Capped at the budgeted N -- more
+  // choices than samples cannot exist. The `milo` field is already stripped
+  // before the forward, so `n` is the request-visible knob here.
+  const exposeK = requestedChoices(body, n);
+
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   // A large prompt gets a longer per-sample cap: see `LARGE_PROMPT_CHARS`.
   const timeoutMs = sampleTimeoutFor(
@@ -485,6 +568,12 @@ export async function forwardSampled(
   const draw = async (index: number, abort: AbortController): Promise<Sample> => {
     const sampleBody = prepareBody(body, decision.model);
     sampleBody["messages"] = applyFraming(messages, variantFor(index));
+    // Top-K exposure (ADR-026): Milo synthesizes the multiple `choices[]` from
+    // the top ranked SAMPLES, so each draw generates a single completion. Force
+    // `n = 1` on the sub-request when the client asked for top-K, so a client
+    // `n` never fans each draw out into n upstream generations. Untouched when
+    // top-K is not requested, so the default draw is byte-identical to ADR-010.
+    if (exposeK > 1) sampleBody["n"] = 1;
     // Internally streamed, whatever the client asked for: a stream can be
     // ranked the moment it completes and aborted while it is still running.
     sampleBody["stream"] = true;
@@ -626,6 +715,20 @@ export async function forwardSampled(
     slots.push(slot);
     void slot.streamed.then(async (sample) => {
       slot.sample = sample;
+      // Static verification (ADR-026): score the candidate's structural validity
+      // before it can be ranked or picked. Sync and independent of Jev, so it is
+      // set the moment the stream settles and is visible to every selector.
+      if (verifyOn && isSuccess(sample)) {
+        const check = checkCandidate({
+          text: answerText(sample.message ?? {}),
+          finishReason: finishReasonOf(sample.json),
+          expectJson,
+        });
+        if (!check.ok) {
+          sample.broken = true;
+          sample.flaws = check.flaws;
+        }
+      }
       if (isSuccess(sample) && deps.jev !== undefined && !decided) {
         try {
           sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}), undefined, jevKey);
@@ -808,6 +911,39 @@ export async function forwardSampled(
     };
   }
 
+  // Top-K exposure (ADR-026): when the client asked for more than one choice
+  // (`n > 1`) and more than one candidate survives, return the top ranked
+  // candidates as multiple `choices[]`, best-first. These are candidates the
+  // user already paid to generate; nothing beyond their completion text is
+  // exposed. Choice 0 is the served pick (gate-applied and reasoning-scrubbed
+  // above); the rest are the next-best ranked successes, each reasoning-scrubbed
+  // the same way. When only one candidate survives, the single-best path below
+  // runs exactly as ADR-010.
+  const exposed = exposeK > 1 ? orderSuccesses(successes).filter((s) => s.index !== chosen.index) : [];
+  if (exposeK > 1 && exposed.length > 0) {
+    const scrub = !wantsVisibleReasoning(body);
+    const head = choiceParts(served.json, served.message);
+    const choices: Array<Record<string, unknown>> = [
+      { index: 0, message: head.message, finish_reason: head.finish_reason },
+    ];
+    for (const sample of exposed.slice(0, exposeK - 1)) {
+      const json =
+        scrub && sample.json !== undefined
+          ? (stripChatReasoningPayload(sample.json) as Record<string, unknown>)
+          : sample.json;
+      const part = choiceParts(json, sample.message);
+      choices.push({ index: choices.length, message: part.message, finish_reason: part.finish_reason });
+    }
+    headers.set(EXPOSED_HEADER, String(choices.length));
+    const multi: Record<string, unknown> = { ...(served.json ?? chosen.json ?? {}), choices };
+    if (isStreaming(body)) {
+      headers.set("content-type", "text/event-stream");
+      return new Response(replayChoicesAsSse(multi, choices), { status: 200, headers });
+    }
+    headers.set("content-type", "application/json");
+    return new Response(JSON.stringify(multi), { status: 200, headers });
+  }
+
   if (isStreaming(body)) {
     headers.set("content-type", "text/event-stream");
     return new Response(replayAsSse(served), { status: 200, headers });
@@ -854,6 +990,59 @@ export function replayAsSse(chosen: {
   const finalChunk = {
     ...frame,
     choices: [{ index: 0, delta: {}, finish_reason: first["finish_reason"] ?? "stop" }],
+    ...(isRecord(json["usage"]) ? { usage: json["usage"] } : {}),
+  };
+
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(contentChunk)}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+}
+
+/**
+ * The top-K exposure (ADR-026) as well-formed multi-choice SSE: one chunk
+ * carrying every choice's message as its delta (each on its own `index`), one
+ * final chunk closing every choice with its finish reason and the aggregate
+ * usage, then `[DONE]`. The OpenAI streaming shape for `n > 1`: a client reads
+ * each candidate off `choices[].index`.
+ */
+export function replayChoicesAsSse(
+  json: Record<string, unknown>,
+  choices: Array<Record<string, unknown>>,
+): ReadableStream<Uint8Array> {
+  const frame = {
+    id: typeof json["id"] === "string" ? json["id"] : "milo-sampled",
+    object: "chat.completion.chunk",
+    created: typeof json["created"] === "number" ? json["created"] : Math.floor(Date.now() / 1000),
+    model: typeof json["model"] === "string" ? json["model"] : "",
+  };
+
+  const deltaFor = (message: Record<string, unknown>): Record<string, unknown> => {
+    const delta: Record<string, unknown> = { role: "assistant" };
+    if (typeof message["content"] === "string") delta["content"] = message["content"];
+    const toolCalls = message["tool_calls"];
+    if (Array.isArray(toolCalls)) {
+      delta["tool_calls"] = toolCalls.map((call, index) => (isRecord(call) ? { index, ...call } : call));
+    }
+    return delta;
+  };
+
+  const contentChunk = {
+    ...frame,
+    choices: choices.map((choice, index) => ({
+      index,
+      delta: deltaFor(isRecord(choice["message"]) ? (choice["message"] as Record<string, unknown>) : {}),
+      finish_reason: null,
+    })),
+  };
+  const finalChunk = {
+    ...frame,
+    choices: choices.map((choice, index) => ({ index, delta: {}, finish_reason: choice["finish_reason"] ?? "stop" })),
     ...(isRecord(json["usage"]) ? { usage: json["usage"] } : {}),
   };
 

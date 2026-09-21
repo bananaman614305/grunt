@@ -304,6 +304,9 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
             ...(config.sampling.cacheFriendlyVariants !== undefined
               ? { cacheFriendlyVariants: config.sampling.cacheFriendlyVariants }
               : {}),
+            ...(config.sampling.verifyCandidates !== undefined
+              ? { verifyCandidates: config.sampling.verifyCandidates }
+              : {}),
           },
         }
       : {}),
