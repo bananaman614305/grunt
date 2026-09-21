@@ -52,6 +52,7 @@ import { embedClientFor } from "../embed.js";
 import type { RoutedFacts } from "../facts.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
+  applyJevTransportHeader,
   applyMiloHeaders,
   onFinished,
   rateLimitedMessage,
@@ -375,6 +376,7 @@ async function forward(
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyJevTransportHeader(headers, deps);
   applyPruneHeaders(headers, prune);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(facts))) headers.set(k, v);

@@ -93,6 +93,7 @@ import {
 } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import {
+  applyJevTransportHeader,
   applyMiloHeaders,
   onFinished,
   rateLimitedMessage,
@@ -292,6 +293,7 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyJevTransportHeader(headers, deps);
 
   // A streamed success is the only case where the body must not be touched.
   // An upstream error is JSON however the request was made, so it takes the

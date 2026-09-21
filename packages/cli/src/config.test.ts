@@ -24,6 +24,7 @@ describe("loadConfig", () => {
       decisionLog: DEFAULT_DECISION_LOG_URL,
       mode: "roster",
       jevTransport: "typesafe",
+      jevFallbackToTypesafe: false,
     });
   });
 
@@ -99,6 +100,16 @@ describe("loadConfig", () => {
 
     expect(loaded.source).toEqual({ kind: "file", path: join(dir, "milo.config.json") });
     expect(loaded.config.port).toBe(4242);
+  });
+
+  it("parses jevFallbackToTypesafe and jevBreaker (ADR-023); the default-false case is covered above", () => {
+    const path = join(dir, "milo.config.json");
+    writeFileSync(path, JSON.stringify({ jevFallbackToTypesafe: true, jevBreaker: { failureThreshold: 5, cooldownMs: 5000 } }));
+
+    const loaded = loadConfig(path, dir);
+
+    expect(loaded.config.jevFallbackToTypesafe).toBe(true);
+    expect(loaded.config.jevBreaker).toEqual({ failureThreshold: 5, cooldownMs: 5000 });
   });
 
   it("rejects a roster missing a tier, with a message naming the missing tier", () => {

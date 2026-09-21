@@ -201,6 +201,22 @@ export async function run(args: string[], deps: CliDeps): Promise<number | undef
     decisionLogUrl,
     mode,
     jevTransport,
+    // ADR-023: operator opt-in fallback safety net + breaker tuning for the
+    // "openrouter" transport. `jevFallbackToTypesafe` defaults false in the
+    // schema, so this is always present but does nothing under "typesafe"
+    // and does nothing under "openrouter" either unless JEV_API_KEY is also
+    // set (createGateway logs a warning and stays fail-open otherwise).
+    jevFallbackToTypesafe: config.jevFallbackToTypesafe,
+    ...(config.jevBreaker !== undefined
+      ? {
+          jevBreaker: {
+            ...(config.jevBreaker.failureThreshold !== undefined
+              ? { failureThreshold: config.jevBreaker.failureThreshold }
+              : {}),
+            ...(config.jevBreaker.cooldownMs !== undefined ? { cooldownMs: config.jevBreaker.cooldownMs } : {}),
+          },
+        }
+      : {}),
     ...(billing !== undefined ? { billing } : {}),
     ...(config.roster !== undefined ? { roster: config.roster } : {}),
     ...(config.rateLimit !== undefined ? { rateLimit: config.rateLimit } : {}),

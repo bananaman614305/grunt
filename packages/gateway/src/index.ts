@@ -8,11 +8,13 @@
  * the router cannot decide fails loudly in the route that asked.
  */
 import type { Hono } from "hono";
-import { DecisionLog, DEFAULT_MAX_CONCURRENT_PER_MODEL, DEFAULT_PRICING, DEFAULT_RETRY, DEFAULT_ROSTER, JevClient, OPENROUTER_BASE_URL, OpenRouterClient, Router, StickyCache } from "@milo/core";
+import { CircuitBreaker, DecisionLog, DEFAULT_MAX_CONCURRENT_PER_MODEL, DEFAULT_PRICING, DEFAULT_RETRY, DEFAULT_ROSTER, JevClient, JevTransportFallbackClient, OPENROUTER_BASE_URL, OpenRouterClient, Router, StickyCache } from "@milo/core";
 import type {
   DecisionRecord,
+  JevClientLike,
   JevClientOptions,
   JevTransport,
+  JevTransportState,
   OpenRouterClientOptions,
   RetryOptions,
   RouteDecision,
@@ -64,6 +66,37 @@ export type GatewayOptions = {
    * `MILO_JEV_TRANSPORT`.
    */
   jevTransport?: JevTransport;
+  /**
+   * Circuit breaker + opt-in TypeSafe fallback around the `"openrouter"` Jev
+   * transport (ADR-023). Ignored under `"typesafe"`, where there is only one
+   * transport and nothing to break out to.
+   *
+   * The alpha OpenRouter Decisions endpoint the `"openrouter"` transport
+   * depends on can flake or change without notice; `createGateway` always
+   * wraps it in a `CircuitBreaker` (`@milo/core`) so a run of consecutive
+   * failures stops hammering it and lets a single half-open probe test
+   * recovery instead of every caller re-discovering the outage. Tune the
+   * threshold/cooldown with `jevBreaker`; both default to `CircuitBreaker`'s
+   * own (3 failures, 30s).
+   *
+   * `jevFallbackToTypesafe: true` is the operator's explicit opt-in to a
+   * safety net: while the breaker is open, a routed request falls back to
+   * the direct TypeSafe transport on Milo's OWN `jevApiKey` instead of
+   * failing. It activates ONLY when `jevApiKey` is also set -- the flag alone
+   * does nothing but log a warning, never a silent no-op that looks like a
+   * working fallback. Default `false`/unset: a broken `"openrouter"`
+   * transport then fails OPEN per call once the breaker trips (no retries
+   * against a transport already known to be down), and never once reaches
+   * for Milo's key -- ADR-022's guarantee ("Milo's key is never used for a
+   * user request" under this transport) holds exactly as before. This is a
+   * deliberate choice, not an oversight: a fallback that quietly reintroduced
+   * Milo's key on every alpha hiccup would defeat ADR-022's whole point, so
+   * it only ever happens when an operator has explicitly asked for it AND
+   * configured the key that pays for it.
+   */
+  jevFallbackToTypesafe?: boolean;
+  /** Breaker tuning for `jevFallbackToTypesafe`'s circuit breaker. Both optional; see `CircuitBreaker`'s own defaults. */
+  jevBreaker?: { failureThreshold?: number; cooldownMs?: number };
   /** Tier to model mapping. Defaults to DEFAULT_ROSTER from core. */
   roster?: Roster;
   /**
@@ -202,7 +235,50 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   if (options.jevBaseUrl !== undefined) jevOptions.baseUrl = options.jevBaseUrl;
   if (options.jevTimeoutMs !== undefined) jevOptions.timeoutMs = options.jevTimeoutMs;
   if (options.fetch !== undefined) jevOptions.fetch = options.fetch;
-  const jev = new JevClient(jevOptions);
+  const primaryJev = new JevClient(jevOptions);
+
+  // ADR-023: only under "openrouter" is there a second transport to break out
+  // to. `jevTransportState` stays undefined under "typesafe", so no
+  // `x-milo-jev-transport` header is ever sent there -- there is nothing to
+  // disclose.
+  let jev: JevClientLike = primaryJev;
+  let jevTransportState: (() => JevTransportState) | undefined;
+  if (jevTransport === "openrouter") {
+    const hasFallbackKey = options.jevApiKey !== undefined && options.jevApiKey !== "";
+    const fallbackOptedIn = options.jevFallbackToTypesafe === true;
+    if (fallbackOptedIn && !hasFallbackKey) {
+      logger.warn(
+        "jevFallbackToTypesafe is set but jevApiKey (JEV_API_KEY) is not configured; the openrouter Jev " +
+          "transport will fail open with no typesafe safety net when its breaker opens",
+      );
+    }
+    let fallback: JevClientLike | undefined;
+    if (fallbackOptedIn && hasFallbackKey) {
+      // Deliberately NOT `options.jevBaseUrl`: that option overrides where
+      // the deployment's ACTIVE transport talks to (tests point it at a
+      // fake host), and the fallback is the direct TypeSafe path, which
+      // keeps its own default base URL unless a deployment is specifically
+      // testing the fallback itself (done via `fetch`, as the primary is).
+      const fallbackOptions: JevClientOptions = { apiKey: options.jevApiKey ?? "" };
+      if (options.jevTimeoutMs !== undefined) fallbackOptions.timeoutMs = options.jevTimeoutMs;
+      if (options.fetch !== undefined) fallbackOptions.fetch = options.fetch;
+      fallback = new JevClient(fallbackOptions);
+    }
+    const breaker = new CircuitBreaker({
+      ...(options.jevBreaker?.failureThreshold !== undefined
+        ? { failureThreshold: options.jevBreaker.failureThreshold }
+        : {}),
+      ...(options.jevBreaker?.cooldownMs !== undefined ? { cooldownMs: options.jevBreaker.cooldownMs } : {}),
+    });
+    const breakerClient = new JevTransportFallbackClient({
+      primary: primaryJev,
+      ...(fallback !== undefined ? { fallback } : {}),
+      breaker,
+      logger,
+    });
+    jev = breakerClient;
+    jevTransportState = () => breakerClient.currentTransport();
+  }
   const jevRouter = jev;
   const samplingEnabled = options.sampling?.enabled ?? true;
 
@@ -318,6 +394,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     mode,
     jev,
     ...(jevTransport === "openrouter" ? { forwardJevKey: true } : {}),
+    ...(jevTransportState !== undefined ? { jevTransportState } : {}),
     ...(factMemory !== undefined ? { factMemory } : {}),
     ...(factRetrieval !== undefined ? { factRetrieval } : {}),
     ...(samplingKnobs !== undefined ? { sampling: samplingKnobs } : {}),

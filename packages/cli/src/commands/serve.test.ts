@@ -221,6 +221,28 @@ describe("milo serve", () => {
     expect(calls[0]?.jevTransport).toBe("typesafe");
   });
 
+  it("defaults jevFallbackToTypesafe to false and passes a config file's opt-in through (ADR-023)", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps } = createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway, serve });
+    await run(["--db", ":memory:"], deps);
+    expect(calls[0]?.jevFallbackToTypesafe).toBe(false);
+
+    const configPath = join(dir, "milo.config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ jevTransport: "openrouter", jevFallbackToTypesafe: true, jevBreaker: { failureThreshold: 5 } }),
+    );
+    const overridden = fakeGateway();
+    await run(
+      ["--config", configPath, "--db", ":memory:"],
+      createTestDeps({ env: { JEV_API_KEY: "k" }, createGateway: overridden.createGateway, serve: fakeServe().serve })
+        .deps,
+    );
+    expect(overridden.calls[0]?.jevFallbackToTypesafe).toBe(true);
+    expect(overridden.calls[0]?.jevBreaker).toEqual({ failureThreshold: 5 });
+  });
+
   it("starts WITHOUT JEV_API_KEY under the openrouter transport (ADR-022)", async () => {
     // Under openrouter, every Jev call bills to the caller's forwarded key, so
     // Milo's own key is unused and need not be set. The gateway starts anyway.
