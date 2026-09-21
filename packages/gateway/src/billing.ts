@@ -287,6 +287,29 @@ export function forwardedUpstreamKey(c: Context): string {
   return auth.replace(/^Bearer\s+/i, "").trim();
 }
 
+/**
+ * The per-call bearer for a Jev call under the `"openrouter"` transport
+ * (ADR-022), or `undefined`. Returns the caller's forwarded OpenRouter key --
+ * the same key that pays for the completion -- when this deployment forwards
+ * the Jev key (`deps.forwardJevKey`, set only under the `"openrouter"`
+ * transport), so under that transport EVERY Jev call (routing and the
+ * auxiliary features -- ranking, the completeness gate, verification, pruning,
+ * fact capture and relevance, preference capture) bills to the user's own key
+ * and Milo's `JEV_API_KEY` is never used for a user-facing call.
+ *
+ * Returns `undefined` under the default TypeSafe transport (Milo's key is
+ * used, as before) and also when no forwarded key is present. A per-request
+ * Jev call always has one; an auxiliary feature that somehow does not simply
+ * passes `undefined`, and the `"openrouter"` Jev client then rejects the call
+ * rather than falling back to Milo's key -- the feature fails open (its
+ * existing behaviour), so the request still succeeds without it.
+ */
+export function forwardedJevKey(c: Context, deps: AppDeps): string | undefined {
+  if (deps.forwardJevKey !== true) return undefined;
+  const key = forwardedUpstreamKey(c);
+  return key !== "" ? key : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // The credit gate
 // ---------------------------------------------------------------------------

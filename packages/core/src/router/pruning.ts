@@ -299,18 +299,27 @@ export function estimatePromptTokens(messages: ChatMessage[]): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Asks Jev (on Milo's key) the two pruning questions over the conversation.
- * The state is `buildJevState`'s compact view, exactly what the router builds
- * (a separate call: this never touches the router's own). Throws on a Jev
- * failure or a malformed answer; the caller forwards unpruned on a throw.
+ * Asks Jev the two pruning questions over the conversation. The state is
+ * `buildJevState`'s compact view, exactly what the router builds (a separate
+ * call: this never touches the router's own). Throws on a Jev failure or a
+ * malformed answer; the caller forwards unpruned on a throw.
+ *
+ * `apiKey` is the caller's forwarded OpenRouter key (ADR-022): under the
+ * `"openrouter"` Jev transport it authenticates this call so it bills to the
+ * user's key, not Milo's `JEV_API_KEY`. The TypeSafe transport ignores it, so
+ * it can be passed unconditionally.
  */
 export async function checkPrune(
   jev: JevClientLike,
   messages: ChatMessage[],
   budgetMs = PRUNE_BUDGET_MS,
+  apiKey?: string,
 ): Promise<PruneAnswers> {
   const { state } = buildJevState(messages);
-  const result = await jev.systemone({ state, questions: PRUNING_QUESTIONS }, { budgetMs });
+  const result = await jev.systemone(
+    { state, questions: PRUNING_QUESTIONS },
+    { budgetMs, ...(apiKey !== undefined && apiKey !== "" ? { apiKey } : {}) },
+  );
   const finished = result.answers["oldest_finished"];
   const prunable = result.answers["prunable"];
   if (finished?.type !== "noul" || prunable?.type !== "score") {

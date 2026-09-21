@@ -84,6 +84,47 @@ function jevRanking(probabilities: Record<string, number>, noul: number): JevCli
   };
 }
 
+/** A stub that records the per-call `apiKey` opt each systemone call saw. */
+function keyCapturingRanker(): JevClientLike & { keys: Array<string | undefined> } {
+  const keys: Array<string | undefined> = [];
+  return {
+    keys,
+    systemone: (_req, opts): Promise<SystemOneResult> => {
+      keys.push(opts?.apiKey);
+      return Promise.resolve({
+        model: "jev-latest",
+        answers: {
+          quality: { type: "score", score: 2, confidence: 0.8, legend: {}, probabilities: { "2": 1 } },
+          correct: { type: "noul", noul: 0.9 },
+        },
+        usage: { input_tokens: 400, output_tokens: 8 },
+        requestId: "req_rank",
+        latencyMs: 55,
+      });
+    },
+  };
+}
+
+describe("rankAnswer: forwarded Jev key (ADR-022)", () => {
+  it("threads the forwarded key to the systemone call as opts.apiKey", async () => {
+    const jev = keyCapturingRanker();
+    await rankAnswer(jev, MESSAGES, "Done.", undefined, "sk-or-v1-forwarded");
+    expect(jev.keys).toEqual(["sk-or-v1-forwarded"]);
+  });
+
+  it("passes no apiKey when none is threaded (TypeSafe default: Milo's key)", async () => {
+    const jev = keyCapturingRanker();
+    await rankAnswer(jev, MESSAGES, "Done.");
+    expect(jev.keys).toEqual([undefined]);
+  });
+
+  it("passes no apiKey for an empty forwarded key (no unauthenticated call)", async () => {
+    const jev = keyCapturingRanker();
+    await rankAnswer(jev, MESSAGES, "Done.", undefined, "");
+    expect(jev.keys).toEqual([undefined]);
+  });
+});
+
 describe("rankAnswer", () => {
   it("returns the expected quality from the probabilities, plus correctness", async () => {
     const jev = jevRanking({ "0": 0.1, "1": 0.1, "2": 0.3, "3": 0.5 }, 0.9);

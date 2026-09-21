@@ -184,7 +184,9 @@ afterEach(async () => {
   for (const log of logs) await log.close();
 });
 
-async function app(opts: { jev?: JevClientLike; decision?: RouteDecision } = {}): Promise<Hono> {
+async function app(
+  opts: { jev?: JevClientLike; decision?: RouteDecision; forwardJevKey?: boolean } = {},
+): Promise<Hono> {
   const log = await DecisionLog.open(":memory:");
   logs.push(log);
   const fixed = opts.decision ?? decision();
@@ -203,6 +205,7 @@ async function app(opts: { jev?: JevClientLike; decision?: RouteDecision } = {})
       void log.setUpstream(id, upstream);
     },
     ...(opts.jev !== undefined ? { jev: opts.jev } : {}),
+    ...(opts.forwardJevKey !== undefined ? { forwardJevKey: opts.forwardJevKey } : {}),
   };
   return createApp(deps);
 }
@@ -547,5 +550,75 @@ describe("the completeness gate", () => {
     expect(first["object"]).toBe("chat.completion.chunk");
     const choices = first["choices"] as Array<Record<string, unknown>>;
     expect((choices[0]?.["delta"] as Record<string, unknown>)["content"]).toBe("retry q3");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-022: the gate's Jev calls bill to the caller's forwarded OpenRouter key
+// ---------------------------------------------------------------------------
+
+/**
+ * A gate Jev that records the per-call `apiKey` opt every systemone call saw,
+ * and answers `incomplete` so the retry path fires -- exercising the
+ * completeness check AND both ranking calls (original + retry) in one request.
+ */
+function keyRecordingGateJev(): JevClientLike & { keys: Array<string | undefined> } {
+  const keys: Array<string | undefined> = [];
+  return {
+    keys,
+    systemone: (req: { questions: Record<string, unknown> }, opts?: { apiKey?: string }): Promise<SystemOneResult> => {
+      keys.push(opts?.apiKey);
+      if ("completeness" in req.questions) {
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: {
+            completeness: { type: "choice", choice: "incomplete", confidence: 0.9, probabilities: { incomplete: 0.9 } },
+          },
+          usage: { input_tokens: 400, output_tokens: 6 },
+          requestId: "req_check",
+          latencyMs: 20,
+        });
+      }
+      return Promise.resolve({
+        model: "jev-latest",
+        answers: {
+          quality: { type: "score", score: 2, confidence: 0.8, legend: {}, probabilities: { "2": 1 } },
+          correct: { type: "noul", noul: 0.6 },
+        },
+        usage: { input_tokens: 300, output_tokens: 8 },
+        requestId: "req_rank",
+        latencyMs: 25,
+      });
+    },
+  };
+}
+
+describe("the completeness gate: forwarded Jev key (ADR-022)", () => {
+  it("threads the caller's forwarded key to every gate Jev call under forwardJevKey", async () => {
+    originalThenRetry("original q1", "retry q2");
+    const jev = keyRecordingGateJev();
+    const server = await app({ jev, forwardJevKey: true });
+
+    const res = await server.request(chatRequest());
+    expect(res.status).toBe(200);
+
+    // The completeness check plus both ranking calls all saw the forwarded key
+    // (the same key that pays for the completions), never Milo's Jev key.
+    expect(jev.keys.length).toBeGreaterThanOrEqual(2);
+    expect(jev.keys.every((k) => k === KEY)).toBe(true);
+  });
+
+  it("threads NO key under the default TypeSafe transport (forwardJevKey unset)", async () => {
+    originalThenRetry("original q1", "retry q2");
+    const jev = keyRecordingGateJev();
+    const server = await app({ jev });
+
+    const res = await server.request(chatRequest());
+    expect(res.status).toBe(200);
+
+    // No forwardJevKey: the gate passes no per-call key, so the client
+    // authenticates with Milo's configured Jev key exactly as before.
+    expect(jev.keys.length).toBeGreaterThanOrEqual(2);
+    expect(jev.keys.every((k) => k === undefined)).toBe(true);
   });
 });

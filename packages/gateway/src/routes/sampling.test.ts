@@ -170,11 +170,16 @@ function hangingSse(): { response: Response; cancelled: () => boolean } {
  * of the rank state and answers with a quality distribution centred on the
  * digit after "q" in the text, so a test declares the ranking in the fixture.
  */
-function rankingJev(): JevClientLike & { calls: number } {
+function rankingJev(): JevClientLike & { calls: number; keys: Array<string | undefined> } {
   const stub = {
     calls: 0,
-    systemone: (req: { state: string | Record<string, unknown> | unknown[] }): Promise<SystemOneResult> => {
+    keys: [] as Array<string | undefined>,
+    systemone: (
+      req: { state: string | Record<string, unknown> | unknown[] },
+      opts?: { apiKey?: string },
+    ): Promise<SystemOneResult> => {
       stub.calls += 1;
+      stub.keys.push(opts?.apiKey);
       const state = req.state as Record<string, unknown>;
       const candidate = String(state["candidate_answer"] ?? "");
       const match = /q([0-3])/.exec(candidate);
@@ -279,6 +284,7 @@ async function app(
     decision?: RouteDecision;
     roster?: Roster;
     sampling?: { sampleTimeoutMs?: number; minRanked?: number };
+    forwardJevKey?: boolean;
   } = {},
 ): Promise<Hono> {
   const log = await DecisionLog.open(":memory:");
@@ -300,6 +306,7 @@ async function app(
     },
     ...(opts.jev !== undefined ? { jev: opts.jev } : {}),
     ...(opts.sampling !== undefined ? { sampling: opts.sampling } : {}),
+    ...(opts.forwardJevKey !== undefined ? { forwardJevKey: opts.forwardJevKey } : {}),
   };
   return createApp(deps);
 }
@@ -358,6 +365,34 @@ describe("sampled fan-out", () => {
     // Three ranking calls, plus the completeness gate's check (ADR-013),
     // which this stub cannot answer -- the pick is served as-is either way.
     expect(jev.calls).toBe(4);
+  });
+
+  it("bills every ranking (and gate) Jev call to the caller's forwarded key under forwardJevKey (ADR-022)", async () => {
+    const contents = ["plain q1", "framed q3", "framed q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const jev = rankingJev();
+    const a = await app({ jev, forwardJevKey: true });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+
+    // Every Jev call the sampled path makes saw the forwarded key, never
+    // Milo's own. (Ranking calls plus the gate's completeness check.)
+    expect(jev.keys.length).toBeGreaterThanOrEqual(3);
+    expect(jev.keys.every((k) => k === KEY)).toBe(true);
+  });
+
+  it("passes NO key to ranking under the default TypeSafe transport (ADR-022)", async () => {
+    const contents = ["plain q1", "framed q3", "framed q0"];
+    openRouter.handler = (_body, index) => sse(completionBody(contents[index] as string));
+    const jev = rankingJev();
+    const a = await app({ jev });
+
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+
+    expect(jev.keys.length).toBeGreaterThanOrEqual(3);
+    expect(jev.keys.every((k) => k === undefined)).toBe(true);
   });
 
   it("aggregates cost and tokens across samples and stores per-sample metadata, no content", async () => {

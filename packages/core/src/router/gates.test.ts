@@ -40,6 +40,38 @@ function verdictJev(choice: string, confidence = 0.82): JevClientLike & { calls:
   };
 }
 
+/** A stub that records the per-call `apiKey` opt each systemone call saw. */
+function keyCapturingGate(): JevClientLike & { keys: Array<string | undefined> } {
+  const keys: Array<string | undefined> = [];
+  return {
+    keys,
+    systemone: (_req, opts) => {
+      keys.push(opts?.apiKey);
+      return Promise.resolve({
+        model: "jev-latest",
+        answers: { completeness: { type: "choice", choice: "complete", confidence: 0.9, probabilities: { complete: 0.9 } } },
+        usage: { input_tokens: 1, output_tokens: 1 },
+        requestId: "req_gate",
+        latencyMs: 5,
+      } satisfies SystemOneResult);
+    },
+  };
+}
+
+describe("checkCompleteness: forwarded Jev key (ADR-022)", () => {
+  it("threads the forwarded key to the systemone call as opts.apiKey", async () => {
+    const jev = keyCapturingGate();
+    await checkCompleteness(jev, TASK, "answer", undefined, "sk-or-v1-forwarded");
+    expect(jev.keys).toEqual(["sk-or-v1-forwarded"]);
+  });
+
+  it("passes no apiKey when none is threaded (TypeSafe default: Milo's key)", async () => {
+    const jev = keyCapturingGate();
+    await checkCompleteness(jev, TASK, "answer");
+    expect(jev.keys).toEqual([undefined]);
+  });
+});
+
 describe("checkCompleteness", () => {
   it("sends the rank-style state and the completeness choice, and returns the typed verdict", async () => {
     const jev = verdictJev("incomplete");

@@ -80,7 +80,7 @@ import type {
 } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
-import { chargeBuffered, upstreamHeadersFor } from "../billing.js";
+import { chargeBuffered, forwardedJevKey, upstreamHeadersFor } from "../billing.js";
 import { briefHeaders } from "../brief.js";
 import { factHeaders } from "../facts.js";
 import type { RoutedFacts } from "../facts.js";
@@ -218,7 +218,11 @@ export function gateFor(
   if (computeBand(decision.signals) < 1) return undefined;
   const jev = deps.jev;
   const candidates = extension?.candidates;
-  return (answer) => runGate(c, deps, jev, body, decision, answer, candidates);
+  // ADR-022: under the OpenRouter Jev transport, every gate Jev call (the
+  // completeness check, the low-confidence re-rating, the both-answers rating,
+  // and ground-truth verification) bills to the caller's forwarded key.
+  const jevKey = forwardedJevKey(c, deps);
+  return (answer) => runGate(c, deps, jev, body, decision, answer, candidates, jevKey);
 }
 
 /**
@@ -234,6 +238,7 @@ async function runGate(
   decision: RouteDecision,
   answer: GateAnswer,
   candidates?: string[],
+  jevKey?: string,
 ): Promise<GateResult> {
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   const answered = answerText(answer.message);
@@ -249,7 +254,7 @@ async function runGate(
   let verify: VerifyResult | undefined;
   if (ground !== undefined) {
     try {
-      verify = await verifyClaims(jev, extractClaims(answered), ground);
+      verify = await verifyClaims(jev, extractClaims(answered), ground, undefined, jevKey);
     } catch (error) {
       deps.logger.warn("ground-truth verification failed; disclosing nothing", {
         decisionId: decision.id,
@@ -281,7 +286,7 @@ async function runGate(
 
   let check;
   try {
-    check = await checkCompleteness(jev, messages, answered);
+    check = await checkCompleteness(jev, messages, answered, undefined, jevKey);
   } catch (error) {
     // The check itself failed: the answer goes out exactly as a passing one
     // would (never fail the request on a gate); the record says `error`. A
@@ -324,7 +329,7 @@ async function runGate(
     // evidence). A rating that cannot be had is not a reason to spend a retry,
     // so absent a contradiction it serves as-is.
     try {
-      originalRank = await rankAnswer(jev, messages, answered);
+      originalRank = await rankAnswer(jev, messages, answered, undefined, jevKey);
     } catch (error) {
       deps.logger.warn("low-confidence gate re-rating failed; serving as-is", {
         decisionId: decision.id,
@@ -424,8 +429,8 @@ async function runGate(
   try {
     const [original, retry] = await Promise.all([
       // The suspect path already rated the original; one Jev call is enough.
-      originalRank !== undefined ? Promise.resolve(originalRank) : rankAnswer(jev, messages, answered),
-      rankAnswer(jev, messages, answerText(retryMessage)),
+      originalRank !== undefined ? Promise.resolve(originalRank) : rankAnswer(jev, messages, answered, undefined, jevKey),
+      rankAnswer(jev, messages, answerText(retryMessage), undefined, jevKey),
     ]);
     record.originalQuality = original.quality;
     record.retryQuality = retry.quality;

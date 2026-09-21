@@ -37,11 +37,14 @@ function choice(value: string, confidence: number): JevAnswer {
 function fakeJev(answers: Record<string, JevAnswer>): {
   jev: JevClientLike;
   calls: Array<Omit<SystemOneRequest, "model"> & { model?: string }>;
+  keys: Array<string | undefined>;
 } {
   const calls: Array<Omit<SystemOneRequest, "model"> & { model?: string }> = [];
+  const keys: Array<string | undefined> = [];
   const jev: JevClientLike = {
-    systemone: (req) => {
+    systemone: (req, opts) => {
       calls.push(req);
+      keys.push(opts?.apiKey);
       const result: SystemOneResult = {
         model: "jev-latest",
         answers,
@@ -52,7 +55,7 @@ function fakeJev(answers: Record<string, JevAnswer>): {
       return Promise.resolve(result);
     },
   };
-  return { jev, calls };
+  return { jev, calls, keys };
 }
 
 const RESOLUTION_ANSWERS = {
@@ -100,6 +103,29 @@ describe("maybeCapture", () => {
     }
 
     expect(await log.listPreferences(HASH)).toHaveLength(1);
+  });
+
+  it("threads the forwarded Jev key to the resolution call under openrouter (ADR-022)", async () => {
+    const { jev, keys } = fakeJev(RESOLUTION_ANSWERS);
+    await maybeCapture(log, jev, {
+      keyHash: HASH,
+      messages: MESSAGES,
+      signals: signals(),
+      provenance: FINGERPRINT,
+      jevKey: "sk-or-v1-forwarded",
+    });
+    expect(keys).toEqual(["sk-or-v1-forwarded"]);
+  });
+
+  it("passes no Jev key when none is threaded (TypeSafe default: Milo's key)", async () => {
+    const { jev, keys } = fakeJev(RESOLUTION_ANSWERS);
+    await maybeCapture(log, jev, {
+      keyHash: HASH,
+      messages: MESSAGES,
+      signals: signals(),
+      provenance: FINGERPRINT,
+    });
+    expect(keys).toEqual([undefined]);
   });
 
   it("scopes to the routed task type on a task_only answer", async () => {

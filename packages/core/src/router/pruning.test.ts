@@ -223,6 +223,43 @@ function pruneJev(finishedSafe: number, scoreProbs: Record<string, number>): Jev
   };
 }
 
+describe("checkPrune: forwarded Jev key (ADR-022)", () => {
+  const messages = [sys("You are a sub-agent."), user("first task"), asst("done"), user("now do this")];
+
+  /** Records the per-call `apiKey` opt each systemone call saw. */
+  function keyCapturingPruner(): JevClientLike & { keys: Array<string | undefined> } {
+    const keys: Array<string | undefined> = [];
+    return {
+      keys,
+      systemone: (_req, opts) => {
+        keys.push(opts?.apiKey);
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: {
+            oldest_finished: { type: "noul", noul: 0.5 },
+            prunable: { type: "score", score: 2, confidence: 0.8, probabilities: { "2": 1 } },
+          },
+          usage: { input_tokens: 1, output_tokens: 1 },
+          requestId: "req_prune",
+          latencyMs: 5,
+        } satisfies SystemOneResult);
+      },
+    };
+  }
+
+  it("threads the forwarded key to the systemone call as opts.apiKey", async () => {
+    const jev = keyCapturingPruner();
+    await checkPrune(jev, messages, undefined, "sk-or-v1-forwarded");
+    expect(jev.keys).toEqual(["sk-or-v1-forwarded"]);
+  });
+
+  it("passes no apiKey when none is threaded (TypeSafe default: Milo's key)", async () => {
+    const jev = keyCapturingPruner();
+    await checkPrune(jev, messages);
+    expect(jev.keys).toEqual([undefined]);
+  });
+});
+
 describe("checkPrune", () => {
   const messages = [sys("You are a sub-agent."), user("first task"), asst("done"), user("now do this")];
 

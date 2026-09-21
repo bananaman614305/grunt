@@ -221,6 +221,41 @@ describe("milo serve", () => {
     expect(calls[0]?.jevTransport).toBe("typesafe");
   });
 
+  it("starts WITHOUT JEV_API_KEY under the openrouter transport (ADR-022)", async () => {
+    // Under openrouter, every Jev call bills to the caller's forwarded key, so
+    // Milo's own key is unused and need not be set. The gateway starts anyway.
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps, stderr } = createTestDeps({
+      env: { MILO_JEV_TRANSPORT: "openrouter" },
+      createGateway,
+      serve,
+    });
+
+    const code = await run(["--db", ":memory:"], deps);
+
+    expect(code).toBeUndefined();
+    expect(stderr.toString()).toBe("");
+    expect(calls[0]?.jevTransport).toBe("openrouter");
+    expect(calls[0]?.jevApiKey ?? "").toBe("");
+  });
+
+  it("still requires JEV_API_KEY under the typesafe transport (ADR-022)", async () => {
+    const { createGateway, calls } = fakeGateway();
+    const { serve } = fakeServe();
+    const { deps, stderr } = createTestDeps({
+      env: { MILO_JEV_TRANSPORT: "typesafe" },
+      createGateway,
+      serve,
+    });
+
+    const code = await run(["--db", ":memory:"], deps);
+
+    expect(code).toBe(1);
+    expect(stderr.toString()).toContain("JEV_API_KEY");
+    expect(calls).toHaveLength(0);
+  });
+
   // -------------------------------------------------------------------------
   // PORT / MILO_DB environment fallbacks
   // -------------------------------------------------------------------------

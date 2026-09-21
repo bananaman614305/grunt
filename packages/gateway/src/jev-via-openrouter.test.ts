@@ -1,16 +1,19 @@
 /**
- * ADR-021: the `"openrouter"` Jev transport, end to end through the gateway.
+ * ADR-021 / ADR-022: the `"openrouter"` Jev transport, end to end through the
+ * gateway.
  *
  * A single injected `fetch` doubles for both upstreams and dispatches on the
  * request path: `/api/alpha/decisions` is OpenRouter's Decisions router (Jev),
  * `/api/v1/chat/completions` is the ordinary completion, and `api.typesafe.ai`
  * is native Jev. The classification call carries the router's question set
  * (`task_type`), so a call whose body has `"task_type"` is the routing
- * decision; the completeness gate (ADR-013) rides Milo's own TypeSafe client
- * with a different question and is intentionally left there.
+ * decision.
  *
- * Under `"openrouter"` the routing decision must go to the Decisions endpoint
- * on the caller's own forwarded OpenRouter key, and never to `api.typesafe.ai`.
+ * Under `"openrouter"` the routing decision -- and, since ADR-022, EVERY other
+ * Jev call the gateway makes (the completeness gate, ranking, verification,
+ * pruning, fact capture and relevance, preference capture) -- must go to the
+ * Decisions endpoint on the caller's own forwarded OpenRouter key, and never to
+ * `api.typesafe.ai`. `JEV_API_KEY` is then unused and need not be set.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -156,5 +159,49 @@ describe("jevTransport: openrouter (ADR-021)", () => {
     expect(res.status).toBe(200);
     expect(upstreams.classificationCalls("api.typesafe.ai")).toHaveLength(1);
     expect(upstreams.decisionCalls()).toHaveLength(0);
+  });
+
+  it("never sends the forwarded key to TypeSafe: the decision uses Milo's own key", async () => {
+    await start();
+
+    await gateway.app.request("/v1/chat/completions", { method: "POST", headers: AUTH, body: chatBody() });
+
+    // Under TypeSafe, every Jev call authenticates with Milo's own key, and
+    // the caller's forwarded OpenRouter key never reaches api.typesafe.ai.
+    const typesafeCalls = upstreams.calls.filter((call) => call.url.host === "api.typesafe.ai");
+    expect(typesafeCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of typesafeCalls) {
+      expect(call.headers.get("authorization")).toBe("Bearer jev-milo-key");
+      expect(call.headers.get("authorization")).not.toContain(KEY);
+    }
+  });
+});
+
+describe("jevTransport: openrouter -- full Jev offload (ADR-022)", () => {
+  it("starts WITHOUT JEV_API_KEY and never calls TypeSafe for any Jev call", async () => {
+    // JEV_API_KEY is unused under the openrouter transport: the gateway starts
+    // without it, and no Jev call falls back to Milo's key.
+    gateway = await createGateway({ roster: ROSTER, fetch: upstreams.fetch, jevTransport: "openrouter" });
+
+    const res = await gateway.app.request("/v1/chat/completions", { method: "POST", headers: AUTH, body: chatBody() });
+
+    expect(res.status).toBe(200);
+    expect(upstreams.calls.filter((call) => call.url.host === "api.typesafe.ai")).toHaveLength(0);
+    // The classification call still fired -- on the Decisions endpoint.
+    expect(upstreams.decisionCalls().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("authenticates EVERY Decisions-endpoint Jev call with the caller's forwarded key", async () => {
+    await start({ jevTransport: "openrouter" });
+
+    await gateway.app.request("/v1/chat/completions", { method: "POST", headers: AUTH, body: chatBody() });
+
+    const decisionCalls = upstreams.decisionCalls();
+    expect(decisionCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of decisionCalls) {
+      expect(call.headers.get("authorization")).toBe(`Bearer ${KEY}`);
+    }
+    // Not one Jev call reached TypeSafe, whatever auxiliary features fired.
+    expect(upstreams.calls.filter((call) => call.url.host === "api.typesafe.ai")).toHaveLength(0);
   });
 });

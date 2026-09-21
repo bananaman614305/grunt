@@ -60,7 +60,7 @@ import { applyVariant, isStreaming, messageText, prepareBody, rankAnswer, resolv
 import type { ChatMessage, RankScore, RouteDecision, SampleUpstream, Tier } from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
-import { chargeBuffered, chargeStream, upstreamHeadersFor } from "../billing.js";
+import { chargeBuffered, chargeStream, forwardedJevKey, upstreamHeadersFor } from "../billing.js";
 import { errorMessage, errorResponse } from "../errors.js";
 import { briefHeaders } from "../brief.js";
 import { factHeaders } from "../facts.js";
@@ -400,6 +400,10 @@ export async function forwardSampled(
   ctx: SamplingContext = {},
 ): Promise<Response> {
   const n = decision.samples ?? 1;
+  // ADR-022: under the OpenRouter Jev transport, bill each sample-ranking call
+  // to the caller's forwarded key -- the same key the sampled completions run
+  // on. Undefined under the TypeSafe transport (Milo's key ranks, as before).
+  const jevKey = forwardedJevKey(c, deps);
   const minRanked = Math.max(1, Math.min(deps.sampling?.minRanked ?? MIN_RANKED_DEFAULT, n));
   const messages = Array.isArray(body["messages"]) ? (body["messages"] as ChatMessage[]) : [];
   // A large prompt gets a longer per-sample cap: see `LARGE_PROMPT_CHARS`.
@@ -571,7 +575,7 @@ export async function forwardSampled(
       slot.sample = sample;
       if (isSuccess(sample) && deps.jev !== undefined && !decided) {
         try {
-          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}));
+          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}), undefined, jevKey);
         } catch (error) {
           sample.rankError = `rank_${classify(error)}`;
           deps.logger.warn("jev sample ranking failed", {

@@ -52,6 +52,12 @@ export type MaybeCaptureOptions = {
   /** The decision's fingerprint: the stored row's provenance. */
   provenance: string;
   budgetMs?: number;
+  /**
+   * The caller's forwarded OpenRouter key (ADR-022): under the `"openrouter"`
+   * Jev transport it authenticates the resolution call so it bills to the
+   * user's key, never Milo's `JEV_API_KEY`. Absent under the TypeSafe transport.
+   */
+  jevKey?: string;
   logger?: Logger;
 };
 
@@ -80,7 +86,10 @@ export async function maybeCapture(
     const { state } = buildJevState(opts.messages);
     const result = await jev.systemone(
       { state, questions: resolutionQuestions(field) },
-      { budgetMs: opts.budgetMs ?? CAPTURE_BUDGET_MS },
+      {
+        budgetMs: opts.budgetMs ?? CAPTURE_BUDGET_MS,
+        ...(opts.jevKey !== undefined && opts.jevKey !== "" ? { apiKey: opts.jevKey } : {}),
+      },
     );
 
     const candidate = resolveCapture(result.answers, detected, taskTypeOf(opts.signals));

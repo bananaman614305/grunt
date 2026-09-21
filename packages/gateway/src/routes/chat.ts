@@ -39,7 +39,7 @@ import {
   chargeBuffered,
   chargeStream,
   creditGate,
-  forwardedUpstreamKey,
+  forwardedJevKey,
   isMetered,
   noteDecisionAccount,
   rateLimitBucket,
@@ -193,12 +193,14 @@ async function routed(
   if (candidates !== undefined) request.candidates = candidates;
   if (forcedTier !== undefined) request.forcedTier = forcedTier;
   if (extension?.samples !== undefined) request.samples = extension.samples;
-  // ADR-021: under the OpenRouter Jev transport, bill the classification call
-  // to the caller's own forwarded OpenRouter key. Left unset otherwise.
-  if (deps.forwardJevKey === true) {
-    const jevKey = forwardedUpstreamKey(c);
-    if (jevKey !== "") request.jevKey = jevKey;
-  }
+  // ADR-021/022: under the OpenRouter Jev transport, bill EVERY Jev call this
+  // request makes to the caller's own forwarded OpenRouter key -- not only the
+  // classification call below (ADR-021), but each auxiliary feature that fires
+  // later on this path too (preference capture, fact capture, fact relevance,
+  // pruning, the completeness gate and its ranking/verification -- ADR-022).
+  // `undefined` under the default TypeSafe transport, where Milo's key is used.
+  const jevKey = forwardedJevKey(c, deps);
+  if (jevKey !== undefined) request.jevKey = jevKey;
 
   // Two-stage fact retrieval (ADR-018): prepare the turn's embedding IN
   // PARALLEL with the routing Jev call below, so its ~50 ms round trip hides
@@ -272,6 +274,7 @@ async function routed(
     messages,
     signals: decision.signals,
     provenance: decision.fingerprint,
+    ...(jevKey !== undefined ? { jevKey } : {}),
     logger: deps.logger,
   });
   // Personal-fact capture (ADR-017) is fire-and-forget too: its own Jev call,
@@ -282,6 +285,7 @@ async function routed(
     messages,
     provenance: decision.fingerprint,
     ...(embed !== undefined ? { embed } : {}),
+    ...(jevKey !== undefined ? { jevKey } : {}),
     logger: deps.logger,
   });
   const brief = await routedBrief(deps.log, callerScope(c), {
@@ -307,6 +311,7 @@ async function routed(
     // routing, so the gate rarely waits on it.
     ...(embed !== undefined ? { embed } : {}),
     promptEmbedding,
+    ...(jevKey !== undefined ? { jevKey } : {}),
     logger: deps.logger,
   });
   const outgoing = applyFactNote(
@@ -318,7 +323,7 @@ async function routed(
   // `outgoing.messages` in place before anything reads them: off by default,
   // over a token floor, never on `low` posture. See prune.ts for the exact
   // conditions; the outcome rides the forward as disclosure only.
-  const prune = await maybePrune(deps, outgoing, decision, posture, extension);
+  const prune = await maybePrune(deps, outgoing, decision, posture, extension, jevKey);
 
   // The completeness gate (ADR-013 phase A) applies to this surface only,
   // in both routing modes, on non-trivial cells: see gateFor for the exact
