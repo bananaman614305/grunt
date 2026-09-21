@@ -13,6 +13,7 @@ describe("runCli", () => {
     expect(stdout.toString()).toContain("explain");
     expect(stdout.toString()).toContain("decisions");
     expect(stdout.toString()).toContain("stats");
+    expect(stdout.toString()).toContain("tune");
     expect(stdout.toString()).toContain("roster");
   });
 
@@ -49,6 +50,14 @@ describe("runCli", () => {
 
     expect(code).toBe(0);
     expect(stdout.toString()).toContain("Usage: milo roster");
+  });
+
+  it("dispatches to the tune command's own --help", async () => {
+    const { deps, stdout } = createTestDeps();
+    const code = await runCli(["tune", "--help"], deps);
+
+    expect(code).toBe(0);
+    expect(stdout.toString()).toContain("Usage: milo tune");
   });
 
   it("dispatches to the explain command's own --help", async () => {

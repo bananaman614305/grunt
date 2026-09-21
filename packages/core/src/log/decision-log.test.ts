@@ -228,6 +228,32 @@ describe("DecisionLog", () => {
     }
   });
 
+  it("iterate walks every row oldest first, across page boundaries", async () => {
+    for (let i = 0; i < 7; i++) {
+      await log.insert(record({ id: `it-${i}`, createdAt: `2026-09-17T00:00:${String(i).padStart(2, "0")}.000Z` }));
+    }
+
+    const ids: string[] = [];
+    // A page size under the row count exercises the cursor, not just one query.
+    for await (const decision of log.iterate({ pageSize: 3 })) {
+      ids.push(decision.id);
+    }
+
+    expect(ids).toEqual(["it-0", "it-1", "it-2", "it-3", "it-4", "it-5", "it-6"]);
+  });
+
+  it("iterate filters on --since's cut-off", async () => {
+    await log.insert(record({ id: "before", createdAt: "2026-01-01T00:00:00.000Z" }));
+    await log.insert(record({ id: "after", createdAt: "2026-09-17T00:00:00.000Z" }));
+
+    const ids: string[] = [];
+    for await (const decision of log.iterate({ sinceIso: "2026-06-01T00:00:00.000Z" })) {
+      ids.push(decision.id);
+    }
+
+    expect(ids).toEqual(["after"]);
+  });
+
   it("rejects a record whose reason contains a bearer token", async () => {
     await expect(log.insert(record({ reason: "leaked Bearer x in the reason" }))).rejects.toThrow(
       /key or bearer token/,

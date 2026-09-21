@@ -17,8 +17,11 @@ Commands:
   explain     Explain one routing decision
   decisions   List recent routing decisions
   stats       Summarize the decision log
+  cost        Show routed-request spend from the decision log
+  tune        Propose tuned routing-policy settings from the decision log
   roster      Show the effective tier-to-model roster
   billing     Operate the billing database, Stripe, and provisioning
+  verify      Install the ground-truth verification Stop hook into a harness
 
 Run "milo <command> --help" for command-specific options.
 ```
@@ -256,6 +259,118 @@ signals (as above, where the only decision had no signals recorded). An
 invalid `--since` value exits **1** with `milo stats: --since is not a valid
 ISO 8601 timestamp: "<value>"`. Exit code **0** otherwise.
 
+## `milo tune`
+
+Closed-loop policy tuning, phase 1: read the decision log, roll it up into the
+cells the routing policy is written in, and **propose** better settings. It
+proposes; a human decides.
+
+```
+Usage: milo tune [options]
+
+Options:
+  --since <iso>      Only include decisions at or after this ISO 8601 timestamp
+  --db <url>         Decision log libsql URL (default: file:./.milo/decisions.db)
+  --min-n <n>        Graded requests a cell needs before a rule judges it (default: 50)
+  --apply-min-n <n>  Graded requests --apply demands per change (default: 200)
+  --json             Print the machine-readable proposal and statistics instead of tables
+  --apply            Write the proposal to an override file (refuses on low sample sizes)
+  --out <path>       Override file --apply writes (default: ./.milo/policy-override.json)
+  -h, --help         Show this help
+```
+
+Each decision is re-banded from its own stored Jev signals with the
+controller's `computeBand`, so the tuner reads bands exactly as ADR-012's
+compute controller does. A decision with no signals (a forced tier) has no
+band and is counted apart.
+
+Sample output:
+
+```
+$ milo tune --db "file:./.milo/decisions.db"
+Decisions read:  1,880 (1,880 banded, 0 without signals)
+Window:          2026-09-12T00:00:00.000Z .. 2026-09-22T23:00:00.000Z
+Policy:          v4 (fastBelowMass 0.35, frontierHardMass 0.05)
+
+Per difficulty band:
+band  reqs   sticky  budget                  graded  pass   trusted  retry  avg cost   lift   flags
+0     680    76      1x deepseek-v4-flash    680     96.0%  87.2%    4.0%   $0.000040  n/a
+1     550    62      1x deepseek-v4-flash    550     69.5%  62.9%    30.5%  $0.000127  n/a
+2     500    56      5x deepseek-v4-flash    500     91.4%  83.0%    8.6%   $0.000581  +0.38
+3     150    17      5x deepseek-v4.1-flash  150     94.0%  85.3%    6.0%   $0.001402  +0.70  no-control
+all   1,880  211     -                       1,880   86.9%  78.8%    13.1%  $0.000318  +0.46
+
+Per band and task type:
+band  task      reqs  obs N  graded  pass   smpl/single  d pass  lift   cost  flags
+0     chat      420   1      420     95.7%  0/420        n/a     n/a    n/a
+0     classify  260   1      260     96.5%  0/260        n/a     n/a    n/a
+1     debug     240   1      240     70.0%  0/240        n/a     n/a    n/a
+1     feature   310   1      310     69.0%  0/310        n/a     n/a    n/a
+2     edit      320   5      320     95.9%  260/60       +5.3pp  +0.04  4.8x
+2     research  180   5      180     83.3%  180/0        n/a     +0.86  n/a   no-control
+3     feature   150   5      150     94.0%  150/0        n/a     +0.70  n/a   no-control
+
+Proposal: 1 change
+rule  target  change        graded  pass   lift  note
+R1    band 1  1 -> 5 calls  550     69.5%  n/a
+
+  [R1] band 1: one call passes the completeness gate on 69.5% of 550 graded
+  requests, below the 80.0% floor -- try best-of-5, the budget the measured
+  table already uses
+
+Read these numbers with their caveats:
+  - The gate verdict is Jev judging an answer Jev also routed ...
+```
+
+### The columns
+
+| Column | What it is |
+|---|---|
+| `graded` | Requests the completeness gate actually returned a verdict on (ADR-013). Everything else -- gates off, gate errored, older rows -- is excluded from every rate below. |
+| `pass` | `complete` verdicts / graded. |
+| `trusted` | The strict reading: `complete` verdicts at or above `GATE_TRUST_CONFIDENCE` / graded. The gap between `pass` and `trusted` is the suspect-verdict share. |
+| `retry` | How often the gate's failure-typed retry fired. |
+| `lift` | The **within-decision** best-of-N lift: the picked sample's `jevQuality` minus the mean across that decision's own samples, on Jev's 0..3 scale. The one comparison in the log that holds the request fixed. |
+| `smpl/single`, `d pass`, `cost` | The cross-arm comparison inside one cell. Observational -- the policy chose which requests sampled. |
+| `flags` | `low-n`, `ungraded`, `mostly-ungraded`, `no-control` (a sampled cell with no single-call arm to compare against), degraded picks. |
+
+### The rules
+
+| Rule | Fires when | Proposes |
+|---|---|---|
+| R1 | A band budgeted at one call passes below `lowPassRate` (0.80) | Best-of-5 on that band |
+| R2 | A band budgeted at best-of-N passes at or above `highPassRate` (0.92) **and** sampling shows no measurable benefit | One call |
+| R3 | Inside a sampling band that holds overall, one task type's own sampled requests show no benefit | One call for that task type |
+| R4 | Band 0 trails the pooled pass rate by `bandGap` (5 points) | `fastBelowMass` up one step (0.05) |
+| R5 | Band 3 beats band 2 by `bandGap` | `frontierHardMass` down one step |
+
+"No measurable benefit" needs both signals to agree: the within-decision lift
+below 0.15 **and** the cross-arm pass-rate delta absent or below 3 points.
+Either one saying sampling helps blocks the drop. A cell under `--min-n`
+graded requests is never judged -- it is listed under "Not judged" instead.
+
+### `--apply`, and why it does not change routing
+
+`--apply` writes the proposal to `./.milo/policy-override.json`: a versioned
+document carrying the proposed sample counts, the proposed thresholds, the
+evidence behind each one, and `requiresBenchmark: true`. It refuses, writing
+nothing, when *any* proposed change rests on fewer than `--apply-min-n` graded
+requests (default 200), and when there is nothing to apply.
+
+**Nothing reads that file at runtime.** The band -> budget table in
+`packages/core/src/router/controller.ts` is a measured artefact, and ADR-012 is
+explicit: *do not change a band's budget without re-running the benchmark*. So
+the loop closes through a person:
+
+1. `milo tune` -- read the proposal and its sample sizes.
+2. `milo tune --apply` -- freeze it, with its evidence, as a reviewable file.
+3. `pnpm bench` (or a canary deployment on a slice of traffic) -- test the
+   proposed budget against the graded suite the current one was measured on.
+4. Only if the benchmark agrees: edit the table in source, with the report.
+
+An invalid `--since`, a non-positive `--min-n`/`--apply-min-n`, a refused
+`--apply`, or an unwritable `--out` all exit **1**. Exit **0** otherwise.
+
 ## `milo billing`
 
 Operator access to the billing database (ADR-007) and the Stripe/OpenRouter
@@ -408,7 +523,7 @@ database.
 | Code | Meaning |
 |---|---|
 | 0 | Success, or `--help` |
-| 1 | No command, unknown command, bad flag, missing `JEV_API_KEY`, missing/invalid config, not-found decision, invalid `--limit`/`--port`/`--since`, missing `--db`/`MILO_DATABASE_URL`, a `milo billing` usage error |
+| 1 | No command, unknown command, bad flag, missing `JEV_API_KEY`, missing/invalid config, not-found decision, invalid `--limit`/`--port`/`--since`/`--min-n`, missing `--db`/`MILO_DATABASE_URL`, a `milo billing` usage error, a `milo tune --apply` refused for thin evidence |
 | *(none)* | `serve` on a successful start — the process keeps running |
 
 There is no `milo eval` subcommand. The eval runner is a separate package

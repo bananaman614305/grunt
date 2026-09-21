@@ -11,6 +11,7 @@ import * as explain from "./commands/explain.js";
 import * as roster from "./commands/roster.js";
 import * as serve from "./commands/serve.js";
 import * as stats from "./commands/stats.js";
+import * as tune from "./commands/tune.js";
 import * as verify from "./commands/verify.js";
 import type { CliDeps } from "./deps.js";
 
@@ -22,7 +23,7 @@ type Command = {
   run: (args: string[], deps: CliDeps) => Promise<number | undefined>;
 };
 
-const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, cost, roster, billing, verify };
+const COMMANDS: Record<string, Command> = { serve, explain, decisions, stats, cost, tune, roster, billing, verify };
 
 export const TOP_LEVEL_HELP = `Usage: milo <command> [options]
 
@@ -34,6 +35,7 @@ Commands:
   decisions   List recent routing decisions
   stats       Summarize the decision log
   cost        Show routed-request spend from the decision log
+  tune        Propose tuned routing-policy settings from the decision log
   roster      Show the effective tier-to-model roster
   billing     Operate the billing database, Stripe, and provisioning
   verify      Install the ground-truth verification Stop hook into a harness
