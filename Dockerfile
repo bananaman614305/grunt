@@ -83,12 +83,6 @@ COPY --from=build --chown=node:node /app/packages/provisioning/node_modules pack
 # `GET /skill.md` on the gateway serves this file verbatim (see
 # packages/gateway/src/routes/static.ts), so it has to sit at the same
 # repo-root-relative path in the image as it does in the source tree.
-# The gateway's routing feature flags (ADRs 021-026). `milo serve` auto-loads
-# ./milo.config.json from its working directory (/app), so this turns on the Jev
-# offload (+ typesafe fallback), adaptive-N, cache-friendly variants, candidate
-# verification and speculative routing without a CMD change.
-COPY --chown=node:node milo.config.json ./milo.config.json
-
 COPY --chown=node:node skills ./skills
 
 # A Fly volume (or any bind mount) is mounted at /data at deploy time;
