@@ -70,11 +70,14 @@ describe("onboarding pi harness", () => {
     expect(statusPi(undefined).enabled).toBe(false);
   });
 
-  it("renders the key store additively under the milo provider id", () => {
-    expect(JSON.parse(renderAuth(undefined, "sk-or-1"))).toEqual({ [PI_PROVIDER_ID]: "sk-or-1" });
+  it("renders the key store additively under the milo provider id, as pi's api_key credential object", () => {
+    // pi's auth.json (core/auth-storage.js) requires each provider's
+    // credential to be an object: { type: "api_key", key }. A bare string
+    // makes pi reject the file and hides the provider's models.
+    expect(JSON.parse(renderAuth(undefined, "sk-or-1"))).toEqual({ [PI_PROVIDER_ID]: { type: "api_key", key: "sk-or-1" } });
     expect(JSON.parse(renderAuth(JSON.stringify({ openrouter: "sk-other" }), "sk-or-1"))).toEqual({
       openrouter: "sk-other",
-      [PI_PROVIDER_ID]: "sk-or-1",
+      [PI_PROVIDER_ID]: { type: "api_key", key: "sk-or-1" },
     });
   });
 

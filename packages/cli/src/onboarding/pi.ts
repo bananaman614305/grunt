@@ -72,10 +72,18 @@ export function statusPi(existing: string | undefined): { enabled: boolean; gate
   return { enabled: false, model: ROUTED_MODEL_ID };
 }
 
-/** Renders `~/.pi/agent/auth.json`: the existing map plus the milo key. */
+/**
+ * Renders `~/.pi/agent/auth.json`: the existing map plus the milo credential.
+ *
+ * pi's auth.json stores each provider's credential as an object carrying a
+ * `type` (core/auth-storage.js): `{ [provider]: { type: "api_key", key } }`
+ * (or an `oauth` object). A bare string is rejected by pi's loader --
+ * "Invalid auth.json credential" -- which leaves the provider's models
+ * unavailable, so the prompted key must be wrapped in the object shape.
+ */
 export function renderAuth(existing: string | undefined, key: string): string {
   const auth = parseJsonObject(existing);
-  return `${JSON.stringify({ ...auth, [PI_PROVIDER_ID]: key }, null, 2)}\n`;
+  return `${JSON.stringify({ ...auth, [PI_PROVIDER_ID]: { type: "api_key", key } }, null, 2)}\n`;
 }
 
 export function nextSteps(ctx: PiEnableContext): string[] {

@@ -185,7 +185,7 @@ describe("milo on pi", () => {
     expect(existsSync(backupPath())).toBe(false);
   });
 
-  it("stores a prompted key in pi's auth.json (mode 600) and uses it for the smoke", async () => {
+  it("stores a prompted key in pi's auth.json (mode 600, api_key credential object) and uses it for the smoke", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const { deps } = createTestDeps({
       env: {},
@@ -197,8 +197,9 @@ describe("milo on pi", () => {
     const code = await runOn(["pi", "--dir", dir], deps);
 
     expect(code).toBe(0);
+    // pi's auth.json credential shape: an api_key object, not a bare string.
     expect(JSON.parse(readFileSync(join(dir, "agent", "auth.json"), "utf8"))).toEqual({
-      [PI_PROVIDER_ID]: "sk-or-prompted",
+      [PI_PROVIDER_ID]: { type: "api_key", key: "sk-or-prompted" },
     });
     expect(calls[0]?.init.headers).toMatchObject({ authorization: "Bearer sk-or-prompted" });
   });
