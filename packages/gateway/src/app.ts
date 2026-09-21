@@ -24,6 +24,7 @@ import type {
   DecisionLog,
   Encryptor,
   JevClientLike,
+  JevTransportState,
   OpenRouterClient,
   Roster,
   Router,
@@ -106,6 +107,18 @@ export type AppDeps = {
    * TypeSafe transport.
    */
   forwardJevKey?: boolean;
+  /**
+   * Discloses which transport actually carries Jev calls right now, for the
+   * `x-milo-jev-transport` header (`routes/shared.ts`'s
+   * `applyJevTransportHeader`). Set only when this deployment runs the
+   * `"openrouter"` transport wrapped in `JevTransportFallbackClient`'s
+   * circuit breaker (ADR-023); absent under the default `"typesafe"`
+   * transport, where the header is never sent because there is nothing to
+   * disclose -- there is only one transport and no fallback. Best-effort and
+   * process-wide, not a strict per-call guarantee under concurrency: see
+   * `JevTransportState`'s own doc comment.
+   */
+  jevTransportState?: () => JevTransportState;
   /**
    * Personal-fact memory (ADR-017). Present only when the deployment has an
    * encryption key -- the gateway builds `encryptor` from the billing

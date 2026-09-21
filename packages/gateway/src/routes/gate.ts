@@ -94,7 +94,7 @@ import {
   stripChatReasoningPayload,
   wantsVisibleReasoning,
 } from "./chat-reasoning.js";
-import { applyMiloHeaders, resolveRoster, retargetProviderStrategy } from "./shared.js";
+import { applyJevTransportHeader, applyMiloHeaders, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage, toUpstreamRecord } from "./usage.js";
 import type { UpstreamUsage } from "./usage.js";
@@ -495,6 +495,7 @@ export async function forwardGated(
   const text = await upstream.text();
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyJevTransportHeader(headers, deps);
   applyPruneHeaders(headers, prune);
   for (const [k, v] of Object.entries(briefHeaders(briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(facts))) headers.set(k, v);

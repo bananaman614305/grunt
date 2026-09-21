@@ -74,7 +74,7 @@ import {
   stripChatReasoningSse,
   wantsVisibleReasoning,
 } from "./chat-reasoning.js";
-import { applyMiloHeaders, onFinished, resolveRoster, retargetProviderStrategy } from "./shared.js";
+import { applyJevTransportHeader, applyMiloHeaders, onFinished, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
 import { addUsage, readBodyUsage } from "./usage.js";
 import type { UpstreamUsage } from "./usage.js";
@@ -661,6 +661,7 @@ export async function forwardSampled(
 
   const headers = chosen.response !== undefined ? passThroughHeaders(chosen.response) : new Headers();
   applyMiloHeaders(headers, decision);
+  applyJevTransportHeader(headers, deps);
   applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);
@@ -819,6 +820,7 @@ async function fallbackUnsampled(
 
   const headers = passThroughHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyJevTransportHeader(headers, deps);
   applyPruneHeaders(headers, ctx.prune);
   for (const [k, v] of Object.entries(briefHeaders(ctx.briefVersion))) headers.set(k, v);
   for (const [k, v] of Object.entries(factHeaders(ctx.facts))) headers.set(k, v);

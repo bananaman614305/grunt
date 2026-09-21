@@ -190,6 +190,25 @@ export function applyMiloHeaders(headers: Headers, decision: RouteDecision): voi
   headers.set("x-milo-cache", decision.cached === true ? "hit" : "miss");
 }
 
+/** Which transport served (or would currently serve) this deployment's Jev calls. */
+export const JEV_TRANSPORT_HEADER = "x-milo-jev-transport";
+
+/**
+ * Discloses the Jev transport (ADR-023), when this deployment has one to
+ * disclose: only under the `"openrouter"` transport, wrapped in the circuit
+ * breaker (`@milo/core`'s `JevTransportFallbackClient`). Absent under the
+ * default `"typesafe"` transport -- `deps.jevTransportState` is unset there,
+ * and no header goes out, because there is only one transport and no
+ * fallback to name. A separate function from `applyMiloHeaders` (rather than
+ * a seventh field on it) because it reads `deps`, not the decision, and is
+ * meaningful even when a Jev call this response depended on was an
+ * auxiliary one rather than the routing decision itself.
+ */
+export function applyJevTransportHeader(headers: Headers, deps: AppDeps): void {
+  const state = deps.jevTransportState?.();
+  if (state !== undefined) headers.set(JEV_TRANSPORT_HEADER, state);
+}
+
 /** `Retry-After` when Milo could not route at all, in seconds. */
 export const ROUTING_RETRY_AFTER_SECONDS = 2;
 

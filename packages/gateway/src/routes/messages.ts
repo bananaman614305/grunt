@@ -54,6 +54,7 @@ import {
 import { passBackHeaders } from "../anthropic.js";
 import { anthropicErrorResponse, errorMessage } from "../errors.js";
 import {
+  applyJevTransportHeader,
   applyMiloHeaders,
   enforceTenantLimits,
   onFinished,
@@ -253,6 +254,7 @@ async function forward(c: Context, deps: AppDeps, body: Body, decision: RouteDec
 
   const headers = passBackHeaders(upstream);
   applyMiloHeaders(headers, decision);
+  applyJevTransportHeader(headers, deps);
 
   // A streamed success is the only case where the body must not be touched.
   // An upstream error is JSON however the request was made, so it takes the

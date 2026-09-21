@@ -171,12 +171,39 @@ const classificationCacheSchema = z
   })
   .strict();
 
+/**
+ * Circuit breaker tuning for the `"openrouter"` Jev transport (ADR-023).
+ * Both optional; unset means `CircuitBreaker`'s own defaults (3 consecutive
+ * failures, 30s cooldown). Ignored under `"typesafe"`.
+ */
+const jevBreakerSchema = z
+  .object({
+    failureThreshold: z.number().int().positive().optional(),
+    cooldownMs: z.number().int().positive().optional(),
+  })
+  .strict();
+
 export const configSchema = z
   .object({
     port: z.number().int().positive().default(DEFAULT_PORT),
     hostname: z.string().trim().min(1).optional(),
     mode: modeSchema.default("roster"),
     jevTransport: jevTransportSchema.default("typesafe"),
+    /**
+     * The operator's explicit opt-in to a TypeSafe safety net for the
+     * `"openrouter"` Jev transport (ADR-023): while its circuit breaker is
+     * open, a request falls back to the direct TypeSafe transport on Milo's
+     * own `JEV_API_KEY` instead of failing. Default `false`: a broken
+     * `"openrouter"` transport then fails open per call once its breaker
+     * trips and never reaches for Milo's key, exactly as ADR-022 always
+     * specified. Setting this WITHOUT `JEV_API_KEY` configured does nothing
+     * but log a warning -- it is never a silent no-op that looks like a
+     * working fallback. Ignored under `"typesafe"`, which has no second
+     * transport to fall back to.
+     */
+    jevFallbackToTypesafe: z.boolean().default(false),
+    /** Breaker tuning for `jevFallbackToTypesafe`'s circuit breaker. */
+    jevBreaker: jevBreakerSchema.optional(),
     roster: rosterSchema.optional(),
     rateLimit: rateLimitSchema.optional(),
     tenantLimits: tenantLimitsSchema.optional(),
