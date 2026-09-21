@@ -60,6 +60,12 @@ export type CliDeps = {
   fetch: FetchLike;
   /** Interactive input for `milo configure`'s key prompts (readline in production). */
   prompt: PromptFn;
+  /**
+   * Whether stdin is a real terminal, for prompts that must not block or
+   * mask in CI. `milo configure` infers it inside `prompt`; the onboarding
+   * commands need it up front to decide whether a prompt is even safe.
+   */
+  isTTY?: boolean;
   /** Opens (and migrates) the billing database at `url`, for `milo billing`. */
   openBillingStore: (url: string) => Promise<BillingAdminStore>;
   /**
