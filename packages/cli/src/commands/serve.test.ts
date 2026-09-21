@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { POLICY_VERSION } from "@milo/core";
@@ -35,12 +35,22 @@ function fakeServe(): { serve: ServeFn; calls: ServeOptions[] } {
 
 describe("milo serve", () => {
   let dir: string;
+  let cwdDir: string;
+  let originalCwd: string;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "milo-cli-serve-"));
+    // Run the suite from an empty subdir so the default-config path (which
+    // resolves <cwd>/milo.config.json) can never pick up a config from the
+    // repository root, the CI checkout, or another test in this file.
+    cwdDir = join(dir, "cwd");
+    mkdirSync(cwdDir);
+    originalCwd = process.cwd();
+    process.chdir(cwdDir);
   });
 
   afterEach(() => {
+    process.chdir(originalCwd);
     rmSync(dir, { recursive: true, force: true });
     process.removeAllListeners("SIGINT");
     process.removeAllListeners("SIGTERM");
