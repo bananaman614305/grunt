@@ -23,6 +23,7 @@ Commands:
   canary      Run the continuous eval canary and check for drift
   billing     Operate the billing database, Stripe, and provisioning
   verify      Install the ground-truth verification Stop hook into a harness
+  configure   Set up a local Milo: config, pi provider, smoke verify
 
 Run "milo <command> --help" for command-specific options.
 ```
@@ -31,6 +32,64 @@ Exit code: **1** with no command; **0** for `--help`, `-h`, or `help`.
 
 An unknown command prints the same usage block after an
 `milo: unknown command "<name>"` line and exits **1**.
+
+## `milo configure`
+
+```
+Usage: milo configure [options]
+
+Set up a local Milo: write milo.config.json (additive merge with a .bak
+backup, default roster filled in), add a "milo" provider to the pi coding
+agent's models.json (additive, with a .bak), then smoke-verify the gateway by
+routing one request and printing its x-milo-model header.
+
+Options:
+  --config <path>     Path to milo.config.json (default: ./milo.config.json)
+  --pi-config <path>  pi's models.json to merge the provider into
+                      (default: ~/.pi/agent/models.json)
+  --base-url <url>    The origin the pi provider should point at
+                      (default: http://<config hostname>:<config port>)
+  --no-pi             Do not touch pi's models.json
+  --no-verify         Write config only; do not start the gateway or smoke it
+  -h, --help          Show this help
+
+Environment:
+  JEV_API_KEY             Milo's Jev key; prompted when missing (never stored)
+  OPENROUTER_API_KEY      Your OpenRouter key; prompted when missing (never stored)
+  MILO_MODE               Routing mode (roster/deepseek), as in milo serve
+  MILO_JEV_TRANSPORT      Jev transport (typesafe/openrouter), as in milo serve
+```
+
+The first-run wizard, in four steps:
+
+1. **Config file with an additive merge and a backup.** When
+   `milo.config.json` exists, every value you already wrote is kept untouched
+   and only missing fields are added -- the default roster (`DEFAULT_ROSTER`,
+   `docs/config.md`) when the file has none -- and the pre-merge file is
+   copied to `milo.config.json.bak` first. A new file is scaffolded with the
+   default roster, `port` 8787 and the default decision log so there is
+   something to see and edit. A config the gateway would refuse (invalid
+   JSON, unknown top-level fields) is refused here too, untouched.
+2. **Pi provider merge.** A `milo` provider -- base URL, `openai-completions`
+   API, models from the running roster -- is merged into
+   `~/.pi/agent/models.json` additively: every provider you already have is
+   kept, and the pre-merge file is copied to `models.json.bak` first. The
+   provider's `apiKey` is `$OPENROUTER_API_KEY`, an environment-variable
+   reference, so no key value is ever written to the file. Point `--pi-config`
+   elsewhere, or skip with `--no-pi`. `--base-url` overrides the origin the
+   provider points at (default: `http://<config hostname>:<config port>`).
+3. **Key prompts, only when the environment is missing the key.**
+   `JEV_API_KEY` (Milo's key, required under the default `"typesafe"`
+   transport) and `OPENROUTER_API_KEY` (the user's key). Answers stay in
+   memory for the smoke request and are never written to a file or echoed;
+   the wizard says how to export them for `milo serve`.
+4. **Smoke verify.** Starts the gateway on an ephemeral port with the config
+   it just wrote, sends one `model: "milo/auto"` chat completion with the
+   OpenRouter key, and prints the `x-milo-model` response header -- proof that
+   Jev classified, policy chose, and OpenRouter answered. `--no-verify` skips
+   this step. A routed request needs real keys and the network, so an
+   unattended run with no keys (prompts unanswered) writes the files and
+   explains what to export instead.
 
 ## `milo serve`
 

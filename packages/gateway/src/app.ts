@@ -418,6 +418,7 @@ export function createApp(deps: AppDeps): Hono {
       ],
       docs: "https://github.com/bananaman614305/milo",
       setup: `${origin}/setup.md`,
+      piSetup: `${origin}/setup/pi.json`,
       skill: `${origin}/skill.md`,
     };
     const accept = c.req.header("accept") ?? "";
@@ -426,7 +427,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // No auth: an agent has to be able to read these before it has a key.
-  registerStaticRoutes(app);
+  registerStaticRoutes(app, deps);
 
   app.use("/v1/*", requireKey);
   // Cheapest abuse check first: an oversized body is refused before a

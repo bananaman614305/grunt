@@ -3,6 +3,9 @@
  * read them before it has an OpenRouter key.
  *
  * `GET /setup.md`  -- the "set me up with Milo" instructions for an agent.
+ * `GET /setup/pi.json` -- the same setup as data for the pi coding agent: the
+ * provider block to merge into `~/.pi/agent/models.json`, generated from the
+ * roster this deployment is actually running.
  * `GET /llms.txt`  -- the llms.txt convention, pointing at `/setup.md`.
  * `GET /skill.md`  -- the repository skill (`skills/milo/SKILL.md`) served
  * over HTTP so `curl` works without cloning the repo. Read once at module
@@ -13,7 +16,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Context, Hono } from "hono";
-import { DEFAULT_ROSTER_INFO, ROSTER_NOTE, TIERS } from "@milo/core";
+import { DEFAULT_ROSTER, DEFAULT_ROSTER_INFO, ROSTER_NOTE, TIERS, piSetup } from "@milo/core";
+import type { Roster } from "@milo/core";
 
 /**
  * `packages/gateway/{src,dist}/routes/static.{ts,js}` sit at the same depth
@@ -442,10 +446,16 @@ function llmsTxt(base: string): string {
 `;
 }
 
-export function registerStaticRoutes(app: Hono): void {
+export function registerStaticRoutes(app: Hono, deps: { roster?: Roster }): void {
   app.get("/setup.md", (c) =>
     c.text(setupMd(origin(c)), 200, { "content-type": "text/markdown; charset=utf-8" }),
   );
+  // The pi coding agent's setup as data: the models.json provider block to
+  // merge under "providers", generated from the running roster (the same
+  // roster /setup.md discloses in prose). No auth, like the rest of this
+  // section -- the document names an environment variable for the key, never
+  // a literal.
+  app.get("/setup/pi.json", (c) => c.json(piSetup(origin(c), deps.roster ?? DEFAULT_ROSTER)));
   app.get("/llms.txt", (c) =>
     c.text(llmsTxt(origin(c)), 200, { "content-type": "text/plain; charset=utf-8" }),
   );
