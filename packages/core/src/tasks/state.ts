@@ -62,11 +62,21 @@ export function beginTaskVerification(
   }
 
   const criterionIds = new Set(task.acceptanceCriteria.map((criterion) => criterion.id));
-  const retainedEvidence = existing?.evidence.filter((entry) => criterionIds.has(entry.criterionId)) ?? [];
-  const retainedDeltas = existing?.candidateDeltas.filter((entry) =>
-    entry.criterionIds === undefined || entry.criterionIds.some((id) => criterionIds.has(id))) ?? [];
-  const retainedObligations = existing?.unresolvedObligations.filter((entry) =>
-    entry.criterionId === "__selection__" || criterionIds.has(entry.criterionId)) ?? [];
+  const rubricChanged = existing !== undefined && rubric.version !== existing.rubricVersion;
+  // Criterion ids are labels, not semantic identities. A version bump may
+  // reuse an id for a different requirement or oracle, so no rubric-dependent
+  // state is valid across a changed rubric without fresh evidence.
+  const retainedEvidence = rubricChanged
+    ? []
+    : existing?.evidence.filter((entry) => criterionIds.has(entry.criterionId)) ?? [];
+  const retainedDeltas = rubricChanged
+    ? []
+    : existing?.candidateDeltas.filter((entry) =>
+      entry.criterionIds === undefined || entry.criterionIds.some((id) => criterionIds.has(id))) ?? [];
+  const retainedObligations = rubricChanged
+    ? []
+    : existing?.unresolvedObligations.filter((entry) =>
+      entry.criterionId === "__selection__" || criterionIds.has(entry.criterionId)) ?? [];
   const provenance = takeNewest([
     ...(existing?.provenance ?? []),
     {

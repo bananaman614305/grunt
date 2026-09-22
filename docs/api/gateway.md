@@ -212,9 +212,11 @@ criteria, relevant evidence, candidate outcome deltas, unresolved obligations,
 and provenance. Dossiers explicitly report truncation or omission and never
 replay raw chat history or candidate text. A lower task version, or a changed
 rubric at the same version, is rejected with `409 task_version_conflict`;
-intentional rubric changes require a version bump. If Milo cannot load or save
-this state, it returns `503 task_verification_unavailable` instead of serving
-an unverifiable sample.
+intentional rubric changes require a version bump. When that bump changes the
+compiled rubric, Milo clears prior evidence, candidate deltas, and obligations
+because criterion ids alone cannot prove semantic continuity; provenance is
+retained. If Milo cannot load or save this state, it returns
+`503 task_verification_unavailable` instead of serving an unverifiable sample.
 
 On this path Milo waits for the sampled candidates, evaluates every criterion,
 rejects confident veto or required violations, and abstains when a required

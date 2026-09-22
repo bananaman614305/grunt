@@ -83,4 +83,41 @@ describe("durable task verification state", () => {
     expect(selected.task.version).toBe(2);
     expect(selected.unresolvedObligations).toEqual([]);
   });
+
+  it("clears rubric-dependent state when a version bump changes criterion meaning", () => {
+    const initial = recordTaskAttempt(beginTaskVerification(undefined, TASK, [{
+      criterionId: "safe",
+      verdict: "satisfied",
+      confidence: 0.99,
+      summary: "The original safety check passed.",
+      sourceRef: "check://old-safety",
+    }], "decision-1"), {
+      decisionId: "decision-1",
+      selection: "failed",
+      unresolvedCriteria: [{ criterionId: "safe", verdict: "unknown", confidence: 0 }],
+      candidateDeltas: [{
+        id: "decision-1:sample-0:delta",
+        decisionId: "decision-1",
+        candidateId: "decision-1:sample-0",
+        outcome: "abstain",
+        summary: "The original candidate abstained.",
+        sourceRef: "decision://decision-1/candidate/0",
+        criterionIds: ["safe"],
+      }],
+    });
+    const changed = beginTaskVerification(initial, {
+      ...TASK,
+      version: 2,
+      acceptanceCriteria: [{
+        ...TASK.acceptanceCriteria[0]!,
+        requirement: "A new security audit passes.",
+        evaluation: { type: "deterministic", oracle: "new security audit receipt" },
+      }],
+    }, [], "decision-2");
+
+    expect(changed.evidence).toEqual([]);
+    expect(changed.candidateDeltas).toEqual([]);
+    expect(changed.unresolvedObligations).toEqual([]);
+    expect(changed.provenance.map((entry) => entry.decisionId)).toContain("decision-1");
+  });
 });

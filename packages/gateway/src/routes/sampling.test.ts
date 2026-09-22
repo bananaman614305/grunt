@@ -510,6 +510,57 @@ describe("sampled fan-out", () => {
     expect(JSON.stringify(priorDeltas)).not.toContain("candidate-0");
   });
 
+  it("drops stale evidence when a version bump changes a criterion and safely falls back", async () => {
+    openRouter.handler = (body, index) => body["model"] === "test/mid"
+      ? ok({ ...completionBody("safe fallback"), model: "test/mid" })
+      : sse(completionBody(`candidate-${index}`));
+    const jev = canonicalJev("candidate_b");
+    const a = await app({ jev });
+    const versionOne: TaskRecord = {
+      id: "task-versioned-security",
+      version: 1,
+      objective: "Return an audited answer.",
+      status: "active",
+      acceptanceCriteria: [{
+        id: "audit",
+        requirement: "The original audit passes.",
+        decision: "veto",
+        evaluation: { type: "deterministic", oracle: "original audit receipt" },
+      }],
+    };
+    const evidence = [{
+      criterionId: "audit",
+      verdict: "satisfied",
+      confidence: 0.99,
+      summary: "The original audit passed.",
+      sourceRef: "check://original-audit",
+    }];
+    expect((await a.fetch(chatRequest({ milo: { task: versionOne, evidence } }))).status).toBe(200);
+
+    const versionTwo: TaskRecord = {
+      ...versionOne,
+      version: 2,
+      acceptanceCriteria: [{
+        id: "audit",
+        requirement: "The new security audit passes.",
+        decision: "veto",
+        evaluation: { type: "deterministic", oracle: "new security audit receipt" },
+      }],
+    };
+    const res = await a.fetch(chatRequest({ milo: { task: versionTwo } }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-model")).toBe("test/mid");
+    expect(res.headers.get("x-milo-sample-pick")).toBeNull();
+    expect(recorded[1]?.upstream.sampleNote).toBe("ranking_abstained");
+    expect(recorded[1]?.upstream.samples).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectionOutcome: "abstain",
+        criterionEvidence: [expect.objectContaining({ criterionId: "audit", source: "missing" })],
+      }),
+    ]));
+  });
+
   it("rejects a same-version rubric mutation before drawing samples", async () => {
     openRouter.handler = (_body, index) => sse(completionBody(`candidate-${index}`));
     const jev = canonicalJev("candidate_b");

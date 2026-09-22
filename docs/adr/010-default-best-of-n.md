@@ -58,7 +58,9 @@ and provenance. Ranking and pairwise selection consume that state through a
 decision-specific dossier with explicit truncation. Raw history and candidate
 content are never persisted. Stale task versions, same-version rubric changes,
 and unavailable persistence fail closed rather than silently reverting to
-request-local verification.
+request-local verification. A version bump that changes the compiled rubric
+also clears prior criterion evidence, candidate deltas, and obligations; only
+content-free provenance survives the semantic boundary.
 
 Disclosure and control, in the ADR-002 explainability tradition:
 
