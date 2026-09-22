@@ -20,6 +20,7 @@ import type { JevClientLike } from "@milo/core";
 import type { WorkerEvent } from "./events.js";
 import { isWorkerVerdict, SUPERVISION_QUESTIONS } from "./questions.js";
 import type { WorkerClassification } from "./types.js";
+import type { TaskDossier } from "./task-records.js";
 
 /** Total budget for one supervision call, ms. Same habit as the router's gate. */
 export const SUPERVISION_BUDGET_MS = 8_000;
@@ -102,6 +103,8 @@ export type ClassifyOptions = {
   now?: number;
   /** Total Jev budget for this call, ms. */
   budgetMs?: number;
+  /** Task-specific goal and rubric; adds context without another Jev call. */
+  dossier?: TaskDossier;
 };
 
 /**
@@ -118,8 +121,11 @@ export async function classifyWorker(
   const now = opts.now ?? Date.now();
   const summary = summarizeWindow(recentEvents, now);
 
+  const jevState = opts.dossier === undefined
+    ? summary as unknown as Record<string, unknown>
+    : { task: opts.dossier.task, rubric: opts.dossier.rubric, activity: summary };
   const result = await jev.systemone(
-    { state: summary as unknown as Record<string, unknown>, questions: SUPERVISION_QUESTIONS },
+    { state: jevState, questions: SUPERVISION_QUESTIONS },
     { budgetMs: opts.budgetMs ?? SUPERVISION_BUDGET_MS },
   );
 

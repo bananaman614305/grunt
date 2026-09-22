@@ -21,8 +21,9 @@
  * turns a finished worker into a failed one.
  */
 
-import type { ClaimVerdict, JevClientLike, Receipt } from "@milo/core";
+import type { ClaimResult, ClaimVerdict, JevClientLike, Receipt } from "@milo/core";
 import { gitStateFromDiff, verifyClaims } from "@milo/core";
+import { compileTaskRubric } from "./task-records.js";
 import type { Task } from "./types.js";
 
 /** Total budget for one done-gate call, ms. Same habit as supervision. */
@@ -38,40 +39,45 @@ export type DoneVerification = {
   /** One human-readable line. */
   line: string;
   latencyMs: number;
+  /** Per-criterion findings from the same Jev call. */
+  criteria: ClaimResult[];
 };
-
-/** The first non-empty line of the prompt, for the claim text. */
-function taskLabel(task: Task): string {
-  if (task.title !== undefined && task.title.trim() !== "") return task.title.trim();
-  const firstLine = task.prompt.split("\n").map((l) => l.trim()).find((l) => l !== "");
-  return firstLine ?? task.id;
-}
 
 /**
  * Verify one finished worker's completion against its git diff and receipts.
- * Builds a single completion claim from the task and hands it, with the diff as
- * ground truth, to the shared verifier. Throws on a Jev failure (the fleet
- * catches it); a malformed or missing answer maps to a non-adverse
- * `unsupported`, never a false contradiction.
+ * Compiles the task's rubric into completion claims and hands all of them,
+ * with the diff as ground truth, to the shared verifier in ONE Jev call.
+ * Throws on a Jev failure (the fleet catches it); a malformed or missing
+ * answer maps to a non-adverse `unsupported`, never a false contradiction.
  */
 export async function verifyWorkerDone(
   jev: JevClientLike,
   input: { task: Task; diff: string; receipts?: readonly Receipt[] },
   budgetMs = DONE_GATE_BUDGET_MS,
 ): Promise<DoneVerification> {
-  const claim = {
-    id: `done:${input.task.id}`,
-    text: `The worker completed the assigned task: ${taskLabel(input.task)}.`,
+  const rubric = compileTaskRubric(input.task);
+  const claims = rubric.criteria.map((criterion) => ({
+    id: `done:${input.task.id}:${criterion.id}`,
+    text: `The worker satisfied this requirement: ${criterion.text}`,
     category: "completion" as const,
-  };
+  }));
   const ground = {
     git: gitStateFromDiff(input.diff),
     ...(input.receipts !== undefined && input.receipts.length > 0 ? { receipts: [...input.receipts] } : {}),
   };
-  const out = await verifyClaims(jev, [claim], ground, budgetMs);
-  const result = out.results[0];
-  if (result === undefined) {
-    return { verdict: "unsupported", confidence: 0, contradicted: false, line: "Done could not be verified.", latencyMs: out.latencyMs };
+  const out = await verifyClaims(jev, claims, ground, budgetMs);
+  const result = out.results.find((candidate) => candidate.verdict === "contradicted")
+    ?? out.results.find((candidate) => candidate.verdict === "unsupported")
+    ?? out.results[0];
+  if (result === undefined || out.results.length !== claims.length) {
+    return {
+      verdict: "unsupported",
+      confidence: result?.confidence ?? 0,
+      contradicted: false,
+      line: "Done unverified: one or more rubric criteria lacked a verdict.",
+      latencyMs: out.latencyMs,
+      criteria: out.results,
+    };
   }
   const line =
     result.verdict === "supported"
@@ -85,5 +91,6 @@ export async function verifyWorkerDone(
     contradicted: result.verdict === "contradicted",
     line,
     latencyMs: out.latencyMs,
+    criteria: out.results,
   };
 }
