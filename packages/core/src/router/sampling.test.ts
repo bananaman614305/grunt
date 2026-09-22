@@ -9,14 +9,37 @@ import {
   RANK_QUESTIONS,
   rankAnswer,
   rankState,
+  selectPairwise,
   variantFor,
 } from "./sampling.js";
 import type { RankScore } from "./sampling.js";
+import type { TaskRecord } from "../tasks/types.js";
 
 const MESSAGES: ChatMessage[] = [
   { role: "system", content: "You are a sub-agent." },
   { role: "user", content: "Fix the typo in the README." },
 ];
+
+const TASK: TaskRecord = {
+  id: "task-1",
+  version: 1,
+  objective: "Ship the safe answer.",
+  status: "active",
+  acceptanceCriteria: [
+    {
+      id: "safety",
+      requirement: "Do not violate the security boundary.",
+      decision: "veto",
+      evaluation: { type: "binary", pass: "No boundary violation is present." },
+    },
+    {
+      id: "complete",
+      requirement: "Complete the requested change.",
+      decision: "required",
+      evaluation: { type: "binary", pass: "The requested change is complete." },
+    },
+  ],
+};
 
 describe("prompt variants", () => {
   it("cycles the framings by sample index, starting with the plain prompt", () => {
@@ -171,6 +194,114 @@ describe("rankAnswer", () => {
         } as SystemOneResult),
     };
     await expect(rankAnswer(jev, MESSAGES, "Done.")).rejects.toThrow(/wrong type/);
+  });
+});
+
+describe("canonical task ranking", () => {
+  it("records criterion evidence and lets a confident Veritaserum veto dominate", async () => {
+    const jev: JevClientLike = {
+      systemone: (req) => Promise.resolve({
+        model: "jev-latest",
+        answers: Object.fromEntries(Object.keys(req.questions).map((key) => [key, { type: "noul", noul: 0.95 }])),
+        usage: { input_tokens: 10, output_tokens: 2 },
+        requestId: "req-task",
+        latencyMs: 7,
+      }),
+    };
+    const rank = await rankAnswer(jev, MESSAGES, "Looks good.", undefined, undefined, {
+      record: TASK,
+      decisionId: "decision-1",
+      candidateId: "sample-0",
+      evidence: [{
+        criterionId: "safety",
+        verdict: "violated",
+        confidence: 0.99,
+        summary: "The verifier found a boundary violation.",
+        sourceRef: "veritaserum://finding/1",
+        candidateId: "sample-0",
+      }],
+    });
+    expect(rank.outcome).toBe("reject");
+    expect(rank.criteria).toEqual({ safety: "violated", complete: "satisfied" });
+    expect(rank.criterionEvidence?.[0]).toMatchObject({ source: "evidence", sourceRef: "veritaserum://finding/1" });
+  });
+
+  it("does not let earlier satisfied evidence mask a later confident veto", async () => {
+    const never: JevClientLike = { systemone: () => Promise.reject(new Error("must not call Jev for supplied evidence")) };
+    const rank = await rankAnswer(never, MESSAGES, "Looks good.", undefined, undefined, {
+      record: {
+        ...TASK,
+        acceptanceCriteria: [TASK.acceptanceCriteria[0]!],
+      },
+      decisionId: "decision-conflict",
+      candidateId: "sample-0",
+      evidence: [
+        {
+          criterionId: "safety",
+          verdict: "satisfied",
+          confidence: 0.61,
+          summary: "A weak check passed.",
+          sourceRef: "check://weak-pass",
+        },
+        {
+          criterionId: "safety",
+          verdict: "violated",
+          confidence: 0.99,
+          summary: "Veritaserum found a boundary violation.",
+          sourceRef: "veritaserum://veto",
+        },
+      ],
+    });
+    expect(rank).toMatchObject({
+      outcome: "reject",
+      criteria: { safety: "violated" },
+      criterionEvidence: [{ sourceRef: "veritaserum://veto", verdict: "violated", confidence: 0.99 }],
+    });
+  });
+
+  it("abstains when an authoritative deterministic requirement has no evidence", async () => {
+    const record: TaskRecord = {
+      ...TASK,
+      acceptanceCriteria: [{
+        id: "tests",
+        requirement: "Tests pass.",
+        decision: "required",
+        evaluation: { type: "deterministic", oracle: "test receipt" },
+      }],
+    };
+    const never: JevClientLike = { systemone: () => Promise.reject(new Error("must not call Jev")) };
+    const rank = await rankAnswer(never, MESSAGES, "Done.", undefined, undefined, {
+      record,
+      decisionId: "decision-2",
+      candidateId: "sample-0",
+    });
+    expect(rank).toMatchObject({ outcome: "abstain", criteria: { tests: "unknown" } });
+  });
+
+  it("uses a direct Jev comparison and safely abstains on an unknown winner", async () => {
+    const jev: JevClientLike = {
+      systemone: () => Promise.resolve({
+        model: "jev-latest",
+        answers: {
+          winner: {
+            type: "choice",
+            choice: "unknown",
+            confidence: 0.91,
+            probabilities: { candidate_a: 0.04, candidate_b: 0.03, equivalent: 0.02, unknown: 0.91 },
+          },
+        },
+        usage: { input_tokens: 20, output_tokens: 2 },
+        requestId: "req-pair",
+        latencyMs: 8,
+      }),
+    };
+    const rank: RankScore = { quality: 3, correct: 0.9, confidence: 0.9, latencyMs: 5, outcome: "accept" };
+    await expect(selectPairwise(
+      jev,
+      { record: TASK, decisionId: "decision-3" },
+      { index: 0, candidateId: "sample-0", answer: "A", rank },
+      { index: 1, candidateId: "sample-1", answer: "B", rank },
+    )).resolves.toBeUndefined();
   });
 });
 

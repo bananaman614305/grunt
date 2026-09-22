@@ -4,6 +4,8 @@
  * dependent tasks begin. See docs/PLAN.md "Core contracts".
  */
 
+import type { CriterionEvidence, TaskRecord } from "./tasks/types.js";
+
 // ---------------------------------------------------------------------------
 // Routing vocabulary
 // ---------------------------------------------------------------------------
@@ -89,6 +91,10 @@ export type MiloRequestExtension = {
    * capped at 8. Absent means the policy's own default applies.
    */
   samples?: number;
+  /** Canonical task intent used by criterion-aware best-of-N selection. */
+  task?: TaskRecord;
+  /** Source-linked deterministic or harness evidence for task criteria. */
+  evidence?: CriterionEvidence[];
   /**
    * `false` skips the injected preference brief for this one request
    * (ADR-011). Absent means "inject when the caller has stored
@@ -296,6 +302,16 @@ export type SampleUpstream = {
   jevQuality?: number;
   /** Jev's probability that this sample's answer is correct. */
   jevCorrect?: number;
+  /** Canonical selector outcome when the request supplied `milo.task`. */
+  selectionOutcome?: "accept" | "reject" | "abstain";
+  /** Per-criterion decisions and provenance; summaries and candidate content are omitted. */
+  criterionEvidence?: Array<{
+    criterionId: string;
+    verdict: "satisfied" | "violated" | "unknown";
+    confidence: number;
+    source: "evidence" | "jev" | "missing";
+    sourceRef?: string;
+  }>;
   /** Failure class only ("timeout", "network", "http_500", "rank_failed"...). */
   error?: string;
   picked?: boolean;

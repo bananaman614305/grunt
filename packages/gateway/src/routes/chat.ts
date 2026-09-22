@@ -30,8 +30,24 @@
 
 import type { Hono } from "hono";
 import type { Context } from "hono";
-import { extractMilo, fingerprint, isRoutingUnavailable, isStreaming, prepareBody } from "@milo/core";
-import type { ChatMessage, CostPosture, EmbedClientLike, EmbeddingVector, RouteDecision, RouteRequest } from "@milo/core";
+import {
+  beginTaskVerification,
+  extractMilo,
+  fingerprint,
+  isRoutingUnavailable,
+  isStreaming,
+  prepareBody,
+  TaskVerificationConflictError,
+} from "@milo/core";
+import type {
+  ChatMessage,
+  CostPosture,
+  EmbedClientLike,
+  EmbeddingVector,
+  RouteDecision,
+  RouteRequest,
+  TaskVerificationState,
+} from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { authorization, passThroughHeaders } from "../app.js";
 import {
@@ -130,7 +146,16 @@ async function handleChat(c: Context, deps: AppDeps): Promise<Response> {
   const refusal = creditGate(c, deps);
   if (refusal !== undefined) return refusal;
 
-  const { extension, isRouted } = extractMilo(body);
+  const { extension, isRouted, invalidTask } = extractMilo(body);
+  if (isRouted && invalidTask === true) {
+    return errorResponse(
+      c,
+      400,
+      "milo.task and milo.evidence must be a valid canonical task record and criterion evidence list.",
+      "invalid_request_error",
+      "invalid_task_record",
+    );
+  }
   return isRouted ? routed(c, deps, body, extension) : passthrough(c, deps, body);
 }
 
@@ -384,8 +409,45 @@ async function routed(
   if (decision.samples !== undefined && decision.samples > 1) {
     recordSpeculation(deps, speculation, "miss", decision.id);
     discardSpeculation(speculation);
+    let verification: { keyHash: string; state: TaskVerificationState } | undefined;
+    if (extension?.task !== undefined) {
+      const task = extension.task;
+      const keyHash = callerScope(c);
+      try {
+        const state = await deps.log.updateTaskVerification(keyHash, task.id, (existing) =>
+          beginTaskVerification(existing, task, extension.evidence ?? [], decision.id),
+        );
+        verification = { keyHash, state };
+      } catch (error) {
+        if (error instanceof TaskVerificationConflictError) {
+          deps.logger.warn("canonical task version conflicts with durable verification state", {
+            decisionId: decision.id,
+            cause: error.cause_,
+          });
+          return errorResponse(
+            c,
+            409,
+            "The canonical task record conflicts with its durable verification state. Increment the task version after changing its rubric.",
+            "invalid_request_error",
+            "task_version_conflict",
+          );
+        }
+        deps.logger.error("task verification state could not be loaded", {
+          decisionId: decision.id,
+          error: errorMessage(error),
+        });
+        return errorResponse(
+          c,
+          503,
+          "Milo could not safely load task verification state.",
+          "api_error",
+          "task_verification_unavailable",
+        );
+      }
+    }
     return forwardSampled(c, deps, outgoing, decision, {
       candidates,
+      ...(verification === undefined ? {} : { verification }),
       briefVersion: brief?.version,
       facts,
       gate,

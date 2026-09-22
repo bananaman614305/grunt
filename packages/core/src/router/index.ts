@@ -59,10 +59,17 @@ export {
   rankState,
   compileRankingRubric,
   rankAnswer,
+  selectPairwise,
   compareRanked,
   pickBest,
 } from "./sampling.js";
-export type { RankCriterion, RankScore } from "./sampling.js";
+export type {
+  CriterionFinding,
+  PairwiseCandidate,
+  RankCriterion,
+  RankScore,
+  TaskRankingContext,
+} from "./sampling.js";
 
 export { checkCandidate, expectsJsonResponse } from "./candidate-check.js";
 export type { CandidateCheck, CandidateFlaw, CandidateInput } from "./candidate-check.js";

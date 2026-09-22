@@ -4,11 +4,14 @@ import type {
   CandidateSummary,
   CompiledTaskArtifacts,
   ComparisonSummary,
+  CriterionEvidence,
   DossierContext,
   DossierManifest,
   DossierSource,
   JevDossier,
   OmittedDossierSource,
+  TaskObligation,
+  TaskProvenance,
   TaskCriterion,
   TaskRecord,
   TaskRubric,
@@ -16,11 +19,22 @@ import type {
 
 export const DEFAULT_DOSSIER_TEXT_BUDGET = 12_000;
 export const MIN_DOSSIER_TEXT_BUDGET = 256;
+export const MAX_TASK_CRITERIA = 8;
+export const MAX_CRITERION_TEXT_CHARS = 1_000;
+export const MAX_CRITERION_CHOICES = 16;
 
 function requireText(path: string, value: string): string {
   const trimmed = value.trim();
   if (trimmed === "") throw new Error(`task compiler: ${path} must be non-empty`);
   return trimmed;
+}
+
+function requireCriterionText(path: string, value: string): string {
+  const text = requireText(path, value);
+  if (text.length > MAX_CRITERION_TEXT_CHARS) {
+    throw new Error(`task compiler: ${path} exceeds ${MAX_CRITERION_TEXT_CHARS} characters`);
+  }
+  return text;
 }
 
 function validateRecord(record: TaskRecord): void {
@@ -29,25 +43,60 @@ function validateRecord(record: TaskRecord): void {
   if (!Number.isInteger(record.version) || record.version < 1) {
     throw new Error("task compiler: version must be a positive integer");
   }
-  if (record.acceptanceCriteria.length === 0) {
+  if (!["pending", "active", "blocked", "complete", "cancelled"].includes(record.status)) {
+    throw new Error("task compiler: status is invalid");
+  }
+  if (!Array.isArray(record.acceptanceCriteria) || record.acceptanceCriteria.length === 0) {
     throw new Error("task compiler: at least one acceptance criterion is required");
+  }
+  if (record.acceptanceCriteria.length > MAX_TASK_CRITERIA) {
+    throw new Error(`task compiler: at most ${MAX_TASK_CRITERIA} acceptance criteria are allowed`);
+  }
+  for (const [name, values] of [
+    ["constraints", record.constraints],
+    ["ancestorIds", record.ancestorIds],
+    ["evidenceRefs", record.evidenceRefs],
+    ["outputRefs", record.outputRefs],
+    ["verifierGates", record.verifierGates],
+  ] as const) {
+    if (values !== undefined && (!Array.isArray(values) || values.some((value) => typeof value !== "string"))) {
+      throw new Error(`task compiler: ${name} must be a string array`);
+    }
+  }
+  if (record.parentId !== undefined && typeof record.parentId !== "string") {
+    throw new Error("task compiler: parentId must be a string");
+  }
+  if (record.dependencies !== undefined && (!Array.isArray(record.dependencies) || record.dependencies.some((dependency) =>
+    typeof dependency !== "object" || dependency === null
+      || typeof dependency.taskId !== "string"
+      || !["pending", "active", "blocked", "complete", "cancelled"].includes(dependency.status)))) {
+    throw new Error("task compiler: dependencies are invalid");
   }
   const ids = new Set<string>();
   for (const criterion of record.acceptanceCriteria) {
     requireText("criterion id", criterion.id);
-    requireText(`criterion ${criterion.id}`, criterion.requirement);
+    requireCriterionText(`criterion ${criterion.id}`, criterion.requirement);
     if (ids.has(criterion.id)) throw new Error(`task compiler: duplicate criterion id "${criterion.id}"`);
     ids.add(criterion.id);
+    if (criterion.decision !== undefined && !["veto", "required", "preference"].includes(criterion.decision)) {
+      throw new Error(`task compiler: criterion ${criterion.id} has an invalid decision`);
+    }
     if (criterion.evaluation.type === "deterministic") {
-      requireText(`criterion ${criterion.id} oracle`, criterion.evaluation.oracle);
+      requireCriterionText(`criterion ${criterion.id} oracle`, criterion.evaluation.oracle);
     } else if (criterion.evaluation.type === "binary") {
-      requireText(`criterion ${criterion.id} pass condition`, criterion.evaluation.pass);
+      requireCriterionText(`criterion ${criterion.id} pass condition`, criterion.evaluation.pass);
+      if (criterion.evaluation.fail !== undefined) {
+        requireCriterionText(`criterion ${criterion.id} fail condition`, criterion.evaluation.fail);
+      }
     } else {
       const choices = Object.keys(criterion.evaluation.choices);
       if (choices.length < 2) throw new Error(`task compiler: criterion ${criterion.id} needs at least two choices`);
+      if (choices.length > MAX_CRITERION_CHOICES) {
+        throw new Error(`task compiler: criterion ${criterion.id} has too many choices`);
+      }
       for (const choice of choices) {
-        requireText(`criterion ${criterion.id} choice`, choice);
-        requireText(`criterion ${criterion.id} choice ${choice}`, criterion.evaluation.choices[choice] ?? "");
+        requireCriterionText(`criterion ${criterion.id} choice`, choice);
+        requireCriterionText(`criterion ${criterion.id} choice ${choice}`, criterion.evaluation.choices[choice] ?? "");
       }
       if (criterion.evaluation.passingChoices.length === 0) {
         throw new Error(`task compiler: criterion ${criterion.id} needs a passing choice`);
@@ -87,6 +136,7 @@ function rubricVersion(record: TaskRecord): string {
     acceptanceCriteria: record.acceptanceCriteria.map((criterion) => ({
       id: criterion.id,
       requirement: criterion.requirement,
+      decision: criterion.decision ?? "required",
       evaluation:
         criterion.evaluation.type === "choice"
           ? {
@@ -106,13 +156,14 @@ export function compileTaskRubric(record: TaskRecord): TaskRubric {
   const questions: TaskRubric["questions"] = {};
   const deterministicCriterionIds: string[] = [];
   const criteria = record.acceptanceCriteria.map((criterion) => {
+    const compiled = { ...criterion, decision: criterion.decision ?? "required" as const };
     const question = questionFor(criterion);
     if (question === undefined) {
       deterministicCriterionIds.push(criterion.id);
-      return { ...criterion };
+      return compiled;
     }
     questions[criterion.id] = question;
-    return { ...criterion, questionKey: criterion.id };
+    return { ...compiled, questionKey: criterion.id };
   });
   return {
     taskId: record.id,
@@ -184,6 +235,44 @@ function compactSources<T extends DossierSource>(
   return compacted;
 }
 
+function compactCriterionEvidence(
+  sources: readonly CriterionEvidence[],
+  budget: Budget,
+  criterionIds: Set<string>,
+): Array<Record<string, unknown>> {
+  const compacted: Array<Record<string, unknown>> = [];
+  for (const source of sources) {
+    if (!criterionIds.has(source.criterionId)) {
+      budget.omitted.push({
+        kind: "evidence",
+        id: source.criterionId,
+        sourceRef: source.sourceRef,
+        reason: "irrelevant_criterion",
+      });
+      continue;
+    }
+    if (!Number.isFinite(source.confidence) || source.confidence < 0 || source.confidence > 1) {
+      throw new Error(`task compiler: criterion evidence ${source.criterionId} confidence must be between 0 and 1`);
+    }
+    if (!["satisfied", "violated", "unknown"].includes(source.verdict)) {
+      throw new Error(`task compiler: criterion evidence ${source.criterionId} has an invalid verdict`);
+    }
+    requireText(`criterion evidence ${source.criterionId} source`, source.sourceRef);
+    requireText(`criterion evidence ${source.criterionId} summary`, source.summary);
+    const summary = takeText(budget, "evidence", source.criterionId, source.summary, source.sourceRef);
+    if (summary === undefined) continue;
+    compacted.push({
+      criterionId: source.criterionId,
+      verdict: source.verdict,
+      confidence: source.confidence,
+      summary,
+      sourceRef: source.sourceRef,
+      ...(source.candidateId === undefined ? {} : { candidateId: source.candidateId }),
+    });
+  }
+  return compacted;
+}
+
 function taskState(record: TaskRecord, budget: Budget): Record<string, unknown> {
   const objective = takeText(budget, "task", record.id, record.objective) ?? "";
   const constraints = (record.constraints ?? []).flatMap((constraint, index) => {
@@ -192,7 +281,12 @@ function taskState(record: TaskRecord, budget: Budget): Record<string, unknown> 
   });
   const criteria = record.acceptanceCriteria.flatMap((criterion) => {
     const requirement = takeText(budget, "task", `${record.id}:criterion:${criterion.id}`, criterion.requirement);
-    return requirement === undefined ? [] : [{ id: criterion.id, requirement, evaluationType: criterion.evaluation.type }];
+    return requirement === undefined ? [] : [{
+      id: criterion.id,
+      requirement,
+      evaluationType: criterion.evaluation.type,
+      decision: criterion.decision ?? "required",
+    }];
   });
   const unresolvedDependencies = (record.dependencies ?? [])
     .filter((dependency) => dependency.status !== "complete" && dependency.status !== "cancelled")
@@ -234,7 +328,26 @@ export function compileJevDossier(record: TaskRecord, context: DossierContext): 
     (candidate) => ({ candidateId: candidate.candidateId }),
   );
   const evidence = compactSources(context.evidence ?? [], "evidence", budget, criterionIds);
+  const criterionEvidence = compactCriterionEvidence(context.criterionEvidence ?? [], budget, criterionIds);
   const recentDeltas = compactSources(context.recentDeltas ?? [], "delta", budget, criterionIds);
+  const obligations = compactSources<TaskObligation>(
+    context.obligations ?? [],
+    "obligation",
+    budget,
+    criterionIds,
+    (obligation) => ({
+      criterionId: obligation.criterionId,
+      verdict: obligation.verdict,
+      confidence: obligation.confidence,
+    }),
+  );
+  const provenance = compactSources<TaskProvenance>(
+    context.provenance ?? [],
+    "provenance",
+    budget,
+    criterionIds,
+    (entry) => ({ decisionId: entry.decisionId, taskVersion: entry.taskVersion }),
+  );
   const priorComparisons = compactSources<ComparisonSummary>(
     context.priorComparisons ?? [],
     "comparison",
@@ -263,6 +376,9 @@ export function compileJevDossier(record: TaskRecord, context: DossierContext): 
       },
       recentDeltas,
       evidence,
+      criterionEvidence,
+      unresolvedObligations: obligations,
+      provenance,
       candidates,
       priorComparisons,
       context: manifest,

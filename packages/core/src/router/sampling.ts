@@ -12,7 +12,16 @@
  * veto, abstention, quality, correctness, and tie fixtures beside this module.
  */
 
-import type { JevClientLike, JevQuestion } from "../jev/types.js";
+import type { JevAnswer, JevClientLike, JevQuestion } from "../jev/types.js";
+import { compileTaskArtifacts } from "../tasks/compile.js";
+import type {
+  CriterionEvidence,
+  CriterionVerdict,
+  DossierSource,
+  TaskObligation,
+  TaskProvenance,
+  TaskRecord,
+} from "../tasks/types.js";
 import type { ChatMessage } from "../types.js";
 import { messageText } from "./context.js";
 
@@ -133,6 +142,14 @@ export function compileRankingRubric(task: ChatMessage[]): RankCriterion[] {
 
 /** Cap on what one ranking call sends Jev, keeping the call cheap. */
 export const RANK_STATE_MAX_CHARS = 12_000;
+const TASK_CANDIDATE_MAX_CHARS = 4_000;
+
+function taskCandidateSummary(answer: string): string {
+  const value = answer.trim() === "" ? "(empty answer)" : answer;
+  return value.length > TASK_CANDIDATE_MAX_CHARS
+    ? `${value.slice(0, TASK_CANDIDATE_MAX_CHARS)}\n…[truncated]`
+    : value;
+}
 
 /** Jev's view of one candidate: the task transcript and the answer, clipped. */
 export function rankState(
@@ -155,6 +172,27 @@ export type RankScore = {
   latencyMs: number;
   outcome?: "accept" | "reject" | "abstain";
   criteria?: Record<string, "satisfied" | "violated" | "unknown">;
+  criterionEvidence?: CriterionFinding[];
+};
+
+export type CriterionFinding = {
+  criterionId: string;
+  verdict: CriterionVerdict;
+  confidence: number;
+  /** Probability that the criterion is satisfied, when available. */
+  satisfied: number;
+  source: "evidence" | "jev" | "missing";
+  sourceRef?: string;
+};
+
+export type TaskRankingContext = {
+  record: TaskRecord;
+  decisionId: string;
+  candidateId: string;
+  evidence?: CriterionEvidence[];
+  recentDeltas?: DossierSource[];
+  obligations?: TaskObligation[];
+  provenance?: TaskProvenance[];
 };
 
 /** Total budget for one ranking call, ms. */
@@ -176,7 +214,11 @@ export async function rankAnswer(
   answer: string,
   budgetMs = RANK_BUDGET_MS,
   apiKey?: string,
+  taskContext?: TaskRankingContext,
 ): Promise<RankScore> {
+  if (taskContext !== undefined) {
+    return rankTaskAnswer(jev, answer, taskContext, budgetMs, apiKey);
+  }
   const rubric = compileRankingRubric(task);
   const questions = Object.fromEntries(rubric.map((criterion) => [criterion.id, criterion.question]));
   const result = await jev.systemone(
@@ -219,6 +261,230 @@ export async function rankAnswer(
     confidence: quality.confidence,
     latencyMs: result.latencyMs,
   };
+}
+
+function evidenceForCriterion(context: TaskRankingContext, criterionId: string): CriterionEvidence | undefined {
+  const matching = (context.evidence ?? []).filter((entry) =>
+    entry.criterionId === criterionId
+      && (entry.candidateId === undefined || entry.candidateId === context.candidateId));
+  const priority = (entry: CriterionEvidence): number => {
+    // A confident Veritaserum violation is dispositive regardless of source
+    // order or candidate specificity. Weak violations remain conservative:
+    // they outrank unknown/weak passes and force the aggregate to abstain.
+    if (entry.verdict === "violated" && entry.confidence >= 0.6) return 0;
+    if (entry.verdict === "satisfied" && entry.confidence >= 0.6) return 1;
+    if (entry.verdict === "violated") return 2;
+    if (entry.verdict === "unknown") return 3;
+    return 4;
+  };
+  return [...matching].sort((a, b) =>
+    priority(a) - priority(b)
+      || b.confidence - a.confidence
+      || a.sourceRef.localeCompare(b.sourceRef))[0];
+}
+
+function findingFromAnswer(
+  criterionId: string,
+  evaluation: TaskRecord["acceptanceCriteria"][number]["evaluation"],
+  answer: JevAnswer | undefined,
+): CriterionFinding {
+  if (evaluation.type === "binary" && answer?.type === "noul") {
+    const satisfied = Math.max(0, Math.min(1, answer.noul));
+    const confidence = Math.max(satisfied, 1 - satisfied);
+    return {
+      criterionId,
+      verdict: confidence < 0.6 ? "unknown" : satisfied >= 0.5 ? "satisfied" : "violated",
+      confidence,
+      satisfied,
+      source: "jev",
+    };
+  }
+  if (evaluation.type === "choice" && answer?.type === "choice") {
+    const satisfied = evaluation.passingChoices.reduce((sum, choice) => sum + (answer.probabilities[choice] ?? 0), 0);
+    const explicitUnknown = answer.choice === "unknown";
+    return {
+      criterionId,
+      verdict: explicitUnknown || answer.confidence < 0.6
+        ? "unknown"
+        : evaluation.passingChoices.includes(answer.choice) ? "satisfied" : "violated",
+      confidence: answer.confidence,
+      satisfied: Math.max(0, Math.min(1, satisfied)),
+      source: "jev",
+    };
+  }
+  return { criterionId, verdict: "unknown", confidence: 0, satisfied: 0, source: "missing" };
+}
+
+function aggregateTaskFindings(
+  record: TaskRecord,
+  findings: CriterionFinding[],
+  latencyMs: number,
+): RankScore {
+  const byId = new Map(findings.map((finding) => [finding.criterionId, finding]));
+  let veto = false;
+  let requiredViolation = false;
+  let unknownRequired = false;
+  let correctness = 1;
+  let preference = 0;
+  let preferenceCount = 0;
+  let confidence = 1;
+  const criteria: Record<string, CriterionVerdict> = {};
+  for (const criterion of record.acceptanceCriteria) {
+    const finding = byId.get(criterion.id)
+      ?? { criterionId: criterion.id, verdict: "unknown" as const, confidence: 0, satisfied: 0, source: "missing" as const };
+    const decision = criterion.decision ?? "required";
+    criteria[criterion.id] = finding.verdict;
+    confidence = Math.min(confidence, finding.confidence);
+    if (decision === "preference") {
+      preference += finding.satisfied;
+      preferenceCount += 1;
+      continue;
+    }
+    correctness = Math.min(correctness, finding.satisfied);
+    if (finding.verdict === "violated" && finding.confidence >= 0.6) {
+      if (decision === "veto") veto = true;
+      else requiredViolation = true;
+    }
+    if (finding.verdict === "unknown" || finding.confidence < 0.6) unknownRequired = true;
+  }
+  const outcome = veto || requiredViolation ? "reject" : unknownRequired ? "abstain" : "accept";
+  const preferenceMean = preferenceCount === 0 ? 1 : preference / preferenceCount;
+  const quality = outcome === "reject" ? 0 : outcome === "abstain" ? correctness : 1.5 + correctness + 0.5 * preferenceMean;
+  return { quality, correct: correctness, confidence, latencyMs, outcome, criteria, criterionEvidence: findings };
+}
+
+async function rankTaskAnswer(
+  jev: JevClientLike,
+  answer: string,
+  context: TaskRankingContext,
+  budgetMs: number,
+  apiKey?: string,
+): Promise<RankScore> {
+  const relevantEvidence = context.evidence?.filter((entry) =>
+    entry.candidateId === undefined || entry.candidateId === context.candidateId);
+  const candidateRef = `candidate://${context.candidateId}`;
+  const artifacts = compileTaskArtifacts(context.record, {
+    decisionId: context.decisionId,
+    ...(context.recentDeltas === undefined ? {} : { recentDeltas: context.recentDeltas }),
+    ...(relevantEvidence === undefined ? {} : { criterionEvidence: relevantEvidence }),
+    ...(context.obligations === undefined ? {} : { obligations: context.obligations }),
+    ...(context.provenance === undefined ? {} : { provenance: context.provenance }),
+    candidates: [{
+      id: context.candidateId,
+      candidateId: context.candidateId,
+      summary: taskCandidateSummary(answer),
+      sourceRef: candidateRef,
+    }],
+  });
+  const findings: CriterionFinding[] = [];
+  const questions: Record<string, JevQuestion> = {};
+  for (const criterion of artifacts.rubric.criteria) {
+    const supplied = evidenceForCriterion(context, criterion.id);
+    if (supplied !== undefined) {
+      findings.push({
+        criterionId: criterion.id,
+        verdict: supplied.verdict,
+        confidence: supplied.confidence,
+        satisfied: supplied.verdict === "satisfied" ? supplied.confidence : supplied.verdict === "violated" ? 1 - supplied.confidence : 0,
+        source: "evidence",
+        sourceRef: supplied.sourceRef,
+      });
+      continue;
+    }
+    if (criterion.questionKey === undefined) {
+      findings.push({ criterionId: criterion.id, verdict: "unknown", confidence: 0, satisfied: 0, source: "missing" });
+      continue;
+    }
+    const question = artifacts.rubric.questions[criterion.questionKey];
+    if (question !== undefined) questions[criterion.questionKey] = question;
+  }
+  if (Object.keys(questions).length === 0) return aggregateTaskFindings(context.record, findings, 0);
+  if (!artifacts.dossier.manifest.includedSourceRefs.includes(candidateRef)) {
+    for (const criterion of artifacts.rubric.criteria) {
+      if (!findings.some((finding) => finding.criterionId === criterion.id)) {
+        findings.push({ criterionId: criterion.id, verdict: "unknown", confidence: 0, satisfied: 0, source: "missing" });
+      }
+    }
+    return aggregateTaskFindings(context.record, findings, 0);
+  }
+  const result = await jev.systemone(
+    { state: artifacts.dossier.state, questions },
+    { budgetMs, ...(apiKey !== undefined && apiKey !== "" ? { apiKey } : {}) },
+  );
+  for (const criterion of artifacts.rubric.criteria) {
+    if (findings.some((finding) => finding.criterionId === criterion.id)) continue;
+    findings.push(findingFromAnswer(criterion.id, criterion.evaluation, result.answers[criterion.questionKey ?? ""]));
+  }
+  return aggregateTaskFindings(context.record, findings, result.latencyMs);
+}
+
+export type PairwiseCandidate = {
+  index: number;
+  candidateId: string;
+  answer: string;
+  rank: RankScore;
+};
+
+/**
+ * Ask Jev for one direct head-to-head between the two strongest viable
+ * candidates. A tie, unknown answer, or low-confidence verdict abstains.
+ */
+export async function selectPairwise(
+  jev: JevClientLike,
+  context: Omit<TaskRankingContext, "candidateId">,
+  a: PairwiseCandidate,
+  b: PairwiseCandidate,
+  budgetMs = RANK_BUDGET_MS,
+  apiKey?: string,
+): Promise<number | undefined> {
+  const candidateRefs = [a, b].map((candidate) => `candidate://${candidate.candidateId}`);
+  const artifacts = compileTaskArtifacts(context.record, {
+    decisionId: context.decisionId,
+    ...(context.recentDeltas === undefined ? {} : { recentDeltas: context.recentDeltas }),
+    ...(context.evidence === undefined ? {} : { criterionEvidence: context.evidence }),
+    ...(context.obligations === undefined ? {} : { obligations: context.obligations }),
+    ...(context.provenance === undefined ? {} : { provenance: context.provenance }),
+    candidates: [a, b].map((candidate) => ({
+      id: candidate.candidateId,
+      candidateId: candidate.candidateId,
+      summary: taskCandidateSummary(candidate.answer),
+      sourceRef: `candidate://${candidate.candidateId}`,
+    })),
+  });
+  if (candidateRefs.some((sourceRef) => !artifacts.dossier.manifest.includedSourceRefs.includes(sourceRef))) {
+    return undefined;
+  }
+  const state = {
+    ...artifacts.dossier.state,
+    candidateCriterionEvidence: {
+      [a.candidateId]: a.rank.criterionEvidence ?? [],
+      [b.candidateId]: b.rank.criterionEvidence ?? [],
+    },
+  };
+  const result = await jev.systemone(
+    {
+      state,
+      questions: {
+        winner: {
+          type: "choice",
+          instructions:
+            "Which candidate better satisfies the canonical task rubric? Honor vetoes before requirements and preferences. Choose unknown when the evidence cannot support a safe preference.",
+          criteria: {
+            candidate_a: `${a.candidateId} is better supported by the criterion evidence.`,
+            candidate_b: `${b.candidateId} is better supported by the criterion evidence.`,
+            equivalent: "The candidates are materially equivalent under the rubric.",
+            unknown: "The available evidence cannot support a safe preference.",
+          },
+        },
+      },
+    },
+    { budgetMs, ...(apiKey !== undefined && apiKey !== "" ? { apiKey } : {}) },
+  );
+  const winner = result.answers["winner"];
+  if (winner?.type !== "choice" || winner.confidence < 0.6) return undefined;
+  if (winner.choice === "candidate_a") return a.index;
+  if (winner.choice === "candidate_b") return b.index;
+  return undefined;
 }
 
 /**

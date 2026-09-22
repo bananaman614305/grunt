@@ -173,7 +173,8 @@ plus one Jev rank when a clear winner emerges — and by the slowest capped
 sample only when none does — not the fast model's own TTFT.
 
 **Spend:** a sampled request spends roughly N fast-tier calls of the caller's
-OpenRouter budget (plus N+1 Jev calls on Milo's), which the benchmark showed
+OpenRouter budget (plus N+1 Jev calls on the legacy path, and one additional
+pairwise call when `milo.task` is present), which the benchmark showed
 lands in the same cost band as the one mid-tier call it replaces and well
 below frontier. A Milo key (`mk_`) is charged the sum of every sample's usage
 as one usage row against the decision. The decision record at
@@ -188,6 +189,46 @@ ordinary call on the decision's `unsampledTier` (the tier the policy would
 have picked without sampling; the headers then name that model and tier). If
 Jev cannot rank any sample, the first successful sample is returned and the
 decision record says `ranking_failed`.
+
+#### Canonical task selection
+
+A caller that has canonical task intent can include `milo.task` and optional
+`milo.evidence`. The task record is the source of the objective and acceptance
+criteria; each criterion uses a deterministic oracle, binary condition, or
+bounded choice and may be a `veto`, `required` (the default), or `preference`.
+Records are capped at eight criteria; criterion instructions and choices are
+bounded before any Jev call.
+Evidence is source-linked and carries a `satisfied`, `violated`, or `unknown`
+verdict plus confidence. Evidence without a candidate id applies task-wide;
+persisted candidate findings use decision-scoped ids such as
+`<decision-id>:sample-0`, so attempts cannot collide.
+Each sample's decision-log row records the selector outcome and compact
+criterion findings (id, verdict, confidence, source kind, and optional source
+reference). It never stores the evidence summary or candidate content.
+
+The persistence boundary is `(caller, task.id)`, not one HTTP turn. Reusing a
+task id resumes its bounded verification state across turns and attempts:
+criteria, relevant evidence, candidate outcome deltas, unresolved obligations,
+and provenance. Dossiers explicitly report truncation or omission and never
+replay raw chat history or candidate text. A lower task version, or a changed
+rubric at the same version, is rejected with `409 task_version_conflict`;
+intentional rubric changes require a version bump. When that bump changes the
+compiled rubric, Milo clears prior evidence, candidate deltas, and obligations
+because criterion ids alone cannot prove semantic continuity; provenance is
+retained. If Milo cannot load or save this state, it returns
+`503 task_verification_unavailable` instead of serving an unverifiable sample.
+
+On this path Milo waits for the sampled candidates, evaluates every criterion,
+rejects confident veto or required violations, and abstains when a required
+criterion lacks evidence. Jev then compares the two strongest accepted
+candidates directly against the same canonical dossier. A tie, unknown, or
+low-confidence comparison is an abstention. Milo does not turn that abstention
+into an arbitrary first-sample pick: it makes the ordinary unsampled-tier call
+and records `ranking_abstained`. The canonical selector supersedes the generic
+completeness gate, so a verified pick cannot be replaced by an unverified gate
+retry. A malformed task or evidence list is rejected
+before Jev or OpenRouter with `400 invalid_task_record`. Requests without
+`milo.task` retain the benchmarked ADR-010 selector and its early-return path.
 
 Opting out: `milo: { "samples": 1 }` disables sampling for one request (any
 explicit integer up to 8 sets the count instead); `posture: "low"` never

@@ -56,6 +56,7 @@ describe("compileTaskRubric", () => {
     expect(rubric.taskVersion).toBe(TASK.version);
     expect(rubric.version).toMatch(/^[0-9a-f]{16}$/);
     expect(rubric.deterministicCriterionIds).toEqual(["tests"]);
+    expect(rubric.criteria.map((criterion) => criterion.decision)).toEqual(["required", "required", "required"]);
     expect(rubric.questions["tests"]).toBeUndefined();
     expect(rubric.questions["tool-boundary"]).toMatchObject({ type: "noul" });
     expect(rubric.questions["closure"]).toEqual({
@@ -81,6 +82,11 @@ describe("compileTaskRubric", () => {
 
     expect(stateOnly.version).toBe(first.version);
     expect(criterionChange.version).not.toBe(first.version);
+    expect(compileTaskRubric({
+      ...TASK,
+      acceptanceCriteria: TASK.acceptanceCriteria.map((criterion) =>
+        criterion.id === "tool-boundary" ? { ...criterion, decision: "veto" as const } : criterion),
+    }).version).not.toBe(first.version);
   });
 
   it("does not change the rubric version when choice map insertion order changes", () => {
@@ -122,6 +128,14 @@ describe("compileTaskRubric", () => {
         ],
       }),
     ).toThrow(/unknown passing choice/);
+    expect(() => compileTaskRubric({
+      ...TASK,
+      acceptanceCriteria: Array.from({ length: 9 }, (_, index) => ({
+        id: `criterion-${index}`,
+        requirement: `Requirement ${index}`,
+        evaluation: { type: "binary" as const, pass: "It passed." },
+      })),
+    })).toThrow(/at most 8/);
   });
 });
 
@@ -145,6 +159,13 @@ describe("compileJevDossier", () => {
           criterionIds: ["other-task"],
         },
       ],
+      criterionEvidence: [{
+        criterionId: "tool-boundary",
+        verdict: "satisfied",
+        confidence: 0.97,
+        summary: "The verifier found no tool execution surface.",
+        sourceRef: "veritaserum://tool-boundary/1",
+      }],
       candidates: [
         {
           id: "candidate-summary-1",
@@ -172,9 +193,15 @@ describe("compileJevDossier", () => {
       unresolvedDependencies: [{ taskId: "task-receipts", status: "blocked", summary: "Waiting for a receipt adapter." }],
     });
     expect(artifacts.dossier.state["evidence"]).toHaveLength(1);
+    expect(artifacts.dossier.state["criterionEvidence"]).toEqual([expect.objectContaining({
+      criterionId: "tool-boundary",
+      verdict: "satisfied",
+      sourceRef: "veritaserum://tool-boundary/1",
+    })]);
     expect(artifacts.dossier.manifest.includedSourceRefs).toEqual([
       "trajectory://candidate-1",
       "receipt://1",
+      "veritaserum://tool-boundary/1",
       "event://delta-1",
       "comparison://1",
     ]);

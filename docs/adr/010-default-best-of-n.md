@@ -42,6 +42,26 @@ A streamed request buffers until selection and
 then replays the chosen answer as normal SSE. Tool-call answers are picked
 like any other; the client executes only what it receives.
 
+Revision 2 (2026-09-22) wires canonical task records into this production
+path. When present, the record's criterion decisions and source-linked evidence
+replace the inferred rubric. Confident Veritaserum vetoes dominate, required
+unknowns abstain, and Jev makes one direct comparison between the two strongest
+viable candidates. A non-decision falls back to the unsampled tier instead of
+serving an arbitrary sample. The historical selector remains unchanged when a
+request has no canonical task record.
+
+Revision 3 (2026-09-22) makes the canonical record the verification and
+persistence boundary across turns and attempts. The gateway atomically stores
+one bounded state per caller and task id: current task version, relevant
+criterion evidence, decision-scoped candidate deltas, unresolved obligations,
+and provenance. Ranking and pairwise selection consume that state through a
+decision-specific dossier with explicit truncation. Raw history and candidate
+content are never persisted. Stale task versions, same-version rubric changes,
+and unavailable persistence fail closed rather than silently reverting to
+request-local verification. A version bump that changes the compiled rubric
+also clears prior criterion evidence, candidate deltas, and obligations; only
+content-free provenance survives the semantic boundary.
+
 Disclosure and control, in the ADR-002 explainability tradition:
 
 - Headers on every sampled response: `x-milo-samples: 5`,
