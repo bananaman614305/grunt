@@ -156,6 +156,12 @@ long the trip took, or what it cost. `pnpm bench`
 (`packages/evals/src/bench/cli.ts`) measures those three things, live,
 against a running gateway.
 
+Selector-only iteration should use the cached-candidate protocol in
+ADR-030: freeze candidate text and grades locally, rank only mixed-outcome
+rows, cache Jev verdicts separately, and reserve the full live benchmark for
+the release gate. Committed benchmark reports intentionally omit candidate
+text, so they cannot by themselves replay a changed ranking rubric.
+
 For every example in `routing.jsonl` it makes one streamed chat completion
 per **arm**, in a per-example shuffled order so no arm always goes first:
 
