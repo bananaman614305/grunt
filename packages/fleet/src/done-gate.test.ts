@@ -49,6 +49,37 @@ describe("verifyWorkerDone", () => {
     expect(state.receipts).toHaveLength(1);
   });
 
+  it("checks a task-specific rubric in one Jev call", async () => {
+    let calls = 0;
+    let keys: string[] = [];
+    const jev: JevClientLike = {
+      systemone(req) {
+        calls += 1;
+        keys = Object.keys(req.questions);
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: Object.fromEntries(keys.map((key) => [key, {
+            type: "choice",
+            choice: "supported",
+            confidence: 0.9,
+            probabilities: { supported: 0.9 },
+          }])),
+          usage: { input_tokens: 10, output_tokens: 3 },
+          requestId: "rubric",
+          latencyMs: 9,
+        } satisfies SystemOneResult);
+      },
+    };
+    const out = await verifyWorkerDone(jev, {
+      task: { ...TASK, acceptanceCriteria: ["Retries are bounded", "Aborts remain aborts"] },
+      diff: "diff --git a/x b/x\n+y\n",
+    });
+    expect(calls).toBe(1);
+    expect(keys).toHaveLength(2);
+    expect(out.criteria).toHaveLength(2);
+    expect(out.verdict).toBe("supported");
+  });
+
   it("maps a missing answer to a non-adverse unsupported", async () => {
     const jev: JevClientLike = {
       systemone: () =>

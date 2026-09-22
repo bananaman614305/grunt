@@ -105,9 +105,28 @@ JEV_API_KEY=... milo-fleet --tasks tasks.json --base main --repo . \
   --root .fleet-worktrees --interval 5 --timeout 900
 ```
 
-`tasks.json` is `{ "tasks": [{ "id": "...", "prompt": "...", "title"?: "..." }] }`.
+`tasks.json` is `{ "tasks": [{ "id": "...", "prompt": "...", "title"?: "...", "acceptanceCriteria"?: ["..."] }] }`.
 This is live glue — it spawns pi and mutates git — and is not covered by the
 test suite.
+
+## Persistent task records
+
+The CLI writes versioned task records to `.milo/fleet-tasks` (override with
+`--records <directory>`). Each record keeps the task lifecycle, a bounded
+rubric compiled from explicit acceptance criteria and prompt checklist items,
+the latest supervision verdict, compact normalized verification evidence, and
+open evidence obligations. Raw diffs are not persisted in the dossier.
+
+Rubric criteria are atomic closed questions ordered into four levels:
+truth/contract vetoes; regression, integration, and scope requirements;
+maintainability; then task-specific preferences. Findings are `satisfied`,
+`violated`, or `unknown`. A confident veto rejects, missing required evidence
+abstains and creates a durable obligation, and preferences cannot override
+either result.
+
+The rubric rides the supervision calls already being made and becomes separate
+questions inside the done-gate's existing single Jev call. This adds neither a
+fleet MCP tool nor a worker turn or tool execution. See ADR-029.
 
 ## v0 limits and the cost note
 

@@ -59,6 +59,11 @@ export const FLEET_TOOLS: ToolSchema[] = [
               id: { type: "string", description: "Unique task id; names the worker's branch." },
               prompt: { type: "string", description: "The full instruction handed to the worker." },
               title: { type: "string", description: "Optional short label." },
+              acceptanceCriteria: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional explicit outcomes compiled into the task verification rubric.",
+              },
             },
             required: ["id", "prompt"],
             additionalProperties: false,
@@ -123,6 +128,12 @@ function validateSpawn(args: SpawnArgs): void {
     if (typeof task.id !== "string" || task.id === "") throw new Error("each task needs an id");
     if (typeof task.prompt !== "string" || task.prompt === "") {
       throw new Error(`task ${task.id} needs a prompt`);
+    }
+    if (task.acceptanceCriteria !== undefined && (
+      !Array.isArray(task.acceptanceCriteria)
+      || task.acceptanceCriteria.some((criterion) => typeof criterion !== "string")
+    )) {
+      throw new Error(`task ${task.id} acceptanceCriteria must be an array of strings`);
     }
     if (seen.has(task.id)) throw new Error(`duplicate task id: ${task.id}`);
     seen.add(task.id);

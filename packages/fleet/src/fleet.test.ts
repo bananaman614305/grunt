@@ -3,6 +3,7 @@ import type { JevClientLike, SystemOneResult } from "@milo/core";
 import type { WorkerEvent } from "./events.js";
 import { Fleet } from "./fleet.js";
 import type { WindowSummary } from "./supervisor.js";
+import { MemoryTaskRecordStore } from "./task-records.js";
 import type { Task, WorkerLifecycle, WorkerResult } from "./types.js";
 import type { WorkerHandle } from "./worker.js";
 
@@ -85,7 +86,8 @@ function gradingJev(): JevClientLike & { count: number } {
           latencyMs: 15,
         } satisfies SystemOneResult);
       }
-      const s = req.state as unknown as WindowSummary;
+      const state = req.state as { activity?: WindowSummary } & WindowSummary;
+      const s = state.activity ?? state;
       if (s.eventCount === 0) return Promise.reject(new Error("empty window"));
       let choice: string;
       let needsHuman = 0.1;
@@ -190,6 +192,28 @@ describe("Fleet", () => {
     expect(fleet.results().map((r) => r.id)).toEqual(["d"]);
     expect(fleet.results()[0]?.result?.diff).toBe("diff --git a/x b/x");
     expect(fleet.needsAttention()).toEqual([]); // a supported done needs no look
+  });
+
+  it("persists the compiled rubric and done evidence without another worker action", async () => {
+    const done = new FakeHandle(
+      "d",
+      { id: "d", prompt: "Implement retries", acceptanceCriteria: ["Retries are bounded"] },
+      "/wt/d",
+      "fleet/d",
+    );
+    const records = new MemoryTaskRecordStore();
+    const fleet = new Fleet({ jev: gradingJev(), records, now: () => 1_000, spawn: () => done });
+    fleet.start([done.task]);
+    expect(records.get("d")?.rubric.criteria[0]?.text).toBe("Retries are bounded");
+
+    done.finish(doneResult());
+    await fleet.superviseOnce();
+
+    const record = records.get("d");
+    expect(record?.lifecycle).toBe("finished");
+    expect(record?.dossier.evidence?.git.filesChanged).toBe(1);
+    expect(record?.dossier.evidence?.verification?.verdict).toBe("supported");
+    expect(fleet.taskRecords()).toEqual([record]);
   });
 
   it("surfaces a finished worker whose done the diff refutes (ADR-019)", async () => {

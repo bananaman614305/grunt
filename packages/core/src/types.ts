@@ -353,7 +353,8 @@ export type DecisionRecord = RouteDecision & {
    * decision (ADR-010) the token counts and cost aggregate across every
    * sample, `samples` carries the per-sample metadata, `samplePick` the
    * chosen index, and `sampleNote` marks a degraded pick: `ranking_failed`
-   * (Jev could not rank, first success returned) or `all_samples_failed`
+   * (Jev could not rank), `ranking_abstained` (required evidence was unknown),
+   * or `all_samples_failed`
    * (one ordinary call on `unsampledTier` answered instead).
    */
   upstream?: {
@@ -364,7 +365,7 @@ export type DecisionRecord = RouteDecision & {
     costUsd?: number;
     samples?: SampleUpstream[];
     samplePick?: number;
-    sampleNote?: "ranking_failed" | "all_samples_failed";
+    sampleNote?: "ranking_failed" | "ranking_abstained" | "all_samples_failed";
     /**
      * The completeness gate's outcome (ADR-013 phase A), present only when
      * the gate ran. On a retried answer the aggregate tokens/cost above

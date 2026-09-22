@@ -21,8 +21,10 @@
  * turns a finished worker into a failed one.
  */
 
-import type { ClaimVerdict, JevClientLike, Receipt } from "@milo/core";
+import type { ClaimResult, ClaimVerdict, JevClientLike, Receipt } from "@milo/core";
 import { gitStateFromDiff, verifyClaims } from "@milo/core";
+import { compileTaskRubric, decideDossier } from "./task-records.js";
+import type { DossierDecision } from "./task-records.js";
 import type { Task } from "./types.js";
 
 /** Total budget for one done-gate call, ms. Same habit as supervision. */
@@ -38,52 +40,66 @@ export type DoneVerification = {
   /** One human-readable line. */
   line: string;
   latencyMs: number;
+  /** Per-criterion findings from the same Jev call. */
+  criteria: ClaimResult[];
+  /** Deterministic closed-set aggregation; only hard contract findings are vetoes. */
+  decision: DossierDecision;
 };
-
-/** The first non-empty line of the prompt, for the claim text. */
-function taskLabel(task: Task): string {
-  if (task.title !== undefined && task.title.trim() !== "") return task.title.trim();
-  const firstLine = task.prompt.split("\n").map((l) => l.trim()).find((l) => l !== "");
-  return firstLine ?? task.id;
-}
 
 /**
  * Verify one finished worker's completion against its git diff and receipts.
- * Builds a single completion claim from the task and hands it, with the diff as
- * ground truth, to the shared verifier. Throws on a Jev failure (the fleet
- * catches it); a malformed or missing answer maps to a non-adverse
- * `unsupported`, never a false contradiction.
+ * Compiles the task's rubric into completion claims and hands all of them,
+ * with the diff as ground truth, to the shared verifier in ONE Jev call.
+ * Throws on a Jev failure (the fleet catches it); a malformed or missing
+ * answer maps to a non-adverse `unsupported`, never a false contradiction.
  */
 export async function verifyWorkerDone(
   jev: JevClientLike,
   input: { task: Task; diff: string; receipts?: readonly Receipt[] },
   budgetMs = DONE_GATE_BUDGET_MS,
 ): Promise<DoneVerification> {
-  const claim = {
-    id: `done:${input.task.id}`,
-    text: `The worker completed the assigned task: ${taskLabel(input.task)}.`,
+  const rubric = compileTaskRubric(input.task);
+  const claims = rubric.criteria.map((criterion) => ({
+    id: `done:${input.task.id}:${criterion.id}`,
+    text: `The worker satisfied this requirement: ${criterion.text}`,
     category: "completion" as const,
-  };
+  }));
   const ground = {
     git: gitStateFromDiff(input.diff),
     ...(input.receipts !== undefined && input.receipts.length > 0 ? { receipts: [...input.receipts] } : {}),
   };
-  const out = await verifyClaims(jev, [claim], ground, budgetMs);
-  const result = out.results[0];
-  if (result === undefined) {
-    return { verdict: "unsupported", confidence: 0, contradicted: false, line: "Done could not be verified.", latencyMs: out.latencyMs };
+  const out = await verifyClaims(jev, claims, ground, budgetMs);
+  const decision = decideDossier(rubric, out.results);
+  const decisiveId = decision.criteria.find((criterion) =>
+    decision.outcome === "reject" ? criterion.decision === "violated" : criterion.decision === "unknown"
+  )?.id;
+  const result = out.results.find((candidate) => candidate.claim.id.endsWith(`:${decisiveId}`)) ?? out.results[0];
+  if (result === undefined || out.results.length !== claims.length) {
+    return {
+      verdict: "unsupported",
+      confidence: result?.confidence ?? 0,
+      contradicted: false,
+      line: "Done unverified: one or more rubric criteria lacked a verdict.",
+      latencyMs: out.latencyMs,
+      criteria: out.results,
+      decision,
+    };
   }
+  const verdict: ClaimVerdict = decision.outcome === "accept" ? "supported"
+    : decision.outcome === "reject" ? "contradicted" : "unsupported";
   const line =
-    result.verdict === "supported"
+    verdict === "supported"
       ? "Done confirmed against the diff and receipts."
-      : result.verdict === "contradicted"
+      : verdict === "contradicted"
         ? "Done refuted: the diff and receipts do not show the task completed."
-        : "Done unverified: no evidence in the diff or receipts either way.";
+        : "Done unverified: required evidence is missing or unknown.";
   return {
-    verdict: result.verdict,
+    verdict,
     confidence: result.confidence,
-    contradicted: result.verdict === "contradicted",
+    contradicted: verdict === "contradicted",
     line,
     latencyMs: out.latencyMs,
+    criteria: out.results,
+    decision,
   };
 }

@@ -22,6 +22,11 @@ export type Task = {
   prompt: string;
   /** Optional human label for status surfaces. */
   title?: string;
+  /**
+   * Explicit outcomes the worker must satisfy. The fleet compiles these with
+   * checklist items in the prompt into the task's durable verification rubric.
+   */
+  acceptanceCriteria?: string[];
 };
 
 /** Process-level state of a worker, independent of what the supervisor thinks. */

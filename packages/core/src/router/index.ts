@@ -57,11 +57,12 @@ export {
   RANK_STATE_MAX_CHARS,
   RANK_BUDGET_MS,
   rankState,
+  compileRankingRubric,
   rankAnswer,
   compareRanked,
   pickBest,
 } from "./sampling.js";
-export type { RankScore } from "./sampling.js";
+export type { RankCriterion, RankScore } from "./sampling.js";
 
 export { checkCandidate, expectsJsonResponse } from "./candidate-check.js";
 export type { CandidateCheck, CandidateFlaw, CandidateInput } from "./candidate-check.js";

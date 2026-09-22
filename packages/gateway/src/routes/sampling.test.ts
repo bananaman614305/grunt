@@ -205,6 +205,34 @@ function failingJev(): JevClientLike {
   return { systemone: () => Promise.reject(new Error("jev down")) };
 }
 
+function abstainingJev(): JevClientLike {
+  return {
+    systemone: (req): Promise<SystemOneResult> => {
+      if ("completeness" in req.questions) {
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: { completeness: { type: "choice", choice: "complete", confidence: 0.9, probabilities: { complete: 0.9 } } },
+          usage: { input_tokens: 10, output_tokens: 1 },
+          requestId: "req_gate",
+          latencyMs: 5,
+        });
+      }
+      return Promise.resolve({
+        model: "jev-latest",
+        answers: Object.fromEntries(Object.keys(req.questions).map((key) => [key, {
+          type: "choice",
+          choice: "unknown",
+          confidence: 0.9,
+          probabilities: { satisfied: 0.05, violated: 0.05, unknown: 0.9 },
+        }])),
+        usage: { input_tokens: 20, output_tokens: 4 },
+        requestId: "req_abstain",
+        latencyMs: 6,
+      });
+    },
+  };
+}
+
 /**
  * `rankingJev` plus the completeness gate's own question, so a test can drive
  * the ADR-013 gate over a sampled pick.
@@ -325,6 +353,16 @@ function chatRequest(extra: Record<string, unknown> = {}): Request {
 // ---------------------------------------------------------------------------
 
 describe("sampled fan-out", () => {
+  it("records closed-selector abstention and waits for all samples", async () => {
+    openRouter.handler = (_body, index) => sse(completionBody(`answer-${index}`));
+    const a = await app({ jev: abstainingJev() });
+    const res = await a.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    expect(openRouter.calls).toHaveLength(3);
+    expect(res.headers.get("x-milo-sample-pick")).toBe("0");
+    expect(recorded[0]?.upstream.sampleNote).toBe("ranking_abstained");
+  });
+
   it("draws N varied streamed samples on throughput-sorted providers and returns Jev's pick", async () => {
     // Sample 1 encodes the highest quality; Jev must pick it.
     const contents = ["plain q1", "framed q3", "framed q0"];

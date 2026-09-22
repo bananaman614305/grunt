@@ -13,6 +13,7 @@ export * from "./pi-events.js";
 export * from "./questions.js";
 export * from "./supervisor.js";
 export * from "./done-gate.js";
+export * from "./task-records.js";
 export * from "./worker.js";
 export * from "./node-runtime.js";
 export * from "./fleet.js";

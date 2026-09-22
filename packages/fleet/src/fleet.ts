@@ -25,6 +25,15 @@ import type { JevClientLike, Receipt } from "@milo/core";
 import { verifyWorkerDone } from "./done-gate.js";
 import type { DoneVerification } from "./done-gate.js";
 import { classifyWorker } from "./supervisor.js";
+import {
+  buildTaskDossier,
+  compileTaskRubric,
+  MemoryTaskRecordStore,
+  summarizeTaskEvidence,
+  TASK_RECORD_VERSION,
+  updateTaskObligations,
+} from "./task-records.js";
+import type { TaskDossier, TaskRecord, TaskRecordStore, TaskRubric } from "./task-records.js";
 import type {
   AttentionItem,
   Task,
@@ -51,6 +60,8 @@ export type FleetDeps = {
   verifyDone?:
     | false
     | ((jev: JevClientLike, input: { task: Task; diff: string; receipts?: readonly Receipt[] }) => Promise<DoneVerification>);
+  /** Durable audit records. The CLI supplies a JSON store; tests may inject memory. */
+  records?: TaskRecordStore;
 };
 
 const DEFAULT_WINDOW = 40;
@@ -64,6 +75,10 @@ type WorkerRecord = {
   doneVerification?: DoneVerification;
   /** True once the done-gate has been attempted for a finished worker. */
   doneChecked?: boolean;
+  rubric: TaskRubric;
+  dossier: TaskDossier;
+  createdAt: string;
+  obligations: TaskRecord["obligations"];
 };
 
 export class Fleet {
@@ -72,19 +87,32 @@ export class Fleet {
   private readonly verifyDone:
     | false
     | ((jev: JevClientLike, input: { task: Task; diff: string; receipts?: readonly Receipt[] }) => Promise<DoneVerification>);
+  private readonly records: TaskRecordStore;
   private readonly workers = new Map<string, WorkerRecord>();
 
   constructor(private readonly deps: FleetDeps) {
     this.window = deps.window ?? DEFAULT_WINDOW;
     this.now = deps.now ?? Date.now;
     this.verifyDone = deps.verifyDone ?? verifyWorkerDone;
+    this.records = deps.records ?? new MemoryTaskRecordStore();
   }
 
   /** Spawn a worker per task. Ignores ids already in the fleet. */
   start(tasks: Task[]): void {
     for (const task of tasks) {
       if (this.workers.has(task.id)) continue;
-      this.workers.set(task.id, { handle: this.deps.spawn(task) });
+      const handle = this.deps.spawn(task);
+      const rubric = compileTaskRubric(task);
+      const dossier = buildTaskDossier(task, rubric);
+      const rec: WorkerRecord = {
+        handle,
+        rubric,
+        dossier,
+        createdAt: new Date(this.now()).toISOString(),
+        obligations: [],
+      };
+      this.workers.set(task.id, rec);
+      this.persist(rec);
     }
   }
 
@@ -117,8 +145,9 @@ export class Fleet {
         const events = rec.handle.events();
         const window = events.slice(Math.max(0, events.length - this.window));
         try {
-          rec.classification = await classifyWorker(this.deps.jev, window, { now });
+          rec.classification = await classifyWorker(this.deps.jev, window, { now, dossier: rec.dossier });
           delete rec.superviseError;
+          this.persist(rec);
         } catch (err) {
           rec.superviseError = err instanceof Error ? err.message : String(err);
         }
@@ -143,6 +172,13 @@ export class Fleet {
         ...(result.receipts !== undefined ? { receipts: result.receipts } : {}),
       });
       rec.doneChecked = true;
+      rec.obligations = updateTaskObligations(rec.obligations, rec.doneVerification.criteria, rec.rubric, new Date(this.now()));
+      rec.dossier = buildTaskDossier(
+        rec.handle.task,
+        rec.rubric,
+        summarizeTaskEvidence(result, rec.doneVerification),
+      );
+      this.persist(rec);
       delete rec.superviseError;
     } catch (err) {
       rec.superviseError = err instanceof Error ? err.message : String(err);
@@ -158,6 +194,11 @@ export class Fleet {
   /** Every worker's public state, in insertion order. */
   status(): WorkerState[] {
     return [...this.workers.entries()].map(([id, rec]) => this.toState(id, rec));
+  }
+
+  /** Durable records, including compact rubrics and verification evidence. */
+  taskRecords(): TaskRecord[] {
+    return this.records.list();
   }
 
   /** Finished and failed workers with their results, in insertion order. */
@@ -233,7 +274,29 @@ export class Fleet {
   /** Resolve when every worker has terminated (results are then complete). */
   async drain(): Promise<WorkerState[]> {
     await Promise.all([...this.workers.values()].map((r) => r.handle.done));
+    await this.superviseOnce();
     return this.results();
+  }
+
+  private persist(rec: WorkerRecord): void {
+    const result = rec.handle.result();
+    if (result !== undefined && rec.dossier.evidence === undefined) {
+      rec.dossier = buildTaskDossier(rec.handle.task, rec.rubric, summarizeTaskEvidence(result, rec.doneVerification));
+    }
+    const record: TaskRecord = {
+      version: TASK_RECORD_VERSION,
+      task: rec.handle.task,
+      rubric: rec.rubric,
+      dossier: rec.dossier,
+      lifecycle: rec.handle.lifecycle(),
+      worktreePath: rec.handle.worktreePath,
+      branch: rec.handle.branch,
+      createdAt: rec.createdAt,
+      updatedAt: new Date(this.now()).toISOString(),
+      ...(rec.classification !== undefined ? { classification: rec.classification } : {}),
+      obligations: rec.obligations,
+    };
+    this.records.save(record);
   }
 
   private toState(id: string, rec: WorkerRecord): WorkerState {

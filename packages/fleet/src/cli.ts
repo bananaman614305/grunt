@@ -19,6 +19,7 @@ import { resolve } from "node:path";
 import { JevClient } from "@milo/core";
 import { Fleet, runSupervisionLoop } from "./fleet.js";
 import { nodeWorkerRuntime } from "./node-runtime.js";
+import { JsonTaskRecordStore } from "./task-records.js";
 import type { Task } from "./types.js";
 import { startWorker } from "./worker.js";
 
@@ -30,6 +31,7 @@ type Args = {
   interval: number;
   timeout: number;
   piAgentDir?: string;
+  records: string;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -47,6 +49,7 @@ function parseArgs(argv: string[]): Args {
     root: get("--root", ".fleet-worktrees") as string,
     interval: Number(get("--interval", "5")) * 1000,
     timeout: Number(get("--timeout", "900")) * 1000,
+    records: get("--records", ".milo/fleet-tasks") as string,
     ...(piAgentDir !== undefined ? { piAgentDir } : {}),
   };
 }
@@ -62,6 +65,7 @@ async function main(): Promise<void> {
 
   const fleet = new Fleet({
     jev,
+    records: new JsonTaskRecordStore(resolve(args.records)),
     spawn: (task) =>
       startWorker(task, runtime, {
         root: resolve(args.root),
@@ -87,6 +91,7 @@ async function main(): Promise<void> {
     const lines = worker.result?.diff ? worker.result.diff.split("\n").length : 0;
     console.log(`[${worker.id}] ${worker.lifecycle} (${lines} diff lines)`);
   }
+  console.log(`Task records: ${resolve(args.records)}`);
 }
 
 main().catch((err: unknown) => {
