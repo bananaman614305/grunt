@@ -267,7 +267,20 @@ function evidenceForCriterion(context: TaskRankingContext, criterionId: string):
   const matching = (context.evidence ?? []).filter((entry) =>
     entry.criterionId === criterionId
       && (entry.candidateId === undefined || entry.candidateId === context.candidateId));
-  return matching.find((entry) => entry.candidateId === context.candidateId) ?? matching[0];
+  const priority = (entry: CriterionEvidence): number => {
+    // A confident Veritaserum violation is dispositive regardless of source
+    // order or candidate specificity. Weak violations remain conservative:
+    // they outrank unknown/weak passes and force the aggregate to abstain.
+    if (entry.verdict === "violated" && entry.confidence >= 0.6) return 0;
+    if (entry.verdict === "satisfied" && entry.confidence >= 0.6) return 1;
+    if (entry.verdict === "violated") return 2;
+    if (entry.verdict === "unknown") return 3;
+    return 4;
+  };
+  return [...matching].sort((a, b) =>
+    priority(a) - priority(b)
+      || b.confidence - a.confidence
+      || a.sourceRef.localeCompare(b.sourceRef))[0];
 }
 
 function findingFromAnswer(

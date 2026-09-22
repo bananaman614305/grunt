@@ -226,6 +226,39 @@ describe("canonical task ranking", () => {
     expect(rank.criterionEvidence?.[0]).toMatchObject({ source: "evidence", sourceRef: "veritaserum://finding/1" });
   });
 
+  it("does not let earlier satisfied evidence mask a later confident veto", async () => {
+    const never: JevClientLike = { systemone: () => Promise.reject(new Error("must not call Jev for supplied evidence")) };
+    const rank = await rankAnswer(never, MESSAGES, "Looks good.", undefined, undefined, {
+      record: {
+        ...TASK,
+        acceptanceCriteria: [TASK.acceptanceCriteria[0]!],
+      },
+      decisionId: "decision-conflict",
+      candidateId: "sample-0",
+      evidence: [
+        {
+          criterionId: "safety",
+          verdict: "satisfied",
+          confidence: 0.61,
+          summary: "A weak check passed.",
+          sourceRef: "check://weak-pass",
+        },
+        {
+          criterionId: "safety",
+          verdict: "violated",
+          confidence: 0.99,
+          summary: "Veritaserum found a boundary violation.",
+          sourceRef: "veritaserum://veto",
+        },
+      ],
+    });
+    expect(rank).toMatchObject({
+      outcome: "reject",
+      criteria: { safety: "violated" },
+      criterionEvidence: [{ sourceRef: "veritaserum://veto", verdict: "violated", confidence: 0.99 }],
+    });
+  });
+
   it("abstains when an authoritative deterministic requirement has no evidence", async () => {
     const record: TaskRecord = {
       ...TASK,

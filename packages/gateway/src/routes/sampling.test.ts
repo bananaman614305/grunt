@@ -439,6 +439,50 @@ describe("sampled fan-out", () => {
     });
   });
 
+  it("falls back instead of letting earlier satisfied evidence mask a Veritaserum veto", async () => {
+    openRouter.handler = (body, index) => body["model"] === "test/mid"
+      ? ok({ ...completionBody("safe fallback"), model: "test/mid" })
+      : sse(completionBody(`candidate-${index}`));
+    const jev = canonicalJev("candidate_b");
+    const a = await app({ jev });
+    const task = {
+      ...CANONICAL_TASK,
+      acceptanceCriteria: [{ ...CANONICAL_TASK.acceptanceCriteria[0]!, decision: "veto" as const }],
+    };
+    const evidence = [
+      {
+        criterionId: "complete",
+        verdict: "satisfied",
+        confidence: 0.61,
+        summary: "A weak check passed.",
+        sourceRef: "check://weak-pass",
+      },
+      {
+        criterionId: "complete",
+        verdict: "violated",
+        confidence: 0.99,
+        summary: "Veritaserum found a blocking violation.",
+        sourceRef: "veritaserum://veto",
+      },
+    ];
+    const res = await a.fetch(chatRequest({ milo: { task, evidence } }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-model")).toBe("test/mid");
+    expect(res.headers.get("x-milo-sample-pick")).toBeNull();
+    expect(jev.pairwiseCalls).toBe(0);
+    expect(recorded[0]?.upstream.sampleNote).toBe("ranking_abstained");
+    expect(recorded[0]?.upstream.samples).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selectionOutcome: "reject",
+        criterionEvidence: [expect.objectContaining({
+          verdict: "violated",
+          sourceRef: "veritaserum://veto",
+        })],
+      }),
+    ]));
+  });
+
   it("resumes bounded task evidence and attempt deltas on a later turn", async () => {
     openRouter.handler = (_body, index) => sse(completionBody(`candidate-${index}`));
     const jev = canonicalJev("candidate_b");
