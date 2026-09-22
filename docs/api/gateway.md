@@ -199,11 +199,22 @@ bounded choice and may be a `veto`, `required` (the default), or `preference`.
 Records are capped at eight criteria; criterion instructions and choices are
 bounded before any Jev call.
 Evidence is source-linked and carries a `satisfied`, `violated`, or `unknown`
-verdict plus confidence. Candidate-specific evidence names `sample-0`,
-`sample-1`, and so on; evidence without a candidate id applies task-wide.
+verdict plus confidence. Evidence without a candidate id applies task-wide;
+persisted candidate findings use decision-scoped ids such as
+`<decision-id>:sample-0`, so attempts cannot collide.
 Each sample's decision-log row records the selector outcome and compact
 criterion findings (id, verdict, confidence, source kind, and optional source
 reference). It never stores the evidence summary or candidate content.
+
+The persistence boundary is `(caller, task.id)`, not one HTTP turn. Reusing a
+task id resumes its bounded verification state across turns and attempts:
+criteria, relevant evidence, candidate outcome deltas, unresolved obligations,
+and provenance. Dossiers explicitly report truncation or omission and never
+replay raw chat history or candidate text. A lower task version, or a changed
+rubric at the same version, is rejected with `409 task_version_conflict`;
+intentional rubric changes require a version bump. If Milo cannot load or save
+this state, it returns `503 task_verification_unavailable` instead of serving
+an unverifiable sample.
 
 On this path Milo waits for the sampled candidates, evaluates every criterion,
 rejects confident veto or required violations, and abstains when a required
@@ -211,7 +222,9 @@ criterion lacks evidence. Jev then compares the two strongest accepted
 candidates directly against the same canonical dossier. A tie, unknown, or
 low-confidence comparison is an abstention. Milo does not turn that abstention
 into an arbitrary first-sample pick: it makes the ordinary unsampled-tier call
-and records `ranking_abstained`. A malformed task or evidence list is rejected
+and records `ranking_abstained`. The canonical selector supersedes the generic
+completeness gate, so a verified pick cannot be replaced by an unverified gate
+retry. A malformed task or evidence list is rejected
 before Jev or OpenRouter with `400 invalid_task_record`. Requests without
 `milo.task` retain the benchmarked ADR-010 selector and its early-return path.
 

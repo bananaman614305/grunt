@@ -31,6 +31,7 @@ import type {
   FactStore,
 } from "../memory/store.js";
 import type { StickyEntry, StickyStore } from "../router/sticky-store.js";
+import type { TaskVerificationState } from "../tasks/types.js";
 import type { DecisionRecord, Modality, RouteDecision, RouteSignals, Roster, Tier } from "../types.js";
 import { aggregateCost, type CostBreakdown, type CostInputDecision } from "./cost.js";
 import { assertKeyHash, rosterModelCount } from "./roster-store.js";
@@ -175,6 +176,8 @@ const ROSTER_LIST_LIMIT_DEFAULT = 100;
 const ROSTER_LIST_LIMIT_MAX = 1000;
 
 export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, FactStore {
+  private readonly taskLocks = new Map<string, Promise<void>>();
+
   private constructor(private readonly db: Client) {}
 
   /** `url` is `":memory:"` or `file:/path/to.db`. Runs migrations before returning. */
@@ -266,6 +269,68 @@ export class DecisionLog implements StickyStore, RosterStore, PreferenceStore, F
     const total = rs.rows[0]?.total;
     const n = typeof total === "number" ? total : Number(total ?? 0);
     return Number.isFinite(n) ? n : 0;
+  }
+
+  /** The durable verification scope for one caller and canonical task. */
+  async getTaskVerification(keyHash: string, taskId: string): Promise<TaskVerificationState | undefined> {
+    assertKeyHash(keyHash);
+    const rs = await this.db.execute({
+      sql: "SELECT state_json FROM task_verification WHERE key_hash = ? AND task_id = ?",
+      args: [keyHash, taskId],
+    });
+    const row = rs.rows[0];
+    return row === undefined ? undefined : JSON.parse(String(row.state_json)) as TaskVerificationState;
+  }
+
+  /**
+   * Serializes read-modify-write updates for a task in this process. The
+   * updater keeps attempt folding atomic from the gateway's point of view.
+   */
+  async updateTaskVerification(
+    keyHash: string,
+    taskId: string,
+    updater: (existing: TaskVerificationState | undefined) => TaskVerificationState,
+  ): Promise<TaskVerificationState> {
+    assertKeyHash(keyHash);
+    const lockKey = `${keyHash}:${taskId}`;
+    const previous = this.taskLocks.get(lockKey) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.taskLocks.set(lockKey, current);
+    await previous;
+    const transaction = await this.db.transaction("write");
+    try {
+      const rs = await transaction.execute({
+        sql: "SELECT state_json FROM task_verification WHERE key_hash = ? AND task_id = ?",
+        args: [keyHash, taskId],
+      });
+      const row = rs.rows[0];
+      const existing = row === undefined
+        ? undefined
+        : JSON.parse(String(row.state_json)) as TaskVerificationState;
+      const next = updater(existing);
+      if (next.task.id !== taskId) throw new Error("task verification: updater changed the task id");
+      checkNoSecrets("taskVerification", next);
+      await transaction.execute({
+        sql: `INSERT INTO task_verification
+                (key_hash, task_id, task_version, state_json, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(key_hash, task_id) DO UPDATE SET
+                task_version = excluded.task_version,
+                state_json = excluded.state_json,
+                updated_at = excluded.updated_at`,
+        args: [keyHash, taskId, next.task.version, JSON.stringify(next), next.createdAt, next.updatedAt],
+      });
+      await transaction.commit();
+      return next;
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    } finally {
+      transaction.close();
+      release();
+      if (this.taskLocks.get(lockKey) === current) this.taskLocks.delete(lockKey);
+    }
   }
 
   /** Newest first. `accountId` scopes the list to one account's decisions. */

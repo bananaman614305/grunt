@@ -249,12 +249,20 @@ const CANONICAL_TASK: TaskRecord = {
   ],
 };
 
-function canonicalJev(pairwise: "candidate_b" | "unknown"): JevClientLike & { calls: number; pairwiseCalls: number } {
+function canonicalJev(pairwise: "candidate_b" | "unknown"): JevClientLike & {
+  calls: number;
+  pairwiseCalls: number;
+  states: Array<Record<string, unknown>>;
+} {
   const stub = {
     calls: 0,
     pairwiseCalls: 0,
+    states: [] as Array<Record<string, unknown>>,
     systemone: (req: Parameters<JevClientLike["systemone"]>[0]): Promise<SystemOneResult> => {
       stub.calls += 1;
+      if (typeof req.state === "object" && req.state !== null && !Array.isArray(req.state)) {
+        stub.states.push(req.state as Record<string, unknown>);
+      }
       if ("winner" in req.questions) {
         stub.pairwiseCalls += 1;
         return Promise.resolve({
@@ -421,7 +429,7 @@ describe("sampled fan-out", () => {
     const res = await a.fetch(chatRequest({ milo: { task: CANONICAL_TASK } }));
     expect(res.status).toBe(200);
     expect(res.headers.get("x-milo-sample-pick")).toBe("1");
-    expect(jev.calls).toBe(5);
+    expect(jev.calls).toBe(4);
     expect(jev.pairwiseCalls).toBe(1);
     expect(openRouter.calls).toHaveLength(3);
     expect(openRouter.calls.every((call) => call.body["milo"] === undefined)).toBe(true);
@@ -429,6 +437,49 @@ describe("sampled fan-out", () => {
       selectionOutcome: "accept",
       criterionEvidence: [{ criterionId: "complete", verdict: "satisfied", source: "jev" }],
     });
+  });
+
+  it("resumes bounded task evidence and attempt deltas on a later turn", async () => {
+    openRouter.handler = (_body, index) => sse(completionBody(`candidate-${index}`));
+    const jev = canonicalJev("candidate_b");
+    const a = await app({ jev });
+    const evidence = [{
+      criterionId: "complete",
+      verdict: "satisfied",
+      confidence: 0.95,
+      summary: "The repository check passed.",
+      sourceRef: "check://repo/1",
+    }];
+    expect((await a.fetch(chatRequest({ milo: { task: CANONICAL_TASK, evidence } }))).status).toBe(200);
+    jev.states.length = 0;
+    expect((await a.fetch(chatRequest({ milo: { task: CANONICAL_TASK } }))).status).toBe(200);
+
+    expect(jev.states.some((state) =>
+      Array.isArray(state["criterionEvidence"])
+      && (state["criterionEvidence"] as unknown[]).length > 0
+      && Array.isArray(state["recentDeltas"])
+      && (state["recentDeltas"] as unknown[]).length > 0
+      && Array.isArray(state["provenance"])
+      && (state["provenance"] as unknown[]).length > 0)).toBe(true);
+    const priorDeltas = jev.states.flatMap((state) =>
+      Array.isArray(state["recentDeltas"]) ? state["recentDeltas"] as unknown[] : []);
+    expect(JSON.stringify(priorDeltas)).not.toContain("candidate-0");
+  });
+
+  it("rejects a same-version rubric mutation before drawing samples", async () => {
+    openRouter.handler = (_body, index) => sse(completionBody(`candidate-${index}`));
+    const jev = canonicalJev("candidate_b");
+    const a = await app({ jev });
+    expect((await a.fetch(chatRequest({ milo: { task: CANONICAL_TASK } }))).status).toBe(200);
+    const calls = openRouter.calls.length;
+    const changed = {
+      ...CANONICAL_TASK,
+      acceptanceCriteria: [{ ...CANONICAL_TASK.acceptanceCriteria[0]!, requirement: "A changed requirement." }],
+    };
+    const res = await a.fetch(chatRequest({ milo: { task: changed } }));
+    expect(res.status).toBe(409);
+    expect((await res.json()) as unknown).toMatchObject({ error: { code: "task_version_conflict" } });
+    expect(openRouter.calls).toHaveLength(calls);
   });
 
   it("falls back to the unsampled tier when pairwise selection abstains", async () => {

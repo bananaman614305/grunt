@@ -10,6 +10,8 @@ import type {
   DossierSource,
   JevDossier,
   OmittedDossierSource,
+  TaskObligation,
+  TaskProvenance,
   TaskCriterion,
   TaskRecord,
   TaskRubric,
@@ -328,6 +330,24 @@ export function compileJevDossier(record: TaskRecord, context: DossierContext): 
   const evidence = compactSources(context.evidence ?? [], "evidence", budget, criterionIds);
   const criterionEvidence = compactCriterionEvidence(context.criterionEvidence ?? [], budget, criterionIds);
   const recentDeltas = compactSources(context.recentDeltas ?? [], "delta", budget, criterionIds);
+  const obligations = compactSources<TaskObligation>(
+    context.obligations ?? [],
+    "obligation",
+    budget,
+    criterionIds,
+    (obligation) => ({
+      criterionId: obligation.criterionId,
+      verdict: obligation.verdict,
+      confidence: obligation.confidence,
+    }),
+  );
+  const provenance = compactSources<TaskProvenance>(
+    context.provenance ?? [],
+    "provenance",
+    budget,
+    criterionIds,
+    (entry) => ({ decisionId: entry.decisionId, taskVersion: entry.taskVersion }),
+  );
   const priorComparisons = compactSources<ComparisonSummary>(
     context.priorComparisons ?? [],
     "comparison",
@@ -357,6 +377,8 @@ export function compileJevDossier(record: TaskRecord, context: DossierContext): 
       recentDeltas,
       evidence,
       criterionEvidence,
+      unresolvedObligations: obligations,
+      provenance,
       candidates,
       priorComparisons,
       context: manifest,

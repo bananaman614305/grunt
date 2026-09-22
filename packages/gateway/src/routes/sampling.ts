@@ -72,17 +72,18 @@ import {
   messageText,
   prepareBody,
   rankAnswer,
+  recordTaskAttempt,
   resolveModel,
   selectPairwise,
   variantFor,
 } from "@milo/core";
 import type {
   ChatMessage,
-  CriterionEvidence,
   RankScore,
   RouteDecision,
   SampleUpstream,
-  TaskRecord,
+  TaskCandidateDelta,
+  TaskVerificationState,
   Tier,
 } from "@milo/core";
 import type { AppDeps } from "../app.js";
@@ -184,9 +185,8 @@ export const EXPOSED_HEADER = "x-milo-exposed";
 /** What the fan-out needs beyond the decision: the request's own knobs. */
 export type SamplingContext = {
   candidates?: string[] | undefined;
-  /** Canonical task intent and source-linked evidence for task-aware selection. */
-  task?: TaskRecord | undefined;
-  evidence?: CriterionEvidence[] | undefined;
+  /** Durable caller-and-task verification scope for task-aware selection. */
+  verification?: { keyHash: string; state: TaskVerificationState } | undefined;
   /** Version of the injected preference brief, for `x-milo-brief-version` (ADR-011). */
   briefVersion?: string | undefined;
   /**
@@ -418,6 +418,92 @@ function firstSuccess(successes: Sample[]): Sample {
   return [...successes].sort((a, b) => a.index - b.index)[0] as Sample;
 }
 
+function taskCandidateId(decisionId: string, index: number): string {
+  return `${decisionId}:sample-${index}`;
+}
+
+function taskCandidateDeltas(decisionId: string, samples: Sample[]): TaskCandidateDelta[] {
+  return samples.flatMap((sample) => {
+    if (sample.rank === undefined) return [];
+    const candidateId = taskCandidateId(decisionId, sample.index);
+    const findings = sample.rank.criterionEvidence ?? [];
+    const result = findings.map((finding) => `${finding.criterionId}=${finding.verdict}`).join(", ");
+    return [{
+      id: `${candidateId}:delta`,
+      decisionId,
+      candidateId,
+      outcome: sample.rank.outcome ?? "accept",
+      summary: `Candidate ${candidateId}: ${sample.rank.outcome ?? "accept"}${result === "" ? "" : `; ${result}`}.`,
+      sourceRef: `decision://${decisionId}/candidate/${sample.index}`,
+      criterionIds: findings.map((finding) => finding.criterionId),
+    }];
+  });
+}
+
+async function persistTaskAttempt(
+  c: Context,
+  deps: AppDeps,
+  decision: RouteDecision,
+  ctx: SamplingContext,
+  samples: Sample[],
+  selection: "selected" | "abstained" | "failed",
+  chosen?: Sample,
+): Promise<Response | undefined> {
+  const verification = ctx.verification;
+  if (verification === undefined) return undefined;
+  const unresolved = new Map<string, {
+    criterionId: string;
+    verdict: "satisfied" | "violated" | "unknown";
+    confidence: number;
+  }>();
+  if (selection !== "selected") {
+    for (const sample of samples) {
+      for (const finding of sample.rank?.criterionEvidence ?? []) {
+        if (finding.verdict === "satisfied" && finding.confidence >= 0.6) continue;
+        const previous = unresolved.get(finding.criterionId);
+        if (previous === undefined || finding.confidence > previous.confidence) {
+          unresolved.set(finding.criterionId, {
+            criterionId: finding.criterionId,
+            verdict: finding.verdict,
+            confidence: finding.confidence,
+          });
+        }
+      }
+    }
+  }
+  try {
+    await deps.log.updateTaskVerification(verification.keyHash, verification.state.task.id, (existing) =>
+      recordTaskAttempt(existing ?? verification.state, {
+        decisionId: decision.id,
+        candidateDeltas: taskCandidateDeltas(decision.id, samples),
+        selection,
+        ...(unresolved.size === 0 ? {} : { unresolvedCriteria: [...unresolved.values()] }),
+        ...(chosen === undefined ? {} : {
+          selectedCandidateId: taskCandidateId(decision.id, chosen.index),
+          selectedCriteria: (chosen.rank?.criterionEvidence ?? []).map((finding) => ({
+            criterionId: finding.criterionId,
+            verdict: finding.verdict,
+            confidence: finding.confidence,
+          })),
+        }),
+      }),
+    );
+    return undefined;
+  } catch (error) {
+    deps.logger.error("task verification state could not be saved", {
+      decisionId: decision.id,
+      error: classify(error),
+    });
+    return errorResponse(
+      c,
+      503,
+      "Milo could not safely persist task verification state.",
+      "api_error",
+      "task_verification_unavailable",
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // SSE accumulation
 // ---------------------------------------------------------------------------
@@ -548,7 +634,7 @@ export async function forwardSampled(
   // to the caller's forwarded key -- the same key the sampled completions run
   // on. Undefined under the TypeSafe transport (Milo's key ranks, as before).
   const jevKey = forwardedJevKey(c, deps);
-  const taskAware = ctx.task !== undefined;
+  const taskAware = ctx.verification !== undefined;
   const minRanked = Math.max(1, Math.min(deps.sampling?.minRanked ?? MIN_RANKED_DEFAULT, n));
 
   // Adaptive-N (ADR-024). Default OFF: with no `adaptive` block, or `enabled`
@@ -768,13 +854,16 @@ export async function forwardSampled(
             answerText(sample.message ?? {}),
             undefined,
             jevKey,
-            ctx.task === undefined
+            ctx.verification === undefined
               ? undefined
               : {
-                  record: ctx.task,
+                  record: ctx.verification.state.task,
                   decisionId: decision.id,
-                  candidateId: `sample-${sample.index}`,
-                  ...(ctx.evidence === undefined ? {} : { evidence: ctx.evidence }),
+                  candidateId: taskCandidateId(decision.id, sample.index),
+                  evidence: ctx.verification.state.evidence,
+                  recentDeltas: ctx.verification.state.candidateDeltas,
+                  obligations: ctx.verification.state.unresolvedObligations,
+                  provenance: ctx.verification.state.provenance,
                 },
           );
         } catch (error) {
@@ -883,7 +972,7 @@ export async function forwardSampled(
     const accepted = successes.filter((sample) => sample.rank?.outcome === "accept");
     const structurallyValid = accepted.filter((sample) => sample.broken !== true);
     const ranked = (structurallyValid.length > 0 ? structurallyValid : accepted).sort(bySampleRank);
-    if (ranked.length === 0 || deps.jev === undefined || ctx.task === undefined) {
+    if (ranked.length === 0 || deps.jev === undefined || ctx.verification === undefined) {
       return fallbackUnsampled(
         c,
         deps,
@@ -905,19 +994,22 @@ export async function forwardSampled(
         selected = await selectPairwise(
           deps.jev,
           {
-            record: ctx.task,
+            record: ctx.verification.state.task,
             decisionId: decision.id,
-            ...(ctx.evidence === undefined ? {} : { evidence: ctx.evidence }),
+            evidence: ctx.verification.state.evidence,
+            recentDeltas: ctx.verification.state.candidateDeltas,
+            obligations: ctx.verification.state.unresolvedObligations,
+            provenance: ctx.verification.state.provenance,
           },
           {
             index: first.index,
-            candidateId: `sample-${first.index}`,
+            candidateId: taskCandidateId(decision.id, first.index),
             answer: answerText(first.message ?? {}),
             rank: first.rank as RankScore,
           },
           {
             index: second.index,
-            candidateId: `sample-${second.index}`,
+            candidateId: taskCandidateId(decision.id, second.index),
             answer: answerText(second.message ?? {}),
             rank: second.rank as RankScore,
           },
@@ -949,6 +1041,8 @@ export async function forwardSampled(
       note = attempted.length > 0 ? "ranking_abstained" : "ranking_failed";
     }
   }
+  const persistenceFailure = await persistTaskAttempt(c, deps, decision, ctx, samples, "selected", chosen);
+  if (persistenceFailure !== undefined) return persistenceFailure;
   if (note === "ranking_failed") {
     deps.logger.warn("jev ranking unavailable; returning the first successful sample", {
       decisionId: decision.id,
@@ -970,7 +1064,10 @@ export async function forwardSampled(
   let gateHeaders: Record<string, string> = {};
   let gateRecord: Upstream["gate"] | undefined;
   let gateUsage: UpstreamUsage | undefined;
-  if (ctx.gate !== undefined && chosen.json !== undefined && chosen.message !== undefined) {
+  // The canonical selector already verifies every task criterion. Its chosen
+  // answer must not be replaced by the generic completeness gate with a retry
+  // that never passed the canonical rubric.
+  if (!taskAware && ctx.gate !== undefined && chosen.json !== undefined && chosen.message !== undefined) {
     // The other finished samples, ranked best-first, so the gate can reuse a
     // complete one instead of spending a fresh retry (ADR-027 change 3). Only
     // fully-parsed candidates (json + message present) can be served as-is.
@@ -1212,6 +1309,15 @@ async function fallbackUnsampled(
   startedAt: number,
   sampleNote: NonNullable<Upstream["sampleNote"]> = "all_samples_failed",
 ): Promise<Response> {
+  const persistenceFailure = await persistTaskAttempt(
+    c,
+    deps,
+    decision,
+    ctx,
+    samples,
+    sampleNote === "ranking_abstained" ? "abstained" : "failed",
+  );
+  if (persistenceFailure !== undefined) return persistenceFailure;
   const tier: Tier = decision.unsampledTier ?? decision.tier;
   let model: string;
   if (decision.unsampledModel !== undefined) {

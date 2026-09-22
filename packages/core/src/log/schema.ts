@@ -290,6 +290,27 @@ ALTER TABLE facts ADD COLUMN embedding TEXT;
       );
     },
   },
+  {
+    version: 11,
+    description: "add durable task verification state",
+    // Canonical task verification is scoped by caller and task id, not by
+    // one request. The JSON value is a bounded dossier state: canonical task,
+    // criterion evidence, candidate deltas, unresolved obligations and
+    // provenance. It never contains prompts, transcripts or candidate text.
+    sql: `
+CREATE TABLE IF NOT EXISTS task_verification (
+  key_hash TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (key_hash, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_verification_updated_at
+  ON task_verification (key_hash, updated_at);
+`,
+  },
 ];
 
 /**

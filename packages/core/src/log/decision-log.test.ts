@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { StickyEntry } from "../router/sticky-store.js";
 import type { DecisionRecord, RouteDecision } from "../types.js";
+import { beginTaskVerification } from "../tasks/state.js";
 import { DecisionLog } from "./decision-log.js";
 import { applyMigrations, MIGRATIONS } from "./schema.js";
 
@@ -68,6 +69,27 @@ describe("DecisionLog", () => {
 
   it("getDecision returns undefined for a missing id", async () => {
     expect(await log.getDecision("does-not-exist")).toBeUndefined();
+  });
+
+  it("keeps task verification isolated by caller and task id", async () => {
+    const keyA = createHash("sha256").update("caller-a").digest("hex");
+    const keyB = createHash("sha256").update("caller-b").digest("hex");
+    const task = {
+      id: "task-a",
+      version: 1,
+      objective: "Verify the result.",
+      status: "active" as const,
+      acceptanceCriteria: [{
+        id: "done",
+        requirement: "The result is complete.",
+        evaluation: { type: "binary" as const, pass: "The result is complete." },
+      }],
+    };
+    await log.updateTaskVerification(keyA, task.id, (existing) =>
+      beginTaskVerification(existing, task, [], "decision-1"));
+    expect((await log.getTaskVerification(keyA, task.id))?.task.id).toBe(task.id);
+    expect(await log.getTaskVerification(keyB, task.id)).toBeUndefined();
+    expect(await log.getTaskVerification(keyA, "task-b")).toBeUndefined();
   });
 
   it("round-trips the modality of a multimodal route, and reads a text row as undefined", async () => {
@@ -477,6 +499,34 @@ describe("DecisionLog migrations", () => {
       const second = await DecisionLog.open(url);
       expect((await second.getDecision("persisted"))?.id).toBe("persisted");
       expect((await second.get("fp-persisted"))?.decision.id).toBe("persisted");
+      await second.close();
+    });
+  });
+
+  it("persists canonical task verification across process opens", async () => {
+    await withFile(async (url) => {
+      const keyHash = createHash("sha256").update("task-caller").digest("hex");
+      const task = {
+        id: "durable-task",
+        version: 1,
+        objective: "Keep verification state.",
+        status: "active" as const,
+        acceptanceCriteria: [{
+          id: "verified",
+          requirement: "The result is verified.",
+          evaluation: { type: "binary" as const, pass: "A verifier passed." },
+        }],
+      };
+      const first = await DecisionLog.open(url);
+      await first.updateTaskVerification(keyHash, task.id, (existing) =>
+        beginTaskVerification(existing, task, [], "decision-1"));
+      await first.close();
+
+      const second = await DecisionLog.open(url);
+      expect(await second.getTaskVerification(keyHash, task.id)).toMatchObject({
+        task: { id: task.id, version: 1 },
+        provenance: [{ decisionId: "decision-1" }],
+      });
       await second.close();
     });
   });

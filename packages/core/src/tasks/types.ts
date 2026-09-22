@@ -59,6 +59,50 @@ export type CriterionEvidence = {
   candidateId?: string;
 };
 
+export type TaskCandidateDelta = DossierSource & {
+  decisionId: string;
+  candidateId: string;
+  outcome: "accept" | "reject" | "abstain";
+};
+
+export type TaskObligation = DossierSource & {
+  criterionId: string;
+  verdict: CriterionVerdict;
+  confidence: number;
+};
+
+export type TaskProvenance = DossierSource & {
+  decisionId: string;
+  taskVersion: number;
+};
+
+export type TaskCriterionOutcome = {
+  criterionId: string;
+  verdict: CriterionVerdict;
+  confidence: number;
+};
+
+export type TaskAttemptRecord = {
+  decisionId: string;
+  candidateDeltas: TaskCandidateDelta[];
+  unresolvedCriteria?: TaskCriterionOutcome[];
+  selectedCandidateId?: string;
+  selectedCriteria?: TaskCriterionOutcome[];
+  selection: "selected" | "abstained" | "failed";
+};
+
+/** Durable verification scope for one caller and canonical task id. */
+export type TaskVerificationState = {
+  task: TaskRecord;
+  rubricVersion: string;
+  evidence: CriterionEvidence[];
+  candidateDeltas: TaskCandidateDelta[];
+  unresolvedObligations: TaskObligation[];
+  provenance: TaskProvenance[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 /**
  * Canonical long-range record for one task. Dossiers and rubrics are derived
  * from this record; neither is an independent source of task truth.
@@ -116,6 +160,8 @@ export type DossierContext = {
   recentDeltas?: DossierSource[];
   evidence?: DossierSource[];
   criterionEvidence?: CriterionEvidence[];
+  obligations?: TaskObligation[];
+  provenance?: TaskProvenance[];
   candidates?: CandidateSummary[];
   priorComparisons?: ComparisonSummary[];
   /** Budget for human-authored text included in the Jev state. */
@@ -123,7 +169,7 @@ export type DossierContext = {
 };
 
 export type OmittedDossierSource = {
-  kind: "task" | "delta" | "evidence" | "candidate" | "comparison";
+  kind: "task" | "delta" | "evidence" | "candidate" | "comparison" | "obligation" | "provenance";
   id: string;
   sourceRef?: string;
   reason: "context_budget" | "irrelevant_criterion";

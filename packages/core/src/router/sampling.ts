@@ -14,7 +14,14 @@
 
 import type { JevAnswer, JevClientLike, JevQuestion } from "../jev/types.js";
 import { compileTaskArtifacts } from "../tasks/compile.js";
-import type { CriterionEvidence, CriterionVerdict, TaskRecord } from "../tasks/types.js";
+import type {
+  CriterionEvidence,
+  CriterionVerdict,
+  DossierSource,
+  TaskObligation,
+  TaskProvenance,
+  TaskRecord,
+} from "../tasks/types.js";
 import type { ChatMessage } from "../types.js";
 import { messageText } from "./context.js";
 
@@ -183,6 +190,9 @@ export type TaskRankingContext = {
   decisionId: string;
   candidateId: string;
   evidence?: CriterionEvidence[];
+  recentDeltas?: DossierSource[];
+  obligations?: TaskObligation[];
+  provenance?: TaskProvenance[];
 };
 
 /** Total budget for one ranking call, ms. */
@@ -342,7 +352,10 @@ async function rankTaskAnswer(
   const candidateRef = `candidate://${context.candidateId}`;
   const artifacts = compileTaskArtifacts(context.record, {
     decisionId: context.decisionId,
+    ...(context.recentDeltas === undefined ? {} : { recentDeltas: context.recentDeltas }),
     ...(relevantEvidence === undefined ? {} : { criterionEvidence: relevantEvidence }),
+    ...(context.obligations === undefined ? {} : { obligations: context.obligations }),
+    ...(context.provenance === undefined ? {} : { provenance: context.provenance }),
     candidates: [{
       id: context.candidateId,
       candidateId: context.candidateId,
@@ -414,7 +427,10 @@ export async function selectPairwise(
   const candidateRefs = [a, b].map((candidate) => `candidate://${candidate.candidateId}`);
   const artifacts = compileTaskArtifacts(context.record, {
     decisionId: context.decisionId,
+    ...(context.recentDeltas === undefined ? {} : { recentDeltas: context.recentDeltas }),
     ...(context.evidence === undefined ? {} : { criterionEvidence: context.evidence }),
+    ...(context.obligations === undefined ? {} : { obligations: context.obligations }),
+    ...(context.provenance === undefined ? {} : { provenance: context.provenance }),
     candidates: [a, b].map((candidate) => ({
       id: candidate.candidateId,
       candidateId: candidate.candidateId,
