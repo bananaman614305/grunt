@@ -43,6 +43,11 @@
  *      successful sample, and the decision record says `ranking_failed`;
  *   3. otherwise -> Jev's pick over every ranked sample.
  *
+ * A request carrying a canonical `milo.task` takes the stricter branch: all
+ * candidates are evaluated against its criteria, the two strongest viable
+ * candidates get a direct Jev comparison, and any non-decision falls back to
+ * the ordinary unsampled tier instead of serving an arbitrary sample.
+ *
  * The client sees exactly one well-formed chat completion either way: a
  * buffered request gets the chosen answer reassembled as one JSON body, a
  * streaming request gets it replayed as well-formed SSE (one content chunk,
@@ -68,9 +73,18 @@ import {
   prepareBody,
   rankAnswer,
   resolveModel,
+  selectPairwise,
   variantFor,
 } from "@milo/core";
-import type { ChatMessage, RankScore, RouteDecision, SampleUpstream, Tier } from "@milo/core";
+import type {
+  ChatMessage,
+  CriterionEvidence,
+  RankScore,
+  RouteDecision,
+  SampleUpstream,
+  TaskRecord,
+  Tier,
+} from "@milo/core";
 import type { AppDeps } from "../app.js";
 import { passThroughHeaders } from "../app.js";
 import { chargeBuffered, chargeStream, forwardedJevKey, upstreamHeadersFor } from "../billing.js";
@@ -88,9 +102,9 @@ import {
   stripChatReasoningSse,
   wantsVisibleReasoning,
 } from "./chat-reasoning.js";
-import { applyJevTransportHeader, applyMiloHeaders, onFinished, resolveRoster, retargetProviderStrategy } from "./shared.js";
+import { applyJevTransportHeader, applyMiloHeaders, resolveRoster, retargetProviderStrategy } from "./shared.js";
 import type { Body, Upstream } from "./shared.js";
-import { addUsage, readBodyUsage } from "./usage.js";
+import { addUsage, readBodyUsage, toUpstreamRecord, usageFromStream } from "./usage.js";
 import type { UpstreamUsage } from "./usage.js";
 
 /** Per-sample wall-clock cap when the deployment configures none. */
@@ -170,6 +184,9 @@ export const EXPOSED_HEADER = "x-milo-exposed";
 /** What the fan-out needs beyond the decision: the request's own knobs. */
 export type SamplingContext = {
   candidates?: string[] | undefined;
+  /** Canonical task intent and source-linked evidence for task-aware selection. */
+  task?: TaskRecord | undefined;
+  evidence?: CriterionEvidence[] | undefined;
   /** Version of the injected preference brief, for `x-milo-brief-version` (ADR-011). */
   briefVersion?: string | undefined;
   /**
@@ -300,6 +317,18 @@ function toSampleUpstream(sample: Sample, picked: boolean): SampleRow {
     ...(sample.usage.outputTokens !== undefined ? { outputTokens: sample.usage.outputTokens } : {}),
     ...(sample.usage.costUsd !== undefined ? { costUsd: sample.usage.costUsd } : {}),
     ...(sample.rank !== undefined ? { jevQuality: sample.rank.quality, jevCorrect: sample.rank.correct } : {}),
+    ...(sample.rank?.outcome === undefined ? {} : { selectionOutcome: sample.rank.outcome }),
+    ...(sample.rank?.criterionEvidence === undefined
+      ? {}
+      : {
+          criterionEvidence: sample.rank.criterionEvidence.map((finding) => ({
+            criterionId: finding.criterionId,
+            verdict: finding.verdict,
+            confidence: finding.confidence,
+            source: finding.source,
+            ...(finding.sourceRef === undefined ? {} : { sourceRef: finding.sourceRef }),
+          })),
+        }),
     ...(sample.broken === true ? { broken: true } : {}),
     ...(sample.flaws !== undefined && sample.flaws.length > 0 ? { flaws: sample.flaws } : {}),
     ...(sample.aborted === true ? { aborted: true } : {}),
@@ -519,6 +548,7 @@ export async function forwardSampled(
   // to the caller's forwarded key -- the same key the sampled completions run
   // on. Undefined under the TypeSafe transport (Milo's key ranks, as before).
   const jevKey = forwardedJevKey(c, deps);
+  const taskAware = ctx.task !== undefined;
   const minRanked = Math.max(1, Math.min(deps.sampling?.minRanked ?? MIN_RANKED_DEFAULT, n));
 
   // Adaptive-N (ADR-024). Default OFF: with no `adaptive` block, or `enabled`
@@ -732,7 +762,21 @@ export async function forwardSampled(
       }
       if (isSuccess(sample) && deps.jev !== undefined && !decided) {
         try {
-          sample.rank = await rankAnswer(deps.jev, messages, answerText(sample.message ?? {}), undefined, jevKey);
+          sample.rank = await rankAnswer(
+            deps.jev,
+            messages,
+            answerText(sample.message ?? {}),
+            undefined,
+            jevKey,
+            ctx.task === undefined
+              ? undefined
+              : {
+                  record: ctx.task,
+                  decisionId: decision.id,
+                  candidateId: `sample-${sample.index}`,
+                  ...(ctx.evidence === undefined ? {} : { evidence: ctx.evidence }),
+                },
+          );
         } catch (error) {
           sample.rankError = `rank_${classify(error)}`;
           deps.logger.warn("jev sample ranking failed", {
@@ -757,14 +801,14 @@ export async function forwardSampled(
     const attempted = successes.filter((sample) => sample.rank !== undefined);
     const ranked = successes.filter((sample) => sample.rank !== undefined
       && (sample.rank.outcome === undefined || sample.rank.outcome === "accept"));
-    if (ranked.length >= minRanked) {
+    if (!taskAware && ranked.length >= minRanked) {
       const best = bestRanked(ranked);
       if ((best.rank as RankScore).quality >= EARLY_WIN_QUALITY) {
         decide({ pick: best });
         return;
       }
     }
-    if (ranked.length === 0 && attempted.length === 0 && successes.length >= minRanked) {
+    if (!taskAware && ranked.length === 0 && attempted.length === 0 && successes.length >= minRanked) {
       // Ranking is degraded: more samples cannot change a pick Jev will
       // never score, so the first success wins now.
       decide({ pick: firstSuccess(successes), note: "ranking_failed" });
@@ -785,7 +829,7 @@ export async function forwardSampled(
     const attempted = successes.filter((sample) => sample.rank !== undefined);
     const ranked = successes.filter((sample) => sample.rank !== undefined
       && (sample.rank.outcome === undefined || sample.rank.outcome === "accept"));
-    if (ranked.length >= minRanked) {
+    if (!taskAware && ranked.length >= minRanked) {
       const ordered = [...ranked].sort(bySampleRank);
       const best = ordered[0] as Sample;
       const bestQuality = (best.rank as RankScore).quality;
@@ -796,7 +840,7 @@ export async function forwardSampled(
         return;
       }
     }
-    if (ranked.length === 0 && attempted.length === 0 && successes.length >= minRanked) {
+    if (!taskAware && ranked.length === 0 && attempted.length === 0 && successes.length >= minRanked) {
       decide({ pick: firstSuccess(successes), note: "ranking_failed" });
       return;
     }
@@ -834,7 +878,65 @@ export async function forwardSampled(
 
   let chosen: Sample;
   let note = outcome.note;
-  if (outcome.pick !== undefined) {
+  if (taskAware) {
+    const attempted = successes.filter((sample) => sample.rank !== undefined);
+    const accepted = successes.filter((sample) => sample.rank?.outcome === "accept");
+    const structurallyValid = accepted.filter((sample) => sample.broken !== true);
+    const ranked = (structurallyValid.length > 0 ? structurallyValid : accepted).sort(bySampleRank);
+    if (ranked.length === 0 || deps.jev === undefined || ctx.task === undefined) {
+      return fallbackUnsampled(
+        c,
+        deps,
+        body,
+        decision,
+        ctx,
+        samples,
+        startedAt,
+        attempted.length > 0 ? "ranking_abstained" : "ranking_failed",
+      );
+    }
+    if (ranked.length === 1) {
+      chosen = ranked[0] as Sample;
+    } else {
+      const first = ranked[0] as Sample;
+      const second = ranked[1] as Sample;
+      let selected: number | undefined;
+      try {
+        selected = await selectPairwise(
+          deps.jev,
+          {
+            record: ctx.task,
+            decisionId: decision.id,
+            ...(ctx.evidence === undefined ? {} : { evidence: ctx.evidence }),
+          },
+          {
+            index: first.index,
+            candidateId: `sample-${first.index}`,
+            answer: answerText(first.message ?? {}),
+            rank: first.rank as RankScore,
+          },
+          {
+            index: second.index,
+            candidateId: `sample-${second.index}`,
+            answer: answerText(second.message ?? {}),
+            rank: second.rank as RankScore,
+          },
+          undefined,
+          jevKey,
+        );
+      } catch (error) {
+        deps.logger.warn("jev pairwise selection failed", {
+          decisionId: decision.id,
+          error: `pairwise_${classify(error)}`,
+        });
+        return fallbackUnsampled(c, deps, body, decision, ctx, samples, startedAt, "ranking_failed");
+      }
+      if (selected === undefined) {
+        return fallbackUnsampled(c, deps, body, decision, ctx, samples, startedAt, "ranking_abstained");
+      }
+      chosen = selected === first.index ? first : second;
+    }
+  } else if (outcome.pick !== undefined) {
     chosen = outcome.pick;
   } else {
     const attempted = successes.filter((sample) => sample.rank !== undefined);
@@ -1081,14 +1183,14 @@ export function replayChoicesAsSse(
 }
 
 // ---------------------------------------------------------------------------
-// All-samples-failed fallback
+// Unsampled safety fallback
 // ---------------------------------------------------------------------------
 
 /**
- * Every sample failed, so the request gets what the policy would have bought
- * without sampling: one ordinary call on `unsampledTier`, streamed or
- * buffered exactly as asked. The decision record keeps the failed samples'
- * metadata and says `all_samples_failed`.
+ * Sampling produced no safe winner, so the request gets what the policy would
+ * have bought without sampling: one ordinary call on `unsampledTier`, streamed
+ * or buffered exactly as asked. The decision record keeps every sample's
+ * metadata and names the failure or abstention reason.
  *
  * The body still carries the posture-aware provider strategy `routed()`
  * applied -- but that strategy's price ceiling was computed for the SAMPLED
@@ -1108,6 +1210,7 @@ async function fallbackUnsampled(
   ctx: SamplingContext,
   samples: Sample[],
   startedAt: number,
+  sampleNote: NonNullable<Upstream["sampleNote"]> = "all_samples_failed",
 ): Promise<Response> {
   const tier: Tier = decision.unsampledTier ?? decision.tier;
   let model: string;
@@ -1127,13 +1230,15 @@ async function fallbackUnsampled(
       model = decision.model;
     }
   }
-  deps.logger.warn("every sample failed; falling back to one unsampled call", {
+  deps.logger.warn("sample selection did not produce a safe winner; falling back to one unsampled call", {
     decisionId: decision.id,
     tier,
     model,
+    sampleNote,
   });
 
   const sampleMeta = samples.map((s) => toSampleUpstream(s, false));
+  const sampledUsage = aggregateUsage(samples, undefined);
   const forwarded = prepareBody(retargetProviderStrategy(body, decision.model, model), model);
 
   let upstream: Response;
@@ -1143,8 +1248,9 @@ async function fallbackUnsampled(
     deps.recordUpstream(decision.id, {
       status: 502,
       latencyMs: deps.now() - startedAt,
+      ...toUpstreamRecord(sampledUsage),
       samples: sampleMeta,
-      sampleNote: "all_samples_failed",
+      sampleNote,
       ...pruneRecord(ctx.prune),
     });
     deps.logger.error("openrouter chat completions failed", { decisionId: decision.id, error: errorMessage(err) });
@@ -1167,24 +1273,29 @@ async function fallbackUnsampled(
   const scrub = !wantsVisibleReasoning(body);
 
   if (isStreaming(body) && upstream.ok && upstream.body !== null) {
-    let recorded: ReadableStream<Uint8Array> = upstream.body.pipeThrough(
-      onFinished(() => {
-        deps.recordUpstream(decision.id, {
-          status: upstream.status,
-          latencyMs: deps.now() - startedAt,
-          samples: sampleMeta,
-          sampleNote: "all_samples_failed",
-          ...pruneRecord(ctx.prune),
-        });
-      }),
-    );
-    if (scrub) recorded = recorded.pipeThrough(stripChatReasoningSse());
-    return new Response(chargeStream(c, deps, headers, chargeCtx, recorded), { status: upstream.status, headers });
+    const [client, audit] = upstream.body.tee();
+    const work = usageFromStream("chat", audit).then((fallbackUsage) => {
+      const usage = addUsage(sampledUsage, fallbackUsage);
+      deps.recordUpstream(decision.id, {
+        status: upstream.status,
+        latencyMs: deps.now() - startedAt,
+        ...toUpstreamRecord(usage),
+        samples: sampleMeta,
+        sampleNote,
+        ...pruneRecord(ctx.prune),
+      });
+    }).catch((error: unknown) => {
+      deps.logger.error("could not read sampled fallback usage", { decisionId: decision.id, error: errorMessage(error) });
+    });
+    deps.track?.(work);
+    let served = client;
+    if (scrub) served = served.pipeThrough(stripChatReasoningSse());
+    return new Response(chargeStream(c, deps, headers, chargeCtx, served, sampledUsage), { status: upstream.status, headers });
   }
 
   let text = await upstream.text();
   if (scrub && upstream.ok) text = stripChatReasoningBody(text);
-  const usage = upstream.ok ? readBodyUsage("chat", text) : {};
+  const usage = addUsage(sampledUsage, upstream.ok ? readBodyUsage("chat", text) : {});
   const record: Upstream = {
     status: upstream.status,
     latencyMs: deps.now() - startedAt,
@@ -1192,7 +1303,7 @@ async function fallbackUnsampled(
     ...(usage.outputTokens !== undefined ? { outputTokens: usage.outputTokens } : {}),
     ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
     samples: sampleMeta,
-    sampleNote: "all_samples_failed",
+    sampleNote,
     ...pruneRecord(ctx.prune),
   };
   deps.recordUpstream(decision.id, record);

@@ -25,6 +25,7 @@ import type {
   RouteDecision,
   Router,
   SystemOneResult,
+  TaskRecord,
 } from "@milo/core";
 import { LARGE_PROMPT_CHARS, promptChars, sampleTimeoutFor, SAMPLE_TIMEOUT_MS_DEFAULT } from "./sampling.js";
 import { MAX_PRICE_MULTIPLIER } from "./shared.js";
@@ -233,6 +234,56 @@ function abstainingJev(): JevClientLike {
   };
 }
 
+const CANONICAL_TASK: TaskRecord = {
+  id: "task-production-selection",
+  version: 1,
+  objective: "Return the candidate that completely applies the requested diff.",
+  status: "active",
+  acceptanceCriteria: [
+    {
+      id: "complete",
+      requirement: "The requested diff is completely applied.",
+      decision: "required",
+      evaluation: { type: "binary", pass: "The answer completely applies the requested diff." },
+    },
+  ],
+};
+
+function canonicalJev(pairwise: "candidate_b" | "unknown"): JevClientLike & { calls: number; pairwiseCalls: number } {
+  const stub = {
+    calls: 0,
+    pairwiseCalls: 0,
+    systemone: (req: Parameters<JevClientLike["systemone"]>[0]): Promise<SystemOneResult> => {
+      stub.calls += 1;
+      if ("winner" in req.questions) {
+        stub.pairwiseCalls += 1;
+        return Promise.resolve({
+          model: "jev-latest",
+          answers: {
+            winner: {
+              type: "choice",
+              choice: pairwise,
+              confidence: 0.9,
+              probabilities: { candidate_a: 0.05, candidate_b: pairwise === "candidate_b" ? 0.9 : 0.03, equivalent: 0.02, unknown: pairwise === "unknown" ? 0.9 : 0.03 },
+            },
+          },
+          usage: { input_tokens: 20, output_tokens: 2 },
+          requestId: "req-pairwise",
+          latencyMs: 9,
+        });
+      }
+      return Promise.resolve({
+        model: "jev-latest",
+        answers: { complete: { type: "noul", noul: 0.9 } },
+        usage: { input_tokens: 20, output_tokens: 2 },
+        requestId: "req-criterion",
+        latencyMs: 6,
+      });
+    },
+  };
+  return stub;
+}
+
 /**
  * `rankingJev` plus the completeness gate's own question, so a test can drive
  * the ADR-013 gate over a sampled pick.
@@ -353,6 +404,47 @@ function chatRequest(extra: Record<string, unknown> = {}): Request {
 // ---------------------------------------------------------------------------
 
 describe("sampled fan-out", () => {
+  it("rejects a malformed canonical task instead of silently using the legacy selector", async () => {
+    const jev = canonicalJev("candidate_b");
+    const a = await app({ jev });
+    const res = await a.fetch(chatRequest({ milo: { task: { id: "broken" } } }));
+    expect(res.status).toBe(400);
+    expect((await res.json()) as unknown).toMatchObject({ error: { code: "invalid_task_record" } });
+    expect(jev.calls).toBe(0);
+    expect(openRouter.calls).toHaveLength(0);
+  });
+
+  it("uses the canonical rubric and a direct Jev comparison in the production path", async () => {
+    openRouter.handler = (_body, index) => sse(completionBody(`candidate-${index}`));
+    const jev = canonicalJev("candidate_b");
+    const a = await app({ jev });
+    const res = await a.fetch(chatRequest({ milo: { task: CANONICAL_TASK } }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-sample-pick")).toBe("1");
+    expect(jev.calls).toBe(5);
+    expect(jev.pairwiseCalls).toBe(1);
+    expect(openRouter.calls).toHaveLength(3);
+    expect(openRouter.calls.every((call) => call.body["milo"] === undefined)).toBe(true);
+    expect(recorded[0]?.upstream.samples?.[1]).toMatchObject({
+      selectionOutcome: "accept",
+      criterionEvidence: [{ criterionId: "complete", verdict: "satisfied", source: "jev" }],
+    });
+  });
+
+  it("falls back to the unsampled tier when pairwise selection abstains", async () => {
+    openRouter.handler = (body, index) => body["model"] === "test/mid"
+      ? ok({ ...completionBody("safe fallback"), model: "test/mid" })
+      : sse(completionBody(`candidate-${index}`));
+    const a = await app({ jev: canonicalJev("unknown") });
+    const res = await a.fetch(chatRequest({ milo: { task: CANONICAL_TASK } }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-milo-model")).toBe("test/mid");
+    expect(res.headers.get("x-milo-sample-pick")).toBeNull();
+    expect(openRouter.calls).toHaveLength(4);
+    expect(recorded[0]?.upstream.sampleNote).toBe("ranking_abstained");
+    expect(recorded[0]?.upstream).toMatchObject({ inputTokens: 400, outputTokens: 40, costUsd: 0.0004 });
+  });
+
   it("records closed-selector abstention and waits for all samples", async () => {
     openRouter.handler = (_body, index) => sse(completionBody(`answer-${index}`));
     const a = await app({ jev: abstainingJev() });

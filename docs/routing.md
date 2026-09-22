@@ -259,6 +259,16 @@ count). A deployment turns the whole thing off with
 are fixed in `policy.ts` for now and are tuned by the benchmark like every
 other policy change.
 
+When a chat request supplies a canonical `milo.task`, the fan-out derives its
+rubric and bounded Jev dossier from that record instead of reconstructing task
+intent from chat text. Source-linked `milo.evidence` answers deterministic
+criteria before Jev runs. Confident vetoes and required violations reject a
+candidate; unknown required evidence abstains; preferences only rank candidates
+that remain viable. Jev directly compares the two strongest viable candidates.
+An unknown, tied, or low-confidence comparison safely abstains to the ordinary
+`unsampledTier` call. This canonical path waits for the candidate set; the
+legacy path keeps the benchmarked first-k early return.
+
 Sticky reuse keeps a sampled outcome pinned like any other decision, and a
 `samples: 1` override on a later turn converts the pinned decision back to
 its unsampled tier for that request.

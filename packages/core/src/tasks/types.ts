@@ -34,10 +34,29 @@ export type ChoiceEvaluation = {
 
 export type CriterionEvaluation = DeterministicEvaluation | BinaryEvaluation | ChoiceEvaluation;
 
+export const CRITERION_DECISIONS = ["veto", "required", "preference"] as const;
+export type CriterionDecision = (typeof CRITERION_DECISIONS)[number];
+
+export const CRITERION_VERDICTS = ["satisfied", "violated", "unknown"] as const;
+export type CriterionVerdict = (typeof CRITERION_VERDICTS)[number];
+
 export type TaskCriterion = {
   id: string;
   requirement: string;
   evaluation: CriterionEvaluation;
+  /** Vetoes dominate requirements; preferences only break otherwise-safe ties. */
+  decision?: CriterionDecision;
+};
+
+/** Source-linked evidence supplied by a harness or deterministic verifier. */
+export type CriterionEvidence = {
+  criterionId: string;
+  verdict: CriterionVerdict;
+  confidence: number;
+  summary: string;
+  sourceRef: string;
+  /** Omit for task-wide evidence; set to bind evidence to one generated candidate. */
+  candidateId?: string;
 };
 
 /**
@@ -63,6 +82,7 @@ export type CompiledCriterion = {
   id: string;
   requirement: string;
   evaluation: CriterionEvaluation;
+  decision: CriterionDecision;
   /** Jev question key; absent when a deterministic oracle is authoritative. */
   questionKey?: string;
 };
@@ -95,6 +115,7 @@ export type DossierContext = {
   decisionId: string;
   recentDeltas?: DossierSource[];
   evidence?: DossierSource[];
+  criterionEvidence?: CriterionEvidence[];
   candidates?: CandidateSummary[];
   priorComparisons?: ComparisonSummary[];
   /** Budget for human-authored text included in the Jev state. */

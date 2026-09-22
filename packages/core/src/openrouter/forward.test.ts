@@ -58,6 +58,41 @@ describe("extractMilo", () => {
     expect(extension).toEqual({ posture: "quality" });
   });
 
+  it("extracts a valid canonical task and source-linked criterion evidence", () => {
+    const task = {
+      id: "task-1",
+      version: 1,
+      objective: "Finish safely.",
+      status: "active",
+      acceptanceCriteria: [{
+        id: "safe",
+        requirement: "Preserve the boundary.",
+        decision: "veto",
+        evaluation: { type: "binary", pass: "The boundary is preserved." },
+      }],
+    };
+    const evidence = [{
+      criterionId: "safe",
+      verdict: "satisfied",
+      confidence: 0.95,
+      summary: "The verifier found no boundary crossing.",
+      sourceRef: "veritaserum://safe/1",
+    }];
+    expect(extractMilo({ model: "milo/auto", milo: { task, evidence } }).extension).toEqual({ task, evidence });
+  });
+
+  it("does not partially apply malformed canonical selection input", () => {
+    const parsed = extractMilo({
+      model: "milo/auto",
+      milo: {
+        task: { id: "task-1", version: 1, objective: "Missing criteria.", status: "active" },
+        evidence: [{ criterionId: "x", verdict: "satisfied", confidence: 2 }],
+      },
+    });
+    expect(parsed.extension).toEqual({});
+    expect(parsed.invalidTask).toBe(true);
+  });
+
   it("drops garbage fields without throwing, keeping unknown fields out", () => {
     expect(() =>
       extractMilo({

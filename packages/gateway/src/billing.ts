@@ -49,7 +49,7 @@ import type { AppDeps } from "./app.js";
 import { credential, isAnthropicPath, keyHash, upstreamAuthorization } from "./app.js";
 import { anthropicErrorResponse, errorMessage, errorResponse } from "./errors.js";
 import { hashKey } from "./rate-limit.js";
-import { usageFromStream } from "./routes/usage.js";
+import { addUsage, usageFromStream } from "./routes/usage.js";
 import type { Surface, UpstreamUsage } from "./routes/usage.js";
 
 /**
@@ -413,6 +413,7 @@ export function chargeStream(
   headers: Headers,
   ctx: ChargeContext,
   stream: ReadableStream<Uint8Array>,
+  baseUsage?: UpstreamUsage,
 ): ReadableStream<Uint8Array> {
   const auth = authOf(c);
   if (auth.kind !== "milo" || deps.billing === undefined) return stream;
@@ -422,7 +423,7 @@ export function chargeStream(
 
   const [passthrough, meter] = stream.tee();
   const work = (async () => {
-    const usage = await usageFromStream(ctx.surface, meter);
+    const usage = addUsage(baseUsage ?? {}, await usageFromStream(ctx.surface, meter));
     await settle(deps, auth, ctx, usage);
   })().catch((err: unknown) => {
     deps.logger.error("streamed charge failed", {

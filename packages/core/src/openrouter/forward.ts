@@ -5,7 +5,9 @@
  */
 
 import { MAX_SAMPLE_COUNT } from "../router/policy.js";
+import { compileTaskRubric } from "../tasks/compile.js";
 import { COST_POSTURES, ROUTED_MODEL_ID, TIERS } from "../types.js";
+import type { CriterionEvidence, TaskRecord } from "../tasks/types.js";
 import type { CostPosture, MiloRequestExtension, Tier } from "../types.js";
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
@@ -41,6 +43,7 @@ export function prepareBody(body: Record<string, unknown>, model: string): Recor
 export function extractMilo(body: Record<string, unknown>): {
   extension?: MiloRequestExtension;
   isRouted: boolean;
+  invalidTask?: boolean;
 } {
   const isRouted = body.model === ROUTED_MODEL_ID;
 
@@ -66,6 +69,16 @@ export function extractMilo(body: Record<string, unknown>): {
   if (typeof source.samples === "number" && Number.isInteger(source.samples) && source.samples >= 1) {
     extension.samples = Math.min(source.samples, MAX_SAMPLE_COUNT);
   }
+  let invalidTask = false;
+  if (isTaskRecord(source.task)) {
+    extension.task = source.task;
+    if (source.evidence !== undefined) {
+      if (isCriterionEvidenceList(source.evidence)) extension.evidence = source.evidence;
+      else invalidTask = true;
+    }
+  } else if (source.task !== undefined || source.evidence !== undefined) {
+    invalidTask = true;
+  }
   // Only `false` means anything: injection is the default (ADR-011), so a
   // stray `brief: true` is the same as saying nothing.
   if (source.brief === false) {
@@ -87,7 +100,38 @@ export function extractMilo(body: Record<string, unknown>): {
     extension.prune = source.prune;
   }
 
-  return { extension, isRouted };
+  return { extension, isRouted, ...(invalidTask ? { invalidTask: true } : {}) };
+}
+
+function isTaskRecord(value: unknown): value is TaskRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  try {
+    compileTaskRubric(value as TaskRecord);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCriterionEvidenceList(value: unknown): value is CriterionEvidence[] {
+  if (!Array.isArray(value)) return false;
+  return value.every((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+    const evidence = entry as Record<string, unknown>;
+    return typeof evidence["criterionId"] === "string"
+      && evidence["criterionId"].trim() !== ""
+      && ["satisfied", "violated", "unknown"].includes(String(evidence["verdict"]))
+      && typeof evidence["confidence"] === "number"
+      && Number.isFinite(evidence["confidence"])
+      && evidence["confidence"] >= 0
+      && evidence["confidence"] <= 1
+      && typeof evidence["summary"] === "string"
+      && evidence["summary"].trim() !== ""
+      && typeof evidence["sourceRef"] === "string"
+      && evidence["sourceRef"].trim() !== ""
+      && (evidence["candidateId"] === undefined
+        || (typeof evidence["candidateId"] === "string" && evidence["candidateId"].trim() !== ""));
+  });
 }
 
 function isCostPosture(value: string): value is CostPosture {

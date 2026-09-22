@@ -130,7 +130,16 @@ async function handleChat(c: Context, deps: AppDeps): Promise<Response> {
   const refusal = creditGate(c, deps);
   if (refusal !== undefined) return refusal;
 
-  const { extension, isRouted } = extractMilo(body);
+  const { extension, isRouted, invalidTask } = extractMilo(body);
+  if (isRouted && invalidTask === true) {
+    return errorResponse(
+      c,
+      400,
+      "milo.task and milo.evidence must be a valid canonical task record and criterion evidence list.",
+      "invalid_request_error",
+      "invalid_task_record",
+    );
+  }
   return isRouted ? routed(c, deps, body, extension) : passthrough(c, deps, body);
 }
 
@@ -386,6 +395,8 @@ async function routed(
     discardSpeculation(speculation);
     return forwardSampled(c, deps, outgoing, decision, {
       candidates,
+      task: extension?.task,
+      evidence: extension?.evidence,
       briefVersion: brief?.version,
       facts,
       gate,
