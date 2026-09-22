@@ -22,12 +22,20 @@ persists one atomically replaced JSON file per task under
 `.milo/fleet-tasks` by default; task ids are hashed for safe filenames.
 
 Rubric compilation is mechanical and bounded. Explicit `acceptanceCriteria`
-come first, followed by checklist items in the prompt, deduplicated and capped
-at eight criteria. A task without either gets one completion criterion from its
-first prompt line. Compilation makes no model call.
+and checklist items in the prompt are deduplicated and capped at eight atomic
+criteria. They are sorted into truth/contract, regression/integration/scope,
+maintainability, and task-preference levels. Each criterion names a closed
+`satisfied | violated | unknown` decision and is marked as a veto, requirement,
+or preference. A task without either gets one required completion criterion
+from its first prompt line. Compilation makes no model call.
 
 The dossier contains the task goal, rubric, and summarized evidence: exit
-state, diff counts and paths, normalized receipts, and the done-gate verdict.
+state, diff counts and paths, normalized receipts, per-criterion decisions, and
+the done-gate verdict. Deterministic aggregation checks confident Veritaserum
+vetoes first, then required violations, then evidence sufficiency. It accepts,
+rejects, or abstains; preference findings never clear a veto or an unknown
+requirement. Unsupported claims become persistent case-law obligations and are
+resolved when later evidence supports the same claim.
 It deliberately omits the raw diff from persistence. The done-gate turns all
 rubric criteria into separate questions carried by its existing single Jev
 call. Routine supervision receives the goal and rubric beside its existing

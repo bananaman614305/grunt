@@ -31,6 +31,7 @@ import {
   MemoryTaskRecordStore,
   summarizeTaskEvidence,
   TASK_RECORD_VERSION,
+  updateTaskObligations,
 } from "./task-records.js";
 import type { TaskDossier, TaskRecord, TaskRecordStore, TaskRubric } from "./task-records.js";
 import type {
@@ -77,6 +78,7 @@ type WorkerRecord = {
   rubric: TaskRubric;
   dossier: TaskDossier;
   createdAt: string;
+  obligations: TaskRecord["obligations"];
 };
 
 export class Fleet {
@@ -107,6 +109,7 @@ export class Fleet {
         rubric,
         dossier,
         createdAt: new Date(this.now()).toISOString(),
+        obligations: [],
       };
       this.workers.set(task.id, rec);
       this.persist(rec);
@@ -169,6 +172,7 @@ export class Fleet {
         ...(result.receipts !== undefined ? { receipts: result.receipts } : {}),
       });
       rec.doneChecked = true;
+      rec.obligations = updateTaskObligations(rec.obligations, rec.doneVerification.criteria, rec.rubric, new Date(this.now()));
       rec.dossier = buildTaskDossier(
         rec.handle.task,
         rec.rubric,
@@ -290,6 +294,7 @@ export class Fleet {
       createdAt: rec.createdAt,
       updatedAt: new Date(this.now()).toISOString(),
       ...(rec.classification !== undefined ? { classification: rec.classification } : {}),
+      obligations: rec.obligations,
     };
     this.records.save(record);
   }

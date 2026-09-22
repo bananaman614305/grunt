@@ -132,8 +132,31 @@ describe("rankAnswer", () => {
     expect(rank.quality).toBeCloseTo(0.1 + 0.6 + 1.5);
     expect(rank.correct).toBe(0.9);
     expect(rank.confidence).toBe(0.8);
-    // The call sent the rank questions, not the router's.
-    expect(Object.keys(RANK_QUESTIONS)).toEqual(["quality", "correct"]);
+    expect(Object.keys(RANK_QUESTIONS)).toEqual([
+      "truth_contract",
+      "task_completion",
+      "regression_scope",
+      "maintainability",
+    ]);
+  });
+
+  it("aggregates closed decisions with contract violations as vetoes", async () => {
+    const jev: JevClientLike = {
+      systemone: () => Promise.resolve({
+        model: "jev-latest",
+        answers: Object.fromEntries(Object.keys(RANK_QUESTIONS).map((key) => [key, {
+          type: "choice",
+          choice: key === "truth_contract" ? "violated" : "satisfied",
+          confidence: 0.9,
+          probabilities: { satisfied: key === "truth_contract" ? 0.05 : 0.9, violated: key === "truth_contract" ? 0.9 : 0.05, unknown: 0.05 },
+        }])),
+        usage: { input_tokens: 20, output_tokens: 4 },
+        requestId: "req_closed",
+        latencyMs: 12,
+      }),
+    };
+    const rank = await rankAnswer(jev, MESSAGES, "Done.");
+    expect(rank).toMatchObject({ outcome: "reject", quality: 0 });
   });
 
   it("throws when Jev answers with the wrong shapes", async () => {
@@ -177,5 +200,35 @@ describe("picking", () => {
 
   it("returns undefined when nothing was ranked", () => {
     expect(pickBest([{ index: 0 }, { index: 1 }])).toBeUndefined();
+  });
+
+  it("benchmarks veto, abstention, score, correctness, and index in decision order", () => {
+    const withOutcome = (quality: number, correct: number, outcome: RankScore["outcome"]): RankScore => ({
+      ...rank(quality, correct),
+      outcome,
+    });
+    const cases: Array<{ name: string; samples: Array<{ index: number; rank: RankScore }>; pick?: number }> = [
+      { name: "contract veto loses", samples: [
+        { index: 0, rank: withOutcome(3, 1, "reject") },
+        { index: 1, rank: withOutcome(2, 0.8, "accept") },
+      ], pick: 1 },
+      { name: "unknown abstains", samples: [
+        { index: 0, rank: withOutcome(3, 1, "abstain") },
+        { index: 1, rank: withOutcome(2, 0.8, "accept") },
+      ], pick: 1 },
+      { name: "all abstain", samples: [
+        { index: 0, rank: withOutcome(2, 0.5, "abstain") },
+        { index: 1, rank: withOutcome(2, 0.5, "reject") },
+      ] },
+      { name: "accepted quality wins", samples: [
+        { index: 0, rank: withOutcome(2, 0.9, "accept") },
+        { index: 1, rank: withOutcome(2.5, 0.7, "accept") },
+      ], pick: 1 },
+      { name: "stable tie", samples: [
+        { index: 0, rank: withOutcome(2, 0.8, "accept") },
+        { index: 1, rank: withOutcome(2, 0.8, "accept") },
+      ], pick: 0 },
+    ];
+    for (const fixture of cases) expect(pickBest(fixture.samples), fixture.name).toBe(fixture.pick);
   });
 });

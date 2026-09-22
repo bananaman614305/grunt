@@ -1,16 +1,15 @@
 /**
  * Best-of-N sampling primitives (ADR-010): the varied prompt framings the
- * gateway fans out with, and the Jev questions that rank the answers.
+ * gateway fans out with, and the closed Jev questions that rank the answers.
  *
  * Sampling is a routing outcome, not a mode: policy v4 resolves some cells to
  * `{ tier: "fast", samples: N }` (see `policy.ts`), and the gateway executes
  * that by drawing N answers from the fast tier -- each with one of these
- * framings appended to the system prompt -- then asking Jev to score every
- * answer and returning the best. The framings and question shapes were
+ * framings appended to the system prompt -- then asking Jev to decide every
+ * answer against a closed rubric and returning the best. The framings were
  * validated by the benchmark in `packages/evals/src/bench` (two live runs,
- * AUROC 0.87/0.91 against the graders); this module is their production home,
- * next to the router questions they run alongside. Do not edit one copy
- * without re-running the benchmark.
+ * AUROC 0.87/0.91 against the graders). The closed selector has deterministic
+ * veto, abstention, quality, correctness, and tie fixtures beside this module.
  */
 
 import type { JevClientLike, JevQuestion } from "../jev/types.js";
@@ -80,31 +79,57 @@ export function applyVariantSuffix(messages: ChatMessage[], variant: string): Ch
 }
 
 /**
- * The two questions one Jev call asks about one candidate answer: an expected
- * quality score (0..3) and a correctness probability. Benchmarked shapes
- * (ADR-010); the wording is the ranking prompt, so changing it changes picks.
+ * The ordered closed questions one Jev call asks about one candidate answer.
+ * Deterministic aggregation preserves the historical 0..3 selector surface
+ * while making contract vetoes and unknown evidence explicit.
  */
 export const RANK_QUESTIONS: Record<string, JevQuestion> = {
-  quality: {
-    type: "score",
-    instructions:
-      "A user sent the task below to an AI assistant and got the candidate answer. Rate how well the candidate answer resolves the task. Judge correctness and completeness against what the task actually asked, not length or tone.",
-    criteria: [
-      "Wrong or off-task: the answer misreads the task, gives an incorrect result, or does not do what was asked.",
-      "Partly right: the main idea is there but a substantive error or omission remains that the user would have to fix.",
-      "Right in substance with a minor flaw: a small mistake, a missing edge case, or unnecessary material, but the user could use it as is.",
-      "Right and complete: correct, does everything the task asked, and nothing needs fixing.",
-    ],
-  },
-  correct: {
-    type: "noul",
-    instructions: "Is the candidate answer correct for the task as asked?",
-    criteria: {
-      true: "The answer is correct and does what the task asked.",
-      false: "The answer is wrong, incomplete, or answers a different question.",
-    },
-  },
+  truth_contract: closedQuestion("Does the candidate contain a factual error or violate an explicit user contract?", true),
+  task_completion: closedQuestion("Does the candidate complete the task the user asked for?"),
+  regression_scope: closedQuestion("Does the candidate preserve stated constraints and stay within the requested scope?"),
+  maintainability: closedQuestion("Is the candidate clear and maintainable enough to use without repair?"),
 };
+
+export type RankCriterion = { id: string; decision: "veto" | "required" | "preference"; question: JevQuestion };
+
+function closedQuestion(instructions: string, adverse = false): JevQuestion {
+  return {
+    type: "choice",
+    instructions,
+    criteria: adverse
+      ? {
+          satisfied: "No factual or contract violation is present.",
+          violated: "A factual or contract violation is present.",
+          unknown: "The supplied task and candidate do not provide enough evidence to decide.",
+        }
+      : {
+          satisfied: "The criterion is satisfied.",
+          violated: "The criterion is violated.",
+          unknown: "The supplied task and candidate do not provide enough evidence to decide.",
+        },
+  };
+}
+
+function taskSpecificCriteria(task: ChatMessage[]): RankCriterion[] {
+  const text = task.filter((message) => message.role === "user").map((message) => messageText(message.content)).join("\n");
+  const lines = text.split("\n").map((line) => line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|\[[ xX]\]\s+)/, "").trim())
+    .filter((line, index, all) => line.length > 0 && line.length <= 240 && all.indexOf(line) === index);
+  return lines.filter((line) => /\b(ux|accessib|security|privacy|performance|latency|memory)\b/i.test(line)).slice(0, 4).map((line, index) => ({
+    id: `task_preference_${index + 1}`,
+    decision: /\b(security|privacy|must|required|never)\b/i.test(line) ? "veto" : "preference",
+    question: closedQuestion(`Does the candidate satisfy this task-specific requirement: ${line}`),
+  }));
+}
+
+export function compileRankingRubric(task: ChatMessage[]): RankCriterion[] {
+  return [
+    { id: "truth_contract", decision: "veto", question: RANK_QUESTIONS["truth_contract"] as JevQuestion },
+    { id: "task_completion", decision: "required", question: RANK_QUESTIONS["task_completion"] as JevQuestion },
+    { id: "regression_scope", decision: "required", question: RANK_QUESTIONS["regression_scope"] as JevQuestion },
+    { id: "maintainability", decision: "preference", question: RANK_QUESTIONS["maintainability"] as JevQuestion },
+    ...taskSpecificCriteria(task),
+  ];
+}
 
 /** Cap on what one ranking call sends Jev, keeping the call cheap. */
 export const RANK_STATE_MAX_CHARS = 12_000;
@@ -128,14 +153,16 @@ export type RankScore = {
   /** Jev's own confidence on the score question. */
   confidence: number;
   latencyMs: number;
+  outcome?: "accept" | "reject" | "abstain";
+  criteria?: Record<string, "satisfied" | "violated" | "unknown">;
 };
 
 /** Total budget for one ranking call, ms. */
 export const RANK_BUDGET_MS = 8_000;
 
 /**
- * Asks Jev to score one candidate answer. Throws on a Jev failure; the caller
- * decides what a failed rank means.
+ * Asks Jev to decide a closed rubric for one candidate answer. Throws on a
+ * Jev failure; the caller decides what a failed rank means.
  *
  * `apiKey` is the caller's forwarded OpenRouter key (ADR-022): under the
  * `"openrouter"` Jev transport it authenticates this call, so the user's own
@@ -150,19 +177,45 @@ export async function rankAnswer(
   budgetMs = RANK_BUDGET_MS,
   apiKey?: string,
 ): Promise<RankScore> {
+  const rubric = compileRankingRubric(task);
+  const questions = Object.fromEntries(rubric.map((criterion) => [criterion.id, criterion.question]));
   const result = await jev.systemone(
-    { state: rankState(task, answer), questions: RANK_QUESTIONS },
+    { state: rankState(task, answer), questions },
     { budgetMs, ...(apiKey !== undefined && apiKey !== "" ? { apiKey } : {}) },
   );
-  const quality = result.answers["quality"];
-  const correct = result.answers["correct"];
-  if (quality?.type !== "score" || correct?.type !== "noul") {
-    throw new Error("jev returned rank answers of the wrong type");
+  const closed = rubric.map((criterion) => ({ criterion, answer: result.answers[criterion.id] }));
+  if (closed.every(({ answer: finding }) => finding?.type === "choice")) {
+    const criteria: Record<string, "satisfied" | "violated" | "unknown"> = {};
+    let confidence = 1;
+    let preference = 0;
+    let preferenceCount = 0;
+    let correct = 1;
+    let veto = false;
+    let unknownRequired = false;
+    for (const { criterion, answer: finding } of closed) {
+      if (finding?.type !== "choice" || !["satisfied", "violated", "unknown"].includes(finding.choice)) continue;
+      const choice = finding.choice as "satisfied" | "violated" | "unknown";
+      criteria[criterion.id] = choice;
+      confidence = Math.min(confidence, finding.confidence);
+      const pass = finding.probabilities["satisfied"] ?? (choice === "satisfied" ? finding.confidence : 0);
+      if (criterion.decision !== "preference") correct = Math.min(correct, pass);
+      else { preference += pass; preferenceCount += 1; }
+      if (criterion.decision === "veto" && choice === "violated" && finding.confidence >= 0.6) veto = true;
+      if (criterion.decision !== "preference" && choice === "unknown") unknownRequired = true;
+    }
+    const outcome = veto ? "reject" : unknownRequired ? "abstain" : "accept";
+    const preferenceMean = preferenceCount === 0 ? 1 : preference / preferenceCount;
+    const quality = outcome === "reject" ? 0 : outcome === "abstain" ? correct : 1.5 + correct + 0.5 * preferenceMean;
+    return { quality, correct, confidence, latencyMs: result.latencyMs, outcome, criteria };
   }
+  // Compatibility for old recorded fixtures while deployed Jev moves to the closed rubric.
+  const quality = result.answers["quality"];
+  const legacyCorrect = result.answers["correct"];
+  if (quality?.type !== "score" || legacyCorrect?.type !== "noul") throw new Error("jev returned rank answers of the wrong type");
   const expected = Object.entries(quality.probabilities).reduce((sum, [level, p]) => sum + Number(level) * p, 0);
   return {
     quality: Number.isFinite(expected) ? expected : quality.score,
-    correct: correct.noul,
+    correct: legacyCorrect.noul,
     confidence: quality.confidence,
     latencyMs: result.latencyMs,
   };
@@ -177,6 +230,10 @@ export function compareRanked(
   a: { index: number; rank: RankScore },
   b: { index: number; rank: RankScore },
 ): number {
+  const order = { accept: 0, abstain: 1, reject: 2 } as const;
+  if (a.rank.outcome !== undefined && b.rank.outcome !== undefined && a.rank.outcome !== b.rank.outcome) {
+    return order[a.rank.outcome] - order[b.rank.outcome];
+  }
   if (a.rank.quality !== b.rank.quality) return b.rank.quality - a.rank.quality;
   if (a.rank.correct !== b.rank.correct) return b.rank.correct - a.rank.correct;
   return a.index - b.index;
@@ -184,7 +241,8 @@ export function compareRanked(
 
 /** The index of the sample Jev rates best, or undefined when nothing was ranked. */
 export function pickBest(samples: Array<{ index: number; rank?: RankScore | undefined }>): number | undefined {
-  const ranked = samples.filter((s): s is { index: number; rank: RankScore } => s.rank !== undefined);
+  const ranked = samples.filter((s): s is { index: number; rank: RankScore } =>
+    s.rank !== undefined && (s.rank.outcome === undefined || s.rank.outcome === "accept"));
   if (ranked.length === 0) return undefined;
   return [...ranked].sort(compareRanked)[0]?.index;
 }

@@ -5,9 +5,10 @@
  *
  * The shape of the trade: N upstream calls on the user's key, each with one
  * of the varied framings from `PROMPT_VARIANTS` appended to the system
- * prompt and each under its own wall-clock cap; one Jev score+correctness
- * call per finished answer on Milo's key; the answer with the highest
- * expected quality (correctness breaking ties) goes back to the client.
+ * prompt and each under its own wall-clock cap; one closed-rubric Jev call per
+ * finished answer on Milo's key. Hard vetoes lose, unknown required evidence
+ * abstains, then quality, correctness, and index deterministically select the
+ * answer returned to the client.
  * Tool-call answers are ranked and picked like any other; the client
  * executes only what it receives.
  *
@@ -60,6 +61,7 @@ import {
   applyVariant,
   applyVariantSuffix,
   checkCandidate,
+  compareRanked,
   expectsJsonResponse,
   isStreaming,
   messageText,
@@ -361,9 +363,7 @@ function bySampleRank(a: Sample, b: Sample): number {
   if (ba !== bb) return ba ? 1 : -1;
   const ra = a.rank as RankScore;
   const rb = b.rank as RankScore;
-  if (ra.quality !== rb.quality) return rb.quality - ra.quality;
-  if (ra.correct !== rb.correct) return rb.correct - ra.correct;
-  return a.index - b.index;
+  return compareRanked({ index: a.index, rank: ra }, { index: b.index, rank: rb });
 }
 
 /**
@@ -374,7 +374,7 @@ function bySampleRank(a: Sample, b: Sample): number {
  * degraded-ranking path.
  */
 function orderSuccesses(successes: Sample[]): Sample[] {
-  const ranked = successes.filter((s) => s.rank !== undefined).sort(bySampleRank);
+  const ranked = successes.filter((s) => s.rank !== undefined && (s.rank.outcome === undefined || s.rank.outcome === "accept")).sort(bySampleRank);
   const unranked = successes.filter((s) => s.rank === undefined).sort((a, b) => a.index - b.index);
   return [...ranked, ...unranked];
 }
@@ -754,7 +754,9 @@ export async function forwardSampled(
     if (decided) return;
     const settled = slots.filter((slot) => slot.settled).map((slot) => slot.sample as Sample);
     const successes = settled.filter(isSuccess);
-    const ranked = successes.filter((sample) => sample.rank !== undefined);
+    const attempted = successes.filter((sample) => sample.rank !== undefined);
+    const ranked = successes.filter((sample) => sample.rank !== undefined
+      && (sample.rank.outcome === undefined || sample.rank.outcome === "accept"));
     if (ranked.length >= minRanked) {
       const best = bestRanked(ranked);
       if ((best.rank as RankScore).quality >= EARLY_WIN_QUALITY) {
@@ -762,7 +764,7 @@ export async function forwardSampled(
         return;
       }
     }
-    if (ranked.length === 0 && successes.length >= minRanked) {
+    if (ranked.length === 0 && attempted.length === 0 && successes.length >= minRanked) {
       // Ranking is degraded: more samples cannot change a pick Jev will
       // never score, so the first success wins now.
       decide({ pick: firstSuccess(successes), note: "ranking_failed" });
@@ -780,7 +782,9 @@ export async function forwardSampled(
     if (decided) return;
     const settled = slots.filter((slot) => slot.settled).map((slot) => slot.sample as Sample);
     const successes = settled.filter(isSuccess);
-    const ranked = successes.filter((sample) => sample.rank !== undefined);
+    const attempted = successes.filter((sample) => sample.rank !== undefined);
+    const ranked = successes.filter((sample) => sample.rank !== undefined
+      && (sample.rank.outcome === undefined || sample.rank.outcome === "accept"));
     if (ranked.length >= minRanked) {
       const ordered = [...ranked].sort(bySampleRank);
       const best = ordered[0] as Sample;
@@ -792,7 +796,7 @@ export async function forwardSampled(
         return;
       }
     }
-    if (ranked.length === 0 && successes.length >= minRanked) {
+    if (ranked.length === 0 && attempted.length === 0 && successes.length >= minRanked) {
       decide({ pick: firstSuccess(successes), note: "ranking_failed" });
       return;
     }
@@ -833,16 +837,24 @@ export async function forwardSampled(
   if (outcome.pick !== undefined) {
     chosen = outcome.pick;
   } else {
-    const ranked = successes.filter((sample) => sample.rank !== undefined);
+    const attempted = successes.filter((sample) => sample.rank !== undefined);
+    const ranked = successes.filter((sample) => sample.rank !== undefined
+      && (sample.rank.outcome === undefined || sample.rank.outcome === "accept"));
     if (ranked.length > 0) {
       chosen = bestRanked(ranked);
     } else {
       chosen = firstSuccess(successes);
-      note = "ranking_failed";
+      note = attempted.length > 0 ? "ranking_abstained" : "ranking_failed";
     }
   }
   if (note === "ranking_failed") {
     deps.logger.warn("jev ranking unavailable; returning the first successful sample", {
+      decisionId: decision.id,
+      samples: n,
+    });
+  }
+  if (note === "ranking_abstained") {
+    deps.logger.warn("jev ranking abstained; returning the first successful sample for completeness gating", {
       decisionId: decision.id,
       samples: n,
     });

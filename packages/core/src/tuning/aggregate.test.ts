@@ -41,7 +41,7 @@ type RowOptions = {
   pick?: "original" | "retry";
   sampleScores?: number[];
   samplePick?: number;
-  sampleNote?: "ranking_failed" | "all_samples_failed";
+  sampleNote?: "ranking_failed" | "ranking_abstained" | "all_samples_failed";
   noUpstream?: boolean;
   createdAt?: string;
 };

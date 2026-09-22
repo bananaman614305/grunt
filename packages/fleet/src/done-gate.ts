@@ -23,7 +23,8 @@
 
 import type { ClaimResult, ClaimVerdict, JevClientLike, Receipt } from "@milo/core";
 import { gitStateFromDiff, verifyClaims } from "@milo/core";
-import { compileTaskRubric } from "./task-records.js";
+import { compileTaskRubric, decideDossier } from "./task-records.js";
+import type { DossierDecision } from "./task-records.js";
 import type { Task } from "./types.js";
 
 /** Total budget for one done-gate call, ms. Same habit as supervision. */
@@ -41,6 +42,8 @@ export type DoneVerification = {
   latencyMs: number;
   /** Per-criterion findings from the same Jev call. */
   criteria: ClaimResult[];
+  /** Deterministic closed-set aggregation; only hard contract findings are vetoes. */
+  decision: DossierDecision;
 };
 
 /**
@@ -66,9 +69,11 @@ export async function verifyWorkerDone(
     ...(input.receipts !== undefined && input.receipts.length > 0 ? { receipts: [...input.receipts] } : {}),
   };
   const out = await verifyClaims(jev, claims, ground, budgetMs);
-  const result = out.results.find((candidate) => candidate.verdict === "contradicted")
-    ?? out.results.find((candidate) => candidate.verdict === "unsupported")
-    ?? out.results[0];
+  const decision = decideDossier(rubric, out.results);
+  const decisiveId = decision.criteria.find((criterion) =>
+    decision.outcome === "reject" ? criterion.decision === "violated" : criterion.decision === "unknown"
+  )?.id;
+  const result = out.results.find((candidate) => candidate.claim.id.endsWith(`:${decisiveId}`)) ?? out.results[0];
   if (result === undefined || out.results.length !== claims.length) {
     return {
       verdict: "unsupported",
@@ -77,20 +82,24 @@ export async function verifyWorkerDone(
       line: "Done unverified: one or more rubric criteria lacked a verdict.",
       latencyMs: out.latencyMs,
       criteria: out.results,
+      decision,
     };
   }
+  const verdict: ClaimVerdict = decision.outcome === "accept" ? "supported"
+    : decision.outcome === "reject" ? "contradicted" : "unsupported";
   const line =
-    result.verdict === "supported"
+    verdict === "supported"
       ? "Done confirmed against the diff and receipts."
-      : result.verdict === "contradicted"
+      : verdict === "contradicted"
         ? "Done refuted: the diff and receipts do not show the task completed."
-        : "Done unverified: no evidence in the diff or receipts either way.";
+        : "Done unverified: required evidence is missing or unknown.";
   return {
-    verdict: result.verdict,
+    verdict,
     confidence: result.confidence,
-    contradicted: result.verdict === "contradicted",
+    contradicted: verdict === "contradicted",
     line,
     latencyMs: out.latencyMs,
     criteria: out.results,
+    decision,
   };
 }

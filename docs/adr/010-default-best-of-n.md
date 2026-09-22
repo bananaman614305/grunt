@@ -33,8 +33,12 @@ change, gated in CI the same way.
 
 The gateway executes a sampled decision by fanning out N identical upstream
 calls on the user's key (varied framings appended to the system prompt),
-ranking each finished answer with one Jev score+correctness call on Milo's
-key, and returning the best. A streamed request buffers until selection and
+ranking each finished answer with one Jev closed-rubric call on Milo's key,
+and returning the best. The hierarchy evaluates truth/contract vetoes before
+completion and scope requirements, then maintainability and task-specific
+preferences. Unknown required evidence abstains; deterministic pairwise
+comparison uses outcome, aggregate quality, correctness, then sample index.
+A streamed request buffers until selection and
 then replays the chosen answer as normal SSE. Tool-call answers are picked
 like any other; the client executes only what it receives.
 
