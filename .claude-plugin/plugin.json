@@ -1,6 +1,6 @@
 {
   "name": "milo",
-  "description": "Configure a client or Claude Code session to route through Milo, and reason about Milo's routing decisions.",
+  "description": "Set up and use Milo, the local router over your own codex and claude subscriptions, and read its routing decisions.",
   "version": "0.1.0",
   "author": {
     "name": "Milo maintainers"

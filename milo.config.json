@@ -1,10 +1,5 @@
 {
-  "mode": "deepseek",
-  "sampling": {
-    "adaptive": { "enabled": true },
-    "cacheFriendlyVariants": true,
-    "verifyCandidates": true
-  },
-  "speculation": { "enabled": true },
-  "classificationCache": { "enabled": true }
+  "port": 8787,
+  "hostname": "127.0.0.1",
+  "subscriptions": {}
 }

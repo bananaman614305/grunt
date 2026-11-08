@@ -4,9 +4,6 @@
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/test-support.ts"],
   "references": [
-    { "path": "../core" },
-    { "path": "../billing" },
-    { "path": "../provisioning" },
-    { "path": "../stripe" }
+    { "path": "../core" }
   ]
 }

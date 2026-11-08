@@ -6,19 +6,22 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./onboarding": { "types": "./dist/onboarding/index.d.ts", "import": "./dist/onboarding/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
-  "bin": { "milo": "./dist/cli.js" },
-  "scripts": { "build": "tsc -b" },
+  "bin": {
+    "milo": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
   "dependencies": {
     "@hono/node-server": "^1",
-    "@milo/billing": "workspace:*",
     "@milo/core": "workspace:*",
     "@milo/evals": "workspace:*",
     "@milo/gateway": "workspace:*",
-    "@milo/provisioning": "workspace:*",
-    "@milo/stripe": "workspace:*",
     "zod": "^3"
   },
   "devDependencies": {}

@@ -1,5 +1,7 @@
 # Config reference
 
+> **Superseded.** This describes the hosted OpenRouter version of Milo, replaced by the local subscription router in [ADR-031](adr/031-local-subscription-router.md). It is kept for history; the code it describes is in git history before ADR-031.
+
 `milo serve` reads `milo.config.json` from the current directory by default,
 or from `--config <path>`. Every field is optional; a missing file (when no
 path was given explicitly) means every default applies. An explicit

@@ -46,18 +46,6 @@ export function createTestDeps(overrides: Partial<CliDeps> = {}): {
     fetch: () => {
       throw new Error("fetch was not expected to be called in this test");
     },
-    prompt: () => {
-      throw new Error("prompt was not expected to be called in this test");
-    },
-    openBillingStore: () => {
-      throw new Error("openBillingStore was not expected to be called in this test");
-    },
-    createStripeClient: () => {
-      throw new Error("createStripeClient was not expected to be called in this test");
-    },
-    createProvisioningClient: () => {
-      throw new Error("createProvisioningClient was not expected to be called in this test");
-    },
     ...overrides,
   };
 

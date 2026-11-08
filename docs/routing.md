@@ -1,5 +1,7 @@
 # How routing works
 
+> **Superseded.** This describes the hosted OpenRouter version of Milo, replaced by the local subscription router in [ADR-031](adr/031-local-subscription-router.md). It is kept for history; the code it describes is in git history before ADR-031.
+
 This describes what `packages/core/src/router` actually does, in plain
 language. Where this differs from `docs/PLAN.md`, the code wins; see the
 divergence note at the end.

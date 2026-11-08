@@ -42,3 +42,6 @@ export type {
   SelectionRules,
   SkippedModel,
 } from "./roster-select.js";
+
+export { formatReplayReport, runSubscriptionReplay, stratifiedSample } from "./subscription-replay.js";
+export type { BackendSummary, ReplayOptions, ReplayReport, ReplayTask } from "./subscription-replay.js";

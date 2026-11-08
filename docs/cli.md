@@ -1,5 +1,7 @@
 # CLI reference
 
+> **Superseded.** This describes the hosted OpenRouter version of Milo, replaced by the local subscription router in [ADR-031](adr/031-local-subscription-router.md). It is kept for history; the code it describes is in git history before ADR-031.
+
 The `milo` binary (`packages/cli/src/cli.ts`) dispatches to one subcommand.
 Output below was copied from running the built CLI
 (`node packages/cli/dist/cli.js ...`) after `pnpm build`.

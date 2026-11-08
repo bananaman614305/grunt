@@ -8,5 +8,4 @@ export * from "./tuning/index.js";
 export * from "./preferences/index.js";
 export * from "./memory/index.js";
 export * from "./tasks/index.js";
-export * from "./billing/types.js";
-export * from "./setup/index.js";
+export * from "./subscription/index.js";

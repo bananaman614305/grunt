@@ -1,310 +1,164 @@
 # Milo
 
-Milo is OpenRouter with an actual routing mechanism. You give Milo one key,
-your OpenRouter key, point an OpenAI-compatible client at Milo's base URL,
-and send `model: "milo/auto"`. Milo holds its own Jev key server-side. For
-every routed request, Jev classifies the task type and how hard it is, a
-policy table picks a tier (fast, mid, or frontier), the request goes to
-OpenRouter with the resolved model, and the response comes back with
-`x-milo-*` headers explaining why that model was chosen.
+Milo routes your requests across the AI subscriptions you already pay for.
 
-## What it is for
+If you have ChatGPT and Claude plans, you have two frontier models with
+usage limits that mostly go unused. Milo runs on your own machine, drives
+the official `codex` and `claude` CLIs you are already logged into, shows
+how much of each plan is left, and sends each request to the subscription
+that suits the task and has room. When one plan is rate-limited, the other
+answers.
 
-Milo is built for a two-model setup. A frontier agent you already pay for on a
-subscription — Opus, Fable, Sol, whatever you run — plans the work and
-orchestrates it. The implementation sub-tasks it hands off go through Milo,
-which routes each one to a model that is cheap and popular on OpenRouter. You
-keep the good planner; you stop paying frontier prices for the hundred small
-edits, tests and lookups underneath it. That is why Milo's default roster is
-the most-used cheap models rather than a second copy of the frontier model you
-are already subscribed to — see "Why these models" below.
-
-For the task shapes where a cheap model tried five times beats a bigger model
-tried once — small edits and docs work, per two live benchmark runs — Milo
-does exactly that by default: it fans the request out as five fast-tier calls
-with varied framings, has Jev score every answer, and returns the best one,
-with `x-milo-samples` and `x-milo-sample-pick` headers saying so (ADR-010). A
-sampled request spends roughly five fast-tier calls of your OpenRouter budget,
-which is still in the same band as the one mid-tier call it replaces; send
-`milo: { "samples": 1 }` to opt a request out, or set
-`sampling: { "enabled": false }` in `milo.config.json` to turn it off for a
-deployment.
-
-Two newer mechanisms build on that. Routed chat answers on non-trivial tasks
-pass a completeness gate (ADR-013): one Jev call checks that the answer
-addresses every part of the request, and a failing answer buys exactly one
-retry, with the better of the two served and `x-milo-completeness`,
-`x-milo-retry` and `x-milo-gate-pick` headers disclosing what happened
-(`milo: { "gates": false }` opts a request out). Long conversations can opt in
-to context pruning (ADR-014, off by default via `pruning.enabled` or per
-request with `milo: { "prune": true }`): one Jev call sheds finished older
-context before forwarding — never the system prompt, the latest turn, or a
-tool-call pair — disclosed on `x-milo-pruned` and `x-milo-pruned-tokens`. And an experimental routing
-mode, `"mode": "deepseek"` in `milo.config.json` (ADR-012), replaces the
-roster with a compute controller over the DeepSeek family: the same routing
-signals buy a compute budget — one flash call on easy bands, best-of-5 on the
-hard ones — which benchmarked at frontier-tier quality for a fraction of the
-price. The default mode is still the roster until the ADR-012 gate passes;
-`docs/routing.md` has both mechanisms in full.
+Milo never touches your logins. It starts the vendors' own CLIs as child
+processes under your account; they use their own logins exactly as they do
+in your terminal. There is no API key, no hosted service, and nothing to pay
+Milo. See [ADR-031](docs/adr/031-local-subscription-router.md).
 
 ## Quickstart
 
+You need Node 22+, pnpm, and at least one of:
+
+- [Codex CLI](https://github.com/openai/codex), logged in with your ChatGPT plan (`codex login`)
+- [Claude Code](https://docs.claude.com/en/docs/claude-code), logged in with your Claude plan (`claude`, then `/login`)
+
 ```
-git clone https://github.com/bananaman614305/milo && cd milo
 pnpm install && pnpm build
-export JEV_API_KEY=...                       # Milo's own Jev key; see docs/config.md
-node packages/cli/dist/cli.js serve          # listens on http://localhost:8787
+alias milo="node $PWD/packages/cli/dist/cli.js"
+milo serve
 ```
 
-Milo supplies the Jev key itself, so end users of a hosted Milo only need
-their own OpenRouter key — nothing about Jev changes on the client side.
+```
+milo: listening on http://127.0.0.1:8787 (backends: codex, claude; classifier: local heuristic)
+milo:   codex: 98% left (weekly)
+milo:   claude: capacity unknown
+milo: set OPENAI_BASE_URL=http://127.0.0.1:8787/v1 and use model: "milo/auto"
+```
 
-Point the OpenAI SDK at Milo and ask for `milo/auto`:
+Point any OpenAI-compatible client at it:
 
-**Python**
+```
+export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
+export OPENAI_API_KEY=unused   # SDKs insist on one; Milo ignores it
+```
 
 ```python
 from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:8787/v1", api_key="sk-or-...")
-resp = client.chat.completions.create(
-    model="milo/auto",
-    messages=[{"role": "user", "content": "..."}],
-)
+client = OpenAI()
+r = client.chat.completions.create(model="milo/auto", messages=[{"role": "user", "content": "Why does my asyncio lock deadlock?"}])
 ```
 
-**TypeScript**
+Streaming works too (`stream: true`, including `stream_options.include_usage`).
 
-```ts
-import OpenAI from "openai";
+## Models
 
-const client = new OpenAI({ baseURL: "http://localhost:8787/v1", apiKey: "sk-or-..." });
-const resp = await client.chat.completions.create({
-  model: "milo/auto",
-  messages: [{ role: "user", content: "..." }],
-});
+| `model` | What runs |
+|---|---|
+| `milo/auto` | Milo picks the subscription |
+| `milo/codex`, `milo/claude` | That subscription, the CLI's default model, no failover |
+| `codex/<model>`, `claude/<model>` | That subscription and model, e.g. `claude/opus`, `claude/sonnet` |
+
+Requests with `tools` or `n > 1` are refused: the CLIs answer in text and do
+not call your functions.
+
+## How it picks
+
+1. **Classify the task.** With `JEV_API_KEY` set, Jev classifies it; without
+   one (or if Jev fails), a local keyword heuristic does.
+2. **Prefer by task.** Edits, features, debugging and ops start on Codex;
+   chat, research, docs, review and classification start on Claude.
+3. **Adjust by what is left.** A rate-limited plan goes last. A plan under its
+   reserve (10% left) yields to one with more. If the other plan has more
+   than 30 points more left, the work moves there.
+4. **Fail over.** If the chosen plan refuses (rate limit, not logged in, CLI
+   error), the other one answers.
+
+Every response says what happened:
+
+```
+x-milo-backend: codex
+x-milo-reason: chat task prefers claude, but claude is below its 10% reserve; claude 1% left (seven_day), codex 98% left (weekly)
+x-milo-task-type: chat
+x-milo-classifier: heuristic
+x-milo-capacity: codex=98%, claude=1%
+x-milo-failover: claude:rate_limited      (only when it happened)
+x-milo-decision-id: 01M6YJMHXCAR4JNQ5NCF6VESGG
 ```
 
-That is the entire change: a base URL and a model id. `api_key` is your
-OpenRouter key, forwarded to OpenRouter unchanged and never stored.
-
-## What you get back
-
-A routed response carries six `x-milo-*` headers naming the decision:
+## How much is left
 
 ```
-HTTP/1.1 200 OK
-content-type: application/json
-x-milo-decision-id: 01ARZ3NDEKTSV4RRFFQ69G5FAV
-x-milo-model: z-ai/glm-5.3
-x-milo-tier: frontier
-x-milo-task-type: debug
-x-milo-difficulty: 2.40
-x-milo-sticky: false
+milo usage
 ```
 
-`x-milo-decision-id` resolves at `GET /v1/decisions/:id`. Example (illustrative
-— shaped from the `DecisionRecord` type in `packages/core/src/types.ts`, not a
-captured response):
+```
+subscription     used  left  window     resets                source  status  24h calls  24h limited  24h tokens in/out  7d calls
+ChatGPT (codex)  2%    98%   weekly     2026-11-15 00:47 UTC  cli     ok      2          0            28396 / 39         2
+Claude (claude)  99%   1%    seven_day  2026-11-09 00:00 UTC  cli     ok      1          0            604 / 73           1
+```
+
+- Codex reports its plan limits on request (`codex app-server`), so its
+  numbers are always current and cost nothing.
+- Claude Code reports its limits with every answer, so its numbers are as
+  fresh as Milo's last Claude call, and `unknown` before the first one.
+- `estimated` means the CLI has given no number and Milo only knows its own
+  calls and refusals.
+
+The same data is at `GET /v1/usage` on a running server
+(`milo usage --url http://127.0.0.1:8787`).
+
+## Measuring it
+
+`milo replay --sample <n>` sends a stratified sample of Milo's 120 labeled
+routing tasks through a running `milo serve` and reports how many each
+subscription served, failures, failovers, latency, tokens, and how much of
+each plan the run used. Every task spends real quota, so `--sample` is
+required.
+
+## Configuration
+
+`milo.config.json` (all optional; see `milo.config.example.json`):
 
 ```json
 {
-  "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-  "fingerprint": "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3",
-  "signals": {
-    "taskType": "debug",
-    "difficulty": 2.4,
-    "difficultyLevels": [0.01, 0.09, 0.39, 0.51],
-    "needsReasoning": 0.94,
-    "longOutput": 0.22,
-    "confidences": { "task_type": 0.9, "difficulty": 0.81 },
-    "jevRequestId": "req_e2e_0001",
-    "jevModel": "jev-latest",
-    "latencyMs": 87
-  },
-  "tier": "frontier",
-  "model": "z-ai/glm-5.3",
-  "reason": "debug task, P(hard) 0.51 at or above 0.25 with balanced posture routes to frontier; chose z-ai/glm-5.3",
-  "policyVersion": "v2",
-  "sticky": false,
-  "createdAt": "2026-09-17T16:03:07.554Z",
-  "upstream": { "status": 200, "latencyMs": 640, "inputTokens": 940, "outputTokens": 210 }
-}
-```
-
-See `docs/api/gateway.md` for every route and `docs/routing.md` for how the
-decision is made.
-
-## Per-request options
-
-A chat completions body can include a `milo` field to override routing for
-that request. It is stripped before the request reaches OpenRouter. The
-pass-through contract (ADR-011, ADR-017): only the model field is rewritten,
-plus up to two appended system messages — the preference brief and the
-relevance-gated fact note — each off per request with one field.
-
-```json
-{
-  "model": "milo/auto",
-  "messages": [{ "role": "user", "content": "..." }],
-  "milo": {
-    "posture": "low",
-    "candidates": ["deepseek/deepseek-v4-flash", "openai/gpt-5.6-luna"],
-    "tier": "fast"
+  "port": 8787,
+  "hostname": "127.0.0.1",
+  "decisionLog": "file:./.milo/decisions.db",
+  "subscriptions": {
+    "reservePercent": 10,
+    "balanceMarginPercent": 30,
+    "timeoutMs": 600000,
+    "codex": { "enabled": true },
+    "claude": { "enabled": true, "model": "sonnet" }
   }
 }
 ```
 
-- `posture` — `"low"`, `"balanced"`, or `"quality"`. Defaults to `"balanced"`. Shifts the policy table toward cheaper or more capable tiers (`docs/routing.md`).
-- `candidates` — restricts the roster to these model ids for this request.
-- `tier` — forces a tier (`"fast"`, `"mid"`, `"frontier"`) and skips the Jev call entirely; the decision is recorded with reason `"forced to the <tier> tier by the request"`.
-- `samples` — best-of-N control (ADR-010): `1` disables sampling for this request, a larger integer (capped at 8) sets the sample count on the cells the policy samples.
-- `task` — a canonical task record for criterion-aware best-of-N selection. Each acceptance criterion carries a deterministic, binary, or bounded-choice evaluation and an optional `decision` of `veto`, `required` (default), or `preference`.
-- `evidence` — source-linked criterion findings (`criterionId`, `verdict`, `confidence`, `summary`, `sourceRef`, and optional `candidateId`) used before Jev judgment. It is accepted only with a valid `task`; malformed task selection input returns `400 invalid_task_record`.
-- `brief: false` — skips the appended preference brief for this one request (`docs/memory.md`, ADR-011). Everything Milo remembers is listed at `GET /v1/preferences` and deletable at `DELETE /v1/preferences/:id`.
-- `facts: false` — skips the relevance-gated personal-fact note for this one request (`docs/memory.md`, ADR-017). Personal-fact memory is on by default, stored **encrypted at rest**, injected only when relevant (`x-milo-facts-injected`); every stored fact is listed decrypted at `GET /v1/memory`, deletable at `DELETE /v1/memory/:id`, and the whole feature is killable per key with `PUT /v1/memory/settings { "enabled": false }`.
-- `prune` — context pruning (ADR-014): `true` opts this request in to shedding finished older context, `false` opts it out; off by default unless the deployment set `pruning.enabled`. `false` always wins.
+The gateway has no API key, so keep it on `127.0.0.1`. `milo serve` warns if
+you bind it anywhere else.
 
-## Why these models
+## Safety
 
-Default roster `2026-09-17`:
+- Codex runs `codex exec --sandbox read-only` and Claude Code runs with every
+  tool disabled, both in a scratch directory: they answer, they do not edit
+  files or run commands.
+- `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are removed from the CLIs'
+  environment, so they spend your subscription, not a pay-per-token key.
+- Milo stores counts, timings and limit readings in its SQLite log. It never
+  stores prompts, answers, or credentials, and a CI test fails if any source
+  file names the CLIs' credential files.
 
-| Tier | Model | In $/M | Out $/M | Usage rank | Weekly tokens |
-|---|---|---|---|---|---|
-| fast | `deepseek/deepseek-v4-flash` | 0.07 | 0.14 | 2 | 15.4T |
-| fast | `z-ai/glm-5.3-flash` | 0.09 | 0.30 | 4 | 11.3T |
-| fast | `xiaomi/mimo-v2.5` | 0.14 | 0.28 | 6 | 7.8T |
-| fast | `tencent/hy3` | 0.0825 | 0.33 | 7 | 4.5T |
-| mid | `openai/gpt-5.6-luna` | 0.20 | 1.20 | 1 | 17.3T |
-| mid | `deepseek/deepseek-v4.1-flash` | 0.15 | 0.60 | 5 | 10.3T |
-| frontier | `z-ai/glm-5.3` | 1.40 | 4.40 | 9 | 2.5T |
-| frontier | `google/gemini-3.8-flash` | 0.75 | 3.75 | 10 | 2.2T |
-| frontier | `tencent/hy4-preview` | 0.834 | 2.501 | 3 | 12.0T |
-| frontier | `nvidia/nemotron-3-ultra-550b-a55b` | 0.625 | 3.125 | 8 | 3.5T |
+## Development
 
-The first entry in a tier is that tier's default. `nvidia/nemotron-3-ultra-550b-a55b`
-caps output at 32,768 tokens, below the 60,000 floor, so it sorts last in its
-tier and is skipped outright whenever a long answer is expected;
-`tencent/hy4-preview` (64,000) and `google/gemini-3.8-flash` (65,536) stay
-eligible.
-
-**The rule**, collected 2026-09-17 from OpenRouter's weekly usage ranking for
-the programming category (week ending 2026-09-16) and its public model
-catalogue: take the ten most-used models after folding dated builds into their
-current id and dropping `:free`, `:batch` and the other data-sharing plan
-variants, anything that cannot call a tool, and anything at or above **$5 per
-million output tokens**; tier them by output price (fast at most $0.35/M, mid
-at most $1.50/M, frontier at most $5/M); order each tier by usage, small-output
-models last.
-
-Defaults are the models people actually run on OpenRouter, ordered by weekly
-usage within price bands; nothing above $5 per million output tokens is chosen
-unless you list it in `candidates` or your roster config. Premium models
-(Fable, Opus, Astra, Sonnet) are never picked by default — you are almost
-certainly paying for one of them on a subscription already, and that is the
-agent that should be calling Milo rather than the one Milo calls.
-
-The table is data, not a hand-kept list: it lives in
-`packages/core/src/router/roster-default.json` with its provenance, is
-generated by `packages/evals/scripts/roster-refresh.ts`, and is **regenerated
-from OpenRouter's rankings every week** by
-`.github/workflows/roster-refresh.yml`, which opens a pull request when the
-list moves.
-
-### Choosing your own models
-
-Milo never locks you into that list.
-
-- **Per request**: `"milo": { "candidates": ["anthropic/claude-opus-5"] }`
-  restricts one request to the ids you name. Any OpenRouter id works.
-- **Per deployment**: set `roster` in `milo.config.json` with your own ids per
-  tier (`docs/config.md`). To put Opus on the frontier tier and leave the rest
-  of the defaults alone:
-
-```json
-{
-  "roster": {
-    "fast": ["deepseek/deepseek-v4-flash", "z-ai/glm-5.3-flash"],
-    "mid": ["openai/gpt-5.6-luna", "deepseek/deepseek-v4.1-flash"],
-    "frontier": ["anthropic/claude-opus-5", "z-ai/glm-5.3"]
-  }
-}
 ```
-
-`GET /v1/roster` returns the running roster with every price, usage rank and
-provenance field, plus which tier each posture favors. `milo roster` prints
-the same thing at the terminal.
-
-## For agents
-
-A running Milo serves its own onboarding: `GET /setup.md` walks an agent
-through picking up an OpenRouter key and configuring a client, Claude Code,
-or another OpenAI-compatible tool, in Markdown written for that purpose.
-`GET /llms.txt` is the discovery entry point, and `GET /skill.md` serves the
-same instructions as an installable skill (`skills/milo/SKILL.md`) — install
-it in Claude Code with `claude plugin marketplace add bananaman614305/milo`
-then `claude plugin install milo@milo`, or in any skill-aware agent with
-`npx skills add bananaman614305/milo --skill milo`. See `skills/README.md`.
-
-<!-- Codex: begin -->
-### Codex CLI
-
-Codex talks to a custom provider over the Responses API, which Milo serves at
-`POST /v1/responses`. Put this in `~/.codex/config.toml`:
-
-```toml
-model_provider = "milo"
-model = "milo/auto"
-
-[model_providers.milo]
-name = "Milo"
-base_url = "https://milo-gateway.fly.dev/v1"
-env_key = "OPENROUTER_API_KEY"
-wire_api = "responses"
+pnpm test        # unit tests, fake CLIs, no network
+pnpm lint
+MILO_LIVE_CLI=1 pnpm vitest run --config vitest.live.config.ts   # real codex and claude, spends a little quota
 ```
-
-Then `export OPENROUTER_API_KEY=sk-or-...` and run `codex --model milo/auto`.
-Full setup, the `-c` one-liner form, and what passes through unrouted:
-[`docs/codex.md`](docs/codex.md).
-<!-- Codex: end -->
-
-<!-- begin: bring your own model list (ADR-008) -->
-
-### Bring your own model list
-
-Onboarding starts by asking, not telling: an agent setting Milo up asks which
-OpenRouter models you already use and which Milo should choose from, before it
-writes any config. Name some and it posts them to `PUT /v1/roster` with your
-key — `{"models": ["deepseek/deepseek-v4-flash", "anthropic/claude-opus-5"]}` —
-which tiers them by output price on the same bands as the default roster and
-keeps your order within a tier; send `tiers` instead to place them by hand.
-Every routed request from that key then picks from your list, `GET /v1/roster`
-shows it back with prices, and `DELETE /v1/roster` reverts to the default. Say
-"just pick" and you get the top-ten roster above, unchanged. Milo stores a
-SHA-256 hash of your key as the row's name and nothing else about you — the
-key itself is still never stored (ADR-003).
-
-<!-- end: bring your own model list -->
-
-## Credits and Milo keys
-
-Bring-your-own-OpenRouter-key stays free and unchanged. If you'd rather not
-hold your own OpenRouter key, create a Milo account at `/account/new`
-(email only) and prepay for credits at `/account` — Stripe Checkout, three
-fixed packs. A Milo key (`mk_...`) then routes through Milo's own OpenRouter
-sub-key instead of yours, charged at upstream cost plus a margin and a flat
-per-request decision fee (both shown on `/account`, never hard-coded), with
-the running balance on `x-milo-balance-usd` on every response. No balance
-means a `402` before any upstream call — Milo never fronts money you haven't
-paid for. See [`docs/billing.md`](docs/billing.md) (ADR-007) for the full
-walkthrough, including the `milo billing` operator CLI.
 
 ## Docs
 
-- [`docs/api/gateway.md`](docs/api/gateway.md) — every route, request/response shape, headers, errors.
-- [`docs/memory.md`](docs/memory.md) — preference memory (ADR-011) and personal-fact memory (ADR-017): what Milo remembers per key, the injected brief and relevance-gated fact note, how facts are encrypted at rest, and how to list, delete, or kill either.
-- [`docs/billing.md`](docs/billing.md) — Milo keys, prepaid credits, the account pages, and the `milo billing` CLI.
-- [`docs/cli.md`](docs/cli.md) — the `milo` CLI: `serve`, `explain`, `decisions`, `stats`, `roster`, `billing`.
-- [`docs/config.md`](docs/config.md) — `milo.config.json` reference and `JEV_API_KEY`.
-- [`docs/routing.md`](docs/routing.md) — how a routing decision gets made.
-- [`docs/evals.md`](docs/evals.md) — running the routing eval set.
+- [ADR-031](docs/adr/031-local-subscription-router.md): the local subscription router, and what was removed.
+- [`docs/evals.md`](docs/evals.md): the routing eval set and Jev evals.
+- The OpenRouter-era docs (`docs/api/gateway.md`, `docs/routing.md`,
+  `docs/config.md`, `docs/cli.md`) describe the hosted version this replaced;
+  it is in git history before ADR-031.

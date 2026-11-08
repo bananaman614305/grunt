@@ -1,459 +1,275 @@
 /**
- * The Hono app: auth, routes, and the small dependency bundle the route
- * modules share.
+ * The local Milo gateway (ADR-031): an OpenAI-compatible surface in front of
+ * the user's own `codex` and `claude` subscriptions.
  *
- * `createApp` takes everything it needs as `AppDeps` and constructs nothing
- * itself, so a test can drive the whole surface with a stub router, a stub
- * OpenRouter client and an in-memory decision log without a server socket.
- * `createGateway` in `index.ts` is the only place that wires real objects.
+ * `createApp` takes everything it needs as `AppDeps` and constructs nothing,
+ * so tests drive the whole surface with fake backends and an in-memory store.
+ * `createGateway` in `index.ts` is the only place that wires real CLIs.
+ *
+ * There is no API key: the gateway is meant to listen on the loopback
+ * interface of the machine whose subscriptions it spends.
  */
 
 import { Hono } from "hono";
-import type { Context, MiddlewareHandler } from "hono";
-import {
-  DEFAULT_ROSTER,
-  DEFAULT_ROSTER_INFO,
-  POLICY_VERSION,
-  ROSTER_NOTE,
-  ROUTED_MODEL_ID,
-  TIERS,
-  defaultRosterModel,
-} from "@milo/core";
+import type { Context } from "hono";
+import { ROUTED_MODEL_ID, isSubscriptionId } from "@milo/core";
 import type {
-  DecisionRecord,
-  DecisionLog,
-  Encryptor,
-  JevClientLike,
-  JevTransportState,
-  OpenRouterClient,
-  Roster,
-  Router,
-  RoutingMode,
-  Tier,
+  CapacitySnapshot,
+  ChatMessage,
+  RouteResult,
+  SubscriptionDecision,
+  SubscriptionId,
+  SubscriptionRouter,
+  UsageStore,
+  UsageTotals,
 } from "@milo/core";
-import type { AnthropicUpstream } from "./anthropic.js";
-import { billingAuth } from "./billing.js";
-import type { BillingRuntime } from "./billing.js";
-import { anthropicErrorResponse, errorResponse } from "./errors.js";
-import { hashKey } from "./rate-limit.js";
-import type { RateLimiter } from "./rate-limit.js";
-import { applyTenantHeaders, bodyTooLarge, getTenantStatus } from "./tenant-limits.js";
-import type { TenantLimits } from "./tenant-limits.js";
-import { registerAccountPages } from "./routes/account-pages.js";
-import { registerBillingRoutes } from "./routes/billing-api.js";
-import { registerChatRoute } from "./routes/chat.js";
-import { registerDecisionsRoutes } from "./routes/decisions.js";
-import { registerMessagesRoute } from "./routes/messages.js";
-import { registerModelsRoute } from "./routes/models.js";
-import { registerPreferencesRoutes } from "./routes/preferences.js";
-import { registerMemoryRoutes } from "./routes/memory.js";
-import { registerProxyRoute } from "./routes/proxy.js";
-import { registerRosterRoute } from "./routes/roster.js";
-import { registerResponsesRoute } from "./routes/responses.js";
-import { registerVerifyRoute } from "./routes/verify.js";
-import { registerStaticRoutes } from "./routes/static.js";
+import { errorMessage, errorResponse } from "./errors.js";
 
-/** Structurally identical to `GatewayOptions["logger"]`, which is pinned. */
+/** The OpenAI stream terminator, sent verbatim rather than as JSON. */
+const DONE = "[DONE]";
+
 export type Logger = {
   info(msg: string, meta?: Record<string, unknown>): void;
   warn(msg: string, meta?: Record<string, unknown>): void;
   error(msg: string, meta?: Record<string, unknown>): void;
 };
 
-/**
- * What `/healthz` and `/` report as the decision backend. Jev is the only one
- * (ADR-005), but the key stays in both payloads so a dashboard that reads it
- * does not break.
- */
-export const DECISION_BACKEND = "jev";
-
-/** The one `/v1` route that exists for people who have no key yet. */
-const SIGNUP_PATH = "/v1/signup";
-
 export type AppDeps = {
-  router: Router;
-  /**
-   * The routing mode this deployment runs (ADR-012), for the disclosure
-   * surfaces (`/healthz`, `GET /`). The router carries the mode that
-   * actually routes; this field only reports it, and defaults to
-   * `"roster"` like everything else.
-   */
-  mode?: RoutingMode;
-  /**
-   * The tier-to-model table this deployment is actually running, so `/` and
-   * `/v1/roster` disclose what will be picked rather than what ships.
-   * Defaults to `DEFAULT_ROSTER` for a caller that constructs `AppDeps` by
-   * hand.
-   */
-  roster?: Roster;
-  openRouter: OpenRouterClient;
-  /** OpenRouter's Anthropic-compatible surface, for `/v1/messages`. */
-  anthropic: AnthropicUpstream;
-  log: DecisionLog;
-  /**
-   * Jev on Milo's own key, shared by the gateway's two non-routing uses:
-   * ranking best-of-N samples (ADR-010) and resolving preference capture
-   * (ADR-011). Optional so a hand-built `AppDeps` degrades softly -- a
-   * sampled decision answers with the first successful sample marked
-   * `ranking_failed`, and capture simply no-ops.
-   */
-  jev?: JevClientLike;
-  /**
-   * Whether the router's Jev classification call runs on the caller's
-   * forwarded OpenRouter key (ADR-021). True only under the `"openrouter"`
-   * Jev transport; when true, each routed request carries its resolved
-   * upstream key as `RouteRequest.jevKey`. False (the default) leaves
-   * `jevKey` unset, so no key is ever attached to a routing request under the
-   * TypeSafe transport.
-   */
-  forwardJevKey?: boolean;
-  /**
-   * Discloses which transport actually carries Jev calls right now, for the
-   * `x-milo-jev-transport` header (`routes/shared.ts`'s
-   * `applyJevTransportHeader`). Set only when this deployment runs the
-   * `"openrouter"` transport wrapped in `JevTransportFallbackClient`'s
-   * circuit breaker (ADR-023); absent under the default `"typesafe"`
-   * transport, where the header is never sent because there is nothing to
-   * disclose -- there is only one transport and no fallback. Best-effort and
-   * process-wide, not a strict per-call guarantee under concurrency: see
-   * `JevTransportState`'s own doc comment.
-   */
-  jevTransportState?: () => JevTransportState;
-  /**
-   * Personal-fact memory (ADR-017). Present only when the deployment has an
-   * encryption key -- the gateway builds `encryptor` from the billing
-   * AES-256-GCM envelope keyed by `MILO_ENCRYPTION_KEY`. Absent means the
-   * feature degrades to disabled: no capture, no injection, and `GET
-   * /v1/memory` answers empty. A fact store with no envelope must not store
-   * plaintext, so it stores nothing.
-   */
-  factMemory?: { encryptor: Encryptor };
-  /**
-   * Two-stage fact retrieval (ADR-018). Present only alongside `factMemory`
-   * and when retrieval is enabled: `model` and `baseUrl` are the embeddings
-   * endpoint the gateway calls with the caller's forwarded key to pre-rank a
-   * caller's facts before the Jev gate. Absent means the pre-filter is off and
-   * the gate falls open to asking Jev about every fact, exactly as ADR-017
-   * shipped it.
-   */
-  factRetrieval?: { model: string; baseUrl: string; fetch?: (input: string, init?: RequestInit) => Promise<Response> };
-  rateLimiter: RateLimiter;
-  /**
-   * Tenant guardrails: per-key request/token rate limits, a rolling-window
-   * spend cap, and request-shape bounds, all independently optional. Absent
-   * means none of it runs -- the pre-existing `rateLimiter` above (Jev spend
-   * on the routed path only, ADR-003) is untouched either way. Set from
-   * `GatewayOptions.tenantLimits`.
-   */
-  tenantLimits?: TenantLimits;
-  /**
-   * Best-of-N execution knobs (ADR-010, ADR-024). Absent means the defaults:
-   * `sampleTimeoutMs` caps each sample's wall clock; `minRanked` is how many
-   * ranked samples the fan-out waits for before an early return may fire.
-   * `adaptive` (default off) draws samples incrementally and stops early on a
-   * confident lead; `cacheFriendlyVariants` (default off) moves each sample's
-   * framing to a trailing suffix so the shared prompt prefix stays
-   * cache-eligible. Both are prompt/compute changes ADR-010's benchmark has
-   * not measured, so they default off and are validated before production use.
-   *
-   * `verifyCandidates` (ADR-026, default off) adds a cheap, language-agnostic
-   * static structural check to the best-of-N ranking so a truncated or
-   * structurally-broken candidate is demoted below valid ones instead of
-   * winning on Jev's text score alone. Off, the ranking is byte-identical to
-   * ADR-010; on, it is a ranking change to validate with `milo canary`/`pnpm
-   * bench` before production use. (Top-K exposure is per-request via `n`, not a
-   * deployment knob.)
-   */
-  sampling?: {
-    sampleTimeoutMs?: number;
-    minRanked?: number;
-    adaptive?: {
-      enabled?: boolean;
-      minSamples?: number;
-      maxSamples?: number;
-      qualityBar?: number;
-      leadMargin?: number;
-    };
-    cacheFriendlyVariants?: boolean;
-    verifyCandidates?: boolean;
-  };
-  /**
-   * Speculative routing (ADR-024). Absent means off: the OpenAI chat route
-   * takes its exact pre-speculation path and never asks the router to
-   * speculate. When present and `enabled`, that route starts the router's
-   * single cheapest fast-tier call in parallel with the Jev classification and
-   * reuses it only when the real decision resolves to that same single,
-   * ungated call -- otherwise the speculative call is aborted and the normal
-   * forward runs, so routing is never changed. The router owns the eligibility
-   * heuristic (`Router.speculativeModel`); this flag only gates whether the
-   * gateway wires it up. Set from `GatewayOptions.speculation`.
-   */
-  speculation?: { enabled?: boolean; maxPromptChars?: number };
-  /**
-   * Context pruning (ADR-014). Absent or `enabled` false means the gate is
-   * off for every request unless one opts in with `milo: { prune: true }`.
-   * `minContextTokens` is the token floor a conversation must exceed before
-   * pruning is considered (default 40,000); `contextWindowTokens` is the
-   * fill-ratio denominator for a model whose context window is unknown
-   * (default 128,000).
-   */
-  pruning?: { enabled?: boolean; minContextTokens?: number; contextWindowTokens?: number };
+  router: SubscriptionRouter;
+  /** Per-backend labels for `/v1/usage` and `/v1/models`. */
+  labels: Partial<Record<SubscriptionId, string>>;
+  store?: UsageStore;
   logger: Logger;
-  /** Injectable clock for upstream latency. */
   now: () => number;
-  /** Fire and forget, but tracked so `close()` can drain it. */
-  recordUpstream(id: string, upstream: NonNullable<DecisionRecord["upstream"]>): void;
-  /**
-   * Milo-issued keys, credits and metering (ADR-007). Absent means this
-   * deployment is bring-your-own-key only: nothing changes for a BYOK caller,
-   * and an `mk_` bearer is refused with 401.
-   */
-  billing?: BillingRuntime;
-  /**
-   * Registers work that outlives the request that started it -- the charge
-   * for a streamed response -- so `close()` can drain it. Optional: without
-   * it the work still runs, it just is not waited for on shutdown.
-   */
-  track?(work: Promise<unknown>): void;
 };
 
-/** The raw `Authorization` header. Valid by the time any route runs. */
-export function authorization(c: Context): string {
-  return c.req.header("authorization") ?? "";
+/** The model ids Milo answers to, besides `codex/<model>` and `claude/<model>`. */
+export function modelIds(available: SubscriptionId[]): string[] {
+  return [ROUTED_MODEL_ID, ...available.map((id) => `milo/${id}`)];
 }
 
-/** The bearer token, or `""` if the header is missing or not bearer-shaped. */
-function bearerToken(c: Context): string {
-  return c.req.header("authorization")?.match(/^Bearer\s+(\S.*)$/i)?.[1]?.trim() ?? "";
+type Target = { force?: SubscriptionId; model?: string };
+
+/** Maps a request's `model` to a routing target, or `undefined` when Milo does not serve it. */
+export function parseModel(model: string): Target | undefined {
+  if (model === ROUTED_MODEL_ID || model === "milo") return {};
+  const [prefix, ...rest] = model.split("/");
+  const suffix = rest.join("/");
+  if (prefix === "milo" && isSubscriptionId(suffix)) return { force: suffix };
+  if (prefix !== undefined && isSubscriptionId(prefix)) {
+    return suffix === "" ? { force: prefix } : { force: prefix, model: suffix };
+  }
+  return undefined;
 }
 
-/**
- * The user's OpenRouter key, from whichever header carried it.
- *
- * The Anthropic SDK and Claude Code send a key as `x-api-key`; every other
- * client Milo serves sends `Authorization: Bearer`. Both name the same thing
- * -- the user's OpenRouter key -- so `/v1/messages` accepts either. Bearer
- * wins when both are present, since that is the one OpenRouter documents.
- */
-export function credential(c: Context): string {
-  const bearer = bearerToken(c);
-  if (bearer !== "") return bearer;
-  return c.req.header("x-api-key")?.trim() ?? "";
+function capacityHeader(capacity: CapacitySnapshot[]): string {
+  return capacity
+    .map((s) => {
+      const left = s.remainingPercent !== undefined ? `${s.remainingPercent}%` : "unknown";
+      return `${s.backend}=${left}${s.limited ? " limited" : ""}${s.source === "cli" ? "" : ` (${s.source})`}`;
+    })
+    .join(", ");
 }
 
-/**
- * The credential as OpenRouter wants it. Used both as the outgoing
- * `Authorization` header and as the rate limiter's bucket key, so one key
- * gets one bucket whichever header it arrived in.
- */
-export function upstreamAuthorization(c: Context): string {
-  return `Bearer ${credential(c)}`;
-}
-
-/**
- * The caller's identity as anything but the request itself is allowed to know
- * it: the SHA-256 of the normalized credential, which is the same function
- * (`hashKey`) and the same value the rate limiter buckets on.
- *
- * It is computed from `upstreamAuthorization` rather than the raw header, so
- * one key is one identity whichever header carried it and whatever spacing it
- * arrived with. This is what a per-key roster is stored under (ADR-008): Milo
- * keeps no key material (ADR-003), so a hash is the only handle it has, and a
- * hash is all it needs -- it is stable per key and reveals nothing.
- */
-export function keyHash(c: Context): string {
-  return hashKey(upstreamAuthorization(c));
-}
-
-/** Whether a path is part of the Anthropic-dialect surface. */
-export function isAnthropicPath(pathname: string): boolean {
-  return pathname === "/v1/messages" || pathname.startsWith("/v1/messages/");
-}
-
-/**
- * The upstream headers worth handing to the client: the content type (so an
- * SSE stream still reads as one) and OpenRouter's request id (so a user can
- * quote it in a support thread). Everything else -- lengths and encodings
- * that may no longer hold, cookies, CORS -- is dropped by omission.
- */
-export function passThroughHeaders(upstream: Response): Headers {
-  const headers = new Headers();
-  const contentType = upstream.headers.get("content-type");
-  if (contentType !== null) headers.set("content-type", contentType);
-  const requestId = upstream.headers.get("x-request-id");
-  if (requestId !== null) headers.set("x-request-id", requestId);
+/** `x-milo-*` headers explaining a decision and, as far as known, its outcome. */
+export function decisionHeaders(
+  decision: SubscriptionDecision,
+  attempts: Array<{ backend: SubscriptionId; error?: string }>,
+  served: SubscriptionId | undefined,
+  model: string | undefined,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "x-milo-decision-id": decision.id,
+    "x-milo-reason": ascii(decision.reason),
+    "x-milo-task-type": decision.classification.taskType,
+    "x-milo-difficulty": String(Math.round(decision.classification.difficulty * 100) / 100),
+    "x-milo-classifier": decision.classification.source,
+    "x-milo-capacity": ascii(capacityHeader(decision.capacity)),
+  };
+  if (served !== undefined) headers["x-milo-backend"] = served;
+  if (model !== undefined) headers["x-milo-model"] = ascii(model);
+  const failed = attempts.filter((a) => a.error !== undefined);
+  if (failed.length > 0) headers["x-milo-failover"] = failed.map((a) => `${a.backend}:${a.error}`).join(", ");
   return headers;
 }
 
-/**
- * Every `/v1/*` request carries the user's OpenRouter key. The gateway only
- * checks that one is present -- validating it is OpenRouter's job, and Milo
- * has no way to do it without spending a call. The value is read here and
- * never logged, stored, or echoed back.
- *
- * Under `/v1/messages` a non-empty `x-api-key` counts, because that is where
- * the Anthropic SDK and Claude Code put the key (Claude Code's
- * `ANTHROPIC_API_KEY` sends `x-api-key`, `ANTHROPIC_AUTH_TOKEN` sends
- * `Authorization: Bearer`, and a user should not have to know which). Both
- * leave as one bearer token; see `routes/messages.ts`. The refusal wears the
- * dialect of the route it guards, so each client's error classes parse it.
- *
- * `POST /v1/signup` is the one exception: it is how somebody with no key at
- * all gets their first one (ADR-007), so it cannot demand one. It has a rate
- * limit of its own instead (`routes/billing-api.ts`).
- */
-const requireKey: MiddlewareHandler = async (c, next) => {
-  const pathname = new URL(c.req.url).pathname;
-  // Signing up is how a user gets their first key, so it cannot require one.
-  if (pathname === SIGNUP_PATH) {
-    await next();
-    return;
-  }
-  const anthropic = isAnthropicPath(pathname);
+function ascii(value: string): string {
+  return value.replace(/[^\x20-\x7e]/g, "?");
+}
 
-  if ((anthropic ? credential(c) : bearerToken(c)) === "") {
-    return anthropic
-      ? anthropicErrorResponse(
-          c,
-          401,
-          "No OpenRouter API key provided. Send it as `x-api-key: <key>` or `Authorization: Bearer <key>`.",
-          "authentication_error",
-        )
-      : errorResponse(
-          c,
-          401,
-          "No OpenRouter API key provided. Send it as `Authorization: Bearer <key>`.",
-          "authentication_error",
-          "missing_authorization",
-        );
-  }
+function attemptsOf(result: RouteResult): Array<{ backend: SubscriptionId; error?: string }> {
+  return result.attempts.map((a) => (a.outcome.ok ? { backend: a.backend } : { backend: a.backend, error: a.outcome.error }));
+}
 
-  await next();
-  return;
+type ChatBody = {
+  model?: unknown;
+  messages?: unknown;
+  stream?: unknown;
+  stream_options?: { include_usage?: unknown };
+  tools?: unknown;
+  n?: unknown;
 };
 
-/**
- * Abuse protection's cheapest check: a `Content-Length` over the configured
- * ceiling is refused before the body is even read, so an oversized upload
- * costs Milo nothing but a header comparison. Only checks what
- * `tenantLimits.maxBodyBytes` names; absent (the default) this middleware
- * does nothing for every request, which is the "unconfigured deployment is
- * unchanged" guarantee tenant limits promise everywhere else.
- */
-function tenantBodySizeGuard(deps: AppDeps): MiddlewareHandler {
-  return async (c, next) => {
-    const maxBytes = deps.tenantLimits?.config.maxBodyBytes;
-    if (maxBytes !== undefined && bodyTooLarge(c.req.header("content-length"), maxBytes)) {
-      const message = `Request body exceeds the ${maxBytes}-byte limit Milo allows for this deployment.`;
-      return isAnthropicPath(new URL(c.req.url).pathname)
-        ? anthropicErrorResponse(c, 413, message, "invalid_request_error")
-        : errorResponse(c, 413, message, "invalid_request_error", "request_too_large");
-    }
-    await next();
-    return;
+function isMessages(value: unknown): value is ChatMessage[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (m) =>
+        typeof m === "object" &&
+        m !== null &&
+        typeof (m as { role?: unknown }).role === "string" &&
+        ((m as { content?: unknown }).content === null ||
+          typeof (m as { content?: unknown }).content === "string" ||
+          Array.isArray((m as { content?: unknown }).content)),
+    )
+  );
+}
+
+function usageBody(result: RouteResult): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+  const usage = result.outcome.ok ? result.outcome.usage : { inputTokens: 0, outputTokens: 0 };
+  return {
+    prompt_tokens: usage.inputTokens,
+    completion_tokens: usage.outputTokens,
+    total_tokens: usage.inputTokens + usage.outputTokens,
   };
 }
 
-/**
- * Discloses whatever the tenant-limits guard found for this request as
- * `x-milo-ratelimit-*` / `x-milo-spend-*` headers, on every response --
- * refusal or success -- once a route has run it (`enforceTenantLimits` in
- * `routes/shared.ts`). A request that never reached a guarded route (a
- * passthrough that failed before parsing, `/healthz`, the proxy route) simply
- * recorded no status, and this middleware then does nothing: `c.res.headers`
- * is mutated only when there is something to disclose.
- */
-function tenantHeadersMiddleware(): MiddlewareHandler {
-  return async (c, next) => {
-    await next();
-    const status = getTenantStatus(c);
-    if (status !== undefined) applyTenantHeaders(c.res.headers, status);
-  };
+/** The status and OpenAI error for a request no subscription answered. */
+function failureResponse(c: Context, result: RouteResult, headers: Record<string, string>): Response {
+  const outcome = result.outcome;
+  const allLimited = result.attempts.length > 0 && result.attempts.every((a) => !a.outcome.ok && a.outcome.error === "rate_limited");
+  const message = outcome.ok ? "unknown failure" : outcome.message;
+  if (allLimited) {
+    return errorResponse(c, 429, `Every subscription is rate-limited. Last error: ${message}`, "rate_limit_error", "subscriptions_exhausted", headers);
+  }
+  if (!outcome.ok && outcome.error === "timeout") {
+    return errorResponse(c, 504, message, "api_error", "backend_timeout", headers);
+  }
+  return errorResponse(c, 502, `No subscription answered. Last error: ${message}`, "api_error", "backend_failed", headers);
 }
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
+  const available = (): SubscriptionId[] => deps.router.available;
 
-  // No auth: a health probe must work before anyone has a key.
-  app.get("/healthz", (c) =>
-    c.json({ ok: true, policyVersion: POLICY_VERSION, decisionBackend: DECISION_BACKEND, mode: deps.mode ?? "roster" }),
-  );
+  app.get("/healthz", (c) => c.json({ ok: true, backends: available() }));
 
-  // A landing answer for people who open the bare address. Browsers get a
-  // short page; programs get JSON.
   app.get("/", (c) => {
-    const url = new URL("/v1", c.req.url);
-    const proto = c.req.header("x-forwarded-proto");
-    if (proto === "https" || proto === "http") url.protocol = `${proto}:`;
-    const baseUrl = url.toString();
-    const origin = baseUrl.slice(0, -"/v1".length);
-    const roster = deps.roster ?? DEFAULT_ROSTER;
-    const info = {
+    const baseUrl = new URL("/v1", c.req.url).toString();
+    return c.json({
       name: "milo",
       description:
-        'OpenRouter with an actual routing mechanism. Point an OpenAI-compatible client at /v1 with your OpenRouter key and use model "milo/auto".',
+        'Local router over your own ChatGPT (codex) and Claude (claude) subscriptions. Point an OpenAI-compatible client at /v1 and use model "milo/auto".',
       baseUrl,
-      routedModel: ROUTED_MODEL_ID,
-      policyVersion: POLICY_VERSION,
-      decisionBackend: DECISION_BACKEND,
-      mode: deps.mode ?? "roster",
-      roster: {
-        version: DEFAULT_ROSTER_INFO.version,
-        tiers: Object.fromEntries(TIERS.map((tier) => [tier, [...(roster[tier] ?? [])]])) as Record<
-          Tier,
-          string[]
-        >,
-      },
-      rosterNote: ROSTER_NOTE,
-      endpoints: [
-        "/healthz",
-        "/v1/chat/completions",
-        "/v1/messages",
-        "/v1/responses",
-        "/v1/models",
-        "/v1/roster",
-        "/v1/preferences",
-        "/v1/memory",
-        "/v1/decisions/:id",
-      ],
-      docs: "https://github.com/bananaman614305/milo",
-      setup: `${origin}/setup.md`,
-      piSetup: `${origin}/setup/pi.json`,
-      skill: `${origin}/skill.md`,
-    };
-    const accept = c.req.header("accept") ?? "";
-    if (!accept.includes("text/html")) return c.json(info);
-    return c.html(landingPage(info));
+      models: modelIds(available()),
+      endpoints: ["/healthz", "/v1/chat/completions", "/v1/models", "/v1/usage"],
+    });
   });
 
-  // No auth: an agent has to be able to read these before it has a key.
-  registerStaticRoutes(app, deps);
+  app.get("/v1/models", (c) =>
+    c.json({
+      object: "list",
+      data: modelIds(available()).map((id) => ({ id, object: "model", created: 0, owned_by: "milo" })),
+    }),
+  );
 
-  app.use("/v1/*", requireKey);
-  // Cheapest abuse check first: an oversized body is refused before a
-  // billing lookup is even attempted.
-  app.use("/v1/*", tenantBodySizeGuard(deps));
-  // Resolves `mk_` keys to an account and everything else to BYOK, once per
-  // request, before any route reads the caller (ADR-007).
-  app.use("/v1/*", billingAuth(deps));
-  // Wraps every route below: applies whatever tenant-limits status a route
-  // recorded to the outgoing response, refusal or success alike.
-  app.use("/v1/*", tenantHeadersMiddleware());
+  app.get("/v1/usage", async (c) => {
+    await deps.router.refreshLimits();
+    const capacity = deps.router.capacity();
+    const now = deps.now();
+    const day = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+    const week = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const [last24h, last7d] = deps.store
+      ? await Promise.all([deps.store.totals(day), deps.store.totals(week)])
+      : [[], []];
+    const pick = (rows: UsageTotals[], id: SubscriptionId): UsageTotals | undefined => rows.find((r) => r.backend === id);
+    return c.json({
+      object: "usage",
+      subscriptions: capacity.map((snapshot) => ({
+        backend: snapshot.backend,
+        label: deps.labels[snapshot.backend] ?? snapshot.backend,
+        capacity: snapshot,
+        last24h: pick(last24h, snapshot.backend) ?? null,
+        last7d: pick(last7d, snapshot.backend) ?? null,
+      })),
+    });
+  });
 
-  registerChatRoute(app, deps);
-  registerMessagesRoute(app, deps);
-  registerResponsesRoute(app, deps);
-  registerModelsRoute(app, deps);
-  registerRosterRoute(app, deps);
-  registerPreferencesRoutes(app, deps);
-  registerMemoryRoutes(app, deps);
-  registerVerifyRoute(app, deps);
-  registerDecisionsRoutes(app, deps);
-  // billing JSON routes
-  if (deps.billing !== undefined) registerBillingRoutes(app, deps);
-  registerAccountPages(app, deps); // account HTML pages
-  // Last: it claims every `/v1/*` method and path the routes above did not.
-  registerProxyRoute(app, deps);
+  app.post("/v1/chat/completions", async (c) => {
+    let body: ChatBody;
+    try {
+      body = (await c.req.json()) as ChatBody;
+    } catch {
+      return errorResponse(c, 400, "Request body must be JSON.", "invalid_request_error", "invalid_json");
+    }
+    const model = typeof body.model === "string" ? body.model : ROUTED_MODEL_ID;
+    const target = parseModel(model);
+    if (target === undefined) {
+      return errorResponse(
+        c,
+        400,
+        `Milo serves ${modelIds(available()).join(", ")}, or codex/<model> and claude/<model>; got "${model}".`,
+        "invalid_request_error",
+        "model_not_found",
+      );
+    }
+    if (target.force !== undefined && !available().includes(target.force)) {
+      return errorResponse(c, 400, `The ${target.force} backend is not enabled.`, "invalid_request_error", "backend_disabled");
+    }
+    if (!isMessages(body.messages)) {
+      return errorResponse(c, 400, "`messages` must be a non-empty array of chat messages.", "invalid_request_error", "invalid_messages");
+    }
+    if (Array.isArray(body.tools) && body.tools.length > 0) {
+      return errorResponse(
+        c,
+        400,
+        "Tool calling is not supported: subscription CLIs answer in text and run no caller-defined tools.",
+        "invalid_request_error",
+        "tools_unsupported",
+      );
+    }
+    if (typeof body.n === "number" && body.n > 1) {
+      return errorResponse(c, 400, "Only n=1 is supported.", "invalid_request_error", "n_unsupported");
+    }
+
+    const messages = body.messages;
+    const created = Math.floor(deps.now() / 1000);
+    const request = {
+      messages,
+      ...(target.force !== undefined ? { force: target.force } : {}),
+      ...(target.model !== undefined ? { model: target.model } : {}),
+      signal: c.req.raw.signal,
+    };
+
+    if (body.stream !== true) {
+      let result: RouteResult;
+      try {
+        result = await deps.router.complete(request);
+      } catch (error) {
+        deps.logger.error("route failed", { error: errorMessage(error) });
+        return errorResponse(c, 500, "Milo failed to route this request.", "api_error", "internal_error");
+      }
+      const servedModel = result.outcome.ok ? result.outcome.model : undefined;
+      const headers = decisionHeaders(result.decision, attemptsOf(result), result.served, servedModel);
+      logResult(deps, result);
+      if (!result.outcome.ok) return failureResponse(c, result, headers);
+      return c.json(
+        {
+          id: `chatcmpl-${result.decision.id}`,
+          object: "chat.completion",
+          created,
+          model,
+          choices: [{ index: 0, message: { role: "assistant", content: result.outcome.text }, finish_reason: "stop" }],
+          usage: usageBody(result),
+        },
+        200,
+        headers,
+      );
+    }
+
+    return streamCompletion(c, deps, request, model, created, body.stream_options?.include_usage === true);
+  });
 
   app.onError((err, c) => {
     deps.logger.error("unhandled gateway error", { error: err.message });
@@ -463,77 +279,146 @@ export function createApp(deps: AppDeps): Hono {
   return app;
 }
 
-/** One row per tier: the tier's models and what each charges for output. */
-function rosterRows(tiers: Record<Tier, string[]>, esc: (v: string) => string): string {
-  return TIERS.map((tier) => {
-    const ids = tiers[tier] ?? [];
-    const models = ids.map((id) => esc(id)).join("<br>");
-    const prices = ids
-      .map((id) => {
-        const known = defaultRosterModel(id);
-        return known === undefined ? "&mdash;" : `$${known.outputUsdPerM}`;
-      })
-      .join("<br>");
-    return `<tr><td class="tier">${esc(tier)}</td><td class="model">${models}</td><td class="price">${prices}</td></tr>`;
-  }).join("\n");
+/**
+ * Streams an answer as OpenAI chat-completion chunks. The response (and its
+ * headers) is committed only when the first text arrives, so a failover
+ * before that point is still reported in `x-milo-failover`; when no backend
+ * answers at all, the caller gets an ordinary JSON error instead of a stream.
+ */
+async function streamCompletion(
+  c: Context,
+  deps: AppDeps,
+  request: Parameters<SubscriptionRouter["complete"]>[0],
+  model: string,
+  created: number,
+  includeUsage: boolean,
+): Promise<Response> {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(ctrl) {
+      controller = ctrl;
+    },
+  });
+  let decision: SubscriptionDecision | undefined;
+  let current: SubscriptionId | undefined;
+  let failed: Array<{ backend: SubscriptionId; error: string }> = [];
+  let started = false;
+  let resolveFirst!: () => void;
+  const firstText = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+
+  const send = (payload: unknown): void => {
+    const data = payload === DONE ? DONE : JSON.stringify(payload);
+    try {
+      controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+    } catch {
+      // The client went away; the CLI is stopped through the request's abort signal.
+    }
+  };
+  const chunk = (delta: Record<string, unknown>, finish: string | null): Record<string, unknown> => ({
+    id: `chatcmpl-${decision?.id ?? ""}`,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+
+  const done = deps.router.complete({
+    ...request,
+    onDecision: (d) => {
+      decision = d;
+    },
+    onAttempt: (backend, earlier) => {
+      failed = earlier.flatMap((a) => (a.outcome.ok ? [] : [{ backend: a.backend, error: a.outcome.error }]));
+      current = backend;
+    },
+    onText: (delta) => {
+      if (!started) {
+        started = true;
+        send(chunk({ role: "assistant", content: "" }, null));
+        resolveFirst();
+      }
+      send(chunk({ content: delta }, null));
+    },
+  });
+
+  let early: RouteResult | undefined;
+  try {
+    early = await Promise.race([firstText.then(() => undefined), done]);
+  } catch (error) {
+    deps.logger.error("route failed", { error: errorMessage(error) });
+    return errorResponse(c, 500, "Milo failed to route this request.", "api_error", "internal_error");
+  }
+
+  if (early !== undefined && !started) {
+    // Finished without producing any text: report it like a buffered request.
+    logResult(deps, early);
+    const headers = decisionHeaders(early.decision, attemptsOf(early), early.served, early.outcome.ok ? early.outcome.model : undefined);
+    if (!early.outcome.ok) return failureResponse(c, early, headers);
+    send(chunk({ role: "assistant", content: "" }, null));
+    finishStream(send, chunk, early, includeUsage);
+    controller.close();
+    return new Response(stream, { status: 200, headers: { ...sseHeaders(), ...headers } });
+  }
+
+  const headers =
+    decision !== undefined
+      ? decisionHeaders(
+          decision,
+          failed,
+          current,
+          undefined,
+        )
+      : {};
+
+  void done
+    .then((result) => {
+      logResult(deps, result);
+      if (result.outcome.ok) {
+        finishStream(send, chunk, result, includeUsage);
+      } else {
+        send({ error: { message: result.outcome.message, type: "api_error", code: result.outcome.error } });
+      }
+    })
+    .catch((error: unknown) => {
+      deps.logger.error("stream failed", { error: errorMessage(error) });
+      send({ error: { message: "Milo failed while streaming.", type: "api_error", code: "internal_error" } });
+    })
+    .finally(() => {
+      try {
+        controller.close();
+      } catch {
+        // The client already went away.
+      }
+    });
+
+  return new Response(stream, { status: 200, headers: { ...sseHeaders(), ...headers } });
 }
 
-function landingPage(info: {
-  baseUrl: string;
-  routedModel: string;
-  policyVersion: string;
-  decisionBackend: string;
-  roster: { version: string; tiers: Record<Tier, string[]> };
-  rosterNote: string;
-  docs: string;
-  setup: string;
-  skill: string;
-}): string {
-  const esc = (v: string): string => v.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] ?? ch);
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Milo</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { margin: 0; padding: 40px 20px 64px; font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-         background: Canvas; color: CanvasText; }
-  main { max-width: 640px; margin: 0 auto; }
-  h1 { font-size: 40px; margin: 0 0 8px; letter-spacing: -0.01em; }
-  p.lede { font-size: 18px; margin: 0 0 28px; opacity: .85; }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0 0 28px; }
-  dt { opacity: .6; } dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
-  pre { background: color-mix(in srgb, CanvasText 8%, Canvas); padding: 14px 16px; overflow-x: auto; border-radius: 6px;
-        font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; }
-  a { color: inherit; }
-  .ok { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #2e9e5b; margin-right: 6px; }
-  table.roster { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 14px; }
-  table.roster th, table.roster td { text-align: left; padding: 5px 10px 5px 0; vertical-align: top;
-        border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, Canvas); }
-  table.roster th { opacity: .6; font-weight: 500; }
-  table.roster td.tier { font-weight: 600; text-transform: capitalize; white-space: nowrap; }
-  table.roster td.model { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
-  table.roster td.price { white-space: nowrap; font-variant-numeric: tabular-nums; }
-  p.note { font-size: 14px; opacity: .8; margin: 0 0 28px; }
-</style></head>
-<body><main>
-<h1>Milo</h1>
-<p class="lede">OpenRouter with an actual routing mechanism. Send <code>model: "milo/auto"</code> and a small decision model picks the right tier for each request from the task's type and difficulty.</p>
-<dl>
-  <dt>Status</dt><dd><span class="ok"></span>up, policy ${esc(info.policyVersion)}, decisions via ${esc(info.decisionBackend)}</dd>
-  <dt>Base URL</dt><dd>${esc(info.baseUrl)}</dd>
-  <dt>Model</dt><dd>${esc(info.routedModel)}</dd>
-  <dt>Docs</dt><dd><a href="${esc(info.docs)}">${esc(info.docs)}</a></dd>
-</dl>
-<h2 style="font-size:18px;margin:0 0 8px">Use it</h2>
-<pre>export OPENAI_BASE_URL=${esc(info.baseUrl)}
-export OPENAI_API_KEY=&lt;your OpenRouter key&gt;
-# any OpenAI SDK call with model="milo/auto"</pre>
-<h2 style="font-size:18px;margin:0 0 8px">What Milo picks by default</h2>
-<table class="roster"><thead><tr><th>Tier</th><th>Models, in preference order</th><th>Output $/M</th></tr></thead><tbody>
-${rosterRows(info.roster.tiers, esc)}
-</tbody></table>
-<p class="note">${esc(info.rosterNote)} Roster version ${esc(info.roster.version)}; the full table, with prices and weekly usage ranks, is at <code>/v1/roster</code>.</p>
-<p>Every routed response carries <code>x-milo-*</code> headers naming the decision. Fetch <code>/v1/decisions/&lt;id&gt;</code> with the same key to read why.</p>
-<p>For agents: <a href="${esc(info.setup)}">${esc(info.setup)}</a> walks through setup end to end; the same content is installable as a skill from <a href="${esc(info.skill)}">${esc(info.skill)}</a>.</p>
-</main></body></html>`;
+function finishStream(
+  send: (payload: unknown) => void,
+  chunk: (delta: Record<string, unknown>, finish: string | null) => Record<string, unknown>,
+  result: RouteResult,
+  includeUsage: boolean,
+): void {
+  send(chunk({}, "stop"));
+  if (includeUsage) send({ ...chunk({}, null), choices: [], usage: usageBody(result) });
+  send(DONE);
+}
+
+function sseHeaders(): Record<string, string> {
+  return { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" };
+}
+
+function logResult(deps: AppDeps, result: RouteResult): void {
+  deps.logger.info("routed", {
+    decision: result.decision.id,
+    taskType: result.decision.classification.taskType,
+    classifier: result.decision.classification.source,
+    served: result.served ?? null,
+    attempts: result.attempts.map((a) => (a.outcome.ok ? a.backend : `${a.backend}:${a.outcome.error}`)),
+    latencyMs: result.attempts.reduce((sum, a) => sum + a.outcome.latencyMs, 0),
+  });
 }

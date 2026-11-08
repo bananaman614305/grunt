@@ -311,6 +311,38 @@ CREATE INDEX IF NOT EXISTS idx_task_verification_updated_at
   ON task_verification (key_hash, updated_at);
 `,
   },
+  {
+    version: 12,
+    description: "add subscription usage meter (ADR-031)",
+    // One row per CLI call Milo made on a local subscription, plus the last
+    // plan-limit reading each CLI reported. Counts, timings and limit
+    // percentages only: never prompts, answers, or any credential.
+    sql: `
+CREATE TABLE IF NOT EXISTS subscription_calls (
+  id TEXT PRIMARY KEY,
+  decision_id TEXT NOT NULL,
+  backend TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  ok INTEGER NOT NULL,
+  error TEXT,
+  latency_ms INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  cached_input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  api_equivalent_usd REAL,
+  task_type TEXT,
+  reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_calls_backend_created
+  ON subscription_calls (backend, created_at);
+CREATE TABLE IF NOT EXISTS subscription_limits (
+  backend TEXT PRIMARY KEY,
+  observed_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  windows_json TEXT NOT NULL
+);
+`,
+  },
 ];
 
 /**

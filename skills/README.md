@@ -19,12 +19,3 @@ rather than Claude Code's own plugin system can install the same file with:
 ```sh
 npx skills add bananaman614305/milo --skill milo
 ```
-
-## Without installing anything
-
-The skill is also served over HTTP by any running Milo gateway, byte-for-byte
-identical to `skills/milo/SKILL.md`:
-
-```sh
-curl https://milo-gateway.fly.dev/skill.md
-```

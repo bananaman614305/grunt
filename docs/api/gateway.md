@@ -1,5 +1,7 @@
 # Gateway API reference
 
+> **Superseded.** This describes the hosted OpenRouter version of Milo, replaced by the local subscription router in [ADR-031](../adr/031-local-subscription-router.md). It is kept for history; the code it describes is in git history before ADR-031.
+
 The gateway is a Hono app (`packages/gateway/src/app.ts`) that speaks the
 OpenAI `/v1` surface plus a small decisions API. Every route lives under one
 of two auth regimes: `GET /healthz` needs nothing, and every `/v1/*` route
