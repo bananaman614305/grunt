@@ -23,7 +23,7 @@ jobs:
         run: |
           docker run -d --name milo-smoke -p 127.0.0.1:8787:8787 "$IMAGE"
           trap 'docker logs milo-smoke; docker rm -f milo-smoke' EXIT
-          curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:8787/health
+          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:8787/health
           curl --fail http://127.0.0.1:8787/chat > /dev/null
       - name: Push tested image
         run: |
