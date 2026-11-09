@@ -1,7 +1,0 @@
-{
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
-  "include": ["src", "src/router/roster-default.json"],
-  "exclude": ["src/**/*.test.ts"],
-  "references": []
-}

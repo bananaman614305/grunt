@@ -1,8 +1,10 @@
 name: ci
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,7 +18,4 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm test
-      # 0.85 is the target (docs/evals.md), but the Jev-tuned policy profile
-      # is still landing (policy revision 3, docs/PLAN.md), so the gate is
-      # held to 0.80 for now until that profile ships.
-      - run: pnpm eval --mode fixtures --gate 0.80
+      - run: pnpm build

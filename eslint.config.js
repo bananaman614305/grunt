@@ -1,12 +1,9 @@
 import tseslint from "typescript-eslint";
-
 export default tseslint.config(
-  { ignores: [".claude/**", "**/dist/**", "**/node_modules/**", "**/*.js", "**/*.cjs", "**/*.mjs"] },
+  { ignores: ["dist/**", "node_modules/**"] },
   ...tseslint.configs.recommended,
-  {
-    rules: {
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
-      "@typescript-eslint/consistent-type-imports": "error",
-    },
-  },
+  { rules: {
+    "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+    "@typescript-eslint/consistent-type-imports": "error"
+  } }
 );

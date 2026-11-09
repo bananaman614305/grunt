@@ -1,14 +1,8 @@
 {
-  "files": [],
-  "references": [
-    { "path": "packages/core" },
-    { "path": "packages/billing" },
-    { "path": "packages/gateway" },
-    { "path": "packages/cli" },
-    { "path": "packages/evals" },
-    { "path": "packages/fleet" },
-    { "path": "packages/browse" },
-    { "path": "packages/stripe" },
-    { "path": "packages/provisioning" }
-  ]
+  "compilerOptions": {
+    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "lib": ["ES2023", "DOM"],
+    "strict": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true, "skipLibCheck": true, "types": ["node"], "rootDir": "src", "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"], "exclude": ["src/**/*.test.ts"]
 }
