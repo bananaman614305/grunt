@@ -1,0 +1,142 @@
+{
+  "model": "milo",
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<environment_context>\n<cwd>/tmp/milo-harness-cwd</cwd>\n</environment_context>"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Reply with exactly: bridge works 42. Do not use tools."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command",
+      "description": "Recorded exec_command tool",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "description": "Shell command to execute."
+          },
+          "justification": {
+            "type": "string",
+            "description": "User-facing approval question for `require_escalated`; omit otherwise."
+          },
+          "login": {
+            "type": "boolean",
+            "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+          },
+          "max_output_tokens": {
+            "type": "number",
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
+          },
+          "prefix_rule": {
+            "type": "array",
+            "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sandbox_permissions": {
+            "type": "string",
+            "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.",
+            "enum": [
+              "use_default",
+              "require_escalated"
+            ]
+          },
+          "shell": {
+            "type": "string",
+            "description": "Shell binary to launch. Defaults to the user's default shell."
+          },
+          "tty": {
+            "type": "boolean",
+            "description": "True allocates a PTY for the command; false or omitted uses plain pipes."
+          },
+          "workdir": {
+            "type": "string",
+            "description": "Working directory for the command. Defaults to the turn cwd."
+          },
+          "yield_time_ms": {
+            "type": "number",
+            "description": "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "write_stdin",
+      "description": "Recorded write_stdin tool",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chars": {
+            "type": "string",
+            "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."
+          },
+          "max_output_tokens": {
+            "type": "number",
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
+          },
+          "session_id": {
+            "type": "number",
+            "description": "Identifier of the running unified exec session."
+          },
+          "yield_time_ms": {
+            "type": "number",
+            "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "web_search"
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "summary": "auto"
+  },
+  "store": false,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "prompt_cache_key": "01a1c25e-374e-7920-b198-0c8359b6ed7a",
+  "client_metadata": {
+    "session_id": "01a1c25e-374e-7920-b198-0c8359b6ed7a",
+    "x-codex-turn-metadata": "{\"installation_id\":\"ab671cad-7ec6-4925-b728-ecc2882dac6d\",\"session_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a\",\"thread_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a\",\"agent_name\":\"/root\",\"turn_id\":\"01a1c25e-37b7-73b1-bd28-41b50361a2f4\",\"window_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a:0\",\"window_number\":0,\"context_window_id\":\"01a1c25e-3765-7212-a91e-bc8de9c41ea0\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1c25e-37b7-73b1-bd28-41b50361a2f4\",\"thread_source\":\"user\",\"turn_trigger\":\"exec\",\"sandbox\":\"seccomp\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1794262316985,\"analytics_enabled\":true,\"model\":\"milo\"}",
+    "root_turn_id": "01a1c25e-37b7-73b1-bd28-41b50361a2f4",
+    "thread_id": "01a1c25e-374e-7920-b198-0c8359b6ed7a",
+    "x-codex-window-id": "01a1c25e-374e-7920-b198-0c8359b6ed7a:0",
+    "turn_id": "01a1c25e-37b7-73b1-bd28-41b50361a2f4",
+    "x-codex-installation-id": "ab671cad-7ec6-4925-b728-ecc2882dac6d"
+  },
+  "instructions": "You are a coding assistant."
+}

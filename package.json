@@ -1,10 +1,34 @@
 {
-  "name": "milo", "version": "0.1.0", "private": true, "type": "module",
-  "engines": { "node": ">=22" }, "packageManager": "pnpm@10.34.5",
-  "scripts": {
-    "dev": "tsx src/server.ts", "build": "tsc && cp src/chat.html dist/chat.html",
-    "start": "node dist/server.js", "test": "vitest run", "lint": "eslint src && tsc --noEmit"
+  "name": "milo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
   },
-  "dependencies": { "@hono/node-server": "^1.19.17", "@libsql/client": "^0.18.0", "hono": "^4.13.8" },
-  "devDependencies": { "@types/node": "^22.20.3", "eslint": "^9.39.5", "tsx": "^4.19.2", "typescript": "^5.9.3", "typescript-eslint": "^8.70.0", "vitest": "^3.2.7" }
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc && cp src/chat.html dist/chat.html",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "lint": "eslint src && tsc --noEmit",
+    "local": "tsx src/local/main.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.17",
+    "@libsql/client": "^0.18.0",
+    "hono": "^4.13.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "eslint": "^9.39.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^3.2.7"
+  },
+  "bin": {
+    "milo-local": "dist/local/main.js"
+  }
 }
