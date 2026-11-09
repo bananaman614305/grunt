@@ -1,3 +1,0 @@
-packages/evals/reports/*.progress.log
-packages/evals/reports/*.stdout
-packages/evals/reports/bench-*.json
