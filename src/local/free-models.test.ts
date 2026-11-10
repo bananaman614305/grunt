@@ -180,20 +180,32 @@ it.each(['default', 'custom', 'legacy'].flatMap(config =>
   }
 );
 
-it('starts a fresh vault approval when the saved timestamp is expired', async () => {
-  const first = new BrowserSquire();
-  vi.spyOn(first, 'call').mockResolvedValue({ approval_id: 'old', approval_url: 'https://squire.test/old' });
-  await first.credentials.requestReveal({ reference: 'vault://existing' });
-  const path = join(stateDir, 'milo', 'approvals.json');
-  const entries = JSON.parse(await readFile(path, 'utf8'));
-  for (const entry of entries) { entry.createdAt = 0; entry.expiresAt = 0; }
-  await writeFile(path, JSON.stringify(entries));
-  const second = new BrowserSquire();
-  const call = vi.spyOn(second, 'call').mockResolvedValue({ approval_id: 'new', approval_url: 'https://squire.test/new' });
-  expect((await second.credentials.requestReveal({ reference: 'vault://existing' })).approval.id).toBe('new');
-  expect(call).toHaveBeenCalledTimes(1);
-  expect(call.mock.calls[0]?.[1]).toMatchObject({ action: 'start', reference: 'vault://existing' });
-});
+it.each(['the saved timestamp is expired', 'Squire reports credential_fetch_approval_not_pending'])(
+  'starts a fresh vault approval when %s', async reason => {
+    const first = new BrowserSquire();
+    vi.spyOn(first, 'call').mockResolvedValue({ approval_id: 'old', approval_url: 'https://squire.test/old' });
+    await first.credentials.requestReveal({ reference: 'vault://existing' });
+    const path = join(stateDir, 'milo', 'approvals.json');
+    const entries = JSON.parse(await readFile(path, 'utf8'));
+    if (reason === 'the saved timestamp is expired') {
+      for (const entry of entries) { entry.createdAt = 0; entry.expiresAt = 0; }
+    } else {
+      expect(entries[0].expiresAt).toBeGreaterThan(Date.now());
+    }
+    await writeFile(path, JSON.stringify(entries));
+    const second = new BrowserSquire();
+    const call = vi.spyOn(second, 'call').mockImplementation(async (_name, args) => args.action === 'start'
+      ? { approval_id: 'new', approval_url: 'https://squire.test/new' }
+      : { status: 'credential_fetch_refused', reason: 'credential_fetch_approval_not_pending' });
+    expect((await second.credentials.requestReveal({ reference: 'vault://existing' })).approval.id).toBe('new');
+    expect(call).toHaveBeenCalledTimes(reason === 'the saved timestamp is expired' ? 1 : 2);
+    if (reason !== 'the saved timestamp is expired') expect(call.mock.calls[0]?.[1]).toEqual({ action: 'resume', approval_id: 'old' });
+    expect(call).toHaveBeenLastCalledWith('fetch_credential', expect.objectContaining({ action: 'start', reference: 'vault://existing' }));
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual([
+      expect.objectContaining({ id: 'new', approveUrl: 'https://squire.test/new', reference: 'vault://existing' })
+    ]);
+  }
+);
 
 it('keeps the saved approval during transient Squire errors instead of requesting a new one', async () => {
   const first = new BrowserSquire();

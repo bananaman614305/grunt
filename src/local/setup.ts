@@ -227,7 +227,7 @@ export class BrowserSquire implements SetupSquire {
           return { approval: { ...approval, ready: true } };
         }
         if (result.status === 'approval_pending') return { approval };
-        if (result.status !== 'credential_fetch_refused' || !/(?:^|_)(?:denied|expired|unknown|not_found|consumed)(?:_|$)/i.test(String(result.reason))) throw setupStopped('Squire refused key loading; setup stopped', result.reason);
+        if (result.status !== 'credential_fetch_refused' || !/(?:^|_)(?:denied|expired|unknown|not_found|not_pending|consumed)(?:_|$)/i.test(String(result.reason))) throw setupStopped('Squire refused key loading; setup stopped', result.reason);
         approval = undefined;
       } else if (approval) approval = undefined;
       if (!approval) {
