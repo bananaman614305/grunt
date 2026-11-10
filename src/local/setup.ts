@@ -91,7 +91,7 @@ export class BrowserSquire implements SetupSquire {
     }
   }
   async call(name: string, args: ObjectValue): Promise<ObjectValue> {
-    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 60000 });
+    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 60000 }).catch(() => { throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`); });
     if (result.isError) throw new Error(`Squire ${name} failed; inspect Squire for the required action`);
     if (result.structuredContent) return object(result.structuredContent);
     for (const part of result.content as { type: string; text?: string }[]) {
@@ -187,32 +187,48 @@ export class FreeLLMAdmin {
   async key(): Promise<string> { return (await this.call('/settings/api-key', undefined, 'GET')).apiKey; }
 }
 
+type DockerRun = (args: string[], env?: NodeJS.ProcessEnv) => Promise<{ stdout: string }>;
+export async function ensureRouter(password: string, encryption: string, run: DockerRun = argsWithEnv) {
+  if (process.platform !== 'linux') throw new Error('Milo FreeLLMAPI installation currently requires Linux Docker host networking');
+  let owner: string | undefined;
+  try { owner = (await run(['inspect', '--format', '{{ index .Config.Labels "io.milo.router" }}', 'milo-freellmapi'])).stdout.trim(); }
+  catch (error) {
+    if (!/No such (object|container)/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Docker is unavailable; start Docker and resume milo setup');
+  }
+  if (owner !== undefined) {
+    if (owner !== '1') throw new Error('The milo-freellmapi container belongs to another installation; setup stopped');
+    await run(['start', 'milo-freellmapi']); return;
+  }
+  await run(['pull', FREELLMAPI_IMAGE]);
+  // Docker copies named variables from env, keeping secrets out of argv.
+  await run(['run', '-d', '--name', 'milo-freellmapi', '--label', 'io.milo.router=1', '--network', 'host', '--restart', 'unless-stopped', '-v', 'milo-freellmapi-data:/app/server/data', '-e', 'HOST=127.0.0.1', '-e', 'PORT=3001', '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
+    ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: 'milo@localhost.local', password }, ...freeConfig() })
+  });
+}
+async function argsWithEnv(args: string[], env?: NodeJS.ProcessEnv) {
+  return await exec('docker', args, { timeout: 300000, maxBuffer: 1048576, ...(env ? { env } : {}) });
+}
 export async function setup(notify = console.log) {
   const squire = new BrowserSquire();
-  await squire.connect();
   const router = new FreeLLMAdmin();
   try {
+    await squire.connect();
     const existing = (await squire.credentials.list()).find(c => c.service === 'milo-freellmapi-admin');
-    let password: string;
+    let password: string, encryption: string;
     if (existing) {
-      const { approval } = await squire.credentials.requestReveal({ reference: existing.reference, field: 'password' });
+      const { approval } = await squire.credentials.requestReveal({ reference: existing.reference });
       notify(`Approve local FreeLLMAPI access: ${approval.approveUrl}`);
       await enter('Press Enter after approving in Squire. ');
       const revealed = await squire.credentials.claimReveal(approval.id);
       password = revealed.fields.password!;
-      // Start only the container Milo created, preserving its encryption key.
-      await exec('docker', ['start', 'milo-freellmapi'], { timeout: 30000 });
+      encryption = revealed.fields.encryption_key!;
+      if (!password || !encryption) throw new Error('Squire returned incomplete local FreeLLMAPI credentials');
     } else {
-      if (process.platform !== 'linux') throw new Error('Milo FreeLLMAPI installation currently requires Linux Docker host networking');
       password = randomBytes(32).toString('hex');
-      const encryption = randomBytes(32).toString('hex');
+      encryption = randomBytes(32).toString('hex');
       await squire.call('store_credential', { service: 'milo-freellmapi-admin', fields: { password, encryption_key: encryption }, label: 'Milo local router' });
-      await exec('docker', ['pull', FREELLMAPI_IMAGE], { timeout: 300000, maxBuffer: 1048576 });
-      // Docker copies named variables from env, keeping secrets out of argv.
-      await exec('docker', ['run', '-d', '--name', 'milo-freellmapi', '--network', 'host', '--restart', 'unless-stopped', '-v', 'milo-freellmapi-data:/app/server/data', '-e', 'HOST=127.0.0.1', '-e', 'PORT=3001', '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
-        timeout: 60000, env: { ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: 'milo@localhost.local', password }, ...freeConfig() }) }
-      });
     }
+    await ensureRouter(password, encryption);
     let ready = false;
     for (let attempt = 0; attempt < 60; attempt++) {
       try { await router.login(password); ready = true; break; } catch { await delay(1000); }

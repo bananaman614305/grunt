@@ -5,7 +5,7 @@ import { Sources } from './source.js';
 import { configure } from './main.js';
 import { FreeLLMAPI, freeConfig } from './freellmapi.js';
 import { OpenCode } from './opencode.js';
-import { BrowserSquire, setupProviders, SetupPending } from './setup.js';
+import { BrowserSquire, ensureRouter, setupProviders, SetupPending } from './setup.js';
 import type { SetupSquire } from './setup.js';
 
 afterEach(() => vi.restoreAllMocks());
@@ -14,7 +14,7 @@ const request = { model: 'freellmapi', messages: [{ role: 'user', content: 'hell
 it('routes the daemon free API through loopback FreeLLMAPI, preserves tools and caps tokens', async () => {
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: 'routed reply' } }] }));
   const app = createLocalApp(new Sources([new FreeLLMAPI({ key: 'synthetic', fetcher })]));
-  const response = await app.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify({ ...request, max_tokens: 100000, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] }) });
+  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, max_tokens: 100000, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] }) });
   expect(response.status).toBe(200);
   expect((await response.json()).choices[0].message.content).toBe('routed reply');
   expect(fetcher.mock.calls).toHaveLength(1);
@@ -34,8 +34,8 @@ it('keeps upstream failures and credentials out of error text', async () => {
 it('registers anonymous Kilo and the separate Freebuff bridge last in the ordered chain', () => {
   const config = freeConfig();
   expect(config.customProviders).toEqual([
-    { baseUrl: 'https://ai-gateway.kilo.ai/api/v1', label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
-    { baseUrl: 'http://127.0.0.1:8789/v1', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: false }] }
+    { baseUrl: 'https://ai-gateway.kilo.ai/api/v1', apiKey: 'no-key', label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
+    { baseUrl: 'http://127.0.0.1:8789/v1', apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: true }] }
   ]);
   expect(config.routing.strategy).toBe('priority');
   expect(config.fallback.at(-1)).toMatchObject({ modelId: 'freebuff', priority: 1000000 });
@@ -53,9 +53,9 @@ it('types the exact latest OpenCode fixture message and reuses the session for f
   const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher });
   const app = createLocalApp(new Sources([driver]));
   fixture.cwd = '/tmp'; fixture.model = 'opencode'; fixture.stream = false;
-  expect((await (await app.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify(fixture) })).json()).choices[0].message.content).toBe('bridge works 42');
+  expect((await (await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) })).json()).choices[0].message.content).toBe('bridge works 42');
   fixture.messages.push({ role: 'assistant', content: 'bridge works 42' }, { role: 'user', content: '  Repeat it.\n' });
-  await app.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify(fixture) });
+  await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) });
   expect(calls.filter(c => c.path === '/session')).toHaveLength(1);
   const prompts = calls.filter(c => c.path.endsWith('/message'));
   expect(prompts.map(p => p.path)).toEqual(['/session/session_one/message', '/session/session_one/message']);
@@ -134,4 +134,18 @@ it('hands SMS and captcha walls back as approval links and resumes the same brow
   call.mockResolvedValue({ status: 'complete', session_id: 'signup' });
   await squire.runs.get('mistral');
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'signup' }));
+});
+
+it('recovers an interrupted router installation using the existing vault secrets', async () => {
+  const run = vi.fn(async (args: string[]) => {
+    if (args[0] === 'inspect') throw Object.assign(new Error('missing'), { code: 1, stderr: 'Error: No such object: milo-freellmapi' });
+    return { stdout: '' };
+  });
+  await ensureRouter('synthetic-password', 'synthetic-encryption', run);
+  expect(run.mock.calls.map(([args]) => args[0])).toEqual(['inspect', 'pull', 'run']);
+  expect(run.mock.calls[2]![0]).toContain('io.milo.router=1');
+  expect(JSON.stringify(run.mock.calls.map(([args]) => args))).not.toContain('synthetic-');
+  const unrelated = vi.fn(async () => ({ stdout: 'not-Milo' }));
+  await expect(ensureRouter('synthetic-password', 'synthetic-encryption', unrelated)).rejects.toThrow('belongs to another installation');
+  expect(unrelated).toHaveBeenCalledTimes(1);
 });

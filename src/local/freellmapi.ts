@@ -12,8 +12,8 @@ export const FREEBUFF_URL = 'http://127.0.0.1:8789/v1';
 export function freeConfig() {
   return {
     customProviders: [
-      { baseUrl: KILO_URL, label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
-      { baseUrl: FREEBUFF_URL, label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: false }] }
+      { baseUrl: KILO_URL, apiKey: 'no-key', label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
+      { baseUrl: FREEBUFF_URL, apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: true }] }
     ],
     // Existing keyed provider rows retain their catalog priorities. Never enable
     // OpenRouter or unvetted aggregators by provisioning keys for them here.
