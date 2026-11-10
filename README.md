@@ -115,14 +115,15 @@ removed. There is no Jev, billing, roster service, worker tooling or monorepo.
 
 ## Use Milo as your harness's model
 
-Run the separate local daemon on your own machine (Node 22+, `tmux`, and an
-installed, logged-in `freebuff` on PATH):
+Run the separate local daemon on your own machine (Node 22+, Linux Docker,
+`opencode` on PATH, and `tmux` with an existing logged-in `freebuff` for the last fallback):
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
-MILO_SOURCES=freebuff node dist/local/main.js
-# Or: pnpm local (development). The package bin is milo-local.
+node dist/local/main.js setup
+# Installed package: milo setup (milo-local setup also works).
+# Freebuff alone, without API setup: MILO_SOURCES=freebuff node dist/local/main.js
 ```
 
 It binds only `127.0.0.1:8788`. `MILO_PORT` changes the port. It provides
@@ -141,6 +142,69 @@ Text and function-tool turns are translated across APIs. Native Responses tools
 are accepted by the app delegate; the Chat Completions gateway cannot forward
 those tools and fails over to the app source. Unsupported media blocks return an
 error rather than silently losing context.
+
+### Free API and account setup
+
+`milo setup` includes Trusty Squire's MCP package and SDK. It connects your own
+local Squire, installs a pinned FreeLLMAPI Docker image, then asks Squire to reuse
+or create free Groq, Mistral and NVIDIA accounts and capture their API keys into
+your vault. It never selects a paid plan or adds payment details. Phone/SMS,
+passkey and captcha steps pause with Squire approval links. Browser handoffs use
+temporary loopback links to Squire's existing UI. Complete the step, close the
+handoff tab and press Enter in setup to resume the same browser session. A
+provider refusal stops setup. Existing Freebuff accounts are never switched or
+created by this command.
+
+Each key import needs your Squire passkey approval. Keys move through memory
+directly into FreeLLMAPI's encrypted storage; Milo saves no provider keys or
+Squire tokens in its database, files or logs. FreeLLMAPI's admin password and
+encryption key also live in your Squire vault. Docker holds its service variables
+as part of FreeLLMAPI's installation. Setup finishes by running Milo with the
+unified router key in memory. After restarting, rerun `milo setup` to reconnect
+your vault and reuse the existing router and accounts. Setup currently requires
+an interactive terminal and Linux Docker host networking so the router can reach
+the loopback Freebuff bridge. It creates the container `milo-freellmapi` and
+volume `milo-freellmapi-data`; it never adopts an unrelated existing router.
+
+Free API calls go to `http://127.0.0.1:3001/v1` through FreeLLMAPI, including
+provider failover. There is no direct OpenRouter free API route. An already
+configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
+`MILO_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
+cap is (4096) tokens. Select `freellmapi` for the free chain or `kilo` for the
+anonymous `kilo-auto/free` model through that same router. Kilo needs no account.
+The separate Freebuff bridge listens only on `127.0.0.1:8789` and contains only
+the Freebuff source, preventing a routing loop. FreeLLMAPI supports priority
+ordering: keyed providers come first, Kilo next, Freebuff last. Setup enables
+only those providers in the chain, excluding Google, OpenRouter and unvetted
+aggregators.
+
+FreeLLMAPI's signed catalog handles model and quota updates. Free installations
+receive its delayed monthly snapshot; live catalog access is a separate upstream
+premium option. Check the local dashboard when provider availability changes.
+FreeLLMAPI is single-user software for personal experimentation; keep it bound
+to loopback. See its [installation guide](https://github.com/tashfeenahmed/freellmapi/blob/main/docs/en/install/01-install.md).
+
+### OpenCode app driver
+
+Select `opencode` as the Milo model. Milo starts `opencode serve` on a loopback
+port, using your normal OS home and existing OpenCode login. It sends only the
+latest user message, word for word, through the session API, with no caller
+system prompt or tool definitions. Follow-ups with their user-message history
+reuse the same session; the mapping lasts until Milo exits. OpenCode runs its
+own tools and returns final text, as Freebuff does. It uses no tmux.
+
+`MILO_OPENCODE_MODEL` selects the OpenCode free model (default `big-pickle`).
+Use a currently free model from your OpenCode catalog; Milo does not buy credits
+or switch to paid models. `MILO_OPENCODE_URL` optionally connects an existing
+numeric loopback server. If it uses HTTP Basic auth, set
+`OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD` in Milo's environment.
+Avoid configuring that OpenCode server to call Milo, which would create a loop.
+See the [server API](https://opencode.ai/v1/docs/server/).
+
+[OpenCode's free models](https://opencode.ai/docs/zen) may be free only for a
+limited time, and some retain prompts for training. [Kilo Auto Free](https://kilo.ai/docs/getting-started/using-kilo-for-free)
+may route to providers that log prompts and outputs and use them to improve
+their services. Do not send confidential data through these free routes.
 
 ### opencode
 
@@ -221,13 +285,12 @@ Run `codex`. See the [official configuration reference](https://learn.chatgpt.co
 
 ### Sources and app sessions
 
-`MILO_SOURCES=gateway,freebuff` sets failover order. The default is gateway when
-configured, then Freebuff. Set `MILO_GATEWAY_URL=https://your-gateway.example/v1`
-and `MILO_GATEWAY_KEY` for the remote source; Milo appends `/chat/completions`.
-Redirects are refused and the local app driver never uses the gateway or fetch.
-Freebuff itself talks to its own service, using your own account; Milo does not
-send its local prompts through Fly. The Fly-side API and personal-agent routing
-are separate work, so the gateway adapter is tested against a fake upstream only.
+`MILO_SOURCES=freellmapi,opencode,kilo` sets the default source order. An explicit
+model selects just that source. Freebuff is last inside FreeLLMAPI's chain and
+can also be selected directly with `MILO_SOURCES=freebuff`. The former
+`MILO_GATEWAY_URL` and `MILO_GATEWAY_KEY` no longer configure the local free API
+path. Redirects are refused. The Fly-side API and personal-agent routing remain
+separate from this local daemon.
 
 Only the latest user text is pasted into Freebuff, without system/developer prompts, tools, results, or known harness context envelopes. Title, summary, topic and warm-up requests are answered locally; classification and the selected working directory are logged. Side-call detection uses system/developer instructions, including Claude Code's recorded session-naming prompt; an ordinary user request for a summary still reaches the source. Detection remains heuristic.
 
