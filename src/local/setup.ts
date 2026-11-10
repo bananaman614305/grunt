@@ -3,6 +3,8 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createInterface } from 'node:readline/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -13,7 +15,7 @@ import { proxyApproval } from './approval-proxy.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-const PROVIDERS = { groq: 'https://console.groq.com/keys', mistral: 'https://console.mistral.ai/api-keys', nvidia: 'https://build.nvidia.com/' };
+const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys' };
 export type Provider = keyof typeof PROVIDERS;
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
 const sameService = (credential: Credential, service: string) => credential.service?.trim().toLowerCase() === service.trim().toLowerCase();
@@ -24,7 +26,7 @@ function apiKeyField(credential: Credential, provider: Provider): string | undef
     return ['apikey', 'key', 'token', 'value', 'secret', 'apitoken', 'accesstoken'].includes(name);
   });
 }
-type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject'; approval_url?: string; reason?: string };
+type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject' | 'drop'; approval_url?: string; reason?: string };
 // Select only diagnostic text, never serialize the browser result or vault data.
 function setupReason(...values: unknown[]): string {
   return [...new Set(values.filter((value): value is string => typeof value === 'string')
@@ -47,7 +49,7 @@ function setupStopped(message: string, ...values: unknown[]): Error {
 export interface SetupSquire {
   credentials: {
     list(): Promise<Credential[]>;
-    requestReveal(input: { reference: string; field?: string }): Promise<{ approval: { id: string; approveUrl: string } }>;
+    requestReveal(input: { reference: string; field?: string }): Promise<{ approval: { id: string; approveUrl: string; ready?: boolean } }>;
     claimReveal(id: string): Promise<{ value: string | null; fields: Record<string, string> }>;
   };
   runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string }> };
@@ -55,31 +57,35 @@ export interface SetupSquire {
 export class SetupPending extends Error {}
 export async function setupProviders(squire: SetupSquire, router: { addKey(platform: string, key: string): Promise<void> }, options: { providers?: Provider[]; notify: (line: string) => void } ) {
   const pending: string[] = [];
+  const dropped: string[] = [];
+  const drop = (provider: string, reason?: string) => {
+    const safe = setupReason(reason);
+    options.notify(`${provider}: dropped; Squire cannot complete signup automatically${safe ? `: ${safe}` : ''}`);
+    dropped.push(provider);
+  };
   for (const provider of options.providers ?? Object.keys(PROVIDERS) as Provider[]) {
     const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
     if (!credential) {
       const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
       if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
-      if (result.decision === 'needs_approval') {
-        if (!result.approval_url) throw new Error(`Squire needs human input for ${provider} but returned no approval link; setup stopped`);
-        options.notify(`${provider}: approve in Squire: ${result.approval_url}`); pending.push(provider); continue;
-      }
+      if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason); continue; }
       let state = result.run.state;
       let reason = result.reason;
       const deadline = Date.now() + 120000;
-      while (!['completed', 'failed', 'rejected'].includes(state) && Date.now() < deadline) {
+      while (!['completed', 'failed', 'rejected', 'dropped'].includes(state) && Date.now() < deadline) {
         const run = await squire.runs.get(result.run.id); state = run.state; reason = run.reason ?? reason;
-        if (run.approval_url) { options.notify(`${provider}: approve in Squire: ${run.approval_url}`); break; }
-        if (state !== 'completed') await delay(1000);
+        if (run.approval_url || state === 'awaiting_approval') { state = 'dropped'; break; }
+        if (!['completed', 'dropped', 'failed', 'rejected'].includes(state)) await delay(1000);
       }
       if (state === 'failed' || state === 'rejected') throw setupStopped(`Squire could not provision ${provider}; setup stopped`, reason);
+      if (state !== 'completed') { drop(provider, reason); continue; }
       credential = await find();
-      if (!credential) { pending.push(provider); options.notify(`${provider}: Squire signup is pending; resume setup after completing its approval`); continue; }
+      if (!credential) { drop(provider, 'No provider access was created'); continue; }
     }
     const field = apiKeyField(credential, provider)!;
     const { approval } = await squire.credentials.requestReveal({ reference: credential.reference, field });
-    options.notify(`${provider}: approve loading the key into local FreeLLMAPI: ${approval.approveUrl}`);
+    if (!approval.ready) options.notify(`${provider}: approve loading the key into local FreeLLMAPI: ${approval.approveUrl}`);
     try {
       const revealed = await squire.credentials.claimReveal(approval.id);
       const key = revealed.value ?? revealed.fields[field];
@@ -88,16 +94,51 @@ export async function setupProviders(squire: SetupSquire, router: { addKey(platf
       options.notify(`${provider}: connected`);
     } catch (error) { if (error instanceof SetupPending) pending.push(provider); else throw error; }
   }
-  return { pending };
+  return { pending, dropped };
 }
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
+type PendingApproval = { id: string; approveUrl: string; reference: string; field?: string; createdAt: number; expiresAt: number };
+type Revealed = { value: string | null; fields: Record<string, string> };
+const approvalKey = (input: { reference: string; field?: string }) => JSON.stringify([input.reference, input.field ?? null]);
 export class BrowserSquire implements SetupSquire {
   private client = new Client({ name: 'Milo setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
-  private approvals = new Map<string, { id: string; approveUrl: string }>();
+  private approvals = new Map<string, PendingApproval>();
+  private deliveries = new Map<string, Revealed>();
+  private approvalsLoaded = false;
+  private statePath = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo', 'approvals.json');
   private handoffs: { url: string; close(): void }[] = [];
+  private async loadApprovals() {
+    if (this.approvalsLoaded) return;
+    let entries: unknown;
+    try { entries = JSON.parse(await readFile(this.statePath, 'utf8')); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read Milo approval state; setup stopped');
+    }
+    if (entries !== undefined && !Array.isArray(entries)) throw new Error('Invalid Milo approval state; setup stopped');
+    for (const value of (entries ?? []) as unknown[]) {
+      const entry = object(value);
+      if (typeof entry.id !== 'string' || typeof entry.approveUrl !== 'string' || typeof entry.reference !== 'string' || (entry.field !== undefined && typeof entry.field !== 'string') || typeof entry.createdAt !== 'number' || typeof entry.expiresAt !== 'number') throw new Error('Invalid Milo approval state; setup stopped');
+      const approval: PendingApproval = { id: entry.id, approveUrl: entry.approveUrl, reference: entry.reference, ...(typeof entry.field === 'string' ? { field: entry.field } : {}), createdAt: entry.createdAt, expiresAt: entry.expiresAt };
+      this.approvals.set(approvalKey(approval), approval);
+    }
+    this.approvalsLoaded = true;
+  }
+  private async saveApprovals() {
+    // Persist only approval metadata. Delivered values stay in memory.
+    const temporary = `${this.statePath}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      await mkdir(dirname(this.statePath), { recursive: true, mode: 0o700 });
+      await writeFile(temporary, JSON.stringify([...this.approvals.values()]), { mode: 0o600, flag: 'wx' });
+      await rename(temporary, this.statePath);
+    } catch { throw new Error('Cannot save Milo approval state; setup stopped'); }
+  }
+  private reveal(result: ObjectValue): Revealed {
+    const fields = object(result.fields) as Record<string, string>;
+    return { fields, value: Object.keys(fields).length === 1 ? Object.values(fields)[0]! : null };
+  }
   async connect() {
     const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
     const env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), TRUSTY_SQUIRE_AGENT_IDENTITY: 'Milo setup' };
@@ -131,30 +172,50 @@ export class BrowserSquire implements SetupSquire {
       if (!Array.isArray(result.credentials)) throw new Error('Squire did not return vault metadata');
       return result.credentials as Credential[];
     },
-    requestReveal: async (input: { reference: string; field?: string }) => {
-      const cacheKey = JSON.stringify(input);
+    requestReveal: async (input: { reference: string; field?: string }): Promise<{ approval: { id: string; approveUrl: string; ready?: boolean } }> => {
+      await this.loadApprovals();
+      const cacheKey = approvalKey(input);
       let approval = this.approvals.get(cacheKey);
+      if (approval && this.deliveries.has(approval.id)) return { approval: { ...approval, ready: true } };
+      if (approval && approval.expiresAt > Date.now() && approval.createdAt <= Date.now()) {
+        const result = await this.call('fetch_credential', { action: 'resume', approval_id: approval.id });
+        if (result.status === 'credential_fetched') {
+          this.deliveries.set(approval.id, this.reveal(result));
+          return { approval: { ...approval, ready: true } };
+        }
+        if (result.status === 'approval_pending') return { approval };
+        if (result.status !== 'credential_fetch_refused' || !/(?:^|_)(?:denied|expired|unknown|not_found|consumed)(?:_|$)/i.test(String(result.reason))) throw setupStopped('Squire refused key loading; setup stopped', result.reason);
+        approval = undefined;
+      } else if (approval) approval = undefined;
       if (!approval) {
         const result = await this.call('fetch_credential', { action: 'start', ...input, reason: 'Load into your local FreeLLMAPI; never logged or saved by Milo' });
         if (typeof result.approval_id !== 'string' || typeof result.approval_url !== 'string') throw new Error('Squire did not return a key-loading approval');
-        approval = { id: result.approval_id, approveUrl: result.approval_url }; this.approvals.set(cacheKey, approval);
+        const createdAt = Date.now(), expires = Date.parse(String(result.expires_at));
+        approval = { id: result.approval_id, approveUrl: result.approval_url, ...input, createdAt, expiresAt: Number.isFinite(expires) ? expires : createdAt + 15 * 60 * 1000 };
+        this.approvals.set(cacheKey, approval);
+        await this.saveApprovals();
       }
       return { approval };
     },
     claimReveal: async (id: string) => {
-      const result = await this.call('fetch_credential', { action: 'resume', approval_id: id });
-      if (result.status === 'approval_pending') throw new SetupPending('Squire approval is pending');
-      if (result.status !== 'credential_fetched') throw setupStopped('Squire refused key loading; setup stopped', result.reason);
+      let revealed = this.deliveries.get(id);
+      if (!revealed) {
+        const result = await this.call('fetch_credential', { action: 'resume', approval_id: id });
+        if (result.status === 'approval_pending') throw new SetupPending('Squire approval is pending');
+        if (result.status !== 'credential_fetched') throw setupStopped('Squire refused key loading; setup stopped', result.reason);
+        revealed = this.reveal(result);
+      }
       for (const [key, approval] of this.approvals) if (approval.id === id) this.approvals.delete(key);
-      const fields = object(result.fields) as Record<string, string>;
-      return { fields, value: Object.keys(fields).length === 1 ? Object.values(fields)[0]! : null };
+      await this.saveApprovals();
+      this.deliveries.delete(id);
+      return revealed;
     }
   };
   private async drive(provider: Provider): Promise<Run> {
     const session = this.sessions.get(provider);
     const result = await this.call('operate_drive', {
       ...(session ? { session_id: session } : { url: PROVIDERS[provider] }),
-      goal: `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for Milo and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer. No paid plan, payment method, extra account or account switching. Surface SMS, passkey and other human-only steps for approval. Stop on provider refusal.`,
+      goal: `Use the user's existing ${provider} account or sign up for the free plan without human signup assistance. Create one API key for Milo and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer. No paid plan, payment method, extra account or account switching. Stop this signup if SMS, phone verification, captcha, passkey or another step requires a human; report the reason without creating an approval link. Stop on provider refusal.`,
       facts: { plan: 'free', project_name: 'Milo' }, max_seconds: 45, max_steps: 60
     });
     if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
@@ -167,14 +228,10 @@ export class BrowserSquire implements SetupSquire {
       if (id) { await this.call('operate_finish', { session_id: id, outcome: 'result', summary: 'Milo provider key stored in user vault' }); this.sessions.delete(provider); }
       return { run: { id: provider, state: 'completed' }, decision: 'silent' };
     }
-    if (result.status === 'budget' || result.status === 'evaluate_timeout') return { run: { id: provider, state: 'running' }, decision: 'silent' };
-    if (typeof result.approval_url === 'string') return { run: { id: provider, state: 'awaiting_approval' }, decision: 'needs_approval', approval_url: result.approval_url };
-    const id = this.sessions.get(provider);
-    if (id && ['needs_value', 'pending_approval', 'stuck', 'low_confidence', 'no_progress'].includes(String(result.status))) {
-      return { run: { id: provider, state: 'awaiting_approval' }, decision: 'needs_approval', approval_url: await this.humanHandoff(id) };
-    }
-    // Never convert an unknown wall or a refusal into endless browser retries.
-    throw setupStopped(`Squire signup for ${provider} needs attention; no approval link was returned`, result.status, reason);
+    const humanStep = /\b(?:sms|phone|captcha|passkey|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
+    if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
+    this.sessions.delete(provider);
+    return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason: reason || 'Signup needs human input or could not be completed' };
   }
   async humanHandoff(session: string) {
     const share = await this.call('operate_share', { session_id: session });
@@ -205,10 +262,10 @@ export class FreeLLMAdmin {
     if (existing) await this.call(`/keys/${existing.id}`, { key, enabled: true }, 'PATCH');
     else await this.call('/keys', { platform, key, label: 'Milo' });
   }
-  async configureChain() {
+  async configureChain(excluded: string[] = []) {
     const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null }[];
     const rows = chain.map(row => ({ modelDbId: row.modelDbId,
-      enabled: row.platform in PROVIDERS || (row.platform === 'custom' && ['kilo-auto/free', 'freebuff'].includes(row.modelId)),
+      enabled: (!excluded.includes(row.platform) && row.platform in PROVIDERS) || (row.platform === 'custom' && ['kilo-auto/free', 'freebuff'].includes(row.modelId)),
       priority: row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : Math.min(row.priority, 999000) }));
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
@@ -246,8 +303,10 @@ export async function setup(notify = console.log) {
     let password: string, encryption: string;
     if (existing) {
       const { approval } = await squire.credentials.requestReveal({ reference: existing.reference });
-      notify(`Approve local FreeLLMAPI access: ${approval.approveUrl}`);
-      await enter('Press Enter after approving in Squire. ');
+      if (!approval.ready) {
+        notify(`Approve local FreeLLMAPI access: ${approval.approveUrl}`);
+        await enter('Press Enter after approving in Squire. ');
+      }
       const revealed = await squire.credentials.claimReveal(approval.id);
       password = revealed.fields.password!;
       encryption = revealed.fields.encryption_key!;
@@ -265,11 +324,14 @@ export async function setup(notify = console.log) {
     if (!ready) throw new Error('Local FreeLLMAPI did not start; inspect its health before resuming setup');
     await router.configureChain();
     let result = await setupProviders(squire, router, { notify });
+    const dropped = new Set(result.dropped);
     while (result.pending.length) {
       notify(`Pending providers: ${result.pending.join(', ')}`);
-      await enter('Complete the Squire approvals, close the browser handoff tab, then press Enter to resume. ');
+      await enter('Complete the Squire vault approvals, then press Enter to resume. ');
       result = await setupProviders(squire, router, { providers: result.pending as Provider[], notify });
+      for (const provider of result.dropped) dropped.add(provider);
     }
+    await router.configureChain([...dropped]);
     return { key: await router.key() };
   } catch (error) {
     // Child-process and SDK errors may contain request data. Keep those local.

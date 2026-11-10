@@ -147,19 +147,26 @@ error rather than silently losing context.
 
 `milo setup` includes Trusty Squire's MCP package and SDK. It connects your own
 local Squire, installs a pinned FreeLLMAPI Docker image, then asks Squire to reuse
-or create free Groq, Mistral and NVIDIA accounts and capture their API keys into
-your vault. Vault service names match without case or surrounding whitespace;
-existing API keys are reused before any browser signup. The pinned pnpm setup
-allows only Squire's required `better-sqlite3` native dependency build. It never
-selects a paid plan or adds payment details. Phone/SMS,
-passkey and captcha steps pause with Squire approval links. Browser handoffs use
-temporary loopback links to Squire's existing UI. Complete the step, close the
-handoff tab and press Enter in setup to resume the same browser session. A
-provider refusal stops setup and displays the provider's reason with credentials
-redacted. If Freebuff needs a login, use your existing account; account switching
-is outside this setup flow.
+or create a free Groq account and capture its API key into your vault. Vault
+service names match without case or surrounding whitespace; existing API keys
+are reused before any browser signup. The pinned pnpm setup allows only Squire's
+required `better-sqlite3` native dependency build. It never selects a paid plan or
+adds payment details. Mistral and NVIDIA are excluded because signup needs SMS.
+If another signup requires SMS, phone verification, captcha, passkey or any
+human assistance, setup drops that provider, prints its safe reason and continues
+without a signup approval link. A genuine provider refusal stops setup. Refusal
+and drop diagnostics omit secret-bearing fields entirely. If Freebuff needs a
+login, use your existing account; account switching is outside this setup flow.
+The reduced FreeLLMAPI chain is Groq, anonymous Kilo, then Freebuff; OpenCode
+remains a separate Milo driver.
 
-Each key import needs your Squire passkey approval. Keys move through memory
+Each key import needs your Squire passkey approval. Before prompting, setup saves
+only pending approval metadata (approval ID, vault reference, selected field,
+approval link and timestamps) in Milo's config directory, under
+`$XDG_CONFIG_HOME/milo` or `~/.config/milo`. Restarting setup resumes the same
+unexpired approval. A denied, expired or unknown approval may be replaced; a
+connection failure keeps the existing approval. Successful delivery removes its
+saved entry. This file never contains a fetched secret. Keys move through memory
 directly into FreeLLMAPI's encrypted storage; Milo saves no provider keys or
 Squire tokens in its database, files or logs. FreeLLMAPI's admin password and
 encryption key also live in your Squire vault. Docker holds its service variables
