@@ -16,7 +16,22 @@ export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b5
 const PROVIDERS = { groq: 'https://console.groq.com/keys', mistral: 'https://console.mistral.ai/api-keys', nvidia: 'https://build.nvidia.com/' };
 export type Provider = keyof typeof PROVIDERS;
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
-type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject'; approval_url?: string };
+type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject'; approval_url?: string; reason?: string };
+// Select only diagnostic text, never serialize the browser result or vault data.
+function setupReason(...values: unknown[]): string {
+  return [...new Set(values.filter((value): value is string => typeof value === 'string').map(value => value
+    .replace(/\p{Cc}|\p{Cf}/gu, ' ')
+    .replace(/https?:\/\/\S+/gi, '[link omitted]')
+    .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted authorization]')
+    .replace(/\b((?:api[ _-]?key|password|secret|token|authorization|encryption[ _-]?key)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s;,]+)/gi, '$1[redacted]')
+    .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_)[A-Za-z0-9_-]+/g, '[redacted]')
+    .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
+    .replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' ').slice(0, 512);
+}
+function setupStopped(message: string, ...values: unknown[]): Error {
+  const reason = setupReason(...values);
+  return new Error(reason ? `${message}: ${reason}` : message);
+}
 // The browser adapter implements this narrow setup contract. It does not use
 // the SDK's legacy runs API: signup is driven by local operate_drive calls.
 export interface SetupSquire {
@@ -25,7 +40,7 @@ export interface SetupSquire {
     requestReveal(input: { reference: string; field?: string }): Promise<{ approval: { id: string; approveUrl: string } }>;
     claimReveal(id: string): Promise<{ value: string | null; fields: Record<string, string> }>;
   };
-  runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string }> };
+  runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string }> };
 }
 export class SetupPending extends Error {}
 export async function setupProviders(squire: SetupSquire, router: { addKey(platform: string, key: string): Promise<void> }, options: { providers?: Provider[]; notify: (line: string) => void } ) {
@@ -35,19 +50,20 @@ export async function setupProviders(squire: SetupSquire, router: { addKey(platf
     let credential = await find();
     if (!credential) {
       const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
-      if (result.decision === 'reject') throw new Error(`Squire refused ${provider} signup; setup stopped`);
+      if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
       if (result.decision === 'needs_approval') {
         if (!result.approval_url) throw new Error(`Squire needs human input for ${provider} but returned no approval link; setup stopped`);
         options.notify(`${provider}: approve in Squire: ${result.approval_url}`); pending.push(provider); continue;
       }
       let state = result.run.state;
+      let reason = result.reason;
       const deadline = Date.now() + 120000;
       while (!['completed', 'failed', 'rejected'].includes(state) && Date.now() < deadline) {
-        const run = await squire.runs.get(result.run.id); state = run.state;
+        const run = await squire.runs.get(result.run.id); state = run.state; reason = run.reason ?? reason;
         if (run.approval_url) { options.notify(`${provider}: approve in Squire: ${run.approval_url}`); break; }
         if (state !== 'completed') await delay(1000);
       }
-      if (state === 'failed' || state === 'rejected') throw new Error(`Squire could not provision ${provider}; setup stopped`);
+      if (state === 'failed' || state === 'rejected') throw setupStopped(`Squire could not provision ${provider}; setup stopped`, reason);
       credential = await find();
       if (!credential) { pending.push(provider); options.notify(`${provider}: Squire signup is pending; resume setup after completing its approval`); continue; }
     }
@@ -118,7 +134,7 @@ export class BrowserSquire implements SetupSquire {
     claimReveal: async (id: string) => {
       const result = await this.call('fetch_credential', { action: 'resume', approval_id: id });
       if (result.status === 'approval_pending') throw new SetupPending('Squire approval is pending');
-      if (result.status !== 'credential_fetched') throw new Error('Squire refused key loading; setup stopped');
+      if (result.status !== 'credential_fetched') throw setupStopped('Squire refused key loading; setup stopped', result.reason);
       for (const [key, approval] of this.approvals) if (approval.id === id) this.approvals.delete(key);
       const fields = object(result.fields) as Record<string, string>;
       return { fields, value: Object.keys(fields).length === 1 ? Object.values(fields)[0]! : null };
@@ -132,7 +148,10 @@ export class BrowserSquire implements SetupSquire {
       facts: { plan: 'free', project_name: 'Milo' }, max_seconds: 45, max_steps: 60
     });
     if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
-    if (/refus|denied|prohibit|not allowed|policy/i.test(`${result.reason ?? ''} ${result.remaining ?? ''}`)) throw new Error(`Provider refused ${provider} signup; setup stopped`);
+    const reason = setupReason(result.reason, result.remaining);
+    const classification = [result.reason, result.remaining].filter(value => typeof value === 'string').join(' ').replace(/[_-]/g, ' ');
+    const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(classification);
+    if (refusal) throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
     if (result.status === 'complete') {
       const id = this.sessions.get(provider);
       if (id) { await this.call('operate_finish', { session_id: id, outcome: 'result', summary: 'Milo provider key stored in user vault' }); this.sessions.delete(provider); }
@@ -145,7 +164,7 @@ export class BrowserSquire implements SetupSquire {
       return { run: { id: provider, state: 'awaiting_approval' }, decision: 'needs_approval', approval_url: await this.humanHandoff(id) };
     }
     // Never convert an unknown wall or a refusal into endless browser retries.
-    throw new Error(`Squire signup for ${provider} needs attention (${String(result.status)}); no approval link was returned`);
+    throw setupStopped(`Squire signup for ${provider} needs attention; no approval link was returned`, result.status, reason);
   }
   async humanHandoff(session: string) {
     const share = await this.call('operate_share', { session_id: session });
@@ -155,7 +174,7 @@ export class BrowserSquire implements SetupSquire {
   }
   runs = {
     start: async (input: ProvisionInput) => this.drive(input.service as Provider),
-    get: async (id: string) => { const result = await this.drive(id as Provider); return { state: result.run.state, ...(result.approval_url ? { approval_url: result.approval_url } : {}) }; }
+    get: async (id: string) => { const result = await this.drive(id as Provider); return { state: result.run.state, ...(result.approval_url ? { approval_url: result.approval_url } : {}), ...(result.reason ? { reason: result.reason } : {}) }; }
   };
   async close() { for (const handoff of this.handoffs) handoff.close(); await this.client.close(); }
 }

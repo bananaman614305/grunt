@@ -152,8 +152,9 @@ your vault. It never selects a paid plan or adds payment details. Phone/SMS,
 passkey and captcha steps pause with Squire approval links. Browser handoffs use
 temporary loopback links to Squire's existing UI. Complete the step, close the
 handoff tab and press Enter in setup to resume the same browser session. A
-provider refusal stops setup. Existing Freebuff accounts are never switched or
-created by this command.
+provider refusal stops setup and displays the provider's reason with credentials
+redacted. If Freebuff needs a login, use your existing account; account switching
+is outside this setup flow.
 
 Each key import needs your Squire passkey approval. Keys move through memory
 directly into FreeLLMAPI's encrypted storage; Milo saves no provider keys or

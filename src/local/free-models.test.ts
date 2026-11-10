@@ -125,9 +125,32 @@ it('uses the local Squire browser driver, vault capture and its human approval l
   await expect(squire.credentials.claimReveal('load')).rejects.toThrow('refused');
 });
 
+it('reports the provider refusal reason without secrets and stops before another provider', async () => {
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockResolvedValue({
+    status: 'stuck', session_id: 'signup', reason: 'Provider denied automated account creation.',
+    remaining: 'API key: synthetic-private-value; password=short-secret; token https://example.test/?token=private; gsk_syntheticprivatevalue1234567890'
+  });
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  const addKey = vi.fn(), notify = vi.fn();
+  let message = '';
+  try { await setupProviders(squire, { addKey }, { notify }); } catch (error) { message = (error as Error).message; }
+  expect(message).toContain('Provider denied automated account creation.');
+  for (const secret of ['synthetic-private-value', 'short-secret', 'https://example.test', 'gsk_syntheticprivatevalue']) expect(message).not.toContain(secret);
+  expect(call).toHaveBeenCalledTimes(1);
+  expect(addKey).not.toHaveBeenCalled();
+  expect(notify).not.toHaveBeenCalled();
+});
+
+it('preserves refusal details from rejected setup runs', async () => {
+  const squire = fakeSquire();
+  vi.mocked(squire.runs.start).mockResolvedValue({ decision: 'reject', reason: 'Free API access is unavailable in this region.', run: { id: 'groq', state: 'rejected' } });
+  await expect(setupProviders(squire, { addKey: vi.fn() }, { notify: vi.fn() })).rejects.toThrow('Free API access is unavailable in this region.');
+});
+
 it('hands SMS and captcha walls back as approval links and resumes the same browser session', async () => {
   const squire = new BrowserSquire();
-  const call = vi.spyOn(squire, 'call').mockResolvedValue({ status: 'needs_value', field: 'sms', session_id: 'signup' });
+  const call = vi.spyOn(squire, 'call').mockResolvedValue({ status: 'needs_value', field: 'sms', session_id: 'signup', remaining: 'Review the privacy policy and enter the SMS code.' });
   const handoff = vi.spyOn(squire, 'humanHandoff').mockResolvedValue('http://127.0.0.1:9876/approval');
   expect(await squire.runs.start({ service: 'mistral', plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none' })).toMatchObject({ approval_url: 'http://127.0.0.1:9876/approval' });
   expect(handoff).toHaveBeenCalledWith('signup');
