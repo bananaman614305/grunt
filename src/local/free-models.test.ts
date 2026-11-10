@@ -290,7 +290,7 @@ it.each([
   }
 );
 
-it('recovers an interrupted router installation using the existing vault secrets', async () => {
+it('recovers an interrupted router installation using the supplied local admin credentials', async () => {
   const run = vi.fn(async (args: string[]) => {
     if (args[0] === 'inspect') throw Object.assign(new Error('missing'), { code: 1, stderr: 'Error: No such object: milo-freellmapi' });
     return { stdout: '' };

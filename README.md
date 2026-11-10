@@ -186,11 +186,18 @@ unexpired approval. A denied, expired or unknown approval may be replaced; a
 connection failure keeps the existing approval. Successful delivery removes its
 saved entry. This file never contains a fetched secret. Keys move through memory
 directly into FreeLLMAPI's encrypted storage; Milo saves no provider keys or
-Squire tokens in its database, files or logs. FreeLLMAPI's admin password and
-encryption key also live in your Squire vault. Docker holds its service variables
-as part of FreeLLMAPI's installation. Setup finishes by running Milo with the
+Squire tokens in its database, files or logs. FreeLLMAPI's generated admin password
+and encryption key stay in `router-admin.json` in Milo's state directory, readable
+only by your user (mode 0600). Setup reuses this file without a Squire approval.
+Keep it when moving or backing up the router: without it, setup recreates an old
+router only after checking that it holds no provider keys. That reset removes the
+old router database, settings and request history. If keys exist or the check fails,
+setup preserves the old router and stops. The old admin vault entry is left alone.
+Docker also holds its service variables as part of FreeLLMAPI's installation. Setup finishes by running Milo with the
 unified router key in memory. After restarting, rerun `milo setup` to reconnect
-your vault and reuse the existing router and accounts. Setup currently requires
+your vault and reuse the existing router and accounts. Providers already stored
+with the `Milo` label in FreeLLMAPI are reused without fetching them from Squire
+or requesting another approval. Setup currently requires
 an interactive terminal and Linux Docker host networking so the router can reach
 the loopback Freebuff bridge. It creates the container `milo-freellmapi` and
 volume `milo-freellmapi-data`; it never adopts an unrelated existing router.

@@ -5,7 +5,8 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createInterface } from 'node:readline/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -65,7 +66,7 @@ export interface SetupSquire {
   runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string }> };
 }
 export class SetupPending extends Error {}
-export async function setupProviders(squire: SetupSquire, router: { addKey(platform: string, key: string): Promise<void> }, options: { providers?: Provider[]; notify: (line: string) => void } ) {
+export async function setupProviders(squire: SetupSquire, router: { addKey(platform: string, key: string): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string) => {
@@ -74,6 +75,7 @@ export async function setupProviders(squire: SetupSquire, router: { addKey(platf
     dropped.push(provider);
   };
   for (const provider of options.providers ?? Object.keys(PROVIDERS) as Provider[]) {
+    if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
     const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
     if (!credential) {
@@ -299,6 +301,10 @@ export class FreeLLMAdmin {
     return await response.json();
   }
   async login(password: string) { this.token = (await this.call('/auth/login', { email: 'milo@localhost.local', password })).token; }
+  async hasKey(platform: string) {
+    const keys = await this.call('/keys', undefined, 'GET') as { platform: string; label: string }[];
+    return keys.some(key => key.platform === platform && key.label === 'Milo');
+  }
   async addKey(platform: string, key: string) {
     const keys = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string }[];
     const existing = keys.find(k => k.platform === platform && k.label === 'Milo');
@@ -317,7 +323,21 @@ export class FreeLLMAdmin {
 }
 
 type DockerRun = (args: string[], env?: NodeJS.ProcessEnv) => Promise<{ stdout: string }>;
-export async function ensureRouter(password: string, encryption: string, run: DockerRun = argsWithEnv) {
+// Read only key metadata from the legacy volume. Never load or print key values.
+const inspectRouterKeys = `
+const fs = require('node:fs');
+const path = '/data/freeapi.db';
+if (!fs.existsSync(path)) {
+  if (fs.readdirSync('/data').length) throw new Error('Unrecognized router data');
+  console.log('empty');
+} else {
+  const Database = require('better-sqlite3');
+  const db = new Database(path, { readonly: true, fileMustExist: true });
+  const keys = db.prepare("SELECT EXISTS(SELECT 1 FROM api_keys WHERE label = 'Milo' OR platform != 'custom' OR label NOT IN ('Kilo Free', 'Freebuff')) AS present").get();
+  console.log(keys.present ? 'keys' : 'empty');
+  db.close();
+}`;
+export async function ensureRouter(password: string, encryption: string, run: DockerRun = argsWithEnv, recreate = false) {
   if (process.platform !== 'linux') throw new Error('Milo FreeLLMAPI installation currently requires Linux Docker host networking');
   let owner: string | undefined;
   try { owner = (await run(['inspect', '--format', '{{ index .Config.Labels "io.milo.router" }}', 'milo-freellmapi'])).stdout.trim(); }
@@ -326,9 +346,25 @@ export async function ensureRouter(password: string, encryption: string, run: Do
   }
   if (owner !== undefined) {
     if (owner !== '1') throw new Error('The milo-freellmapi container belongs to another installation; setup stopped');
-    await run(['start', 'milo-freellmapi']); return;
+    if (!recreate) { await run(['start', 'milo-freellmapi']); return; }
   }
   await run(['pull', FREELLMAPI_IMAGE]);
+  if (recreate) {
+    let volume = false;
+    try { await run(['volume', 'inspect', 'milo-freellmapi-data']); volume = true; }
+    catch (error) {
+      if (!/No such volume/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Cannot inspect the old router volume; its data was preserved');
+    }
+    if (volume) {
+      let state: string;
+      try {
+        state = (await run(['run', '--rm', '--network', 'none', '--mount', 'type=volume,src=milo-freellmapi-data,dst=/data,readonly', '--entrypoint', 'node', FREELLMAPI_IMAGE, '-e', inspectRouterKeys])).stdout.trim();
+      } catch { throw new Error('Cannot check the old router for provider keys; its data was preserved'); }
+      if (state !== 'empty') throw new Error('Local router admin credentials are missing and the old router may contain provider keys; its data was preserved. Restore the local admin file before rerunning setup');
+    }
+    if (owner !== undefined) await run(['rm', '-f', 'milo-freellmapi']);
+    if (volume) await run(['volume', 'rm', 'milo-freellmapi-data']);
+  }
   // Docker copies named variables from env, keeping secrets out of argv.
   await run(['run', '-d', '--name', 'milo-freellmapi', '--label', 'io.milo.router=1', '--network', 'host', '--restart', 'unless-stopped', '-v', 'milo-freellmapi-data:/app/server/data', '-e', 'HOST=127.0.0.1', '-e', 'PORT=3001', '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
     ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: 'milo@localhost.local', password }, ...freeConfig() })
@@ -337,34 +373,50 @@ export async function ensureRouter(password: string, encryption: string, run: Do
 async function argsWithEnv(args: string[], env?: NodeJS.ProcessEnv) {
   return await exec('docker', args, { timeout: 300000, maxBuffer: 1048576, ...(env ? { env } : {}) });
 }
+type LocalAdmin = { password: string; encryption: string };
+function localAdminPath() {
+  return join(process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo'), 'router-admin.json');
+}
+async function readLocalAdmin(): Promise<LocalAdmin | undefined> {
+  let handle;
+  try { handle = await open(localAdminPath(), constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw new Error('Cannot read the local router admin file; setup stopped');
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('permissions');
+    const saved = object(JSON.parse(await handle.readFile('utf8')));
+    if (typeof saved.password !== 'string' || !/^[a-f0-9]{64}$/.test(saved.password)
+      || typeof saved.encryption !== 'string' || !/^[a-f0-9]{64}$/.test(saved.encryption)) throw new Error('format');
+    return { password: saved.password, encryption: saved.encryption };
+  } catch { throw new Error('Invalid local router admin file; it must belong to this user and have mode 0600. Restore it before rerunning setup'); }
+  finally { await handle.close(); }
+}
+async function saveLocalAdmin(admin: LocalAdmin) {
+  const path = localAdminPath(), temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await writeFile(temporary, JSON.stringify(admin), { mode: 0o600, flag: 'wx' });
+    await rename(temporary, path);
+  } catch { throw new Error('Cannot save the local router admin file; setup stopped'); }
+  finally { await rm(temporary, { force: true }).catch(() => {}); }
+}
 export async function setup(notify = console.log) {
   const squire = new BrowserSquire();
   const router = new FreeLLMAdmin();
   try {
-    await squire.connect();
-    const existing = (await squire.credentials.list()).find(c => sameService(c, 'milo-freellmapi-admin'));
-    let password: string, encryption: string;
-    if (existing) {
-      const { approval } = await squire.credentials.requestReveal({ reference: existing.reference });
-      if (!approval.ready) {
-        notify(`Approve local FreeLLMAPI access: ${approval.approveUrl}`);
-        await enter('Press Enter after approving in Squire. ');
-      }
-      const revealed = await squire.credentials.claimReveal(approval.id);
-      password = revealed.fields.password!;
-      encryption = revealed.fields.encryption_key!;
-      if (!password || !encryption) throw new Error('Squire returned incomplete local FreeLLMAPI credentials');
-    } else {
-      password = randomBytes(32).toString('hex');
-      encryption = randomBytes(32).toString('hex');
-      await squire.call('store_credential', { service: 'milo-freellmapi-admin', fields: { password, encryption_key: encryption }, label: 'Milo local router' });
-    }
-    await ensureRouter(password, encryption);
+    const saved = await readLocalAdmin();
+    const admin = saved ?? { password: randomBytes(32).toString('hex'), encryption: randomBytes(32).toString('hex') };
+    await ensureRouter(admin.password, admin.encryption, argsWithEnv, !saved);
+    if (!saved) await saveLocalAdmin(admin);
     let ready = false;
     for (let attempt = 0; attempt < 60; attempt++) {
-      try { await router.login(password); ready = true; break; } catch { await delay(1000); }
+      try { await router.login(admin.password); ready = true; break; } catch { await delay(1000); }
     }
     if (!ready) throw new Error('Local FreeLLMAPI did not start; inspect its health before resuming setup');
+    await squire.connect();
     await router.configureChain();
     let result = await setupProviders(squire, router, { notify });
     const dropped = new Set(result.dropped);
