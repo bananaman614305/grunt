@@ -13,7 +13,7 @@ export const HOST = '127.0.0.1';
 export function configure(env = process.env) {
   const connection = { url: env.MILO_FREELLMAPI_URL ?? 'http://127.0.0.1:3001/v1', key: env.MILO_FREELLMAPI_KEY ?? '' };
   const registered: Source[] = [new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: env.MILO_OPENCODE_MODEL ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff()];
-  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['codex', 'freellmapi', 'opencode', 'kilo'];
+  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['freellmapi', 'opencode', 'kilo'];
   return new Sources(ids.map(id => { const source = registered.find(s => s.id === id); if (!source) throw new Error(`Unknown Milo source: ${id}`); return source; }));
 }
 export function start(env = process.env) {

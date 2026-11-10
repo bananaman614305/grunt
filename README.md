@@ -321,9 +321,11 @@ Run `codex`. See the [official configuration reference](https://learn.chatgpt.co
 
 ### Codex source
 
-When the official `codex` CLI is already signed in using ChatGPT, Milo tries it
-first. This spends your ChatGPT plan allowance; to keep traffic on free sources,
-set `MILO_SOURCES=freellmapi,opencode,kilo`. Select model `codex` to use only Codex.
+Codex is opt-in. With the official `codex` CLI already signed in using ChatGPT,
+set `MILO_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
+spends your Codex plan allowance, including the weekly limit. Without
+`MILO_SOURCES`, Milo uses only `freellmapi,opencode,kilo` and never launches Codex.
+With Codex enabled, select model `codex` to use only Codex.
 API-key logins do not enable this source. Missing or signed-out Codex is omitted
 from `/v1/models`; Milo continues through the free chain on usage limits.
 
@@ -337,7 +339,8 @@ Codex default back at Milo, which would create a routing loop.
 
 ### Sources and app sessions
 
-`MILO_SOURCES=codex,freellmapi,opencode,kilo` sets the default source order. An explicit
+The default source order is `freellmapi,opencode,kilo`. Set `MILO_SOURCES` to
+choose sources in your preferred order; Codex runs only when listed. An explicit
 model selects just that source. Freebuff is last inside FreeLLMAPI's chain and
 can also be selected directly with `MILO_SOURCES=freebuff`. The former
 `MILO_GATEWAY_URL` and `MILO_GATEWAY_KEY` no longer configure the local free API

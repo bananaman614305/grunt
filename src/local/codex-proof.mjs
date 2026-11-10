@@ -1,4 +1,4 @@
-// Run after pnpm build with an already signed-in official codex CLI on PATH.
+// Run after pnpm build with MILO_SOURCES=codex and an already signed-in official codex CLI on PATH.
 import { serve } from '@hono/node-server';
 import { createLocalApp } from '../../dist/local/api.js';
 import { configure } from '../../dist/local/main.js';

@@ -1,4 +1,4 @@
-import { copyFile, chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as fs from 'node:fs';
 import * as promises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -44,7 +44,7 @@ it('handles a missing binary without changing the free source chain', async () =
   vi.stubEnv('PATH', dir + '/missing');
   expect(await new Codex().available()).toBe(false);
   await expect(new Codex().complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'not_installed' });
-  expect(configure({}).sources.map(s => s.id)).toEqual(['codex', 'freellmapi', 'opencode', 'kilo']);
+  expect(configure({}).sources.map(s => s.id)).toEqual(['freellmapi', 'opencode', 'kilo']);
 });
 it('passes exact text and cwd, parses only the final agent text, and resumes through the API', async () => {
   const source = new Codex({ model: 'custom' });
@@ -91,4 +91,25 @@ it('does not open files in Codex home from the Milo process', async () => {
   expect(await new Codex().available()).toBe(true);
   expect(await new Codex().complete(request(), AbortSignal.timeout(5000))).toEqual({ text: '  exact prompt\n' });
   for (const spy of spies) for (const args of spy.mock.calls) expect(String(args[0])).not.toContain('codex-home');
+});
+
+it('never launches Codex for default-config API requests', async () => {
+  await writeFile(join(dir, 'codex'), '#!/bin/sh\ntouch "$FAKE_CODEX_CALLS"\nexit 99\n');
+  const fetcher = vi.fn(async () => Response.json({ choices: [{ message: { content: 'free answer' } }] }));
+  vi.stubGlobal('fetch', fetcher);
+  try {
+    const sources = configure({ MILO_FREELLMAPI_KEY: 'test' });
+    const app = createLocalApp(sources);
+    for (const model of ['milo', 'codex']) {
+      const res = await app.request('http://localhost:8788/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Say hello' }] })
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).choices[0].message.content).toBe('free answer');
+    }
+    expect(sources.sources.map(s => s.id)).toEqual(['freellmapi', 'opencode', 'kilo']);
+    expect(fs.existsSync(join(dir, 'calls'))).toBe(false);
+    expect(configure({ MILO_SOURCES: 'opencode,codex,freellmapi' }).sources.map(s => s.id)).toEqual(['opencode', 'codex', 'freellmapi']);
+  } finally { vi.unstubAllGlobals(); }
 });
