@@ -20,27 +20,20 @@ export function dotsRelay(store: DotsStore, options: { origin?: string; sender?:
   const events = new DotsEvents(store, options.sender);
   let windowStart = Date.now(), unauthenticated = 0;
   app.use('*', async (c, next) => {
-    if (!/^\/(?:mcp$|dots\/|oauth\/|\.well-known\/oauth)/.test(c.req.path)) return next();
+    if (!/^\/(?:(?:mcp|join)$|dots\/|oauth\/|\.well-known\/oauth)/.test(c.req.path)) return next();
     c.header('Cache-Control', 'no-store');
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');
-    c.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
-    if (c.req.method === 'POST' && ['/dots/link', '/oauth/register', '/oauth/authorize', '/oauth/token'].includes(c.req.path)) {
+    c.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+    if (c.req.method === 'POST' && ['/dots/redeem', '/oauth/register', '/oauth/authorize', '/oauth/token'].includes(c.req.path)) {
       if (Date.now() - windowStart > 60000) { windowStart = Date.now(); unauthenticated = 0; }
       if (++unauthenticated > 120) return c.json({ error: 'rate_limited' }, 429);
     }
     await next();
   });
-  for (const path of ['/mcp', '/dots/*', '/oauth/*']) app.use(path, bodyLimit({ maxSize: 262144, onError: c => c.json({ error: 'payload_too_large' }, 413) }));
+  for (const path of ['/join', '/mcp', '/dots/*', '/oauth/*']) app.use(path, bodyLimit({ maxSize: 262144, onError: c => c.json({ error: 'payload_too_large' }, 413) }));
   app.route('/', oauthRoutes(store, origin));
-  app.post('/dots/link', async c => {
-    const body = await c.req.json();
-    if (!object(body) || typeof body.deviceSecret !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.deviceSecret)) return c.json({ error: 'invalid_device' }, 400);
-    await store.clean();
-    return c.json({ ...await store.link(body.deviceSecret), connector: origin + '/mcp' }, 201);
-  });
   app.use('/dots/*', async (c, next) => {
-    if (c.req.path === '/dots/link') return next();
     const pair = await store.device(bearer(c.req.header('authorization')));
     if (!pair) return c.json({ error: 'logged_out' }, 401);
     c.set('pair', pair.id);
@@ -70,14 +63,14 @@ export function dotsRelay(store: DotsStore, options: { origin?: string; sender?:
     }
   });
   app.delete('/dots/requests/:id', async c => { await store.remove(c.get('pair'), c.req.param('id')); return c.body(null, 204); });
-  app.get('/mcp', c => {
+  app.on('GET', ['/join', '/mcp'], c => {
     if (c.req.header('accept')?.includes('text/event-stream')) return c.body(null, 405);
-    return c.html(page('Let your dot answer Milo', '<p>Run <code>milo dots link</code> on your computer. Add <strong>https://usemilo.dev/mcp</strong> as a connector in ChatGPT, enter your pairing code, and choose Allow.</p><p>Tell your dot: “When Milo sends a request, answer it and send the answer back with milo_submit_reply.”</p><p>If your dot cannot add connectors from chat, use ChatGPT Settings → Apps or Plugins → Developer mode → Create, then enter this MCP URL with OAuth.</p>'));
+    return c.html(page('Let your dot answer Milo', `<p>With Milo running on your computer, tell your dot:</p><p><strong>Join Milo: ${new URL(origin).host}/join</strong></p><p>Choose Allow when ChatGPT opens Milo's connection page. Your dot connects to Milo and subscribes to new requests automatically.</p>`));
   });
-  app.post('/mcp', async c => {
+  app.on('POST', ['/join', '/mcp'], async c => {
     if (c.req.header('origin') && c.req.header('origin') !== origin) return c.json({ error: 'invalid_origin' }, 403);
     const auth = await store.token(bearer(c.req.header('authorization')));
-    if (!auth) { c.header('WWW-Authenticate', `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`); return c.json({ error: 'invalid_token' }, 401); }
+    if (!auth) { c.header('WWW-Authenticate', `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource${c.req.path}"`); return c.json({ error: 'invalid_token' }, 401); }
     const message = await c.req.json();
     if (!object(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string') return c.json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } }, 400);
     if (message.id === undefined) return c.body(null, 202);
@@ -86,7 +79,7 @@ export function dotsRelay(store: DotsStore, options: { origin?: string; sender?:
     const error = (code: number, text: string, data?: unknown) => c.json({ jsonrpc: '2.0', id, error: { code, message: text, ...(data ? { data } : {}) } });
     try {
       switch (message.method) {
-        case 'initialize': return result({ protocolVersion: ['2025-03-26', '2025-06-18', '2025-11-25'].includes(String(params.protocolVersion)) ? params.protocolVersion : '2025-03-26', capabilities: { tools: {}, events: {} }, serverInfo: { name: 'milo-dots', version: '0.1.0' }, instructions: 'Subscribe to milo.request. Fetch pending messages with milo_get_request, answer in chat without Codex or Work tasks, then milo_submit_reply.' });
+        case 'initialize': return result({ protocolVersion: ['2025-03-26', '2025-06-18', '2025-11-25'].includes(String(params.protocolVersion)) ? params.protocolVersion : '2025-03-26', capabilities: { tools: {}, events: {} }, serverInfo: { name: 'milo-dots', version: '0.1.0' }, instructions: 'Immediately subscribe to the milo.request event after connecting; the person does not need to ask. On every event call milo_get_request with its requestId, use the conversation history to answer here in chat without starting Codex or Work tasks, then call milo_submit_reply with the requestId and final answer. If unable to answer, call milo_fail_request with quota only for an actual usage-limit refusal, otherwise upstream. Do not classify an answer that discusses limits as a quota refusal.' });
         case 'ping': return result({});
         case 'tools/list': return result({ tools });
         case 'events/list': return result({ events: [eventDefinition] });

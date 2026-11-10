@@ -13,9 +13,9 @@ export class DotsStore {
     await this.db.executeMultiple(`
       CREATE TABLE IF NOT EXISTS dots_pairs(id TEXT PRIMARY KEY, device_hash TEXT UNIQUE NOT NULL, code_hash TEXT UNIQUE, code_expires INTEGER NOT NULL, linked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS dots_clients(id TEXT PRIMARY KEY, redirects TEXT NOT NULL, name TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_flows(id TEXT PRIMARY KEY, client TEXT NOT NULL, redirect TEXT NOT NULL, state TEXT NOT NULL, challenge TEXT NOT NULL, browser_hash TEXT NOT NULL, csrf_hash TEXT NOT NULL, expires INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS dots_codes(hash TEXT PRIMARY KEY, pair TEXT NOT NULL, client TEXT NOT NULL, redirect TEXT NOT NULL, challenge TEXT NOT NULL, expires INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS dots_tokens(hash TEXT PRIMARY KEY, pair TEXT NOT NULL, client TEXT NOT NULL, kind TEXT NOT NULL, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS dots_flows(id TEXT PRIMARY KEY, client TEXT NOT NULL, redirect TEXT NOT NULL, state TEXT NOT NULL, challenge TEXT NOT NULL, browser_hash TEXT NOT NULL, csrf_hash TEXT NOT NULL, expires INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, resource TEXT NOT NULL, port INTEGER NOT NULL, approved INTEGER NOT NULL DEFAULT 0, ticket_hash TEXT UNIQUE, fallback_hash TEXT UNIQUE, ticket_expires INTEGER, pair TEXT);
+      CREATE TABLE IF NOT EXISTS dots_codes(hash TEXT PRIMARY KEY, pair TEXT NOT NULL, client TEXT NOT NULL, redirect TEXT NOT NULL, challenge TEXT NOT NULL, expires INTEGER NOT NULL, resource TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS dots_tokens(hash TEXT PRIMARY KEY, pair TEXT NOT NULL, client TEXT NOT NULL, kind TEXT NOT NULL, expires INTEGER NOT NULL, resource TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_subscriptions(id TEXT PRIMARY KEY, pair TEXT NOT NULL, url TEXT NOT NULL, secret TEXT NOT NULL, previous TEXT, rotation_until INTEGER NOT NULL DEFAULT 0, expires INTEGER NOT NULL, verified_until INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_requests(id TEXT PRIMARY KEY, pair TEXT NOT NULL, messages TEXT, reply TEXT, error TEXT, expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS dots_request_pair ON dots_requests(pair, expires);
@@ -35,11 +35,6 @@ export class DotsStore {
       { sql: 'DELETE FROM dots_codes WHERE expires<=?', args: [now] },
       { sql: 'DELETE FROM dots_pairs WHERE linked=0 AND code_expires<=?', args: [now] }
     ], 'write');
-  }
-  async link(device: string) {
-    const id = randomUUID(), code = randomBytes(6).toString('hex').toUpperCase();
-    await this.db.execute({ sql: 'INSERT INTO dots_pairs(id,device_hash,code_hash,code_expires) VALUES(?,?,?,?)', args: [id, hash(device), hash(code), Date.now() + 600000] });
-    return { code: code.match(/.{4}/g)!.join('-'), expiresIn: 600 };
   }
   async device(token: string) { return (await this.rows<Pair>('SELECT id,linked FROM dots_pairs WHERE device_hash=? AND (linked=1 OR code_expires>?)', [hash(token), Date.now()]))[0]; }
   async token(token: string) { return (await this.rows<{ pair: string; client: string }>("SELECT pair,client FROM dots_tokens WHERE hash=? AND kind='access' AND expires>?", [hash(token), Date.now()]))[0]; }

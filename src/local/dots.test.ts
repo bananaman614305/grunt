@@ -12,7 +12,7 @@ import { DotsStore } from '../dots-store.js';
 import { dotsRelay } from '../dots-relay.js';
 import { callbackURL, publicAddress, webhookPost } from '../dots-events.js';
 import type { Sender } from '../dots-events.js';
-import { dotsLink, readDotsLink } from './dots-link.js';
+import { dotsLink, readDotsLink, pairDots } from './dots-link.js';
 import { Dots, DOTS_INSTRUCTION } from './dots.js';
 import { configure } from './main.js';
 import { Sources } from './source.js';
@@ -29,38 +29,52 @@ async function fixture() {
   const store = new DotsStore(db); await store.init();
   const config = await mkdtemp(join(tmpdir(), 'milo-mcp-')); cleanup.push(() => rm(config, { recursive: true, force: true }));
   let receiver: Sender = async (_url, raw) => ({ status: 200, body: JSON.stringify({ challenge: JSON.parse(raw).challenge }) });
-  const relay = dotsRelay(store, { sender: (...args) => receiver(...args), poll: 5 });
-  const server = serve({ fetch: relay.app.fetch, hostname: '127.0.0.1', port: 0 });
+  const server = serve({ fetch: req => relay.app.fetch(req), hostname: '127.0.0.1', port: 0 });
   await new Promise<void>(resolve => server.listening ? resolve() : server.once('listening', () => resolve()));
   cleanup.push(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const relay = dotsRelay(store, { origin, sender: (...args) => receiver(...args), poll: 5 });
   const env = { MILO_CONFIG_DIR: config, MILO_DOTS_URL: origin, MILO_SOURCES: 'dots' };
-  const linked = await dotsLink(env, fetch, () => {});
-  const link = (await readDotsLink(env))!;
-  const device = { Authorization: `Bearer ${link.deviceSecret}` };
   const client = await (await relay.app.request('/oauth/register', json({ redirect_uris: ['https://chatgpt.com/connector/callback'], client_name: 'ChatGPT dot', token_endpoint_auth_method: 'none' }))).json();
   const verifier = randomBytes(32).toString('base64url');
-  const query = { response_type: 'code', client_id: client.client_id, redirect_uri: 'https://chatgpt.com/connector/callback', state: 'state123', code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), resource: 'https://usemilo.dev/mcp', scope: 'milo:dots' };
-  async function authorize(code = linked.code) {
+  const query = { response_type: 'code', client_id: client.client_id, redirect_uri: 'https://chatgpt.com/connector/callback', state: 'state123', code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), resource: origin + '/join', scope: 'milo:dots' };
+  async function allow(decision = 'allow') {
     const consent = await relay.app.request('/oauth/authorize?' + new URLSearchParams(query));
     const html = await consent.text();
     const cookie = consent.headers.get('set-cookie')!.split(';')[0]!;
-    const fields = { flow: html.match(/name="flow" value="([^"]+)"/)![1]!, csrf: html.match(/name="csrf" value="([^"]+)"/)![1]!, code, decision: 'allow' };
-    return { response: await relay.app.request('/oauth/authorize', form(fields, { Cookie: cookie })), fields, cookie, html };
+    const fields = { flow: html.match(/name="flow" value="([^"]+)"/)![1]!, csrf: html.match(/name="csrf" value="([^"]+)"/)![1]!, decision };
+    const response = await relay.app.request('/oauth/authorize', form(fields, { Cookie: cookie }));
+    return { response, fields, cookie, html };
+  }
+  async function authorize(pairEnv = env, fallback = false) {
+    const allowed = await allow(fallback ? 'fallback' : 'allow');
+    let complete: string;
+    if (fallback) {
+      const html = await allowed.response.text();
+      const code = html.match(/milo dots link ([A-Z0-9_-]{16})/)![1]!;
+      complete = await dotsLink(code, pairEnv, fetch, () => {});
+    } else {
+      const app = createLocalApp(new Sources([{ id: 'fixture', available: async () => false, complete: async () => ({ text: '' }) }]), { dotsEnv: pairEnv });
+      const response = await app.request(allowed.response.headers.get('location')!, { headers: { Referer: origin + '/', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' } });
+      expect(response.status).toBe(303); complete = response.headers.get('location')!;
+    }
+    return { ...allowed, response: await relay.app.request(complete, { headers: { Cookie: allowed.cookie } }) };
   }
   const granted = await authorize();
   expect(granted.response.status).toBe(303);
+  expect(granted.html).not.toContain('name="code"');
   const callback = new URL(granted.response.headers.get('location')!);
   expect(callback.searchParams.get('state')).toBe('state123');
   const tokenBody = { grant_type: 'authorization_code', client_id: client.client_id, redirect_uri: query.redirect_uri, code: callback.searchParams.get('code')!, code_verifier: verifier, resource: query.resource };
   const bad = await relay.app.request('/oauth/token', form({ ...tokenBody, code_verifier: 'x'.repeat(43) })); expect(bad.status).toBe(400);
   const tokens = await (await relay.app.request('/oauth/token', form(tokenBody))).json();
   expect(typeof tokens.access_token).toBe('string');
-  const rpc = async (method: string, params: unknown = {}, token = tokens.access_token) => (await (await relay.app.request('/mcp', json({ jsonrpc: '2.0', id: 1, method, params }, token))).json());
+  const rpc = async (method: string, params: unknown = {}, token = tokens.access_token, path = '/join') => (await (await relay.app.request(path, json({ jsonrpc: '2.0', id: 1, method, params }, token))).json());
   const tool = async (name: string, args: unknown = {}, token?: string) => { const response = await rpc('tools/call', { name, arguments: args }, token); return { ...response.result, value: response.result?.content?.[0]?.text ? JSON.parse(response.result.content[0].text.startsWith('{') ? response.result.content[0].text : '{}') : undefined }; };
   const signingKey = 'whsec_' + randomBytes(32).toString('base64');
   const subscription = { name: 'milo.request', arguments: {}, delivery: { mode: 'webhook', url: 'https://receiver.example/events', secret: signingKey } };
-  return { db, store, relay, env, device, link, client, tokens, tokenBody, authorize, rpc, tool, subscription, signingKey, set receiver(fn: Sender) { receiver = fn; } };
+  const link = (await readDotsLink(env))!;
+  return { db, store, relay, env, device: { Authorization: `Bearer ${link.deviceSecret}` }, link, client, tokens, tokenBody, authorize, allow, rpc, tool, subscription, signingKey, set receiver(fn: Sender) { receiver = fn; } };
 }
 it('stays off by default and makes no gateway call without explicit opt-in or setup', async () => {
   const fetcher = vi.fn();
@@ -75,12 +89,12 @@ it('stays off by default and makes no gateway call without explicit opt-in or se
 });
 it('supports metadata, PKCE, single-use pairing and codes, refresh rotation and explicit consent', async () => {
   const f = await fixture();
-  expect(await (await f.relay.app.request('/.well-known/oauth-protected-resource')).json()).toMatchObject({ resource: 'https://usemilo.dev/mcp' });
+  expect(await (await f.relay.app.request('/.well-known/oauth-protected-resource')).json()).toMatchObject({ resource: f.env.MILO_DOTS_URL + '/join' });
   expect(await (await f.relay.app.request('/.well-known/oauth-authorization-server')).json()).toMatchObject({ code_challenge_methods_supported: ['S256'], grant_types_supported: ['authorization_code', 'refresh_token'] });
   expect((await f.relay.app.request('/mcp')).headers.get('content-type')).toContain('text/html');
   expect((await f.relay.app.request('/mcp', json({}))).status).toBe(401);
   expect((await f.relay.app.request('/oauth/token', form(f.tokenBody))).status).toBe(400);
-  const repeated = await f.authorize(); expect(repeated.response.status).toBe(400);
+  const repeated = await f.allow();
   const csrf = await f.relay.app.request('/oauth/authorize', form(repeated.fields)); expect(csrf.status).toBe(400);
   const refresh = { grant_type: 'refresh_token', client_id: f.client.client_id, refresh_token: f.tokens.refresh_token };
   expect((await f.relay.app.request('/oauth/token', form(refresh))).status).toBe(200);
@@ -129,7 +143,9 @@ it('carries a local API request through a signed event and scoped MCP tools back
     expect(await f.tool('milo_submit_reply', { requestId: item.requestId, text: 'These chats do not count toward your weekly usage limit.' })).toMatchObject({ value: { accepted: true } });
     return { status: 200, body: '{}' };
   };
-  expect((await f.rpc('initialize', { protocolVersion: '2025-03-26' })).result.capabilities).toHaveProperty('events');
+  const initialized = (await f.rpc('initialize', { protocolVersion: '2025-03-26' })).result;
+  expect(initialized.capabilities).toHaveProperty('events');
+  for (const term of ['Immediately subscribe', 'milo.request', 'milo_get_request', 'milo_submit_reply', 'milo_fail_request', 'without starting Codex or Work tasks']) expect(initialized.instructions).toContain(term);
   expect((await f.rpc('events/list')).result.events[0].name).toBe('milo.request');
   await f.rpc('events/subscribe', f.subscription);
   const source = new Dots({ env: f.env, timeout: 2000 });
@@ -149,9 +165,10 @@ it('isolates both daemon and MCP credentials between pairings and deletes prompt
   const f = await fixture(); await f.rpc('events/subscribe', f.subscription);
   const pair = (await f.store.device(f.link.deviceSecret))!;
   const id = (await f.store.enqueue(pair.id, request.messages, 10000))!;
-  const otherDevice = randomBytes(32).toString('base64url');
-  const other = await f.store.link(otherDevice);
-  const wrong = await f.authorize(other.code); expect(wrong.response.status).toBe(303);
+  const otherConfig = await mkdtemp(join(tmpdir(), 'milo-other-')); cleanup.push(() => rm(otherConfig, { recursive: true, force: true }));
+  const otherEnv = { ...f.env, MILO_CONFIG_DIR: otherConfig };
+  const wrong = await f.authorize(otherEnv); expect(wrong.response.status).toBe(303);
+  const otherDevice = (await readDotsLink(otherEnv))!.deviceSecret;
   const code = new URL(wrong.response.headers.get('location')!).searchParams.get('code')!;
   const token = await (await f.relay.app.request('/oauth/token', form({ ...f.tokenBody, code }))).json();
   expect((await f.relay.app.request('/dots/requests/' + id, { headers: { Authorization: `Bearer ${otherDevice}` } })).status).toBe(410);
@@ -224,4 +241,59 @@ it('retains subscriptions across a SQLite reopen', async () => {
   const reopened = createClient({ url });
   try { const persisted = new DotsStore(reopened); await persisted.init(); expect((await persisted.subscriptions(sub.pair))[0]!.id).toBe(sub.id); }
   finally { reopened.close(); }
+});
+it('pairs after Allow without typing, refuses reused/expired/unconfirmed tickets, and keeps the device secret', async () => {
+  const f = await fixture();
+  const local = createLocalApp(new Sources([{ id: 'fixture', available: async () => false, complete: async () => ({ text: '' }) }]), { dotsEnv: f.env });
+  const headers = { Referer: f.env.MILO_DOTS_URL + '/', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' };
+  const allowed = await f.allow(); const target = allowed.response.headers.get('location')!;
+  expect(target).toContain('http://127.0.0.1:8788/dots/pair?ticket=');
+  expect(allowed.response.headers.get('referrer-policy')).toBe('origin');
+  expect((await local.request(target, { headers: { ...headers, Referer: 'https://hostile.example/' } })).status).toBe(403);
+  const paired = await local.request(target, { headers }); expect(paired.status).toBe(303);
+  expect((await readDotsLink(f.env))!.deviceSecret).toBe(f.link.deviceSecret);
+  expect((await local.request(target, { headers })).status).toBe(403);
+  const complete = await f.relay.app.request(paired.headers.get('location')!, { headers: { Cookie: allowed.cookie } }); expect(complete.status).toBe(303);
+  expect((await f.relay.app.request(paired.headers.get('location')!, { headers: { Cookie: allowed.cookie } })).status).toBe(400);
+  const expired = await f.allow();
+  await f.db.execute({ sql: 'UPDATE dots_flows SET ticket_expires=0 WHERE id=?', args: [expired.fields.flow] });
+  expect((await local.request(expired.response.headers.get('location')!, { headers })).status).toBe(403);
+  const unconfirmed = await f.allow();
+  await f.db.execute({ sql: 'UPDATE dots_flows SET approved=0 WHERE id=?', args: [unconfirmed.fields.flow] });
+  expect((await local.request(unconfirmed.response.headers.get('location')!, { headers })).status).toBe(403);
+  expect((await readDotsLink(f.env))!.deviceSecret).toBe(f.link.deviceSecret);
+});
+it('redeems the fallback code only once and completes the same pending browser authorization', async () => {
+  const f = await fixture(); const allowed = await f.allow('fallback');
+  const html = await allowed.response.text(); const code = html.match(/milo dots link ([A-Z0-9_-]{16})/)![1]!;
+  const complete = await dotsLink(code, f.env, fetch, () => {});
+  expect((await readDotsLink(f.env))!.deviceSecret).toBe(f.link.deviceSecret);
+  await expect(dotsLink(code, f.env, fetch, () => {})).rejects.toMatchObject({ code: 'upstream' });
+  expect((await f.relay.app.request(complete, { headers: { Cookie: allowed.cookie } })).status).toBe(303);
+});
+it('rejects hostile or disabled local pairing and unconfirmed gateway results before saving a device secret', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'milo-unpaired-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const env = { MILO_CONFIG_DIR: directory, MILO_DOTS_URL: 'https://usemilo.dev', MILO_SOURCES: 'dots' };
+  const target = 'https://usemilo.dev/oauth/complete?flow=' + 'f'.repeat(43);
+  const url = 'http://127.0.0.1:8788/dots/pair?' + new URLSearchParams({ ticket: 't'.repeat(43), return: target });
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ paired: false, return: target })));
+  const request = new Request(url, { headers: { Referer: 'https://usemilo.dev/' } });
+  expect((await pairDots(request, { ...env, MILO_SOURCES: 'kilo' }, fetcher)).status).toBe(403); expect(fetcher).not.toHaveBeenCalled();
+  expect((await pairDots(new Request(url, { headers: { Referer: 'https://hostile.example/' } }), env, fetcher)).status).toBe(403); expect(fetcher).not.toHaveBeenCalled();
+  expect((await pairDots(request, env, fetcher)).status).toBe(403);
+  expect(await readDotsLink(env)).toBeUndefined();
+  fetcher.mockImplementation(async () => new Response(JSON.stringify({ paired: true, return: 'https://usemilo.dev/oauth/complete?flow=' + 'x'.repeat(43) })));
+  expect((await pairDots(request, env, fetcher)).status).toBe(403); expect(await readDotsLink(env)).toBeUndefined();
+  await expect(dotsLink(undefined, env, fetcher, () => {})).rejects.toThrow('fallback');
+});
+it('publishes canonical join metadata and the mcp alias with matching resource challenges', async () => {
+  const f = await fixture();
+  for (const path of ['/join', '/mcp']) {
+    const metadata = await (await f.relay.app.request('/.well-known/oauth-protected-resource' + path)).json(); expect(metadata.resource).toBe(f.env.MILO_DOTS_URL + path);
+    const unauthenticated = await f.relay.app.request(path, json({})); expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get('www-authenticate')).toContain('/.well-known/oauth-protected-resource' + path);
+    expect((await f.rpc('initialize', {}, undefined, path)).result.capabilities).toHaveProperty('events');
+  }
+  const setup = await (await f.relay.app.request('/join')).text();
+  expect(setup).toContain('Join Milo:'); expect(setup).not.toContain('milo dots link'); expect(setup).not.toContain('Settings');
 });

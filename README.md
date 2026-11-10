@@ -390,34 +390,30 @@ startup log alongside a successful request from another folder named `project`.
 
 ### Dots through the Milo connector (optional)
 
-Dots is **off by default**. You need a ChatGPT account with access to a dot and custom MCP connectors. No Slack account, browser automation, or OpenAI credentials are needed.
+With Milo running on your computer, tell your dot:
 
-On the computer running Milo:
+> Join Milo: usemilo.dev/join
 
-```sh
-milo dots link
-```
+Choose **Allow** when ChatGPT opens Milo's connection page. It sends your browser to the local daemon, redeems a single-use ticket, and returns to ChatGPT. No command or typed code is needed. The dot receives server instructions to subscribe to `milo.request` automatically and return answers with `milo_submit_reply`.
 
-This prints a short pairing code (valid for ten minutes) and `https://usemilo.dev/mcp`. Ask your dot to join that connector. If ChatGPT cannot add it from chat, use **Settings → Apps or Plugins → Developer mode → Create**, enter the MCP URL, and select OAuth. On Milo's authorize page enter the code and choose **Allow**. Only approve a pairing you started; keep the code private. The code grants access only to that Milo device's requests.
-
-Tell your dot:
-
-> When Milo sends a request, answer it in chat without starting Codex or Work tasks, and send the answer back with milo_submit_reply. Subscribe to Milo's milo.request event.
-
-Then start the local daemon with an explicit source order:
+Dots is off by default. Start Milo with an explicit source order that includes it:
 
 ```sh
 MILO_SOURCES=dots,freellmapi,opencode,kilo milo
 ```
 
-Select model `dots` for the dot only. Model `milo` moves to the next source when the device is not paired, no live subscription exists, a dot reports an actual quota refusal, or no reply arrives before `MILO_DOTS_TIMEOUT_MS` (default `300000`, five minutes). Caller cancellation stops the whole request. Without setup, dots is absent from `/v1/models`. Without `dots` in `MILO_SOURCES`, Milo makes no relay calls. Ordinary replies that discuss usage limits are returned as answers.
+The normal join flow targets the default daemon port (`8788`). The OAuth authorize URL can specify `milo_port` when the daemon runs on another port. If Milo cannot be reached, or you approve on a phone, return to the Allow page and choose **Connect another computer**. Run the displayed fallback command, `milo dots link <code>`, on the computer running Milo, then choose **Continue to ChatGPT** on that page. Codes and tickets are private, single-use, and expire within ten minutes. The fallback command reuses the same device secret as automatic pairing.
 
-Milo stores a generated device secret in `dots.json` under `MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`, with file mode `0600`. It is a Milo relay secret, never an OpenAI token. Do not share that file. `milo dots link` again creates a new pairing. Disconnecting the connector in ChatGPT revokes its OAuth grant and stops its subscriptions when ChatGPT invokes the revocation endpoint. Without revocation, subscriptions stop at their granted expiry (at most one day); Milo cannot detect a ChatGPT-only removal immediately.
+Select model `dots` for the dot only. Model `milo` moves to the next source when the device is not paired, no live subscription exists, the dot reports an actual quota refusal, or no reply arrives before `MILO_DOTS_TIMEOUT_MS` (default `300000`, five minutes). Caller cancellation stops the chain. Without pairing, dots is absent from `/v1/models`. Without `dots` in `MILO_SOURCES`, normal requests and the local pairing route make no gateway calls. Replies that merely discuss usage limits are returned normally.
 
-The public relay runs on `milo-gateway` at usemilo.dev. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP is allowed only on loopback). Pair with the override in place: Milo will not forward an existing device secret to a different origin. The relay's `MILO_PUBLIC_URL` defaults to `https://usemilo.dev` and controls its OAuth metadata. Deployments use the existing merge-to-main GitHub workflow.
+Milo stores its generated device secret in `dots.json` under `MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`, with mode `0600`, and reuses it for later authorizations. It is a Milo relay secret, never an OpenAI token; do not share that file. Local pairing requires a navigation from the configured gateway and a ticket that gateway confirms was approved. It refuses arbitrary origins, return URLs, unapproved tickets, reused tickets and expired tickets.
 
-The relay emits a signed MCP Event containing only a request ID and a fixed short summary. The dot calls `milo_get_request` to read the full conversation, then `milo_submit_reply(requestId, text)` or `milo_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry the earlier user and assistant turns. Request text is removed from SQLite when the dot replies or the request expires; replies remain only until the local caller acknowledges them or the deadline expires. Text is never written to application logs. The relay temporarily stores conversation text, and the dot receives it: send only content you intend to share with that dot.
+The public relay runs on `milo-gateway` at usemilo.dev. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: Milo will not forward an existing device secret to another origin. The gateway's `MILO_PUBLIC_URL` defaults to `https://usemilo.dev` and controls OAuth metadata. Deployment uses the existing merge-to-main workflow. A bare `join.usemilo.dev` hostname would require DNS and a Fly certificate; no DNS change is included here.
 
-MCP Events is experimental. Whether a dot can join from chat alone, whether ChatGPT accepts the subscription, and how event-triggered dot work is counted against plan limits must be checked live. If subscription fails, record the exact ChatGPT error. You can still ask the dot manually to call `milo_get_request` for a queued request while its subscription remains live. Every request asks for a chat reply without Codex or Work tasks; this does not guarantee what the dot will do or that event-triggered work is free. Replies are **text only** and cannot edit the local working directory or return local tool calls.
+The relay sends a signed event containing only a request ID and fixed summary. The dot reads the conversation with `milo_get_request`, then calls `milo_submit_reply(requestId, text)` or `milo_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry earlier user and assistant turns. Prompt text is removed from SQLite when answered or expired; replies remain only until local acknowledgment or expiry. Text is never written to application logs. The relay temporarily stores conversation text and the dot receives it, so send only content you intend to share.
 
-Protocol references: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [connecting ChatGPT plugins](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
+MCP Events is experimental. The live test checks whether the dot follows the server instructions and subscribes by itself. If it does not, say: “Subscribe to Milo's milo.request event, answer each request in chat, and send the answer back with milo_submit_reply.” Record the exact error if ChatGPT rejects a subscription. You can ask the dot manually to read a queued request while its subscription remains live. Whether event-triggered dot work counts against plan limits must be checked live; do not assume it is free. Every prompt asks for a chat answer without starting Codex or Work tasks, but this cannot guarantee the dot's behavior or usage accounting. Replies are text only; they cannot edit the local working directory or return local tool calls.
+
+Disconnecting the connector revokes the grant and stops subscriptions when ChatGPT invokes the revocation endpoint. Otherwise subscriptions expire within a day; Milo cannot detect ChatGPT-only removal immediately.
+
+References: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [ChatGPT plugin connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
