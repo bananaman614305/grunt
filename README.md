@@ -161,7 +161,8 @@ The reduced FreeLLMAPI chain is Groq, anonymous Kilo, then Freebuff; OpenCode
 remains a separate Milo driver.
 
 Connect Trusty Squire before running setup. If Squire is unavailable or has no
-session, Milo stops with an instruction to connect it separately and rerun setup.
+session, Milo stops with an instruction to connect it separately and rerun setup,
+followed by a redacted, single-line connection reason (at most 300 characters total).
 Milo never launches Squire onboarding, login or agent installation.
 
 Each key import needs your Squire passkey approval. Before prompting, setup saves
@@ -170,10 +171,15 @@ approval link and timestamps) in Milo's config directory, under
 `$MILO_CONFIG_DIR` when set, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`.
 Use `MILO_CONFIG_DIR=/path/to/persistent/milo milo setup` to persist Milo state
 without changing Squire's config location. Squire inherits your normal environment.
+If an agent sandbox changes `HOME`, set `MILO_SQUIRE_HOME` to the home that runs
+your own Squire, for example `MILO_SQUIRE_HOME=/home/you milo setup`. Only the
+Squire child receives that `HOME` and its derived `XDG_CONFIG_HOME` (`<home>/.config`);
+Milo state, Freebuff, OpenCode and FreeLLMAPI keep their normal environment.
 If an older launch overrides `XDG_CONFIG_HOME` solely for Milo, keep it while
 resuming existing approvals and set `MILO_SQUIRE_XDG_CONFIG_HOME` to Squire's
-original XDG config root (usually `$HOME/.config`). This override applies only
-to the Squire child. When a new Milo state directory has no saved state, setup
+original XDG config root (usually `$HOME/.config`). This explicit value wins
+over the config root derived from `MILO_SQUIRE_HOME` and applies only to the
+Squire child. When a new Milo state directory has no saved state, setup
 also reads the previous `$XDG_CONFIG_HOME/milo` location; future writes use the
 selected Milo directory. Restarting setup resumes the same
 unexpired approval. A denied, expired or unknown approval may be replaced; a
