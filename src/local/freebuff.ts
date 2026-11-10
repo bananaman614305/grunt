@@ -176,5 +176,5 @@ export class Freebuff implements Source {
     try { return (await readdir(dir, { withFileTypes: true })).filter(d => d.isDirectory()).map(d => join(dir, d.name, 'chat-messages.json')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
   }
-  async close() { this.shutdown.abort(); await Promise.all([...this.sessions].map(id => this.mux.stop(id))); }
+  async close() { this.shutdown.abort(); await Promise.all([...this.sessions].map(id => this.mux.stop(id))); await this.mux.close?.(); }
 }

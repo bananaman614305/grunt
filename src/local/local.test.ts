@@ -96,8 +96,14 @@ it('fake Freebuff on real tmux isolates concurrent identical requests, queues, c
     const request: ModelRequest = { model: 'freebuff', messages: [{ role: 'user', content: 'same prompt' }], tools: [], stream: false, cwd: dir };
     const app = createLocalApp(new Sources([driver]));
     vi.stubEnv('MILO_TEST_UNIQUE','1');
-    const results = await Promise.all(Array.from({ length: 3 }, () => app.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify({ ...request, messages: request.messages }) }).then(r => r.json())));
-    expect(new Set(results.map(r => r.choices[0].message.content)).size).toBe(3);
+    for (let batch = 0; batch < 8; batch++) {
+      const results = await Promise.all(Array.from({ length: 3 }, async () => {
+        const response = await app.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify({ ...request, messages: [{role:'user',content:`same prompt ${batch}`}] }) });
+        return {status:response.status,body:await response.json()};
+      }));
+      for (const result of results) expect(result).toMatchObject({status:200,body:{choices:[{message:{role:'assistant',content:expect.any(String)}}]}});
+      expect(new Set(results.map(r => r.body.choices[0].message.content)).size).toBe(3);
+    }
     vi.stubEnv('MILO_TEST_UNIQUE','');
     expect(fetcher).not.toHaveBeenCalled();
     const timeout = new Freebuff({ home: dir, timeout: 500, startup: 100, poll: 20 });
@@ -108,7 +114,7 @@ it('fake Freebuff on real tmux isolates concurrent identical requests, queues, c
     vi.stubEnv('PATH', '/nonexistent');
     expect(await driver.available()).toBe(false);
   } finally { vi.stubEnv('PATH', originalPath ?? ''); await driver.close(); fetcher.mockRestore(); await rm(dir, { recursive: true, force: true }); }
-}, 15000);
+}, 30000);
 it('gateway tool replies retain their wire shapes and tool results survive translation', async () => {
   const tool = { id: 'call_1', type: 'function' as const, function: { name: 'read', arguments: '{"path":"a.txt"}' } };
   const source: Source = { ...fake(), complete: async () => ({ text: '', calls: [tool] }) };

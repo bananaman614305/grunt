@@ -237,7 +237,9 @@ per directory. New-chat creation and association are serialized per shared on-di
 directory, including different working folders with the same basename. Once a
 chat is associated with its originating process, its response runs concurrently
 with other associated turns; replies and startup logs are read only from that chat. SIGINT/SIGTERM
-cancel work and close only Milo's own sessions on its private tmux socket.
+cancel work and close only Milo's own sessions and server on its private tmux socket.
+The private server stays alive between turns so ending the last session cannot
+race with launching the next; daemon shutdown waits for launches and closes it explicitly.
 `MILO_APP_TIMEOUT_MS` defaults to (600000), including queue time. More sessions
 consume your account's free hours faster. Freebuff automation may conflict with
 its terms; using your account this way is your choice.
