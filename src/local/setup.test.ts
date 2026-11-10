@@ -1,0 +1,119 @@
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import type * as ChildProcess from 'node:child_process';
+import { join } from 'node:path';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
+
+const { docker, question } = vi.hoisted(() => ({ docker: vi.fn(), question: vi.fn(async () => '') }));
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof ChildProcess>();
+  const { promisify } = await import('node:util');
+  return { ...actual, execFile: Object.assign(vi.fn(), { [promisify.custom]: docker }) };
+});
+vi.mock('node:readline/promises', () => ({ createInterface: () => ({ question, close: vi.fn() }) }));
+
+const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+let stateDir: string;
+let installed: boolean, volume: boolean, storedKeys: boolean, legacyAdmin: boolean;
+let keys: { id: number; platform: string; label: string }[];
+let logins: string[];
+let squireCall: ReturnType<typeof vi.spyOn>;
+beforeEach(async () => {
+  stateDir = await mkdtemp(join(tmpdir(), 'milo-setup-test-'));
+  vi.stubEnv('MILO_CONFIG_DIR', stateDir);
+  vi.stubEnv('XDG_CONFIG_HOME', stateDir);
+  Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+  installed = false; volume = false; storedKeys = false; legacyAdmin = true; keys = []; logins = [];
+  docker.mockReset(); question.mockClear();
+  docker.mockImplementation(async (_command, args) => {
+    if (args[0] === 'inspect') {
+      if (!installed) throw Object.assign(new Error('missing'), { stderr: 'No such container: milo-freellmapi' });
+      return { stdout: '1' };
+    }
+    if (args[0] === 'volume' && args[1] === 'inspect') {
+      if (!volume) throw Object.assign(new Error('missing'), { stderr: 'No such volume: milo-freellmapi-data' });
+      return { stdout: 'milo-freellmapi-data' };
+    }
+    if (args[0] === 'run' && args.includes('--rm')) return { stdout: storedKeys ? 'keys' : 'empty' };
+    if (args[0] === 'run') { installed = true; volume = true; }
+    if (args[0] === 'rm') installed = false;
+    if (args[0] === 'volume' && args[1] === 'rm') volume = false;
+    return { stdout: '' };
+  });
+  vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
+  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
+  squireCall = vi.spyOn(BrowserSquire.prototype, 'call').mockImplementation(async (name, args) => {
+    if (name === 'list_credentials') return { credentials: [
+      ...(legacyAdmin ? [{ service: 'milo-freellmapi-admin', reference: 'vault://admin', field_names: ['password', 'encryption_key'] }] : []),
+      { service: 'groq', reference: 'vault://groq', field_names: ['api_key'] }
+    ] };
+    if (name === 'store_credential') return {};
+    if (name === 'fetch_credential') {
+      if (args.action === 'start') return { approval_id: String(args.reference), approval_url: 'https://squire.test/approve' };
+      return { status: 'credential_fetched', fields: args.approval_id === 'vault://admin'
+        ? { password: 'synthetic-old-password', encryption_key: 'synthetic-old-encryption' }
+        : { api_key: 'synthetic-groq-key' } };
+    }
+    throw new Error(`Unexpected Squire call: ${name}`);
+  });
+  vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(async (path, body, method) => {
+    if (path === '/auth/login') { logins.push((body as { password: string }).password); return { token: 'synthetic-login' }; }
+    if (path === '/keys' && method === 'GET') return keys;
+    if (path === '/keys') { keys.push({ id: 1, ...(body as { platform: string; label: string }) }); return {}; }
+    if (path.startsWith('/keys/')) return {};
+    if (path === '/fallback' && method === 'GET') return [];
+    if (path === '/settings/api-key') return { apiKey: 'synthetic-router-key' };
+    return {};
+  });
+});
+afterEach(async () => {
+  vi.restoreAllMocks(); vi.unstubAllEnvs();
+  if (stdinTTY) Object.defineProperty(process.stdin, 'isTTY', stdinTTY);
+  else Reflect.deleteProperty(process.stdin, 'isTTY');
+  await rm(stateDir, { recursive: true, force: true });
+});
+
+it.each([true, false])('never fetches or stores local admin credentials and reuses its private local file across setup runs (legacy vault entry: %s)', async exists => {
+  legacyAdmin = exists;
+  await expect(setup(() => {})).resolves.toEqual({ key: 'synthetic-router-key' });
+  await expect(setup(() => {})).resolves.toEqual({ key: 'synthetic-router-key' });
+  expect(squireCall.mock.calls.filter(([name, args]) => name === 'store_credential'
+    || (name === 'fetch_credential' && (args.reference === 'vault://admin' || args.approval_id === 'vault://admin')))).toEqual([]);
+  const files = await readdir(stateDir);
+  const admin = files.find(file => file !== 'approvals.json');
+  expect(admin).toBeDefined();
+  const path = join(stateDir, admin!);
+  expect((await stat(path)).mode & 0o777).toBe(0o600);
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  expect(saved).toMatchObject({ password: logins[0], encryption: expect.any(String) });
+  expect(logins).toEqual([saved.password, saved.password]);
+});
+
+it('fetches a missing provider once and skips every subsequent fetch once the router has its Milo key', async () => {
+  const output: string[] = [];
+  await setup(line => output.push(line));
+  expect(squireCall.mock.calls.filter(([name, args]) => name === 'fetch_credential' && args.reference === 'vault://groq')).toHaveLength(1);
+  squireCall.mockClear(); question.mockClear(); output.length = 0;
+  await setup(line => output.push(line));
+  expect(squireCall.mock.calls.filter(([name]) => name === 'fetch_credential')).toEqual([]);
+  expect(output.some(line => line.includes('approve'))).toBe(false);
+  expect(question).toHaveBeenCalledTimes(0);
+});
+
+it.each([true, false])('recreates a keyless old router when local admin state is missing (container: %s)', async container => {
+  installed = container; volume = true;
+  await setup(() => {});
+  const commands = docker.mock.calls.map(([, args]) => args);
+  expect(commands).toContainEqual(['volume', 'rm', 'milo-freellmapi-data']);
+  expect(commands.some(args => args[0] === 'run' && args.includes('--rm'))).toBe(true);
+  expect(commands.some(args => args[0] === 'run' && args.includes('-d'))).toBe(true);
+  if (container) expect(commands).toContainEqual(['rm', '-f', 'milo-freellmapi']);
+});
+
+it.each([true, false])('preserves an old router containing provider keys when local admin state is missing (container: %s)', async container => {
+  installed = container; volume = true; storedKeys = true;
+  await expect(setup(() => {})).rejects.toThrow(/provider keys.*preserv/i);
+  expect(docker.mock.calls.some(([, args]) => args[0] === 'rm' || args[0] === 'volume' && args[1] === 'rm')).toBe(false);
+  expect(squireCall.mock.calls.filter(([name]) => name === 'fetch_credential' || name === 'store_credential')).toEqual([]);
+});
