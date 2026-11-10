@@ -112,3 +112,160 @@ The `milo_data` volume mounts at `/data`. Keep a single Fly machine for SQLite.
 
 This replaces the former OpenAI-compatible gateway. The old `/v1/*` routes are
 removed. There is no Jev, billing, roster service, worker tooling or monorepo.
+
+## Use Milo as your harness's model
+
+Run the separate local daemon on your own machine (Node 22+, `tmux`, and an
+installed, logged-in `freebuff` on PATH):
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+MILO_SOURCES=freebuff node dist/local/main.js
+# Or: pnpm local (development). The package bin is milo-local.
+```
+
+It binds only `127.0.0.1:8788`. `MILO_PORT` changes the port. It provides
+`GET /v1/models`, Chat Completions, Anthropic Messages, and OpenAI Responses,
+including SSE. Choose model `milo` for automatic source selection, or a source
+id such as `freebuff`. This process is separate from the Fly server and Docker
+entry point. Local callers can invoke Freebuff with your filesystem permissions;
+keep this endpoint on your own machine.
+
+Freebuff acts as a delegate: it runs its own tools and can edit files in the
+working directory. Your harness receives final text; its own tool loop does not
+run for that turn. Milo extracts cwd from harness context (including environment
+blocks), accepts an explicit absolute `cwd`, and otherwise uses the daemon's
+working directory. It logs the chosen directory. Check it before asking for edits.
+Text and function-tool turns are translated across APIs. Native Responses tools
+are accepted by the app delegate; the Chat Completions gateway cannot forward
+those tools and fails over to the app source. Unsupported media blocks return an
+error rather than silently losing context.
+
+### opencode
+
+For opencode 1.18.31, save this as `opencode.json` in your project:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "milo/milo",
+  "provider": {
+    "milo": {
+      "name": "Milo",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8788/v1", "apiKey": "local" },
+      "models": { "milo": { "name": "Milo" } }
+    }
+  }
+}
+```
+
+Then run `opencode -m milo/milo`. The [provider docs for this config format](https://docs.dev.opencode.ai/docs/providers/)
+use `provider`, `npm`, and `options`. Newer native configs in the
+[current docs](https://opencode.ai/docs/providers/) use `providers`,
+`package: "@opencode/ai/providers/openai-compatible"`, and `settings` instead.
+
+### pi
+
+Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
+
+```json
+{
+  "providers": {
+    "milo": {
+      "baseUrl": "http://127.0.0.1:8788/v1",
+      "api": "openai-completions",
+      "apiKey": "local",
+      "models": [{
+        "id": "milo", "name": "Milo", "reasoning": false, "input": ["text"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 128000, "maxTokens": 8192
+      }]
+    }
+  }
+}
+```
+
+Run `pi --provider milo --model milo`. See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
+
+### Claude Code
+
+Claude Code 2.1.319 uses the Anthropic endpoint:
+
+```sh
+ANTHROPIC_BASE_URL=http://127.0.0.1:8788 \
+ANTHROPIC_AUTH_TOKEN=local \
+claude --model milo
+```
+
+See [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway).
+The placeholder token satisfies the client; the loopback daemon does not require
+a provider credential. Custom model metadata may produce a context-window warning.
+
+### Codex
+
+Add to your user `config.toml` (Responses API; tested with Codex 0.167.0):
+
+```toml
+model = "milo"
+model_provider = "milo"
+
+[model_providers.milo]
+name = "Milo"
+base_url = "http://127.0.0.1:8788/v1"
+wire_api = "responses"
+```
+
+Run `codex`. See the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+### Sources and app sessions
+
+`MILO_SOURCES=gateway,freebuff` sets failover order. The default is gateway when
+configured, then Freebuff. Set `MILO_GATEWAY_URL=https://your-gateway.example/v1`
+and `MILO_GATEWAY_KEY` for the remote source; Milo appends `/chat/completions`.
+Redirects are refused and the local app driver never uses the gateway or fetch.
+Freebuff itself talks to its own service, using your own account; Milo does not
+send its local prompts through Fly. The Fly-side API and personal-agent routing
+are separate work, so the gateway adapter is tested against a fake upstream only.
+
+Only the latest user text is pasted into Freebuff, without system/developer prompts, tools, results, or known harness context envelopes. Title, summary, topic and warm-up requests are answered locally; classification and the selected working directory are logged. Side-call detection uses system/developer instructions, including Claude Code's recorded session-naming prompt; an ordinary user request for a summary still reaches the source. Detection remains heuristic.
+
+A conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
+per canonical working directory; `MILO_APP_POOL` defaults to (2) active sessions
+per directory. New-chat creation and association are serialized per shared on-disk project
+directory, including different working folders with the same basename. Once a
+chat is associated with its originating process, its response runs concurrently
+with other associated turns; replies and startup logs are read only from that chat. SIGINT/SIGTERM
+cancel work and close only Milo's own sessions and server on its private tmux socket.
+The private server stays alive between turns so ending the last session cannot
+race with launching the next; daemon shutdown waits for launches and closes it explicitly.
+`MILO_APP_TIMEOUT_MS` defaults to (600000), including queue time. More sessions
+consume your account's free hours faster. Freebuff automation may conflict with
+its terms; using your account this way is your choice.
+
+Errors carry `not_installed`, `logged_out`, `quota`, `timeout`, `refused`, or `upstream` in
+the harness's error envelope. Missing executables are detected immediately.
+Freebuff refusals (`prompt_policy_refused`) in the chat log return a typed `refused` error immediately and permit source failover. Long pastes stored in text attachments are supported.
+
+The driver runs a bounded `freebuff doctor` preflight and reads startup log errors before waiting for a saved user message. A turn that is never persisted fails with a startup error after (10 seconds). Recognized login and exhausted-hours diagnostics return typed errors immediately.
+Unrecognized startup failures return a clear upstream error; they do not wait
+for the full model-turn timeout. Stable malformed chat data returns an explicit format error.
+Authentication, quota, missing-app and upstream availability failures can try the
+next configured source. Timeouts stop instead of replaying potentially unfinished
+filesystem work. Use `MILO_SOURCES=freebuff` to keep requests on the app path.
+
+The source interface is in `src/local/source.ts`; `Multiplexer` is in
+`src/local/multiplexer.ts`. Register another app in local configuration without
+changing API handlers. Offline tests replay recorded harness request shapes and
+run a fake Freebuff TUI through real tmux; they require tmux but no credentials.
+
+To demonstrate the built daemon offline, run `pnpm build && node src/local/proof.mjs`.
+It starts the real local entry point with a temporary fake Freebuff on PATH,
+exercises all three APIs with and without SSE, and removes its temporary chats.
+
+To replay chat-ownership races through the built HTTP API, run
+`pnpm build && node src/local/ownership-proof.mjs`. This uses a filesystem-writing
+multiplexer that delays send completion until both processes have persisted their
+chat. It verifies exact cwd/chat ownership, follow-up continuation, and a quota-only
+startup log alongside a successful request from another folder named `project`.
