@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
 import { createLocalApp } from './api.js';
 import { Freebuff, positive } from './freebuff.js';
@@ -14,11 +16,11 @@ export function start() {
   const sources = configure();
   const port = positive(process.env.MILO_PORT, 8788);
   if (port > 65535) throw new Error('MILO_PORT must be at most 65535');
-  const app = createLocalApp(sources, { log: cwd => console.error(`Milo working directory: ${cwd}`) });
+  const app = createLocalApp(sources, { port, log: cwd => console.error(`Milo working directory: ${cwd}`) });
   const server = serve({ fetch: app.fetch, hostname: HOST, port }, () => console.error(`Milo model API: http://${HOST}:${port}/v1`));
   let closing = false;
   const close = async () => { if (closing) return; closing = true; await sources.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, close };
 }
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) start();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) start();

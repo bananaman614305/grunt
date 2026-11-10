@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
-import { createLocalApp, decode } from './api.js';
+import { createLocalApp, decode, encode } from './api.js';
 import { Freebuff, parseChat } from './freebuff.js';
 import { Gateway, Sources, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
@@ -19,7 +19,7 @@ describe('harness wire contracts', () => {
       expect(body.tools.length).toBeGreaterThan(0);
       body.model = 'second-app';
       const app = createLocalApp(new Sources([fake()]));
-      const response = await app.request(`/v1/${path}`, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+      const response = await app.request(`http://localhost:8788/v1/${path}`, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
       expect(response.status).toBe(200);
       if (!stream) {
         const result = await response.json();
@@ -51,11 +51,11 @@ describe('harness wire contracts', () => {
 it('models, failover, last typed error and loopback binding', async () => {
   const bad: Source = { ...fake('bad'), complete: async () => { throw new SourceError('quota', 'Free hours exhausted'); } };
   const app = createLocalApp(new Sources([bad, fake()]));
-  expect((await (await app.request('/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['milo', 'bad', 'second-app']);
+  expect((await (await app.request('http://localhost:8788/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['milo', 'bad', 'second-app']);
   const body = JSON.stringify({ model: 'milo', messages: [{ role: 'user', content: 'hello' }] });
-  expect((await (await app.request('/v1/chat/completions', { method: 'POST', body })).json()).choices[0].message.content).toBe('hello');
+  expect((await (await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: {'Content-Type':'application/json'}, body })).json()).choices[0].message.content).toBe('hello');
   for (const path of paths) {
-    const response = await createLocalApp(new Sources([bad])).request(`/v1/${path}`, { method: 'POST', body: JSON.stringify({ input: 'hello', messages: [{ role: 'user', content: 'hello' }] }) });
+    const response = await createLocalApp(new Sources([bad])).request(`http://localhost:8788/v1/${path}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ input: 'hello', messages: [{ role: 'user', content: 'hello' }] }) });
     expect(response.status).toBe(503); expect((await response.json()).error.code).toBe('quota');
   }
   const server = serve({ fetch: app.fetch, hostname: HOST, port: 0 });
@@ -98,7 +98,7 @@ it('fake Freebuff on real tmux isolates concurrent identical requests, queues, c
     vi.stubEnv('MILO_TEST_UNIQUE','1');
     for (let batch = 0; batch < 8; batch++) {
       const results = await Promise.all(Array.from({ length: 3 }, async () => {
-        const response = await app.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify({ ...request, messages: [{role:'user',content:`same prompt ${batch}`}] }) });
+        const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...request, messages: [{role:'user',content:`same prompt ${batch}`}] }) });
         return {status:response.status,body:await response.json()};
       }));
       for (const result of results) expect(result).toMatchObject({status:200,body:{choices:[{message:{role:'assistant',content:expect.any(String)}}]}});
@@ -120,7 +120,7 @@ it('gateway tool replies retain their wire shapes and tool results survive trans
   const source: Source = { ...fake(), complete: async () => ({ text: '', calls: [tool] }) };
   const app = createLocalApp(new Sources([source]));
   for (const path of paths) {
-    const response = await app.request(`/v1/${path}`, { method: 'POST', body: JSON.stringify({ input: 'read', messages: [{ role: 'user', content: 'read' }] }) });
+    const response = await app.request(`http://localhost:8788/v1/${path}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ input: 'read', messages: [{ role: 'user', content: 'read' }] }) });
     const result = await response.json();
     if (path === 'messages') expect(result).toMatchObject({ stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'call_1', name: 'read', input: { path: 'a.txt' } }] });
     if (path === 'responses') expect(result.output).toMatchObject([{ type: 'function_call', call_id: 'call_1', arguments: tool.function.arguments }]);
@@ -150,20 +150,20 @@ it('answers housekeeping locally before starting any source', async () => {
   const complete = vi.fn(async () => ({ text: 'unexpected' }));
   const app = createLocalApp(new Sources([{ ...fake(), complete }]));
   for (const path of paths) {
-    const response = await app.request(`/v1/${path}`, {method:'POST', body:JSON.stringify({system:'Generate a concise title for this conversation.', instructions:'Generate a concise title for this conversation.', input:'Help me plant tomatoes', messages:[{role:'system',content:'Generate a concise title for this conversation.'},{role:'user',content:'Help me plant tomatoes'}]})});
+    const response = await app.request(`http://localhost:8788/v1/${path}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({system:'Generate a concise title for this conversation.', instructions:'Generate a concise title for this conversation.', input:'Help me plant tomatoes', messages:[{role:'system',content:'Generate a concise title for this conversation.'},{role:'user',content:'Help me plant tomatoes'}]})});
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('Help me plant tomatoes');
   }
   const title = await fixture('claude-title');
-  const titleResponse = await app.request('/v1/messages',{method:'POST',body:JSON.stringify(title)});
+  const titleResponse = await app.request('http://localhost:8788/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(title)});
   expect(await titleResponse.text()).toContain('What is 2 + 2?');
   expect(complete).not.toHaveBeenCalled();
   for (const content of ['Write a summary of my notes.', 'Generate a concise title for my essay.', 'Create a topic list for my talk.']) {
-    await app.request('/v1/messages',{method:'POST',body:JSON.stringify({messages:[{role:'user',content}]})});
+    await app.request('http://localhost:8788/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content}]})});
   }
   expect(complete).toHaveBeenCalledTimes(3);
 });
-it('resumes one fake Freebuff chat, preserves long pastes and fails over a refusal promptly', async () => {
+it.each(['missing','unreadable'])('recovers a %s continuation, matches CR turns, resumes chats and stops on refusal', async state => {
   const dir = await mkdtemp(join(tmpdir(), 'milo-resume-'));
   const { readdir } = await import('node:fs/promises');
   const driver = new Freebuff({home:dir, startup:200, poll:20, timeout:5000});
@@ -178,6 +178,11 @@ it('resumes one fake Freebuff chat, preserves long pastes and fails over a refus
     const files = await readdir(chats); expect(files).toHaveLength(1);
     const messages = JSON.parse(await readFile(join(chats,files[0]!,'chat-messages.json'),'utf8'));
     expect(messages.filter((m: {variant:string})=>m.variant==='user').map((m: {textAttachments:{content:string}[]})=>m.textAttachments[0]!.content)).toEqual(['first\nline','second']);
+    const saved=join(chats,files[0]!,'chat-messages.json');
+    await rm(saved);
+    if(state==='unreadable') {const {mkdir}=await import('node:fs/promises');await mkdir(saved);}
+    req.messages.push({role:'user',content:' recovered\rturn '});
+    expect(await driver.complete(req,new AbortController().signal)).toEqual({text:' recovered\nturn '});
     for (const [name, api] of [['claude','messages'],['codex','responses'],['pi','chat'],['opencode','chat']]) {
       const harness = decode(await fixture(name!),api!,dir); harness.cwd=dir;
       const expected = name === 'opencode' ? '"Reply with exactly: bridge works 42. Do not use tools."' : 'Reply with exactly: bridge works 42. Do not use tools.';
@@ -218,7 +223,7 @@ it.each([false, true])('attributes shared-basename chats and follow-ups to their
   const driver = new Freebuff({home,mux:new OwnershipMux(home),startup:1,poll:5,timeout:3000});
   const app=createLocalApp(new Sources([driver]));
   const send=async(cwd:string,messages:{role:string;content:string}[])=>{
-    const response=await app.request('/v1/chat/completions',{method:'POST',body:JSON.stringify({model:'freebuff',cwd,messages})});
+    const response=await app.request('http://localhost:8788/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'freebuff',cwd,messages})});
     return {status:response.status,body:await response.json()};
   };
   try {
@@ -235,3 +240,46 @@ it.each([false, true])('attributes shared-basename chats and follow-ups to their
     }
   } finally {await driver.close();await rm(home,{recursive:true,force:true});}
 },10000);
+
+// Reproduction local-hardening: exercise public wire translation and process startup.
+it.each([{Host:'evil.invalid:8788'}, {Host:'localhost:8788',Origin:''}, {Host:'localhost:8788','Content-Type':'text/plain'}])('rejects unsafe loopback requests without starting a session: %j', async headers => {
+  const complete=vi.fn(async()=>({text:'unexpected'}));
+  const app=createLocalApp(new Sources([{...fake(),complete}]));
+  const response=await app.request('http://localhost:8788/v1/messages',{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify({messages:[{role:'user',content:'hi'}]})});
+  expect([403,415]).toContain(response.status); expect(complete).not.toHaveBeenCalled();
+});
+it('skips unknown content blocks while retaining text',()=>{
+  expect(decode({messages:[{role:'user',content:[{type:'thinking'},{type:'redacted_thinking'},{type:'image'},{type:'input_image'},{type:'text',text:'hi'}]}]},'messages','/tmp').messages).toEqual([{role:'user',content:'hi'}]);
+});
+it('skips unknown Responses items and serializes structured tool outputs',()=>{
+  expect(decode({input:[{type:'reasoning'},{type:'custom_tool_call'},{type:'local_shell_call'},{type:'message',role:'user',content:'hi'},{type:'function_call_output',call_id:'c',output:{ok:true}}]},'responses','/tmp').messages).toEqual([{role:'user',content:'hi'},{role:'tool',tool_call_id:'c',content:'{"ok":true}'}]);
+});
+it('maps unknown background model ids to the default chain and logs the mapping',async()=>{
+  const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+  try {expect(await new Sources([fake()]).complete(decode({input:'hi',model:'claude-haiku-new'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});expect(log).toHaveBeenCalledWith(expect.stringContaining('claude-haiku-new'));}finally{log.mockRestore();}
+});
+it.each([['',{}],['broken','broken']])('encodes tool arguments safely: %s',(arguments_,input)=>{
+  expect(encode({text:'',calls:[{id:'c',type:'function',function:{name:'read',arguments:arguments_ as string}}]},'milo','messages')).toMatchObject({content:[{input}]});
+});
+it('prefers first absolute Primary working directory and ignores relative hints',()=>{
+  const request=(instructions:string)=>decode({input:'hi',instructions},'responses','/fallback').cwd;
+  expect(request('Working directory: /other\nPrimary working directory: /first\nPrimary working directory: /last')).toBe('/first');
+  expect(request('Working directory: relative')).toBe('/fallback');
+  expect(request('Working directory: /first\nWorking directory: /last')).toBe('/first');
+});
+it('caps gateway completions when max tokens are omitted and preserves explicit limits',async()=>{
+  const fetcher=vi.fn<typeof fetch>(async()=>Response.json({choices:[{message:{content:'ok'}}]}));
+  const gateway=new Gateway('https://configured.invalid/v1','synthetic',fetcher);
+  for(const maxTokens of [undefined,123]) {await gateway.complete({...decode({input:'hi'},'responses','/tmp'),maxTokens},new AbortController().signal);expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]!.body)).max_tokens).toBe(maxTokens ?? 4096);}
+});
+it('matches saved user turns with normalized newlines and surrounding whitespace',()=>{
+  expect(parseChat([{variant:'user',textAttachments:[{content:'  first\nsecond\nthird  '}]},{variant:'ai',isComplete:true,blocks:[{type:'text',content:'ok'}]}],'first\r\nsecond\rthird')).toBe('ok');
+});
+it('starts the daemon through the milo-local bin symlink',async()=>{
+  const {symlink}=await import('node:fs/promises');
+  const {spawn}=await import('node:child_process');
+  const dir=await mkdtemp(join(tmpdir(),'milo-bin-'));
+  await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,'milo-local'));
+  const child=spawn(process.execPath,['--import','tsx',join(dir,'milo-local')],{env:{...process.env,MILO_PORT:'18789'},stdio:['ignore','ignore','pipe']});
+  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('Milo model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{child.kill();await rm(dir,{recursive:true,force:true});}
+});

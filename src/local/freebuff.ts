@@ -40,10 +40,14 @@ class Pool {
   release() { const waiter = this.queue.shift(); if (waiter) waiter.resolve(); else this.active--; }
 }
 interface ChatMessage { variant?: string; content?: string; textAttachments?: { content?: string }[]; isComplete?: boolean; blocks?: { type?: string; content?: string }[] }
+function matchesUser(m: ChatMessage, prompt: string): boolean {
+  const normalize = (text: string) => text.replace(/\r\n?/g, '\n').trim();
+  return m.variant === 'user' && normalize(m.content || m.textAttachments?.map(a => a.content ?? '').join('\n') || '') === normalize(prompt);
+}
 export function parseChat(value: unknown, prompt: string): string | undefined {
   if (!Array.isArray(value) || value.some(m => !m || typeof m !== 'object' || typeof m.variant !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: expected a message array');
   const messages = value as ChatMessage[];
-  const userIndex = messages.findLastIndex(m => m.variant === 'user' && (m.content || m.textAttachments?.map(a => a.content ?? '').join('\n')) === prompt);
+  const userIndex = messages.findLastIndex(m => matchesUser(m, prompt));
   if (userIndex < 0) return;
   const replies = messages.slice(userIndex + 1).filter(m => m.variant === 'ai');
   const last = replies.at(-1);
@@ -86,7 +90,7 @@ export class Freebuff implements Source {
     if (!prompt) throw new SourceError('upstream', 'No user text in this request');
     const key = cwd + ':' + createHash('sha256').update(turns[0]!).digest('hex');
     // Simultaneous requests must never send into the same pane/chat.
-    const continuation = this.busy.has(key) ? undefined : this.conversations.get(key);
+    let continuation = this.busy.has(key) ? undefined : this.conversations.get(key);
     const ownsConversation = !this.busy.has(key);
     if (ownsConversation) this.busy.add(key);
     let creation: Pool | undefined;
@@ -94,6 +98,11 @@ export class Freebuff implements Source {
     const releaseCreation = () => { if (creating) { creation!.release(); creating = false; } };
     try {
       await pool.acquire(signal); acquired = true;
+      let previousMessages = 0;
+      if (continuation) {
+        try { previousMessages = (JSON.parse(await readFile(continuation, 'utf8')) as unknown[]).length; }
+        catch { this.conversations.delete(key); continuation = undefined; }
+      }
       if (!continuation) {
         // Freebuff groups different working folders with the same basename together.
         // Start only one unassociated process per on-disk directory at a time.
@@ -104,9 +113,7 @@ export class Freebuff implements Source {
       signal.throwIfAborted();
       const before = new Set(await this.chatFiles(directory));
       const logOffsets = new Map<string, number>();
-      let previousMessages = 0;
       if (continuation) {
-        previousMessages = (JSON.parse(await readFile(continuation, 'utf8')) as unknown[]).length;
         try { logOffsets.set(continuation, (await readFile(join(dirname(continuation), 'log.jsonl'), 'utf8')).length); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
       }
       this.sessions.add(id);
@@ -145,7 +152,7 @@ export class Freebuff implements Source {
             continue;
           }
           if (continuation && Array.isArray(data)) data = data.slice(previousMessages);
-          const matched = Array.isArray(data) && data.some(m => m.variant === 'user' && (m.content || m.textAttachments?.map((a: { content?: string }) => a.content ?? '').join('\n')) === prompt);
+          const matched = Array.isArray(data) && data.some(m => matchesUser(m, prompt));
           if (!matched) continue;
           // No other new process sharing this storage directory started between
           // our snapshot and this association. Later polling reads only this chat.
