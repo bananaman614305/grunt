@@ -1,3 +1,4 @@
+import { pairDots } from './dots-link.js';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { randomUUID } from 'node:crypto';
@@ -111,15 +112,16 @@ export function events(value: Obj, api: string): { event?: string; data: string 
   }
   return out;
 }
-export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void } = {}) {
+export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv } = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
     const host = c.req.header('host') ?? new URL(c.req.url).host;
-    if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || c.req.raw.headers.has('origin')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
+    if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || (c.req.raw.headers.has('origin') && c.req.path !== '/dots/pair')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
     if (c.req.method === 'POST' && c.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') return c.json({ error: { message: 'Content-Type must be application/json' } }, 415);
     await next();
   });
+  app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
   app.get('/v1/models', async c => c.json({ object: 'list', data: (await sources.models()).map(id => ({ id, object: 'model', created: 0, owned_by: 'milo' })) }));
   for (const [path, api] of [['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const) {
     app.post(`/v1/${path}`, async c => {

@@ -34,7 +34,8 @@ export class Sources {
         signal.throwIfAborted();
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
         console.error(`Milo source: ${source.id} failed (${last.code}) for model ${request.model}`);
-        if (last.code === 'timeout') throw last;
+        // A dot deadline is local to the relay; the caller's cancellation still stops the chain.
+        if (last.code === 'timeout' && source.id !== 'dots') throw last;
         continue;
       }
       console.error(`Milo source: ${source.id} answered model ${request.model}`);
