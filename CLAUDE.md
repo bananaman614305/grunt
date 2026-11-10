@@ -20,3 +20,7 @@ Cap completion tokens. Dispatch must return before worker work completes.
 
 Do not restore the former gateway, billing, Jev, CLI or monorepo. Git history
 preserves them; the app now serves `/chat`, `/agent/*`, and `/health` only.
+
+The approved local daemon is the exception: `milo-local`, its `/v1/*` harness
+routes, and its configured gateway forwarder are supported. Gateway completions
+default to a cap of 4096 tokens when the harness omits its limit.

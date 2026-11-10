@@ -22,7 +22,9 @@ export class Sources {
     return ['milo', ...available.filter((id): id is string => id !== null)];
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
-    const candidates = request.model === 'milo' ? this.sources : this.sources.filter(s => s.id === request.model);
+    const known = this.sources.some(s => s.id === request.model);
+    if (request.model !== 'milo' && !known) console.error(`Milo model mapping: ${request.model} -> milo`);
+    const candidates = request.model === 'milo' || !known ? this.sources : this.sources.filter(s => s.id === request.model);
     let last = new SourceError('not_installed', `No source for model ${request.model}`);
     for (const source of candidates) {
       signal.throwIfAborted();
@@ -53,7 +55,7 @@ export class Gateway implements Source {
       response = await this.fetcher(this.url, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.key}` },
-        body: JSON.stringify({ model: 'milo', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: request.maxTokens })
+        body: JSON.stringify({ model: 'milo', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: request.maxTokens ?? 4096 })
       });
     } catch { signal.throwIfAborted(); throw new SourceError('upstream', 'Milo gateway is unavailable'); }
     if (!response.ok) throw new SourceError(response.status === 401 || response.status === 403 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `Milo gateway returned HTTP ${response.status}`);
