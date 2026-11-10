@@ -35,7 +35,7 @@ BrowserSquire.prototype.call = async function(name, args) {
   if (process.env.MILO_PROOF_CASE === 'reuse') throw new Error('Unexpected signup: existing vault keys must be reused');
   if (name === 'operate_drive') return process.env.MILO_PROOF_CASE === 'policy'
     ? { status: 'needs_value', session_id: 'offline', remaining: 'Review the privacy policy and enter the SMS code.' }
-    : { status: 'stuck', session_id: 'offline', reason: 'Provider denied automated account creation.', remaining: 'api_key=' + process.env.MILO_PROOF_SECRET };
+    : { status: 'stuck', session_id: 'offline', reason: process.env.MILO_PROOF_REASON || 'Provider denied automated account creation.', remaining: process.env.MILO_PROOF_REASON ? '' : 'api_key=' + process.env.MILO_PROOF_SECRET };
   throw new Error('Unexpected Squire call in offline proof');
 };
 FreeLLMAdmin.prototype.login = async () => {};
@@ -46,20 +46,32 @@ FreeLLMAdmin.prototype.addKey = async function(provider, key) {
 };
 FreeLLMAdmin.prototype.key = async () => { throw new Error('Offline proof complete: existing vault keys imported'); };
 `);
-const run = async scenario => {
+const run = async (scenario, reason = '') => {
   const child = spawn(process.execPath, ['--import', hook, 'dist/local/main.js', 'setup'], {
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, MILO_PROOF_CASE: scenario, MILO_PROOF_SECRET: secret }, stdio: ['ignore', 'pipe', 'pipe']
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, MILO_PROOF_CASE: scenario, MILO_PROOF_SECRET: secret, MILO_PROOF_REASON: reason }, stdio: ['ignore', 'pipe', 'pipe']
   });
-  let output = '';
-  child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
   assert.equal(code, 1, 'setup stops before starting the daemon');
-  assert(!output.includes(secret), 'provider key never appears in CLI output');
-  return output.trim();
+  for (const output of [stdout, stderr]) {
+    for (const value of [secret, 'SyntheticPass!42', 'SyntheticToken!42', 'Synthetic Secret!42']) assert(!output.includes(value), 'synthetic credential never appears in either CLI output stream');
+  }
+  return (stdout + stderr).trim();
 };
 try {
   const refusal = await run('refusal');
   assert(refusal.includes('Provider denied automated account creation.'), 'CLI preserves the non-secret provider refusal reason');
+  const secretDescriptions = [];
+  for (const reason of [
+    'Provider denied automated account creation. password is SyntheticPass!42.',
+    'Provider denied automated account creation. your token was "SyntheticToken!42".',
+    "Provider denied automated account creation. secret = 'Synthetic Secret!42'"
+  ]) {
+    const output = await run('refusal', reason);
+    assert(output.endsWith('Provider refused groq signup; setup stopped'), 'ambiguous secret-bearing reason is omitted entirely');
+    secretDescriptions.push(output);
+  }
   const policy = await run('policy');
   assert(policy.includes('https://approval.test/sms') && !policy.includes('Provider refused'), 'a privacy-policy/SMS handoff remains an approval');
   const vaultReuse = await run('reuse');
@@ -67,5 +79,5 @@ try {
   assert(!vaultReuse.includes('Unexpected signup'), 'existing keys prevent browser signup');
   const adminReuse = await run('admin');
   assert(adminReuse.includes('Approve local FreeLLMAPI access: https://approval.test/admin') && !adminReuse.includes('Unexpected vault write'), 'router credential lookup also ignores service case and whitespace');
-  console.log(JSON.stringify({ reproduction: 'setup-refusal-detail', target: 'built setup CLI with offline dependencies', refusal, humanHandoff: policy, vaultReuse, adminReuse, providerSecretPrinted: false }, null, 2));
+  console.log(JSON.stringify({ reproduction: 'setup-refusal-detail', target: 'built setup CLI with offline dependencies', refusal, secretDescriptions, humanHandoff: policy, vaultReuse, adminReuse, providerSecretPrinted: false }, null, 2));
 } finally { await rm(dir, { recursive: true, force: true }); }

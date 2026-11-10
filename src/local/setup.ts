@@ -27,11 +27,13 @@ function apiKeyField(credential: Credential, provider: Provider): string | undef
 type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject'; approval_url?: string; reason?: string };
 // Select only diagnostic text, never serialize the browser result or vault data.
 function setupReason(...values: unknown[]): string {
-  return [...new Set(values.filter((value): value is string => typeof value === 'string').map(value => value
+  return [...new Set(values.filter((value): value is string => typeof value === 'string')
+    // Free-form secret descriptions cannot be redacted reliably. Drop the whole
+    // field, including ambiguous prose, while retaining separate safe details.
+    .filter(value => !/(?:password|passcode|token|secret|key|credential|authorization)/i.test(value.normalize('NFKC'))).map(value => value
     .replace(/\p{Cc}|\p{Cf}/gu, ' ')
     .replace(/https?:\/\/\S+/gi, '[link omitted]')
     .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted authorization]')
-    .replace(/\b((?:api[ _-]?key|password|secret|token|authorization|encryption[ _-]?key)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s;,]+)/gi, '$1[redacted]')
     .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_)[A-Za-z0-9_-]+/g, '[redacted]')
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
     .replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' ').slice(0, 512);

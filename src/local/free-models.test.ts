@@ -133,18 +133,27 @@ it('uses the local Squire browser driver, vault capture and its human approval l
   await expect(squire.credentials.claimReveal('load')).rejects.toThrow('refused');
 });
 
-it('reports the provider refusal reason without secrets and stops before another provider', async () => {
+it.each([
+  { reason: 'Provider denied automated account creation.', remaining: '', detail: true },
+  { reason: 'Provider denied automated account creation.', remaining: 'API key: synthetic-private-value; password=short-secret; token https://example.test/?token=private; gsk_syntheticprivatevalue1234567890', detail: true },
+  { reason: 'Provider denied automated account creation. password is SyntheticPass!42.', remaining: '', detail: false },
+  { reason: 'Provider denied automated account creation. your token was "SyntheticToken!42".', remaining: '', detail: false },
+  { reason: "Provider denied automated account creation. secret = 'Synthetic Secret!42'", remaining: '', detail: false },
+  { reason: 'Provider denied automated account creation. api key: "SyntheticKey!42"', remaining: '', detail: false },
+  { reason: 'Provider denied automated account creation. passcode is SyntheticCode!42', remaining: '', detail: false },
+  { reason: 'Provider denied automated account creation. credential SyntheticCredential!42', remaining: '', detail: false },
+  { reason: 'Provider denied automated account creation. key might be SyntheticKey!42', remaining: '', detail: false }
+])('reports only safe refusal details and stops before another provider ($reason)', async ({ reason, remaining, detail }) => {
   const squire = new BrowserSquire();
   const call = vi.spyOn(squire, 'call').mockResolvedValue({
-    status: 'stuck', session_id: 'signup', reason: 'Provider denied automated account creation.',
-    remaining: 'API key: synthetic-private-value; password=short-secret; token https://example.test/?token=private; gsk_syntheticprivatevalue1234567890'
+    status: 'stuck', session_id: 'signup', reason, remaining
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
   const addKey = vi.fn(), notify = vi.fn();
   let message = '';
   try { await setupProviders(squire, { addKey }, { notify }); } catch (error) { message = (error as Error).message; }
-  expect(message).toContain('Provider denied automated account creation.');
-  for (const secret of ['synthetic-private-value', 'short-secret', 'https://example.test', 'gsk_syntheticprivatevalue']) expect(message).not.toContain(secret);
+  expect(message).toBe('Provider refused groq signup; setup stopped' + (detail ? ': Provider denied automated account creation.' : ''));
+  for (const secret of ['synthetic-private-value', 'short-secret', 'https://example.test', 'gsk_syntheticprivatevalue', 'SyntheticPass!42', 'SyntheticToken!42', 'Synthetic Secret!42', 'SyntheticKey!42', 'SyntheticCode!42', 'SyntheticCredential!42']) expect(message).not.toContain(secret);
   expect(call).toHaveBeenCalledTimes(1);
   expect(addKey).not.toHaveBeenCalled();
   expect(notify).not.toHaveBeenCalled();
