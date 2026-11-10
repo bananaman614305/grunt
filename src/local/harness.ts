@@ -14,9 +14,12 @@ export function userTurns(request: ModelRequest): string[] {
   return request.messages.filter(m => m.role === 'user').map(m => userText(m.content)).filter(s => s.length > 0);
 }
 export function housekeeping(request: ModelRequest): string | undefined {
-  const instructions = request.messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => m.content).join('\n');
-  const latest = request.messages.at(-1)?.content ?? '';
-  const side = /(?:generate|create|write|provide|return)[\s\S]{0,100}(?:session title|conversation title|chat title|short title|concise title|topic|summary)|(?:quota|warm[- ]?up) (?:probe|check)|title for (?:this|the) (?:session|conversation)/i;
-  if (!side.test(instructions) && !side.test(latest)) return;
-  return userTurns(request)[0]?.replace(/\s+/g, ' ').slice(0, 80) || 'Ready';
+  const instructions = request.messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => m.content).join('\n').replace(/^x-anthropic-billing-header:[^\n]*\n?/gm, '').replace(/^You are Claude Code, Anthropic's official CLI for Claude\.\n?/gm, '').trimStart();
+  const side = /^(?:generate|create|write|provide|return)[\s\S]{0,100}(?:session title|conversation title|chat title|short title|concise title|topic|summary)|^(?:quota|warm[- ]?up) (?:probe|check)|^title for (?:this|the) (?:session|conversation)/i;
+  const claudeTitle = /^You are naming a coding session so the user can pick it out of a long list of sessions\./.test(instructions);
+  if (!claudeTitle && !side.test(instructions)) return;
+  const first = userTurns(request)[0];
+  const text = claudeTitle ? first?.match(/<session>\n([\s\S]*?)\n<\/session>/)?.[1] : first;
+  const reply = text?.replace(/\s+/g, ' ').slice(0, 80) || 'Ready';
+  return claudeTitle ? JSON.stringify({ title: reply }) : reply;
 }

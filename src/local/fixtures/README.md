@@ -19,3 +19,11 @@ or account credentials are recorded. Each of the four real clients displayed
 freebuff.json is the exact supplied real chat sample from chad; SHA-256:
 dd9629852d3c6f45ca6ceabf8f37b24b217c7ed9a96b93bee2a05caf147da498.
 The fake TUI reads bracketed paste and writes this same user/ai/text-block format.
+
+claude-title.json was recorded on squire from the real interactive Claude Code
+(2.1.319) session through a loopback capture server with a synthetic Source.
+The user typed “What is 2 + 2?”. The client sent a separate session-name request
+before its normal turn. The captured title-system text, session envelope, request
+fields and settings are retained; account metadata is removed. This records a
+real housekeeping call, not a constructed approximation. Other harnesses have
+not emitted side calls in the recorded runs.

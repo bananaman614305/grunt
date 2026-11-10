@@ -229,12 +229,12 @@ Freebuff itself talks to its own service, using your own account; Milo does not
 send its local prompts through Fly. The Fly-side API and personal-agent routing
 are separate work, so the gateway adapter is tested against a fake upstream only.
 
-Only the latest user text is pasted into Freebuff, without system/developer prompts, tools, results, or known harness context envelopes. Title, summary, topic and warm-up requests are answered locally; classification and the selected working directory are logged. Side-call detection is heuristic.
+Only the latest user text is pasted into Freebuff, without system/developer prompts, tools, results, or known harness context envelopes. Title, summary, topic and warm-up requests are answered locally; classification and the selected working directory are logged. Side-call detection uses system/developer instructions, including Claude Code's recorded session-naming prompt; an ordinary user request for a summary still reaches the source. Detection remains heuristic.
 
 A conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
 per canonical working directory; `MILO_APP_POOL` defaults to (2) active sessions
-per directory. Concurrent requests use distinct request markers so chats cannot
-be confused even when the prompts or directory basenames match. SIGINT/SIGTERM
+per directory. Each discovered chat is claimed by one request so identical
+prompts cannot return the same saved reply to multiple callers. SIGINT/SIGTERM
 cancel work and close only Milo's own sessions on its private tmux socket.
 `MILO_APP_TIMEOUT_MS` defaults to (600000), including queue time. More sessions
 consume your account's free hours faster. Freebuff automation may conflict with
@@ -244,9 +244,9 @@ Errors carry `not_installed`, `logged_out`, `quota`, `timeout`, `refused`, or `u
 the harness's error envelope. Missing executables are detected immediately.
 Freebuff refusals (`prompt_policy_refused`) in the chat log return a typed `refused` error immediately and permit source failover. Long pastes stored in text attachments are supported.
 
-Freebuff's logged-out and exhausted-hours chat formats have not been established
-reliably: these cases currently time out with instructions to check login and
-free hours. Stable malformed chat data returns an explicit format error.
+The driver runs a bounded `freebuff doctor` preflight and reads startup log errors before waiting for a saved user message. A turn that is never persisted fails with a startup error after (10 seconds). Recognized login and exhausted-hours diagnostics return typed errors immediately.
+Unrecognized startup failures return a clear upstream error; they do not wait
+for the full model-turn timeout. Stable malformed chat data returns an explicit format error.
 Authentication, quota, missing-app and upstream availability failures can try the
 next configured source. Timeouts stop instead of replaying potentially unfinished
 filesystem work. Use `MILO_SOURCES=freebuff` to keep requests on the app path.

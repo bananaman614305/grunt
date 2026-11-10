@@ -95,8 +95,10 @@ it('fake Freebuff on real tmux isolates concurrent identical requests, queues, c
     expect(await driver.available()).toBe(true);
     const request: ModelRequest = { model: 'freebuff', messages: [{ role: 'user', content: 'same prompt' }], tools: [], stream: false, cwd: dir };
     const app = createLocalApp(new Sources([driver]));
+    vi.stubEnv('MILO_TEST_UNIQUE','1');
     const results = await Promise.all(Array.from({ length: 3 }, () => app.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify({ ...request, messages: request.messages }) }).then(r => r.json())));
-    expect(results.map(r => r.choices[0].message.content)).toEqual(['same prompt', 'same prompt', 'same prompt']);
+    expect(new Set(results.map(r => r.choices[0].message.content)).size).toBe(3);
+    vi.stubEnv('MILO_TEST_UNIQUE','');
     expect(fetcher).not.toHaveBeenCalled();
     const timeout = new Freebuff({ home: dir, timeout: 500, startup: 100, poll: 20 });
     await expect(timeout.complete({ ...request, messages: [{ role: 'user', content: 'NEVER_COMPLETE' }] }, new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
@@ -146,7 +148,14 @@ it('answers housekeeping locally before starting any source', async () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('Help me plant tomatoes');
   }
+  const title = await fixture('claude-title');
+  const titleResponse = await app.request('/v1/messages',{method:'POST',body:JSON.stringify(title)});
+  expect(await titleResponse.text()).toContain('What is 2 + 2?');
   expect(complete).not.toHaveBeenCalled();
+  for (const content of ['Write a summary of my notes.', 'Generate a concise title for my essay.', 'Create a topic list for my talk.']) {
+    await app.request('/v1/messages',{method:'POST',body:JSON.stringify({messages:[{role:'user',content}]})});
+  }
+  expect(complete).toHaveBeenCalledTimes(3);
 });
 it('resumes one fake Freebuff chat, preserves long pastes and fails over a refusal promptly', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'milo-resume-'));
@@ -172,6 +181,21 @@ it('resumes one fake Freebuff chat, preserves long pastes and fails over a refus
     const start=Date.now();
     await expect(driver.complete(req,new AbortController().signal)).rejects.toMatchObject({code:'refused',message:expect.stringContaining('Freebuff is not a worker for other agents.')});
     expect(Date.now()-start).toBeLessThan(3000);
+    for (const [prompt,code] of [['STARTUP_LOGIN','logged_out'],['STARTUP_QUOTA','quota']]) {
+      const started = Date.now();
+      await expect(driver.complete({...req,messages:[{role:'user',content:prompt!}]},new AbortController().signal)).rejects.toMatchObject({code});
+      expect(Date.now()-started).toBeLessThan(3000);
+    }
+    const mux = {start:vi.fn(),send:vi.fn(),stop:vi.fn()};
+    const diagnosed = new Freebuff({mux,home:dir});
+    for (const [message,code] of [['Not signed in','logged_out'],['Free hours exhausted','quota']]) {
+      vi.stubEnv('MILO_TEST_DOCTOR_ERROR',message!);
+      await expect(diagnosed.complete(req,new AbortController().signal)).rejects.toMatchObject({code});
+    }
+    vi.stubEnv('MILO_TEST_DOCTOR_ERROR','');
+    expect(mux.start).not.toHaveBeenCalled();
+    expect(mux.send).not.toHaveBeenCalled();
+    await diagnosed.close();
     const refused: Source = {...fake('refused'),complete:async()=>{throw new SourceError('refused','policy');}};
     expect(await new Sources([refused,fake()]).complete(req,new AbortController().signal)).toEqual({text:'REFUSE'});
   } finally {await driver.close(); await rm(dir,{recursive:true,force:true});}

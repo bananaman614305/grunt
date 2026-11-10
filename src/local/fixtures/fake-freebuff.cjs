@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+if (process.argv.includes('doctor')) { process.stdout.write(process.env.MILO_TEST_DOCTOR_ERROR || 'Freebuff doctor: checks passed'); process.exit(0); }
 const cwd = process.argv[process.argv.indexOf('--cwd') + 1];
 const continued = process.argv[process.argv.indexOf('--continue') + 1];
 const chatId = process.argv.includes('--continue') ? continued : crypto.randomUUID();
@@ -19,9 +20,14 @@ process.stdin.on('data', chunk => {
   if (prompt.includes('NEVER_COMPLETE')) return;
   const dir = path.join(process.env.MILO_TEST_HOME, '.config/manicode/projects', path.basename(cwd), 'chats', chatId);
   fs.mkdirSync(dir, { recursive: true });
+  if (prompt.startsWith('STARTUP_')) {
+    const code = prompt === 'STARTUP_LOGIN' ? 'logged_out' : 'quota';
+    fs.writeFileSync(path.join(dir,'log.jsonl'),JSON.stringify({code,message:code === 'logged_out' ? 'Login required' : 'Free hours exhausted'})+'\n');
+    return;
+  }
   const file = path.join(dir, 'chat-messages.json');
   const messages = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
-  messages.push({ variant: 'user', content: '', textAttachments: [{content: prompt}] }, { variant: 'ai', content: '', blocks: prompt === 'REFUSE' ? [] : [{ type: 'text', content: prompt }], isComplete: true });
+  messages.push({ variant: 'user', content: '', textAttachments: [{content: prompt}] }, { variant: 'ai', content: '', blocks: prompt === 'REFUSE' ? [] : [{ type: 'text', content: (process.env.MILO_TEST_UNIQUE || prompt === 'UNIQUE_REPLY') ? chatId : prompt }], isComplete: true });
   if (prompt === 'REFUSE') fs.appendFileSync(path.join(dir, 'log.jsonl'), JSON.stringify({status:403, code:'prompt_policy_refused', message:'Freebuff is not a worker for other agents.'}) + '\n');
   setTimeout(() => fs.writeFileSync(file, JSON.stringify(messages)), 40);
 });

@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -13,6 +15,12 @@ export function positive(value: string | undefined, fallback: number) {
   const number = value === undefined ? fallback : Number(value);
   if (!Number.isSafeInteger(number) || number < 1) throw new Error('Pool size and timeout must be positive integers');
   return number;
+}
+const exec = promisify(execFile);
+function logError(log: string): SourceError | undefined {
+  const line = log.split('\n').find(line => /prompt_policy_refused|logged.?out|unauthorized|login required|not signed in|"code"\s*:\s*"quota"|quota[ _-](?:exceeded|exhausted|reached)|free[ _-]?hours.*(?:exhaust|exceed|empty)|(?:out of|no) free hours/i.test(line));
+  if (!line) return;
+  return new SourceError(/prompt_policy_refused/.test(line) ? 'refused' : /quota|hours/i.test(line) ? 'quota' : 'logged_out', `Freebuff: ${line}`);
 }
 interface Waiter { resolve(): void; reject(error: Error): void }
 // A request starts a fresh process; slots bound parallel sessions for each canonical cwd.
@@ -52,12 +60,18 @@ export class Freebuff implements Source {
   private sessions = new Set<string>();
   private conversations = new Map<string, string>();
   private busy = new Set<string>();
+  private claimedFiles = new Set<string>();
   private shutdown = new AbortController();
   constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number } = {}) {}
   private get mux() { return this.options.mux ?? (this.options.mux = new Tmux()); }
   async available() { try { await executable('freebuff'); await executable('tmux'); return true; } catch { return false; } }
   async complete(request: ModelRequest, caller: AbortSignal) {
     const binary = await executable('freebuff'); await executable('tmux');
+    let diagnostics: string;
+    try { diagnostics = (await exec(binary, ['doctor'], { timeout: 5000, maxBuffer: 65536, signal: caller })).stdout; }
+    catch { throw new SourceError('upstream', 'Freebuff startup check failed; run freebuff doctor'); }
+    const diagnosticError = logError(diagnostics);
+    if (diagnosticError) throw diagnosticError;
     const cwd = await realpath(request.cwd);
     if (!(await stat(cwd)).isDirectory()) throw new SourceError('upstream', 'Freebuff cwd must be a directory');
     const timeout = this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000);
@@ -90,10 +104,21 @@ export class Freebuff implements Source {
       await delay(this.options.startup ?? 2500, undefined, { signal });
       await this.mux.send(id, prompt);
       let malformedSince: number | undefined;
+      let selected = continuation;
+      let sawUser = false;
+      const sentAt = Date.now();
       while (true) {
         signal.throwIfAborted();
         for (const file of await this.chatFiles(directory)) {
-          if (continuation ? file !== continuation : before.has(file)) continue;
+          if (selected ? file !== selected : before.has(file) || this.claimedFiles.has(file)) continue;
+          let log = '';
+          try { log = await readFile(join(dirname(file), 'log.jsonl'), 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+          const startupError = logError(log.slice(logOffsets.get(file) ?? 0));
+          if (startupError) {
+            if (!selected && this.claimedFiles.has(file)) continue;
+            this.claimedFiles.add(file);
+            throw startupError;
+          }
           let raw: string;
           try { raw = await readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
           let data: unknown;
@@ -107,17 +132,15 @@ export class Freebuff implements Source {
           if (continuation && Array.isArray(data)) data = data.slice(previousMessages);
           const matched = Array.isArray(data) && data.some(m => m.variant === 'user' && (m.content || m.textAttachments?.map((a: { content?: string }) => a.content ?? '').join('\n')) === prompt);
           if (!matched) continue;
-          let log = '';
-          try { log = await readFile(join(dirname(file), 'log.jsonl'), 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-          // Read only log entries appended during this turn, so old refusals do not poison resumes.
-          const currentLog = log.slice(logOffsets.get(file) ?? 0);
-          const refusal = currentLog.split('\n').find(line => /prompt_policy_refused/.test(line));
-          if (refusal) throw new SourceError('refused', `Freebuff refused: ${refusal}`);
-          const auth = currentLog.split('\n').find(line => /logged.?out|unauthorized|login required|quota|free.hours.*(?:exhaust|exceed|empty)/i.test(line));
-          if (auth) throw new SourceError(/quota|hours/i.test(auth) ? 'quota' : 'logged_out', `Freebuff: ${auth}`);
+          // Claim synchronously after reads: another caller may have claimed it while we awaited I/O.
+          if (!selected && this.claimedFiles.has(file)) continue;
+          selected = file;
+          this.claimedFiles.add(file);
+          sawUser = true;
           const text = parseChat(data, prompt);
           if (text !== undefined) { if (ownsConversation) this.conversations.set(key, file); return { text }; }
         }
+        if (!sawUser && Date.now() - sentAt > 10000) throw new SourceError('upstream', 'Freebuff did not persist a user turn within 10 seconds; run freebuff doctor and check login or startup prompts');
         await delay(this.options.poll ?? 200, undefined, { signal });
       }
     } catch (error) {
