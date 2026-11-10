@@ -60,7 +60,7 @@ export class Freebuff implements Source {
   private sessions = new Set<string>();
   private conversations = new Map<string, string>();
   private busy = new Set<string>();
-  private claimedFiles = new Set<string>();
+  private creationLocks = new Map<string, Pool>();
   private shutdown = new AbortController();
   constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number } = {}) {}
   private get mux() { return this.options.mux ?? (this.options.mux = new Tmux()); }
@@ -89,8 +89,18 @@ export class Freebuff implements Source {
     const continuation = this.busy.has(key) ? undefined : this.conversations.get(key);
     const ownsConversation = !this.busy.has(key);
     if (ownsConversation) this.busy.add(key);
+    let creation: Pool | undefined;
+    let creating = false;
+    const releaseCreation = () => { if (creating) { creation!.release(); creating = false; } };
     try {
       await pool.acquire(signal); acquired = true;
+      if (!continuation) {
+        // Freebuff groups different working folders with the same basename together.
+        // Start only one unassociated process per on-disk directory at a time.
+        creation = this.creationLocks.get(directory);
+        if (!creation) { creation = new Pool(1); this.creationLocks.set(directory, creation); }
+        await creation.acquire(signal); creating = true;
+      }
       signal.throwIfAborted();
       const before = new Set(await this.chatFiles(directory));
       const logOffsets = new Map<string, number>();
@@ -102,21 +112,26 @@ export class Freebuff implements Source {
       this.sessions.add(id);
       await this.mux.start(id, cwd, binary, continuation ? basename(dirname(continuation)) : undefined);
       await delay(this.options.startup ?? 2500, undefined, { signal });
-      await this.mux.send(id, prompt);
+      // Persisted files can identify this process before send finishes returning.
+      // Observe them concurrently, while still holding the creation lock.
+      let sendComplete = false;
+      let sendFailure: unknown;
+      void this.mux.send(id, prompt).then(() => { sendComplete = true; }, error => { sendFailure = error; sendComplete = true; });
       let malformedSince: number | undefined;
       let selected = continuation;
       let sawUser = false;
       const sentAt = Date.now();
       while (true) {
         signal.throwIfAborted();
+        if (sendFailure) throw sendFailure;
         for (const file of await this.chatFiles(directory)) {
-          if (selected ? file !== selected : before.has(file) || this.claimedFiles.has(file)) continue;
+          if (selected ? file !== selected : before.has(file)) continue;
           let log = '';
           try { log = await readFile(join(dirname(file), 'log.jsonl'), 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
           const startupError = logError(log.slice(logOffsets.get(file) ?? 0));
           if (startupError) {
-            if (!selected && this.claimedFiles.has(file)) continue;
-            this.claimedFiles.add(file);
+            selected = file;
+            releaseCreation();
             throw startupError;
           }
           let raw: string;
@@ -132,13 +147,13 @@ export class Freebuff implements Source {
           if (continuation && Array.isArray(data)) data = data.slice(previousMessages);
           const matched = Array.isArray(data) && data.some(m => m.variant === 'user' && (m.content || m.textAttachments?.map((a: { content?: string }) => a.content ?? '').join('\n')) === prompt);
           if (!matched) continue;
-          // Claim synchronously after reads: another caller may have claimed it while we awaited I/O.
-          if (!selected && this.claimedFiles.has(file)) continue;
+          // No other new process sharing this storage directory started between
+          // our snapshot and this association. Later polling reads only this chat.
           selected = file;
-          this.claimedFiles.add(file);
+          releaseCreation();
           sawUser = true;
           const text = parseChat(data, prompt);
-          if (text !== undefined) { if (ownsConversation) this.conversations.set(key, file); return { text }; }
+          if (text !== undefined && sendComplete) { if (ownsConversation) this.conversations.set(key, file); return { text }; }
         }
         if (!sawUser && Date.now() - sentAt > 10000) throw new SourceError('upstream', 'Freebuff did not persist a user turn within 10 seconds; run freebuff doctor and check login or startup prompts');
         await delay(this.options.poll ?? 200, undefined, { signal });
@@ -148,9 +163,13 @@ export class Freebuff implements Source {
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', `Freebuff failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
-      await this.mux.stop(id); this.sessions.delete(id);
-      if (acquired) pool.release();
-      if (ownsConversation) this.busy.delete(key);
+      try { await this.mux.stop(id); }
+      finally {
+        // An unassociated process must be stopped before another one can start.
+        releaseCreation(); this.sessions.delete(id);
+        if (acquired) pool.release();
+        if (ownsConversation) this.busy.delete(key);
+      }
     }
   }
   private async chatFiles(dir: string): Promise<string[]> {

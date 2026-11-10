@@ -233,8 +233,10 @@ Only the latest user text is pasted into Freebuff, without system/developer prom
 
 A conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
 per canonical working directory; `MILO_APP_POOL` defaults to (2) active sessions
-per directory. Each discovered chat is claimed by one request so identical
-prompts cannot return the same saved reply to multiple callers. SIGINT/SIGTERM
+per directory. New-chat creation and association are serialized per shared on-disk project
+directory, including different working folders with the same basename. Once a
+chat is associated with its originating process, its response runs concurrently
+with other associated turns; replies and startup logs are read only from that chat. SIGINT/SIGTERM
 cancel work and close only Milo's own sessions on its private tmux socket.
 `MILO_APP_TIMEOUT_MS` defaults to (600000), including queue time. More sessions
 consume your account's free hours faster. Freebuff automation may conflict with
@@ -259,3 +261,9 @@ run a fake Freebuff TUI through real tmux; they require tmux but no credentials.
 To demonstrate the built daemon offline, run `pnpm build && node src/local/proof.mjs`.
 It starts the real local entry point with a temporary fake Freebuff on PATH,
 exercises all three APIs with and without SSE, and removes its temporary chats.
+
+To replay chat-ownership races through the built HTTP API, run
+`pnpm build && node src/local/ownership-proof.mjs`. This uses a filesystem-writing
+multiplexer that delays send completion until both processes have persisted their
+chat. It verifies exact cwd/chat ownership, follow-up continuation, and a quota-only
+startup log alongside a successful request from another folder named `project`.

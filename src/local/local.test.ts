@@ -200,3 +200,32 @@ it('resumes one fake Freebuff chat, preserves long pastes and fails over a refus
     expect(await new Sources([refused,fake()]).complete(req,new AbortController().signal)).toEqual({text:'REFUSE'});
   } finally {await driver.close(); await rm(dir,{recursive:true,force:true});}
 },10000);
+
+it.each([false, true])('attributes shared-basename chats and follow-ups to their originating process (quota=%s)', async quota => {
+  const { mkdir } = await import('node:fs/promises');
+  const { OwnershipMux } = await import('./fixtures/ownership-mux.js');
+  const home = await mkdtemp(join(tmpdir(),'milo-owner-'));
+  const a = join(home,'A','project'), b = join(home,'B','project');
+  await mkdir(a,{recursive:true}); await mkdir(b,{recursive:true});
+  await copyFile(new URL('./fixtures/fake-freebuff.cjs',import.meta.url),join(home,'freebuff')); await chmod(join(home,'freebuff'),0o755);
+  vi.stubEnv('PATH',`${home}:${process.env.PATH}`);
+  const driver = new Freebuff({home,mux:new OwnershipMux(home),startup:1,poll:5,timeout:3000});
+  const app=createLocalApp(new Sources([driver]));
+  const send=async(cwd:string,messages:{role:string;content:string}[])=>{
+    const response=await app.request('/v1/chat/completions',{method:'POST',body:JSON.stringify({model:'freebuff',cwd,messages})});
+    return {status:response.status,body:await response.json()};
+  };
+  try {
+    const first=quota ? 'quota please' : 'same user text';
+    const [ra,rb]=await Promise.all([send(a,[{role:'user',content:first}]),send(b,[{role:'user',content:quota ? 'different user text' : first}])]);
+    if(quota) expect(ra).toMatchObject({status:503,body:{error:{code:'quota'}}});
+    else expect(JSON.parse(ra.body.choices[0].message.content)).toEqual({cwd:a,chat:'A-chat'});
+    expect(rb.status).toBe(200);
+    expect(JSON.parse(rb.body.choices[0].message.content)).toEqual({cwd:b,chat:'B-chat'});
+    for(const cwd of quota ? [b] : [a,b]) {
+      const follow=await send(cwd,[{role:'user',content:quota ? 'different user text' : first},{role:'assistant',content:'previous reply'},{role:'user',content:'follow up'}]);
+      expect(follow.status).toBe(200);
+      expect(JSON.parse(follow.body.choices[0].message.content)).toEqual({cwd,chat:cwd===a ? 'A-chat' : 'B-chat'});
+    }
+  } finally {await driver.close();await rm(home,{recursive:true,force:true});}
+},10000);
