@@ -32,7 +32,8 @@ export class Sources {
       catch (error) {
         signal.throwIfAborted();
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
-        if (last.code === 'timeout') throw last;
+        // A dot deadline is local to Slack; the caller's cancellation still stops the chain.
+        if (last.code === 'timeout' && source.id !== 'dots') throw last;
       }
     }
     throw last;

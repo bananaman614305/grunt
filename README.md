@@ -368,3 +368,15 @@ To replay chat-ownership races through the built HTTP API, run
 multiplexer that delays send completion until both processes have persisted their
 chat. It verifies exact cwd/chat ownership, follow-up continuation, and a quota-only
 startup log alongside a successful request from another folder named `project`.
+
+### Dots over Slack (optional)
+
+Dots is disabled unless configured. You need ChatGPT Pro, your own dot already connected to Slack, and your own Slack **user token** with `chat:write`, `im:history`, `channels:history`, and `groups:history` access to the conversation. Milo does not create a Slack app or connect your dot for you.
+
+**Account risk:** OpenAI's Terms of Use prohibit programmatically extracting output outside the API. Relaying dot replies through Slack may violate those terms and put your ChatGPT account at risk. Configure this source only if you accept that risk.
+
+Set `MILO_DOTS_SLACK_TOKEN` securely in the daemon's environment (never commit or log it) and `MILO_DOTS_CHANNEL` to the DM or channel ID where your dot answers. For a channel, also set `MILO_DOTS_MENTION` to the dot's Slack mention, such as `<@DOT_USER_ID>`. `MILO_DOTS_TIMEOUT_MS` defaults to `300000` (five minutes).
+
+When configured, dots goes first in the default `milo` source order. Select model `dots` to use only the dot. Follow-ups containing the same user-message history and working directory reuse the Slack thread while the daemon is running. Replies are returned after the latest message stops changing for a settle period; this is a heuristic, not a Slack completion signal. A timeout, usage-limit reply, or rejected token falls back to the next configured source for `milo`. Caller cancellation stops the whole request. To exclude dots, set `MILO_SOURCES=freellmapi,opencode,kilo` (or your preferred explicit list).
+
+Every posted message asks the dot to answer in the conversation and not start Codex or Work tasks. This instruction does not guarantee what the dot will do: tasks it starts can consume subscription usage. Dots returns **text only**, works on its own cloud computer, and cannot edit your local working directory or return local tool calls through this bridge. No OpenAI login or token is read or forwarded.

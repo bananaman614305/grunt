@@ -7,12 +7,14 @@ import { Freebuff, positive } from './freebuff.js';
 import { Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { OpenCode } from './opencode.js';
+import { Dots } from './dots.js';
 import type { Source } from './source.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env) {
   const connection = { url: env.MILO_FREELLMAPI_URL ?? 'http://127.0.0.1:3001/v1', key: env.MILO_FREELLMAPI_KEY ?? '' };
-  const registered: Source[] = [new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: env.MILO_OPENCODE_MODEL ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff()];
-  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['freellmapi', 'opencode', 'kilo'];
+  const dots = new Dots({ token: env.MILO_DOTS_SLACK_TOKEN ?? '', channel: env.MILO_DOTS_CHANNEL ?? '', mention: env.MILO_DOTS_MENTION ?? '', timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
+  const registered: Source[] = [dots, new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: env.MILO_OPENCODE_MODEL ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff()];
+  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? [...(env.MILO_DOTS_SLACK_TOKEN && env.MILO_DOTS_CHANNEL ? ['dots'] : []), 'freellmapi', 'opencode', 'kilo'];
   return new Sources(ids.map(id => { const source = registered.find(s => s.id === id); if (!source) throw new Error(`Unknown Milo source: ${id}`); return source; }));
 }
 export function start(env = process.env) {
