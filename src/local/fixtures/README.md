@@ -23,7 +23,11 @@ The fake TUI reads bracketed paste and writes this same user/ai/text-block forma
 claude-title.json was recorded on squire from the real interactive Claude Code
 (2.1.319) session through a loopback capture server with a synthetic Source.
 The user typed “What is 2 + 2?”. The client sent a separate session-name request
-before its normal turn. The captured title-system text, session envelope, request
-fields and settings are retained; account metadata is removed. This records a
+before its normal turn. The complete captured request body is retained, including nonsecret device/session
+metadata (the account identifier is empty). Authentication headers were never
+recorded. A headless `claude -p` run emitted only the main request; the interactive
+run emitted the title call. The billing and session-naming markers match the
+chad excerpt; this installed client identifies itself as the official CLI rather
+than the Agent SDK. This records a
 real housekeeping call, not a constructed approximation. Other harnesses have
 not emitted side calls in the recorded runs.

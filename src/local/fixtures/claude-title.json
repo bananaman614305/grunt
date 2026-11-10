@@ -26,6 +26,9 @@
     }
   ],
   "tools": [],
+  "metadata": {
+    "user_id": "{\"device_id\":\"1a2d0c17cab059df8c8059ad0aabb2b460ae6b8a1ffec46e1a54f716910faf06\",\"account_uuid\":\"\",\"session_id\":\"7fe6de33-163c-4239-8b90-4756351d5de4\"}"
+  },
   "max_tokens": 32000,
   "output_config": {
     "effort": "high",
