@@ -1,10 +1,11 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { executable, Tmux } from './multiplexer.js';
 import type { Multiplexer } from './multiplexer.js';
+import { userTurns } from './harness.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
@@ -30,24 +31,27 @@ class Pool {
   }
   release() { const waiter = this.queue.shift(); if (waiter) waiter.resolve(); else this.active--; }
 }
-interface ChatMessage { variant?: string; content?: string; isComplete?: boolean; blocks?: { type?: string; content?: string }[] }
+interface ChatMessage { variant?: string; content?: string; textAttachments?: { content?: string }[]; isComplete?: boolean; blocks?: { type?: string; content?: string }[] }
 export function parseChat(value: unknown, prompt: string): string | undefined {
   if (!Array.isArray(value) || value.some(m => !m || typeof m !== 'object' || typeof m.variant !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: expected a message array');
   const messages = value as ChatMessage[];
-  const userIndex = messages.findIndex(m => m.variant === 'user' && m.content === prompt);
+  const userIndex = messages.findLastIndex(m => m.variant === 'user' && (m.content || m.textAttachments?.map(a => a.content ?? '').join('\n')) === prompt);
   if (userIndex < 0) return;
   const replies = messages.slice(userIndex + 1).filter(m => m.variant === 'ai');
   const last = replies.at(-1);
   if (!last || last.isComplete !== true) return;
   if (!Array.isArray(last.blocks)) throw new SourceError('upstream', 'Freebuff chat format changed: missing reply blocks');
   const blocks = last.blocks.filter(b => b.type === 'text');
-  if (!blocks.length || blocks.some(b => typeof b.content !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: missing text blocks');
+  if (!blocks.length) return;
+  if (blocks.some(b => typeof b.content !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: missing text blocks');
   return blocks.map(b => b.content).join('\n');
 }
 export class Freebuff implements Source {
   id = 'freebuff';
   private pools = new Map<string, Pool>();
   private sessions = new Set<string>();
+  private conversations = new Map<string, string>();
+  private busy = new Set<string>();
   private shutdown = new AbortController();
   constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number } = {}) {}
   private get mux() { return this.options.mux ?? (this.options.mux = new Tmux()); }
@@ -63,20 +67,33 @@ export class Freebuff implements Source {
     let acquired = false;
     const id = `milo-${randomUUID()}`;
     const directory = join(this.options.home ?? homedir(), '.config/manicode/projects', basename(cwd), 'chats');
-    const prompt = `[Milo request ${id}]\n\n` + request.messages.map(m => `[${m.role}]\n${m.content}${m.tool_calls ? '\n' + JSON.stringify(m.tool_calls) : ''}`).join('\n\n');
+    const turns = userTurns(request);
+    const prompt = turns.at(-1);
+    if (!prompt) throw new SourceError('upstream', 'No user text in this request');
+    const key = cwd + ':' + createHash('sha256').update(turns[0]!).digest('hex');
+    // Simultaneous requests must never send into the same pane/chat.
+    const continuation = this.busy.has(key) ? undefined : this.conversations.get(key);
+    const ownsConversation = !this.busy.has(key);
+    if (ownsConversation) this.busy.add(key);
     try {
       await pool.acquire(signal); acquired = true;
       signal.throwIfAborted();
       const before = new Set(await this.chatFiles(directory));
+      const logOffsets = new Map<string, number>();
+      let previousMessages = 0;
+      if (continuation) {
+        previousMessages = (JSON.parse(await readFile(continuation, 'utf8')) as unknown[]).length;
+        try { logOffsets.set(continuation, (await readFile(join(dirname(continuation), 'log.jsonl'), 'utf8')).length); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+      }
       this.sessions.add(id);
-      await this.mux.start(id, cwd, binary);
+      await this.mux.start(id, cwd, binary, continuation ? basename(dirname(continuation)) : undefined);
       await delay(this.options.startup ?? 2500, undefined, { signal });
       await this.mux.send(id, prompt);
       let malformedSince: number | undefined;
       while (true) {
         signal.throwIfAborted();
         for (const file of await this.chatFiles(directory)) {
-          if (before.has(file)) continue;
+          if (continuation ? file !== continuation : before.has(file)) continue;
           let raw: string;
           try { raw = await readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
           let data: unknown;
@@ -87,8 +104,19 @@ export class Freebuff implements Source {
             if (Date.now() - malformedSince > 2000) throw new SourceError('upstream', 'Freebuff chat file is persistently invalid JSON');
             continue;
           }
+          if (continuation && Array.isArray(data)) data = data.slice(previousMessages);
+          const matched = Array.isArray(data) && data.some(m => m.variant === 'user' && (m.content || m.textAttachments?.map((a: { content?: string }) => a.content ?? '').join('\n')) === prompt);
+          if (!matched) continue;
+          let log = '';
+          try { log = await readFile(join(dirname(file), 'log.jsonl'), 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+          // Read only log entries appended during this turn, so old refusals do not poison resumes.
+          const currentLog = log.slice(logOffsets.get(file) ?? 0);
+          const refusal = currentLog.split('\n').find(line => /prompt_policy_refused/.test(line));
+          if (refusal) throw new SourceError('refused', `Freebuff refused: ${refusal}`);
+          const auth = currentLog.split('\n').find(line => /logged.?out|unauthorized|login required|quota|free.hours.*(?:exhaust|exceed|empty)/i.test(line));
+          if (auth) throw new SourceError(/quota|hours/i.test(auth) ? 'quota' : 'logged_out', `Freebuff: ${auth}`);
           const text = parseChat(data, prompt);
-          if (text !== undefined) return { text };
+          if (text !== undefined) { if (ownsConversation) this.conversations.set(key, file); return { text }; }
         }
         await delay(this.options.poll ?? 200, undefined, { signal });
       }
@@ -99,6 +127,7 @@ export class Freebuff implements Source {
     } finally {
       await this.mux.stop(id); this.sessions.delete(id);
       if (acquired) pool.release();
+      if (ownsConversation) this.busy.delete(key);
     }
   }
   private async chatFiles(dir: string): Promise<string[]> {

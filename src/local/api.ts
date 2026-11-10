@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
+import { housekeeping, userText } from './harness.js';
 import { SourceError } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
 type Obj = Record<string, unknown>;
@@ -50,8 +51,10 @@ export function decode(body: Obj, api: string, fallback: string): ModelRequest {
   const inferred = matches.at(-1);
   const cwd = typeof body.cwd === 'string' ? body.cwd : (inferred?.[1] ?? inferred?.[2])?.trim() ?? fallback;
   if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
+  const rawTurns = api === 'responses' ? (typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : array(body.input)) : array(body.messages);
+  const userMessages = rawTurns.map(object).filter(m => (m.role === 'user' || (api === 'responses' && !m.role && !m.type))).map(m => typeof m.content === 'string' ? userText(m.content) : array(m.content).map(object).filter(b => b.type === 'text' || b.type === 'input_text').map(b => userText(String(b.text ?? ''))).filter(t => t.length > 0).join('\n')).filter(t => t.length > 0);
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
-  return { model: String(body.model ?? 'milo'), messages, tools, cwd, stream: body.stream === true, ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  return { model: String(body.model ?? 'milo'), messages, userMessages, tools, cwd, stream: body.stream === true, ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 export function encode(result: Completion, model: string, api: string) {
   const id = randomUUID(), input = result.inputTokens ?? 0, output = result.outputTokens ?? 0;
@@ -111,7 +114,9 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; log?: 
       let request: ModelRequest;
       try { request = decode(object(await c.req.json()), api, options.cwd ?? process.cwd()); }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }
-      options.log?.(request.cwd);
+      const local = housekeeping(request);
+      options.log?.(`${request.cwd}; cwd=${request.cwd === (options.cwd ?? process.cwd()) ? 'fallback-or-explicit' : 'request'}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
+      const complete = (signal: AbortSignal) => local === undefined ? sources.complete(request, signal) : Promise.resolve({ text: local });
       const controller = new AbortController();
       const abort = () => controller.abort();
       c.req.raw.signal.addEventListener('abort', abort, { once: true });
@@ -125,7 +130,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; log?: 
         await stream.write(': Milo is waiting for the source\n\n');
         const ping = setInterval(() => { void stream.write(': keepalive\n\n').catch(abort); }, 15000);
         try {
-          const result = encode(await sources.complete(request, controller.signal), request.model, api);
+          const result = encode(await complete(controller.signal), request.model, api);
           for (const event of events(result, api)) await stream.writeSSE(event);
         } catch (e) {
           const { body } = failure(e);
@@ -133,7 +138,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; log?: 
         } finally { clearInterval(ping); c.req.raw.signal.removeEventListener('abort', abort); }
       });
       try {
-        return c.json(encode(await sources.complete(request, controller.signal), request.model, api));
+        return c.json(encode(await complete(controller.signal), request.model, api));
       } catch (e) {
         const { err, body } = failure(e);
         return c.json(body, err.code === 'timeout' ? 504 : 503);

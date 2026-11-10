@@ -1,11 +1,11 @@
-export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream';
+export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused';
 export class SourceError extends Error {
   constructor(public code: ErrorCode, message: string) { super(message); }
 }
 export interface Message { role: string; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
-export interface ModelRequest { model: string; messages: Message[]; tools: Tool[]; cwd: string; stream: boolean; maxTokens?: number }
+export interface ModelRequest { model: string; messages: Message[]; userMessages?: string[]; tools: Tool[]; cwd: string; stream: boolean; maxTokens?: number }
 export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number }
 export interface Source {
   id: string;

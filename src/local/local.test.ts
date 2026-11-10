@@ -126,3 +126,53 @@ it('README includes copyable config for each harness', async () => {
   for (const name of ['opencode', 'pi', 'Claude Code', 'Codex']) expect(readme).toContain(name);
   for (const key of ['baseURL', 'openai-completions', 'ANTHROPIC_BASE_URL', 'wire_api = "responses"']) expect(readme).toContain(key);
 });
+
+it('types only the user text from each harness and removes injected context', async () => {
+  const { userTurns } = await import('./harness.js');
+  for (const [name, api] of [['claude', 'messages'], ['codex', 'responses'], ['pi', 'chat'], ['opencode', 'chat']]) {
+    const request = decode(await fixture(name!), api!, '/tmp');
+    const expected = name === 'opencode' ? '"Reply with exactly: bridge works 42. Do not use tools."' : 'Reply with exactly: bridge works 42. Do not use tools.';
+    expect(userTurns(request).at(-1)).toBe(expected);
+  }
+  const request = decode({ input: '<environment_context><cwd>/tmp</cwd></environment_context>\n<system-reminder>secret harness context</system-reminder>\n  Keep my spaces.\n' }, 'responses', '/tmp');
+  expect(userTurns(request)).toEqual(['  Keep my spaces.\n']);
+  expect(userTurns(decode({messages:[{role:'user',content:[{type:'text',text:'<system-reminder>metadata</system-reminder>\n'},{type:'text',text:'What is 2 + 2?'}]}]},'messages','/tmp'))).toEqual(['What is 2 + 2?']);
+});
+it('answers housekeeping locally before starting any source', async () => {
+  const complete = vi.fn(async () => ({ text: 'unexpected' }));
+  const app = createLocalApp(new Sources([{ ...fake(), complete }]));
+  for (const path of paths) {
+    const response = await app.request(`/v1/${path}`, {method:'POST', body:JSON.stringify({system:'Generate a concise title for this conversation.', instructions:'Generate a concise title for this conversation.', input:'Help me plant tomatoes', messages:[{role:'system',content:'Generate a concise title for this conversation.'},{role:'user',content:'Help me plant tomatoes'}]})});
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('Help me plant tomatoes');
+  }
+  expect(complete).not.toHaveBeenCalled();
+});
+it('resumes one fake Freebuff chat, preserves long pastes and fails over a refusal promptly', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'milo-resume-'));
+  const { readdir } = await import('node:fs/promises');
+  const driver = new Freebuff({home:dir, startup:200, poll:20, timeout:5000});
+  try {
+    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir,'freebuff')); await chmod(join(dir,'freebuff'),0o755);
+    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('MILO_TEST_HOME',dir);
+    const req: ModelRequest = {model:'milo',messages:[{role:'user',content:'first\nline'}], tools:[], stream:false,cwd:dir};
+    expect(await driver.complete(req,new AbortController().signal)).toEqual({text:'first\nline'});
+    req.messages.push({role:'assistant',content:'first\nline'},{role:'user',content:'second'});
+    expect(await driver.complete(req,new AbortController().signal)).toEqual({text:'second'});
+    const chats = join(dir,'.config/manicode/projects',dir.split('/').at(-1)!,'chats');
+    const files = await readdir(chats); expect(files).toHaveLength(1);
+    const messages = JSON.parse(await readFile(join(chats,files[0]!,'chat-messages.json'),'utf8'));
+    expect(messages.filter((m: {variant:string})=>m.variant==='user').map((m: {textAttachments:{content:string}[]})=>m.textAttachments[0]!.content)).toEqual(['first\nline','second']);
+    for (const [name, api] of [['claude','messages'],['codex','responses'],['pi','chat'],['opencode','chat']]) {
+      const harness = decode(await fixture(name!),api!,dir); harness.cwd=dir;
+      const expected = name === 'opencode' ? '"Reply with exactly: bridge works 42. Do not use tools."' : 'Reply with exactly: bridge works 42. Do not use tools.';
+      expect(await driver.complete(harness,new AbortController().signal)).toEqual({text:expected});
+    }
+    req.messages.push({role:'assistant',content:'second'},{role:'user',content:'REFUSE'});
+    const start=Date.now();
+    await expect(driver.complete(req,new AbortController().signal)).rejects.toMatchObject({code:'refused',message:expect.stringContaining('Freebuff is not a worker for other agents.')});
+    expect(Date.now()-start).toBeLessThan(3000);
+    const refused: Source = {...fake('refused'),complete:async()=>{throw new SourceError('refused','policy');}};
+    expect(await new Sources([refused,fake()]).complete(req,new AbortController().signal)).toEqual({text:'REFUSE'});
+  } finally {await driver.close(); await rm(dir,{recursive:true,force:true});}
+},10000);

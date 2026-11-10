@@ -13,7 +13,7 @@ export async function executable(name: string) {
   throw new SourceError('not_installed', `${name} is not installed or executable on PATH`);
 }
 export interface Multiplexer {
-  start(id: string, cwd: string, binary: string): Promise<void>;
+  start(id: string, cwd: string, binary: string, continuation?: string): Promise<void>;
   send(id: string, prompt: string): Promise<void>;
   stop(id: string): Promise<void>;
 }
@@ -25,9 +25,9 @@ export class Tmux implements Multiplexer {
     if (input !== undefined) command.child.stdin?.end(input);
     return command;
   }
-  async start(id: string, cwd: string, binary: string) {
+  async start(id: string, cwd: string, binary: string, continuation?: string) {
     // A private socket keeps cleanup isolated from the user's own tmux sessions.
-    await this.run(['-L', this.socket, 'new-session', '-d', '-s', id, '-c', cwd, '-x', '180', '-y', '50', `${quote(binary)} --cwd ${quote(cwd)}`]);
+    await this.run(['-L', this.socket, 'new-session', '-d', '-s', id, '-c', cwd, '-x', '180', '-y', '50', `${quote(binary)} --cwd ${quote(cwd)}${continuation ? ` --continue ${quote(continuation)}` : ''}`]);
   }
   async send(id: string, prompt: string) {
     // Bracketed paste preserves multiline transcripts and avoids shell/key interpretation.
