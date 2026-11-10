@@ -286,6 +286,6 @@ it('starts the daemon through the milo-local bin symlink',async()=>{
   const {spawn}=await import('node:child_process');
   const dir=await mkdtemp(join(tmpdir(),'milo-bin-'));
   await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,'milo-local'));
-  const child=spawn(process.execPath,['--import','tsx',join(dir,'milo-local')],{env:{...process.env,MILO_PORT:'18789'},stdio:['ignore','ignore','pipe']});
+  const child=spawn(process.execPath,['--import','tsx',join(dir,'milo-local')],{env:{...process.env,MILO_PORT:'18789',MILO_SOURCES:'freebuff'},stdio:['ignore','ignore','pipe']});
   try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('Milo model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{child.kill();await rm(dir,{recursive:true,force:true});}
 });

@@ -13,9 +13,9 @@ import type { Source } from './source.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env) {
   const connection = { url: env.MILO_FREELLMAPI_URL ?? 'http://127.0.0.1:3001/v1', key: env.MILO_FREELLMAPI_KEY ?? '' };
-  const dots = new Dots({ token: env.MILO_DOTS_SLACK_TOKEN ?? '', channel: env.MILO_DOTS_CHANNEL ?? '', mention: env.MILO_DOTS_MENTION ?? '', timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
+  const dots = new Dots({ env, timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
   const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: env.MILO_OPENCODE_MODEL ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff()];
-  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? [...(env.MILO_DOTS_SLACK_TOKEN && env.MILO_DOTS_CHANNEL ? ['dots'] : []), 'freellmapi', 'opencode', 'kilo'];
+  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['freellmapi', 'opencode', 'kilo'];
   return new Sources(ids.map(id => { const source = registered.find(s => s.id === id); if (!source) throw new Error(`Unknown Milo source: ${id}`); return source; }));
 }
 export function start(env = process.env) {
@@ -33,7 +33,11 @@ export function start(env = process.env) {
   return { server, close };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  if (process.argv[2] === 'setup') {
+  if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
+    const { dotsLink } = await import('./dots-link.js');
+    try { await dotsLink(); }
+    catch { console.error('Dots pairing failed. Check your connection and run milo dots link again.'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'setup') {
     const { setup } = await import('./setup.js');
     try { const connection = await setup(); start({ ...process.env, MILO_FREELLMAPI_KEY: connection.key }); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Milo setup failed'); process.exitCode = 1; }

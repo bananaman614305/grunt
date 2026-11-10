@@ -388,14 +388,36 @@ multiplexer that delays send completion until both processes have persisted thei
 chat. It verifies exact cwd/chat ownership, follow-up continuation, and a quota-only
 startup log alongside a successful request from another folder named `project`.
 
-### Dots over Slack (optional)
+### Dots through the Milo connector (optional)
 
-Dots is disabled unless configured. You need ChatGPT Pro, your own dot already connected to Slack, and your own Slack **user token** with `chat:write`, `im:history`, `channels:history`, and `groups:history` access to the conversation. Milo does not create a Slack app or connect your dot for you.
+Dots is **off by default**. You need a ChatGPT account with access to a dot and custom MCP connectors. No Slack account, browser automation, or OpenAI credentials are needed.
 
-**Account risk:** OpenAI's Terms of Use prohibit programmatically extracting output outside the API. Relaying dot replies through Slack may violate those terms and put your ChatGPT account at risk. Configure this source only if you accept that risk.
+On the computer running Milo:
 
-Set `MILO_DOTS_SLACK_TOKEN` securely in the daemon's environment (never commit or log it) and `MILO_DOTS_CHANNEL` to the DM or channel ID where your dot answers. For a channel, also set `MILO_DOTS_MENTION` to the dot's Slack mention, such as `<@DOT_USER_ID>`. `MILO_DOTS_TIMEOUT_MS` defaults to `300000` (five minutes).
+```sh
+milo dots link
+```
 
-When configured, dots goes first in the default `milo` source order. Select model `dots` to use only the dot. Follow-ups containing the same user-message history and working directory reuse the Slack thread while the daemon is running. Replies are returned after the latest message stops changing for a settle period; this is a heuristic, not a Slack completion signal. A timeout, usage-limit reply, or rejected token falls back to the next configured source for `milo`. Caller cancellation stops the whole request. To exclude dots, set `MILO_SOURCES=freellmapi,opencode,kilo` (or your preferred explicit list).
+This prints a short pairing code (valid for ten minutes) and `https://usemilo.dev/mcp`. Ask your dot to join that connector. If ChatGPT cannot add it from chat, use **Settings → Apps or Plugins → Developer mode → Create**, enter the MCP URL, and select OAuth. On Milo's authorize page enter the code and choose **Allow**. Only approve a pairing you started; keep the code private. The code grants access only to that Milo device's requests.
 
-Every posted message asks the dot to answer in the conversation and not start Codex or Work tasks. This instruction does not guarantee what the dot will do: tasks it starts can consume subscription usage. Dots returns **text only**, works on its own cloud computer, and cannot edit your local working directory or return local tool calls through this bridge. No OpenAI login or token is read or forwarded.
+Tell your dot:
+
+> When Milo sends a request, answer it in chat without starting Codex or Work tasks, and send the answer back with milo_submit_reply. Subscribe to Milo's milo.request event.
+
+Then start the local daemon with an explicit source order:
+
+```sh
+MILO_SOURCES=dots,freellmapi,opencode,kilo milo
+```
+
+Select model `dots` for the dot only. Model `milo` moves to the next source when the device is not paired, no live subscription exists, a dot reports an actual quota refusal, or no reply arrives before `MILO_DOTS_TIMEOUT_MS` (default `300000`, five minutes). Caller cancellation stops the whole request. Without setup, dots is absent from `/v1/models`. Without `dots` in `MILO_SOURCES`, Milo makes no relay calls. Ordinary replies that discuss usage limits are returned as answers.
+
+Milo stores a generated device secret in `dots.json` under `MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`, with file mode `0600`. It is a Milo relay secret, never an OpenAI token. Do not share that file. `milo dots link` again creates a new pairing. Disconnecting the connector in ChatGPT revokes its OAuth grant and stops its subscriptions when ChatGPT invokes the revocation endpoint. Without revocation, subscriptions stop at their granted expiry (at most one day); Milo cannot detect a ChatGPT-only removal immediately.
+
+The public relay runs on `milo-gateway` at usemilo.dev. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP is allowed only on loopback). Pair with the override in place: Milo will not forward an existing device secret to a different origin. The relay's `MILO_PUBLIC_URL` defaults to `https://usemilo.dev` and controls its OAuth metadata. Deployments use the existing merge-to-main GitHub workflow.
+
+The relay emits a signed MCP Event containing only a request ID and a fixed short summary. The dot calls `milo_get_request` to read the full conversation, then `milo_submit_reply(requestId, text)` or `milo_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry the earlier user and assistant turns. Request text is removed from SQLite when the dot replies or the request expires; replies remain only until the local caller acknowledges them or the deadline expires. Text is never written to application logs. The relay temporarily stores conversation text, and the dot receives it: send only content you intend to share with that dot.
+
+MCP Events is experimental. Whether a dot can join from chat alone, whether ChatGPT accepts the subscription, and how event-triggered dot work is counted against plan limits must be checked live. If subscription fails, record the exact ChatGPT error. You can still ask the dot manually to call `milo_get_request` for a queued request while its subscription remains live. Every request asks for a chat reply without Codex or Work tasks; this does not guarantee what the dot will do or that event-triggered work is free. Replies are **text only** and cannot edit the local working directory or return local tool calls.
+
+Protocol references: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [connecting ChatGPT plugins](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
