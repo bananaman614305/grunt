@@ -11,7 +11,12 @@ import { BrowserSquire, ensureRouter, FreeLLMAdmin, setupProviders, SetupPending
 import type { SetupSquire } from './setup.js';
 
 let stateDir: string;
-beforeEach(async () => { stateDir = await mkdtemp(join(tmpdir(), 'milo-approval-test-')); vi.stubEnv('XDG_CONFIG_HOME', stateDir); });
+beforeEach(async () => {
+  stateDir = await mkdtemp(join(tmpdir(), 'milo-approval-test-'));
+  vi.stubEnv('XDG_CONFIG_HOME', stateDir);
+  vi.stubEnv('MILO_CONFIG_DIR', '');
+  vi.stubEnv('MILO_SQUIRE_XDG_CONFIG_HOME', '');
+});
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(stateDir, { recursive: true, force: true }); });
 const request = { model: 'freellmapi', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false };
 
@@ -136,17 +141,21 @@ it('uses the local Squire browser driver and approved vault capture', async () =
   await expect(squire.credentials.claimReveal('load')).rejects.toThrow('refused');
 });
 
-it.each(['approval_pending', 'credential_fetched', 'approval_expired', 'approval_denied', 'approval_unknown'])(
-  'recovers a pending vault approval after restart (%s)', async status => {
+it.each(['default', 'custom', 'legacy'].flatMap(config =>
+  ['approval_pending', 'credential_fetched', 'approval_expired', 'approval_denied', 'approval_unknown'].map(status => ({ config, status }))))(
+  'recovers a pending vault approval after restart ($config, $status)', async ({ config, status }) => {
+    const customDir = join(stateDir, 'persistent-milo');
+    if (config === 'custom') vi.stubEnv('MILO_CONFIG_DIR', customDir);
     const first = new BrowserSquire();
     const start = vi.spyOn(first, 'call').mockResolvedValue({ status: 'approval_pending', approval_id: 'saved', approval_url: 'https://squire.test/saved' });
     await first.credentials.requestReveal({ reference: 'vault://existing', field: 'value' });
     expect(start).toHaveBeenCalledTimes(1);
-    const path = join(stateDir, 'milo', 'approvals.json');
+    const path = join(config === 'custom' ? customDir : join(stateDir, 'milo'), 'approvals.json');
     const saved = await readFile(path, 'utf8');
     expect(saved).toContain('vault://existing');
     expect(saved).toContain('createdAt');
     expect(Object.keys(JSON.parse(saved)[0]).sort()).toEqual(['approveUrl', 'createdAt', 'expiresAt', 'field', 'id', 'reference']);
+    if (config === 'legacy') vi.stubEnv('MILO_CONFIG_DIR', customDir);
     const second = new BrowserSquire();
     const call = vi.spyOn(second, 'call').mockImplementation(async (_name, args) => args.action === 'start'
       ? { status: 'approval_pending', approval_id: 'fresh', approval_url: 'https://squire.test/fresh' }
@@ -156,10 +165,16 @@ it.each(['approval_pending', 'credential_fetched', 'approval_expired', 'approval
     const refresh = !['approval_pending', 'credential_fetched'].includes(status);
     expect(approval.id).toBe(refresh ? 'fresh' : 'saved');
     expect(call).toHaveBeenCalledTimes(refresh ? 2 : 1);
+    if (!refresh) expect(call).not.toHaveBeenCalledWith('fetch_credential', expect.objectContaining({ action: 'start' }));
     if (status === 'credential_fetched') {
       expect(await second.credentials.claimReveal(approval.id)).toMatchObject({ value: 'SyntheticRecovered!42' });
       expect(call).toHaveBeenCalledTimes(1);
-      expect(await readFile(path, 'utf8')).not.toContain('saved');
+      const destination = config === 'default' ? path : join(customDir, 'approvals.json');
+      expect(await readFile(destination, 'utf8')).not.toContain('saved');
+      const third = new BrowserSquire();
+      const fresh = vi.spyOn(third, 'call').mockResolvedValue({ approval_id: 'next', approval_url: 'https://squire.test/next' });
+      await third.credentials.requestReveal({ reference: 'vault://existing', field: 'value' });
+      expect(fresh.mock.calls[0]?.[1]).toMatchObject({ action: 'start' });
     }
     expect(await readFile(path, 'utf8')).not.toContain('SyntheticRecovered!42');
   }

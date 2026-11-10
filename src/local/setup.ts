@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -108,14 +108,19 @@ export class BrowserSquire implements SetupSquire {
   private approvals = new Map<string, PendingApproval>();
   private deliveries = new Map<string, Revealed>();
   private approvalsLoaded = false;
-  private statePath = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo', 'approvals.json');
+  private legacyStatePath = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo', 'approvals.json');
+  private statePath = join(process.env.MILO_CONFIG_DIR || dirname(this.legacyStatePath), 'approvals.json');
   private handoffs: { url: string; close(): void }[] = [];
   private async loadApprovals() {
     if (this.approvalsLoaded) return;
     let entries: unknown;
-    try { entries = JSON.parse(await readFile(this.statePath, 'utf8')); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read Milo approval state; setup stopped');
+    // The selected location wins, including an empty list after delivery. Only
+    // fall back when absent, so moving Milo state preserves pending approvals.
+    for (const path of new Set([this.statePath, this.legacyStatePath])) {
+      try { entries = JSON.parse(await readFile(path, 'utf8')); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read Milo approval state; setup stopped');
+      }
     }
     if (entries !== undefined && !Array.isArray(entries)) throw new Error('Invalid Milo approval state; setup stopped');
     for (const value of (entries ?? []) as unknown[]) {
@@ -141,20 +146,17 @@ export class BrowserSquire implements SetupSquire {
   }
   async connect() {
     const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), TRUSTY_SQUIRE_AGENT_IDENTITY: 'Milo setup' };
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+      ...(process.env.MILO_SQUIRE_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: process.env.MILO_SQUIRE_XDG_CONFIG_HOME } : {}),
+      TRUSTY_SQUIRE_AGENT_IDENTITY: 'Milo setup'
+    };
+    // Squire owns its account binding and vault. Milo never reads its files.
     const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'ignore', env });
     try { await this.client.connect(transport); await this.credentials.list(); }
     catch {
       await this.client.close().catch(() => {});
-      // Squire owns its account binding and vault. Milo never reads its files.
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(process.execPath, [bin, 'connect'], { stdio: 'inherit' });
-        child.once('error', () => reject(new Error('Squire connection failed')));
-        child.once('exit', code => code === 0 ? resolve() : reject(new Error('Squire connection was not completed')));
-      });
-      this.client = new Client({ name: 'Milo setup', version: '0.1.0' });
-      const retry = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'ignore', env });
-      await this.client.connect(retry);
+      throw new Error('Connect Trusty Squire separately, then rerun milo setup');
     }
   }
   async call(name: string, args: ObjectValue): Promise<ObjectValue> {
