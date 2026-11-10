@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -9,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createInterface } from 'node:readline/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ProvisionInput } from '@trusty-squire/sdk';
 import { freeConfig, loopback } from './freellmapi.js';
 import { proxyApproval } from './approval-proxy.js';
@@ -43,6 +45,14 @@ function setupReason(...values: unknown[]): string {
 function setupStopped(message: string, ...values: unknown[]): Error {
   const reason = setupReason(...values);
   return new Error(reason ? `${message}: ${reason}` : message);
+}
+// Connection diagnostics are untrusted child output. Redact before truncating.
+function connectionReason(value: string): string {
+  return value
+    .replace(/\bBearer\s+\S+/gi, '[redacted]')
+    .replace(/(?:sk-|gsk_|ghp_|eyJ)[A-Za-z0-9_+/.=-]*/g, '[redacted]')
+    .replace(/[A-Za-z0-9_+/-]{32,}={0,2}/g, '[redacted]')
+    .replace(/\p{Cc}|\p{Cf}/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 // The browser adapter implements this narrow setup contract. It does not use
 // the SDK's legacy runs API: signup is driven by local operate_drive calls.
@@ -148,20 +158,51 @@ export class BrowserSquire implements SetupSquire {
     const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
     const env = {
       ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+      ...(process.env.MILO_SQUIRE_HOME ? { HOME: process.env.MILO_SQUIRE_HOME, XDG_CONFIG_HOME: join(process.env.MILO_SQUIRE_HOME, '.config') } : {}),
       ...(process.env.MILO_SQUIRE_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: process.env.MILO_SQUIRE_XDG_CONFIG_HOME } : {}),
       TRUSTY_SQUIRE_AGENT_IDENTITY: 'Milo setup'
     };
     // Squire owns its account binding and vault. Milo never reads its files.
-    const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'ignore', env });
-    try { await this.client.connect(transport); await this.credentials.list(); }
-    catch {
+    const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'pipe', env });
+    let lastLine = '', partialLine = '';
+    const stderr = transport.stderr instanceof Readable ? transport.stderr : null;
+    stderr?.setEncoding('utf8');
+    const capture = (chunk: string) => {
+      const lines = (partialLine + chunk).split(/\r\n|[\r\n]/);
+      partialLine = lines.pop()!.slice(0, 8192);
+      for (const line of lines) if (line.trim()) lastLine = line.slice(0, 8192);
+    };
+    stderr?.on('data', capture);
+    try {
+      await this.client.connect(transport);
+      const result = await this.call('list_credentials', { fields: 'summary' }, true);
+      if (!Array.isArray(result.credentials)) throw new Error('Squire did not return vault metadata');
+    } catch (error) {
       await this.client.close().catch(() => {});
-      throw new Error('Connect Trusty Squire separately, then rerun milo setup');
+      const stderrReason = partialLine.trim() || lastLine;
+      const mcpReason = error instanceof Error ? error.message : '';
+      // Prefer a broker error over a startup banner; use stderr for a bare exit.
+      const closed = error instanceof McpError && error.code === ErrorCode.ConnectionClosed
+        && mcpReason === `MCP error ${ErrorCode.ConnectionClosed}: Connection closed`;
+      const reason = connectionReason(closed ? stderrReason || mcpReason : mcpReason || stderrReason);
+      const instruction = 'Connect Trusty Squire separately, then rerun milo setup';
+      throw new Error((reason ? `${instruction}: ${reason}` : instruction).slice(0, 300));
+    } finally {
+      stderr?.off('data', capture);
+      // Keep consuming stderr without retaining diagnostics after connecting.
+      stderr?.resume();
     }
   }
-  async call(name: string, args: ObjectValue): Promise<ObjectValue> {
-    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 60000 }).catch(() => { throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`); });
-    if (result.isError) throw new Error(`Squire ${name} failed; inspect Squire for the required action`);
+  async call(name: string, args: ObjectValue, connectionCheck = false): Promise<ObjectValue> {
+    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 60000 }).catch(error => {
+      if (connectionCheck) throw error;
+      throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
+    });
+    if (result.isError) {
+      const reason = connectionCheck ? (result.content as { type: string; text?: string }[])
+        .filter(part => part.type === 'text').map(part => part.text ?? '').join(' ') : '';
+      throw new Error(reason || `Squire ${name} failed; inspect Squire for the required action`);
+    }
     if (result.structuredContent) return object(result.structuredContent);
     for (const part of result.content as { type: string; text?: string }[]) {
       if (part.type === 'text' && part.text) { try { return object(JSON.parse(part.text)); } catch { /* Do not echo upstream output. */ } }
