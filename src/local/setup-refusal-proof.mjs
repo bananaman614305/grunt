@@ -18,8 +18,13 @@ BrowserSquire.prototype.connect = async () => {};
 BrowserSquire.prototype.close = async () => {};
 BrowserSquire.prototype.humanHandoff = async () => 'https://approval.test/sms';
 BrowserSquire.prototype.call = async function(name, args) {
+  if (process.env.MILO_PROOF_CASE === 'admin') {
+    if (name === 'list_credentials') return { credentials: [{ service: ' MILO-FREELLMAPI-ADMIN ', reference: 'admin', field_names: ['password', 'encryption_key'] }] };
+    if (name === 'fetch_credential') return { approval_id: 'admin', approval_url: 'https://approval.test/admin' };
+    throw new Error('Unexpected vault write: existing router credentials must be reused');
+  }
   if (name === 'list_credentials') return { credentials: process.env.MILO_PROOF_CASE === 'reuse' ? [
-    { service: ' GroQ ', reference: 'groq', field_names: ['GROQ_API_KEY'] },
+    { service: 'Groq', reference: 'groq', field_names: ['value'] },
     { service: 'Mistral', reference: 'mistral', field_names: ['apiKey'] },
     { service: 'NVIDIA', reference: 'nvidia', field_names: ['value'] }
   ] : [] };
@@ -60,5 +65,7 @@ try {
   const vaultReuse = await run('reuse');
   for (const provider of ['groq', 'mistral', 'nvidia']) assert(vaultReuse.includes(`${provider}: existing vault key imported`), 'existing provider key is loaded');
   assert(!vaultReuse.includes('Unexpected signup'), 'existing keys prevent browser signup');
-  console.log(JSON.stringify({ reproduction: 'setup-refusal-detail', target: 'built setup CLI with offline dependencies', refusal, humanHandoff: policy, vaultReuse, providerSecretPrinted: false }, null, 2));
+  const adminReuse = await run('admin');
+  assert(adminReuse.includes('Approve local FreeLLMAPI access: https://approval.test/admin') && !adminReuse.includes('Unexpected vault write'), 'router credential lookup also ignores service case and whitespace');
+  console.log(JSON.stringify({ reproduction: 'setup-refusal-detail', target: 'built setup CLI with offline dependencies', refusal, humanHandoff: policy, vaultReuse, adminReuse, providerSecretPrinted: false }, null, 2));
 } finally { await rm(dir, { recursive: true, force: true }); }

@@ -101,19 +101,21 @@ it('sets up every free provider through the user Squire and imports keys only in
 });
 
 it.each([
-  { provider: 'mistral' as const, service: 'mistral', field: 'api_key' },
-  { provider: 'groq' as const, service: ' GroQ ', field: 'api_key' },
-  { provider: 'groq' as const, service: 'groq', field: 'apiKey' },
-  { provider: 'groq' as const, service: 'GROQ', field: 'GROQ_API_KEY' }
-])('returns signup approvals then reuses $service/$field without duplicate signup', async ({ provider, service, field }) => {
+  { provider: 'mistral' as const, service: 'mistral', field: 'api_key', initiallyKnown: false },
+  { provider: 'groq' as const, service: 'Groq', field: 'value', initiallyKnown: true },
+  { provider: 'groq' as const, service: 'groq', field: 'apiKey', initiallyKnown: false },
+  { provider: 'groq' as const, service: 'GROQ', field: 'GROQ_API_KEY', initiallyKnown: false }
+])('reuses $service/$field without starting unnecessary provisioning', async ({ provider, service, field, initiallyKnown }) => {
   const squire = fakeSquire(), output: string[] = [], addKey = vi.fn();
   vi.mocked(squire.runs.start).mockResolvedValue({ decision: 'needs_approval', approval_url: 'https://squire.test/sms', run: { id: 'sms', state: 'awaiting_approval' } });
-  expect(await setupProviders(squire, { addKey }, { providers: [provider], notify: line => output.push(line) })).toMatchObject({ pending: [provider] });
-  expect(output.join('\n')).toContain('https://squire.test/sms');
-  expect(addKey).not.toHaveBeenCalled();
+  if (!initiallyKnown) {
+    expect(await setupProviders(squire, { addKey }, { providers: [provider], notify: line => output.push(line) })).toMatchObject({ pending: [provider] });
+    expect(output.join('\n')).toContain('https://squire.test/sms');
+    expect(addKey).not.toHaveBeenCalled();
+  }
   vi.mocked(squire.credentials.list).mockResolvedValue([{ service, reference: 'existing', field_names: [field] }]);
   await setupProviders(squire, { addKey }, { providers: [provider], notify: () => {} });
-  expect(squire.runs.start).toHaveBeenCalledTimes(1);
+  expect(squire.runs.start).toHaveBeenCalledTimes(initiallyKnown ? 0 : 1);
   expect(squire.credentials.requestReveal).toHaveBeenCalledWith({ reference: 'existing', field });
   expect(addKey).toHaveBeenCalledWith(provider, 'synthetic-existing');
 });

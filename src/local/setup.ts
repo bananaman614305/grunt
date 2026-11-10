@@ -16,6 +16,7 @@ export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b5
 const PROVIDERS = { groq: 'https://console.groq.com/keys', mistral: 'https://console.mistral.ai/api-keys', nvidia: 'https://build.nvidia.com/' };
 export type Provider = keyof typeof PROVIDERS;
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
+const sameService = (credential: Credential, service: string) => credential.service?.trim().toLowerCase() === service.trim().toLowerCase();
 function apiKeyField(credential: Credential, provider: Provider): string | undefined {
   return credential.field_names.find(field => {
     const normalized = field.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -53,7 +54,7 @@ export class SetupPending extends Error {}
 export async function setupProviders(squire: SetupSquire, router: { addKey(platform: string, key: string): Promise<void> }, options: { providers?: Provider[]; notify: (line: string) => void } ) {
   const pending: string[] = [];
   for (const provider of options.providers ?? Object.keys(PROVIDERS) as Provider[]) {
-    const find = async () => (await squire.credentials.list()).find(c => c.service?.trim().toLowerCase() === provider && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
+    const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
     if (!credential) {
       const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
@@ -239,7 +240,7 @@ export async function setup(notify = console.log) {
   const router = new FreeLLMAdmin();
   try {
     await squire.connect();
-    const existing = (await squire.credentials.list()).find(c => c.service === 'milo-freellmapi-admin');
+    const existing = (await squire.credentials.list()).find(c => sameService(c, 'milo-freellmapi-admin'));
     let password: string, encryption: string;
     if (existing) {
       const { approval } = await squire.credentials.requestReveal({ reference: existing.reference });
