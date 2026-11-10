@@ -28,12 +28,17 @@ export class Sources {
     let last = new SourceError('not_installed', `No source for model ${request.model}`);
     for (const source of candidates) {
       signal.throwIfAborted();
-      try { return await source.complete(request, signal); }
+      let completion: Completion;
+      try { completion = await source.complete(request, signal); }
       catch (error) {
         signal.throwIfAborted();
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
+        console.error(`Milo source: ${source.id} failed (${last.code}) for model ${request.model}`);
         if (last.code === 'timeout') throw last;
+        continue;
       }
+      console.error(`Milo source: ${source.id} answered model ${request.model}`);
+      return completion;
     }
     throw last;
   }

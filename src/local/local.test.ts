@@ -258,6 +258,12 @@ it('maps unknown background model ids to the default chain and logs the mapping'
   const log=vi.spyOn(console,'error').mockImplementation(()=>{});
   try {expect(await new Sources([fake()]).complete(decode({input:'hi',model:'claude-haiku-new'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});expect(log).toHaveBeenCalledWith(expect.stringContaining('claude-haiku-new'));}finally{log.mockRestore();}
 });
+it('logs which source answered each request and which ones failed before it',async()=>{
+  const log=vi.spyOn(console,'error').mockImplementation(()=>{});
+  const down:Source={...fake('first-app'),complete:async()=>{throw new SourceError('quota','out');}};
+  try {expect(await new Sources([down,fake()]).complete(decode({input:'hi',model:'milo'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});
+    expect(log.mock.calls.map(c=>c[0])).toEqual(['Milo source: first-app failed (quota) for model milo','Milo source: second-app answered model milo']);}finally{log.mockRestore();}
+});
 it.each([['',{}],['broken','broken']])('encodes tool arguments safely: %s',(arguments_,input)=>{
   expect(encode({text:'',calls:[{id:'c',type:'function',function:{name:'read',arguments:arguments_ as string}}]},'milo','messages')).toMatchObject({content:[{input}]});
 });
