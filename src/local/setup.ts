@@ -403,6 +403,16 @@ async function saveLocalAdmin(admin: LocalAdmin) {
   } catch { throw new Error('Cannot save the local router admin file; setup stopped'); }
   finally { await rm(temporary, { force: true }).catch(() => {}); }
 }
+// Read the login already created by setup; never provision or change router state.
+export async function loadRouterKey(url: string): Promise<string> {
+  const admin = await readLocalAdmin();
+  if (!admin) throw new Error('Local router login is missing');
+  const router = new FreeLLMAdmin(url);
+  await router.login(admin.password);
+  const key = await router.key();
+  if (typeof key !== 'string' || !key.trim()) throw new Error('Local router returned an invalid API key');
+  return key;
+}
 export async function setup(notify = console.log) {
   const squire = new BrowserSquire();
   const router = new FreeLLMAdmin();
