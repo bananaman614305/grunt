@@ -28,24 +28,29 @@ export class FreeLLMAPI implements Source {
   readonly id: string;
   private url: string;
   private fetcher: typeof fetch;
-  constructor(private options: { url?: string; key?: string; fetcher?: typeof fetch; model?: string; id?: string } = {}) {
+  constructor(private options: { url?: string; key?: string; loadKey?: () => Promise<string>; fetcher?: typeof fetch; model?: string; id?: string } = {}) {
     this.url = loopback(options.url ?? 'http://127.0.0.1:3001/v1').href.replace(/\/$/, '');
     this.fetcher = options.fetcher ?? fetch;
     this.id = options.id ?? 'freellmapi';
   }
   async available() {
-    if (!this.options.key) return false;
-    try { return (await this.fetcher(`${this.url}/models`, { headers: { Authorization: `Bearer ${this.options.key}` }, redirect: 'error', signal: AbortSignal.timeout(2000) })).ok; } catch { return false; }
+    try {
+      const key = this.options.key || await this.options.loadKey?.();
+      if (!key) return false;
+      return (await this.fetcher(`${this.url}/models`, { headers: { Authorization: `Bearer ${key}` }, redirect: 'error', signal: AbortSignal.timeout(2000) })).ok;
+    } catch { return false; }
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
-    if (!this.options.key) throw new SourceError('logged_out', 'Run milo setup to connect FreeLLMAPI');
+    const key = this.options.key || await this.options.loadKey?.();
+    caller.throwIfAborted();
+    if (!key) throw new SourceError('logged_out', 'FreeLLMAPI login unavailable; check the local router and saved login');
     if (request.tools.some(t => t.type !== 'function')) throw new SourceError('upstream', 'FreeLLMAPI Chat Completions requires function tools');
     const signal = AbortSignal.any([caller, AbortSignal.timeout(600000)]);
     let response: Response;
     try {
       response = await this.fetcher(`${this.url}/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.options.key}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify({ model: this.options.model ?? 'auto', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
       });
     } catch { throw new SourceError(signal.aborted ? 'timeout' : 'upstream', 'Local FreeLLMAPI is unavailable'); }

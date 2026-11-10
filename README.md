@@ -194,8 +194,11 @@ router only after checking that it holds no provider keys. That reset removes th
 old router database, settings and request history. If keys exist or the check fails,
 setup preserves the old router and stops. The old admin vault entry is left alone.
 Docker also holds its service variables as part of FreeLLMAPI's installation. Setup finishes by running Milo with the
-unified router key in memory. After restarting, rerun `milo setup` to reconnect
-your vault and reuse the existing router and accounts. Providers already stored
+unified router key in memory. On normal startup, Milo loads the saved local router
+login and retrieves that key again without setup or Squire. If the router is not
+ready, Milo retries on the next request and can fall back to other sources.
+Keep the same Milo state directory when running as a service. An explicit
+`MILO_FREELLMAPI_KEY` takes precedence over the saved login. Providers already stored
 with the `Milo` label in FreeLLMAPI are reused without fetching them from Squire
 or requesting another approval. Setup currently requires
 an interactive terminal and Linux Docker host networking so the router can reach

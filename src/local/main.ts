@@ -12,7 +12,18 @@ import { Dots } from './dots.js';
 import type { Source } from './source.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env) {
-  const connection = { url: env.MILO_FREELLMAPI_URL ?? 'http://127.0.0.1:3001/v1', key: env.MILO_FREELLMAPI_KEY ?? '' };
+  const url = env.MILO_FREELLMAPI_URL ?? 'http://127.0.0.1:3001/v1';
+  let key = env.MILO_FREELLMAPI_KEY ?? '';
+  let pending: Promise<string> | undefined;
+  const loadKey = async () => {
+    if (key) return key;
+    pending ??= import('./setup.js').then(module => module.loadRouterKey(url)).then(value => key = value).catch(() => {
+      console.error('Milo router login unavailable or invalid; will retry on the next request. Check the local router and its saved login.');
+      return '';
+    }).finally(() => { pending = undefined; });
+    return pending;
+  };
+  const connection = { url, loadKey };
   const dots = new Dots({ env, timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
   const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: env.MILO_OPENCODE_MODEL ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff()];
   const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['freellmapi', 'opencode', 'kilo'];
@@ -20,6 +31,8 @@ export function configure(env = process.env) {
 }
 export function start(env = process.env) {
   const sources = configure(env);
+  // Warm the saved login without delaying the server; failed loads retry lazily.
+  void sources.sources.find(source => source.id === 'freellmapi' || source.id === 'kilo')?.available();
   const port = positive(process.env.MILO_PORT, 8788);
   if (port > 65535) throw new Error('MILO_PORT must be at most 65535');
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`Milo working directory: ${cwd}`) });
