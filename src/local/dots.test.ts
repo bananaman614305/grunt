@@ -53,6 +53,7 @@ it('omits unconfigured dots and prepends configured dots without changing exclus
 });
 it('returns the edited settled answer through the model API and keeps a follow-up in its thread', async () => {
   const fixture = await slack();
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {});
   expect(await fixture.driver.available()).toBe(true);
   const fallback = { id: 'fallback', available: async () => true, complete: vi.fn(async () => ({ text: 'fallback' })) };
   const app = createLocalApp(new Sources([fixture.driver, fallback]));
@@ -65,6 +66,7 @@ it('returns the edited settled answer through the model API and keeps a follow-u
   expect(fixture.posts.map(p => p.text)).toEqual([`<@DOT>\n${request.messages[0]!.content}\n\n${DOTS_INSTRUCTION}`, `<@DOT>\nNext question\n\n${DOTS_INSTRUCTION}`]);
   expect(fixture.posts.every(p => p.text!.includes('Do not start Codex or Work tasks.'))).toBe(true);
   expect(fallback.complete).not.toHaveBeenCalled();
+  expect(log.mock.calls.map(call => call[0])).toEqual(['Milo source: dots answered model dots', 'Milo source: dots answered model milo']);
 });
 it.each([
   ['silent', 'timeout'], ['quota', 'quota'], ['invalid_auth', 'logged_out'], ['token_revoked', 'logged_out'], ['not_authed', 'logged_out'], ['rate', 'upstream'], ['leak', 'upstream']
@@ -84,6 +86,7 @@ it.each([
   expect(await sources.complete(request, new AbortController().signal)).toEqual({ text: 'fallback' });
   await expect(sources.complete({ ...request, model: 'dots' }, new AbortController().signal)).rejects.toMatchObject({ code });
   expect(fallback.complete).toHaveBeenCalledTimes(1);
+  expect(log.mock.calls.map(call => call[0])).toEqual([`Milo source: dots failed (${code}) for model milo`, 'Milo source: fallback answered model milo', `Milo source: dots failed (${code}) for model dots`]);
   expect(JSON.stringify(log.mock.calls)).not.toContain('synthetic-private-token');
 });
 it('caller cancellation stops polling and does not invoke fallback', async () => {
