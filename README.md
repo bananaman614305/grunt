@@ -148,7 +148,10 @@ error rather than silently losing context.
 `milo setup` includes Trusty Squire's MCP package and SDK. It connects your own
 local Squire, installs a pinned FreeLLMAPI Docker image, then asks Squire to reuse
 or create free Groq, Mistral and NVIDIA accounts and capture their API keys into
-your vault. It never selects a paid plan or adds payment details. Phone/SMS,
+your vault. Vault service names match without case or surrounding whitespace;
+existing API keys are reused before any browser signup. The pinned pnpm setup
+allows only Squire's required `better-sqlite3` native dependency build. It never
+selects a paid plan or adds payment details. Phone/SMS,
 passkey and captcha steps pause with Squire approval links. Browser handoffs use
 temporary loopback links to Squire's existing UI. Complete the step, close the
 handoff tab and press Enter in setup to resume the same browser session. A

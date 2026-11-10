@@ -17,9 +17,17 @@ import { BrowserSquire, FreeLLMAdmin } from ${JSON.stringify(setupUrl)};
 BrowserSquire.prototype.connect = async () => {};
 BrowserSquire.prototype.close = async () => {};
 BrowserSquire.prototype.humanHandoff = async () => 'https://approval.test/sms';
-BrowserSquire.prototype.call = async function(name) {
-  if (name === 'list_credentials') return { credentials: [] };
+BrowserSquire.prototype.call = async function(name, args) {
+  if (name === 'list_credentials') return { credentials: process.env.MILO_PROOF_CASE === 'reuse' ? [
+    { service: ' GroQ ', reference: 'groq', field_names: ['GROQ_API_KEY'] },
+    { service: 'Mistral', reference: 'mistral', field_names: ['apiKey'] },
+    { service: 'NVIDIA', reference: 'nvidia', field_names: ['value'] }
+  ] : [] };
   if (name === 'store_credential') return {};
+  if (name === 'fetch_credential') return args.action === 'start'
+    ? { approval_id: args.reference, approval_url: 'https://approval.test/load' }
+    : { status: 'credential_fetched', fields: { api_key: process.env.MILO_PROOF_SECRET } };
+  if (process.env.MILO_PROOF_CASE === 'reuse') throw new Error('Unexpected signup: existing vault keys must be reused');
   if (name === 'operate_drive') return process.env.MILO_PROOF_CASE === 'policy'
     ? { status: 'needs_value', session_id: 'offline', remaining: 'Review the privacy policy and enter the SMS code.' }
     : { status: 'stuck', session_id: 'offline', reason: 'Provider denied automated account creation.', remaining: 'api_key=' + process.env.MILO_PROOF_SECRET };
@@ -27,6 +35,11 @@ BrowserSquire.prototype.call = async function(name) {
 };
 FreeLLMAdmin.prototype.login = async () => {};
 FreeLLMAdmin.prototype.configureChain = async () => {};
+FreeLLMAdmin.prototype.addKey = async function(provider, key) {
+  if (key !== process.env.MILO_PROOF_SECRET) throw new Error('Wrong offline vault key');
+  console.log(provider + ': existing vault key imported');
+};
+FreeLLMAdmin.prototype.key = async () => { throw new Error('Offline proof complete: existing vault keys imported'); };
 `);
 const run = async scenario => {
   const child = spawn(process.execPath, ['--import', hook, 'dist/local/main.js', 'setup'], {
@@ -44,5 +57,8 @@ try {
   assert(refusal.includes('Provider denied automated account creation.'), 'CLI preserves the non-secret provider refusal reason');
   const policy = await run('policy');
   assert(policy.includes('https://approval.test/sms') && !policy.includes('Provider refused'), 'a privacy-policy/SMS handoff remains an approval');
-  console.log(JSON.stringify({ reproduction: 'setup-refusal-detail', target: 'built setup CLI with offline dependencies', refusal, humanHandoff: policy, providerSecretPrinted: false }, null, 2));
+  const vaultReuse = await run('reuse');
+  for (const provider of ['groq', 'mistral', 'nvidia']) assert(vaultReuse.includes(`${provider}: existing vault key imported`), 'existing provider key is loaded');
+  assert(!vaultReuse.includes('Unexpected signup'), 'existing keys prevent browser signup');
+  console.log(JSON.stringify({ reproduction: 'setup-refusal-detail', target: 'built setup CLI with offline dependencies', refusal, humanHandoff: policy, vaultReuse, providerSecretPrinted: false }, null, 2));
 } finally { await rm(dir, { recursive: true, force: true }); }

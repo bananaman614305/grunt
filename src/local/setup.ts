@@ -16,6 +16,13 @@ export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b5
 const PROVIDERS = { groq: 'https://console.groq.com/keys', mistral: 'https://console.mistral.ai/api-keys', nvidia: 'https://build.nvidia.com/' };
 export type Provider = keyof typeof PROVIDERS;
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
+function apiKeyField(credential: Credential, provider: Provider): string | undefined {
+  return credential.field_names.find(field => {
+    const normalized = field.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const name = normalized.startsWith(provider) ? normalized.slice(provider.length) : normalized;
+    return ['apikey', 'key', 'token', 'value', 'secret', 'apitoken', 'accesstoken'].includes(name);
+  });
+}
 type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject'; approval_url?: string; reason?: string };
 // Select only diagnostic text, never serialize the browser result or vault data.
 function setupReason(...values: unknown[]): string {
@@ -46,7 +53,7 @@ export class SetupPending extends Error {}
 export async function setupProviders(squire: SetupSquire, router: { addKey(platform: string, key: string): Promise<void> }, options: { providers?: Provider[]; notify: (line: string) => void } ) {
   const pending: string[] = [];
   for (const provider of options.providers ?? Object.keys(PROVIDERS) as Provider[]) {
-    const find = async () => (await squire.credentials.list()).find(c => c.service === provider && c.auth_strategy !== 'username_password' && c.field_names.some(f => /^(api_key|key|token|value)$/i.test(f)));
+    const find = async () => (await squire.credentials.list()).find(c => c.service?.trim().toLowerCase() === provider && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
     if (!credential) {
       const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
@@ -67,7 +74,7 @@ export async function setupProviders(squire: SetupSquire, router: { addKey(platf
       credential = await find();
       if (!credential) { pending.push(provider); options.notify(`${provider}: Squire signup is pending; resume setup after completing its approval`); continue; }
     }
-    const field = credential.field_names.find(f => /^(api_key|key|token|value)$/i.test(f))!;
+    const field = apiKeyField(credential, provider)!;
     const { approval } = await squire.credentials.requestReveal({ reference: credential.reference, field });
     options.notify(`${provider}: approve loading the key into local FreeLLMAPI: ${approval.approveUrl}`);
     try {
