@@ -145,8 +145,8 @@ error rather than silently losing context.
 
 ### Free API and account setup
 
-`milo setup` includes Trusty Squire's MCP package and SDK. It connects your own
-local Squire, installs a pinned FreeLLMAPI Docker image, then asks Squire to reuse
+`milo setup` includes Trusty Squire's MCP package and SDK. It reuses your existing
+local Squire connection, installs a pinned FreeLLMAPI Docker image, then asks Squire to reuse
 or create a free Groq account and capture its API key into your vault. Vault
 service names match without case or surrounding whitespace; existing API keys
 are reused before any browser signup. The pinned pnpm setup allows only Squire's
@@ -160,10 +160,22 @@ login, use your existing account; account switching is outside this setup flow.
 The reduced FreeLLMAPI chain is Groq, anonymous Kilo, then Freebuff; OpenCode
 remains a separate Milo driver.
 
+Connect Trusty Squire before running setup. If Squire is unavailable or has no
+session, Milo stops with an instruction to connect it separately and rerun setup.
+Milo never launches Squire onboarding, login or agent installation.
+
 Each key import needs your Squire passkey approval. Before prompting, setup saves
 only pending approval metadata (approval ID, vault reference, selected field,
 approval link and timestamps) in Milo's config directory, under
-`$XDG_CONFIG_HOME/milo` or `~/.config/milo`. Restarting setup resumes the same
+`$MILO_CONFIG_DIR` when set, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`.
+Use `MILO_CONFIG_DIR=/path/to/persistent/milo milo setup` to persist Milo state
+without changing Squire's config location. Squire inherits your normal environment.
+If an older launch overrides `XDG_CONFIG_HOME` solely for Milo, keep it while
+resuming existing approvals and set `MILO_SQUIRE_XDG_CONFIG_HOME` to Squire's
+original XDG config root (usually `$HOME/.config`). This override applies only
+to the Squire child. When a new Milo state directory has no saved state, setup
+also reads the previous `$XDG_CONFIG_HOME/milo` location; future writes use the
+selected Milo directory. Restarting setup resumes the same
 unexpired approval. A denied, expired or unknown approval may be replaced; a
 connection failure keeps the existing approval. Successful delivery removes its
 saved entry. This file never contains a fetched secret. Keys move through memory
