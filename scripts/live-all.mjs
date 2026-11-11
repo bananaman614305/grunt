@@ -25,7 +25,16 @@ try {
   changed = true
   await stage('a2')
   await p.ctl('restart', 'milo')
-  await p.owns()
+  await p.step('Wait for Milo listener', async () => {
+    const deadline = Date.now() + 30000
+    for (;;) {
+      try { await p.owns(); return }
+      catch (error) {
+        if (Date.now() >= deadline) throw error
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+  })
   await stage('b')
   await p.step('Gate B', async () => {
     const current = JSON.parse(await readFile(p.marker, 'utf8'))
