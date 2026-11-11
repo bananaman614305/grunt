@@ -47,7 +47,7 @@ export class OpenCode implements Source {
     const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
     const prior = turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined;
     const continuation = prior && !this.busy.has(prior) ? prior : undefined;
-    const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 600000)]);
+    const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 90000)]);
     let session: string | undefined, base: string | undefined;
     const headers = { 'Content-Type': 'application/json', 'x-opencode-directory': cwd,
       ...(process.env.OPENCODE_SERVER_PASSWORD ? { Authorization: `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? 'opencode'}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}` } : {}) };
@@ -71,7 +71,9 @@ export class OpenCode implements Source {
     } catch (error) {
       if (signal.aborted) {
         if (session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
-        throw new SourceError('timeout', 'OpenCode request timed out or was cancelled');
+        caller.throwIfAborted();
+        if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'OpenCode request cancelled during shutdown');
+        throw new SourceError('timeout', 'OpenCode request timed out');
       }
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'OpenCode request failed');
