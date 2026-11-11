@@ -2,7 +2,7 @@ import { readFile, writeFile, rm, stat, cp } from 'node:fs/promises';
 import { createHash, createDecipheriv } from 'node:crypto';
 import { join } from 'node:path';
 const helper = new URL('./live-lib.mjs', import.meta.url);
-if (createHash('sha256').update(await readFile(helper)).digest('hex') !== '85a1ac9de383169abdfefe03831305665cf774bf15410d7af662efb0704def7d') throw Error('Helper hash mismatch');
+if (createHash('sha256').update(await readFile(helper)).digest('hex') !== '4d8e6b2e1c0601e3adc6a2cb6880d92c0bb9889ea773efc3156620510058e0b5') throw Error('Helper hash mismatch');
 const { proof } = await import(helper.href);
 const { DatabaseSync } = await import('node:sqlite');
 const p = await proof('stage-b');

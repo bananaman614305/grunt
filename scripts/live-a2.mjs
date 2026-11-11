@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { join, resolve } from 'node:path'
 const helper = new URL('./live-lib.mjs', import.meta.url)
-if (createHash('sha256').update(await readFile(helper)).digest('hex') !== '85a1ac9de383169abdfefe03831305665cf774bf15410d7af662efb0704def7d') throw Error('Helper hash mismatch')
+if (createHash('sha256').update(await readFile(helper)).digest('hex') !== '4d8e6b2e1c0601e3adc6a2cb6880d92c0bb9889ea773efc3156620510058e0b5') throw Error('Helper hash mismatch')
 const { proof } = await import(helper.href)
 const p = await proof('stage-a2')
 let changed = false, wizard, router
@@ -33,7 +33,9 @@ try {
   await p.ctl('disable', 'milo-pi')
   await p.ctl('stop', 'milo')
   await p.ctl('stop', 'milo-router')
-  await p.ctl('reset-failed', 'milo')
+  const state = await p.ctl('show', 'milo', '-p', 'LoadState', '-p', 'ActiveState')
+  await p.log({ name: 'Reset decision', state })
+  if (state.split('\n').includes('LoadState=loaded') && state.split('\n').includes('ActiveState=failed')) await p.ctl('reset-failed', 'milo')
   const old = { ...process.env }
   Object.assign(process.env, p.env, { MILO_CONFIG_DIR: a.state, MILO_FREELLMAPI_URL: 'http://127.0.0.1:3003/v1', MILO_PORT: '8788' })
   try {
