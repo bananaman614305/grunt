@@ -147,9 +147,21 @@ error rather than silently losing context.
 
 `npx usemilo setup` runs a Clack terminal wizard using the same rail and wine accent as
 Trusty Squire. It reuses your Squire connection, lets you select Groq or Cerebras,
-installs FreeLLMAPI, writes a persistent background service and adds the `milo`
+installs FreeLLMAPI, Freebuff and OpenCode, writes a persistent background service and adds the `milo`
 provider to Pi. It sends a real request through that service before printing
 “Milo is ready” and exits. Run `pi`, open `/model`, and choose **milo**.
+Setup checks Freebuff's local sign-in and completes its CLI pairing through Squire's
+browser when needed. If tmux is missing, setup installs it through Homebrew, apt or dnf (sudo may prompt in the terminal).
+The Milo service starts the Freebuff loopback bridge. OpenCode's free model must
+answer a probe; anonymous access needs no account. If it returns an authentication
+error, setup reuses or creates free OpenCode access through Squire and saves only
+an app grant in a private OpenCode config. A refusal or failed fallback check
+prints a repair step and setup continues with the other routes. The final message
+lists any incomplete fallbacks. Rerunning setup keeps Kilo and Freebuff enabled
+as the last fallbacks and preserves the enabled state and priority of other backups.
+Free routes run their own tools in the working directory with your filesystem
+permissions; free model providers may retain prompts.
+
 Before making changes, setup checks Node, npm, Pi, tar and the user service
 manager. A missing prerequisite prints its install or repair step and stops.
 

@@ -62,7 +62,11 @@ export class OpenCode implements Source {
       if (!session || !/^[a-zA-Z0-9_-]+$/.test(session)) throw new SourceError('upstream', 'OpenCode returned an invalid session');
       this.busy.add(session);
       const reply = await call(`/session/${session}/message`, { model: { providerID: 'opencode', modelID: this.options.model ?? 'big-pickle' }, parts: [{ type: 'text', text: prompt }] });
-      if (reply.info?.error) throw new SourceError('refused', 'OpenCode provider refused the request');
+      if (reply.info?.error) {
+        const error = reply.info.error;
+        if (error.name === 'ProviderAuthError' || error.data?.statusCode === 401) throw new SourceError('logged_out', 'OpenCode free model requires sign-in');
+        throw new SourceError('refused', 'OpenCode provider refused the request');
+      }
       const parts: { type: string; text?: string }[] = reply.parts ?? [];
       const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (!text) throw new SourceError('upstream', 'OpenCode returned no assistant text');
@@ -79,5 +83,16 @@ export class OpenCode implements Source {
       throw new SourceError('upstream', 'OpenCode request failed');
     } finally { if (session) this.busy.delete(session); }
   }
-  async close() { this.shutdown.abort(); this.child?.kill(); }
+  async close() {
+    this.shutdown.abort();
+    const child = this.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise<void>(resolve => {
+      // Some CLI versions keep their idle server alive after SIGTERM. Setup
+      // must release its probe process before it can exit or try sign-in again.
+      const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      child.once('exit', () => { clearTimeout(timer); resolve(); });
+      child.kill();
+    });
+  }
 }
