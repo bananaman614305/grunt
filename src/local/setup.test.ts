@@ -170,3 +170,28 @@ it('stops native setup without replacing the missing key of an existing database
   expect(await readdir(stateDir)).toEqual(['freellmapi']);
   expect(logins).toEqual([]);
 });
+
+it('keeps Freebuff and Kilo enabled last on repeat setup without changing other backups', async () => {
+  const chain = [
+    { modelDbId: 1, platform: 'custom', modelId: 'freebuff', priority: 3, keyLabel: 'Freebuff', enabled: false },
+    { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', priority: 4, keyLabel: 'Kilo Free', enabled: false },
+    { modelDbId: 3, platform: 'custom', modelId: 'other', priority: 17, keyLabel: 'My backup', enabled: true },
+    { modelDbId: 4, platform: 'groq', modelId: 'disabled', priority: 19, keyLabel: null, enabled: false },
+    { modelDbId: 5, platform: 'custom', modelId: 'gpt-oss-120b', priority: 0, keyLabel: 'Milo groq (Squire)', enabled: false }
+  ];
+  const updates: unknown[] = [];
+  vi.mocked(FreeLLMAdmin.prototype.call).mockImplementation(async (path, body, method) => {
+    if (path === '/fallback' && method === 'GET') return chain;
+    if (path === '/fallback' && method === 'PUT') { updates.push(body); for (const row of body as typeof chain) Object.assign(chain.find(saved => saved.modelDbId === row.modelDbId)!, row); }
+    return {};
+  });
+  const router = new FreeLLMAdmin();
+  await router.configureChain(); await router.configureChain();
+  expect(updates).toEqual([1, 2].map(() => [
+    { modelDbId: 1, enabled: true, priority: 1000000 },
+    { modelDbId: 2, enabled: true, priority: 999999 },
+    { modelDbId: 3, enabled: true, priority: 17 },
+    { modelDbId: 4, enabled: false, priority: 19 },
+    { modelDbId: 5, enabled: true, priority: 0 }
+  ]));
+});

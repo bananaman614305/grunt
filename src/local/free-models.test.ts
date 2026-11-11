@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -78,9 +78,9 @@ it('types the exact latest OpenCode fixture message and reuses the session for f
   await driver.close();
 });
 
-it('does not swallow OpenCode provider refusals or return upstream secrets', async () => {
-  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => Response.json(String(url).includes('/message') ? { info: { error: { name: 'ProviderAuthError', data: { message: 'secret' } } }, parts: [] } : { id: 'session_one' }) });
-  await expect(driver.complete(decode({ messages: request.messages }, 'chat', '/tmp'), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused', message: 'OpenCode provider refused the request' });
+it.each(['ProviderAuthError', 'UnknownError'])('types OpenCode %s without returning upstream secrets', async name => {
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => Response.json(String(url).includes('/message') ? { info: { error: { name, data: { message: 'secret' } } }, parts: [] } : { id: 'session_one' }) });
+  await expect(driver.complete(decode({ messages: request.messages }, 'chat', '/tmp'), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: name === 'ProviderAuthError' ? 'logged_out' : 'refused', message: name === 'ProviderAuthError' ? 'OpenCode free model requires sign-in' : 'OpenCode provider refused the request' });
 });
 
 function fakeSquire() {
@@ -141,7 +141,7 @@ it('uses the local Squire browser driver and approved vault capture', async () =
   expect(call).toHaveBeenLastCalledWith('grant_app_access', { reference: 'vault://synthetic' });
 });
 
-it('disables removed SMS providers and a newly dropped provider in the router chain', async () => {
+it('preserves disabled providers and enables Kilo in the router chain', async () => {
   const admin = new FreeLLMAdmin();
   const call = vi.spyOn(admin, 'call').mockResolvedValue([
     { modelDbId: 1, platform: 'groq', modelId: 'groq', priority: 1 },
@@ -154,7 +154,7 @@ it('disables removed SMS providers and a newly dropped provider in the router ch
     { modelDbId: 1, enabled: false, priority: 1 },
     { modelDbId: 2, enabled: false, priority: 2 },
     { modelDbId: 3, enabled: false, priority: 3 },
-    { modelDbId: 4, enabled: false, priority: 999999 }
+    { modelDbId: 4, enabled: true, priority: 999999 }
   ], 'PUT');
 });
 
@@ -225,4 +225,35 @@ it('registers the provider API path beneath a Squire egress root and rejects leg
   expect(call).toHaveBeenCalledWith('/keys/custom', expect.objectContaining({ baseUrl: 'https://egress.test/g_123/openai/v1', apiKey: 'synthetic-grant', models: [{ model: 'openai/gpt-oss-120b', supportsTools: true }] }));
   call.mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Milo groq (Squire)', baseUrl: 'https://egress.test/g_123/openai/v1', models: [{ modelId: 'openai/gpt-oss-120b' }] }]);
   expect(await admin.hasKey('groq')).toBe(true);
+});
+
+it.each(['freebuff', 'opencode'])('shares %s human verification and resumes the same signup session', async service => {
+  const squire = new BrowserSquire();
+  const handoff = vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.test/verify');
+  const call = vi.spyOn(squire, 'call')
+    .mockResolvedValueOnce({ status: 'needs_value', session_id: 'signup-session', field: 'verification_code', remaining: 'Email verification needs a human' })
+    .mockResolvedValueOnce({ status: 'complete', session_id: 'signup-session' })
+    .mockResolvedValue({});
+  await squire.signup(service, `https://${service}.test/login`, 'Sign in to the free plan');
+  expect(handoff).toHaveBeenCalledWith('signup-session');
+  expect(call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => args)).toEqual([
+    expect.objectContaining({ url: `https://${service}.test/login` }),
+    expect.objectContaining({ session_id: 'signup-session' })
+  ]);
+});
+
+
+it('exits the OpenCode probe server even when the CLI ignores graceful shutdown', async () => {
+  const pidFile = join(stateDir, 'probe.pid');
+  await writeFile(join(stateDir, 'opencode'), '#!' + process.execPath + '\n' +
+    `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => {}); console.log('http://127.0.0.1:19778'); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  vi.stubEnv('PATH', stateDir + ':' + process.env.PATH);
+  const source = new OpenCode({ fetcher: async url => Response.json(String(url).includes('/message') ? { parts: [{ type: 'text', text: 'ready' }] } : { id: 'probe' }) });
+  let pid: number | undefined;
+  try {
+    await source.complete(request, AbortSignal.timeout(5000));
+    pid = Number(await readFile(pidFile, 'utf8'));
+    await source.close();
+    expect(() => process.kill(pid!, 0)).toThrow();
+  } finally { if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already closed. */ } } }
 });

@@ -179,11 +179,20 @@ export class BrowserSquire implements SetupSquire {
     }
   };
 
-  private async drive(provider: Provider): Promise<Run> {
+  async signup(service: string, url: string, goal: string): Promise<void> {
+    const deadline = Date.now() + 600000;
+    while (Date.now() < deadline) {
+      const result = await this.drive(service, url, goal);
+      if (result.run.state === 'completed') return;
+      if (result.run.state !== 'running') throw new Error(`${service}: signup could not be completed`);
+    }
+    throw new Error(`${service}: signup timed out; rerun setup to resume`);
+  }
+  private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
     const session = this.sessions.get(provider);
     const result = await this.call('operate_drive', {
-      ...(session ? { session_id: session } : { url: PROVIDERS[provider] }),
-      goal: `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for Milo and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer. No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so Milo can share this browser. Do not bypass verification. Stop on provider refusal.`,
+      ...(session ? { session_id: session } : { url }),
+      goal: goal ?? `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for Milo and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer. No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so Milo can share this browser. Do not bypass verification. Stop on provider refusal.`,
       facts: { plan: 'free', project_name: 'Milo' }, max_seconds: 45, max_steps: 60
     });
     if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
@@ -258,11 +267,23 @@ export class FreeLLMAdmin {
       if (Number.isInteger(key.id) && key.platform === 'custom' && key.label === label && key.baseUrl !== baseUrl) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
     }
   }
+  async ensureFreeFallbacks() {
+    const keys = await this.call('/keys', undefined, 'GET') as { platform: string; label: string; baseUrl?: string }[];
+    for (const provider of freeConfig().customProviders) {
+      if (!keys.some(key => key.platform === 'custom' && key.baseUrl === provider.baseUrl)) {
+        await this.call('/keys/custom', provider);
+      }
+    }
+  }
   async configureChain(excluded: string[] = []) {
-    const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null }[];
-    const rows = chain.map(row => ({ modelDbId: row.modelDbId,
-      enabled: row.platform === 'custom' && Object.keys(PROVIDERS).some(provider => !excluded.includes(provider) && row.keyLabel === `Milo ${provider} (Squire)`),
-      priority: row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : Math.min(row.priority, 999000) }));
+    const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean }[];
+    const rows = chain.map(row => {
+      const provider = Object.keys(PROVIDERS).find(provider => row.keyLabel === `Milo ${provider} (Squire)`);
+      const fallback = row.modelId === 'freebuff' || row.modelId === 'kilo-auto/free';
+      return { modelDbId: row.modelDbId,
+        enabled: fallback || (provider ? row.platform === 'custom' && !excluded.includes(provider) : row.enabled === true),
+        priority: row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : row.priority };
+    });
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
   }
@@ -389,6 +410,7 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
       try { await router.login(admin.password); ready = true; break; } catch { await delay(1000); }
     }
     if (!ready) throw new Error('Local FreeLLMAPI did not start; inspect its health before resuming setup');
+    await router.ensureFreeFallbacks();
     await router.configureChain();
     const result = await setupProviders(squire, router, { providers, notify });
     const dropped = new Set(result.dropped);
