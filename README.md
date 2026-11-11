@@ -145,65 +145,42 @@ error rather than silently losing context.
 
 ### Free API and account setup
 
-`milo setup` includes Trusty Squire's MCP package and SDK. It reuses your existing
-local Squire connection, installs a pinned FreeLLMAPI Docker image, then asks Squire to reuse
-or create a free Groq account and capture its API key into your vault. Vault
-service names match without case or surrounding whitespace; existing API keys
-are reused before any browser signup. The pinned pnpm setup allows only Squire's
-required `better-sqlite3` native dependency build. It never selects a paid plan or
-adds payment details. Mistral and NVIDIA are excluded because signup needs SMS.
-If another signup requires SMS, phone verification, captcha, passkey or any
-human assistance, setup drops that provider, prints its safe reason and continues
-without a signup approval link. A genuine provider refusal stops setup. Refusal
-and drop diagnostics omit secret-bearing fields entirely. If Freebuff needs a
-login, use your existing account; account switching is outside this setup flow.
-The reduced FreeLLMAPI chain is Groq, anonymous Kilo, then Freebuff; OpenCode
-remains a separate Milo driver.
+`milo setup` runs a Clack terminal wizard using the same rail and wine accent as
+Trusty Squire. It reuses your Squire connection, lets you select Groq or Cerebras,
+installs FreeLLMAPI, writes a persistent background service and adds the `milo`
+provider to Pi. It sends a real request through that service before printing
+“Milo is ready” and exits. Run `pi`, open `/model`, and choose **milo**.
 
-Connect Trusty Squire before running setup. If Squire is unavailable or has no
-session, Milo stops with an instruction to connect it separately and rerun setup,
-followed by a redacted, single-line connection reason (at most 300 characters total).
-Milo never launches Squire onboarding, login or agent installation.
+Existing vault API keys are reused. Missing keys are created through Squire's
+browser and captured directly into its vault. Human verification opens a browser
+handoff. Provider refusals stop setup. Milo calls `grant_app_access` and sends only
+the grant's base URL and bearer token to FreeLLMAPI's custom-provider endpoint.
+Provider keys stay in Squire; no provider reveal approval is requested.
+`milo add groq` or `milo add cerebras` connects another provider through the same flow.
 
-Each key import needs your Squire passkey approval. Before prompting, setup saves
-only pending approval metadata (approval ID, vault reference, selected field,
-approval link and timestamps) in Milo's config directory, under
-`$MILO_CONFIG_DIR` when set, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`.
-Use `MILO_CONFIG_DIR=/path/to/persistent/milo milo setup` to persist Milo state
-without changing Squire's config location. Squire inherits your normal environment.
-If an agent sandbox changes `HOME`, set `MILO_SQUIRE_HOME` to the home that runs
-your own Squire, for example `MILO_SQUIRE_HOME=/home/you milo setup`. Only the
-Squire child receives that `HOME` and its derived `XDG_CONFIG_HOME` (`<home>/.config`);
-Milo state, Freebuff, OpenCode and FreeLLMAPI keep their normal environment.
-If an older launch overrides `XDG_CONFIG_HOME` solely for Milo, keep it while
-resuming existing approvals and set `MILO_SQUIRE_XDG_CONFIG_HOME` to Squire's
-original XDG config root (usually `$HOME/.config`). This explicit value wins
-over the config root derived from `MILO_SQUIRE_HOME` and applies only to the
-Squire child. When a new Milo state directory has no saved state, setup
-also reads the previous `$XDG_CONFIG_HOME/milo` location; future writes use the
-selected Milo directory. Restarting setup resumes the same
-unexpired approval. A denied, expired or unknown approval may be replaced; a
-connection failure keeps the existing approval. Successful delivery removes its
-saved entry. This file never contains a fetched secret. Keys move through memory
-directly into FreeLLMAPI's encrypted storage; Milo saves no provider keys or
-Squire tokens in its database, files or logs. FreeLLMAPI's generated admin password
-and encryption key stay in `router-admin.json` in Milo's state directory, readable
-only by your user (mode 0600). Setup reuses this file without a Squire approval.
-Keep it when moving or backing up the router: without it, setup recreates an old
-router only after checking that it holds no provider keys. That reset removes the
-old router database, settings and request history. If keys exist or the check fails,
-setup preserves the old router and stops. The old admin vault entry is left alone.
-Docker also holds its service variables as part of FreeLLMAPI's installation. Setup finishes by running Milo with the
-unified router key in memory. On normal startup, Milo loads the saved local router
-login and retrieves that key again without setup or Squire. If the router is not
-ready, Milo retries on the next request and can fall back to other sources.
-Keep the same Milo state directory when running as a service. An explicit
-`MILO_FREELLMAPI_KEY` takes precedence over the saved login. Providers already stored
-with the `Milo` label in FreeLLMAPI are reused without fetching them from Squire
-or requesting another approval. Setup currently requires
-an interactive terminal and Linux Docker host networking so the router can reach
-the loopback Freebuff bridge. It creates the container `milo-freellmapi` and
-volume `milo-freellmapi-data`; it never adopts an unrelated existing router.
+When no Squire session exists, the wizard runs Squire's own connect installer
+with the OpenCode target. Squire manages login and its broker service. An existing
+session with an unavailable broker reports the connection error for repair.
+Setup does not pair with Beeline or create agents or Rooms.
+
+Milo state lives under `$MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or
+`~/.config/milo`. Keep this directory across service restarts. Local router login
+and encryption material are generated once and stored with mode `0600`.
+FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
+provider keys appear in Pi's config or terminal output. Never share backend state.
+Existing routers with keys are preserved if their local admin state is missing.
+
+The service uses FreeLLMAPI first and OpenCode free models as fallback. It loads
+the saved router login itself at startup and retries if the router is temporarily
+unavailable. Setup keeps a runtime outside the npx cache, so cache cleanup does
+not remove the service. Pi's other providers are preserved. `PI_CODING_AGENT_DIR`
+selects a nondefault Pi agent directory.
+
+Setup needs Docker running and a working user service manager: systemd on
+Linux or launchd on macOS. On macOS the container publishes only its loopback
+port; the optional Freebuff bridge is available only with Linux host networking. Setup creates container `milo-freellmapi` and volume
+`milo-freellmapi-data`. `MILO_SQUIRE_HOME` and `MILO_SQUIRE_XDG_CONFIG_HOME` can
+select an existing Squire home without relocating Milo state.
 
 Free API calls go to `http://127.0.0.1:3001/v1` through FreeLLMAPI, including
 provider failover. There is no direct OpenRouter free API route. An already

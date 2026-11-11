@@ -1,0 +1,117 @@
+import { spawn } from 'node:child_process';
+import { mkdir, readFile, writeFile, rename, cp } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { intro, outro, multiselect, isCancel, spinner, log } from '@clack/prompts';
+import chalk from 'chalk';
+import { BrowserSquire, PROVIDERS, setup } from './setup.js';
+
+export const configDir = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+export async function command(binary: string, args: string[], interactive = false) {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(binary, args, { stdio: interactive ? 'inherit' : 'ignore' });
+    child.once('error', () => reject(new Error(`Could not run ${binary}`)));
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${binary} failed; inspect its service status before retrying`)));
+  });
+}
+async function step<T>(label: string, task: () => Promise<T>): Promise<T> {
+  const progress = spinner(); progress.start(label);
+  try { const result = await task(); progress.stop(label); return result; }
+  catch (error) { progress.stop(`${label} failed`); throw error; }
+}
+export async function connectSquire() {
+  const squire = new BrowserSquire();
+  try { await squire.connect(); }
+  catch (error) {
+    if (!(error instanceof Error) || !/no.*session|missing.*session|not connected|not signed|connect.*first/i.test(error.message)) throw error;
+    // Squire owns login and service installation. No account files enter Milo.
+    const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
+    await command(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true);
+    const connected = new BrowserSquire();
+    try { await connected.connect(); } finally { await connected.close(); }
+  } finally { await squire.close(); }
+}
+export async function configurePi(port = 8788) {
+  const directory = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
+  const path = join(directory, 'models.json');
+  let saved: Record<string, unknown> = {};
+  try { saved = JSON.parse(await readFile(path, 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read Pi models config; repair it before retrying setup'); }
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved) || (saved.providers !== undefined && (!saved.providers || typeof saved.providers !== 'object' || Array.isArray(saved.providers)))) throw new Error('Invalid Pi models config');
+  const providers = (saved.providers ?? {}) as Record<string, unknown>;
+  providers.milo = { baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
+    models: [{ id: 'milo', name: 'Milo', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }] };
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify({ ...saved, providers }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  await rename(temporary, path);
+}
+const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
+const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+export async function installService() {
+  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Milo background service requires systemd or launchd');
+  const directory = configDir(), runtime = join(directory, 'runtime');
+  // npx cache entries can disappear. Keep a backend runtime outside that cache.
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  await mkdir(runtime, { recursive: true, mode: 0o700 });
+  await cp(join(root, 'dist'), join(runtime, 'dist'), { recursive: true });
+  const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', private: true, type: 'module', dependencies: pkg.dependencies }), { mode: 0o600 });
+  await command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']);
+  const entry = join(runtime, 'dist', 'local', 'main.js');
+  const port = process.env.MILO_PORT || '8788';
+  if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid Milo service port');
+  const env: Record<string, string> = { MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: 'freellmapi,opencode', PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  if (process.platform === 'linux') {
+    const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
+    await mkdir(units, { recursive: true });
+    await writeFile(join(units, 'milo.service'), `[Unit]\nDescription=Milo model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
+    await command('systemctl', ['--user', 'daemon-reload']);
+    await command('systemctl', ['--user', 'enable', 'milo.service']);
+    await command('systemctl', ['--user', 'restart', 'milo.service']);
+  } else {
+    const agents = join(homedir(), 'Library', 'LaunchAgents');
+    await mkdir(agents, { recursive: true });
+    const plist = join(agents, 'ai.milo.service.plist'), domain = `gui/${process.getuid!()}`;
+    await writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.milo.service</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(entry)}</string></array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer></dict></plist>`, { mode: 0o600 });
+    await command('launchctl', ['bootout', `${domain}/ai.milo.service`]).catch(() => {});
+    await command('launchctl', ['bootstrap', domain, plist]);
+  }
+}
+export async function checkService(port = 8788) {
+  let ready = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try { const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(1000) }); if (response.ok) { ready = true; break; } } catch { /* Wait for the service manager. */ }
+    await delay(1000);
+  }
+  if (!ready) throw new Error('Milo service did not start; inspect its service status');
+  const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freellmapi', messages: [{ role: 'user', content: 'Reply with Milo is ready.' }], stream: false, max_tokens: 32 }), signal: AbortSignal.timeout(120000) });
+  if (!response.ok) throw new Error(`Milo service live check failed (HTTP ${response.status})`);
+  const result = await response.json() as { choices?: { message?: { content?: string } }[] };
+  if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('Milo service returned no answer');
+}
+export async function wizard(add?: string) {
+  if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
+  intro(chalk.hex('#cf3a52').bold('Milo') + chalk.dim(' — setup'));
+  await step('Trusty Squire', connectSquire);
+  let providers = add ? [add] : undefined;
+  if (!providers) {
+    const selected = await multiselect({ message: 'Choose your providers', options: Object.keys(PROVIDERS).map(value => ({ value, label: value === 'groq' ? 'Groq' : 'Cerebras' })), initialValues: ['groq'], required: true });
+    if (isCancel(selected)) throw new Error('Milo setup cancelled');
+    providers = selected;
+  }
+  await step('FreeLLMAPI and provider grants', () => setup(line => log.info(line), providers));
+  if (add) { outro(`${add} connected`); return; }
+  await step('OpenCode fallback', async () => {
+    try { await command('opencode', ['--version']); }
+    catch { await command('npm', ['install', '--global', 'opencode-ai'], true); }
+  });
+  await step('Milo background service', installService);
+  const port = Number(process.env.MILO_PORT || '8788');
+  await step('Pi provider', () => configurePi(port));
+  await step('Live request through Milo service', () => checkService(port));
+  outro('Milo is ready');
+  log.info('Run pi, open /model, and choose milo.');
+}

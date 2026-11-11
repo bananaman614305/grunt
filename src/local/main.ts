@@ -38,7 +38,7 @@ export function start(env = process.env) {
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`Milo working directory: ${cwd}`) });
   const server = serve({ fetch: app.fetch, hostname: HOST, port }, () => console.error(`Milo model API: http://${HOST}:${port}/v1`));
   // A distinct source list prevents FreeLLMAPI -> Milo -> FreeLLMAPI recursion.
-  const fallback = sources.sources.some(s => s.id === 'freellmapi' || s.id === 'kilo') ? new Sources([new Freebuff()]) : undefined;
+  const fallback = env.MILO_FREEBUFF_BRIDGE !== '0' && sources.sources.some(s => s.id === 'freellmapi' || s.id === 'kilo') ? new Sources([new Freebuff()]) : undefined;
   const bridge = fallback ? serve({ fetch: createLocalApp(fallback, { port: 8789 }).fetch, hostname: HOST, port: 8789 }) : undefined;
   let closing = false;
   const close = async () => { if (closing) return; closing = true; await sources.close(); await fallback?.close(); bridge?.close(); server.close(); };
@@ -50,9 +50,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }
     catch { console.error('Dots pairing failed. Use the fallback code from the Allow page: milo dots link <code>.'); process.exitCode = 1; }
-  } else if (process.argv[2] === 'setup') {
-    const { setup } = await import('./setup.js');
-    try { const connection = await setup(); start({ ...process.env, MILO_FREELLMAPI_KEY: connection.key }); }
+  } else if (['setup', 'add'].includes(process.argv[2] ?? '')) {
+    const { wizard } = await import('./wizard.js');
+    try {
+      if (process.argv[2] === 'add' && !process.argv[3]) throw new Error('Usage: milo add <provider>');
+      await wizard(process.argv[2] === 'add' ? process.argv[3] : undefined);
+    }
     catch (error) { console.error(error instanceof Error ? error.message : 'Milo setup failed'); process.exitCode = 1; }
   } else start();
 }
