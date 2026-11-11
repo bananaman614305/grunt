@@ -57,7 +57,7 @@ it.each([true, false])('sets up both default free routes, signing Freebuff in on
   const login = vi.fn(async () => { await squire.signup('freebuff', 'https://freebuff.com/login', 'pair'); ready = true; });
   const run = vi.fn(async () => {}), verify = vi.fn(async () => {});
   expect(await setupFallbacks({ directory: dir, run, notify: () => {}, squire, signedIn: async () => ready, login, verify })).toEqual({ unavailable: [] });
-  expect(run.mock.calls).toEqual([['freebuff', ['--version']], ['tmux', ['-V']], ['opencode', ['--version']]]);
+  expect(run.mock.calls).toEqual([['freebuff', ['--version']], ['freebuff', ['doctor']], ['tmux', ['-V']], ['opencode', ['--version']]]);
   expect(squire.signup).toHaveBeenCalledTimes(signed ? 0 : 1);
   expect(verify).toHaveBeenCalledOnce();
 });
@@ -119,4 +119,27 @@ it('pairs the local Freebuff CLI using its own login URL through Squire', async 
   const squire = { signup: vi.fn(async () => {}), credentials: { list: vi.fn(), grant: vi.fn() } };
   await loginFreebuff(squire);
   expect(squire.signup).toHaveBeenCalledWith('freebuff', 'https://freebuff.com/login?auth_code=synthetic&cli_flow=fixture', expect.stringContaining('local CLI'));
+});
+
+
+it.each([true, false])('repairs an installed Freebuff without doctor before probing sign-in (repair works: %s)', async repaired => {
+  const { setupFallbacks } = await import('./fallback-setup.js');
+  dir = await mkdtemp(join(tmpdir(), 'milo-old-cli-test-'));
+  let upgraded = false, signed = false;
+  const output: string[] = [];
+  const run = vi.fn(async (binary: string, args: string[]) => {
+    if (binary === 'freebuff' && args[0] === 'doctor' && (!upgraded || !repaired)) throw new Error('invalid command: doctor; only login is accepted');
+    if (binary === 'npm' && args.includes('freebuff@latest')) upgraded = true;
+  });
+  const signedIn = vi.fn(async () => { expect(upgraded).toBe(true); return signed; });
+  const squire = { signup: vi.fn(async () => { signed = true; }), credentials: { list: vi.fn(), grant: vi.fn() } };
+  const verify = vi.fn(async () => {});
+  const result = await setupFallbacks({ directory: dir, run, notify: line => output.push(line), squire, signedIn,
+    login: async browser => browser.signup('freebuff', 'https://freebuff.com/login', 'Pair the CLI'), verify });
+  expect(run).toHaveBeenCalledWith('npm', ['install', '--global', 'freebuff@latest'], true);
+  expect(squire.signup).toHaveBeenCalledTimes(repaired ? 1 : 0);
+  expect(signedIn).toHaveBeenCalledTimes(repaired ? 2 : 0);
+  expect(verify).toHaveBeenCalledOnce();
+  expect(result.unavailable).toEqual(repaired ? [] : ['freebuff']);
+  if (!repaired) expect(output.join(' ')).toContain('remove older Freebuff binaries earlier on PATH');
 });

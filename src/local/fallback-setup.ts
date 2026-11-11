@@ -8,6 +8,7 @@ import { SourceError, Sources } from './source.js';
 import type { Source } from './source.js';
 
 const exec = promisify(execFile);
+class FreebuffCompatibilityError extends Error {}
 export type Signup = Pick<BrowserSquire, 'signup' | 'credentials'>;
 // The CLI keeps the local login exchange alive while Squire completes its URL.
 export async function loginFreebuff(squire: Signup) {
@@ -74,6 +75,17 @@ export async function setupFallbacks(options: {
   try {
     try {
       await install('freebuff', 'freebuff');
+      // Older CLIs accept --version but cannot run the login diagnostic.
+      try { await options.run('freebuff', ['doctor']); }
+      catch {
+        options.notify('Freebuff: repairing the installed CLI before checking sign-in');
+        try {
+          await options.run('npm', ['install', '--global', 'freebuff@latest'], true);
+          await options.run('freebuff', ['doctor']);
+        } catch {
+          throw new FreebuffCompatibilityError('Freebuff CLI repair incomplete. The active freebuff on PATH must support doctor. Run npm install --global freebuff@latest, remove older Freebuff binaries earlier on PATH, then rerun milo setup. Continuing with OpenCode.');
+        }
+      }
       try { await options.run('tmux', ['-V']); }
       catch {
         if (process.platform === 'darwin') await options.run('brew', ['install', 'tmux'], true);
@@ -91,9 +103,10 @@ export async function setupFallbacks(options: {
       if (!await signedIn()) { await connect(); await (options.login ?? loginFreebuff)(squire); }
       if (!await signedIn()) throw new Error('Freebuff is still signed out; rerun setup to resume');
       options.notify('Freebuff: signed in; Milo will start its loopback bridge with the background service');
-    } catch {
+    } catch (error) {
       unavailable.push('freebuff');
-      options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun milo setup. Continuing with OpenCode.');
+      if (error instanceof FreebuffCompatibilityError) options.notify(error.message);
+      else options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun milo setup. Continuing with OpenCode.');
     }
     try {
       await install('opencode', 'opencode-ai');
