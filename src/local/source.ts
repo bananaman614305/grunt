@@ -1,4 +1,4 @@
-export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused';
+export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
 export class SourceError extends Error {
   constructor(public code: ErrorCode, message: string) { super(message); }
 }
@@ -31,11 +31,15 @@ export class Sources {
       let completion: Completion;
       try { completion = await source.complete(request, signal); }
       catch (error) {
-        signal.throwIfAborted();
+        if (signal.aborted || (error instanceof SourceError && error.code === 'cancelled')) {
+          console.error(`Milo source: ${source.id} cancelled for model ${request.model}`);
+          signal.throwIfAborted();
+          throw error;
+        }
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
         console.error(`Milo source: ${source.id} failed (${last.code}) for model ${request.model}`);
-        // A dot deadline is local to the relay; the caller's cancellation still stops the chain.
-        if (last.code === 'timeout' && source.id !== 'dots') throw last;
+        // Only dots and OpenCode deadlines fall through; caller cancellation stops above.
+        if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode') throw last;
         continue;
       }
       console.error(`Milo source: ${source.id} answered model ${request.model}`);
