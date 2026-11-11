@@ -1,7 +1,6 @@
 {
-  "name": "milo",
-  "version": "0.1.0",
-  "private": true,
+  "name": "usemilo",
+  "version": "0.4.0",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -21,11 +20,13 @@
     "local": "tsx src/local/main.ts"
   },
   "dependencies": {
+    "@clack/prompts": "^1.9.0",
     "@hono/node-server": "^1.19.17",
     "@libsql/client": "^0.18.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@trusty-squire/mcp": "1.1.39",
     "@trusty-squire/sdk": "0.1.0",
+    "chalk": "^6.0.1",
     "hono": "^4.13.8",
     "ipaddr.js": "^2.5.0",
     "standardwebhooks": "^1.1.1"
@@ -41,5 +42,10 @@
   "bin": {
     "milo": "dist/local/main.js",
     "milo-local": "dist/local/main.js"
-  }
+  },
+  "description": "One-command onboarding for Milo",
+  "files": [
+    "dist",
+    "README.md"
+  ]
 }
