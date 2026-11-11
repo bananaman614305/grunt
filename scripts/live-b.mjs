@@ -2,7 +2,7 @@ import { readFile, writeFile, rm, stat, cp } from 'node:fs/promises';
 import { createHash, createDecipheriv } from 'node:crypto';
 import { join } from 'node:path';
 const helper = new URL('./live-lib.mjs', import.meta.url);
-if (createHash('sha256').update(await readFile(helper)).digest('hex') !== '639b05d0945063acfe2d91df7dcfeb3c5df7b20911006ff0a9a842c4d72fa562') throw Error('Helper hash mismatch');
+if (createHash('sha256').update(await readFile(helper)).digest('hex') !== '4d8e6b2e1c0601e3adc6a2cb6880d92c0bb9889ea773efc3156620510058e0b5') throw Error('Helper hash mismatch');
 const { proof } = await import(helper.href);
 const { DatabaseSync } = await import('node:sqlite');
 const p = await proof('stage-b');
@@ -13,7 +13,7 @@ try {
   await p.owns();
   await p.step('Profile HTTP preflight', async () => {
     const profile = JSON.parse(await readFile(join(a.piDir, 'models.json'), 'utf8')).providers.milo;
-    // src/local/api.ts:125 serves GET /v1/models (Host must match loopback).
+    // Pinned package/dist/local/api.js:151 serves GET /v1/models (loopback Host).
     const response = await fetch(profile.baseUrl.replace(/\/$/, '') + '/models', {
       headers: profile.apiKey ? { Authorization: `Bearer ${profile.apiKey}` } : {},
       redirect: 'error', signal: AbortSignal.timeout(10000) });
@@ -21,9 +21,11 @@ try {
     if (!response.ok) throw Error(`Preflight HTTP ${response.status}: ${body}`);
     return `${response.status} ${body}`;
   });
-  const reply = await p.run('pi', ['--provider', 'milo', '--model', 'milo', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '-p', 'Reply exactly: Milo is ready'], { PI_CODING_AGENT_DIR: a.piDir });
+  p.env.PI_CODING_AGENT_DIR = a.piDir;
+  const since = '@' + (Date.now() / 1000).toFixed(3);
+  const reply = await p.run('pi', ['--provider', 'milo', '--model', 'milo', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '-p', 'Reply exactly: Milo is ready']);
   if (!reply) throw Error('Pi returned no answer');
-  const logs = await p.run('journalctl', ['--user', '-u', 'milo', '-n', '80', '--no-pager', '-o', 'cat']);
+  const logs = await p.run('journalctl', ['--user', '-u', 'milo', '--since', since, '--no-pager', '-o', 'cat']);
   const sources = logs.split('\n').filter(line => line.startsWith('Milo source:'));
   if (!sources.some(line => line.includes('freellmapi answered model milo'))) throw Error('Pi used an unexpected source');
   const attempts = await p.step('FreeLLMAPI token-only proof', async () => {
@@ -46,15 +48,13 @@ try {
   await p.step('Write marker B', () => writeFile('.local-proof/marker-b.json', JSON.stringify({ marker: p.marker, a }), { mode: 0o600 }));
   console.log('PASS B:', reply, sources.join('\n'), JSON.stringify(attempts));
 } catch (error) {
-  await p.log({ name: 'Original error before rollback', message: error.message, stack: error.stack });
+  await p.log({ name: 'Error before rollback', message: error.message, stack: error.stack });
   try {
-    if (changed) {
-      await p.rollback();
-    }
+    if (changed) await p.rollback();
   } catch (rollback) {
     await p.log({ name: 'Rollback error', message: rollback.message, stack: rollback.stack });
   } finally {
-    await p.log({ name: 'Original error after rollback', message: error.message, stack: error.stack });
+    await p.log({ name: 'Error after rollback', message: error.message, stack: error.stack });
     console.error(error.message.replace(/(?:sqr_egress_|sk-)\S+/g, '[REDACTED]'));
     process.exitCode = 1;
   }
