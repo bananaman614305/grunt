@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type * as ChildProcess from 'node:child_process';
 import { join } from 'node:path';
@@ -158,4 +158,15 @@ it.each([true, false])('preserves an old router containing provider keys when lo
   await expect(setup(() => {})).rejects.toThrow(/provider keys.*preserv/i);
   expect(docker.mock.calls.some(([, args]) => args[0] === 'rm' || args[0] === 'volume' && args[1] === 'rm')).toBe(false);
   expect(squireCall.mock.calls.filter(([name]) => name === 'fetch_credential' || name === 'store_credential')).toEqual([]);
+});
+
+it('stops native setup without replacing the missing key of an existing database', async () => {
+  vi.stubEnv('MILO_ROUTER_RUNTIME', 'native');
+  await mkdir(join(stateDir, 'freellmapi'));
+  const database = join(stateDir, 'freellmapi', 'router.db');
+  await writeFile(database, 'existing encrypted provider state');
+  await expect(setup(() => {})).rejects.toThrow(/existing.*database.*restore/i);
+  expect(await readFile(database, 'utf8')).toBe('existing encrypted provider state');
+  expect(await readdir(stateDir)).toEqual(['freellmapi']);
+  expect(logins).toEqual([]);
 });

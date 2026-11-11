@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -366,6 +366,15 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
   try {
     await squire.connect();
     const saved = await readLocalAdmin();
+    if (!saved && process.env.MILO_ROUTER_RUNTIME !== 'docker') {
+      const database = join(dirname(localAdminPath()), 'freellmapi', 'router.db');
+      let exists = false;
+      try { await lstat(database); exists = true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot inspect the existing router database; setup stopped');
+      }
+      if (exists) throw new Error('Existing router database has no local encryption key. Restore its original private router login before rerunning setup');
+    }
     const admin = saved ?? { password: randomBytes(32).toString('hex'), encryption: randomBytes(32).toString('hex') };
     if (process.env.MILO_ROUTER_RUNTIME === 'docker') {
       await ensureRouter(admin.password, admin.encryption, argsWithEnv, !saved);
