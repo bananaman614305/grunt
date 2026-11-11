@@ -14,13 +14,14 @@ const backend = serve({ hostname: '127.0.0.1', port: 0, fetch: async request => 
   events.push(path);
   if (path === '/api/auth/login') { login++; return Response.json({ token: 'synthetic-admin' }); }
   if (path === '/api/keys') return Response.json([]);
+  if (path === '/api/keys/custom/discover-models') return Response.json({ models: [{ id: 'openai/gpt-oss-120b' }] });
   if (path === '/api/keys/custom') {
     assert.equal(body.apiKey, 'synthetic-grant');
-    assert.equal(body.baseUrl, 'https://egress.example.test/v1');
-    assert.equal(body.models[0].model, 'llama-3.3-70b-versatile');
+    assert.equal(body.baseUrl, 'https://egress.example.test/v1/openai/v1');
+    assert.equal(body.models[0].model, 'openai/gpt-oss-120b');
     return Response.json({});
   }
-  if (path === '/api/fallback') return Response.json(request.method === 'GET' ? [{ modelDbId: 1, platform: 'custom', modelId: 'llama-3.3-70b-versatile', keyLabel: 'Milo groq (Squire)', priority: 1 }] : {});
+  if (path === '/api/fallback') return Response.json(request.method === 'GET' ? [{ modelDbId: 1, platform: 'custom', modelId: 'openai/gpt-oss-120b', keyLabel: 'Milo groq (Squire)', priority: 1 }] : {});
   if (path === '/api/settings/api-key') return Response.json({ apiKey: 'synthetic-router' });
   if (path === '/v1/models') return Response.json({ data: [] });
   if (path === '/v1/chat/completions') {
@@ -54,13 +55,23 @@ await server.connect(new StdioServerTransport());
 `);
 await writeFile(hook, `
 import { StdioClientTransport } from ${JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/client/stdio.js'))};
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { promisify } from 'node:util';
+const originalExec = childProcess.execFile;
+childProcess.execFile = function(binary, args, options, callback) {
+  if (args?.includes('--input-type=module')) { const cb = typeof options === 'function' ? options : callback; queueMicrotask(() => cb(null, 'present', '')); return { on() {} }; }
+  return originalExec(binary, args, options, callback);
+};
+childProcess.execFile[promisify.custom] = async (binary, args, options) => args?.includes('--input-type=module') ? { stdout: 'present', stderr: '' } : promisify(originalExec)(binary, args, options);
+syncBuiltinESMExports();
 const start = StdioClientTransport.prototype.start;
 StdioClientTransport.prototype.start = function() { this._serverParams.args = [${JSON.stringify(broker)}]; return start.call(this); };
 `);
 for (const [name, content] of Object.entries({
   docker: '#!/bin/sh\nif [ "$1" = inspect ]; then echo 1; fi\nif [ "$1" = run ] && [ "$2" = --rm ]; then echo empty; fi\nexit 0\n',
   opencode: '#!/bin/sh\nexit 0\n',
-  npm: `#!/bin/sh\nln -s ${JSON.stringify(join(root, 'node_modules'))} "$3/node_modules"\n`,
+  npm: `#!/bin/sh\nif [ \"$1\" = --version ]; then echo 10; exit 0; fi\nln -s ${JSON.stringify(join(root, 'node_modules'))} "$3/node_modules"\n`,
   systemctl: `#!/bin/sh\nif [ "$2" = restart ]; then touch ${JSON.stringify(marker)}; fi\nexit 0\n`
 })) { await writeFile(join(bin, name), content); await chmod(join(bin, name), 0o755); }
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, MILO_CONFIG_DIR: state, MILO_ROUTER_RUNTIME: 'docker', XDG_CONFIG_HOME: join(dir, 'config'), PI_CODING_AGENT_DIR: pi, MILO_FREELLMAPI_URL: routerUrl, MILO_PORT: String(port), MILO_SOURCES: 'freellmapi', MILO_FREEBUFF_BRIDGE: '0', NODE_OPTIONS: `--import=${hook}` };

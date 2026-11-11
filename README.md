@@ -150,12 +150,17 @@ Trusty Squire. It reuses your Squire connection, lets you select Groq or Cerebra
 installs FreeLLMAPI, writes a persistent background service and adds the `milo`
 provider to Pi. It sends a real request through that service before printing
 “Milo is ready” and exits. Run `pi`, open `/model`, and choose **milo**.
+Before making changes, setup checks Node, npm, Pi, tar and the user service
+manager. A missing prerequisite prints its install or repair step and stops.
 
 Existing vault API keys are reused. Missing keys are created through Squire's
 browser and captured directly into its vault. Human verification opens a browser
-handoff. Provider refusals stop setup. Milo calls `grant_app_access` and sends only
+handoff, including email confirmation, and signup resumes in that same session.
+Provider refusals stop setup. Milo calls `grant_app_access` and sends only
 the grant's base URL and bearer token to FreeLLMAPI's custom-provider endpoint.
-Provider keys stay in Squire; no provider reveal approval is requested.
+Provider keys stay in Squire; no provider reveal approval is requested. Groq
+uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
+currently available chat models through that grant before registering one.
 `milo add groq` or `milo add cerebras` connects another provider through the same flow.
 
 When no Squire session exists, the wizard runs Squire's own connect installer

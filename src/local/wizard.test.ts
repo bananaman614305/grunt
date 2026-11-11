@@ -2,10 +2,11 @@ import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { configurePi } from './wizard.js';
+import { BrowserSquire } from './setup.js';
+import { configurePi, connectSquire, preflight } from './wizard.js';
 
 let dir: string;
-afterEach(async () => { vi.unstubAllEnvs(); if (dir) await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); if (dir) await rm(dir, { recursive: true, force: true }); });
 it('adds the Pi provider without removing user providers and preserves it on repeat setup', async () => {
   dir = await mkdtemp(join(tmpdir(), 'milo-pi-test-'));
   vi.stubEnv('PI_CODING_AGENT_DIR', dir);
@@ -20,4 +21,24 @@ it('adds the Pi provider without removing user providers and preserves it on rep
   await writeFile(path, '{invalid');
   await expect(configurePi()).rejects.toThrow('Cannot read Pi');
   expect(await readFile(path, 'utf8')).toBe('{invalid');
+});
+
+it('bootstraps a fresh Squire install before connecting, and leaves an existing session alone', async () => {
+  const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
+  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
+  const run = vi.fn(async () => {});
+  await connectSquire({ hasSession: async () => false, run, installer: '/fixture/bin.js' });
+  expect(run).toHaveBeenCalledWith(process.execPath, [expect.stringContaining('bin.js'), 'connect', '--target=opencode', '--json'], true);
+  expect(connect).toHaveBeenCalledOnce();
+  run.mockClear();
+  await connectSquire({ hasSession: async () => true, run });
+  expect(run).not.toHaveBeenCalled();
+  vi.stubEnv('MILO_SETUP_NO_HUMAN', '1');
+  await expect(connectSquire({ hasSession: async () => false, run, installer: '/fixture/bin.js' })).rejects.toThrow('stopped before onboarding');
+  expect(run).not.toHaveBeenCalled();
+});
+it('stops at a missing prerequisite with its fix before Squire or service changes', async () => {
+  const run = vi.fn(async (binary: string) => { if (binary === 'pi') throw new Error('missing'); });
+  await expect(preflight(run)).rejects.toThrow('npm install --global @mariozechner/pi-coding-agent');
+  expect(run.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'pi']);
 });

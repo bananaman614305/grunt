@@ -204,9 +204,9 @@ it('recovers an interrupted router installation using the supplied local admin c
   expect(unrelated).toHaveBeenCalledTimes(1);
 });
 
-it('shares a human verification step and resumes signup in the same browser session', async () => {
+it.each(['captcha', 'email confirmation'])('shares %s and resumes signup in the same browser session', async field => {
   const squire = new BrowserSquire();
-  const call = vi.spyOn(squire, 'call').mockResolvedValueOnce({ status: 'needs_value', field: 'captcha', session_id: 'signup', remaining: 'Complete a captcha' })
+  const call = vi.spyOn(squire, 'call').mockResolvedValueOnce({ status: 'needs_value', field, session_id: 'signup', remaining: `Complete ${field}` })
     .mockResolvedValue({ status: 'complete', session_id: 'signup' });
   const handoff = vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.example.test');
   const output = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -215,4 +215,14 @@ it('shares a human verification step and resumes signup in the same browser sess
   expect(await squire.runs.get('groq')).toMatchObject({ state: 'completed' });
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'signup' }));
   expect(output).toHaveBeenCalledWith(expect.stringContaining('https://handoff.example.test'));
+});
+
+it('registers the provider API path beneath a Squire egress root and rejects legacy bare-root entries', async () => {
+  const admin = new FreeLLMAdmin();
+  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Milo groq (Squire)', baseUrl: 'https://egress.test/g_123' }]);
+  expect(await admin.hasKey('groq')).toBe(false);
+  await admin.addGrant('groq', { base_url: 'https://egress.test/g_123', token: 'synthetic-grant' });
+  expect(call).toHaveBeenCalledWith('/keys/custom', expect.objectContaining({ baseUrl: 'https://egress.test/g_123/openai/v1', apiKey: 'synthetic-grant', models: [{ model: 'openai/gpt-oss-120b', supportsTools: true }] }));
+  call.mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Milo groq (Squire)', baseUrl: 'https://egress.test/g_123/openai/v1', models: [{ modelId: 'openai/gpt-oss-120b' }] }]);
+  expect(await admin.hasKey('groq')).toBe(true);
 });

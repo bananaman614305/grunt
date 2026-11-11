@@ -18,7 +18,7 @@ vi.mock('node:readline/promises', () => ({ createInterface: () => ({ question, c
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 let stateDir: string;
 let installed: boolean, volume: boolean, storedKeys: boolean, legacyAdmin: boolean;
-let keys: { id: number; platform: string; label: string }[];
+let keys: { id: number; platform: string; label: string; baseUrl?: string }[];
 let logins: string[];
 let squireCall: ReturnType<typeof vi.spyOn>;
 beforeEach(async () => {
@@ -58,7 +58,8 @@ beforeEach(async () => {
   vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(async (path, body, method) => {
     if (path === '/auth/login') { logins.push((body as { password: string }).password); return { token: 'synthetic-login' }; }
     if (path === '/keys' && method === 'GET') return keys;
-    if (path === '/keys/custom') { keys.push({ id: 1, platform: 'custom', label: (body as { label: string }).label }); return {}; }
+    if (path === '/keys/custom/discover-models') return { models: [{ id: 'openai/gpt-oss-120b' }] };
+    if (path === '/keys/custom') { keys.push({ id: 1, platform: 'custom', label: (body as { label: string }).label, baseUrl: (body as { baseUrl: string }).baseUrl }); return {}; }
     if (path.startsWith('/keys/')) return {};
     if (path === '/fallback' && method === 'GET') return [];
     if (path === '/settings/api-key') return { apiKey: 'synthetic-router-key' };

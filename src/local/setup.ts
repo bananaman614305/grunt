@@ -102,18 +102,21 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
+export function squireEnvironment() {
+  return {
+      ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+      ...(process.env.MILO_SQUIRE_HOME ? { HOME: process.env.MILO_SQUIRE_HOME, XDG_CONFIG_HOME: join(process.env.MILO_SQUIRE_HOME, '.config') } : {}),
+      ...(process.env.MILO_SQUIRE_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: process.env.MILO_SQUIRE_XDG_CONFIG_HOME } : {}),
+      TRUSTY_SQUIRE_AGENT_IDENTITY: 'Milo setup'
+  };
+}
 export class BrowserSquire implements SetupSquire {
   private client = new Client({ name: 'Milo setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
   private handoffs: { url: string; close(): void }[] = [];
   async connect() {
     const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
-    const env = {
-      ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
-      ...(process.env.MILO_SQUIRE_HOME ? { HOME: process.env.MILO_SQUIRE_HOME, XDG_CONFIG_HOME: join(process.env.MILO_SQUIRE_HOME, '.config') } : {}),
-      ...(process.env.MILO_SQUIRE_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: process.env.MILO_SQUIRE_XDG_CONFIG_HOME } : {}),
-      TRUSTY_SQUIRE_AGENT_IDENTITY: 'Milo setup'
-    };
+    const env = squireEnvironment();
     // Squire owns its account binding and vault. Milo never reads its files.
     const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'pipe', env });
     let lastLine = '', partialLine = '';
@@ -193,7 +196,7 @@ export class BrowserSquire implements SetupSquire {
       if (id) { await this.call('operate_finish', { session_id: id, outcome: 'result', summary: 'Milo provider key stored in user vault' }); this.sessions.delete(provider); }
       return { run: { id: provider, state: 'completed' }, decision: 'silent' };
     }
-    const humanStep = /\b(?:sms|phone|captcha|passkey|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
+    const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
     if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
     if (humanStep && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
     if (humanStep && this.sessions.has(provider)) {
@@ -220,6 +223,8 @@ export class BrowserSquire implements SetupSquire {
   async close() { for (const handoff of this.handoffs) handoff.close(); await this.client.close(); }
 }
 
+const providerPath = (provider: string) => provider === 'groq' ? '/openai/v1' : '/v1';
+
 export class FreeLLMAdmin {
   private token = '';
   readonly url: string;
@@ -231,14 +236,27 @@ export class FreeLLMAdmin {
   }
   async login(password: string) { this.token = (await this.call('/auth/login', { email: 'milo@localhost.local', password })).token; }
   async hasKey(platform: string) {
-    const keys = await this.call('/keys', undefined, 'GET') as { platform: string; label: string }[];
-    return keys.some(key => key.platform === 'custom' && key.label === `Milo ${platform} (Squire)`);
+    const keys = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string; baseUrl?: string; models?: { modelId: string }[] }[];
+    const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${platform} (Squire)` && key.baseUrl?.endsWith(providerPath(platform)));
+    if (!key || !key.models?.length) return false;
+    const discovery = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
+    return key.models.some(model => discovery.models.some(available => available.id === model.modelId));
   }
   async addGrant(platform: string, grant: { base_url: string; token: string }) {
     // Custom endpoints bind the grant URL and token to their own model rows.
-    const model = platform === 'groq' ? 'llama-3.3-70b-versatile' : 'gpt-oss-120b';
-    await this.call('/keys/custom', { baseUrl: grant.base_url, apiKey: grant.token,
-      label: `Milo ${platform} (Squire)`, models: [{ model, supportsTools: true }] });
+    const baseUrl = grant.base_url.replace(/\/$/, '') + providerPath(platform);
+    const label = `Milo ${platform} (Squire)`;
+    const discovery = await this.call('/keys/custom/discover-models', { baseUrl, apiKey: grant.token }) as { models: { id: string }[] };
+    const available = new Set(discovery.models.map(model => model.id));
+    const model = ['openai/gpt-oss-120b', 'gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'].find(id => available.has(id));
+    if (!model) throw new Error(`No supported chat model is currently available from ${platform}`);
+
+    const previous = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string; baseUrl?: string }[];
+    await this.call('/keys/custom', { baseUrl, apiKey: grant.token,
+      label, models: [{ model, supportsTools: true }] });
+    for (const key of previous) {
+      if (Number.isInteger(key.id) && key.platform === 'custom' && key.label === label && key.baseUrl !== baseUrl) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
+    }
   }
   async configureChain(excluded: string[] = []) {
     const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null }[];
