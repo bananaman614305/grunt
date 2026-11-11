@@ -24,6 +24,7 @@ let squireCall: ReturnType<typeof vi.spyOn>;
 beforeEach(async () => {
   stateDir = await mkdtemp(join(tmpdir(), 'milo-setup-test-'));
   vi.stubEnv('MILO_CONFIG_DIR', stateDir);
+  vi.stubEnv('MILO_ROUTER_RUNTIME', 'docker');
   vi.stubEnv('XDG_CONFIG_HOME', stateDir);
   Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
   installed = false; volume = false; storedKeys = false; legacyAdmin = true; keys = []; logins = [];

@@ -63,7 +63,7 @@ for (const [name, content] of Object.entries({
   npm: `#!/bin/sh\nln -s ${JSON.stringify(join(root, 'node_modules'))} "$3/node_modules"\n`,
   systemctl: `#!/bin/sh\nif [ "$2" = restart ]; then touch ${JSON.stringify(marker)}; fi\nexit 0\n`
 })) { await writeFile(join(bin, name), content); await chmod(join(bin, name), 0o755); }
-const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, MILO_CONFIG_DIR: state, XDG_CONFIG_HOME: join(dir, 'config'), PI_CODING_AGENT_DIR: pi, MILO_FREELLMAPI_URL: routerUrl, MILO_PORT: String(port), MILO_SOURCES: 'freellmapi', MILO_FREEBUFF_BRIDGE: '0', NODE_OPTIONS: `--import=${hook}` };
+const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, MILO_CONFIG_DIR: state, MILO_ROUTER_RUNTIME: 'docker', XDG_CONFIG_HOME: join(dir, 'config'), PI_CODING_AGENT_DIR: pi, MILO_FREELLMAPI_URL: routerUrl, MILO_PORT: String(port), MILO_SOURCES: 'freellmapi', MILO_FREEBUFF_BRIDGE: '0', NODE_OPTIONS: `--import=${hook}` };
 let logs = '';
 async function startDaemon() {
   const child = spawn(process.execPath, [join(state, 'runtime/dist/local/main.js')], { env: { ...env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });

@@ -154,7 +154,7 @@ it('disables removed SMS providers and a newly dropped provider in the router ch
     { modelDbId: 1, enabled: false, priority: 1 },
     { modelDbId: 2, enabled: false, priority: 2 },
     { modelDbId: 3, enabled: false, priority: 3 },
-    { modelDbId: 4, enabled: true, priority: 999999 }
+    { modelDbId: 4, enabled: false, priority: 999999 }
   ], 'PUT');
 });
 

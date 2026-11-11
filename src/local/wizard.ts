@@ -26,6 +26,7 @@ export async function connectSquire() {
   try { await squire.connect(); }
   catch (error) {
     if (!(error instanceof Error) || !/no.*session|missing.*session|not connected|not signed|connect.*first/i.test(error.message)) throw error;
+    if (process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
     // Squire owns login and service installation. No account files enter Milo.
     const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
     await command(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true);
@@ -63,20 +64,24 @@ export async function installService() {
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = process.env.MILO_PORT || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid Milo service port');
-  const env: Record<string, string> = { MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: 'freellmapi,opencode', PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  const env: Record<string, string> = { MILO_FREELLMAPI_URL: process.env.MILO_FREELLMAPI_URL || 'http://127.0.0.1:3001/v1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: 'freellmapi,opencode', PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  await installBackgroundService('milo', entry, env);
+}
+export async function installBackgroundService(name: string, entry: string, env: Record<string, string>) {
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid service name');
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
     await mkdir(units, { recursive: true });
-    await writeFile(join(units, 'milo.service'), `[Unit]\nDescription=Milo model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
+    await writeFile(join(units, `${name}.service`), `[Unit]\nDescription=Milo model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
     await command('systemctl', ['--user', 'daemon-reload']);
-    await command('systemctl', ['--user', 'enable', 'milo.service']);
-    await command('systemctl', ['--user', 'restart', 'milo.service']);
+    await command('systemctl', ['--user', 'enable', `${name}.service`]);
+    await command('systemctl', ['--user', 'restart', `${name}.service`]);
   } else {
     const agents = join(homedir(), 'Library', 'LaunchAgents');
     await mkdir(agents, { recursive: true });
-    const plist = join(agents, 'ai.milo.service.plist'), domain = `gui/${process.getuid!()}`;
-    await writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.milo.service</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(entry)}</string></array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer></dict></plist>`, { mode: 0o600 });
-    await command('launchctl', ['bootout', `${domain}/ai.milo.service`]).catch(() => {});
+    const plist = join(agents, `ai.${name}.service.plist`), domain = `gui/${process.getuid!()}`;
+    await writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.${name}.service</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(entry)}</string></array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer></dict></plist>`, { mode: 0o600 });
+    await command('launchctl', ['bootout', `${domain}/ai.${name}.service`]).catch(() => {});
     await command('launchctl', ['bootstrap', domain, plist]);
   }
 }
@@ -94,7 +99,7 @@ export async function checkService(port = 8788) {
 }
 export async function wizard(add?: string) {
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
-  intro(chalk.hex('#cf3a52').bold('Milo') + chalk.dim(' — setup'));
+  intro(chalk.hex('#cf3a52').bold('Milo') + chalk.dim(' — npx usemilo setup'));
   await step('Trusty Squire', connectSquire);
   let providers = add ? [add] : undefined;
   if (!providers) {

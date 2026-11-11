@@ -195,6 +195,7 @@ export class BrowserSquire implements SetupSquire {
     }
     const humanStep = /\b(?:sms|phone|captcha|passkey|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
     if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
+    if (humanStep && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
     if (humanStep && this.sessions.has(provider)) {
       const url = await this.humanHandoff(this.sessions.get(provider)!);
       console.log(`Complete ${provider} verification in this browser: ${url}`);
@@ -242,7 +243,7 @@ export class FreeLLMAdmin {
   async configureChain(excluded: string[] = []) {
     const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null }[];
     const rows = chain.map(row => ({ modelDbId: row.modelDbId,
-      enabled: row.platform === 'custom' && (['kilo-auto/free', 'freebuff'].includes(row.modelId) || Object.keys(PROVIDERS).some(provider => !excluded.includes(provider) && row.keyLabel === `Milo ${provider} (Squire)`)),
+      enabled: row.platform === 'custom' && Object.keys(PROVIDERS).some(provider => !excluded.includes(provider) && row.keyLabel === `Milo ${provider} (Squire)`),
       priority: row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : Math.min(row.priority, 999000) }));
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
@@ -270,7 +271,7 @@ export async function ensureRouter(password: string, encryption: string, run: Do
   let owner: string | undefined;
   try { owner = (await run(['inspect', '--format', '{{ index .Config.Labels "io.milo.router" }}', 'milo-freellmapi'])).stdout.trim(); }
   catch (error) {
-    if (!/No such (object|container)/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Docker is unavailable; start Docker and resume milo setup');
+    if (!/No such (object|container)/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Docker is unavailable. Install and start Docker Desktop, then run npx usemilo setup again');
   }
   if (owner !== undefined) {
     if (owner !== '1') throw new Error('The milo-freellmapi container belongs to another installation; setup stopped');
@@ -348,8 +349,14 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
     await squire.connect();
     const saved = await readLocalAdmin();
     const admin = saved ?? { password: randomBytes(32).toString('hex'), encryption: randomBytes(32).toString('hex') };
-    await ensureRouter(admin.password, admin.encryption, argsWithEnv, !saved);
-    if (!saved) await saveLocalAdmin(admin);
+    if (process.env.MILO_ROUTER_RUNTIME === 'docker') {
+      await ensureRouter(admin.password, admin.encryption, argsWithEnv, !saved);
+      if (!saved) await saveLocalAdmin(admin);
+    } else {
+      if (!saved) await saveLocalAdmin(admin);
+      const { ensureNativeRouter } = await import('./native-router.js');
+      await ensureNativeRouter();
+    }
     let ready = false;
     for (let attempt = 0; attempt < 60; attempt++) {
       try { await router.login(admin.password); ready = true; break; } catch { await delay(1000); }
@@ -365,6 +372,6 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
     // Child-process and SDK errors may contain request data. Keep those local.
     if (error instanceof SetupPending) throw new Error('Squire approval remains pending; resume milo setup after approval');
     if (error instanceof Error && !('cmd' in error)) throw error;
-    throw new Error('FreeLLMAPI installation failed; check Docker availability and resume milo setup');
+    throw new Error('FreeLLMAPI installation failed; check Node and npm availability and run npx usemilo setup again');
   } finally { await squire.close(); }
 }

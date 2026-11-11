@@ -115,14 +115,14 @@ removed. There is no Jev, billing, roster service, worker tooling or monorepo.
 
 ## Use Milo as your harness's model
 
-Run the separate local daemon on your own machine (Node 22+, Linux Docker,
+Run the separate local daemon on your own machine (Node 22+, Linux or macOS,
 `opencode` on PATH, and `tmux` with an existing logged-in `freebuff` for the last fallback):
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
 node dist/local/main.js setup
-# Installed package: milo setup (milo-local setup also works).
+# Published package: npx usemilo setup; installed bin: milo.
 # Freebuff alone, without API setup: MILO_SOURCES=freebuff node dist/local/main.js
 ```
 
@@ -145,7 +145,7 @@ error rather than silently losing context.
 
 ### Free API and account setup
 
-`milo setup` runs a Clack terminal wizard using the same rail and wine accent as
+`npx usemilo setup` runs a Clack terminal wizard using the same rail and wine accent as
 Trusty Squire. It reuses your Squire connection, lets you select Groq or Cerebras,
 installs FreeLLMAPI, writes a persistent background service and adds the `milo`
 provider to Pi. It sends a real request through that service before printing
@@ -176,11 +176,20 @@ unavailable. Setup keeps a runtime outside the npx cache, so cache cleanup does
 not remove the service. Pi's other providers are preserved. `PI_CODING_AGENT_DIR`
 selects a nondefault Pi agent directory.
 
-Setup needs Docker running and a working user service manager: systemd on
-Linux or launchd on macOS. On macOS the container publishes only its loopback
-port; the optional Freebuff bridge is available only with Linux host networking. Setup creates container `milo-freellmapi` and volume
-`milo-freellmapi-data`. `MILO_SQUIRE_HOME` and `MILO_SQUIRE_XDG_CONFIG_HOME` can
-select an existing Squire home without relocating Milo state.
+Setup installs the pinned FreeLLMAPI Node server as a separate background service;
+Docker is not required. Linux uses systemd user units; macOS uses launchd
+(macOS remains untested). The router data and private login live under Milo's
+config directory. `MILO_FREELLMAPI_URL` chooses its numeric loopback address and
+is saved in Milo's service configuration. The router's database is created under
+umask `0077`. `MILO_ROUTER_RUNTIME=docker` retains the older Docker installer for
+existing installations and offline regression checks.
+
+`MILO_SQUIRE_HOME` and `MILO_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
+home without relocating Milo state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
+onboarding or browser handoff if human verification would be needed.
+
+The package is `usemilo` (version `0.4.0`); the installed command remains `milo`.
+This change prepares the package for publication after merge; it does not publish.
 
 Free API calls go to `http://127.0.0.1:3001/v1` through FreeLLMAPI, including
 provider failover. There is no direct OpenRouter free API route. An already
