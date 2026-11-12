@@ -163,6 +163,18 @@ it('answers housekeeping locally before starting any source', async () => {
   }
   expect(complete).toHaveBeenCalledTimes(3);
 });
+it('answers through Freebuff when freebuff doctor takes longer than 5 seconds', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'milo-slow-doctor-'));
+  const driver = new Freebuff({home:dir, startup:200, poll:20, timeout:15000});
+  try {
+    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir,'freebuff')); await chmod(join(dir,'freebuff'),0o755);
+    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('MILO_TEST_HOME',dir); vi.stubEnv('MILO_TEST_DOCTOR_DELAY','5500');
+    const response = await createLocalApp(new Sources([driver])).request('http://localhost:8788/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'freebuff',cwd:dir,messages:[{role:'user',content:'slow doctor'}]})});
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Grunt-Source')).toBe('freebuff');
+    expect((await response.json()).choices[0].message.content).toBe('slow doctor');
+  } finally { vi.stubEnv('MILO_TEST_DOCTOR_DELAY',''); await driver.close(); await rm(dir,{recursive:true,force:true}); }
+}, 30000);
 it.each(['missing','unreadable'])('recovers a %s continuation, matches CR turns, resumes chats and stops on refusal', async state => {
   const dir = await mkdtemp(join(tmpdir(), 'milo-resume-'));
   const { readdir } = await import('node:fs/promises');

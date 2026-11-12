@@ -4,6 +4,7 @@ import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BrowserSquire } from './setup.js';
 import { OpenCode } from './opencode.js';
+import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
 import type { Source } from './source.js';
 
@@ -38,7 +39,7 @@ export async function loginFreebuff(squire: Signup, signal?: AbortSignal) {
   } finally { clearTimeout(timer); child.kill(); }
 }
 export async function freebuffSignedIn() {
-  const { stdout } = await exec('freebuff', ['doctor'], { timeout: 10000, maxBuffer: 65536 });
+  const { stdout } = await exec('freebuff', ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536 });
   if (/not signed in|logged.?out|login required/i.test(stdout)) return false;
   if (!/Freebuff doctor/i.test(stdout)) throw new Error('Unrecognized Freebuff diagnostics; run freebuff doctor');
   return true;
