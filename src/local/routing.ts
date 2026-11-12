@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
-import { SourceError } from './source.js';
+import { SourceError, answeredBy } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import type { Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -83,6 +83,7 @@ export class StickyRouter {
           const input = task.switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
           const result = await selected.source.complete(input, signal);
           task.failures = 0; task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
+          answeredBy.set(result, selected.source.id);
           return result;
         } catch (error) {
           signal.throwIfAborted();
