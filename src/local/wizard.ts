@@ -1,6 +1,6 @@
 import { promisify } from 'node:util';
 import { spawn, execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile, rename, cp, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, cp, mkdtemp, rm, access } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -25,28 +25,41 @@ async function step<T>(label: string, task: () => Promise<T>): Promise<T> {
   try { const result = await task(); progress.stop(label); return result; }
   catch (error) { progress.stop(`${label} failed`); throw error; }
 }
-export async function squireSessionExists() {
-  const sessionModule = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'session.js');
-  const program = `const {openSessionStorage} = await import(${JSON.stringify(pathToFileURL(sessionModule).href)}); process.stdout.write((await (await openSessionStorage()).read()) ? 'present' : 'missing');`;
+export async function squireBrokerExists() {
+  const service = process.platform === 'darwin'
+    ? ['launchctl', ['print', `gui/${process.getuid!()}/ai.trustysquire.trusty-squire-broker`]] as const
+    : ['systemctl', ['--user', 'is-active', 'trusty-squire-broker']] as const;
+  try { await promisify(execFile)(service[0], [...service[1]], { timeout: 10000 }); return true; }
+  catch { /* An inactive service can still own the broker installation. */ }
+  if (process.platform === 'linux') {
+    try {
+      const { stdout } = await promisify(execFile)('systemctl', ['--user', 'list-unit-files', 'trusty-squire-broker*.service', '--no-legend', '--no-pager'], { timeout: 10000 });
+      if (/^trusty-squire-broker\S*\.service\s/m.test(stdout)) return true;
+    } catch { /* Socket discovery remains available without a service manager. */ }
+  }
+  const home = homedir();
+  const serviceFile = process.platform === 'darwin'
+    ? join(home, 'Library', 'LaunchAgents', 'ai.trustysquire.trusty-squire-broker.plist')
+    : join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'systemd', 'user', 'trusty-squire-broker.service');
+  try { await access(serviceFile); return true; } catch { /* Check socket discovery too. */ }
+  const discovery = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bot/broker/discovery.js');
+  const program = `const {brokerSocketPath} = await import(${JSON.stringify(pathToFileURL(discovery).href)}); const {existsSync} = await import('node:fs'); process.stdout.write(existsSync(brokerSocketPath()) ? 'present' : 'missing');`;
   const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', program], { env: squireEnvironment(), timeout: 10000 });
   return result.stdout === 'present';
 }
-export async function connectSquire(options: { hasSession?: () => Promise<boolean>; run?: typeof command; installer?: string } = {}) {
-  const run = options.run || command;
-  const install = async () => {
-    if (process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
-    // The bundled installer owns account creation and broker service installation.
-    const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
-    await run(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true);
-  };
-  const existing = await (options.hasSession || squireSessionExists)();
-  if (!existing) await install();
+export async function connectSquire(options: { hasBroker?: () => Promise<boolean>; run?: typeof command; installer?: string } = {}) {
   const probe = async () => { const squire = new BrowserSquire(); try { await squire.connect(); } finally { await squire.close(); } };
-  try { await probe(); }
+  try { await probe(); return; }
   catch (error) {
-    if (!existing) throw error;
-    await install(); await probe();
+    if (await (options.hasBroker || squireBrokerExists)()) {
+      throw new Error(`Existing trusty-squire-broker failed its connection probe: ${error instanceof Error ? error.message : String(error)}. Repair the broker, then rerun usegrunt setup.`, { cause: error });
+    }
   }
+  if (process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
+  // Only a machine without a broker may enter the installer.
+  const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
+  await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true);
+  await probe();
 }
 export async function preflight(run = command) {
   const major = Number(process.versions.node.split('.')[0]);
