@@ -151,22 +151,20 @@ error rather than silently losing context.
 
 ### Free API and account setup
 
-`npx usegrunt setup` runs a Clack terminal wizard using the same rail and wine accent as
-Trusty Squire. It reuses your Squire connection, lets you select Groq or Cerebras,
-installs FreeLLMAPI, Freebuff and OpenCode, writes a persistent background service and adds the `milo`
-provider to Pi. It sends a real request through that service before printing
-“grunt is ready” and exits. Run `pi`, open `/model`, and choose **milo**.
-Setup checks Freebuff's local sign-in and completes its CLI pairing through Squire's
-browser when needed. If tmux is missing, setup installs it through Homebrew, apt or dnf (sudo may prompt in the terminal).
-The grunt service starts the Freebuff loopback bridge. OpenCode's free model must
-answer a probe; anonymous access needs no account. If it returns an authentication
-error, setup reuses or creates free OpenCode access through Squire and saves only
-an app grant in a private OpenCode config. A refusal or failed fallback check
-prints a repair step and setup continues with the other routes. The final message
-lists any incomplete fallbacks. Rerunning setup keeps Kilo and Freebuff enabled
-as the last fallbacks and preserves the enabled state and priority of other backups.
-Free routes run their own tools in the working directory with your filesystem
-permissions; free model providers may retain prompts.
+`npx usegrunt` (or `npx usegrunt setup`) starts the terminal wizard. It installs
+and connects the local Trusty Squire broker; one Google sign-in establishes the
+browser session used for free-service signups. Setup reads the adapter registry,
+installs Freebuff and OpenCode, checks sign-in, installs the grunt background
+service, and adds the **grunt** provider to Pi at `http://127.0.0.1:8788/v1`.
+Each adapter gets a verification task and a PASS/FAIL line. Incomplete setup
+exits unsuccessfully with a repair step; rerun it to resume. Run `pi`, open
+`/model`, and choose **grunt**. For a foreground daemon, run `usegrunt serve`.
+
+Freebuff pairs its CLI through Squire's browser. Setup installs tmux when
+needed. OpenCode first tries its free model without an account and requests
+sign-in only if that model requires it. Captcha, passkey and email verification
+show a browser handoff and wait for the user to resume. Existing accounts are
+reused; no extra Google accounts are created.
 
 Before making changes, setup checks Node, npm, Pi, tar and the user service
 manager. A missing prerequisite prints its install or repair step and stops.
@@ -214,7 +212,7 @@ onboarding or browser handoff if human verification would be needed.
 The package is `usegrunt` (version `0.5.0`); the installed command is `usegrunt`.
 This change prepares the package for publication after merge; it does not publish.
 
-Free API calls go to `http://127.0.0.1:3001/v1` through FreeLLMAPI, including
+Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
 provider failover. There is no direct OpenRouter free API route. An already
 configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
 `MILO_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
@@ -336,7 +334,7 @@ Run `codex`. See the [official configuration reference](https://learn.chatgpt.co
 Codex is opt-in. With the official `codex` CLI already signed in using ChatGPT,
 set `MILO_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
 spends your Codex plan allowance, including the weekly limit. Without
-`MILO_SOURCES`, grunt uses only `freellmapi,opencode,kilo` and never launches Codex.
+`MILO_SOURCES`, grunt uses only Freebuff and OpenCode and never launches Codex.
 With Codex enabled, select model `codex` to use only Codex.
 API-key logins do not enable this source. Missing or signed-out Codex is omitted
 from `/v1/models`; grunt continues through the free chain on usage limits.
@@ -351,15 +349,50 @@ Codex default back at grunt, which would create a routing loop.
 
 ### Sources and app sessions
 
-The default source order is `freellmapi,opencode,kilo`. Set `MILO_SOURCES` to
-choose sources in your preferred order; Codex runs only when listed. An explicit
-model selects just that source. Freebuff is last inside FreeLLMAPI's chain and
-can also be selected directly with `MILO_SOURCES=freebuff`. The former
-`MILO_GATEWAY_URL` and `MILO_GATEWAY_KEY` no longer configure the local free API
-path. Redirects are refused. The Fly-side API and personal-agent routing remain
-separate from this local daemon.
+The launch registry contains Freebuff and OpenCode with equal selection
+probability after renormalization. Both adapters currently support text only.
+Pi remains the harness. Each new user turn starts a task keyed by the canonical
+working directory and user history. Tool results and retries keep the same
+adapter. No usage counters switch it ahead of quota exhaustion.
 
-Only the latest user text is pasted into Freebuff, without system/developer prompts, tools, results, or known harness context envelopes. Title, summary, topic and warm-up requests are answered locally; classification and the selected working directory are logged. Side-call detection uses system/developer instructions, including Claude Code's recorded session-naming prompt; an ordinary user request for a summary still reaches the source. Detection remains heuristic.
+A quota error switches immediately and bars that adapter until Retry-After,
+or one hour. Three consecutive upstream failures or timeouts in a task bar it
+for fifteen minutes. A missing installation or expired login bars it until a
+successful health check. Cancellation and provider refusal do not switch.
+When no eligible adapter remains, the API returns HTTP 429 and, when known,
+the earliest Retry-After. Agent adapters return final text, so streaming headers
+are sent after completion; quota failures retain their HTTP status.
+
+On handoff, the next adapter receives the original task, working-tree status,
+the diff against a task-start `git stash create` checkpoint, the previous
+adapter's last four KB of output, and an instruction to continue without
+restarting. The checkpoint creates no branch commit or stash entry. Outside a
+git repository, only task text and output are sent.
+
+The owner curates `registry/adapters.json`. The **Publish adapter registry**
+workflow accepts manual dispatch only by `lunchboxfortwo` on `main`, validates
+the registry, uploads it atomically to the Fly gateway volume, and checks
+`GET /v1/registry`. Ordinary code deployments do not publish registry edits.
+Before the first dispatch the endpoint returns HTTP 503. Published data
+survives deploys and has an ETag. Stable weights total (0.8) and experimental
+weights total (0.2) when both tiers are present. Unknown adapter identifiers
+are ignored locally and cannot install new code.
+
+The daemon synchronizes on startup and every twenty-four hours with
+If-None-Match. It writes the valid registry and ETag atomically in a private
+`registry.json` in its existing config directory. A gateway or cache failure
+keeps the last good list, falling back to the packaged list on a fresh install.
+Known adapters are installed and checked during sync; removing a registry entry
+disables it without uninstalling its files. The legacy `MILO_CONFIG_DIR` and
+`MILO_PORT` settings remain supported. `GRUNT_REGISTRY_URL` overrides the sync
+endpoint for local development.
+
+Explicit `MILO_SOURCES` configurations containing legacy sources such as Dots,
+Codex or FreeLLMAPI retain their existing ordered behavior. They are outside the
+launch registry. Codex still requires explicit opt-in. The Fly personal-agent
+API remains separate from this local daemon.
+
+Outside provider handoffs, only the latest user text is pasted into Freebuff, without system/developer prompts, tools, results, or known harness context envelopes. Title, summary, topic and warm-up requests are answered locally; classification and the selected working directory are logged. Side-call detection uses system/developer instructions, including Claude Code's recorded session-naming prompt; an ordinary user request for a summary still reaches the source. Detection remains heuristic.
 
 A conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
 per canonical working directory; `MILO_APP_POOL` defaults to (2) active sessions
@@ -411,7 +444,7 @@ Choose **Allow** when ChatGPT opens grunt's connection page. It sends your brows
 Dots is off by default. Start grunt with an explicit source order that includes it:
 
 ```sh
-MILO_SOURCES=dots,freellmapi,opencode,kilo usegrunt
+MILO_SOURCES=dots,freellmapi,opencode,kilo usegrunt serve
 ```
 
 The normal join flow targets the default daemon port (`8788`). The OAuth authorize URL can specify `milo_port` when the daemon runs on another port. If grunt cannot be reached, or you approve on a phone, return to the Allow page and choose **Connect another computer**. Run the displayed fallback command, `usegrunt dots link <code>`, on the computer running grunt, then choose **Continue to ChatGPT** on that page. Codes and tickets are private, single-use, and expire within ten minutes. The fallback command reuses the same device secret as automatic pairing.

@@ -68,7 +68,13 @@ export class Freebuff implements Source {
   private shutdown = new AbortController();
   constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number } = {}) {}
   private get mux() { return this.options.mux ?? (this.options.mux = new Tmux()); }
-  async available() { try { await executable('freebuff'); await executable('tmux'); return true; } catch { return false; } }
+  async available() {
+    try {
+      const binary = await executable('freebuff'); await executable('tmux');
+      const { stdout } = await exec(binary, ['doctor'], { timeout: 5000, maxBuffer: 65536 });
+      return /Freebuff doctor/i.test(stdout) && logError(stdout)?.code !== 'logged_out';
+    } catch { return false; }
+  }
   async complete(request: ModelRequest, caller: AbortSignal) {
     const binary = await executable('freebuff'); await executable('tmux');
     let diagnostics: string;
@@ -86,7 +92,7 @@ export class Freebuff implements Source {
     const id = `milo-${randomUUID()}`;
     const directory = join(this.options.home ?? homedir(), '.config/manicode/projects', basename(cwd), 'chats');
     const turns = userTurns(request);
-    const prompt = turns.at(-1);
+    const prompt = request.handoffPrompt ?? turns.at(-1);
     if (!prompt) throw new SourceError('upstream', 'No user text in this request');
     const key = cwd + ':' + createHash('sha256').update(turns[0]!).digest('hex');
     // Simultaneous requests must never send into the same pane/chat.
@@ -95,6 +101,7 @@ export class Freebuff implements Source {
     if (ownsConversation) this.busy.add(key);
     let creation: Pool | undefined;
     let creating = false;
+    let partial = '';
     const releaseCreation = () => { if (creating) { creation!.release(); creating = false; } };
     try {
       await pool.acquire(signal); acquired = true;
@@ -151,6 +158,10 @@ export class Freebuff implements Source {
             if (Date.now() - malformedSince > 2000) throw new SourceError('upstream', 'Freebuff chat file is persistently invalid JSON');
             continue;
           }
+          if (Array.isArray(data)) {
+            const latest = data.filter(m => m?.variant === 'ai').at(-1);
+            if (Array.isArray(latest?.blocks)) partial = latest.blocks.filter((b: { type?: string; content?: string }) => b.type === 'text' && typeof b.content === 'string').map((b: { content: string }) => b.content).join('\n').slice(-4096);
+          }
           if (continuation && Array.isArray(data)) data = data.slice(previousMessages);
           const matched = Array.isArray(data) && data.some(m => matchesUser(m, prompt));
           if (!matched) continue;
@@ -166,8 +177,10 @@ export class Freebuff implements Source {
         await delay(this.options.poll ?? 200, undefined, { signal });
       }
     } catch (error) {
-      if (signal.aborted) throw new SourceError('timeout', `Freebuff timed out or was cancelled after ${timeout}ms; check freebuff login and your free-hours balance`);
-      if (error instanceof SourceError) throw error;
+      caller.throwIfAborted();
+      if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
+      if (signal.aborted) throw new SourceError('timeout', `Freebuff timed out after ${timeout}ms; check freebuff login and your free-hours balance`);
+      if (error instanceof SourceError) { if (partial) error.output = partial; throw error; }
       throw new SourceError('upstream', `Freebuff failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       try { await this.mux.stop(id); }

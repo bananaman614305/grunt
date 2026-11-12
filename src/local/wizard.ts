@@ -5,15 +5,17 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { intro, outro, multiselect, isCancel, spinner, log } from '@clack/prompts';
+import { intro, outro, spinner, log } from '@clack/prompts';
 import chalk from 'chalk';
 import { setupFallbacks } from './fallback-setup.js';
 import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
+import { RegistrySync } from './registry.js';
+import { bundledRegistry, knownAdapters } from '../registry.js';
 
-export const configDir = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
-export async function command(binary: string, args: string[], interactive = false) {
+export const configDir = (env = process.env) => env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal) {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: interactive ? 'inherit' : 'ignore' });
+    const child = spawn(binary, args, { stdio: interactive ? 'inherit' : 'ignore', ...(signal ? { signal } : {}) });
     child.once('error', () => reject(new Error(`Could not run ${binary}`)));
     child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${binary} failed; inspect its service status before retrying`)));
   });
@@ -31,14 +33,20 @@ export async function squireSessionExists() {
 }
 export async function connectSquire(options: { hasSession?: () => Promise<boolean>; run?: typeof command; installer?: string } = {}) {
   const run = options.run || command;
-  if (!await (options.hasSession || squireSessionExists)()) {
+  const install = async () => {
     if (process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
     // The bundled installer owns account creation and broker service installation.
     const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
     await run(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true);
+  };
+  const existing = await (options.hasSession || squireSessionExists)();
+  if (!existing) await install();
+  const probe = async () => { const squire = new BrowserSquire(); try { await squire.connect(); } finally { await squire.close(); } };
+  try { await probe(); }
+  catch (error) {
+    if (!existing) throw error;
+    await install(); await probe();
   }
-  const squire = new BrowserSquire();
-  try { await squire.connect(); } finally { await squire.close(); }
 }
 export async function preflight(run = command) {
   const major = Number(process.versions.node.split('.')[0]);
@@ -67,8 +75,8 @@ export async function configurePi(port = 8788) {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read Pi models config; repair it before retrying setup'); }
   if (!saved || typeof saved !== 'object' || Array.isArray(saved) || (saved.providers !== undefined && (!saved.providers || typeof saved.providers !== 'object' || Array.isArray(saved.providers)))) throw new Error('Invalid Pi models config');
   const providers = (saved.providers ?? {}) as Record<string, unknown>;
-  providers.milo = { baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
-    models: [{ id: 'milo', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }] };
+  providers.grunt = { baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
+    models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }] };
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify({ ...saved, providers }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
@@ -89,7 +97,7 @@ export async function installService() {
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = process.env.MILO_PORT || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
-  const env: Record<string, string> = { MILO_FREELLMAPI_URL: process.env.MILO_FREELLMAPI_URL || 'http://127.0.0.1:3001/v1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: 'freellmapi,opencode', PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: 'freebuff,opencode', PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await readFile(opencodeConfig); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -120,26 +128,22 @@ export async function checkService(port = 8788) {
     await delay(1000);
   }
   if (!ready) throw new Error('grunt service did not start; inspect its service status');
-  const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freellmapi', messages: [{ role: 'user', content: 'Reply with grunt is ready.' }], stream: false, max_tokens: 256 }), signal: AbortSignal.timeout(120000) });
-  if (!response.ok) throw new Error(`grunt service live check failed (HTTP ${response.status})`);
-  const result = await response.json() as { choices?: { message?: { content?: string } }[] };
-  if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('grunt service returned no answer');
 }
-export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log) {
+export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['freebuff', 'opencode']) {
   const directory = await mkdtemp(join(tmpdir(), 'milo-free-check-'));
   try {
-    for (const source of ['freebuff', 'opencode']) {
-      if (unavailable.includes(source)) continue;
+    for (const source of adapters) {
+      if (unavailable.includes(source)) { notify(`${source}: FAIL — setup incomplete`); continue; }
       try {
-        const response = await fetch(`http://127.0.0.1:${source === 'freebuff' ? 8789 : port}/v1/chat/completions`, {
+        const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: 'Reply only: grunt is ready. Do not use tools or change files.' }], stream: false, max_tokens: 256 }),
+          body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files.` }], stream: false, max_tokens: 256 }),
           signal: AbortSignal.timeout(120000)
         });
         if (!response.ok) throw new Error('Free fallback did not answer');
         const result = await response.json() as { choices?: { message?: { content?: string } }[] };
         if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('Free fallback returned no text');
-        notify(`${source}: answered through the grunt service`);
+        notify(`${source}: PASS — answered through the grunt service`);
       } catch {
         unavailable.push(source);
         notify(`${source}: service check failed; rerun setup to finish this fallback`);
@@ -147,26 +151,31 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
-const wizardActions = { preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices };
-export async function wizard(add?: string, actions = wizardActions) {
+export async function loadRegistry() {
+  const registry = new RegistrySync({ directory: configDir(), notify: line => log.info(line) });
+  try { await registry.load(); await registry.sync(); return registry.current; }
+  finally { await registry.close(); }
+}
+const wizardActions = { preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry };
+export async function wizard(add?: string, actions: Omit<typeof wizardActions, 'loadRegistry'> & { loadRegistry?: typeof loadRegistry } = wizardActions) {
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
   intro(chalk.hex('#cf3a52').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
+  log.info('Sign in to Google once. Your local Trusty Squire uses that browser session to sign up for free services for you.');
   await step('Prerequisites', () => actions.preflight());
   await step('Trusty Squire', () => actions.connectSquire());
-  let providers = add ? [add] : undefined;
-  if (!providers) {
-    const selected = await multiselect({ message: 'Choose your providers', options: Object.keys(PROVIDERS).map(value => ({ value, label: value === 'groq' ? 'Groq' : 'Cerebras' })), initialValues: ['groq'], required: true });
-    if (isCancel(selected)) throw new Error('grunt setup cancelled');
-    providers = selected;
+  if (add) {
+    await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), [add]));
+    outro(`${add} connected`); return;
   }
-  await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), providers));
-  if (add) { outro(`${add} connected`); return; }
-  const fallbacks = await step('Freebuff and OpenCode free fallbacks', () => actions.setupFallbacks({ directory: configDir(), run: command, notify: line => log.info(line) }));
+  const registry = actions.loadRegistry ? await step('Adapter registry', actions.loadRegistry) : bundledRegistry;
+  const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+  const fallbacks = await step('Freebuff and OpenCode', () => actions.setupFallbacks({ directory: configDir(), run: command, adapters, notify: line => log.info(line) }));
   await step('grunt background service', actions.installService);
   const port = Number(process.env.MILO_PORT || '8788');
   await step('Pi provider', () => actions.configurePi(port));
   await step('Live request through grunt service', () => actions.checkService(port));
-  await step('Free fallback requests through grunt', () => actions.checkFallbackServices(fallbacks.unavailable, port, line => log.info(line)));
+  await step('Adapter verification through grunt', () => actions.checkFallbackServices(fallbacks.unavailable, port, line => log.info(line), adapters));
   outro(fallbacks.unavailable.length ? `grunt is ready; incomplete fallbacks: ${fallbacks.unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
-  log.info('Run pi, open /model, and choose milo.');
+  log.info('Run pi, open /model, and choose grunt.');
+  if (fallbacks.unavailable.length) throw new Error('Some adapters failed verification. Run usegrunt setup to resume.');
 }

@@ -1,11 +1,11 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
 export class SourceError extends Error {
-  constructor(public code: ErrorCode, message: string) { super(message); }
+  constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string) { super(message); }
 }
 export interface Message { role: string; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
-export interface ModelRequest { model: string; messages: Message[]; userMessages?: string[]; tools: Tool[]; cwd: string; stream: boolean; maxTokens?: number }
+export interface ModelRequest { model: string; messages: Message[]; userMessages?: string[]; tools: Tool[]; cwd: string; stream: boolean; maxTokens?: number; imageInput?: boolean; handoffPrompt?: string }
 export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number }
 export interface Source {
   id: string;
@@ -14,14 +14,18 @@ export interface Source {
   close?(): Promise<void>;
 }
 export class Sources {
-  constructor(public readonly sources: Source[]) {
+  private router: StickyRouter | undefined;
+  constructor(public readonly sources: Source[], routing?: RoutingOptions) {
     if (!sources.length || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
+    if (routing) this.router = new StickyRouter(sources, routing);
   }
+  healthy(id: string) { this.router?.healthy(id); }
   async models() {
-    const available = await Promise.all(this.sources.map(async s => await s.available() ? s.id : null));
-    return ['milo', ...available.filter((id): id is string => id !== null)];
+    const available = await Promise.all(this.sources.map(async s => (!this.router || this.router.listed(s.id)) && await s.available() ? s.id : null));
+    return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+    if (this.router) return this.router.complete(request, signal);
     const known = this.sources.some(s => s.id === request.model);
     if (request.model !== 'milo' && !known) console.error(`grunt model mapping: ${request.model} -> milo`);
     const candidates = request.model === 'milo' || !known ? this.sources : this.sources.filter(s => s.id === request.model);
@@ -75,3 +79,5 @@ export class Gateway implements Source {
     return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), inputTokens: body.usage?.prompt_tokens ?? 0, outputTokens: body.usage?.completion_tokens ?? 0 };
   }
 }
+import { StickyRouter } from './routing.js';
+import type { RoutingOptions } from './routing.js';

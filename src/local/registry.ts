@@ -1,0 +1,69 @@
+import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { bundledRegistry, knownAdapters, validateRegistry } from '../registry.js';
+import type { Adapter, Registry } from '../registry.js';
+
+export const REGISTRY_INTERVAL = 24 * 60 * 60 * 1000;
+export class RegistrySync {
+  current: Registry = structuredClone(bundledRegistry);
+  private etag: string | undefined;
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private pending: Promise<void> | undefined;
+  private controller = new AbortController();
+  constructor(private options: {
+    directory: string;
+    url?: string;
+    fetcher?: typeof fetch;
+    ensure?: (adapter: Adapter, signal: AbortSignal) => Promise<void>;
+    notify?: (text: string) => void;
+    changed?: (registry: Registry) => void;
+  }) {}
+  get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id)); }
+  async load() {
+    try {
+      const saved = JSON.parse(await readFile(join(this.options.directory, 'registry.json'), 'utf8'));
+      this.current = validateRegistry(saved.registry);
+      this.etag = typeof saved.etag === 'string' ? saved.etag : undefined;
+    } catch { /* A missing or damaged cache uses the packaged registry. */ }
+    this.options.changed?.(this.current);
+  }
+  sync(): Promise<void> {
+    this.pending ??= this.refresh().finally(() => { this.pending = undefined; });
+    return this.pending;
+  }
+  private async refresh() {
+    try {
+      const response = await (this.options.fetcher ?? fetch)(this.options.url ?? 'https://api.grunt.run/v1/registry', {
+        headers: this.etag ? { 'If-None-Match': this.etag } : {}, redirect: 'error',
+        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10000)])
+      });
+      if (response.status === 200) {
+        const registry = validateRegistry(await response.json());
+        const etag = response.headers.get('ETag') ?? undefined;
+        const temporary = join(this.options.directory, `registry.${randomUUID()}.tmp`);
+        try {
+          await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
+          await writeFile(temporary, JSON.stringify({ registry, etag }), { mode: 0o600, flag: 'wx' });
+          await rename(temporary, join(this.options.directory, 'registry.json'));
+        } finally { await rm(temporary, { force: true }); }
+        this.current = registry; this.etag = etag;
+        this.options.changed?.(registry);
+      } else if (response.status !== 304) throw new Error('Registry unavailable');
+    } catch { this.options.notify?.('Registry update unavailable; keeping the last good list'); }
+    if (this.controller.signal.aborted) return;
+    for (const adapter of this.enabled) {
+      if (!this.options.ensure) continue;
+      try { await this.options.ensure(adapter, this.controller.signal); }
+      catch { this.options.notify?.(`${adapter.id}: setup needs attention; run usegrunt setup to finish sign-in`); }
+    }
+  }
+  async start() {
+    await this.load();
+    if (this.controller.signal.aborted) return;
+    this.timer = setInterval(() => { void this.sync(); }, REGISTRY_INTERVAL);
+    this.timer.unref();
+    await this.sync();
+  }
+  async close() { if (this.timer) clearInterval(this.timer); this.controller.abort(); await this.pending; }
+}

@@ -21,7 +21,7 @@ it('adds the Pi provider without removing user providers and preserves it on rep
   await configurePi(19878);
   await configurePi(19878);
   expect(JSON.parse(await readFile(path, 'utf8'))).toMatchObject({ other: 'keep', providers: {
-    existing: { baseUrl: 'https://example.test' }, milo: { baseUrl: 'http://127.0.0.1:19878/v1', models: [{ id: 'milo' }] }
+    existing: { baseUrl: 'https://example.test' }, grunt: { baseUrl: 'http://127.0.0.1:19878/v1', models: [{ id: 'grunt' }] }
   } });
   expect((await stat(path)).mode & 0o777).toBe(0o600);
   await writeFile(path, '{invalid');
@@ -47,6 +47,13 @@ it('stops at a missing prerequisite with its fix before Squire or service change
   const run = vi.fn(async (binary: string) => { if (binary === 'pi') throw new Error('missing'); });
   await expect(preflight(run)).rejects.toThrow('npm install --global @mariozechner/pi-coding-agent');
   expect(run.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'pi']);
+});
+it('repairs a missing broker service while reusing an existing Squire session', async () => {
+  const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValueOnce(new Error('broker missing')).mockResolvedValue();
+  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
+  const run = vi.fn(async () => {});
+  await connectSquire({ hasSession: async () => true, run, installer: '/fixture/bin.js' });
+  expect(run).toHaveBeenCalledOnce(); expect(connect).toHaveBeenCalledTimes(2);
 });
 
 it.each([true, false])('sets up both default free routes, signing Freebuff in only when needed (signed in: %s)', async signed => {
@@ -107,6 +114,7 @@ it('runs both free fallback setup steps on default installs and starts the servi
   expect(intro).toHaveBeenCalledWith(expect.stringContaining('npx usegrunt setup'));
   expect(outro).toHaveBeenCalledWith('grunt is ready');
   expect(order).toEqual(['fallbacks', 'service']);
+  expect(actions.setup).not.toHaveBeenCalled();
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ run: expect.any(Function), notify: expect.any(Function) }));
   actions.setupFallbacks.mockClear();
   await wizard('groq', actions);

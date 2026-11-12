@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "tsx src/server.ts",
-    "build": "tsc && cp src/chat.html dist/chat.html",
+    "build": "tsc && cp src/chat.html dist/chat.html && mkdir -p dist/registry && cp registry/adapters.json dist/registry/adapters.json",
     "start": "node dist/server.js",
     "test": "vitest run",
     "lint": "eslint src && tsc --noEmit",
