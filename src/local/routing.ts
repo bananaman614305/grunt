@@ -16,6 +16,7 @@ export class StickyRouter {
   private bars = new Map<string, number>();
   constructor(private sources: Source[], private options: RoutingOptions) {}
   private now() { return (this.options.now ?? Date.now)(); }
+  needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) this.bars.delete(id); }
   listed(id: string) { return knownAdapters.has(id) && this.options.registry().adapters.some(a => a.id === id); }
   private async git(cwd: string, args: string[]) {

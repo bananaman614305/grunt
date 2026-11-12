@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
@@ -20,6 +21,13 @@ export class OpenCode implements Source {
   }
   private get fetcher() { return this.options.fetcher ?? fetch; }
   async available() { if (this.options.url) return true; try { await executable('opencode'); return true; } catch { return false; } }
+  async healthCheck() {
+    // Executable discovery cannot prove that the upstream login has recovered.
+    try {
+      const result = await this.complete({ model: this.id, messages: [{ role: 'user', content: 'Reply OK. Do not use tools or edit files.' }], tools: [], cwd: tmpdir(), stream: false }, AbortSignal.timeout(30000));
+      return Boolean(result.text);
+    } catch { return false; }
+  }
   private async server(): Promise<string> {
     if (this.options.url) return this.options.url.replace(/\/$/, '');
     if (this.starting) return this.starting;

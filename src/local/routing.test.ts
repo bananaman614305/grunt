@@ -1,11 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Sources, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
+import { Freebuff } from './freebuff.js';
 import { OpenCode } from './opencode.js';
 import { createLocalApp } from './api.js';
 
@@ -32,6 +33,7 @@ it.each(['logged_out', 'not_installed'] as const)('keeps %s barred until a succe
   await sources.complete(request, AbortSignal.timeout(1000));
   await sources.complete({ ...request, userMessages: ['next'] }, AbortSignal.timeout(1000));
   expect(a.complete).toHaveBeenCalledOnce();
+  a.healthCheck = () => a.available();
   vi.mocked(a.available).mockResolvedValue(false);
   await sources.models();
   vi.mocked(a.available).mockResolvedValue(true);
@@ -137,4 +139,41 @@ it('passes OpenCode quota reply partial text to the next adapter', async () => {
   const sources = new Sources([driver, next], { registry: () => bundledRegistry, random: () => 0 });
   await sources.complete(request, AbortSignal.timeout(1000));
   expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('partial work survives');
+});
+
+it('keeps actual OpenCode login bars through an unhealthy models check', async () => {
+  let signedIn = false;
+  const messages: string[] = [];
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async (url, init) => {
+    if (!String(url).endsWith('/message')) return Response.json({ id: 'health_session' });
+    messages.push(JSON.parse(String(init?.body)).parts[0].text);
+    return signedIn ? Response.json({ parts: [{ type: 'text', text: 'ready' }] }) : new Response('', { status: 401 });
+  } });
+  const sources = new Sources([driver, source('freebuff')], { registry: () => bundledRegistry, random: () => 0 });
+  const run = (text: string) => sources.complete({ ...request, userMessages: [text] }, AbortSignal.timeout(2000));
+  await run('first'); await run('second');
+  expect(messages.filter(m => m === 'first' || m === 'second')).toEqual(['first']);
+  await sources.models(); await run('third');
+  expect(messages).not.toContain('third');
+  signedIn = true;
+  await sources.models();
+  expect(await run('fourth')).toEqual({ text: 'ready' });
+});
+it('hands off current persisted Freebuff output when quota is already logged', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'grunt-current-output-'));
+  try {
+    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(cwd, 'freebuff')); await chmod(join(cwd, 'freebuff'), 0o755);
+    vi.stubEnv('PATH', `${cwd}:${process.env.PATH}`);
+    const mux = { start: async () => {}, stop: async () => {}, send: async (_id: string, prompt: string) => {
+      const dir = join(cwd, '.config/manicode/projects', cwd.split('/').at(-1)!, 'chats/current');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'chat-messages.json'), JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: false, blocks: [{ type: 'text', content: 'CURRENT PARTIAL WORK' }] }]));
+      await writeFile(join(dir, 'log.jsonl'), 'quota exhausted');
+    } };
+    const driver = new Freebuff({ home: cwd, mux, startup: 1, poll: 10 });
+    const next = source('opencode');
+    const sources = new Sources([driver, next], { registry: () => bundledRegistry, random: () => 0 });
+    await sources.complete({ ...request, cwd }, AbortSignal.timeout(2000));
+    expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('CURRENT PARTIAL WORK');
+  } finally { vi.unstubAllEnvs(); await rm(cwd, { recursive: true, force: true }); }
 });

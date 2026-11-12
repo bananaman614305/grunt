@@ -10,6 +10,7 @@ export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: nu
 export interface Source {
   id: string;
   available(): Promise<boolean>;
+  healthCheck?(): Promise<boolean>;
   complete(request: ModelRequest, signal: AbortSignal): Promise<Completion>;
   close?(): Promise<void>;
 }
@@ -23,7 +24,7 @@ export class Sources {
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
       if (this.router && !this.router.listed(s.id) || !await s.available()) return null;
-      this.healthy(s.id);
+      if (this.router?.needsHealthCheck(s.id) && await s.healthCheck?.().catch(() => false)) this.healthy(s.id);
       return s.id;
     }));
     return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];

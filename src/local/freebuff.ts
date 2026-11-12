@@ -75,6 +75,7 @@ export class Freebuff implements Source {
       return /Freebuff doctor/i.test(stdout) && logError(stdout)?.code !== 'logged_out';
     } catch { return false; }
   }
+  async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, caller: AbortSignal) {
     const binary = await executable('freebuff'); await executable('tmux');
     let diagnostics: string;
@@ -143,13 +144,8 @@ export class Freebuff implements Source {
           let log = '';
           try { log = await readFile(join(dirname(file), 'log.jsonl'), 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
           const startupError = logError(log.slice(logOffsets.get(file) ?? 0));
-          if (startupError) {
-            selected = file;
-            releaseCreation();
-            throw startupError;
-          }
           let raw: string;
-          try { raw = await readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+          try { raw = await readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') { if (startupError) throw startupError; continue; } throw error; }
           let data: unknown;
           try { data = JSON.parse(raw); }
           catch {
@@ -161,6 +157,11 @@ export class Freebuff implements Source {
           if (Array.isArray(data)) {
             const latest = data.filter(m => m?.variant === 'ai').at(-1);
             if (Array.isArray(latest?.blocks)) partial = latest.blocks.filter((b: { type?: string; content?: string }) => b.type === 'text' && typeof b.content === 'string').map((b: { content: string }) => b.content).join('\n').slice(-4096);
+          }
+          if (startupError) {
+            selected = file;
+            releaseCreation();
+            throw startupError;
           }
           if (continuation && Array.isArray(data)) data = data.slice(previousMessages);
           const matched = Array.isArray(data) && data.some(m => matchesUser(m, prompt));
