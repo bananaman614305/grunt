@@ -67,14 +67,14 @@ export class OpenCode implements Source {
       this.busy.add(session);
       const modelID = typeof this.options.model === 'function' ? this.options.model() : this.options.model ?? 'big-pickle';
       const reply = await call(`/session/${session}/message`, { model: { providerID: 'opencode', modelID }, parts: [{ type: 'text', text: prompt }] });
+      const parts: { type: string; text?: string }[] = reply.parts ?? [];
+      const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (reply.info?.error) {
         const error = reply.info.error;
         if (error.name === 'ProviderAuthError' || error.data?.statusCode === 401) throw new SourceError('logged_out', 'OpenCode free model requires sign-in');
-        if (error.data?.statusCode === 429) throw new SourceError('quota', 'OpenCode free model quota exhausted');
+        if (error.data?.statusCode === 429) throw new SourceError('quota', 'OpenCode free model quota exhausted', undefined, text);
         throw new SourceError('refused', 'OpenCode provider refused the request');
       }
-      const parts: { type: string; text?: string }[] = reply.parts ?? [];
-      const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (!text) throw new SourceError('upstream', 'OpenCode returned no assistant text');
       this.sessions.set(key(turns), session);
       return { text };

@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { Sources, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
+import { OpenCode } from './opencode.js';
 import { createLocalApp } from './api.js';
 
 const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
@@ -31,7 +32,10 @@ it.each(['logged_out', 'not_installed'] as const)('keeps %s barred until a succe
   await sources.complete(request, AbortSignal.timeout(1000));
   await sources.complete({ ...request, userMessages: ['next'] }, AbortSignal.timeout(1000));
   expect(a.complete).toHaveBeenCalledOnce();
-  sources.healthy('freebuff');
+  vi.mocked(a.available).mockResolvedValue(false);
+  await sources.models();
+  vi.mocked(a.available).mockResolvedValue(true);
+  await sources.models();
   expect(await sources.complete({ ...request, userMessages: ['after check'] }, AbortSignal.timeout(1000))).toEqual({ text: 'recovered' });
 });
 it('does not replace a bound adapter when a later availability probe would fail', async () => {
@@ -123,4 +127,14 @@ it('hands off the live working tree against a dirty task-start checkpoint', asyn
     expect(git('rev-parse', 'HEAD')).toBe(head); expect(git('stash', 'list')).toBe(''); expect(before).toContain('task.txt');
     expect(await readFile(join(cwd, 'task.txt'), 'utf8')).toContain('user edits');
   } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+it('passes OpenCode quota reply partial text to the next adapter', async () => {
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => Response.json(String(url).endsWith('/message')
+    ? { info: { error: { data: { statusCode: 429 } } }, parts: [{ type: 'text', text: 'partial work survives' }] }
+    : { id: 'quota_session' }) });
+  const next = source('freebuff');
+  const sources = new Sources([driver, next], { registry: () => bundledRegistry, random: () => 0 });
+  await sources.complete(request, AbortSignal.timeout(1000));
+  expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('partial work survives');
 });

@@ -21,7 +21,11 @@ export class Sources {
   }
   healthy(id: string) { this.router?.healthy(id); }
   async models() {
-    const available = await Promise.all(this.sources.map(async s => (!this.router || this.router.listed(s.id)) && await s.available() ? s.id : null));
+    const available = await Promise.all(this.sources.map(async s => {
+      if (this.router && !this.router.listed(s.id) || !await s.available()) return null;
+      this.healthy(s.id);
+      return s.id;
+    }));
     return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
