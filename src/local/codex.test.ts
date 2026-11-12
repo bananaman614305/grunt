@@ -84,7 +84,7 @@ it('kills the child on cancellation', async () => {
   controller.abort(); await rejected;
   expect(() => process.kill(pid, 0)).toThrow();
 });
-it('does not open files in Codex home from the Milo process', async () => {
+it('does not open files in Codex home from the grunt process', async () => {
   vi.stubEnv('CODEX_HOME', join(dir, 'codex-home'));
   const watched = ['readFile', 'open', 'readdir', 'realpath', 'access', 'stat'] as const;
   const spies = watched.flatMap(name => [vi.mocked(promises[name]), vi.mocked(fs[`${name}Sync`])]);

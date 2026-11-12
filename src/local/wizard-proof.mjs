@@ -15,7 +15,7 @@ const backend = serve({ hostname: '127.0.0.1', port: 0, fetch: async request => 
   if (path === '/api/auth/login') { login++; return Response.json({ token: 'synthetic-admin' }); }
   if (path === '/api/keys') return Response.json([]);
   if (path === '/api/keys/custom/discover-models') return Response.json({ models: [{ id: 'openai/gpt-oss-120b' }] });
-  if (path === '/api/keys/custom') {
+  if (path === '/api/keys/custom' && body.label === 'Milo groq (Squire)') {
     assert.equal(body.apiKey, 'synthetic-grant');
     assert.equal(body.baseUrl, 'https://egress.example.test/v1/openai/v1');
     assert.equal(body.models[0].model, 'openai/gpt-oss-120b');
@@ -26,7 +26,7 @@ const backend = serve({ hostname: '127.0.0.1', port: 0, fetch: async request => 
   if (path === '/v1/models') return Response.json({ data: [] });
   if (path === '/v1/chat/completions') {
     assert.equal(request.headers.get('authorization'), 'Bearer synthetic-router');
-    routed++; return Response.json({ choices: [{ message: { role: 'assistant', content: 'Milo is ready' }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 4 } });
+    routed++; return Response.json({ choices: [{ message: { role: 'assistant', content: 'grunt is ready' }, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 4 } });
   }
   return Response.json({});
 } });
@@ -70,7 +70,9 @@ StdioClientTransport.prototype.start = function() { this._serverParams.args = [$
 `);
 for (const [name, content] of Object.entries({
   docker: '#!/bin/sh\nif [ "$1" = inspect ]; then echo 1; fi\nif [ "$1" = run ] && [ "$2" = --rm ]; then echo empty; fi\nexit 0\n',
-  opencode: '#!/bin/sh\nexit 0\n',
+  freebuff: '#!/bin/sh\necho "Freebuff doctor: signed in (offline fixture)"\nexit 0\n',
+  opencode: '#!' + process.execPath + '\nif (process.argv.includes("--version")) process.exit(0); const { createServer } = await import("node:http"); const server = createServer((req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(req.url === "/session" ? { id: "proof" } : { parts: [{ type: "text", text: "grunt is ready" }] })); }); server.listen(0, "127.0.0.1", () => console.log("http://127.0.0.1:" + server.address().port));\n',
+
   npm: `#!/bin/sh\nif [ \"$1\" = --version ]; then echo 10; exit 0; fi\nln -s ${JSON.stringify(join(root, 'node_modules'))} "$3/node_modules"\n`,
   systemctl: `#!/bin/sh\nif [ "$2" = restart ]; then touch ${JSON.stringify(marker)}; fi\nexit 0\n`
 })) { await writeFile(join(bin, name), content); await chmod(join(bin, name), 0o755); }
@@ -104,7 +106,7 @@ try {
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
   clearTimeout(timer); clearInterval(monitor);
   assert.equal(code, 0, output + '\nDaemon logs:\n' + logs);
-  assert(output.includes('Milo is ready'), output);
+  assert(output.includes('grunt is ready'), output);
   assert(!output.includes('synthetic-grant') && !output.includes('synthetic-router'));
   assert(events.includes('/api/keys/custom'));
   const models = JSON.parse(await readFile(join(pi, 'models.json'), 'utf8'));
@@ -113,16 +115,16 @@ try {
   let addOutput = ''; addChild.stdout.on('data', chunk => { addOutput += chunk; }); addChild.stderr.on('data', chunk => { addOutput += chunk; });
   const addCode = await new Promise(resolve => addChild.on('exit', resolve));
   assert.equal(addCode, 0, addOutput); assert(addOutput.includes('groq connected'));
-  assert(!addOutput.includes('Milo background service') && !addOutput.includes('synthetic-grant'));
+  assert(!addOutput.includes('grunt background service') && !addOutput.includes('synthetic-grant'));
 
   const first = daemons.at(-1); first.kill('SIGTERM'); await new Promise(resolve => first.on('exit', resolve));
   await startDaemon();
-  const piChild = spawn('pi', ['--provider', 'milo', '--model', 'milo', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '-p', 'Say Milo is ready.'], { env: { ...env, PATH: process.env.PATH, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const piChild = spawn('pi', ['--provider', 'milo', '--model', 'milo', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '-p', 'Say grunt is ready.'], { env: { ...env, PATH: process.env.PATH, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let piOutput = ''; piChild.stdout.on('data', chunk => { piOutput += chunk; }); piChild.stderr.on('data', chunk => { piOutput += chunk; });
   const piTimer = setTimeout(() => piChild.kill('SIGKILL'), 20000);
   const piCode = await new Promise(resolve => piChild.once('exit', resolve)); clearTimeout(piTimer);
-  assert.equal(piCode, 0, piOutput); assert(piOutput.includes('Milo is ready'), piOutput);
-  assert(routed >= 2); assert(login >= 3); assert(logs.includes('Milo source: freellmapi answered'));
+  assert.equal(piCode, 0, piOutput); assert(piOutput.includes('grunt is ready'), piOutput);
+  assert(routed >= 2); assert(login >= 3); assert(logs.includes('grunt source: freellmapi answered'));
   const proof = `Feature proof (not a defect report): built setup CLI exited; existing vault entry minted a grant; custom provider received only synthetic grant; Pi config written; separate daemon live request passed; daemon restarted; real Pi CLI answered through offline router.\n\n${output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')}\nPi after restart:\n${piOutput}\nSource logs:\n${logs}`;
   await writeFile('/tmp/milo-wizard-proof.txt', proof);
   await writeFile('/tmp/milo-wizard-rail.cast', [JSON.stringify({ version: 2, width: 100, height: 40, timestamp: Math.floor(started / 1000), title: 'Milo setup — isolated offline proof' }), ...frames.map(frame => JSON.stringify(frame))].join('\n') + '\n');

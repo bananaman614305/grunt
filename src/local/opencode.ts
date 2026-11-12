@@ -58,7 +58,7 @@ export class OpenCode implements Source {
     };
     try {
       base = await this.server(); signal.throwIfAborted();
-      session = continuation ?? (await call('/session', { title: 'Milo' })).id;
+      session = continuation ?? (await call('/session', { title: 'grunt' })).id;
       if (!session || !/^[a-zA-Z0-9_-]+$/.test(session)) throw new SourceError('upstream', 'OpenCode returned an invalid session');
       this.busy.add(session);
       const reply = await call(`/session/${session}/message`, { model: { providerID: 'opencode', modelID: this.options.model ?? 'big-pickle' }, parts: [{ type: 'text', text: prompt }] });

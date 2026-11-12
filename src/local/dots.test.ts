@@ -1,7 +1,7 @@
 import { createClient } from '@libsql/client';
 import { serve } from '@hono/node-server';
 import { randomBytes, createHash } from 'node:crypto';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -12,7 +12,7 @@ import { DotsStore } from '../dots-store.js';
 import { dotsRelay } from '../dots-relay.js';
 import { callbackURL, publicAddress, webhookPost } from '../dots-events.js';
 import type { Sender } from '../dots-events.js';
-import { dotsLink, readDotsLink, pairDots } from './dots-link.js';
+import { dotsLink, readDotsLink, pairDots, dotsGateway } from './dots-link.js';
 import { Dots, DOTS_INSTRUCTION } from './dots.js';
 import { configure } from './main.js';
 import { Sources } from './source.js';
@@ -51,7 +51,7 @@ async function fixture() {
     let complete: string;
     if (fallback) {
       const html = await allowed.response.text();
-      const code = html.match(/milo dots link ([A-Z0-9_-]{16})/)![1]!;
+      const code = html.match(/usegrunt dots link ([A-Z0-9_-]{16})/)![1]!;
       complete = await dotsLink(code, pairEnv, fetch, () => {});
     } else {
       const app = createLocalApp(new Sources([{ id: 'fixture', available: async () => false, complete: async () => ({ text: '' }) }]), { dotsEnv: pairEnv });
@@ -78,7 +78,7 @@ async function fixture() {
 }
 it('stays off by default and makes no gateway call without explicit opt-in or setup', async () => {
   const fetcher = vi.fn();
-  const source = new Dots({ env: { MILO_DOTS_URL: 'https://usemilo.dev' }, fetcher });
+  const source = new Dots({ env: { MILO_DOTS_URL: 'https://api.grunt.run' }, fetcher });
   expect(await source.available()).toBe(false);
   await expect(source.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'not_installed' });
   const sources = configure({}); expect(sources.sources.map(s => s.id)).toEqual(['freellmapi', 'opencode', 'kilo']);
@@ -265,7 +265,7 @@ it('pairs after Allow without typing, refuses reused/expired/unconfirmed tickets
 });
 it('redeems the fallback code only once and completes the same pending browser authorization', async () => {
   const f = await fixture(); const allowed = await f.allow('fallback');
-  const html = await allowed.response.text(); const code = html.match(/milo dots link ([A-Z0-9_-]{16})/)![1]!;
+  const html = await allowed.response.text(); const code = html.match(/usegrunt dots link ([A-Z0-9_-]{16})/)![1]!;
   const complete = await dotsLink(code, f.env, fetch, () => {});
   expect((await readDotsLink(f.env))!.deviceSecret).toBe(f.link.deviceSecret);
   await expect(dotsLink(code, f.env, fetch, () => {})).rejects.toMatchObject({ code: 'upstream' });
@@ -273,16 +273,16 @@ it('redeems the fallback code only once and completes the same pending browser a
 });
 it('rejects hostile or disabled local pairing and unconfirmed gateway results before saving a device secret', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'milo-unpaired-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const env = { MILO_CONFIG_DIR: directory, MILO_DOTS_URL: 'https://usemilo.dev', MILO_SOURCES: 'dots' };
-  const target = 'https://usemilo.dev/oauth/complete?flow=' + 'f'.repeat(43);
+  const env = { MILO_CONFIG_DIR: directory, MILO_DOTS_URL: 'https://api.grunt.run', MILO_SOURCES: 'dots' };
+  const target = 'https://api.grunt.run/oauth/complete?flow=' + 'f'.repeat(43);
   const url = 'http://127.0.0.1:8788/dots/pair?' + new URLSearchParams({ ticket: 't'.repeat(43), return: target });
   const fetcher = vi.fn(async () => new Response(JSON.stringify({ paired: false, return: target })));
-  const request = new Request(url, { headers: { Referer: 'https://usemilo.dev/' } });
+  const request = new Request(url, { headers: { Referer: 'https://api.grunt.run/' } });
   expect((await pairDots(request, { ...env, MILO_SOURCES: 'kilo' }, fetcher)).status).toBe(403); expect(fetcher).not.toHaveBeenCalled();
   expect((await pairDots(new Request(url, { headers: { Referer: 'https://hostile.example/' } }), env, fetcher)).status).toBe(403); expect(fetcher).not.toHaveBeenCalled();
   expect((await pairDots(request, env, fetcher)).status).toBe(403);
   expect(await readDotsLink(env)).toBeUndefined();
-  fetcher.mockImplementation(async () => new Response(JSON.stringify({ paired: true, return: 'https://usemilo.dev/oauth/complete?flow=' + 'x'.repeat(43) })));
+  fetcher.mockImplementation(async () => new Response(JSON.stringify({ paired: true, return: 'https://api.grunt.run/oauth/complete?flow=' + 'x'.repeat(43) })));
   expect((await pairDots(request, env, fetcher)).status).toBe(403); expect(await readDotsLink(env)).toBeUndefined();
   await expect(dotsLink(undefined, env, fetcher, () => {})).rejects.toThrow('fallback');
 });
@@ -295,5 +295,21 @@ it('publishes canonical join metadata and the mcp alias with matching resource c
     expect((await f.rpc('initialize', {}, undefined, path)).result.capabilities).toHaveProperty('events');
   }
   const setup = await (await f.relay.app.request('/join')).text();
-  expect(setup).toContain('Join Milo:'); expect(setup).not.toContain('milo dots link'); expect(setup).not.toContain('Settings');
+  expect(setup).toContain('Join grunt:'); expect(setup).not.toContain('usegrunt dots link'); expect(setup).not.toContain('Settings');
+});
+
+it('defaults new installs to grunt while paired devices keep their stored relay origin', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-legacy-link-'));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const env = { MILO_CONFIG_DIR: directory, MILO_SOURCES: 'dots' };
+  expect(dotsGateway(env)).toBe('https://api.grunt.run');
+  const link = { gateway: 'https://usemilo.dev', deviceSecret: 'a'.repeat(43) };
+  await writeFile(join(directory, 'dots.json'), JSON.stringify(link));
+  expect(await readDotsLink(env)).toEqual(link);
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ linked: true, subscribed: true }));
+  const dots = new Dots({ env, fetcher });
+  expect(await dots.available()).toBe(true);
+  expect(fetcher.mock.calls[0]![0]).toBe('https://usemilo.dev/dots/status');
+  expect(await readDotsLink({ ...env, MILO_DOTS_URL: 'https://api.grunt.run' })).toBeUndefined();
+  await dots.close();
 });

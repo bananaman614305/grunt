@@ -30,7 +30,7 @@ export class Dots implements Source {
   async complete(request: ModelRequest, caller: AbortSignal) {
     if (!this.enabled) throw new SourceError('not_installed', 'Add dots to MILO_SOURCES to enable it');
     const link = await readDotsLink(this.options.env);
-    if (!link) throw new SourceError('not_installed', 'Run milo dots link to configure your dot');
+    if (!link) throw new SourceError('not_installed', 'Run usegrunt dots link to configure your dot');
     const prompt = userTurns(request).at(-1);
     if (!prompt) throw new SourceError('upstream', 'No user text in this request');
     const timeout = this.options.timeout ?? 300000;

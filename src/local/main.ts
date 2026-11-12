@@ -18,7 +18,7 @@ export function configure(env = process.env) {
   const loadKey = async () => {
     if (key) return key;
     pending ??= import('./setup.js').then(module => module.loadRouterKey(url)).then(value => key = value).catch(() => {
-      console.error('Milo router login unavailable or invalid; will retry on the next request. Check the local router and its saved login.');
+      console.error('grunt router login unavailable or invalid; will retry on the next request. Check the local router and its saved login.');
       return '';
     }).finally(() => { pending = undefined; });
     return pending;
@@ -27,7 +27,7 @@ export function configure(env = process.env) {
   const dots = new Dots({ env, timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
   const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: env.MILO_OPENCODE_MODEL ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff()];
   const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['freellmapi', 'opencode', 'kilo'];
-  return new Sources(ids.map(id => { const source = registered.find(s => s.id === id); if (!source) throw new Error(`Unknown Milo source: ${id}`); return source; }));
+  return new Sources(ids.map(id => { const source = registered.find(s => s.id === id); if (!source) throw new Error(`Unknown grunt source: ${id}`); return source; }));
 }
 export function start(env = process.env) {
   const sources = configure(env);
@@ -35,9 +35,9 @@ export function start(env = process.env) {
   void sources.sources.find(source => source.id === 'freellmapi' || source.id === 'kilo')?.available();
   const port = positive(process.env.MILO_PORT, 8788);
   if (port > 65535) throw new Error('MILO_PORT must be at most 65535');
-  const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`Milo working directory: ${cwd}`) });
-  const server = serve({ fetch: app.fetch, hostname: HOST, port }, () => console.error(`Milo model API: http://${HOST}:${port}/v1`));
-  // A distinct source list prevents FreeLLMAPI -> Milo -> FreeLLMAPI recursion.
+  const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
+  const server = serve({ fetch: app.fetch, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
+  // A distinct source list prevents FreeLLMAPI -> grunt -> FreeLLMAPI recursion.
   const fallback = env.MILO_FREEBUFF_BRIDGE !== '0' && sources.sources.some(s => s.id === 'freellmapi' || s.id === 'kilo') ? new Sources([new Freebuff()]) : undefined;
   const bridge = fallback ? serve({ fetch: createLocalApp(fallback, { port: 8789 }).fetch, hostname: HOST, port: 8789 }) : undefined;
   let closing = false;
@@ -49,13 +49,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
   if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }
-    catch { console.error('Dots pairing failed. Use the fallback code from the Allow page: milo dots link <code>.'); process.exitCode = 1; }
+    catch { console.error('Dots pairing failed. Use the fallback code from the Allow page: usegrunt dots link <code>.'); process.exitCode = 1; }
   } else if (['setup', 'add'].includes(process.argv[2] ?? '')) {
     const { wizard } = await import('./wizard.js');
     try {
-      if (process.argv[2] === 'add' && !process.argv[3]) throw new Error('Usage: milo add <provider>');
+      if (process.argv[2] === 'add' && !process.argv[3]) throw new Error('Usage: usegrunt add <provider>');
       await wizard(process.argv[2] === 'add' ? process.argv[3] : undefined);
     }
-    catch (error) { console.error(error instanceof Error ? error.message : 'Milo setup failed'); process.exitCode = 1; }
+    catch (error) { console.error(error instanceof Error ? error.message : 'grunt setup failed'); process.exitCode = 1; }
   } else start();
 }

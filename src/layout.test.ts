@@ -10,3 +10,11 @@ it("tracks only the new root app, its proof adapter, the static site, configurat
   expect(paths).toContain("src/server.ts");
   expect(readFileSync(".github/workflows/deploy.yml", "utf8")).toContain("secrets.FLY_API_TOKEN");
 });
+
+it("packages usegrunt with the primary command and compatibility aliases", () => {
+  const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+  expect(pkg.name).toBe("usegrunt");
+  expect(pkg.version).toBe("0.5.0");
+  expect(pkg.description).toBe("One-command setup for grunt");
+  expect(pkg.bin).toEqual({ usegrunt: "dist/local/main.js", milo: "dist/local/main.js", "milo-local": "dist/local/main.js" });
+});

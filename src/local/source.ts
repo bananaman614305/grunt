@@ -15,7 +15,7 @@ export interface Source {
 }
 export class Sources {
   constructor(public readonly sources: Source[]) {
-    if (!sources.length || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct Milo sources');
+    if (!sources.length || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => await s.available() ? s.id : null));
@@ -23,7 +23,7 @@ export class Sources {
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const known = this.sources.some(s => s.id === request.model);
-    if (request.model !== 'milo' && !known) console.error(`Milo model mapping: ${request.model} -> milo`);
+    if (request.model !== 'milo' && !known) console.error(`grunt model mapping: ${request.model} -> milo`);
     const candidates = request.model === 'milo' || !known ? this.sources : this.sources.filter(s => s.id === request.model);
     let last = new SourceError('not_installed', `No source for model ${request.model}`);
     for (const source of candidates) {
@@ -32,17 +32,17 @@ export class Sources {
       try { completion = await source.complete(request, signal); }
       catch (error) {
         if (signal.aborted || (error instanceof SourceError && error.code === 'cancelled')) {
-          console.error(`Milo source: ${source.id} cancelled for model ${request.model}`);
+          console.error(`grunt source: ${source.id} cancelled for model ${request.model}`);
           signal.throwIfAborted();
           throw error;
         }
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
-        console.error(`Milo source: ${source.id} failed (${last.code}) for model ${request.model}`);
+        console.error(`grunt source: ${source.id} failed (${last.code}) for model ${request.model}`);
         // Only dots and OpenCode deadlines fall through; caller cancellation stops above.
         if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode') throw last;
         continue;
       }
-      console.error(`Milo source: ${source.id} answered model ${request.model}`);
+      console.error(`grunt source: ${source.id} answered model ${request.model}`);
       return completion;
     }
     throw last;
@@ -67,11 +67,11 @@ export class Gateway implements Source {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.key}` },
         body: JSON.stringify({ model: 'milo', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: request.maxTokens ?? 4096 })
       });
-    } catch { signal.throwIfAborted(); throw new SourceError('upstream', 'Milo gateway is unavailable'); }
-    if (!response.ok) throw new SourceError(response.status === 401 || response.status === 403 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `Milo gateway returned HTTP ${response.status}`);
+    } catch { signal.throwIfAborted(); throw new SourceError('upstream', 'grunt gateway is unavailable'); }
+    if (!response.ok) throw new SourceError(response.status === 401 || response.status === 403 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `grunt gateway returned HTTP ${response.status}`);
     const body = await response.json() as { choices?: { message?: { content?: string | null; tool_calls?: ToolCall[] } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const message = body.choices?.[0]?.message;
-    if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'Milo gateway returned an invalid completion');
+    if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'grunt gateway returned an invalid completion');
     return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), inputTokens: body.usage?.prompt_tokens ?? 0, outputTokens: body.usage?.completion_tokens ?? 0 };
   }
 }

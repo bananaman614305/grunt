@@ -262,7 +262,7 @@ it('logs which source answered each request and which ones failed before it',asy
   const log=vi.spyOn(console,'error').mockImplementation(()=>{});
   const down:Source={...fake('first-app'),complete:async()=>{throw new SourceError('quota','out');}};
   try {expect(await new Sources([down,fake()]).complete(decode({input:'hi',model:'milo'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});
-    expect(log.mock.calls.map(c=>c[0])).toEqual(['Milo source: first-app failed (quota) for model milo','Milo source: second-app answered model milo']);}finally{log.mockRestore();}
+    expect(log.mock.calls.map(c=>c[0])).toEqual(['grunt source: first-app failed (quota) for model milo','grunt source: second-app answered model milo']);}finally{log.mockRestore();}
 });
 it.each([['',{}],['broken','broken']])('encodes tool arguments safely: %s',(arguments_,input)=>{
   expect(encode({text:'',calls:[{id:'c',type:'function',function:{name:'read',arguments:arguments_ as string}}]},'milo','messages')).toMatchObject({content:[{input}]});
@@ -287,5 +287,5 @@ it('starts the daemon through the milo-local bin symlink',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'milo-bin-'));
   await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,'milo-local'));
   const child=spawn(process.execPath,['--import','tsx',join(dir,'milo-local')],{env:{...process.env,MILO_PORT:'18789',MILO_SOURCES:'freebuff'},stdio:['ignore','ignore','pipe']});
-  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('Milo model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{child.kill();await rm(dir,{recursive:true,force:true});}
+  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{child.kill();await rm(dir,{recursive:true,force:true});}
 });

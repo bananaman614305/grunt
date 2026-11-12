@@ -103,6 +103,9 @@ it('runs both free fallback setup steps on default installs and starts the servi
     configurePi: vi.fn(async () => {}), checkService: vi.fn(async () => {}), checkFallbackServices: vi.fn(async () => {})
   };
   await wizard(undefined, actions);
+  const { intro, outro } = await import('@clack/prompts');
+  expect(intro).toHaveBeenCalledWith(expect.stringContaining('npx usegrunt setup'));
+  expect(outro).toHaveBeenCalledWith('grunt is ready');
   expect(order).toEqual(['fallbacks', 'service']);
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ run: expect.any(Function), notify: expect.any(Function) }));
   actions.setupFallbacks.mockClear();

@@ -31,7 +31,7 @@ export class Tmux implements Multiplexer {
   async start(id: string, cwd: string, binary: string, continuation?: string) {
     // Keep the private server alive across empty-session handoffs. Closing the
     // daemon kills this socket explicitly, without touching the user's server.
-    if (this.closed) throw new SourceError('upstream', 'Milo multiplexer is closed');
+    if (this.closed) throw new SourceError('upstream', 'grunt multiplexer is closed');
     const launch = this.run(['-L', this.socket, 'new-session', '-d', '-s', id, '-c', cwd, '-x', '180', '-y', '50', `${quote(binary)} --cwd ${quote(cwd)}${continuation ? ` --continue ${quote(continuation)}` : ''}`, ';', 'set-option', '-s', 'exit-empty', 'off']);
     this.launches.add(launch);
     try { await launch; } finally { this.launches.delete(launch); }

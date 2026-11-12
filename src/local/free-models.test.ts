@@ -134,7 +134,7 @@ it.each([
 it('uses the local Squire browser driver and approved vault capture', async () => {
   const squire = new BrowserSquire();
   const call = vi.spyOn(squire, 'call').mockResolvedValue({ status: 'complete', session_id: 'signup' });
-  await squire.runs.start({ service: 'groq', plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none' });
+  await squire.runs.start({ service: 'groq', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' });
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ url: 'https://console.groq.com/keys', goal: expect.stringContaining('operate_extract') }));
   call.mockResolvedValue({ base_url: 'https://egress.squire.test/v1', token: 'synthetic-grant' });
   await expect(squire.credentials.grant('vault://synthetic')).resolves.toEqual({ base_url: 'https://egress.squire.test/v1', token: 'synthetic-grant' });
@@ -199,7 +199,7 @@ it('recovers an interrupted router installation using the supplied local admin c
   expect(run.mock.calls.map(([args]) => args[0])).toEqual(['inspect', 'pull', 'run']);
   expect(run.mock.calls[2]![0]).toContain('io.milo.router=1');
   expect(JSON.stringify(run.mock.calls.map(([args]) => args))).not.toContain('synthetic-');
-  const unrelated = vi.fn(async () => ({ stdout: 'not-Milo' }));
+  const unrelated = vi.fn(async () => ({ stdout: 'not-grunt' }));
   await expect(ensureRouter('synthetic-password', 'synthetic-encryption', unrelated)).rejects.toThrow('belongs to another installation');
   expect(unrelated).toHaveBeenCalledTimes(1);
 });
@@ -210,7 +210,7 @@ it.each(['captcha', 'email confirmation'])('shares %s and resumes signup in the 
     .mockResolvedValue({ status: 'complete', session_id: 'signup' });
   const handoff = vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.example.test');
   const output = vi.spyOn(console, 'log').mockImplementation(() => {});
-  expect(await squire.runs.start({ service: 'groq', plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none' })).toMatchObject({ run: { state: 'running' } });
+  expect(await squire.runs.start({ service: 'groq', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' })).toMatchObject({ run: { state: 'running' } });
   expect(handoff).toHaveBeenCalledWith('signup');
   expect(await squire.runs.get('groq')).toMatchObject({ state: 'completed' });
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'signup' }));

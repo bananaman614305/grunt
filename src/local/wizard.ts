@@ -42,22 +42,22 @@ export async function connectSquire(options: { hasSession?: () => Promise<boolea
 }
 export async function preflight(run = command) {
   const major = Number(process.versions.node.split('.')[0]);
-  if (major < 22 || major >= 25) throw new Error('Install Node.js 22 or 24 LTS, then run npx usemilo setup.');
+  if (major < 22 || major >= 25) throw new Error('Install Node.js 22 or 24 LTS, then run npx usegrunt setup.');
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Run setup on Linux with systemd or macOS with launchd.');
   for (const [binary, args, fix] of [
     ['npm', ['--version'], 'Install Node.js 22 or 24 LTS including npm.'],
     ['pi', ['--version'], 'Run npm install --global @mariozechner/pi-coding-agent.'],
     ['tar', ['--version'], 'Install tar using your system package manager.']
   ] as const) {
-    try { await run(binary, [...args]); } catch { throw new Error(fix + ' Then run npx usemilo setup.'); }
+    try { await run(binary, [...args]); } catch { throw new Error(fix + ' Then run npx usegrunt setup.'); }
   }
   if (process.env.MILO_ROUTER_RUNTIME === 'docker') {
-    try { await run('docker', ['info']); } catch { throw new Error('Install and start Docker Desktop, then run npx usemilo setup.'); }
+    try { await run('docker', ['info']); } catch { throw new Error('Install and start Docker Desktop, then run npx usegrunt setup.'); }
   }
   try {
     if (process.platform === 'linux') await run('systemctl', ['--user', 'show-environment']);
     else await run('launchctl', ['print', `gui/${process.getuid!()}`]);
-  } catch { throw new Error('Start a normal user login with its systemd/launchd service manager, then run npx usemilo setup.'); }
+  } catch { throw new Error('Start a normal user login with its systemd/launchd service manager, then run npx usegrunt setup.'); }
 }
 export async function configurePi(port = 8788) {
   const directory = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
@@ -68,7 +68,7 @@ export async function configurePi(port = 8788) {
   if (!saved || typeof saved !== 'object' || Array.isArray(saved) || (saved.providers !== undefined && (!saved.providers || typeof saved.providers !== 'object' || Array.isArray(saved.providers)))) throw new Error('Invalid Pi models config');
   const providers = (saved.providers ?? {}) as Record<string, unknown>;
   providers.milo = { baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
-    models: [{ id: 'milo', name: 'Milo', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }] };
+    models: [{ id: 'milo', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }] };
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify({ ...saved, providers }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
@@ -77,7 +77,7 @@ export async function configurePi(port = 8788) {
 const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
 const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 export async function installService() {
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Milo background service requires systemd or launchd');
+  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
   const directory = configDir(), runtime = join(directory, 'runtime');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
   const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -88,7 +88,7 @@ export async function installService() {
   await command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']);
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = process.env.MILO_PORT || '8788';
-  if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid Milo service port');
+  if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
   const env: Record<string, string> = { MILO_FREELLMAPI_URL: process.env.MILO_FREELLMAPI_URL || 'http://127.0.0.1:3001/v1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: 'freellmapi,opencode', PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await readFile(opencodeConfig); env.OPENCODE_CONFIG = opencodeConfig; }
@@ -100,7 +100,7 @@ export async function installBackgroundService(name: string, entry: string, env:
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
     await mkdir(units, { recursive: true });
-    await writeFile(join(units, `${name}.service`), `[Unit]\nDescription=Milo model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
+    await writeFile(join(units, `${name}.service`), `[Unit]\nDescription=grunt model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
     await command('systemctl', ['--user', 'daemon-reload']);
     await command('systemctl', ['--user', 'enable', `${name}.service`]);
     await command('systemctl', ['--user', 'restart', `${name}.service`]);
@@ -119,11 +119,11 @@ export async function checkService(port = 8788) {
     try { const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(1000) }); if (response.ok) { ready = true; break; } } catch { /* Wait for the service manager. */ }
     await delay(1000);
   }
-  if (!ready) throw new Error('Milo service did not start; inspect its service status');
-  const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freellmapi', messages: [{ role: 'user', content: 'Reply with Milo is ready.' }], stream: false, max_tokens: 256 }), signal: AbortSignal.timeout(120000) });
-  if (!response.ok) throw new Error(`Milo service live check failed (HTTP ${response.status})`);
+  if (!ready) throw new Error('grunt service did not start; inspect its service status');
+  const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freellmapi', messages: [{ role: 'user', content: 'Reply with grunt is ready.' }], stream: false, max_tokens: 256 }), signal: AbortSignal.timeout(120000) });
+  if (!response.ok) throw new Error(`grunt service live check failed (HTTP ${response.status})`);
   const result = await response.json() as { choices?: { message?: { content?: string } }[] };
-  if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('Milo service returned no answer');
+  if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('grunt service returned no answer');
 }
 export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log) {
   const directory = await mkdtemp(join(tmpdir(), 'milo-free-check-'));
@@ -133,13 +133,13 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
       try {
         const response = await fetch(`http://127.0.0.1:${source === 'freebuff' ? 8789 : port}/v1/chat/completions`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: 'Reply only: Milo is ready. Do not use tools or change files.' }], stream: false, max_tokens: 256 }),
+          body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: 'Reply only: grunt is ready. Do not use tools or change files.' }], stream: false, max_tokens: 256 }),
           signal: AbortSignal.timeout(120000)
         });
         if (!response.ok) throw new Error('Free fallback did not answer');
         const result = await response.json() as { choices?: { message?: { content?: string } }[] };
         if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('Free fallback returned no text');
-        notify(`${source}: answered through the Milo service`);
+        notify(`${source}: answered through the grunt service`);
       } catch {
         unavailable.push(source);
         notify(`${source}: service check failed; rerun setup to finish this fallback`);
@@ -150,23 +150,23 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
 const wizardActions = { preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices };
 export async function wizard(add?: string, actions = wizardActions) {
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
-  intro(chalk.hex('#cf3a52').bold('Milo') + chalk.dim(' — npx usemilo setup'));
+  intro(chalk.hex('#cf3a52').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
   await step('Prerequisites', () => actions.preflight());
   await step('Trusty Squire', () => actions.connectSquire());
   let providers = add ? [add] : undefined;
   if (!providers) {
     const selected = await multiselect({ message: 'Choose your providers', options: Object.keys(PROVIDERS).map(value => ({ value, label: value === 'groq' ? 'Groq' : 'Cerebras' })), initialValues: ['groq'], required: true });
-    if (isCancel(selected)) throw new Error('Milo setup cancelled');
+    if (isCancel(selected)) throw new Error('grunt setup cancelled');
     providers = selected;
   }
   await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), providers));
   if (add) { outro(`${add} connected`); return; }
   const fallbacks = await step('Freebuff and OpenCode free fallbacks', () => actions.setupFallbacks({ directory: configDir(), run: command, notify: line => log.info(line) }));
-  await step('Milo background service', actions.installService);
+  await step('grunt background service', actions.installService);
   const port = Number(process.env.MILO_PORT || '8788');
   await step('Pi provider', () => actions.configurePi(port));
-  await step('Live request through Milo service', () => actions.checkService(port));
-  await step('Free fallback requests through Milo', () => actions.checkFallbackServices(fallbacks.unavailable, port, line => log.info(line)));
-  outro(fallbacks.unavailable.length ? `Milo is ready; incomplete fallbacks: ${fallbacks.unavailable.join(', ')}. Rerun setup to finish them.` : 'Milo is ready');
+  await step('Live request through grunt service', () => actions.checkService(port));
+  await step('Free fallback requests through grunt', () => actions.checkFallbackServices(fallbacks.unavailable, port, line => log.info(line)));
+  outro(fallbacks.unavailable.length ? `grunt is ready; incomplete fallbacks: ${fallbacks.unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
   log.info('Run pi, open /model, and choose milo.');
 }

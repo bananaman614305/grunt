@@ -39,7 +39,7 @@ export class EventError extends Error {
   constructor(readonly reason: string) { super('Callback verification failed'); }
 }
 export const eventDefinition = {
-  name: 'milo.request', description: 'A request is waiting from your linked Milo daemon. Fetch it with milo_get_request and return text with milo_submit_reply.', delivery: ['webhook'],
+  name: 'milo.request', description: 'A request is waiting from your linked grunt daemon. Fetch it with milo_get_request and return text with milo_submit_reply.', delivery: ['webhook'],
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   payloadSchema: { type: 'object', properties: { requestId: { type: 'string' }, summary: { type: 'string' } }, required: ['requestId', 'summary'], additionalProperties: false }
 };
@@ -95,7 +95,7 @@ export class DotsEvents {
       const deliveries = await this.store.rows<Subscription & { request: string; event_id: string; occurred: number; attempts: number }>(`SELECT s.*,d.request,d.event_id,d.occurred,d.attempts FROM dots_deliveries d JOIN dots_subscriptions s ON s.id=d.subscription JOIN dots_requests r ON r.id=d.request WHERE d.next_at<=? AND s.expires>? AND r.expires>? AND r.messages IS NOT NULL LIMIT 16`, [Date.now(), Date.now(), Date.now()]);
       for (const sub of deliveries) {
         let status = 503;
-        try { status = (await this.post(sub, sub.event_id, { eventId: sub.event_id, name: 'milo.request', timestamp: new Date(sub.occurred).toISOString(), data: { requestId: sub.request, summary: 'A request is waiting from your linked Milo daemon.' }, cursor: null })).status; }
+        try { status = (await this.post(sub, sub.event_id, { eventId: sub.event_id, name: 'milo.request', timestamp: new Date(sub.occurred).toISOString(), data: { requestId: sub.request, summary: 'A request is waiting from your linked grunt daemon.' }, cursor: null })).status; }
         catch { /* Network errors retry without storing diagnostics or user text. */ }
         if ((status >= 200 && status < 300) || (status >= 400 && status < 500 && status !== 429) || sub.attempts >= 4) {
           await this.store.db.execute({ sql: 'DELETE FROM dots_deliveries WHERE request=? AND subscription=?', args: [sub.request, sub.id] });

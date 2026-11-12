@@ -77,7 +77,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
     if (!credential) {
-      const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'Milo', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
+      const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
       if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
       if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason); continue; }
       let state = result.run.state;
@@ -107,17 +107,17 @@ export function squireEnvironment() {
       ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
       ...(process.env.MILO_SQUIRE_HOME ? { HOME: process.env.MILO_SQUIRE_HOME, XDG_CONFIG_HOME: join(process.env.MILO_SQUIRE_HOME, '.config') } : {}),
       ...(process.env.MILO_SQUIRE_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: process.env.MILO_SQUIRE_XDG_CONFIG_HOME } : {}),
-      TRUSTY_SQUIRE_AGENT_IDENTITY: 'Milo setup'
+      TRUSTY_SQUIRE_AGENT_IDENTITY: 'grunt setup'
   };
 }
 export class BrowserSquire implements SetupSquire {
-  private client = new Client({ name: 'Milo setup', version: '0.1.0' });
+  private client = new Client({ name: 'grunt setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
   private handoffs: { url: string; close(): void }[] = [];
   async connect() {
     const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
     const env = squireEnvironment();
-    // Squire owns its account binding and vault. Milo never reads its files.
+    // Squire owns its account binding and vault. grunt never reads its files.
     const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'pipe', env });
     let lastLine = '', partialLine = '';
     const stderr = transport.stderr instanceof Readable ? transport.stderr : null;
@@ -140,7 +140,7 @@ export class BrowserSquire implements SetupSquire {
       const closed = error instanceof McpError && error.code === ErrorCode.ConnectionClosed
         && mcpReason === `MCP error ${ErrorCode.ConnectionClosed}: Connection closed`;
       const reason = connectionReason(closed ? stderrReason || mcpReason : mcpReason || stderrReason);
-      const instruction = 'Connect Trusty Squire separately, then rerun milo setup';
+      const instruction = 'Connect Trusty Squire separately, then rerun usegrunt setup';
       throw new Error((reason ? `${instruction}: ${reason}` : instruction).slice(0, 300));
     } finally {
       stderr?.off('data', capture);
@@ -192,8 +192,8 @@ export class BrowserSquire implements SetupSquire {
     const session = this.sessions.get(provider);
     const result = await this.call('operate_drive', {
       ...(session ? { session_id: session } : { url }),
-      goal: goal ?? `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for Milo and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer. No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so Milo can share this browser. Do not bypass verification. Stop on provider refusal.`,
-      facts: { plan: 'free', project_name: 'Milo' }, max_seconds: 45, max_steps: 60
+      goal: goal ?? `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer. No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`,
+      facts: { plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 60
     });
     if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
     const reason = setupReason(result.reason, result.remaining);
@@ -202,7 +202,7 @@ export class BrowserSquire implements SetupSquire {
     if (refusal) throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
     if (result.status === 'complete') {
       const id = this.sessions.get(provider);
-      if (id) { await this.call('operate_finish', { session_id: id, outcome: 'result', summary: 'Milo provider key stored in user vault' }); this.sessions.delete(provider); }
+      if (id) { await this.call('operate_finish', { session_id: id, outcome: 'result', summary: 'grunt provider key stored in user vault' }); this.sessions.delete(provider); }
       return { run: { id: provider, state: 'completed' }, decision: 'silent' };
     }
     const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
@@ -306,11 +306,11 @@ if (!fs.existsSync(path)) {
   db.close();
 }`;
 export async function ensureRouter(password: string, encryption: string, run: DockerRun = argsWithEnv, recreate = false) {
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Milo FreeLLMAPI requires Docker on Linux or macOS');
+  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt FreeLLMAPI requires Docker on Linux or macOS');
   let owner: string | undefined;
   try { owner = (await run(['inspect', '--format', '{{ index .Config.Labels "io.milo.router" }}', 'milo-freellmapi'])).stdout.trim(); }
   catch (error) {
-    if (!/No such (object|container)/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Docker is unavailable. Install and start Docker Desktop, then run npx usemilo setup again');
+    if (!/No such (object|container)/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Docker is unavailable. Install and start Docker Desktop, then run npx usegrunt setup again');
   }
   if (owner !== undefined) {
     if (owner !== '1') throw new Error('The milo-freellmapi container belongs to another installation; setup stopped');
@@ -419,8 +419,8 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
     return { key: await router.key() };
   } catch (error) {
     // Child-process and SDK errors may contain request data. Keep those local.
-    if (error instanceof SetupPending) throw new Error('Squire approval remains pending; resume milo setup after approval');
+    if (error instanceof SetupPending) throw new Error('Squire approval remains pending; resume usegrunt setup after approval');
     if (error instanceof Error && !('cmd' in error)) throw error;
-    throw new Error('FreeLLMAPI installation failed; check Node and npm availability and run npx usemilo setup again');
+    throw new Error('FreeLLMAPI installation failed; check Node and npm availability and run npx usegrunt setup again');
   } finally { await squire.close(); }
 }
