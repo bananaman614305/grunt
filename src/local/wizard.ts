@@ -142,25 +142,63 @@ export async function checkService(port = 8788) {
   }
   if (!ready) throw new Error('grunt service did not start; inspect its service status');
 }
-export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['freebuff', 'opencode']) {
+type Systemctl = (args: string[]) => Promise<string>;
+const systemctl: Systemctl = async args => (await promisify(execFile)('systemctl', ['--user', ...args], { timeout: 10000 })).stdout;
+// Read MILO_SOURCES as systemd applies it, including drop-ins, and name the file that set it.
+export async function serviceSources(run: Systemctl = systemctl, name = 'milo') {
+  if (run === systemctl && process.platform !== 'linux') return;
+  let environment: string, dropIns: string;
+  try { [environment, dropIns] = await Promise.all(['Environment', 'DropInPaths'].map(property => run(['show', `${name}.service`, '-p', property, '--value']))) as [string, string]; }
+  catch { return; }
+  const value = environment.match(/(?:^|\s)"?MILO_SOURCES=([^\s"]*)/)?.[1];
+  if (value === undefined) return;
+  let origin = `${name}.service`;
+  for (const path of dropIns.trim().split(/\s+/).filter(Boolean)) {
+    try { if (/^\s*Environment=.*MILO_SOURCES=/m.test(await readFile(path, 'utf8'))) origin = path; }
+    catch { /* An unreadable drop-in cannot be named. */ }
+  }
+  return { sources: value.split(',').map(id => id.trim()), origin };
+}
+export async function checkServiceSources(unavailable: string[], notify = console.log, adapters = ['freebuff', 'opencode'], read = serviceSources) {
+  const unit = await read();
+  if (!unit) return;
+  for (const id of adapters) {
+    if (unit.sources.includes(id)) continue;
+    if (!unavailable.includes(id)) unavailable.push(id);
+    notify(`${id}: FAIL — ${unit.origin} sets MILO_SOURCES=${unit.sources.join(',')}, which lacks ${id}. Setup does not edit it; add ${id} there or remove that setting.`);
+  }
+}
+export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['freebuff', 'opencode'], wait = { limit: 180000, interval: 2000 }) {
   const directory = await mkdtemp(join(tmpdir(), 'milo-free-check-'));
   try {
     for (const source of adapters) {
       if (unavailable.includes(source)) { notify(`${source}: FAIL — setup incomplete`); continue; }
-      try {
-        const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files.` }], stream: false, max_tokens: 256 }),
-          signal: AbortSignal.timeout(120000)
-        });
-        if (!response.ok) throw new Error('Free fallback did not answer');
-        const result = await response.json() as { choices?: { message?: { content?: string } }[] };
-        if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('Free fallback returned no text');
-        notify(`${source}: PASS — answered through the grunt service`);
-      } catch {
-        unavailable.push(source);
-        notify(`${source}: service check failed; rerun setup to finish this fallback`);
+      const deadline = Date.now() + wait.limit;
+      let failure: string | undefined, waiting = false;
+      for (let attempt = 1; ; attempt++) {
+        let preparing = false;
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files. Check ${attempt}.` }], stream: false, max_tokens: 256 }),
+            signal: AbortSignal.timeout(120000)
+          });
+          preparing = response.headers.get('x-grunt-preparing')?.split(',').includes(source) ?? false;
+          const answered = response.headers.get('x-grunt-source');
+          const result = await response.json().catch(() => ({})) as { choices?: { message?: { content?: string } }[] };
+          if (!response.ok) failure = `grunt returned HTTP ${response.status}`;
+          else if (answered !== source) failure = `${answered ?? 'an unnamed source'} answered instead of ${source}`;
+          else if (!result.choices?.[0]?.message?.content?.trim()) failure = 'no text returned';
+          else failure = undefined;
+        } catch { failure = 'grunt did not answer'; }
+        // Retry only while grunt still runs this adapter's background setup. Each attempt
+        // is a new prompt, so the router does not keep a fallback source from an earlier try.
+        if (!failure || !preparing || Date.now() + wait.interval > deadline) break;
+        if (!waiting) { waiting = true; notify(`${source}: grunt is still preparing this adapter; waiting`); }
+        await delay(wait.interval);
       }
+      if (failure) { unavailable.push(source); notify(`${source}: FAIL — ${failure}`); }
+      else notify(`${source}: PASS — ${source} answered through the grunt service`);
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -169,8 +207,8 @@ export async function loadRegistry() {
   try { await registry.load(); await registry.sync(); return registry.current; }
   finally { await registry.close(); }
 }
-const wizardActions = { preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry };
-export async function wizard(add?: string, actions: Omit<typeof wizardActions, 'loadRegistry'> & { loadRegistry?: typeof loadRegistry } = wizardActions) {
+const wizardActions = { preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources };
+export async function wizard(add?: string, actions: Omit<typeof wizardActions, 'loadRegistry' | 'checkServiceSources'> & { loadRegistry?: typeof loadRegistry; checkServiceSources?: typeof checkServiceSources } = wizardActions) {
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
   intro(chalk.hex('#cf3a52').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
   log.info('Sign in to Google once. Your local Trusty Squire uses that browser session to sign up for free services for you.');
@@ -187,6 +225,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, '
   const port = Number(process.env.MILO_PORT || '8788');
   await step('Pi provider', () => actions.configurePi(port));
   await step('Live request through grunt service', () => actions.checkService(port));
+  if (actions.checkServiceSources) await step('Service source list', () => actions.checkServiceSources!(fallbacks.unavailable, line => log.info(line), adapters));
   await step('Adapter verification through grunt', () => actions.checkFallbackServices(fallbacks.unavailable, port, line => log.info(line), adapters));
   outro(fallbacks.unavailable.length ? `grunt is ready; incomplete fallbacks: ${fallbacks.unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
   log.info('Run pi, open /model, and choose grunt.');

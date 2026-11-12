@@ -45,18 +45,20 @@ export function start(env = process.env) {
     changed: current => { registry = current; }, notify: console.error,
     ensure: async (adapter, signal) => {
       if (!sources.sources.some(source => source.id === adapter.id)) return;
+      sources.preparing.add(adapter.id);
       const squire = new BrowserSquire({ background: true, signal });
       try {
         const result = await setupFallbacks({ directory, run: (binary, args) => command(binary, args, false, signal), notify: console.error, adapters: [adapter.id], squire, signal,
           connect: () => squire.connect() });
         if (result.unavailable.length) throw new Error('Adapter setup incomplete');
         sources.healthy(adapter.id);
-      } finally { await squire.close(); }
+      } finally { sources.preparing.delete(adapter.id); await squire.close(); }
     }
   });
   // Load the private cache before accepting tasks, without waiting for the network.
-  const ready = sync.load();
-  void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
+  // Mark adapters as preparing until their first background setup finishes.
+  const ready = sync.load().then(() => { for (const adapter of sync.enabled) if (sources.sources.some(source => source.id === adapter.id)) sources.preparing.add(adapter.id); });
+  void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list')).finally(() => sources.preparing.clear());
   // Warm the saved login without delaying the server; failed loads retry lazily.
   void sources.sources.find(source => source.id === 'freellmapi' || source.id === 'kilo')?.available();
   const port = positive(env.MILO_PORT, 8788);

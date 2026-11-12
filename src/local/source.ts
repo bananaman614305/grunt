@@ -7,6 +7,8 @@ export interface ToolCall { id: string; type: 'function'; function: { name: stri
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
 export interface ModelRequest { model: string; messages: Message[]; userMessages?: string[]; tools: Tool[]; cwd: string; stream: boolean; maxTokens?: number; imageInput?: boolean; handoffPrompt?: string }
 export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number }
+// Names the adapter that produced each completion; setup checks it against the requested adapter.
+export const answeredBy = new WeakMap<Completion, string>();
 export interface Source {
   id: string;
   available(): Promise<boolean>;
@@ -16,6 +18,8 @@ export interface Source {
 }
 export class Sources {
   private router: StickyRouter | undefined;
+  // Adapters whose background setup has not finished yet.
+  readonly preparing = new Set<string>();
   constructor(public readonly sources: Source[], routing?: RoutingOptions) {
     if (!sources.length || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
     if (routing) this.router = new StickyRouter(sources, routing);
@@ -52,6 +56,7 @@ export class Sources {
         continue;
       }
       console.error(`grunt source: ${source.id} answered model ${request.model}`);
+      answeredBy.set(completion, source.id);
       return completion;
     }
     throw last;

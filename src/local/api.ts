@@ -4,7 +4,7 @@ import { streamSSE } from 'hono/streaming';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { housekeeping, userText } from './harness.js';
-import { SourceError } from './source.js';
+import { SourceError, answeredBy } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
 type Obj = Record<string, unknown>;
 const object = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
@@ -131,7 +131,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }
       const local = housekeeping(request);
       options.log?.(`${request.cwd}; cwd=${request.cwd === (options.cwd ?? process.cwd()) ? 'fallback-or-explicit' : 'request'}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
-      const complete = (signal: AbortSignal) => local === undefined ? sources.complete(request, signal) : Promise.resolve({ text: local });
+      const complete = (signal: AbortSignal): Promise<Completion> => local === undefined ? sources.complete(request, signal) : Promise.resolve({ text: local });
       const controller = new AbortController();
       const abort = () => controller.abort();
       c.req.raw.signal.addEventListener('abort', abort, { once: true });
@@ -142,7 +142,11 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       try {
         // Agent adapters return final text, not incremental tokens. Resolve routing
         // before committing SSE headers so exhausted routes still return HTTP 429.
-        const result = encode(await complete(controller.signal), request.model, api);
+        const completion = await complete(controller.signal);
+        const source = answeredBy.get(completion);
+        if (source) c.header('X-Grunt-Source', source);
+        if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
+        const result = encode(completion, request.model, api);
         if (request.stream) return streamSSE(c, async stream => {
           stream.onAbort(abort);
           for (const event of events(result, api)) await stream.writeSSE(event);
@@ -150,6 +154,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         return c.json(result);
       } catch (e) {
         const { err, body } = failure(e);
+        if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
         if (err.retryAfter !== undefined) c.header('Retry-After', String(Math.max(1, Math.ceil(err.retryAfter))));
         return c.json(body, err.code === 'quota' ? 429 : err.code === 'timeout' ? 504 : 503);
       } finally { c.req.raw.signal.removeEventListener('abort', abort); }

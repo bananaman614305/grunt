@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
-import { configurePi, connectSquire, preflight, wizard } from './wizard.js';
+import { serve } from '@hono/node-server';
+import type { AddressInfo } from 'node:net';
+import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkServiceSources, serviceSources } from './wizard.js';
+import { createLocalApp } from './api.js';
+import { Sources, SourceError } from './source.js';
+import { bundledRegistry } from '../registry.js';
+import type { Source } from './source.js';
 
 vi.mock('@clack/prompts', () => ({
   multiselect: vi.fn(async () => ['groq']), isCancel: () => false,
@@ -155,4 +161,80 @@ it.each([true, false])('repairs an installed Freebuff without doctor before prob
   expect(verify).toHaveBeenCalledOnce();
   expect(result.unavailable).toEqual(repaired ? [] : ['freebuff']);
   if (!repaired) expect(output.join(' ')).toContain('remove older Freebuff binaries earlier on PATH');
+});
+
+async function service(sources: Sources) {
+  let port = 0;
+  const app = createLocalApp(sources, { get port() { return port; } });
+  const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 });
+  await new Promise(resolve => server.once('listening', resolve));
+  port = (server.address() as AddressInfo).port;
+  return { port, close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }) };
+}
+const fake = (id: string, complete: Source['complete'] = async () => ({ text: `${id} ready` })): Source => ({ id, available: async () => true, complete });
+it('fails an adapter check when another source answered for it', async () => {
+  // Owner drop-in MILO_SOURCES=freellmapi,opencode,dots maps freebuff to milo, so FreeLLMAPI answers.
+  const live = await service(new Sources([fake('freellmapi'), fake('opencode')]));
+  const lines: string[] = [], unavailable: string[] = [];
+  try { await checkFallbackServices(unavailable, live.port, line => lines.push(line), ['freebuff', 'opencode']); }
+  finally { await live.close(); }
+  expect(lines).toEqual(['freebuff: FAIL — freellmapi answered instead of freebuff', 'opencode: PASS — opencode answered through the grunt service']);
+  expect(unavailable).toEqual(['freebuff']);
+});
+it('waits while grunt still prepares an adapter, then passes', async () => {
+  let ready = false, calls = 0;
+  const sources = new Sources([fake('opencode', async () => { calls++; if (!ready) throw new SourceError('not_installed', 'OpenCode is not installed'); return { text: 'ready' }; })]);
+  sources.preparing.add('opencode');
+  setTimeout(() => { ready = true; sources.preparing.delete('opencode'); }, 150);
+  const live = await service(sources);
+  const lines: string[] = [], unavailable: string[] = [];
+  try { await checkFallbackServices(unavailable, live.port, line => lines.push(line), ['opencode'], { limit: 5000, interval: 50 }); }
+  finally { await live.close(); }
+  expect(lines).toEqual(['opencode: grunt is still preparing this adapter; waiting', 'opencode: PASS — opencode answered through the grunt service']);
+  expect(unavailable).toEqual([]); expect(calls).toBeGreaterThan(1);
+});
+it('keeps waiting while an adapter prepares and another source answers in its place', async () => {
+  let ready = false;
+  // Like the service: background setup clears the sign-in bar, then drops the preparing mark.
+  const finish = () => setTimeout(() => { ready = true; sources.healthy('opencode'); sources.preparing.delete('opencode'); }, 150);
+  const sources = new Sources([fake('opencode', async () => { if (!ready) { finish(); throw new SourceError('logged_out', 'OpenCode is not signed in'); } return { text: 'ready' }; }), fake('freebuff')], { registry: () => bundledRegistry, random: () => 0 });
+  sources.preparing.add('opencode');
+  const live = await service(sources);
+  const lines: string[] = [], unavailable: string[] = [];
+  try { await checkFallbackServices(unavailable, live.port, line => lines.push(line), ['opencode'], { limit: 5000, interval: 50 }); }
+  finally { await live.close(); }
+  expect(lines).toEqual(['opencode: grunt is still preparing this adapter; waiting', 'opencode: PASS — opencode answered through the grunt service']);
+  expect(unavailable).toEqual([]);
+});
+it('stops waiting at the limit and fails without retrying an adapter that is not preparing', async () => {
+  let calls = 0;
+  const sources = new Sources([fake('opencode', async () => { calls++; throw new SourceError('upstream', 'down'); }), fake('freebuff', async () => { throw new SourceError('upstream', 'down'); })]);
+  sources.preparing.add('opencode');
+  const live = await service(sources);
+  const lines: string[] = [];
+  try { await checkFallbackServices([], live.port, line => lines.push(line), ['opencode', 'freebuff'], { limit: 300, interval: 50 }); }
+  finally { await live.close(); }
+  expect(lines).toEqual(['opencode: grunt is still preparing this adapter; waiting', 'opencode: FAIL — grunt returned HTTP 503', 'freebuff: FAIL — grunt returned HTTP 503']);
+  expect(calls).toBeGreaterThan(1);
+});
+it('names a unit override whose MILO_SOURCES lacks an adapter and leaves it unchanged', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'milo-unit-test-'));
+  const dropIn = join(dir, '20-dots.conf'), other = join(dir, '10-other.conf');
+  const content = '[Service]\nEnvironment="MILO_SOURCES=freellmapi,opencode,dots"\n';
+  await writeFile(dropIn, content); await writeFile(other, '[Service]\nEnvironment="MILO_PORT=8788"\n');
+  const run = vi.fn(async (args: string[]) => args.includes('Environment')
+    ? 'GRUNT_DAEMON=1 MILO_PORT=8788 MILO_SOURCES=freellmapi,opencode,dots PATH=/usr/bin\n'
+    : `${other} ${dropIn}\n`);
+  const lines: string[] = [], unavailable: string[] = [];
+  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff', 'opencode'], () => serviceSources(run));
+  expect(lines).toEqual([`freebuff: FAIL — ${dropIn} sets MILO_SOURCES=freellmapi,opencode,dots, which lacks freebuff. Setup does not edit it; add freebuff there or remove that setting.`]);
+  expect(unavailable).toEqual(['freebuff']);
+  expect(await readFile(dropIn, 'utf8')).toBe(content);
+  expect(run.mock.calls.map(c => c[0])).toEqual([['show', 'milo.service', '-p', 'Environment', '--value'], ['show', 'milo.service', '-p', 'DropInPaths', '--value']]);
+  await checkServiceSources(unavailable, line => lines.push(line), ['opencode'], async () => undefined);
+  expect(lines).toHaveLength(1);
+  // An adapter that setup already marked unavailable still gets the override named.
+  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff'], () => serviceSources(run));
+  expect(lines[1]).toContain(`${dropIn} sets MILO_SOURCES=freellmapi,opencode,dots, which lacks freebuff`);
+  expect(unavailable).toEqual(['freebuff']);
 });
