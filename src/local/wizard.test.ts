@@ -29,18 +29,20 @@ it('adds the Pi provider without removing user providers and preserves it on rep
   expect(await readFile(path, 'utf8')).toBe('{invalid');
 });
 
-it('bootstraps a fresh Squire install before connecting, and leaves an existing session alone', async () => {
-  const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
+it('reuses working Squire without a session check or installer', async () => {
+  vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
+  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
+  vi.stubEnv('MILO_SETUP_NO_HUMAN', '1');
+  const run = vi.fn(async () => {}), hasBroker = vi.fn(async () => true);
+  await connectSquire({ hasBroker, run });
+  expect(run).not.toHaveBeenCalled();
+  expect(hasBroker).not.toHaveBeenCalled();
+});
+it('refuses to reinstall an existing broker when its probe fails', async () => {
+  vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('socket refused'));
   vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
   const run = vi.fn(async () => {});
-  await connectSquire({ hasSession: async () => false, run, installer: '/fixture/bin.js' });
-  expect(run).toHaveBeenCalledWith(process.execPath, [expect.stringContaining('bin.js'), 'connect', '--target=opencode', '--json'], true);
-  expect(connect).toHaveBeenCalledOnce();
-  run.mockClear();
-  await connectSquire({ hasSession: async () => true, run });
-  expect(run).not.toHaveBeenCalled();
-  vi.stubEnv('MILO_SETUP_NO_HUMAN', '1');
-  await expect(connectSquire({ hasSession: async () => false, run, installer: '/fixture/bin.js' })).rejects.toThrow('stopped before onboarding');
+  await expect(connectSquire({ hasBroker: async () => true, run })).rejects.toThrow('Existing trusty-squire-broker failed its connection probe: socket refused');
   expect(run).not.toHaveBeenCalled();
 });
 it('stops at a missing prerequisite with its fix before Squire or service changes', async () => {
@@ -48,11 +50,11 @@ it('stops at a missing prerequisite with its fix before Squire or service change
   await expect(preflight(run)).rejects.toThrow('npm install --global @mariozechner/pi-coding-agent');
   expect(run.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'pi']);
 });
-it('repairs a missing broker service while reusing an existing Squire session', async () => {
+it('installs once only when the probe fails and no broker exists', async () => {
   const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValueOnce(new Error('broker missing')).mockResolvedValue();
   vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
   const run = vi.fn(async () => {});
-  await connectSquire({ hasSession: async () => true, run, installer: '/fixture/bin.js' });
+  await connectSquire({ hasBroker: async () => false, run, installer: '/fixture/bin.js' });
   expect(run).toHaveBeenCalledOnce(); expect(connect).toHaveBeenCalledTimes(2);
 });
 
