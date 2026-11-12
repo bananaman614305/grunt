@@ -17,6 +17,8 @@ export function positive(value: string | undefined, fallback: number) {
   return number;
 }
 const exec = promisify(execFile);
+// freebuff doctor can take several seconds on a healthy machine (8 s measured).
+export const DOCTOR_TIMEOUT_MS = 30000;
 function logError(log: string): SourceError | undefined {
   const line = log.split('\n').find(line => /prompt_policy_refused|logged.?out|unauthorized|login required|not signed in|"code"\s*:\s*"quota"|quota[ _-](?:exceeded|exhausted|reached)|free[ _-]?hours.*(?:exhaust|exceed|empty)|(?:out of|no) free hours/i.test(line));
   if (!line) return;
@@ -71,7 +73,7 @@ export class Freebuff implements Source {
   async available() {
     try {
       const binary = await executable('freebuff'); await executable('tmux');
-      const { stdout } = await exec(binary, ['doctor'], { timeout: 5000, maxBuffer: 65536 });
+      const { stdout } = await exec(binary, ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536 });
       return /Freebuff doctor/i.test(stdout) && logError(stdout)?.code !== 'logged_out';
     } catch { return false; }
   }
@@ -79,7 +81,7 @@ export class Freebuff implements Source {
   async complete(request: ModelRequest, caller: AbortSignal) {
     const binary = await executable('freebuff'); await executable('tmux');
     let diagnostics: string;
-    try { diagnostics = (await exec(binary, ['doctor'], { timeout: 5000, maxBuffer: 65536, signal: caller })).stdout; }
+    try { diagnostics = (await exec(binary, ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536, signal: caller })).stdout; }
     catch { throw new SourceError('upstream', 'Freebuff startup check failed; run freebuff doctor'); }
     const diagnosticError = logError(diagnostics);
     if (diagnosticError) throw diagnosticError;

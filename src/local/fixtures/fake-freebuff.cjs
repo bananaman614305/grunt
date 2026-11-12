@@ -4,7 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-if (process.argv.includes('doctor')) { process.stdout.write(process.env.MILO_TEST_DOCTOR_ERROR || 'Freebuff doctor: checks passed'); process.exit(0); }
+if (process.argv.includes('doctor')) { setTimeout(() => { process.stdout.write(process.env.MILO_TEST_DOCTOR_ERROR || 'Freebuff doctor: checks passed'); process.exit(0); }, Number(process.env.MILO_TEST_DOCTOR_DELAY || 0)); return; }
 const cwd = process.argv[process.argv.indexOf('--cwd') + 1];
 const continued = process.argv[process.argv.indexOf('--continue') + 1];
 const chatId = process.argv.includes('--continue') ? continued : crypto.randomUUID();
