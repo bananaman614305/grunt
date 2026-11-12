@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
@@ -15,11 +16,18 @@ export class OpenCode implements Source {
   private sessions = new Map<string, string>();
   private busy = new Set<string>();
   private shutdown = new AbortController();
-  constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string; timeout?: number } = {}) {
+  constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); timeout?: number } = {}) {
     if (options.url) loopback(options.url);
   }
   private get fetcher() { return this.options.fetcher ?? fetch; }
   async available() { if (this.options.url) return true; try { await executable('opencode'); return true; } catch { return false; } }
+  async healthCheck() {
+    // Executable discovery cannot prove that the upstream login has recovered.
+    try {
+      const result = await this.complete({ model: this.id, messages: [{ role: 'user', content: 'Reply OK. Do not use tools or edit files.' }], tools: [], cwd: tmpdir(), stream: false }, AbortSignal.timeout(30000));
+      return Boolean(result.text);
+    } catch { return false; }
+  }
   private async server(): Promise<string> {
     if (this.options.url) return this.options.url.replace(/\/$/, '');
     if (this.starting) return this.starting;
@@ -41,11 +49,11 @@ export class OpenCode implements Source {
     return this.starting;
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
-    const turns = userTurns(request), prompt = turns.at(-1);
+    const turns = userTurns(request), prompt = request.handoffPrompt ?? turns.at(-1);
     if (!prompt) throw new SourceError('upstream', 'No user text in this request');
     const cwd = await realpath(request.cwd);
     const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
-    const prior = turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined;
+    const prior = this.sessions.get(key(turns)) ?? (turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined);
     const continuation = prior && !this.busy.has(prior) ? prior : undefined;
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 90000)]);
     let session: string | undefined, base: string | undefined;
@@ -53,7 +61,11 @@ export class OpenCode implements Source {
       ...(process.env.OPENCODE_SERVER_PASSWORD ? { Authorization: `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? 'opencode'}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}` } : {}) };
     const call = async (path: string, body: unknown) => {
       const res = await this.fetcher(`${base}${path}`, { method: 'POST', headers, redirect: 'error', signal, body: JSON.stringify(body) });
-      if (!res.ok) throw new SourceError(res.status === 403 ? 'refused' : res.status === 401 ? 'logged_out' : res.status === 429 ? 'quota' : 'upstream', `OpenCode returned HTTP ${res.status}`);
+      if (!res.ok) {
+        const header = res.headers.get('Retry-After');
+        const seconds = header === null ? NaN : /^\d+(?:\.\d+)?$/.test(header) ? Number(header) : (Date.parse(header) - Date.now()) / 1000;
+        throw new SourceError(res.status === 403 ? 'refused' : res.status === 401 ? 'logged_out' : res.status === 429 ? 'quota' : 'upstream', `OpenCode returned HTTP ${res.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined);
+      }
       return await res.json();
     };
     try {
@@ -61,14 +73,16 @@ export class OpenCode implements Source {
       session = continuation ?? (await call('/session', { title: 'grunt' })).id;
       if (!session || !/^[a-zA-Z0-9_-]+$/.test(session)) throw new SourceError('upstream', 'OpenCode returned an invalid session');
       this.busy.add(session);
-      const reply = await call(`/session/${session}/message`, { model: { providerID: 'opencode', modelID: this.options.model ?? 'big-pickle' }, parts: [{ type: 'text', text: prompt }] });
+      const modelID = typeof this.options.model === 'function' ? this.options.model() : this.options.model ?? 'big-pickle';
+      const reply = await call(`/session/${session}/message`, { model: { providerID: 'opencode', modelID }, parts: [{ type: 'text', text: prompt }] });
+      const parts: { type: string; text?: string }[] = reply.parts ?? [];
+      const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (reply.info?.error) {
         const error = reply.info.error;
         if (error.name === 'ProviderAuthError' || error.data?.statusCode === 401) throw new SourceError('logged_out', 'OpenCode free model requires sign-in');
+        if (error.data?.statusCode === 429) throw new SourceError('quota', 'OpenCode free model quota exhausted', undefined, text);
         throw new SourceError('refused', 'OpenCode provider refused the request');
       }
-      const parts: { type: string; text?: string }[] = reply.parts ?? [];
-      const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (!text) throw new SourceError('upstream', 'OpenCode returned no assistant text');
       this.sessions.set(key(turns), session);
       return { text };

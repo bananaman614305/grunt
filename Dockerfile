@@ -5,6 +5,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
+COPY registry ./registry
 RUN pnpm build
 RUN pnpm prune --prod
 

@@ -111,6 +111,7 @@ export function squireEnvironment() {
   };
 }
 export class BrowserSquire implements SetupSquire {
+  constructor(private options: { background?: boolean; signal?: AbortSignal } = {}) {}
   private client = new Client({ name: 'grunt setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
   private handoffs: { url: string; close(): void }[] = [];
@@ -149,7 +150,7 @@ export class BrowserSquire implements SetupSquire {
     }
   }
   async call(name: string, args: ObjectValue, connectionCheck = false): Promise<ObjectValue> {
-    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 60000 }).catch(error => {
+    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 60000, ...(this.options.signal ? { signal: this.options.signal } : {}) }).catch(error => {
       if (connectionCheck) throw error;
       throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
     });
@@ -182,6 +183,7 @@ export class BrowserSquire implements SetupSquire {
   async signup(service: string, url: string, goal: string): Promise<void> {
     const deadline = Date.now() + 600000;
     while (Date.now() < deadline) {
+      this.options.signal?.throwIfAborted();
       const result = await this.drive(service, url, goal);
       if (result.run.state === 'completed') return;
       if (result.run.state !== 'running') throw new Error(`${service}: signup could not be completed`);
@@ -211,6 +213,10 @@ export class BrowserSquire implements SetupSquire {
     if (humanStep && this.sessions.has(provider)) {
       const url = await this.humanHandoff(this.sessions.get(provider)!);
       console.log(`Complete ${provider} verification in this browser: ${url}`);
+      if (this.options.background) {
+        await delay(5000, undefined, this.options.signal ? { signal: this.options.signal } : {});
+        return { run: { id: provider, state: 'running' }, decision: 'silent' };
+      }
       const { confirm, isCancel } = await import('@clack/prompts');
       const done = await confirm({ message: 'Verification complete? Resume signup.', initialValue: true });
       if (isCancel(done) || !done) throw new Error('Provider verification cancelled');

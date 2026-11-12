@@ -57,7 +57,8 @@ export function decode(body: Obj, api: string, fallback: string): ModelRequest {
   const rawTurns = api === 'responses' ? (typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : array(body.input)) : array(body.messages);
   const userMessages = rawTurns.map(object).filter(m => (m.role === 'user' || (api === 'responses' && !m.role && !m.type))).map(m => typeof m.content === 'string' ? userText(m.content) : array(m.content).map(object).filter(b => b.type === 'text' || b.type === 'input_text').map(b => userText(String(b.text ?? ''))).filter(t => t.length > 0).join('\n')).filter(t => t.length > 0);
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
-  return { model: String(body.model ?? 'milo'), messages, userMessages, tools, cwd, stream: body.stream === true, ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  const imageInput = /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
+  return { model: String(body.model ?? 'milo'), messages, userMessages, tools, cwd, stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
@@ -138,24 +139,19 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         const err = e instanceof SourceError ? e : new SourceError('upstream', 'grunt source failed');
         return { err, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type: api === 'messages' ? 'api_error' : 'server_error', code: err.code, message: err.message } } };
       };
-      if (request.stream) return streamSSE(c, async stream => {
-        stream.onAbort(abort);
-        // Send headers immediately and keep slow app turns alive without inventing model text.
-        await stream.write(': grunt is waiting for the source\n\n');
-        const ping = setInterval(() => { void stream.write(': keepalive\n\n').catch(abort); }, 15000);
-        try {
-          const result = encode(await complete(controller.signal), request.model, api);
-          for (const event of events(result, api)) await stream.writeSSE(event);
-        } catch (e) {
-          const { body } = failure(e);
-          await stream.writeSSE({ ...(api !== 'chat' ? { event: 'error' } : {}), data: JSON.stringify(api === 'responses' ? { type: 'error', code: body.error.code, message: body.error.message, param: null, sequence_number: 0 } : body) });
-        } finally { clearInterval(ping); c.req.raw.signal.removeEventListener('abort', abort); }
-      });
       try {
-        return c.json(encode(await complete(controller.signal), request.model, api));
+        // Agent adapters return final text, not incremental tokens. Resolve routing
+        // before committing SSE headers so exhausted routes still return HTTP 429.
+        const result = encode(await complete(controller.signal), request.model, api);
+        if (request.stream) return streamSSE(c, async stream => {
+          stream.onAbort(abort);
+          for (const event of events(result, api)) await stream.writeSSE(event);
+        });
+        return c.json(result);
       } catch (e) {
         const { err, body } = failure(e);
-        return c.json(body, err.code === 'timeout' ? 504 : 503);
+        if (err.retryAfter !== undefined) c.header('Retry-After', String(Math.max(1, Math.ceil(err.retryAfter))));
+        return c.json(body, err.code === 'quota' ? 429 : err.code === 'timeout' ? 504 : 503);
       } finally { c.req.raw.signal.removeEventListener('abort', abort); }
     });
   }

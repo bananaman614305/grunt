@@ -1,0 +1,38 @@
+name: Publish adapter registry
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-milo-gateway
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.actor == 'lunchboxfortwo' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Validate registry before publication
+        run: node dist/registry.js registry/adapters.json
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Publish validated registry atomically on the gateway volume
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl ssh console --app milo-gateway --user root --command 'rm -f /data/registry.pending.json'
+          flyctl ssh sftp shell --app milo-gateway <<'SFTP'
+          put registry/adapters.json /data/registry.pending.json
+          SFTP
+          flyctl ssh console --app milo-gateway --user root --command 'sh -c "chown node:node /data/registry.pending.json && chmod 600 /data/registry.pending.json && mv /data/registry.pending.json /data/registry.json"'
+      - name: Verify public registry
+        run: |
+          curl --fail --retry 3 --retry-delay 2 https://api.grunt.run/v1/registry > /tmp/published-registry.json
+          node dist/registry.js /tmp/published-registry.json
+          diff -u <(jq -S . registry/adapters.json) <(jq -S . /tmp/published-registry.json)

@@ -44,7 +44,7 @@ it('handles a missing binary without changing the free source chain', async () =
   vi.stubEnv('PATH', dir + '/missing');
   expect(await new Codex().available()).toBe(false);
   await expect(new Codex().complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'not_installed' });
-  expect(configure({}).sources.map(s => s.id)).toEqual(['freellmapi', 'opencode', 'kilo']);
+  expect(configure({}).sources.map(s => s.id)).toEqual(['freebuff', 'opencode']);
 });
 it('passes exact text and cwd, parses only the final agent text, and resumes through the API', async () => {
   const source = new Codex({ model: 'custom' });
@@ -99,6 +99,7 @@ it('never launches Codex for default-config API requests', async () => {
   vi.stubGlobal('fetch', fetcher);
   try {
     const sources = configure({ MILO_FREELLMAPI_KEY: 'test' });
+    for (const source of sources.sources) { vi.spyOn(source, 'available').mockResolvedValue(true); vi.spyOn(source, 'complete').mockResolvedValue({ text: 'free answer' }); }
     const app = createLocalApp(sources);
     for (const model of ['milo', 'codex']) {
       const res = await app.request('http://localhost:8788/v1/chat/completions', {
@@ -108,7 +109,7 @@ it('never launches Codex for default-config API requests', async () => {
       expect(res.status).toBe(200);
       expect((await res.json()).choices[0].message.content).toBe('free answer');
     }
-    expect(sources.sources.map(s => s.id)).toEqual(['freellmapi', 'opencode', 'kilo']);
+    expect(sources.sources.map(s => s.id)).toEqual(['freebuff', 'opencode']);
     expect(fs.existsSync(join(dir, 'calls'))).toBe(false);
     expect(configure({ MILO_SOURCES: 'opencode,codex,freellmapi' }).sources.map(s => s.id)).toEqual(['opencode', 'codex', 'freellmapi']);
   } finally { vi.unstubAllGlobals(); }

@@ -56,7 +56,7 @@ it('models, failover, last typed error and loopback binding', async () => {
   expect((await (await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: {'Content-Type':'application/json'}, body })).json()).choices[0].message.content).toBe('hello');
   for (const path of paths) {
     const response = await createLocalApp(new Sources([bad])).request(`http://localhost:8788/v1/${path}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ input: 'hello', messages: [{ role: 'user', content: 'hello' }] }) });
-    expect(response.status).toBe(503); expect((await response.json()).error.code).toBe('quota');
+    expect(response.status).toBe(429); expect((await response.json()).error.code).toBe('quota');
   }
   const server = serve({ fetch: app.fetch, hostname: HOST, port: 0 });
   await new Promise<void>(resolve => server.once('listening', resolve));
@@ -229,7 +229,7 @@ it.each([false, true])('attributes shared-basename chats and follow-ups to their
   try {
     const first=quota ? 'quota please' : 'same user text';
     const [ra,rb]=await Promise.all([send(a,[{role:'user',content:first}]),send(b,[{role:'user',content:quota ? 'different user text' : first}])]);
-    if(quota) expect(ra).toMatchObject({status:503,body:{error:{code:'quota'}}});
+    if(quota) expect(ra).toMatchObject({status:429,body:{error:{code:'quota'}}});
     else expect(JSON.parse(ra.body.choices[0].message.content)).toEqual({cwd:a,chat:'A-chat'});
     expect(rb.status).toBe(200);
     expect(JSON.parse(rb.body.choices[0].message.content)).toEqual({cwd:b,chat:'B-chat'});
@@ -286,6 +286,23 @@ it('starts the daemon through the milo-local bin symlink',async()=>{
   const {spawn}=await import('node:child_process');
   const dir=await mkdtemp(join(tmpdir(),'milo-bin-'));
   await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,'milo-local'));
-  const child=spawn(process.execPath,['--import','tsx',join(dir,'milo-local')],{env:{...process.env,MILO_PORT:'18789',MILO_SOURCES:'freebuff'},stdio:['ignore','ignore','pipe']});
+  const child=spawn(process.execPath,['--import','tsx',join(dir,'milo-local'),'serve'],{env:{...process.env,MILO_PORT:'18789',MILO_SOURCES:'dots',MILO_CONFIG_DIR:dir},stdio:['ignore','ignore','pipe']});
   try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{child.kill();await rm(dir,{recursive:true,force:true});}
+});
+it('starts setup from the usegrunt bin without arguments', async () => {
+  const { symlink, writeFile } = await import('node:fs/promises');
+  const { execFile } = await import('node:child_process');
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-bin-'));
+  try {
+    const bin = join(directory, 'usegrunt');
+    await symlink(new URL('./main.ts', import.meta.url).pathname, bin);
+    await writeFile(join(directory, 'npm'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const result = await new Promise<{ output: string; code: number | string | undefined }>(resolve => {
+      execFile(process.execPath, ['--import', 'tsx', bin], { env: { ...process.env, PATH: directory, GRUNT_DAEMON: '' }, timeout: 5000 }, (error, stdout, stderr) => resolve({ output: stdout + stderr, code: error?.code }));
+    });
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('Sign in to Google once');
+    expect(result.output).toContain('npm install --global @mariozechner/pi-coding-agent');
+    expect(result.output).not.toContain('grunt model API:');
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
