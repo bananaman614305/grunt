@@ -135,13 +135,13 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       const abort = () => controller.abort();
       c.req.raw.signal.addEventListener('abort', abort, { once: true });
       const failure = (e: unknown) => {
-        const err = e instanceof SourceError ? e : new SourceError('upstream', 'Milo source failed');
+        const err = e instanceof SourceError ? e : new SourceError('upstream', 'grunt source failed');
         return { err, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type: api === 'messages' ? 'api_error' : 'server_error', code: err.code, message: err.message } } };
       };
       if (request.stream) return streamSSE(c, async stream => {
         stream.onAbort(abort);
         // Send headers immediately and keep slow app turns alive without inventing model text.
-        await stream.write(': Milo is waiting for the source\n\n');
+        await stream.write(': grunt is waiting for the source\n\n');
         const ping = setInterval(() => { void stream.write(': keepalive\n\n').catch(abort); }, 15000);
         try {
           const result = encode(await complete(controller.signal), request.model, api);

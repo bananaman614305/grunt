@@ -74,7 +74,7 @@ export class Codex {
       }
       if (!text) throw new SourceError('upstream', 'Codex returned no assistant text');
       if (thread || session) this.sessions.set(key(turns), thread ?? session!);
-      console.error('Milo source: codex');
+      console.error('grunt source: codex');
       return { text };
     } finally { if (session) this.busy.delete(session); }
   }

@@ -1,4 +1,4 @@
-name: publish
+name: publish usegrunt
 on:
   workflow_dispatch:
   push:

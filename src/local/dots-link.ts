@@ -6,7 +6,7 @@ import { SourceError } from './source.js';
 
 export function dotsConfigDir(env = process.env) { return env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo'); }
 export function dotsGateway(env = process.env) {
-  const url = new URL(env.MILO_DOTS_URL ?? 'https://usemilo.dev');
+  const url = new URL(env.MILO_DOTS_URL ?? 'https://api.grunt.run');
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)))) throw new SourceError('upstream', 'MILO_DOTS_URL must be an HTTPS origin or a loopback test origin');
   return url.origin;
 }
@@ -22,7 +22,7 @@ export async function readDotsLink(env = process.env): Promise<{ deviceSecret: s
 // Pairing operations share one device secret even when two browser windows approve concurrently.
 const pairing = new Map<string, Promise<unknown>>();
 export async function redeemDots(input: { ticket?: string; code?: string }, env = process.env, fetcher: typeof fetch = fetch, expectedReturn?: string) {
-  if ((input.ticket && !/^[A-Za-z0-9_-]{43}$/.test(input.ticket)) || (input.code && !/^[A-Z0-9_-]{16}$/.test(input.code)) || (!input.ticket && !input.code)) throw new SourceError('upstream', 'Invalid Milo pairing');
+  if ((input.ticket && !/^[A-Za-z0-9_-]{43}$/.test(input.ticket)) || (input.code && !/^[A-Z0-9_-]{16}$/.test(input.code)) || (!input.ticket && !input.code)) throw new SourceError('upstream', 'Invalid grunt pairing');
   const config = dotsConfigDir(env), gateway = dotsGateway(env);
   const prior = pairing.get(config) ?? Promise.resolve();
   const result = prior.catch(() => {}).then(async () => {
@@ -34,7 +34,7 @@ export async function redeemDots(input: { ticket?: string; code?: string }, env 
       if (!response.ok) throw new Error();
       value = await response.json() as { paired?: boolean; return?: string };
       if (!value.paired || !validPairReturn(value.return, gateway) || (expectedReturn !== undefined && value.return !== expectedReturn)) throw new Error();
-    } catch { throw new SourceError('upstream', 'Milo pairing was refused or expired. Return to the Allow page and try again.'); }
+    } catch { throw new SourceError('upstream', 'grunt pairing was refused or expired. Return to the Allow page and try again.'); }
     // A refused ticket never creates or replaces local configuration.
     await mkdir(config, { recursive: true, mode: 0o700 });
     const temporary = join(config, `.dots-${randomUUID()}.tmp`);
@@ -51,13 +51,13 @@ export function validPairReturn(value: unknown, gateway: string): value is strin
   catch { return false; }
 }
 export async function dotsLink(code: string | undefined, env = process.env, fetcher: typeof fetch = fetch, print: (text: string) => void = console.log) {
-  if (!code) throw new SourceError('upstream', 'Use milo dots link <code> only with the fallback code from the Allow page');
+  if (!code) throw new SourceError('upstream', 'Use usegrunt dots link <code> only with the fallback code from the Allow page');
   const target = await redeemDots({ code: code.toUpperCase() }, env, fetcher);
-  print('Milo is paired. Return to the Allow page and choose Continue to ChatGPT.');
+  print('grunt is paired. Return to the Allow page and choose Continue to ChatGPT.');
   return target;
 }
 export async function pairDots(request: Request, env = process.env, fetcher: typeof fetch = fetch) {
-  const reject = () => new Response('Milo refused this pairing. Return to the Allow page and try again.', { status: 403, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
+  const reject = () => new Response('grunt refused this pairing. Return to the Allow page and try again.', { status: 403, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
   if (!env.MILO_SOURCES?.split(',').some(id => id.trim() === 'dots')) return reject();
   const gateway = dotsGateway(env), url = new URL(request.url);
   let referrer: URL;

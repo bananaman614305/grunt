@@ -51,7 +51,7 @@ it.each(['deadline', 'caller', 'shutdown'] as const)('handles OpenCode %s withou
     } else {
       expect('error' in result).toBe(true);
       expect(next).not.toHaveBeenCalled();
-      expect(log).toHaveBeenCalledWith('Milo source: opencode cancelled for model milo');
+      expect(log).toHaveBeenCalledWith('grunt source: opencode cancelled for model milo');
       expect(log.mock.calls.flat().join('\n')).not.toContain('failed (timeout)');
       expect(timeout).toHaveBeenCalledWith(90000);
     }

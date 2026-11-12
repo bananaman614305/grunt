@@ -11,7 +11,7 @@ const exec = promisify(execFile);
 const moduleUrl = (name: string) => pathToFileURL(require.resolve(name).replace('/dist/cjs/', '/dist/esm/')).href;
 
 let dir: string;
-const instruction = 'Connect Trusty Squire separately, then rerun milo setup';
+const instruction = 'Connect Trusty Squire separately, then rerun usegrunt setup';
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'milo-squire-connection-'));
   vi.stubEnv('MILO_SQUIRE_HOME', '');

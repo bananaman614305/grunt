@@ -3,10 +3,10 @@ import { dirname, join } from 'node:path';
 import { command, configDir, installBackgroundService } from './wizard.js';
 import { loopback } from './freellmapi.js';
 
-// Published FreeLLMAPI v0.16.24 source, pinned independently of Milo releases.
+// Published FreeLLMAPI v0.16.24 source, pinned independently of grunt releases.
 export const FREELLMAPI_REVISION = '4c8c2f834b587b6acc3f00698ad8f6468bea1aa2';
 export async function ensureNativeRouter() {
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Milo setup requires Linux or macOS');
+  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt setup requires Linux or macOS');
   const directory = join(configDir(), 'freellmapi'), source = join(directory, 'source');
   const entry = join(source, 'server', 'dist', 'index.js');
   await mkdir(directory, { recursive: true, mode: 0o700 });

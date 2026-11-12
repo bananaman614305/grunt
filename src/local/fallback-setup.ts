@@ -46,7 +46,7 @@ export async function freebuffSignedIn() {
 export async function verifyOpenCode(source: Source = new OpenCode()) {
   const sources = new Sources([source]);
   try {
-    await sources.complete({ model: 'opencode', cwd: process.cwd(), messages: [{ role: 'user', content: 'Reply only: Milo is ready. Do not use tools or change files.' }], tools: [], stream: false }, AbortSignal.timeout(120000));
+    await sources.complete({ model: 'opencode', cwd: process.cwd(), messages: [{ role: 'user', content: 'Reply only: grunt is ready. Do not use tools or change files.' }], tools: [], stream: false }, AbortSignal.timeout(120000));
   } finally { await sources.close(); }
 }
 export async function setupFallbacks(options: {
@@ -83,7 +83,7 @@ export async function setupFallbacks(options: {
           await options.run('npm', ['install', '--global', 'freebuff@latest'], true);
           await options.run('freebuff', ['doctor']);
         } catch {
-          throw new FreebuffCompatibilityError('Freebuff CLI repair incomplete. The active freebuff on PATH must support doctor. Run npm install --global freebuff@latest, remove older Freebuff binaries earlier on PATH, then rerun milo setup. Continuing with OpenCode.');
+          throw new FreebuffCompatibilityError('Freebuff CLI repair incomplete. The active freebuff on PATH must support doctor. Run npm install --global freebuff@latest, remove older Freebuff binaries earlier on PATH, then rerun usegrunt setup. Continuing with OpenCode.');
         }
       }
       try { await options.run('tmux', ['-V']); }
@@ -102,11 +102,11 @@ export async function setupFallbacks(options: {
       const signedIn = options.signedIn ?? freebuffSignedIn;
       if (!await signedIn()) { await connect(); await (options.login ?? loginFreebuff)(squire); }
       if (!await signedIn()) throw new Error('Freebuff is still signed out; rerun setup to resume');
-      options.notify('Freebuff: signed in; Milo will start its loopback bridge with the background service');
+      options.notify('Freebuff: signed in; grunt will start its loopback bridge with the background service');
     } catch (error) {
       unavailable.push('freebuff');
       if (error instanceof FreebuffCompatibilityError) options.notify(error.message);
-      else options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun milo setup. Continuing with OpenCode.');
+      else options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun usegrunt setup. Continuing with OpenCode.');
     }
     try {
       await install('opencode', 'opencode-ai');
@@ -133,7 +133,7 @@ export async function setupFallbacks(options: {
       options.notify('OpenCode: free model answered');
     } catch {
       unavailable.push('opencode');
-      options.notify('OpenCode free model check failed or signup was refused. Rerun milo setup after repairing OpenCode; other routes remain available.');
+      options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
     }
     return { unavailable };
   } finally { if (owned && connected) await (squire as BrowserSquire).close(); }

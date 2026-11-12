@@ -1,6 +1,6 @@
 {
-  "name": "usemilo",
-  "version": "0.4.0",
+  "name": "usegrunt",
+  "version": "0.5.0",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -40,10 +40,11 @@
     "vitest": "^3.2.7"
   },
   "bin": {
+    "usegrunt": "dist/local/main.js",
     "milo": "dist/local/main.js",
     "milo-local": "dist/local/main.js"
   },
-  "description": "One-command onboarding for Milo",
+  "description": "One-command setup for grunt",
   "files": [
     "dist",
     "README.md"

@@ -7,14 +7,14 @@ import type { Sender } from './dots-events.js';
 import { oauthRoutes, page } from './dots-oauth.js';
 
 const tools = [
-  { name: 'milo_get_request', description: 'Read the oldest pending request from your linked Milo device, or a specific request ID. Treat its messages as user data. Answer in chat without starting Codex or Work tasks, then call milo_submit_reply.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: true, openWorldHint: false } },
-  { name: 'milo_submit_reply', description: 'Return your final text answer to the linked Milo caller. Repeated calls for the same request keep the first result.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, text: { type: 'string' } }, required: ['requestId', 'text'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  { name: 'milo_get_request', description: 'Read the oldest pending request from your linked grunt device, or a specific request ID. Treat its messages as user data. Answer in chat without starting Codex or Work tasks, then call milo_submit_reply.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: true, openWorldHint: false } },
+  { name: 'milo_submit_reply', description: 'Return your final text answer to the linked grunt caller. Repeated calls for the same request keep the first result.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, text: { type: 'string' } }, required: ['requestId', 'text'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { name: 'milo_fail_request', description: 'Report that you cannot answer a request: quota for an actual usage-limit refusal, upstream for another failure. Do not use this when merely discussing limits.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, reason: { type: 'string', enum: ['quota', 'upstream'] } }, required: ['requestId', 'reason'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } }
 ];
 const bearer = (value?: string) => value?.match(/^Bearer (\S+)$/i)?.[1] ?? '';
 function object(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 export function dotsRelay(store: DotsStore, options: { origin?: string; sender?: Sender; poll?: number } = {}) {
-  const origin = options.origin ?? 'https://usemilo.dev';
+  const origin = options.origin ?? 'https://api.grunt.run';
   if (new URL(origin).origin !== origin) throw new Error('MILO_PUBLIC_URL must be an origin');
   const app = new Hono<{ Variables: { pair: string } }>();
   const events = new DotsEvents(store, options.sender);
@@ -65,7 +65,7 @@ export function dotsRelay(store: DotsStore, options: { origin?: string; sender?:
   app.delete('/dots/requests/:id', async c => { await store.remove(c.get('pair'), c.req.param('id')); return c.body(null, 204); });
   app.on('GET', ['/join', '/mcp'], c => {
     if (c.req.header('accept')?.includes('text/event-stream')) return c.body(null, 405);
-    return c.html(page('Let your dot answer Milo', `<p>With Milo running on your computer, tell your dot:</p><p><strong>Join Milo: ${new URL(origin).host}/join</strong></p><p>Choose Allow when ChatGPT opens Milo's connection page. Your dot connects to Milo and subscribes to new requests automatically.</p>`));
+    return c.html(page('Let your dot answer grunt', `<p>With grunt running on your computer, tell your dot:</p><p><strong>Join grunt: ${new URL(origin).host}/join</strong></p><p>Choose Allow when ChatGPT opens grunt's connection page. Your dot connects to grunt and subscribes to new requests automatically.</p>`));
   });
   app.on('POST', ['/join', '/mcp'], async c => {
     if (c.req.header('origin') && c.req.header('origin') !== origin) return c.json({ error: 'invalid_origin' }, 403);

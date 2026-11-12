@@ -10,10 +10,10 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT m
 const agent = await MiloAgent.open({ ...loadConfig(process.env.MILO_CONFIG), dbUrl: process.env.MILO_DB ?? "file:/data/milo.db" });
 const dotsStore = new DotsStore(agent.store.db);
 await dotsStore.init();
-const relay = dotsRelay(dotsStore, { origin: process.env.MILO_PUBLIC_URL ?? 'https://usemilo.dev' });
+const relay = dotsRelay(dotsStore, { origin: process.env.MILO_PUBLIC_URL ?? 'https://api.grunt.run' });
 const stopRelay = relay.start();
 const app = relay.app.route('/', agentRoutes(agent));
-const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`Milo is listening on port ${port}. Open /chat.`));
+const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`grunt is listening on port ${port}. Open /chat.`));
 let stopping = false;
 async function stop() {
   if (stopping) return;
