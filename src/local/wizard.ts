@@ -163,8 +163,8 @@ export async function checkServiceSources(unavailable: string[], notify = consol
   const unit = await read();
   if (!unit) return;
   for (const id of adapters) {
-    if (unit.sources.includes(id) || unavailable.includes(id)) continue;
-    unavailable.push(id);
+    if (unit.sources.includes(id)) continue;
+    if (!unavailable.includes(id)) unavailable.push(id);
     notify(`${id}: FAIL — ${unit.origin} sets MILO_SOURCES=${unit.sources.join(',')}, which lacks ${id}. Setup does not edit it; add ${id} there or remove that setting.`);
   }
 }
@@ -175,12 +175,12 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
       if (unavailable.includes(source)) { notify(`${source}: FAIL — setup incomplete`); continue; }
       const deadline = Date.now() + wait.limit;
       let failure: string | undefined, waiting = false;
-      for (;;) {
+      for (let attempt = 1; ; attempt++) {
         let preparing = false;
         try {
           const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files.` }], stream: false, max_tokens: 256 }),
+            body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files. Check ${attempt}.` }], stream: false, max_tokens: 256 }),
             signal: AbortSignal.timeout(120000)
           });
           preparing = response.headers.get('x-grunt-preparing')?.split(',').includes(source) ?? false;
@@ -191,7 +191,8 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
           else if (!result.choices?.[0]?.message?.content?.trim()) failure = 'no text returned';
           else failure = undefined;
         } catch { failure = 'grunt did not answer'; }
-        // Retry only while grunt still runs this adapter's background setup.
+        // Retry only while grunt still runs this adapter's background setup. Each attempt
+        // is a new prompt, so the router does not keep a fallback source from an earlier try.
         if (!failure || !preparing || Date.now() + wait.interval > deadline) break;
         if (!waiting) { waiting = true; notify(`${source}: grunt is still preparing this adapter; waiting`); }
         await delay(wait.interval);

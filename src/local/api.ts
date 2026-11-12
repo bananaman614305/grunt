@@ -145,6 +145,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         const completion = await complete(controller.signal);
         const source = answeredBy.get(completion);
         if (source) c.header('X-Grunt-Source', source);
+        if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
         const result = encode(completion, request.model, api);
         if (request.stream) return streamSSE(c, async stream => {
           stream.onAbort(abort);
