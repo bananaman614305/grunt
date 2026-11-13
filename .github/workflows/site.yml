@@ -1,0 +1,31 @@
+name: site
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-grunt-site
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the page has its film
+        run: |
+          test -f site/index.html
+          test "$(ls site/film/wide | wc -l)" -eq 360
+          test "$(ls site/film/tall | wc -l)" -eq 180
+      - name: Deploy site/ to Cloudflare Pages
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' && env.PAGES_PROJECT != ''
+        run: npx --yes wrangler@4 pages deploy site --project-name "$PAGES_PROJECT" --branch main
+      - name: Say why nothing was deployed
+        if: env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' || env.PAGES_PROJECT == ''
+        run: echo "::warning::grunt.run was not deployed. Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets and the CLOUDFLARE_PAGES_PROJECT variable to this repository, then re-run this workflow."
