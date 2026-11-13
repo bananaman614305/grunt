@@ -23,4 +23,11 @@ The film was made in Blender for this site.
   WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
   COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- **Sound effects:** public-domain (CC0) recordings from [Freesound](https://freesound.org), trimmed and levelled:
+  mine cart on rails (`minecart.wav` by wmquincy101, sound 351382), iron gate (`cemeterygate1.aif` and
+  `cemeterygate14.aif` by celadon_noise, 399448 and 399451), metal clank (`MetalClank2` by Oddworld, 171246),
+  heavy thud (`Heavy Metal Thud on Ground` by 7of9Designs, 640204), flame catching (`Torch - Ignite flame on soft` by
+  ldezem, 386385), click (`Clic sound` by Lunevix, 323821), typing (`Keyboard typing` by Breviceps, 447909).
+  The wind is synthesised.
+- **Music:** generated for this site with [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5).
 - **Fonts:** Big Shoulders Display, IBM Plex Sans and IBM Plex Mono, served by Google Fonts (SIL Open Font License).
