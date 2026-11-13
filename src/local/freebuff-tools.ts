@@ -4,8 +4,6 @@ import type { ValidateFunction, AnySchema } from 'ajv';
 import { SourceError } from './source.js';
 import type { Completion, ModelRequest, ToolCall } from './source.js';
 
-// Draft 7 only. No remote refs, coercion, defaults, or removal of extra properties.
-const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, validateFormats: true, addUsedSchema: false });
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const fail = () => new SourceError('upstream', 'Freebuff JSON bridge rejected an invalid envelope or tool conversation');
@@ -19,6 +17,9 @@ export class FreebuffTools {
   private validators = new Map<string, ValidateFunction>();
   private fingerprint: string;
   constructor(private request: ModelRequest) {
+    // Ajv retains schema objects in its cache. Keep that cache request-local.
+    // Draft 7 only. No remote refs, coercion, defaults, or removal of extra properties.
+    const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, validateFormats: true, addUsedSchema: false });
     for (const tool of request.tools) {
       const fn = tool.function;
       if (tool.type !== 'function' || !object(fn) || typeof fn.name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(fn.name) || this.validators.has(fn.name) || !object(fn.parameters)) throw fail();

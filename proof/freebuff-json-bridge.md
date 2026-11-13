@@ -31,11 +31,29 @@ contexts, cancellation, bounded repair, fallback, context preservation, tool
 result injection serialization, fresh conversations, and native-tool rejection.
 Prompt injection resistance of a live model has not been established.
 
-Validation: `pnpm lint`, `pnpm build` and the complete test suite passed (236
-tests at that run). The subsequent caller/shutdown cancellation cases and all
-other bridge regressions passed in the focused suite (22 tests). Both PF1
-commands above passed. No existing automated tests were skipped. The live
-Freebuff round trip and skill run were deferred for the limitations below.
+Validation after the validator lifetime fix: `pnpm lint`, `pnpm build` and the
+complete test suite passed (238 tests). The PF1 bridge/skill command above passed
+again. No existing automated tests were skipped. The live Freebuff round trip
+and skill run were deferred for the limitations below.
+
+## Validator lifetime regression
+
+Reproduction PF-memory: successive bridge requests compile fresh schema objects
+into a shared Ajv instance, whose cache retains them after the request finishes.
+The independent reviewer measured retained heap growth (about 77 MB over 3000
+requests with seven tools) before the fix.
+
+Ajv now belongs to each bridge request, so its schema cache can be collected with
+that request. A deterministic regression constructs bridges from fresh identical
+schema objects and verifies they do not share the retaining compiler. It failed
+before the fix (one shared compiler across 30 requests) and passes afterward.
+
+A built-module measurement with Node `--expose-gc`, seven synthetic tool schemas,
+100 warm-up requests, and explicit collection before and after 3000 additional
+requests measured heap from 8,354,688 bytes to 8,050,072 bytes (a decrease of
+304,616 bytes). This sample confirms the reported retention pattern is gone;
+absolute heap size depends on the runtime and workload. It does not establish
+live Freebuff behavior.
 
 ## Live limitations
 

@@ -8,6 +8,7 @@ import { Sources, SourceError } from './source.js';
 import type { ModelRequest } from './source.js';
 import type { Multiplexer } from './multiplexer.js';
 import { configure } from './main.js';
+import { Ajv } from 'ajv';
 
 const request: ModelRequest = { cwd: '/tmp', model: 'freebuff', stream: false, messages: [{role:'system',content:'Follow skill instructions'}, {role:'user',content:'read the file'}], tools: [{type:'function',function:{name:'read',parameters:{type:'object',properties:{path:{type:'string',minLength:1}},required:['path'],additionalProperties:false}}}] };
 const envelope = {version:1,type:'calls',calls:[{name:'read',arguments:{path:'a'}}]};
@@ -56,6 +57,19 @@ it('preserves system/skill context, assistant calls and correlated tool data wit
 it('fails closed on unsupported tool schemas and duplicate definitions', () => {
   expect(() => new FreebuffTools({...request,tools:[...request.tools,...request.tools]})).toThrow();
   expect(() => new FreebuffTools({...request,tools:[{type:'function',function:{name:'read',parameters:{$ref:'https://invalid.example/schema'}}}]})).toThrow(/draft 7/);
+});
+
+it('does not retain schemas from successive requests in a shared validator', () => {
+  const compile = vi.spyOn(Ajv.prototype, 'compile');
+  try {
+    for (let index = 0; index < 30; index++) {
+      const bridge = new FreebuffTools(structuredClone(request));
+      expect(bridge.parse(JSON.stringify(envelope)).calls![0]!.function.name).toBe('read');
+    }
+    // A process-wide Ajv cache holds each fresh schema object indefinitely.
+    // Each request must own its compiler so the cache dies with that request.
+    expect(new Set(compile.mock.contexts).size).toBe(30);
+  } finally { compile.mockRestore(); }
 });
 
 it('retains default routing and explicitly opts the adapter into tool routing', () => {
