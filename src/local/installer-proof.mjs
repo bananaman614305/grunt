@@ -35,7 +35,7 @@ try {
     preflight: () => preflight(run),
     connectSquire: async () => { googleSignins++; events.push('local broker installed; one Google session connected (stand-in)'); },
     setup: async () => { throw new Error('Launch installer must not provision unrelated providers'); },
-    loadRegistry: async () => bundledRegistry,
+    loadRegistry: async () => ({ registry: bundledRegistry, origin: 'bundled' }),
     setupFallbacks: options => setupFallbacks({ ...options, run, squire, signedIn: async () => signedIn,
       login: async browser => { await browser.signup('freebuff', 'https://freebuff.example.test/login', 'Pair free account'); signedIn = true; }, verify: async () => {} }),
     installService: async () => {
@@ -48,12 +48,9 @@ try {
       process.env.MILO_PORT = String(service.address().port); local = createLocalApp(sources, { port: service.address().port });
       events.push(calls);
     },
-    configurePi, checkService,
-    checkFallbackServices: async (...args) => {
-      await checkFallbackServices(...args); const calls = events.find(Array.isArray);
-      assert.deepEqual(calls, ['freebuff', 'opencode'], 'each adapter gets its own task and verification');
-    }
+    configurePi, checkService, checkFallbackServices
   });
+  assert.deepEqual(events.find(Array.isArray), ['freebuff', 'opencode'], 'each adapter gets its own task and verification');
   const pi = JSON.parse(await readFile(join(directory, 'pi/models.json'), 'utf8'));
   assert.equal(pi.providers.grunt.baseUrl, `http://127.0.0.1:${process.env.MILO_PORT}/v1`);
   assert.equal(googleSignins, 1);

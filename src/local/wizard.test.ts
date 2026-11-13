@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
 import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
-import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources } from './wizard.js';
+import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry } from './wizard.js';
 import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -13,8 +13,8 @@ import type { Source } from './source.js';
 
 vi.mock('@clack/prompts', () => ({
   multiselect: vi.fn(async () => ['groq']), isCancel: () => false,
-  intro: vi.fn(), outro: vi.fn(), log: { info: vi.fn() },
-  spinner: () => ({ start: vi.fn(), stop: vi.fn() })
+  intro: vi.fn(), outro: vi.fn(), note: vi.fn(), log: { info: vi.fn(), warn: vi.fn(), step: vi.fn(), message: vi.fn(), success: vi.fn(), error: vi.fn() },
+  spinner: () => ({ start: vi.fn(), stop: vi.fn(), error: vi.fn(), clear: vi.fn() })
 }));
 
 let dir: string;
@@ -121,7 +121,8 @@ it('runs both free fallback setup steps on default installs and starts the servi
   const { intro, outro } = await import('@clack/prompts');
   expect(intro).toHaveBeenCalledWith(expect.stringContaining('npx usegrunt setup'));
   expect(outro).toHaveBeenCalledWith('grunt is ready');
-  expect(order).toEqual(['fallbacks', 'service']);
+  expect(order).toEqual(['fallbacks', 'fallbacks', 'service']);
+  expect(actions.setupFallbacks.mock.calls.map(([options]) => options.adapters)).toEqual([['freebuff'], ['opencode']]);
   expect(actions.setup).not.toHaveBeenCalled();
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ run: expect.any(Function), notify: expect.any(Function) }));
   actions.setupFallbacks.mockClear();
@@ -250,3 +251,54 @@ it('still reports a service that never answers', async () => {
   await live.close();
   await expect(checkService(live.port, 2000)).rejects.toThrow('grunt service did not start; inspect its service status');
 }, 10000);
+
+const stubActions = (order: string[], overrides: Record<string, unknown> = {}) => ({
+  banner: vi.fn(async () => { order.push('banner'); return false; }),
+  preflight: vi.fn(async () => {}), connectSquire: vi.fn(async () => { order.push('squire'); }),
+  setup: vi.fn(async () => ({ key: 'synthetic' })),
+  loadRegistry: vi.fn(async () => { order.push('registry'); return { registry: bundledRegistry, origin: 'remote' as const }; }),
+  setupFallbacks: vi.fn(async (options: { adapters?: string[] }) => { order.push(`signup:${options.adapters}`); return { unavailable: [] }; }),
+  installService: vi.fn(async () => { order.push('service'); }),
+  checkService: vi.fn(async () => {}),
+  checkFallbackServices: vi.fn(async (_unavailable: string[], _port: number, notify: (line: string) => void, ids: string[]) => { order.push(`check:${ids}`); notify(`${ids[0]}: PASS — ${ids[0]} answered through the grunt service`); }),
+  connectHarnesses: vi.fn(async () => { order.push('harnesses'); return []; }),
+  ...overrides
+});
+it('shows the banner, preamble, Squire notice, registry, each service and then the harness step in order', async () => {
+  const { note } = await import('@clack/prompts');
+  const order: string[] = [];
+  vi.mocked(note).mockImplementation((_message, title) => { order.push(`note:${title}`); });
+  await wizard(undefined, stubActions(order));
+  expect(order).toEqual(['banner', 'note:What grunt does', 'note:Google sign-in for Trusty Squire', 'squire', 'registry',
+    'signup:freebuff', 'signup:opencode', 'service', 'check:freebuff', 'check:opencode', 'note:Free services', 'harnesses']);
+});
+it('gives every service its own result when one fails, then ends with the resume message', async () => {
+  const { log, outro } = await import('@clack/prompts');
+  const order: string[] = [];
+  const actions = stubActions(order, {
+    setupFallbacks: vi.fn(async (options: { adapters?: string[] }) => ({ unavailable: options.adapters?.includes('freebuff') ? ['freebuff'] : [] })),
+    checkFallbackServices
+  });
+  const live = await service(new Sources([fake('opencode')]));
+  vi.stubEnv('MILO_PORT', String(live.port));
+  try { await expect(wizard(undefined, actions)).rejects.toThrow('Some adapters failed verification. Run usegrunt setup to resume.'); }
+  finally { await live.close(); }
+  expect(vi.mocked(log.error).mock.calls.map(([line]) => line)).toContain('freebuff: FAIL — setup incomplete');
+  expect(vi.mocked(log.success).mock.calls.map(([line]) => line)).toContain('opencode: PASS — opencode answered through the grunt service');
+  expect(outro).toHaveBeenCalledWith('grunt is ready; incomplete fallbacks: freebuff. Rerun setup to finish them.');
+  expect(order).toContain('harnesses');
+});
+it('pulls the registry from the RegistrySync URL and says when it falls back to the bundled list', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'milo-registry-test-'));
+  vi.stubEnv('MILO_CONFIG_DIR', dir);
+  const fresh = { ...bundledRegistry, published: '2026-11-12T00:00:00Z' };
+  const fetcher = vi.fn(async () => new Response(JSON.stringify(fresh), { status: 200 }));
+  expect(await loadRegistry({ fetcher })).toEqual({ registry: fresh, origin: 'remote' });
+  expect(fetcher).toHaveBeenCalledWith('https://api.grunt.run/v1/registry', expect.anything());
+  expect((await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).origin).toBe('cache');
+  await rm(dir, { recursive: true, force: true });
+  expect(await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).toEqual({ registry: bundledRegistry, origin: 'bundled' });
+  const { log } = await import('@clack/prompts');
+  await wizard(undefined, stubActions([], { loadRegistry: async () => ({ registry: bundledRegistry, origin: 'bundled' }) }));
+  expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Registry unreachable; using the list bundled with this version'));
+});

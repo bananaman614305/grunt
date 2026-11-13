@@ -151,14 +151,27 @@ error rather than silently losing context.
 
 ### Free API and account setup
 
-`npx usegrunt` (or `npx usegrunt setup`) starts the terminal wizard. It installs
-and connects the local Trusty Squire broker; one Google sign-in establishes the
-browser session used for free-service signups. Setup reads the adapter registry,
-installs Freebuff and OpenCode, checks sign-in, installs the grunt background
-service, and adds the **grunt** provider to Pi at `http://127.0.0.1:8788/v1`.
-Each adapter gets a verification task and a PASS/FAIL line. Incomplete setup
-exits unsuccessfully with a repair step; rerun it to resume. Run `pi`, open
-`/model`, and choose **grunt**. For a foreground daemon, run `usegrunt serve`.
+`npx usegrunt` (or `npx usegrunt setup`) starts the terminal wizard. In a wide
+interactive terminal it opens with a short animation (any key skips it; CI,
+pipes and narrow terminals get a one-line title). It explains what grunt does,
+then says that Trusty Squire needs one Google sign-in before it installs and
+connects the local broker. Setup pulls the free service list from the grunt
+registry (falling back to the saved or bundled list, and saying so), signs in
+to each service, installs the grunt background service, and sends each service
+a test request through grunt. Each service gets a PASS/FAIL line and a summary
+row. Incomplete setup exits unsuccessfully with a repair step; rerun it to
+resume. For a foreground daemon, run `usegrunt serve`.
+
+Setup ends by offering to connect grunt to the coding tools it finds on PATH
+(Pi is preselected; non-interactive runs connect Pi only). Each choice adds a
+named **grunt** option and keeps your default model and provider:
+Pi gets a `grunt` provider in `models.json`; Codex gets its own
+`$CODEX_HOME/grunt.config.toml` for `codex --profile grunt` (`config.toml` is
+not edited); OpenCode gets a `grunt` provider in `opencode.json` (pick it with
+`/models`; an `opencode.jsonc` file is left alone); Claude Code needs no file
+and is started with the printed `ANTHROPIC_BASE_URL` command. A changed file is
+first copied to `<file>.grunt-backup-<time>`. Each tool is reported connected
+only after it answers one real request through grunt.
 
 Freebuff pairs its CLI through Squire's browser. Setup installs tmux when
 needed. OpenCode first tries its free model without an account and requests
