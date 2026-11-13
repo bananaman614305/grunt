@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { intro, outro, spinner, log } from '@clack/prompts';
 import chalk from 'chalk';
 import { setupFallbacks } from './fallback-setup.js';
+import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, knownAdapters } from '../registry.js';
@@ -134,13 +135,16 @@ export async function installBackgroundService(name: string, entry: string, env:
     await command('launchctl', ['bootstrap', domain, plist]);
   }
 }
-export async function checkService(port = 8788) {
-  let ready = false;
-  for (let attempt = 0; attempt < 30; attempt++) {
-    try { const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(1000) }); if (response.ok) { ready = true; break; } } catch { /* Wait for the service manager. */ }
-    await delay(1000);
+// /v1/models asks every source whether it is available, and Freebuff runs `freebuff doctor` to answer.
+// Give each probe longer than that check, and stop after totalMs so a hung service still fails.
+export async function checkService(port = 8788, totalMs = 90000) {
+  const deadline = Date.now() + totalMs;
+  while (Date.now() < deadline) {
+    const timeout = Math.max(1, Math.min(DOCTOR_TIMEOUT_MS + 5000, deadline - Date.now()));
+    try { const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(timeout) }); if (response.ok) return; } catch { /* Wait for the service manager. */ }
+    await delay(Math.max(0, Math.min(1000, deadline - Date.now())));
   }
-  if (!ready) throw new Error('grunt service did not start; inspect its service status');
+  throw new Error('grunt service did not start; inspect its service status');
 }
 type Systemctl = (args: string[]) => Promise<string>;
 const systemctl: Systemctl = async args => (await promisify(execFile)('systemctl', ['--user', ...args], { timeout: 10000 })).stdout;
