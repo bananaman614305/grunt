@@ -42,7 +42,7 @@ class Pool {
   }
   release() { const waiter = this.queue.shift(); if (waiter) waiter.resolve(); else this.active--; }
 }
-interface ChatMessage { variant?: string; content?: string; textAttachments?: { content?: string }[]; isComplete?: boolean; blocks?: { type?: string; content?: string }[] }
+interface ChatMessage { variant?: string; content?: string; textAttachments?: { content?: string }[]; isComplete?: boolean; blocks?: { type?: string; textType?: string; name?: string; content?: string }[] }
 function matchesUser(m: ChatMessage, prompt: string): boolean {
   const normalize = (text: string) => text.replace(/\r\n?/g, '\n').trim();
   return m.variant === 'user' && normalize(m.content || m.textAttachments?.map(a => a.content ?? '').join('\n') || '') === normalize(prompt);
@@ -57,7 +57,10 @@ export function parseChat(value: unknown, prompt: string, forbidNative = false):
   const last = replies.at(-1);
   if (!last || last.isComplete !== true) return;
   if (!Array.isArray(last.blocks)) throw new SourceError('upstream', 'Freebuff chat format changed: missing reply blocks');
-  const blocks = last.blocks.slice(last.blocks.findLastIndex(b => b.type !== 'text') + 1);
+  let end = last.blocks.length;
+  while (end > 0 && last.blocks[end - 1]!.type === 'tool' && last.blocks[end - 1]!.name === 'suggest_followups') end--;
+  const answer = last.blocks.slice(0, end);
+  const blocks = answer.slice(answer.findLastIndex(b => b.type !== 'text') + 1).filter(b => b.textType !== 'reasoning');
   if (!blocks.length) return;
   if (blocks.some(b => typeof b.content !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: missing text blocks');
   return blocks.map(b => b.content).join('\n');
@@ -176,7 +179,7 @@ export class Freebuff implements Source {
           }
           if (Array.isArray(data)) {
             const latest = data.filter(m => m?.variant === 'ai').at(-1);
-            if (Array.isArray(latest?.blocks)) partial = latest.blocks.filter((b: { type?: string; content?: string }) => b.type === 'text' && typeof b.content === 'string').map((b: { content: string }) => b.content).join('\n').slice(-4096);
+            if (Array.isArray(latest?.blocks)) partial = latest.blocks.filter((b: { type?: string; textType?: string; content?: string }) => b.type === 'text' && b.textType !== 'reasoning' && typeof b.content === 'string').map((b: { content: string }) => b.content).join('\n').slice(-4096);
           }
           if (startupError) {
             selected = file;
