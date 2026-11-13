@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 
-it("tracks only the root app, its proof adapter, the static site, registry, configuration and four workflows", () => {
+it("tracks only the root app, its proof adapter, the static site, registry, configuration and five workflows", () => {
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
   const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "registry/adapters.json"]);
   expect(paths.length).toBeGreaterThan(15);
-  for (const path of paths) expect(files.has(path) || path.startsWith("src/") || path.startsWith("site/") || path === "proof/fake.mjs" || [".github/workflows/ci.yml", ".github/workflows/deploy.yml", ".github/workflows/publish.yml", ".github/workflows/registry.yml"].includes(path), path).toBe(true);
+  for (const path of paths) expect(files.has(path) || path.startsWith("src/") || path.startsWith("site/") || path === "proof/fake.mjs" || [".github/workflows/ci.yml", ".github/workflows/deploy.yml", ".github/workflows/publish.yml", ".github/workflows/registry.yml", ".github/workflows/site.yml"].includes(path), path).toBe(true);
   expect(paths).toContain("src/server.ts");
   expect(paths).toContain("registry/adapters.json");
   expect(paths).toContain(".github/workflows/registry.yml");
