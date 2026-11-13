@@ -1,20 +1,25 @@
 # Freebuff JSON bridge evidence
 
-Reproduction PF1: direct Pi using grunt with only Freebuff configured, with Pi's
+Historical reproduction PF1 before routing restoration: direct Pi using grunt with only Freebuff configured, with Pi's
 read tool enabled and an explicit benign proof-read skill, cannot execute that
-tool. The default adapter is excluded from function-tool routing and the built
-HTTP API returns `Tool-capable sources are unavailable`.
+tool. At that revision the default adapter was excluded from function-tool routing and the built
+HTTP API returned `Tool-capable sources are unavailable`.
 
 Run after `pnpm build`:
 
 ```
-node src/local/pi-freebuff-proof.mjs
+node src/local/pi-freebuff-proof.mjs --synthetic
 node src/local/pi-freebuff-proof.mjs --bridge --synthetic
 ```
 
-The first command reproduced PF1 using actual installed Pi (version 0.99.1), the
+Before routing restoration, the first command reproduced PF1 using actual installed Pi (version 0.99.1), the
 built HTTP service and the default Freebuff adapter. Pi received the unavailable
 tool-source error; no Freebuff inference was invoked.
+
+After routing restoration, the unbridged synthetic command returns final text
+through Freebuff instead of a routing error. It does not prove Pi tool execution.
+See [FT1 routing evidence](freebuff-routing-revert.md). The bridge command still
+exercises Pi's own tool loop.
 
 The second command demonstrated PF1 passing using actual Pi and its real read
 tool and skill loader, the built HTTP service, actual tmux, and a synthetic
