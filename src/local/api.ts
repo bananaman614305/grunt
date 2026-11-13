@@ -1,8 +1,10 @@
 import { pairDots } from './dots-link.js';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { randomUUID } from 'node:crypto';
-import { isAbsolute } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
 import { SourceError, answeredBy } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
@@ -19,7 +21,7 @@ function text(v: unknown): string {
     return [];
   }).join('\n');
 }
-export function decode(body: Obj, api: string, fallback: string): ModelRequest {
+export function decode(body: Obj, api: string, fallback?: string): ModelRequest & { cwdSource: 'request' | 'fallback' | 'scratch' } {
   let messages: Message[];
   if (api === 'responses') {
     messages = typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : array(body.input).flatMap((v): Message[] => {
@@ -52,13 +54,15 @@ export function decode(body: Obj, api: string, fallback: string): ModelRequest {
   const matches = [...context.matchAll(/(?:<cwd>\s*([^<\n]+)\s*<\/cwd>|(?:Working directory|Current working directory|Primary working directory|cwd):\s*([^\n<]+))/gi)];
   const absolute = matches.filter(m => isAbsolute((m[1] ?? m[2] ?? '').trim()));
   const inferred = absolute.find(m => /^Primary working directory:/i.test(m[0])) ?? absolute[0];
-  const cwd = typeof body.cwd === 'string' ? body.cwd : (inferred?.[1] ?? inferred?.[2])?.trim() ?? fallback;
-  if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
+  const namedCwd = typeof body.cwd === 'string' ? body.cwd : (inferred?.[1] ?? inferred?.[2])?.trim();
   const rawTurns = api === 'responses' ? (typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : array(body.input)) : array(body.messages);
   const userMessages = rawTurns.map(object).filter(m => (m.role === 'user' || (api === 'responses' && !m.role && !m.type))).map(m => typeof m.content === 'string' ? userText(m.content) : array(m.content).map(object).filter(b => b.type === 'text' || b.type === 'input_text').map(b => userText(String(b.text ?? ''))).filter(t => t.length > 0).join('\n')).filter(t => t.length > 0);
+  const cwdSource = namedCwd !== undefined ? 'request' : fallback !== undefined ? 'fallback' : 'scratch';
+  const cwd = namedCwd ?? fallback ?? join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'grunt/scratch', createHash('sha256').update(userMessages[0] ?? '').digest('hex').slice(0, 24));
+  if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
   const imageInput = /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
-  return { model: String(body.model ?? 'milo'), messages, userMessages, tools, cwd, stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  return { model: String(body.model ?? 'milo'), messages, userMessages, tools, cwd, cwdSource, stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
@@ -126,11 +130,11 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
   app.get('/v1/models', async c => c.json({ object: 'list', data: (await sources.models()).map(id => ({ id, object: 'model', created: 0, owned_by: 'milo' })) }));
   for (const [path, api] of [['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const) {
     app.post(`/v1/${path}`, async c => {
-      let request: ModelRequest;
-      try { request = decode(object(await c.req.json()), api, options.cwd ?? process.cwd()); }
+      let request: ReturnType<typeof decode>;
+      try { request = decode(object(await c.req.json()), api, options.cwd); }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }
       const local = housekeeping(request);
-      options.log?.(`${request.cwd}; cwd=${request.cwd === (options.cwd ?? process.cwd()) ? 'fallback-or-explicit' : 'request'}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
+      options.log?.(`${request.cwd}; cwd=${request.cwdSource}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
       const complete = (signal: AbortSignal): Promise<Completion> => local === undefined ? sources.complete(request, signal) : Promise.resolve({ text: local });
       const controller = new AbortController();
       const abort = () => controller.abort();
@@ -142,6 +146,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       try {
         // Agent adapters return final text, not incremental tokens. Resolve routing
         // before committing SSE headers so exhausted routes still return HTTP 429.
+        if (request.cwdSource === 'scratch') await mkdir(request.cwd, { recursive: true });
         const completion = await complete(controller.signal);
         const source = answeredBy.get(completion);
         if (source) c.header('X-Grunt-Source', source);
