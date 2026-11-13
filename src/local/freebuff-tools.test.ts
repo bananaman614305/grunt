@@ -54,9 +54,9 @@ it('preserves system/skill context, assistant calls and correlated tool data wit
   ]) expect(() => new FreebuffTools({...request,messages:invalid})).toThrow(SourceError);
 });
 
-it('fails closed on unsupported tool schemas and duplicate definitions', () => {
+it('rejects duplicate definitions and passes tools whose schema Ajv cannot compile', () => {
   expect(() => new FreebuffTools({...request,tools:[...request.tools,...request.tools]})).toThrow();
-  expect(() => new FreebuffTools({...request,tools:[{type:'function',function:{name:'read',parameters:{$ref:'https://invalid.example/schema'}}}]})).toThrow(/draft 7/);
+  expect(() => new FreebuffTools({...request,tools:[{type:'function',function:{name:'read',parameters:{$ref:'https://invalid.example/schema'}}}]})).not.toThrow();
 });
 
 it('does not retain schemas from successive requests in a shared validator', () => {

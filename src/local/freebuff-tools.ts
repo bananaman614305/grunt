@@ -23,8 +23,9 @@ export class FreebuffTools {
     for (const tool of request.tools) {
       const fn = tool.function;
       if (tool.type !== 'function' || !object(fn) || typeof fn.name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(fn.name) || this.validators.has(fn.name) || !object(fn.parameters)) throw fail();
+      // A schema Ajv cannot compile still reaches the model; Pi validates the call it receives.
       try { this.validators.set(fn.name, ajv.compile(fn.parameters as AnySchema)); }
-      catch { throw new SourceError('upstream', 'Freebuff JSON bridge requires a supported JSON Schema draft 7 tool definition'); }
+      catch { this.validators.set(fn.name, Object.assign(() => true, { errors: null }) as unknown as ValidateFunction); }
     }
     // Results are data supplied by Pi, never model-authored bridge envelopes.
     const pending = new Set<string>();
