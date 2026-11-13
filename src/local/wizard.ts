@@ -1,17 +1,21 @@
 import { promisify } from 'node:util';
 import { spawn, execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile, rename, cp, mkdtemp, rm, access } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, cp, mkdtemp, rm, access } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { intro, outro, spinner, log } from '@clack/prompts';
+import { intro, outro, spinner, log, note, multiselect, isCancel } from '@clack/prompts';
 import chalk from 'chalk';
 import { setupFallbacks } from './fallback-setup.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, knownAdapters } from '../registry.js';
+import type { Adapter } from '../registry.js';
+import { banner } from './banner.js';
+import { HARNESSES, configurePi, connectHarness, detectHarnesses } from './harnesses.js';
+import type { Harness, runHarness } from './harnesses.js';
 
 export const configDir = (env = process.env) => env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal) {
@@ -21,10 +25,10 @@ export async function command(binary: string, args: string[], interactive = fals
     child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${binary} failed; inspect its service status before retrying`)));
   });
 }
-async function step<T>(label: string, task: () => Promise<T>): Promise<T> {
+async function step<T>(label: string, task: () => Promise<T>, done: (result: T) => string = () => label): Promise<T> {
   const progress = spinner(); progress.start(label);
-  try { const result = await task(); progress.stop(label); return result; }
-  catch (error) { progress.stop(`${label} failed`); throw error; }
+  try { const result = await task(); progress.stop(done(result)); return result; }
+  catch (error) { progress.error(`${label} failed`); throw error; }
 }
 export async function squireBrokerExists() {
   const service = process.platform === 'darwin'
@@ -80,21 +84,6 @@ export async function preflight(run = command) {
     if (process.platform === 'linux') await run('systemctl', ['--user', 'show-environment']);
     else await run('launchctl', ['print', `gui/${process.getuid!()}`]);
   } catch { throw new Error('Start a normal user login with its systemd/launchd service manager, then run npx usegrunt setup.'); }
-}
-export async function configurePi(port = 8788) {
-  const directory = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
-  const path = join(directory, 'models.json');
-  let saved: Record<string, unknown> = {};
-  try { saved = JSON.parse(await readFile(path, 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read Pi models config; repair it before retrying setup'); }
-  if (!saved || typeof saved !== 'object' || Array.isArray(saved) || (saved.providers !== undefined && (!saved.providers || typeof saved.providers !== 'object' || Array.isArray(saved.providers)))) throw new Error('Invalid Pi models config');
-  const providers = (saved.providers ?? {}) as Record<string, unknown>;
-  providers.grunt = { baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
-    models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }] };
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, JSON.stringify({ ...saved, providers }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  await rename(temporary, path);
 }
 const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
 const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -206,32 +195,136 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
-export async function loadRegistry() {
-  const registry = new RegistrySync({ directory: configDir(), notify: line => log.info(line) });
-  try { await registry.load(); await registry.sync(); return registry.current; }
-  finally { await registry.close(); }
+export { configurePi };
+export type RegistryOrigin = 'remote' | 'cache' | 'bundled';
+// Same URL and validation as the daemon's RegistrySync; says where the list came from.
+export async function loadRegistry(options: { url?: string; fetcher?: typeof fetch } = {}) {
+  let offline = false, cached = false;
+  const registry = new RegistrySync({ directory: configDir(), ...options, notify: () => { offline = true; } });
+  try {
+    await registry.load();
+    cached = registry.current.published !== bundledRegistry.published || JSON.stringify(registry.current) !== JSON.stringify(bundledRegistry);
+    await registry.sync();
+    return { registry: registry.current, origin: (offline ? cached ? 'cache' : 'bundled' : 'remote') as RegistryOrigin };
+  } finally { await registry.close(); }
 }
-const wizardActions = { preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources };
-export async function wizard(add?: string, actions: Omit<typeof wizardActions, 'loadRegistry' | 'checkServiceSources'> & { loadRegistry?: typeof loadRegistry; checkServiceSources?: typeof checkServiceSources } = wizardActions) {
+const PREAMBLE = [
+  'usegrunt installs grunt, a small daemon that runs on this machine.',
+  'It pools the free AI inference quota offered by many services and serves',
+  'it as one agent at a local address. Your coding tools talk to grunt; grunt',
+  'sends each request to a free service that can answer it.',
+  '',
+  'Setup will:',
+  '  1. Connect Trusty Squire (one Google sign-in)',
+  '  2. Pull the current list of free services from the grunt registry',
+  '  3. Sign up for each service, connect it to grunt and test it',
+  '  4. Connect grunt to the coding tools installed here'
+].join('\n');
+const SQUIRE_NOTICE = [
+  'Some free services only work with an account. Trusty Squire is a local',
+  'browser helper that signs up for them for you using Google sign-in (OAuth).',
+  '',
+  'Next, a browser may open and ask you to sign in to Google once. If Trusty',
+  'Squire is already connected on this machine, setup reuses it. A captcha or',
+  'email check pauses setup until you finish it in the browser.'
+].join('\n');
+type Status = 'pass' | 'fail' | 'skip';
+const mark = (status: Status | undefined) => status === 'pass' ? chalk.green('✔') : status === 'fail' ? chalk.red('✘') : chalk.dim('–');
+const describe = (adapter: Adapter) => [adapter.kind === 'agent' ? 'coding agent' : 'model API', adapter.model ? `free model ${adapter.model}` : undefined,
+  adapter.signup ? `account at ${new URL(adapter.signup).host}` : 'no account needed until it asks'].filter(Boolean).join(' · ');
+// Service lines name their result, so show PASS and FAIL as success and error.
+const report = (shown = new Set<string>()) => (line: string) => {
+  if (shown.has(line)) return; shown.add(line);
+  if (/: PASS\b/.test(line)) log.success(line); else if (/: FAIL\b/.test(line)) log.error(line); else log.info(line);
+};
+export async function connectHarnesses(port: number, options: { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness } = {}) {
+  log.step('Connect grunt to your coding tools');
+  const found = await detectHarnesses(options.harnesses);
+  if (!found.length) { log.warn(`No supported coding tool found on PATH (${HARNESSES.map(h => h.binary).join(', ')}). Install one, then rerun usegrunt setup.`); return []; }
+  log.info(`Found: ${found.map(h => h.name).join(', ')}. grunt is added as an extra, named option; your default model and provider stay as they are.`);
+  const interactive = process.stdin.isTTY && process.stdout.isTTY && process.env.MILO_SETUP_NO_HUMAN !== '1';
+  const choose = options.choose ?? (async (list: Harness[]) => {
+    if (!interactive) return list.filter(h => h.id === 'pi');
+    const picked = await multiselect({ message: 'Connect grunt to which tools? (space toggles, enter confirms)', required: false,
+      options: list.map(h => ({ value: h.id, label: h.name, hint: h.launch(port) })), initialValues: list.filter(h => h.id === 'pi').map(h => h.id) });
+    return isCancel(picked) ? [] : list.filter(h => picked.includes(h.id));
+  });
+  const connected: Harness[] = [];
+  for (const harness of await choose(found)) {
+    const progress = spinner(); progress.start(`${harness.name}: adding grunt and sending a test request through it`);
+    try {
+      const { change } = await connectHarness(harness, port, options.run);
+      progress.stop(`${harness.name}: PASS — answered through grunt`);
+      if (change?.backup) log.info(`${harness.name}: previous config saved as ${change.backup}`);
+      connected.push(harness);
+    } catch (error) {
+      progress.error(`${harness.name}: FAIL — ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (connected.length) note(connected.map(h => `${chalk.bold(h.name)}\n  ${h.launch(port)}`).join('\n'), 'Start coding with grunt');
+  return connected;
+}
+const wizardActions = { banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses };
+type Optional = 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi';
+export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
-  intro(chalk.hex('#cf3a52').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
-  log.info('Sign in to Google once. Your local Trusty Squire uses that browser session to sign up for free services for you.');
-  await step('Prerequisites', () => actions.preflight());
-  await step('Trusty Squire', () => actions.connectSquire());
+  await actions.banner?.();
+  intro(chalk.hex('#f4b41a').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
+  note(PREAMBLE, 'What grunt does');
+  await step('Checking prerequisites', () => actions.preflight());
+  note(SQUIRE_NOTICE, 'Google sign-in for Trusty Squire');
+  await step('Connecting Trusty Squire', () => actions.connectSquire());
   if (add) {
     await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), [add]));
     outro(`${add} connected`); return;
   }
-  const registry = actions.loadRegistry ? await step('Adapter registry', actions.loadRegistry) : bundledRegistry;
-  const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
-  const fallbacks = await step('Freebuff and OpenCode', () => actions.setupFallbacks({ directory: configDir(), run: command, adapters, notify: line => log.info(line) }));
-  await step('grunt background service', actions.installService);
+  const pulled = actions.loadRegistry ? await step('Pulling the free service list from the registry', () => actions.loadRegistry!()) : { registry: bundledRegistry, origin: 'bundled' as RegistryOrigin };
+  const { registry } = pulled;
+  const published = registry.published.slice(0, 10);
+  if (pulled.origin === 'remote') log.info(`Registry: ${registry.adapters.length} free services, published ${published}`);
+  else log.warn(`Registry unreachable; using the ${pulled.origin === 'cache' ? 'list saved by an earlier setup' : 'list bundled with this version'} (published ${published})`);
+  const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id));
+  log.message(registry.adapters.map(adapter => knownAdapters.has(adapter.id)
+    ? `${chalk.bold(adapter.id.padEnd(10))} ${chalk.dim(describe(adapter))}`
+    : `${chalk.dim(adapter.id.padEnd(10))} ${chalk.dim('skipped: needs a newer usegrunt')}`).join('\n'));
+  const ids = adapters.map(adapter => adapter.id);
+  const results = new Map<string, { signup?: Status; daemon?: Status; check?: Status }>(ids.map(id => [id, {}]));
+  const unavailable: string[] = [];
+  const notify = report();
+
+  log.step(`Signing up for ${ids.length} free services`);
+  for (const id of ids) {
+    const outcome = await step(`${id}: installing and signing in`, () => actions.setupFallbacks({ directory: configDir(), run: command, adapters: [id], notify }), result => result.unavailable.includes(id) ? `${id}: sign-in incomplete` : `${id}: signed in`);
+    const failed = outcome.unavailable.includes(id);
+    if (failed) unavailable.push(id);
+    results.get(id)!.signup = failed ? 'fail' : 'pass';
+  }
+
+  log.step('Connecting the services to the grunt daemon');
+  await step('Starting the grunt background service', actions.installService);
   const port = Number(process.env.MILO_PORT || '8788');
-  await step('Pi provider', () => actions.configurePi(port));
-  await step('Live request through grunt service', () => actions.checkService(port));
-  if (actions.checkServiceSources) await step('Service source list', () => actions.checkServiceSources!(fallbacks.unavailable, line => log.info(line), adapters));
-  await step('Adapter verification through grunt', () => actions.checkFallbackServices(fallbacks.unavailable, port, line => log.info(line), adapters));
-  outro(fallbacks.unavailable.length ? `grunt is ready; incomplete fallbacks: ${fallbacks.unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
-  log.info('Run pi, open /model, and choose grunt.');
-  if (fallbacks.unavailable.length) throw new Error('Some adapters failed verification. Run usegrunt setup to resume.');
+  await step(`Waiting for grunt to answer at http://127.0.0.1:${port}`, () => actions.checkService(port));
+  const beforeSources = new Set(unavailable);
+  if (actions.checkServiceSources) await step('Checking which services the daemon runs', () => actions.checkServiceSources!(unavailable, notify, ids));
+  for (const id of ids) results.get(id)!.daemon = beforeSources.has(id) ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
+
+  log.step('Testing each service with a real request through grunt');
+  for (const id of ids) {
+    const before = unavailable.includes(id);
+    // Hold the result line until the spinner is gone so the two do not share a row.
+    const lines: string[] = [], progress = spinner();
+    progress.start(`${id}: sending a test request through grunt`);
+    try { await actions.checkFallbackServices(unavailable, port, line => lines.push(line), [id]); }
+    finally { progress.clear(); lines.forEach(notify); }
+    results.get(id)!.check = before ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
+  }
+  note([`${'service'.padEnd(10)}  sign-in  daemon  test`, ...ids.map(id => {
+    const r = results.get(id)!;
+    return `${id.padEnd(10)}  ${mark(r.signup)}        ${mark(r.daemon)}       ${mark(r.check)}`;
+  })].join('\n'), 'Free services');
+
+  if (actions.connectHarnesses) await actions.connectHarnesses(port);
+  else if (actions.configurePi) await step('Pi provider', () => actions.configurePi!(port));
+  outro(unavailable.length ? `grunt is ready; incomplete fallbacks: ${unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
+  if (unavailable.length) throw new Error('Some adapters failed verification. Run usegrunt setup to resume.');
 }
