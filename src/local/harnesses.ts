@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomInt } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -73,7 +74,8 @@ export async function configureOpenCode(port = 8788): Promise<Change> {
   return writeConfig(path, JSON.stringify({ $schema: 'https://opencode.ai/config.json', ...saved, provider }, null, 2) + '\n');
 }
 
-const PROMPT = 'Reply only: grunt is ready. Do not use tools or change files.';
+// Free services refuse a message repeated word for word as automated use, so each check differs.
+const prompt = (tool: string) => `Reply only: grunt is ready for ${tool} (check ${randomInt(1000, 10000)}). Do not use tools or change files.`;
 export interface Harness {
   id: 'pi' | 'codex' | 'opencode' | 'claude';
   name: string;
@@ -85,17 +87,17 @@ export interface Harness {
 }
 export const HARNESSES: Harness[] = [
   { id: 'pi', name: 'Pi', binary: 'pi', configure: configurePi,
-    check: () => ({ args: ['-p', '--provider', 'grunt', '--model', 'grunt', '--no-session', PROMPT] }),
+    check: () => ({ args: ['-p', '--provider', 'grunt', '--model', 'grunt', '--no-session', prompt('Pi')] }),
     launch: () => 'pi --provider grunt --model grunt   (or open /model in pi and choose grunt)' },
   { id: 'codex', name: 'Codex', binary: 'codex', configure: configureCodex,
-    check: () => ({ args: ['exec', '--profile', 'grunt', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', PROMPT] }),
+    check: () => ({ args: ['exec', '--profile', 'grunt', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', prompt('Codex')] }),
     launch: () => 'codex --profile grunt' },
   { id: 'opencode', name: 'OpenCode', binary: 'opencode', configure: configureOpenCode,
     // grunt's own OpenCode source sets OPENCODE_CONFIG; check the user's config without it.
-    check: () => ({ args: ['run', '-m', 'grunt/grunt', PROMPT], env: { OPENCODE_CONFIG: undefined } }),
+    check: () => ({ args: ['run', '-m', 'grunt/grunt', prompt('OpenCode')], env: { OPENCODE_CONFIG: undefined } }),
     launch: () => 'opencode -m grunt/grunt   (or pick grunt with /models)' },
   { id: 'claude', name: 'Claude Code', binary: 'claude', configure: async () => undefined,
-    check: port => ({ args: ['-p', '--model', 'grunt', PROMPT], env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_AUTH_TOKEN: 'local' } }),
+    check: port => ({ args: ['-p', '--model', 'grunt', prompt('Claude Code')], env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_AUTH_TOKEN: 'local' } }),
     launch: port => `ANTHROPIC_BASE_URL=http://127.0.0.1:${port} ANTHROPIC_AUTH_TOKEN=local claude --model grunt` }
 ];
 
