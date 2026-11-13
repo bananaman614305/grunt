@@ -16,7 +16,7 @@ it("tracks only the root app, its proof adapter, the static site, registry, conf
 it("packages usegrunt with the primary command and compatibility aliases", () => {
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   expect(pkg.name).toBe("usegrunt");
-  expect(pkg.version).toBe("0.5.0");
+  expect(pkg.version).toBe("0.6.0");
   expect(pkg.description).toBe("One-command setup for grunt");
   expect(pkg.bin).toEqual({ usegrunt: "dist/local/main.js", milo: "dist/local/main.js", "milo-local": "dist/local/main.js" });
 });
