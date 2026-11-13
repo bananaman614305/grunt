@@ -32,7 +32,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   };
   const connection = { url, loadKey };
   const dots = new Dots({ env, timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
-  const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: () => env.MILO_OPENCODE_MODEL ?? registry().adapters.find(a => a.id === 'opencode')?.model ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff()];
+  const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: () => env.MILO_OPENCODE_MODEL ?? registry().adapters.find(a => a.id === 'opencode')?.model ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' })];
   const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['freebuff', 'opencode'];
   const routing = ids.every(id => ['freebuff', 'opencode'].includes(id)) ? { registry } : undefined;
   return new Sources(ids.map(id => { const source = registered.find(s => s.id === id); if (!source) throw new Error(`Unknown grunt source: ${id}`); return source; }), routing);
@@ -66,7 +66,7 @@ export function start(env = process.env) {
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   // A distinct source list prevents FreeLLMAPI -> grunt -> FreeLLMAPI recursion.
-  const fallback = env.MILO_FREEBUFF_BRIDGE !== '0' && sources.sources.some(s => s.id === 'freellmapi' || s.id === 'kilo') ? new Sources([new Freebuff()]) : undefined;
+  const fallback = env.MILO_FREEBUFF_BRIDGE !== '0' && sources.sources.some(s => s.id === 'freellmapi' || s.id === 'kilo') ? new Sources([new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' })]) : undefined;
   const bridge = fallback ? serve({ fetch: createLocalApp(fallback, { port: 8789 }).fetch, hostname: HOST, port: 8789 }) : undefined;
   let closing = false;
   const close = async () => { if (closing) return; closing = true; await sync.close(); await sources.close(); await fallback?.close(); bridge?.close(); server.close(); };
