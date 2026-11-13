@@ -13,7 +13,7 @@ export function freeConfig() {
   return {
     customProviders: [
       { baseUrl: KILO_URL, apiKey: 'no-key', label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
-      { baseUrl: FREEBUFF_URL, apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: true }] }
+      { baseUrl: FREEBUFF_URL, apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: false }] }
     ],
     // Existing keyed provider rows retain their catalog priorities. Never enable
     // OpenRouter or unvetted aggregators by provisioning keys for them here.
@@ -26,6 +26,7 @@ export function freeConfig() {
 }
 export class FreeLLMAPI implements Source {
   readonly id: string;
+  readonly supportsFunctionTools = true;
   private url: string;
   private fetcher: typeof fetch;
   constructor(private options: { url?: string; key?: string; loadKey?: () => Promise<string>; fetcher?: typeof fetch; model?: string; id?: string } = {}) {

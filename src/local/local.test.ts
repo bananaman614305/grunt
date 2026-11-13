@@ -9,7 +9,7 @@ import { Gateway, Sources, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { configure, HOST } from './main.js';
 const fixture = async (name: string) => JSON.parse(await readFile(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'));
-const fake = (id = 'second-app'): Source => ({ id, available: async () => true, complete: async r => ({ text: r.messages.at(-1)!.content }) });
+const fake = (id = 'second-app'): Source => ({ id, supportsFunctionTools: true, available: async () => true, complete: async r => ({ text: r.messages.at(-1)!.content }) });
 const paths = ['chat/completions', 'messages', 'responses'];
 afterEach(() => vi.unstubAllEnvs());
 describe('harness wire contracts', () => {
@@ -78,6 +78,8 @@ it('gateway only calls configured origin, preserves tools, rejects redirects and
 it('cwd inference and changed Freebuff format fail clearly', async () => {
   const sample = await fixture('freebuff');
   expect(parseChat(sample, sample[1].content)).toBe('bridge works 42');
+  const final = await fixture('freebuff-final');
+  expect(parseChat(final, final[0].content)).toBe('hello');
   expect(() => parseChat({}, '')).toThrow('format changed');
   expect(decode(await fixture('claude'), 'messages', '/fallback').cwd).toBe('/tmp/milo-harness-cwd');
   expect(decode({ input: 'hi', instructions: '<cwd>/tmp/codex</cwd>' }, 'responses', '/fallback').cwd).toBe('/tmp/codex');

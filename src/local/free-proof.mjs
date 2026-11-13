@@ -81,7 +81,7 @@ try {
   const kilo = await send({ model: 'kilo', messages: [{ role: 'user', content: 'Reply with Kilo marker' }] });
   assert.equal(kilo, 'FreeLLMAPI routed reply 42');
   const fixture = JSON.parse(await readFile('src/local/fixtures/opencode.json', 'utf8'));
-  fixture.model = 'opencode'; fixture.cwd = project;
+  fixture.model = 'opencode'; fixture.cwd = project; fixture.tools = [];
   const first = await send(fixture);
   fixture.messages.push({ role: 'assistant', content: first }, { role: 'user', content: '  Follow up exactly.\n' });
   const second = await send(fixture);
