@@ -26,6 +26,7 @@
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@trusty-squire/mcp": "1.1.39",
     "@trusty-squire/sdk": "0.1.0",
+    "ajv": "^8.20.0",
     "chalk": "^6.0.1",
     "hono": "^4.13.8",
     "ipaddr.js": "^2.5.0",

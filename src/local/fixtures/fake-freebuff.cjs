@@ -27,7 +27,14 @@ process.stdin.on('data', chunk => {
   }
   const file = path.join(dir, 'chat-messages.json');
   const messages = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
-  messages.push({ variant: 'user', content: '', textAttachments: [{content: prompt}] }, { variant: 'ai', content: '', blocks: prompt === 'REFUSE' ? [] : [{ type: 'text', content: (process.env.MILO_TEST_UNIQUE || prompt === 'UNIQUE_REPLY') ? chatId : prompt }], isComplete: true });
+  let reply = (process.env.MILO_TEST_UNIQUE || prompt === 'UNIQUE_REPLY') ? chatId : prompt;
+  if (process.env.MILO_TEST_JSON_BRIDGE && prompt.startsWith('You are answering a Pi tool protocol')) {
+    const payload = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
+    if (!JSON.stringify(payload.messages).includes('Never invent the nonce.')) throw new Error('Pi skill context was lost');
+    const result = payload.messages.filter(m => m.role === 'tool').at(-1);
+    reply = JSON.stringify(result ? {version:1,type:'final',text:result.content} : {version:1,type:'calls',calls:[{name:'read',arguments:{path:'nonce.txt'}}]});
+  }
+  messages.push({ variant: 'user', content: '', textAttachments: [{content: prompt}] }, { variant: 'ai', content: '', blocks: prompt === 'REFUSE' ? [] : [{ type: 'text', content: reply }], isComplete: true });
   if (process.env.MILO_TEST_REASONING) messages.at(-1).blocks.unshift({ type: 'text', content: 'private deliberation' }, { type: 'tool', name: 'read_files' });
   if (prompt === 'REFUSE') fs.appendFileSync(path.join(dir, 'log.jsonl'), JSON.stringify({status:403, code:'prompt_policy_refused', message:'Freebuff is not a worker for other agents.'}) + '\n');
   setTimeout(() => fs.writeFileSync(file, JSON.stringify(messages)), 40);

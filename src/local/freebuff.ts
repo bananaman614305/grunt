@@ -10,6 +10,7 @@ import type { Multiplexer } from './multiplexer.js';
 import { userTurns } from './harness.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
+import { FreebuffTools } from './freebuff-tools.js';
 
 export function positive(value: string | undefined, fallback: number) {
   const number = value === undefined ? fallback : Number(value);
@@ -46,12 +47,13 @@ function matchesUser(m: ChatMessage, prompt: string): boolean {
   const normalize = (text: string) => text.replace(/\r\n?/g, '\n').trim();
   return m.variant === 'user' && normalize(m.content || m.textAttachments?.map(a => a.content ?? '').join('\n') || '') === normalize(prompt);
 }
-export function parseChat(value: unknown, prompt: string): string | undefined {
+export function parseChat(value: unknown, prompt: string, forbidNative = false): string | undefined {
   if (!Array.isArray(value) || value.some(m => !m || typeof m !== 'object' || typeof m.variant !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: expected a message array');
   const messages = value as ChatMessage[];
   const userIndex = messages.findLastIndex(m => matchesUser(m, prompt));
   if (userIndex < 0) return;
   const replies = messages.slice(userIndex + 1).filter(m => m.variant === 'ai');
+  if (forbidNative && replies.some(m => m.blocks?.some(b => b.type !== 'text'))) throw new SourceError('refused', 'Freebuff used native tools during a Pi JSON bridge request');
   const last = replies.at(-1);
   if (!last || last.isComplete !== true) return;
   if (!Array.isArray(last.blocks)) throw new SourceError('upstream', 'Freebuff chat format changed: missing reply blocks');
@@ -68,7 +70,8 @@ export class Freebuff implements Source {
   private busy = new Set<string>();
   private creationLocks = new Map<string, Pool>();
   private shutdown = new AbortController();
-  constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number } = {}) {}
+  constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number; toolBridge?: boolean } = {}) {}
+  get supportsFunctionTools() { return this.options.toolBridge === true; }
   private get mux() { return this.options.mux ?? (this.options.mux = new Tmux()); }
   async available() {
     try {
@@ -79,6 +82,21 @@ export class Freebuff implements Source {
   }
   async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, caller: AbortSignal) {
+    if (!this.options.toolBridge) return this.completeText(request, caller);
+    caller.throwIfAborted();
+    const bridge = new FreebuffTools(request);
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000))]);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      signal.throwIfAborted();
+      const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0) }, signal, true);
+      signal.throwIfAborted();
+      if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
+      try { return bridge.parse(result.text); }
+      catch { if (attempt === 1) throw new SourceError('upstream', 'Freebuff JSON bridge failed validation after one repair attempt'); }
+    }
+    throw new SourceError('upstream', 'Freebuff JSON bridge failed');
+  }
+  private async completeText(request: ModelRequest, caller: AbortSignal, isolated = false) {
     const binary = await executable('freebuff'); await executable('tmux');
     let diagnostics: string;
     try { diagnostics = (await exec(binary, ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536, signal: caller })).stdout; }
@@ -99,8 +117,8 @@ export class Freebuff implements Source {
     if (!prompt) throw new SourceError('upstream', 'No user text in this request');
     const key = cwd + ':' + createHash('sha256').update(turns[0]!).digest('hex');
     // Simultaneous requests must never send into the same pane/chat.
-    let continuation = this.busy.has(key) ? undefined : this.conversations.get(key);
-    const ownsConversation = !this.busy.has(key);
+    let continuation = isolated || this.busy.has(key) ? undefined : this.conversations.get(key);
+    const ownsConversation = !isolated && !this.busy.has(key);
     if (ownsConversation) this.busy.add(key);
     let creation: Pool | undefined;
     let creating = false;
@@ -173,7 +191,7 @@ export class Freebuff implements Source {
           selected = file;
           releaseCreation();
           sawUser = true;
-          const text = parseChat(data, prompt);
+          const text = parseChat(data, prompt, isolated);
           if (text !== undefined && sendComplete) { if (ownsConversation) this.conversations.set(key, file); return { text }; }
         }
         if (!sawUser && Date.now() - sentAt > 10000) throw new SourceError('upstream', 'Freebuff did not persist a user turn within 10 seconds; run freebuff doctor and check login or startup prompts');
@@ -183,7 +201,7 @@ export class Freebuff implements Source {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
       if (signal.aborted) throw new SourceError('timeout', `Freebuff timed out after ${timeout}ms; check freebuff login and your free-hours balance`);
-      if (error instanceof SourceError) { if (partial) error.output = partial; throw error; }
+      if (error instanceof SourceError) { if (partial && !isolated) error.output = partial; throw error; }
       throw new SourceError('upstream', `Freebuff failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       try { await this.mux.stop(id); }
