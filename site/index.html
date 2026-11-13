@@ -36,6 +36,8 @@
   .mark small { font: 500 11px/1 var(--mono); letter-spacing: .08em; color: var(--dim); margin-left: 10px; text-transform: none; }
   .chip { font: 500 14px/1 var(--mono); color: var(--ink); background: rgba(18, 24, 41, .82); border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; cursor: pointer; }
   .chip:hover { border-color: var(--gold); }
+  .chip[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
+  .tools { display: flex; gap: 8px; }
   .chip b { color: var(--gold); font-weight: 500; }
 
   /* 1. hero: the valley, and your pointer is a headlamp */
@@ -119,7 +121,10 @@
 <body>
   <div class="bar wrap">
     <a class="mark" href="#top">grunt<small>free agent for everyone</small></a>
-    <button class="chip" type="button" data-copy="npx usegrunt" aria-label="Copy the install command: npx usegrunt"><b>$</b> npx usegrunt</button>
+    <div class="tools">
+      <button class="chip" id="sound" type="button" aria-pressed="false">Sound off</button>
+      <button class="chip" type="button" data-copy="npx usegrunt" aria-label="Copy the install command: npx usegrunt"><b>$</b> npx usegrunt</button>
+    </div>
   </div>
 
   <header class="hero" id="top">
@@ -128,7 +133,7 @@
     <div class="copy wrap"><div class="inner">
       <h1>There's more <em>free intelligence</em> out there than you think.</h1>
       <p>A lot of good AI is free right now. It's spread across different tools and sign-ups, so most of it goes unused. grunt puts it all behind one model your coding agent can use.</p>
-      <div class="hint">Scroll to follow the line</div>
+      <div class="hint">Scroll to follow the line. Sound is in the top corner.</div>
     </div></div>
   </header>
 
@@ -176,6 +181,7 @@
 <script type="module">
   import { ScrollFilm } from "./scroll-film.js";
   import { AlphaVideo } from "./alpha-video.js";
+  import { FilmSound } from "./sound.js";
 
   const portrait = matchMedia("(orientation: portrait)").matches;
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -208,6 +214,13 @@
     const fr = Math.min(last, Math.round(b.frame / FILM.per));
     p += move * (fr - f) / last; keys.push([p, fr]); b.from = p; p += b.hold; b.to = p; keys.push([Math.min(1, p), fr]); f = fr;
   }
+  // Sound: off until asked for. The button says what you will hear, not what you will get by pressing it.
+  const sound = new FilmSound(), soundBtn = document.getElementById("sound");
+  soundBtn.addEventListener("click", async () => {
+    soundBtn.textContent = "Loading sound";
+    const on = await sound.toggle().catch(() => false);
+    soundBtn.setAttribute("aria-pressed", String(on)); soundBtn.textContent = on ? "Sound on" : "Sound off";
+  });
   const section = document.getElementById("film");
   section.style.height = portrait ? "1250svh" : "1500svh";
   const capsEl = section.querySelector(".caps"), rail = section.querySelector(".rail");
@@ -216,7 +229,8 @@
   const caps = [...capsEl.children], stops = [...rail.querySelectorAll("i")], marker = rail.querySelector("b");
   new ScrollFilm({
     section, canvas: section.querySelector("canvas"), ...(FILM.video ? { video: { src: FILM.video, fps: 24 } } : { frames: { count: FILM.count, src: FILM.src } }), keys, fit: "cover",
-    onUpdate: ({ progress }) => {
+    onUpdate: ({ progress, index }) => {
+      sound.frame(index * FILM.per);
       BEATS.forEach((b, i) => { caps[i].classList.toggle("on", progress >= b.from - 0.012 && progress <= b.to + 0.012); stops[i].classList.toggle("past", progress >= b.from); });
       marker.style.top = `${progress * 100}%`;
     },
