@@ -13,18 +13,16 @@ import { createLocalApp } from './api.js';
 const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
 const source = (id: string): Source => ({ id, available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: `${id} done` })) });
 function routed(random = () => 0) { const a = source('freebuff'), b = source('opencode'); return { a, b, sources: new Sources([a, b], { registry: () => bundledRegistry, random }) }; }
-it.each([false, true])('preserves function tools without reaching delegates (sticky=%s)', async sticky => {
-  const delegates = ['freebuff', 'codex', 'opencode'].map(source);
-  const gateway = { ...source('gateway'), supportsFunctionTools: true };
-  const sources = new Sources([...delegates, gateway], sticky ? { registry: () => bundledRegistry } : undefined);
-  const input = { ...request, tools: [{ type: 'function' as const, function: { name: 'post', parameters: {} } }] };
-  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'gateway done' });
-  expect(gateway.complete).toHaveBeenCalledWith(input, expect.any(AbortSignal));
-  for (const delegate of delegates) expect(delegate.complete).not.toHaveBeenCalled();
-  vi.mocked(gateway.complete).mockRejectedValue(new SourceError('upstream', 'offline'));
-  await expect(sources.complete(input, AbortSignal.timeout(1000))).rejects.toThrow('Tool-capable sources are unavailable');
-  for (const delegate of delegates) expect(delegate.complete).not.toHaveBeenCalled();
-  await expect(new Sources(delegates, sticky ? { registry: () => bundledRegistry } : undefined).complete(input, AbortSignal.timeout(1000))).rejects.toThrow('Tool-capable sources are unavailable');
+// Reproduction FT1: Pi tool definitions must not remove Freebuff from routing.
+it.each([false, true])('retains Pi tools and source selection (sticky=%s)', async sticky => {
+  const freebuff = { ...source('freebuff'), supportsFunctionTools: false };
+  const opencode = source('opencode');
+  const sources = new Sources([opencode, freebuff], sticky ? { registry: () => bundledRegistry, random: () => 0 } : undefined);
+  const input = { ...request, model: 'freebuff', tools: [{ type: 'function' as const, function: { name: 'read', parameters: {} } }] };
+  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'freebuff done' });
+  expect(freebuff.complete).toHaveBeenCalledWith(input, expect.any(AbortSignal));
+  expect(opencode.complete).not.toHaveBeenCalled();
+  expect(await new Sources([freebuff], sticky ? { registry: () => bundledRegistry } : undefined).complete({ ...input, model: 'milo' }, AbortSignal.timeout(1000))).toEqual({ text: 'freebuff done' });
 });
 afterEach(() => vi.restoreAllMocks());
 it('sticky within task, tool results and retries; draws again for the next user turn', async () => {

@@ -43,8 +43,9 @@ try {
     child.on('close', code => resolve({ code, output }));
   });
   if (!bridged) {
-    assert.match(run.output, /Tool-capable sources are unavailable/);
-    console.log(JSON.stringify({ reproduction: 'PF1', actualPi: true, bridge: false, result: 'Pi cannot execute its read tool: adapter excluded from function-tool routing' }));
+    assert.equal(run.code, 0, run.output);
+    assert.doesNotMatch(run.output, /Tool-capable sources are unavailable/);
+    console.log(JSON.stringify({ reproduction: 'PF1', actualPi: true, bridge: false, result: 'Pi request reached the unbridged delegate and returned final text; Pi tool execution is not proven' }));
   } else {
     assert.equal(run.code, 0, run.output);
     const events = run.output.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));

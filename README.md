@@ -139,13 +139,12 @@ id such as `freebuff`. This process is separate from the Fly server and Docker
 entry point. Local callers can invoke Freebuff with your filesystem permissions;
 keep this endpoint on your own machine.
 
-Requests containing function tools use only sources that forward those tools
-(FreeLLMAPI or Gateway), bypassing delegate selection and sticky routing. If no
-such source is configured or all fail, grunt returns a clear tool-capable-source
-unavailable error. Freebuff, OpenCode and Codex never receive these requests;
-the default Freebuff/OpenCode-only configuration therefore cannot serve them.
-The Freebuff bridge also rejects function-tool requests, including requests
-from older FreeLLMAPI fallback configurations that advertise it as tool-capable.
+Requests containing function tools follow the same source selection and fallback
+rules as other requests. Selecting `freebuff` keeps Freebuff eligible even when
+Pi attaches tool definitions, including on the separate fallback listener.
+FreeLLMAPI and Gateway forward tool definitions to their upstream APIs. Without
+the JSON bridge, Freebuff remains a delegate returning final text; routing a
+request to it does not enable Pi's own tool loop.
 
 Freebuff returns only text after the last non-text block in its completed reply.
 Earlier deliberation and tool activity are omitted.
@@ -420,8 +419,8 @@ Outside provider handoffs, only the latest user text is pasted into Freebuff, wi
 
 An experimental Freebuff JSON tool bridge is available with
 `MILO_FREEBUFF_JSON_BRIDGE=1`. It is **off by default and not live validated**.
-When enabled, Freebuff becomes a function-tool candidate, including on the
-separate fallback listener. Existing source order still applies. Every bridge
+When enabled, Freebuff translates function-tool requests into the JSON protocol,
+including on the separate fallback listener. Existing source order still applies. Every bridge
 request sends the full system/developer, skill and conversation context, tool
 definitions, assistant calls and correlated Pi tool results in a fresh CLI
 session. Treat this as disclosure of that context to Freebuff.

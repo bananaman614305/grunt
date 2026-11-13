@@ -72,7 +72,7 @@ it('does not retain schemas from successive requests in a shared validator', () 
   } finally { compile.mockRestore(); }
 });
 
-it('retains default routing and explicitly opts the adapter into tool routing', () => {
+it('advertises JSON tool protocol support only when the bridge is enabled', () => {
   expect(configure({MILO_SOURCES:'freebuff'}).sources[0]!.supportsFunctionTools).toBe(false);
   expect(configure({MILO_SOURCES:'freebuff',MILO_FREEBUFF_JSON_BRIDGE:'1'}).sources[0]!.supportsFunctionTools).toBe(true);
 });
@@ -114,7 +114,7 @@ it('repairs once in a fresh session, never leaks rejected protocol or deliberati
     await expect(invalid.driver.complete(invalid.request,new AbortController().signal)).rejects.toMatchObject({code:'upstream',output:undefined});
     expect(invalid.prompts).toHaveLength(2);
     const fallback = {id:'fallback',supportsFunctionTools:true,available:async()=>true,complete:async()=>({text:'safe fallback'})};
-    expect(await new Sources([invalid.driver,fallback]).complete(invalid.request,new AbortController().signal)).toEqual({text:'safe fallback'});
+    expect(await new Sources([invalid.driver,fallback]).complete({...invalid.request,model:'milo'},new AbortController().signal)).toEqual({text:'safe fallback'});
   } finally {await invalid.close();}
 });
 
