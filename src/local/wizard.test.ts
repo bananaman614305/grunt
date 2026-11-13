@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
 import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
-import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkServiceSources, serviceSources } from './wizard.js';
+import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources } from './wizard.js';
 import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -238,3 +238,15 @@ it('names a unit override whose MILO_SOURCES lacks an adapter and leaves it unch
   expect(lines[1]).toContain(`${dropIn} sets MILO_SOURCES=freellmapi,opencode,dots, which lacks freebuff`);
   expect(unavailable).toEqual(['freebuff']);
 });
+
+it('passes the live check when the model list takes longer than one second', async () => {
+  const slow: Source = { ...fake('freebuff'), available: async () => { await new Promise(resolve => setTimeout(resolve, 1500)); return true; } };
+  const live = await service(new Sources([slow]));
+  try { await checkService(live.port, 10000); } finally { await live.close(); }
+}, 15000);
+
+it('still reports a service that never answers', async () => {
+  const live = await service(new Sources([fake('opencode')]));
+  await live.close();
+  await expect(checkService(live.port, 2000)).rejects.toThrow('grunt service did not start; inspect its service status');
+}, 10000);
