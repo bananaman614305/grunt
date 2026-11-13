@@ -55,7 +55,7 @@ export function parseChat(value: unknown, prompt: string): string | undefined {
   const last = replies.at(-1);
   if (!last || last.isComplete !== true) return;
   if (!Array.isArray(last.blocks)) throw new SourceError('upstream', 'Freebuff chat format changed: missing reply blocks');
-  const blocks = last.blocks.filter(b => b.type === 'text');
+  const blocks = last.blocks.slice(last.blocks.findLastIndex(b => b.type !== 'text') + 1);
   if (!blocks.length) return;
   if (blocks.some(b => typeof b.content !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: missing text blocks');
   return blocks.map(b => b.content).join('\n');

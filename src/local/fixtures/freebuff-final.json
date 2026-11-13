@@ -1,0 +1,10 @@
+[
+  { "variant": "user", "content": "Reply with only hello" },
+  { "variant": "ai", "isComplete": true, "blocks": [
+    { "type": "text", "content": "private deliberation" },
+    { "type": "tool", "name": "read_files" },
+    { "type": "text", "content": "more private deliberation" },
+    { "type": "tool", "name": "run_terminal_command" },
+    { "type": "text", "content": "hello" }
+  ] }
+]

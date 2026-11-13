@@ -85,7 +85,7 @@ try {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/pi.json', import.meta.url), 'utf8'));
   const response = await fetch(`${url}/v1/chat/completions`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(150000),
-    body: JSON.stringify({ ...fixture, model: 'grunt', cwd, stream: false, messages: [{ role: 'user', content: 'Append the line DONE to progress.txt after the work so far. Preserve all existing lines exactly. Do not change any other files. Reply only DONE when finished.' }] })
+    body: JSON.stringify({ ...fixture, tools: [], model: 'grunt', cwd, stream: false, messages: [{ role: 'user', content: 'Append the line DONE to progress.txt after the work so far. Preserve all existing lines exactly. Do not change any other files. Reply only DONE when finished.' }] })
   });
   if (response.status !== 200) console.error(JSON.stringify({ status: response.status, body: await response.clone().text(), traces }));
   assert.equal(response.status, 200); const answer = await response.json(); assert(answer.choices[0].message.content.trim());

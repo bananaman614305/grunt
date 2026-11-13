@@ -47,7 +47,7 @@ it('registers anonymous Kilo and the separate Freebuff bridge last in the ordere
   const config = freeConfig();
   expect(config.customProviders).toEqual([
     { baseUrl: 'https://ai-gateway.kilo.ai/api/v1', apiKey: 'no-key', label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
-    { baseUrl: 'http://127.0.0.1:8789/v1', apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: true }] }
+    { baseUrl: 'http://127.0.0.1:8789/v1', apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: false }] }
   ]);
   expect(config.routing.strategy).toBe('priority');
   expect(config.fallback.at(-1)).toMatchObject({ modelId: 'freebuff', priority: 1000000 });
@@ -64,7 +64,7 @@ it('types the exact latest OpenCode fixture message and reuses the session for f
   };
   const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher });
   const app = createLocalApp(new Sources([driver]));
-  fixture.cwd = '/tmp'; fixture.model = 'opencode'; fixture.stream = false;
+  fixture.cwd = '/tmp'; fixture.model = 'opencode'; fixture.stream = false; fixture.tools = [];
   expect((await (await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) })).json()).choices[0].message.content).toBe('bridge works 42');
   fixture.messages.push({ role: 'assistant', content: 'bridge works 42' }, { role: 'user', content: '  Repeat it.\n' });
   await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) });

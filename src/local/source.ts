@@ -11,6 +11,7 @@ export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: nu
 export const answeredBy = new WeakMap<Completion, string>();
 export interface Source {
   id: string;
+  supportsFunctionTools?: boolean;
   available(): Promise<boolean>;
   healthCheck?(): Promise<boolean>;
   complete(request: ModelRequest, signal: AbortSignal): Promise<Completion>;
@@ -34,10 +35,11 @@ export class Sources {
     return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
-    if (this.router) return this.router.complete(request, signal);
+    const needsTools = request.tools.some(tool => tool.type === 'function');
+    if (this.router && !needsTools) return this.router.complete(request, signal);
     const known = this.sources.some(s => s.id === request.model);
     if (request.model !== 'milo' && !known) console.error(`grunt model mapping: ${request.model} -> milo`);
-    const candidates = request.model === 'milo' || !known ? this.sources : this.sources.filter(s => s.id === request.model);
+    const candidates = needsTools ? this.sources.filter(s => s.supportsFunctionTools) : request.model === 'milo' || !known ? this.sources : this.sources.filter(s => s.id === request.model);
     let last = new SourceError('not_installed', `No source for model ${request.model}`);
     for (const source of candidates) {
       signal.throwIfAborted();
@@ -52,19 +54,21 @@ export class Sources {
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
         console.error(`grunt source: ${source.id} failed (${last.code}) for model ${request.model}`);
         // Only dots and OpenCode deadlines fall through; caller cancellation stops above.
-        if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode') throw last;
+        if (!needsTools && last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode') throw last;
         continue;
       }
       console.error(`grunt source: ${source.id} answered model ${request.model}`);
       answeredBy.set(completion, source.id);
       return completion;
     }
+    if (needsTools) throw new SourceError('upstream', `Tool-capable sources are unavailable; configure FreeLLMAPI or Gateway${candidates.length ? ` (${last.message})` : ''}`);
     throw last;
   }
   async close() { await Promise.allSettled(this.sources.map(s => s.close?.())); }
 }
 export class Gateway implements Source {
   id = 'gateway';
+  readonly supportsFunctionTools = true;
   private url: string;
   constructor(url: string, private key: string, private fetcher: typeof fetch = fetch) {
     const parsed = new URL(url);

@@ -139,6 +139,17 @@ id such as `freebuff`. This process is separate from the Fly server and Docker
 entry point. Local callers can invoke Freebuff with your filesystem permissions;
 keep this endpoint on your own machine.
 
+Requests containing function tools use only sources that forward those tools
+(FreeLLMAPI or Gateway), bypassing delegate selection and sticky routing. If no
+such source is configured or all fail, grunt returns a clear tool-capable-source
+unavailable error. Freebuff, OpenCode and Codex never receive these requests;
+the default Freebuff/OpenCode-only configuration therefore cannot serve them.
+The Freebuff bridge also rejects function-tool requests, including requests
+from older FreeLLMAPI fallback configurations that advertise it as tool-capable.
+
+Freebuff returns only text after the last non-text block in its completed reply.
+Earlier deliberation and tool activity are omitted.
+
 Freebuff acts as a delegate: it runs its own tools and can edit files in the
 working directory. Your harness receives final text; its own tool loop does not
 run for that turn. grunt extracts cwd from harness context (including environment
