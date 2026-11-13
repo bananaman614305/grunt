@@ -232,7 +232,7 @@ existing installations and offline regression checks.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package is `usegrunt` (version `0.5.0`); the installed command is `usegrunt`.
+The package is `usegrunt` (version `0.6.0`); the installed command is `usegrunt`.
 This change prepares the package for publication after merge; it does not publish.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
