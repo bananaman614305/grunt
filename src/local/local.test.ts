@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, copyFile, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, copyFile, chmod, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
@@ -85,6 +85,42 @@ it('cwd inference and changed Freebuff format fail clearly', async () => {
   expect(decode({ input: 'hi', instructions: '<cwd>/tmp/codex</cwd>' }, 'responses', '/fallback').cwd).toBe('/tmp/codex');
   expect(decode({ messages: [{ role: 'user', content: 'hi' }] }, 'chat', '/fallback').cwd).toBe('/fallback');
   expect(() => decode({ input: 'hi', cwd: 'relative' }, 'responses', '/fallback')).toThrow('absolute');
+});
+const storyBlocks = [
+  { type: 'text', textType: 'reasoning', content: 'I am Buffy; I should consider my tools before telling a story.' },
+  { type: 'text', textType: 'text', content: 'Once upon a time, a jellybean sailed the moon.' },
+  { type: 'tool', name: 'suggest_followups' },
+];
+it('Reproduction R1 returns only the story before trailing followups', () => {
+  const chat = [{ variant: 'user', content: 'Tell a story' }, { variant: 'ai', isComplete: true, blocks: storyBlocks }];
+  expect(parseChat(chat, 'Tell a story')).toBe(storyBlocks[1]!.content);
+  expect(() => parseChat(chat, 'Tell a story', true)).toThrow('native tools');
+  expect(parseChat([{ variant: 'user', content: 'Tell a story' }, { variant: 'ai', isComplete: true, blocks: storyBlocks.slice(0, 1) }], 'Tell a story')).toBeUndefined();
+});
+it.each([false, true])('Reproduction R1 exposes only story text through completion or partial output (partial=%s)', async partial => {
+  const home = await mkdtemp(join(tmpdir(), 'grunt-story-'));
+  const mux = {
+    start: async () => {}, stop: async () => {},
+    send: async (_id: string, prompt: string) => {
+      const dir = join(home, '.config/manicode/projects', home.split('/').at(-1)!, 'chats', 'story');
+      await mkdir(dir, { recursive: true });
+      if (partial) await writeFile(join(dir, 'log.jsonl'), '{"code":"prompt_policy_refused"}\n');
+      await writeFile(join(dir, 'chat-messages.json'), JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: !partial, blocks: storyBlocks }]));
+    },
+  };
+  const driver = new Freebuff({ home, mux, startup: 1, poll: 5, timeout: 1000 });
+  try {
+    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff')); await chmod(join(home, 'freebuff'), 0o755);
+    vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
+    if (partial) {
+      await expect(driver.complete(decode({ model: 'freebuff', cwd: home, input: 'Tell a story' }, 'responses', home), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', output: storyBlocks[1]!.content });
+      return;
+    }
+    const app = createLocalApp(new Sources([driver]));
+    const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freebuff', cwd: home, messages: [{ role: 'user', content: 'Tell a story' }] }) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).choices[0].message.content).toBe(storyBlocks[1]!.content);
+  } finally { await driver.close(); await rm(home, { recursive: true, force: true }); }
 });
 it('fake Freebuff on real tmux isolates concurrent identical requests, queues, cleans up, times out and makes no fetch calls', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'milo-app-'));
