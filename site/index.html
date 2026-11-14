@@ -4,260 +4,78 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>grunt</title>
-<meta name="description" content="A lot of good AI is free right now, spread across different tools and sign-ups. grunt puts it behind one model your coding agent can use.">
+<meta name="description" content="Free AI is everywhere. grunt puts it to work: one model your coding agent can use, built from free sources, running on your computer.">
 <link rel="icon" href="favicon.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@900&family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;600&display=swap">
 <style>
-  /* Layout: a night valley. One film you scroll through, then a station board, three promises, one command. */
+  /* Night shift: one screen, centred under a warm work light. */
   :root {
     color-scheme: dark;
-    --night: #0a1020; --deep: #060a14; --iron: #1a2132; --plate: #121829;
-    --ink: #efe6d6; --dim: #9aa3b5; --gold: #f3a53a; --ember: #d9731f; --ok: #7fd08a;
-    --line: rgba(239, 230, 214, .14);
-    --display: "Big Shoulders Display", "Arial Narrow", "Helvetica Neue", sans-serif;
-    --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --bg: #0d121c; --ink: #ede6d8; --dim: #97a0b1; --line: #232c3c; --panel: #151c2a; --gold: #f2b531; --ongold: #1a1406;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
-    --gutter-l: max(20px, env(safe-area-inset-left, 0px)); --gutter-r: max(20px, env(safe-area-inset-right, 0px));
+    --tall: "Big Shoulders Display", "Arial Narrow", sans-serif;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--deep); color: var(--ink); font: 400 18px/1.55 var(--body); }
-  a { color: var(--gold); text-underline-offset: 3px; }
+  html, body { margin: 0; overflow-x: clip; min-height: 100%; background: var(--bg); color: var(--ink); font: 400 18px/1.55 var(--sans); }
+  body { display: grid; place-items: center; min-height: 100vh; min-height: 100svh; overflow-x: clip; }
+  main { width: 100%; max-width: 620px; text-align: center; padding-block: 40px;
+    padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+  .light { position: relative; display: grid; place-items: center; margin-bottom: 18px; }
+  .light::before { content: ""; position: absolute; top: -70px; bottom: -70px; left: 50%; width: min(460px, 100vw); transform: translateX(-50%); pointer-events: none;
+    background: radial-gradient(closest-side, rgba(242, 181, 49, .26), rgba(242, 181, 49, .07) 55%, transparent); }
+  .light img { position: relative; width: 128px; height: 128px; }
+  .name { margin: 0 0 22px; font: 900 34px/1 var(--tall); color: var(--gold); letter-spacing: .02em; }
+  h1 { margin: 0 0 14px; font: 900 clamp(40px, 8vw, 62px)/.98 var(--tall); text-transform: uppercase; text-wrap: balance; }
+  h1 em { font-style: normal; color: var(--gold); }
+  p { margin: 0 auto 28px; max-width: 44ch; }
+  .install { display: flex; gap: 10px; flex-wrap: wrap; text-align: left; }
+  .install code { flex: 1 1 220px; min-width: 0; font: 500 20px/1 var(--mono); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 20px; white-space: nowrap; overflow-x: auto; }
+  .install code::before { content: "$ "; color: var(--gold); }
+  .install button { font: 900 20px/1 var(--tall); letter-spacing: .06em; text-transform: uppercase; color: var(--ongold); background: var(--gold);
+    border: 0; border-radius: 10px; padding: 0 26px; min-height: 58px; cursor: pointer; }
+  .install button:hover { background: #ffc94d; }
   :focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
-  .wrap { padding-left: var(--gutter-l); padding-right: var(--gutter-r); }
-  .inner { max-width: 1120px; margin: 0 auto; }
-
-  /* top bar */
-  .bar { position: fixed; inset: 0 0 auto; z-index: 20; display: flex; justify-content: space-between; align-items: center; gap: 12px;
-    padding-top: calc(12px + env(safe-area-inset-top, 0px)); padding-bottom: 12px;
-    background: linear-gradient(rgba(6, 10, 20, .78), rgba(6, 10, 20, 0)); pointer-events: none; }
-  .bar > * { pointer-events: auto; }
-  .mark { font: 800 24px/1 var(--display); letter-spacing: .04em; text-transform: uppercase; color: var(--ink); text-decoration: none; }
-  .mark small { font: 500 11px/1 var(--mono); letter-spacing: .08em; color: var(--dim); margin-left: 10px; text-transform: none; }
-  .chip { font: 500 14px/1 var(--mono); color: var(--ink); background: rgba(18, 24, 41, .82); border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; cursor: pointer; }
-  .chip:hover { border-color: var(--gold); }
-  .chip[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
-  .tools { display: flex; gap: 8px; }
-  .chip b { color: var(--gold); font-weight: 500; }
-
-  /* 1. hero: the valley, and your pointer is a headlamp */
-  .hero { position: relative; height: 100svh; min-height: 520px; overflow: hidden; background: var(--night); }
-  .hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .hero .lit { -webkit-mask-image: radial-gradient(circle var(--r, 26vmax) at var(--x, 62%) var(--y, 38%), #000 0%, rgba(0, 0, 0, .7) 38%, transparent 72%);
-               mask-image: radial-gradient(circle var(--r, 26vmax) at var(--x, 62%) var(--y, 38%), #000 0%, rgba(0, 0, 0, .7) 38%, transparent 72%); }
-  .hero::after { content: ""; position: absolute; inset: auto 0 0; height: 46%; background: linear-gradient(transparent, rgba(6, 10, 20, .82)); }
-  .hero .copy { position: absolute; left: 0; right: 0; bottom: max(7svh, 34px); z-index: 2; }
-  .hero h1 { margin: 0 0 14px; max-width: 13ch; font: 800 clamp(44px, 8.2vw, 116px)/.9 var(--display); letter-spacing: .005em; text-transform: uppercase; text-wrap: balance; }
-  .hero h1 em { font-style: normal; color: var(--gold); }
-  .hero p { margin: 0; max-width: 46ch; color: var(--ink); }
-  .hint { margin-top: 22px; font: 500 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
-  .hint::before { content: ""; display: inline-block; width: 28px; height: 1px; background: var(--gold); vertical-align: middle; margin-right: 10px; }
-
-  /* 2. the film: a pinned canvas, scroll is the camera */
-  #film { position: relative; background: var(--night); }
-  .pin { position: sticky; top: 0; height: 100svh; overflow: hidden; }
-  .pin canvas { width: 100%; height: 100%; display: block; }
-  .pin::after { content: ""; position: absolute; inset: auto 0 0; height: 38%; background: linear-gradient(transparent, rgba(6, 10, 20, .7)); pointer-events: none; }
-  .cap { position: absolute; z-index: 2; left: max(var(--gutter-l), calc((100vw - 1120px) / 2)); right: var(--gutter-r); bottom: max(9svh, 44px); max-width: 17ch;
-    font: 800 clamp(34px, 5.6vw, 80px)/.94 var(--display); text-transform: uppercase; text-wrap: balance;
-    opacity: 0; transform: translateY(14px); transition: opacity .4s ease, transform .4s ease; pointer-events: none; }
-  .cap::before { content: ""; display: block; width: 44px; height: 3px; background: var(--gold); margin-bottom: 16px; }
-  .cap.on { opacity: 1; transform: none; }
-  /* the line: stations down the right edge, a marker that rides it */
-  .rail { position: absolute; z-index: 2; right: calc(var(--gutter-r) - 4px); top: 18svh; bottom: 18svh; width: 14px; }
-  .rail::before { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; background: var(--line); }
-  .rail i { position: absolute; left: 3px; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; background: var(--deep); border: 1px solid var(--dim); }
-  .rail i.past { background: var(--gold); border-color: var(--gold); }
-  .rail b { position: absolute; left: 1px; width: 12px; height: 18px; margin-top: -9px; background: var(--gold); border-radius: 2px; }
-
-  /* 3. after the film */
-  section.after { padding-block: clamp(72px, 12vh, 140px); position: relative; }
-  h2 { margin: 0 0 18px; font: 800 clamp(36px, 5vw, 64px)/.95 var(--display); text-transform: uppercase; text-wrap: balance; }
-  .lede { margin: 0 0 34px; max-width: 58ch; color: var(--dim); }
-  .eyebrow { margin: 0 0 14px; font: 500 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--gold); }
-  .lantern { position: absolute; right: var(--gutter-r); top: clamp(10px, 4vh, 50px); width: 120px; height: 180px; pointer-events: none; }
-
-  /* the board: what is on the line today */
-  .board { border: 1px solid var(--line); border-radius: 10px; background: var(--plate); overflow: hidden; }
-  .row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, .9fr) minmax(0, 2fr); gap: 18px; align-items: baseline; padding: 16px 20px; border-top: 1px solid var(--line); }
-  .row:first-child { border-top: 0; }
-  .row.head { font: 500 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); padding-block: 12px; background: var(--iron); }
-  .row > * { min-width: 0; }
-  .name { font: 600 24px/1.1 var(--display); letter-spacing: .02em; text-transform: uppercase; }
-  .state { font: 500 14px/1.2 var(--mono); white-space: nowrap; }
-  .state::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 9px; border: 1px solid var(--dim); vertical-align: 0; }
-  .state.on { color: var(--ink); } .state.on::before { background: var(--gold); border-color: var(--gold); }
-  .state.opt { color: var(--dim); }
-  .cost { font: 500 14px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
-  .note { color: var(--dim); font-size: 14px; }
-  .small { color: var(--dim); font-size: 14px; margin: 16px 0 0; max-width: 70ch; }
-
-  .promises { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 34px; }
-  .promises > div { border-top: 2px solid var(--gold); padding-top: 18px; }
-  .promises h3 { margin: 0 0 8px; font: 800 30px/1 var(--display); text-transform: uppercase; }
-  .promises p { margin: 0; color: var(--dim); }
-
-  .install { background: var(--night); border-block: 1px solid var(--line); }
-  .cmd { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; margin: 26px 0 14px; }
-  .cmd code { flex: 1 1 260px; min-width: 0; font: 500 clamp(24px, 3.4vw, 40px)/1 var(--mono); color: var(--ink); background: var(--plate); border: 1px solid var(--line); border-radius: 10px; padding: 24px 26px; overflow-x: auto; white-space: nowrap; }
-  .cmd code::before { content: "$ "; color: var(--gold); }
-  .cmd button { font: 800 24px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: #1c1204; background: var(--gold); border: 0; border-radius: 10px; padding: 0 30px; min-height: 60px; cursor: pointer; }
-  .cmd button:hover { background: #ffb851; }
-  footer { padding-block: 36px 56px; color: var(--dim); font-size: 14px; }
-  footer p { margin: 0 0 6px; max-width: 80ch; }
-
-  @media (max-width: 760px) {
-    .mark small { display: none; }
-    .row { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; padding: 16px; }
-    .row.head { display: none; }
-    .row .cost { grid-column: 1; } .row .note { grid-column: 1 / -1; }
-    .row .state { grid-row: 1; grid-column: 2; }
-    .lantern { width: 84px; height: 126px; top: 8px; }
-    .rail { top: 22svh; bottom: 30svh; }
-  }
-  @media (prefers-reduced-motion: reduce) { .cap { transition: none; } }
+  .sources b { font-weight: 600; }
+  small { display: block; margin-top: 14px; color: var(--dim); font-size: 15px; }
+  .sources { list-style: none; margin: 36px auto 0; padding: 0; max-width: 420px; text-align: left; border-top: 1px solid var(--line); }
+  .sources li { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 10px 2px; border-bottom: 1px solid var(--line); }
+  .sources span { font: 500 13px/1.3 var(--mono); color: var(--dim); }
+  .sources .on span { color: var(--gold); }
+  .label { margin: 36px 0 -26px; font: 500 12px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  footer { margin-top: 32px; color: var(--dim); font: 500 13px/1.5 var(--mono); }
+  @media (max-width: 480px) { .install button { flex: 1 1 100%; } }
 </style>
 </head>
 <body>
-  <div class="bar wrap">
-    <a class="mark" href="#top">grunt<small>free agent for everyone</small></a>
-    <div class="tools">
-      <button class="chip" id="sound" type="button" aria-pressed="false">Sound off</button>
-      <button class="chip" type="button" data-copy="npx usegrunt" aria-label="Copy the install command: npx usegrunt"><b>$</b> npx usegrunt</button>
-    </div>
+<main>
+  <div class="light"><img src="grunt.svg" alt="The grunt: a worker in a hard hat with an unlit cigar" width="128" height="128"></div>
+  <div class="name">grunt</div>
+  <h1>Free AI is everywhere. <em>grunt puts it to work.</em></h1>
+  <p>It turns the free AI scattered across the web into one model your coding agent can use. It runs on your computer and costs nothing.</p>
+  <div class="install">
+    <code id="cmd">npx usegrunt</code>
+    <button type="button" id="copy">Copy</button>
   </div>
-
-  <header class="hero" id="top">
-    <picture><source media="(orientation: portrait)" srcset="hero/dark-tall.webp"><img class="dark" src="hero/dark-wide.webp" alt=""></picture>
-    <picture><source media="(orientation: portrait)" srcset="hero/lit-tall.webp"><img class="lit" src="hero/lit-wide.webp" alt="A valley at night. Veins of gold glow in every hill, and three small fenced yards sit apart from each other in the dark."></picture>
-    <div class="copy wrap"><div class="inner">
-      <h1>There's more <em>free intelligence</em> out there than you think.</h1>
-      <p>A lot of good AI is free right now. It's spread across different tools and sign-ups, so most of it goes unused. grunt puts it all behind one model your coding agent can use.</p>
-      <div class="hint">Scroll to follow the line. Sound is in the top corner.</div>
-    </div></div>
-  </header>
-
-  <section id="film" aria-label="A short film. Each hill's gold sits behind its own gate until a rail line is laid from every yard to one track, and loaded wagons roll down it to a workshop where a laptop is running grunt.">
-    <div class="pin">
-      <canvas></canvas>
-      <div class="caps"></div>
-      <div class="rail" aria-hidden="true"></div>
-    </div>
-  </section>
-
-  <section class="after wrap" aria-labelledby="board-h"><div class="inner">
-    <canvas class="lantern" aria-hidden="true"></canvas>
-    <p class="eyebrow">On the line today</p>
-    <h2 id="board-h">Where the free tokens come from</h2>
-    <p class="lede">grunt starts with two free sources turned on, and it costs nothing. The others stay off until you switch them on. We add new ones as we test them.</p>
-    <div class="board" id="board" role="table" aria-label="Sources grunt can use"></div>
-    <p class="small">If a free source has a catch, like keeping your prompts, grunt tells you up front.</p>
-  </div></section>
-
-  <section class="after wrap" aria-label="What grunt promises"><div class="inner">
-    <div class="promises">
-      <div><h3>Free by default</h3><p>Installing grunt costs nothing. It won't buy credits, upgrade a plan or move you to a paid model unless you tell it to.</p></div>
-      <div><h3>On your machine</h3><p>grunt runs on your own computer. Your prompts go straight to whichever source is doing the work, not through our servers, and your keys stay with you.</p></div>
-      <div><h3>It keeps going</h3><p>When one free source hits its limit halfway through a job, the next one takes over where it left off. Your agent keeps working.</p></div>
-    </div>
-  </div></section>
-
-  <section class="after install wrap" aria-labelledby="install-h"><div class="inner">
-    <p class="eyebrow">One command</p>
-    <h2 id="install-h">Put it to work</h2>
-    <div class="cmd">
-      <code id="cmd">npx usegrunt</code>
-      <button type="button" data-copy="npx usegrunt">Copy</button>
-    </div>
-    <p class="small" id="copied" role="status" aria-live="polite"></p>
-    <p class="small">This sets up Pi to use grunt. Claude Code and opencode work too, as a custom model. MIT licensed.</p>
-  </div></section>
-
-  <footer class="wrap"><div class="inner">
-    <p>grunt uses one account per person per service, in your own name. It doesn't resell credits or farm accounts.</p>
-    <p>Film made in Blender. The mine wagon is <a href="https://sketchfab.com/3d-models/1-af57a95d53ab474f8e69088c7c9fa3f4">a 3D scan from the Aleksinac mines</a> by <a href="https://sketchfab.com/nixic.alexandar">Aleksandar Nikšić</a> on Sketchfab (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>), relit and adapted. Other models and textures are from <a href="https://polyhaven.com">Poly Haven</a> (CC0).</p>
-  </div></footer>
-
-<script type="module">
-  import { ScrollFilm } from "./scroll-film.js";
-  import { AlphaVideo } from "./alpha-video.js";
-  import { FilmSound } from "./sound.js";
-
-  const portrait = matchMedia("(orientation: portrait)").matches;
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const pad = (i) => String(i).padStart(3, "0");
-  // The film is 360 frames. Wide screens get all of them; phones get every second one, framed tall.
-  const TALL_AS_VIDEO = false;   // true: phones play one seek-friendly video instead of 180 frames
-  const FILM = portrait ? { count: 180, src: (i) => `film/tall/${pad(i)}.webp`, per: 2, video: TALL_AS_VIDEO && "film/tall.mp4" } : { count: 360, src: (i) => `film/wide/${pad(i)}.webp`, per: 1 };
-  const BEATS = [   // film frame to hold on, share of the scroll to hold for, caption
-    { frame: 104, hold: 0.075, text: "It's scattered. Every source sits behind its own gate." },
-    { frame: 207, hold: 0.075, text: "grunt lays one line to all of them." },
-    { frame: 322, hold: 0.075, text: "Your work, one place." },
-    { frame: 359, hold: 0.085, text: "And it keeps coming." },
-  ];
-  // Sources: registry v1 (2026-11-11) and the daemon's defaults.
-  const SOURCES = [
-    { name: "Freebuff", on: true, cost: "$0", note: "A free coding agent. You sign in once during setup." },
-    { name: "OpenCode", on: true, cost: "$0", note: "The free model that comes with OpenCode." },
-    { name: "Kilo", on: false, cost: "$0", note: "Kilo's free tier." },
-    { name: "Codex", on: false, cost: "Your ChatGPT plan", note: "Uses your existing ChatGPT login and counts against that plan." },
-    { name: "Dots", on: false, cost: "Your account", note: "Uses a Dots account you connect yourself." },
-  ];
-  document.getElementById("board").innerHTML =
-    `<div class="row head" role="row"><span role="columnheader">Source</span><span role="columnheader">Status</span><span role="columnheader">Cost to you</span><span role="columnheader">What it is</span></div>` +
-    SOURCES.map((s) => `<div class="row" role="row"><span class="name" role="cell">${s.name}</span><span class="state ${s.on ? "on" : "opt"}" role="cell">${s.on ? "On by default" : "Optional"}</span><span class="cost" role="cell">${s.cost}</span><span class="note" role="cell">${s.note}</span></div>`).join("");
-
-  // Scroll progress to frame: moves in proportion to frames travelled, with a hold at each beat.
-  const last = FILM.count - 1, holdTotal = BEATS.reduce((a, b) => a + b.hold, 0), move = 1 - holdTotal;
-  const keys = [[0, 0]]; let p = 0, f = 0;
-  for (const b of BEATS) {
-    const fr = Math.min(last, Math.round(b.frame / FILM.per));
-    p += move * (fr - f) / last; keys.push([p, fr]); b.from = p; p += b.hold; b.to = p; keys.push([Math.min(1, p), fr]); f = fr;
-  }
-  // Sound: off until asked for. The button says what you will hear, not what you will get by pressing it.
-  const sound = new FilmSound(), soundBtn = document.getElementById("sound");
-  soundBtn.addEventListener("click", async () => {
-    soundBtn.textContent = "Loading sound";
-    const on = await sound.toggle().catch(() => false);
-    soundBtn.setAttribute("aria-pressed", String(on)); soundBtn.textContent = on ? "Sound on" : "Sound off";
+  <small>Works with Pi, Claude Code and opencode.</small>
+  <div class="label">Free sources</div>
+  <ul class="sources">
+    <li class="on"><b>Freebuff</b><span>on</span></li>
+    <li class="on"><b>OpenCode</b><span>on</span></li>
+    <li><b>Kilo</b><span>optional</span></li>
+    <li><b>Codex</b><span>optional · uses your ChatGPT plan</span></li>
+    <li><b>Dots</b><span>optional</span></li>
+  </ul>
+  <footer>Never spends a cent unless you say so · MIT licensed</footer>
+</main>
+<script>
+  const btn = document.getElementById("copy");
+  btn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText("npx usegrunt"); btn.textContent = "Copied"; }
+    catch { getSelection().selectAllChildren(document.getElementById("cmd")); btn.textContent = "Ctrl+C"; }
+    setTimeout(() => { btn.textContent = "Copy"; }, 2000);
   });
-  const section = document.getElementById("film");
-  section.style.height = portrait ? "1250svh" : "1500svh";
-  const capsEl = section.querySelector(".caps"), rail = section.querySelector(".rail");
-  capsEl.innerHTML = BEATS.map((b) => `<p class="cap">${b.text}</p>`).join("");
-  rail.innerHTML = BEATS.map((b) => `<i style="top:${(b.from + b.hold / 2) * 100}%"></i>`).join("") + "<b></b>";
-  const caps = [...capsEl.children], stops = [...rail.querySelectorAll("i")], marker = rail.querySelector("b");
-  new ScrollFilm({
-    section, canvas: section.querySelector("canvas"), ...(FILM.video ? { video: { src: FILM.video, fps: 24 } } : { frames: { count: FILM.count, src: FILM.src } }), keys, fit: "cover",
-    onUpdate: ({ progress, index }) => {
-      sound.frame(index * FILM.per);
-      BEATS.forEach((b, i) => { caps[i].classList.toggle("on", progress >= b.from - 0.012 && progress <= b.to + 0.012); stops[i].classList.toggle("past", progress >= b.from); });
-      marker.style.top = `${progress * 100}%`;
-    },
-  });
-
-  // Headlamp: the pointer lights the gold. Touch screens get a slow sweep.
-  const hero = document.getElementById("top");
-  const lamp = (x, y) => { hero.style.setProperty("--x", `${x}%`); hero.style.setProperty("--y", `${y}%`); };
-  if (matchMedia("(pointer: fine)").matches) {
-    hero.addEventListener("pointermove", (e) => { const r = hero.getBoundingClientRect(); lamp((e.clientX - r.left) / r.width * 100, (e.clientY - r.top) / r.height * 100); });
-  } else if (!reduce) {
-    const t0 = performance.now();
-    (function sweep(now) { const t = (now - t0) / 1000; lamp(50 + 34 * Math.sin(t * 0.5), 34 + 10 * Math.sin(t * 0.8)); requestAnimationFrame(sweep); })(t0);
-  }
-
-  // A lantern, swinging beside the board (transparent video).
-  if (!reduce) {
-    const lv = new AlphaVideo(document.querySelector(".lantern"), "overlay/lantern.mp4");
-    (function tick() { lv.draw(); requestAnimationFrame(tick); })();
-  }
-
-  // Copy buttons
-  const status = document.getElementById("copied");
-  document.querySelectorAll("[data-copy]").forEach((btn) => btn.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(btn.dataset.copy); status.textContent = "Copied. Paste it into your terminal."; }
-    catch { getSelection().selectAllChildren(document.getElementById("cmd")); status.textContent = "Selected. Press Ctrl+C or Cmd+C to copy."; }
-  }));
 </script>
 </body>
 </html>
