@@ -446,7 +446,7 @@ November 12, 2026, restrict relaying access to other applications and automated
 operation without written permission. No supported authorization for this
 integration has been established. Do not treat a CLI login or the opt-in flag as
 that permission. Live tool and skill support remains unproven; see
-[the recorded proof and limitations](proof/freebuff-json-bridge.md).
+[the recorded proof and limitations](../proof/freebuff-json-bridge.md).
 
 A conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
 per canonical working directory; `MILO_APP_POOL` defaults to (2) active sessions
