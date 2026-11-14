@@ -196,7 +196,10 @@ the grant's base URL and bearer token to FreeLLMAPI's custom-provider endpoint.
 Provider keys stay in Squire; no provider reveal approval is requested. Groq
 uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
-`usegrunt add groq` or `usegrunt add cerebras` connects another provider through the same flow.
+`usegrunt add groq`, `usegrunt add cerebras`, or `usegrunt add kilo` connects another
+provider through the same flow, then restarts grunt with the API sources enabled.
+Kilo reuses its saved profile key or opens free signup; its grant uses bearer
+authentication with `api.kilo.ai` first in the allowed hosts and `/api/gateway`.
 
 When no Squire session exists, the wizard runs Squire's own connect installer
 with the OpenCode target. Squire manages login and its broker service. An existing
@@ -210,14 +213,16 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-The service uses FreeLLMAPI first and OpenCode free models as fallback. It loads
-the saved router login itself at startup and retries if the router is temporarily
-unavailable. Setup keeps a runtime outside the npx cache, so cache cleanup does
+Fresh setup enables Freebuff and OpenCode. After named provider setup creates a
+local router login, repeat service installs preserve the source order
+`freellmapi,kilo,freebuff,opencode`. The daemon loads the saved router login itself
+at startup and retries if the router is temporarily unavailable. Setup keeps a
+runtime outside the npx cache, so cache cleanup does
 not remove the service. Pi's other providers are preserved. `PI_CODING_AGENT_DIR`
 selects a nondefault Pi agent directory.
 
-Setup installs the pinned FreeLLMAPI Node server as a separate background service;
-Docker is not required. Linux uses systemd user units; macOS uses launchd
+Named provider setup installs the pinned FreeLLMAPI Node server as a separate
+background service; Docker is not required. Linux uses systemd user units; macOS uses launchd
 (macOS remains untested). The router data and private login live under grunt's
 config directory. `MILO_FREELLMAPI_URL` chooses its numeric loopback address and
 is saved in grunt's service configuration. The router's database is created under
@@ -235,8 +240,10 @@ Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1
 provider failover. There is no direct OpenRouter free API route. An already
 configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
 `MILO_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
-cap is (4096) tokens. Select `freellmapi` for the free chain or `kilo` for the
-anonymous `kilo-auto/free` model through that same router. Kilo needs no account.
+cap is (4096) tokens. Select `freellmapi` for the free chain, which tries keyed
+Kilo's free Nemotron 3 Ultra before keyed `kilo-auto/free` when configured. Select
+`kilo` for Auto explicitly. The anonymous Kilo fallback remains available without
+an account.
 The separate Freebuff bridge listens only on `127.0.0.1:8789` and contains only
 the Freebuff source, preventing a routing loop. FreeLLMAPI supports priority
 ordering: keyed providers come first, Kilo next, Freebuff last. Setup enables
