@@ -260,7 +260,7 @@ it('exits the OpenCode probe server even when the CLI ignores graceful shutdown'
 });
 
 
-it.each([{ saved: [] }, { saved: ['kilo'] }, { saved: ['gemini'] }, { saved: ['kilo', 'gemini'] }])('adds only saved optional providers ($saved) without signup', async ({ saved }) => {
+it.each([{ saved: [] }, { saved: ['kilo'] }])('adds only saved optional providers ($saved) without signup', async ({ saved }) => {
   const squire = fakeSquire();
   vi.mocked(squire.credentials.list).mockResolvedValue(saved.map(service => ({ service, reference: service, field_names: ['value'] })));
   const addGrant = vi.fn();
@@ -280,23 +280,17 @@ it.each([true, false])('registers only vetted Kilo models, falling back when Nem
   });
 });
 
-it('registers Gemini Flash at the Google OpenAI-compatible path and orders keyed sources', async () => {
+it('orders keyed Kilo sources and disables unvetted models', async () => {
   const admin = new FreeLLMAdmin();
-  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models') ? { models: [{ id: 'models/gemini-3.5-flash' }] } : []);
-  await admin.addGrant('gemini', { base_url: 'https://egress.test/google', token: 'synthetic-grant' });
-  expect(call).toHaveBeenCalledWith('/keys/custom', {
-    baseUrl: 'https://egress.test/google/v1beta/openai', apiKey: 'synthetic-grant', label: 'Milo gemini (Squire)',
-    models: [{ model: 'models/gemini-3.5-flash', supportsTools: true }]
-  });
+  const call = vi.spyOn(admin, 'call');
   call.mockResolvedValue([
     { modelDbId: 1, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Milo kilo (Squire)', priority: 0 },
     { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Milo kilo (Squire)', priority: 0 },
-    { modelDbId: 3, platform: 'custom', modelId: 'models/gemini-3.5-flash', keyLabel: 'Milo gemini (Squire)', priority: 0 },
     { modelDbId: 4, platform: 'custom', modelId: 'stealth/glyph-cluster', keyLabel: 'Milo kilo (Squire)', priority: 0 }
   ]);
   await admin.configureChain();
   expect(call).toHaveBeenCalledWith('/fallback', [
-    { modelDbId: 1, enabled: true, priority: 999996 }, { modelDbId: 2, enabled: true, priority: 999997 }, { modelDbId: 3, enabled: true, priority: 999998 },
+    { modelDbId: 1, enabled: true, priority: 999996 }, { modelDbId: 2, enabled: true, priority: 999997 },
     { modelDbId: 4, enabled: false, priority: 999997 }
   ], 'PUT');
 });

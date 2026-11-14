@@ -20,9 +20,8 @@ export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b5
 export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys' };
 export type Provider = keyof typeof PROVIDERS;
 export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
-export const GEMINI_FLASH = 'models/gemini-3.5-flash';
-const savedProviders = ['kilo', 'gemini'] as const;
-const providerModels: Record<string, string[]> = { kilo: [KILO_NEMOTRON, 'kilo-auto/free'], gemini: [GEMINI_FLASH, 'gemini-3.5-flash'] };
+const savedProviders = ['kilo'] as const;
+const providerModels: Record<string, string[]> = { kilo: [KILO_NEMOTRON, 'kilo-auto/free'] };
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
 const sameService = (credential: Credential, service: string) => credential.service?.trim().toLowerCase() === service.trim().toLowerCase();
 function apiKeyField(credential: Credential, provider: Provider): string | undefined {
@@ -250,7 +249,7 @@ export class BrowserSquire implements SetupSquire {
   async close() { for (const handoff of this.handoffs) handoff.close(); await this.client.close(); }
 }
 
-const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway', gemini: '/v1beta/openai' })[provider] ?? '/v1';
+const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway' })[provider] ?? '/v1';
 
 export class FreeLLMAdmin {
   private token = '';
@@ -308,7 +307,7 @@ export class FreeLLMAdmin {
       const vetted = !provider || !providerModels[provider] || providerModels[provider].includes(row.modelId);
       return { modelDbId: row.modelDbId,
         enabled: fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true),
-        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : provider === 'gemini' ? 999998 : row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : row.priority };
+        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');

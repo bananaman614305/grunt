@@ -39,7 +39,7 @@ try {
   await admin.configureChain();
   const key = await admin.key();
   const chain = await admin.call('/fallback', undefined, 'GET');
-  for (const provider of ['kilo', 'gemini'].filter(name => grants[name])) {
+  for (const provider of ['kilo'].filter(name => grants[name])) {
     // Isolate each provider to prove its completion cannot be another source.
     await admin.call('/fallback', chain.map(row => ({ modelDbId: row.modelDbId, enabled: row.keyLabel === `Milo ${provider} (Squire)`, priority: row.priority })), 'PUT');
     const app = createLocalApp(new Sources([new FreeLLMAPI({ url: `${url}/v1`, key })]));
