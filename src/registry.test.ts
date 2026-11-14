@@ -10,11 +10,11 @@ const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('ships only Freebuff and OpenCode and validates tier weights', () => {
-  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode']);
+it('ships vetted Freebuff, OpenCode and Kilo and validates tier weights', () => {
+  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo']);
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
   const experimental = { ...bundledRegistry.adapters[0]!, id: 'future', tier: 'experimental', weight: 0.2 };
-  expect(validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters, experimental] }).adapters).toHaveLength(3);
+  expect(validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters.map(a => ({ ...a, weight: a.weight * 0.8 })), experimental] }).adapters).toHaveLength(4);
   expect(() => validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters, { ...experimental, weight: 0.3 }] })).toThrow();
 });
 it.each([
@@ -81,7 +81,22 @@ it('restricts publication to owner dispatch on main and validates before uploadi
   const workflow = await readFile('.github/workflows/registry.yml', 'utf8');
   expect(workflow).toContain('workflow_dispatch:');
   expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
-  expect(workflow).toContain("github.actor == 'lunchboxfortwo'");
+  expect(workflow).toContain('github.actor == github.repository_owner');
   expect(workflow).toContain("github.ref == 'refs/heads/main'");
   expect(workflow.indexOf('dist/registry.js')).toBeLessThan(workflow.indexOf('flyctl ssh'));
+});
+
+it('reaches the published Fly registry if the custom domain fails', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error('DNS unavailable')).mockResolvedValueOnce(Response.json(bundledRegistry));
+  const sync = new RegistrySync({ directory: await directory(), fetcher });
+  await sync.sync();
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry']);
+  expect(sync.current).toEqual(bundledRegistry);
+});
+it('never sends an explicit registry override to another host', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('offline'));
+  const sync = new RegistrySync({ directory: await directory(), url: 'https://custom.test/v1/registry', fetcher });
+  await sync.sync();
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(fetcher.mock.calls[0]![0]).toBe('https://custom.test/v1/registry');
 });

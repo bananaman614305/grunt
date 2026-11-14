@@ -31,7 +31,7 @@ It does not serve industrial or bulk workloads.
 The registry lists the adapters that offer free tokens, with a tier and a fixed weight for each.
 A weight is the chance that an adapter is picked for a new task.
 Stable adapters share 0.8 of the weight and experimental adapters share 0.2.
-grunt opens with two stable adapters, Freebuff and OpenCode, at 0.5 each.
+The bundled starting pool has three stable adapters: Freebuff and OpenCode at 0.3 each, and Kilo at 0.4.
 New sources enter by pull request, are tested, and reach people only when the owner publishes the registry.
 The registry can only select adapters that grunt already has code for; it cannot add code.
 The daemon pulls the registry once a day and keeps the last good copy when the gateway is down.

@@ -16,11 +16,11 @@ usegrunt installs grunt on this machine. It pools free AI quota and serves one l
 
 https://grunt.run. `milo` and `milo-local` remain aliases.
 
-Setup is Trusty Squire, the free-service list, sign-in, then your coding tools.
+Setup connects Trusty Squire, installs and connects the vetted Freebuff, OpenCode and Kilo pool (up to three services at once), tests each service, then connects your coding tools. Browser verification is queued when a provider needs you.
 
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md).
 
-Run `usegrunt add kilo` to connect Kilo and restart grunt with its API sources enabled. This reuses saved Squire access or opens Kilo's free signup flow. Requests using model `grunt`, `milo`, or `freellmapi` try free Nemotron 3 Ultra before `kilo-auto/free`; model `kilo` selects Auto explicitly. Freebuff and OpenCode remain available. Repeat setup preserves the API sources. If Nemotron disappears from Kilo's catalog, setup uses Auto.
+New installs route tasks across Freebuff, OpenCode and Kilo Auto. `usegrunt add groq`, `usegrunt add cerebras` and `usegrunt add kilo` remain available. Existing `freellmapi` routes keep their Nemotron-first Kilo chain; the default `kilo` source selects `kilo-auto/free`. Repeat setup preserves previously connected API sources.
 
 Kilo free models may log prompts or use them for training; avoid sensitive prompts. Their free limits are unknown. Kilo quota errors fall through FreeLLMAPI's fallback chain. Requests allow a long timeout for Nemotron reasoning.
 

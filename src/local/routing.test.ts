@@ -189,3 +189,13 @@ it('hands off current persisted Freebuff output when quota is already logged', a
     expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('CURRENT PARTIAL WORK');
   } finally { vi.unstubAllEnvs(); await rm(cwd, { recursive: true, force: true }); }
 });
+
+it('includes vetted Kilo in weighted default routing and falls through after its quota', async () => {
+  const kilo = source('kilo'), freebuff = source('freebuff'), opencode = source('opencode');
+  const sources = new Sources([freebuff, opencode, kilo], { registry: () => bundledRegistry, random: () => 0.99 });
+  const input = { ...request, model: 'grunt' };
+  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  expect(await sources.models()).toContain('kilo');
+  vi.mocked(kilo.complete).mockRejectedValue(new SourceError('quota', 'quota', 60));
+  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+});

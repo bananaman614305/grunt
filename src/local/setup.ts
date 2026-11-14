@@ -14,6 +14,8 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ProvisionInput } from '@trusty-squire/sdk';
 import { freeConfig, loopback } from './freellmapi.js';
 import { proxyApproval } from './approval-proxy.js';
+import { VerificationQueue } from './verification-queue.js';
+import { withTerminal } from './terminal.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
@@ -127,7 +129,21 @@ export class BrowserSquire implements SetupSquire {
   private client = new Client({ name: 'grunt setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
   private handoffs: { url: string; close(): void }[] = [];
-  async connect() {
+  private connection: Promise<void> | undefined;
+  private metadata: Promise<Credential[]> | undefined;
+  private grants = new Map<string, Promise<{ base_url: string; token: string }>>();
+  private verification = new VerificationQueue(items => withTerminal(async () => {
+    this.options.signal?.throwIfAborted();
+    for (const item of items) console.log(`Complete ${item.service} verification in this browser: ${item.url}`);
+    const { confirm, isCancel } = await import('@clack/prompts');
+    const done = await confirm({ message: `Finished verification for ${items.map(item => item.service).join(', ')}? Resume setup.`, initialValue: true });
+    if (isCancel(done) || !done) throw new Error('Provider verification cancelled');
+    this.options.signal?.throwIfAborted();
+  }));
+  connect(): Promise<void> {
+    return this.connection ??= this.connectOnce().catch(error => { this.connection = undefined; throw error; });
+  }
+  private async connectOnce() {
     const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
     const env = squireEnvironment();
     // Squire owns its account binding and vault. grunt never reads its files.
@@ -145,6 +161,7 @@ export class BrowserSquire implements SetupSquire {
       await this.client.connect(transport);
       const result = await this.call('list_credentials', { fields: 'summary' }, true);
       if (!Array.isArray(result.credentials)) throw new Error('Squire did not return vault metadata');
+      this.metadata = Promise.resolve(result.credentials as Credential[]);
     } catch (error) {
       await this.client.close().catch(() => {});
       const stderrReason = partialLine.trim() || lastLine;
@@ -179,18 +196,24 @@ export class BrowserSquire implements SetupSquire {
   }
   credentials = {
     list: async (): Promise<Credential[]> => {
-      const result = await this.call('list_credentials', { fields: 'summary' });
-      if (!Array.isArray(result.credentials)) throw new Error('Squire did not return vault metadata');
-      return result.credentials as Credential[];
+      return structuredClone(await (this.metadata ??= this.call('list_credentials', { fields: 'summary' }).then(result => {
+        if (!Array.isArray(result.credentials)) throw new Error('Squire did not return vault metadata');
+        return result.credentials as Credential[];
+      }).catch(error => { this.metadata = undefined; throw error; })));
     },
     grant: async (reference: string) => {
-      const result = await this.call('grant_app_access', { reference });
-      if (typeof result.base_url !== 'string' || typeof result.token !== 'string' || !result.token) throw new Error('Squire returned no app grant');
-      const url = new URL(result.base_url);
-      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Squire returned an invalid grant endpoint');
-      return { base_url: result.base_url, token: result.token };
+      let grant = this.grants.get(reference);
+      if (!grant) { grant = this.grant(reference).catch(error => { this.grants.delete(reference); throw error; }); this.grants.set(reference, grant); }
+      return grant;
     }
   };
+  private async grant(reference: string) {
+    const result = await this.call('grant_app_access', { reference });
+    if (typeof result.base_url !== 'string' || typeof result.token !== 'string' || !result.token) throw new Error('Squire returned no app grant');
+    const url = new URL(result.base_url);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Squire returned an invalid grant endpoint');
+    return { base_url: result.base_url, token: result.token };
+  }
 
   async signup(service: string, url: string, goal: string): Promise<void> {
     const deadline = Date.now() + 600000;
@@ -215,6 +238,7 @@ export class BrowserSquire implements SetupSquire {
     const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(classification);
     if (refusal) throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
     if (result.status === 'complete') {
+      this.metadata = undefined; // A browser capture may have added a credential.
       const id = this.sessions.get(provider);
       if (id) { await this.call('operate_finish', { session_id: id, outcome: 'result', summary: 'grunt provider key stored in user vault' }); this.sessions.delete(provider); }
       return { run: { id: provider, state: 'completed' }, decision: 'silent' };
@@ -224,14 +248,12 @@ export class BrowserSquire implements SetupSquire {
     if (humanStep && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
     if (humanStep && this.sessions.has(provider)) {
       const url = await this.humanHandoff(this.sessions.get(provider)!);
-      console.log(`Complete ${provider} verification in this browser: ${url}`);
       if (this.options.background) {
+        console.log(`Complete ${provider} verification in this browser: ${url}`);
         await delay(5000, undefined, this.options.signal ? { signal: this.options.signal } : {});
         return { run: { id: provider, state: 'running' }, decision: 'silent' };
       }
-      const { confirm, isCancel } = await import('@clack/prompts');
-      const done = await confirm({ message: 'Verification complete? Resume signup.', initialValue: true });
-      if (isCancel(done) || !done) throw new Error('Provider verification cancelled');
+      await this.verification.wait({ service: provider, url });
       return { run: { id: provider, state: 'running' }, decision: 'silent' };
     }
     this.sessions.delete(provider);
@@ -407,11 +429,13 @@ export async function loadRouterKey(url: string): Promise<string> {
   if (typeof key !== 'string' || !key.trim()) throw new Error('Local router returned an invalid API key');
   return key;
 }
-export async function setup(notify = console.log, providers: Provider[] = ['groq']) {
-  const squire = new BrowserSquire();
+export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal } = {}) {
+  const owned = options.squire ? undefined : new BrowserSquire(options.signal ? { signal: options.signal } : {});
+  const squire = options.squire ?? owned!;
   const router = new FreeLLMAdmin();
   try {
-    await squire.connect();
+    await owned?.connect();
+    options.signal?.throwIfAborted();
     const saved = await readLocalAdmin();
     if (!saved && process.env.MILO_ROUTER_RUNTIME !== 'docker') {
       const database = join(dirname(localAdminPath()), 'freellmapi', 'router.db');
@@ -429,11 +453,14 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
     } else {
       if (!saved) await saveLocalAdmin(admin);
       const { ensureNativeRouter } = await import('./native-router.js');
-      await ensureNativeRouter();
+      let running = false;
+      if (saved) { try { await router.login(admin.password); running = true; } catch { /* Repair an unavailable backend. */ } }
+      if (!running) await ensureNativeRouter(options.signal);
     }
     let ready = false;
     for (let attempt = 0; attempt < 60; attempt++) {
-      try { await router.login(admin.password); ready = true; break; } catch { await delay(1000); }
+      options.signal?.throwIfAborted();
+      try { await router.login(admin.password); ready = true; break; } catch { await delay(1000, undefined, options.signal ? { signal: options.signal } : {}); }
     }
     if (!ready) throw new Error('Local FreeLLMAPI did not start; inspect its health before resuming setup');
     await router.ensureFreeFallbacks();
@@ -448,5 +475,5 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
     if (error instanceof SetupPending) throw new Error('Squire approval remains pending; resume usegrunt setup after approval');
     if (error instanceof Error && !('cmd' in error)) throw error;
     throw new Error('FreeLLMAPI installation failed; check Node and npm availability and run npx usegrunt setup again');
-  } finally { await squire.close(); }
+  } finally { await owned?.close(); }
 }

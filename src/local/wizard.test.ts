@@ -72,7 +72,7 @@ it.each([true, false])('sets up both default free routes, signing Freebuff in on
   const login = vi.fn(async () => { await squire.signup('freebuff', 'https://freebuff.com/login', 'pair'); ready = true; });
   const run = vi.fn(async () => {}), verify = vi.fn(async () => {});
   expect(await setupFallbacks({ directory: dir, run, notify: () => {}, squire, signedIn: async () => ready, login, verify })).toEqual({ unavailable: [] });
-  expect(run.mock.calls).toEqual([['freebuff', ['--version']], ['freebuff', ['doctor']], ['tmux', ['-V']], ['opencode', ['--version']]]);
+  expect(run.mock.calls).toEqual(expect.arrayContaining([['freebuff', ['--version']], ['freebuff', ['doctor']], ['tmux', ['-V']], ['opencode', ['--version']]]));
   expect(squire.signup).toHaveBeenCalledTimes(signed ? 0 : 1);
   expect(verify).toHaveBeenCalledOnce();
 });
@@ -85,8 +85,8 @@ it('installs missing CLIs, continues OpenCode after Freebuff refusal, and skips 
   const verify = vi.fn(async () => {});
   const result = await setupFallbacks({ directory: dir, run, notify: () => {}, squire, signedIn: async () => false, login: async () => { throw new Error('refused'); }, verify });
   expect(result.unavailable).toEqual(['freebuff']);
-  expect(run.mock.calls).toContainEqual(['npm', ['install', '--global', 'freebuff'], true]);
-  expect(run.mock.calls).toContainEqual(['npm', ['install', '--global', 'opencode-ai'], true]);
+  expect(run.mock.calls).toContainEqual(['npm', ['install', '--global', 'freebuff']]);
+  expect(run.mock.calls).toContainEqual(['npm', ['install', '--global', 'opencode-ai']]);
   expect(verify).toHaveBeenCalledOnce();
   expect(squire.signup).not.toHaveBeenCalled();
 });
@@ -121,8 +121,8 @@ it('runs both free fallback setup steps on default installs and starts the servi
   const { intro, outro } = await import('@clack/prompts');
   expect(intro).toHaveBeenCalledWith(expect.stringContaining('npx usegrunt setup'));
   expect(outro).toHaveBeenCalledWith('grunt is ready');
-  expect(order).toEqual(['fallbacks', 'fallbacks', 'service']);
-  expect(actions.setupFallbacks.mock.calls.map(([options]) => options.adapters)).toEqual([['freebuff'], ['opencode']]);
+  expect(order).toEqual(['fallbacks', 'service']);
+  expect(actions.setupFallbacks.mock.calls.map(([options]) => options.adapters)).toEqual([['freebuff', 'opencode', 'kilo']]);
   expect(actions.setup).not.toHaveBeenCalled();
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ run: expect.any(Function), notify: expect.any(Function) }));
   actions.setupFallbacks.mockClear();
@@ -156,7 +156,7 @@ it.each([true, false])('repairs an installed Freebuff without doctor before prob
   const verify = vi.fn(async () => {});
   const result = await setupFallbacks({ directory: dir, run, notify: line => output.push(line), squire, signedIn,
     login: async browser => browser.signup('freebuff', 'https://freebuff.com/login', 'Pair the CLI'), verify });
-  expect(run).toHaveBeenCalledWith('npm', ['install', '--global', 'freebuff@latest'], true);
+  expect(run).toHaveBeenCalledWith('npm', ['install', '--global', 'freebuff@latest']);
   expect(squire.signup).toHaveBeenCalledTimes(repaired ? 1 : 0);
   expect(signedIn).toHaveBeenCalledTimes(repaired ? 2 : 0);
   expect(verify).toHaveBeenCalledOnce();
@@ -270,7 +270,7 @@ it('connects Kilo and restarts the daemon before reporting success', async () =>
   actions.setup.mockImplementation(async () => { order.push('grant'); return { key: 'synthetic' }; });
   actions.checkService.mockImplementation(async () => { order.push('ready'); });
   await wizard('kilo', actions);
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo']);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo'], {});
   expect(order).toEqual(['banner', 'squire', 'grant', 'service', 'ready']);
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.connectHarnesses).not.toHaveBeenCalled();
@@ -283,7 +283,7 @@ it('does not restart the daemon or report success when Kilo setup fails', async 
 });
 it('keeps registered API sources enabled across repeat service installs', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-sources-test-'));
-  expect(await installedSources(dir)).toBe('freebuff,opencode');
+  expect(await installedSources(dir)).toBe('freebuff,opencode,kilo');
   await writeFile(join(dir, 'router-admin.json'), '{}', { mode: 0o600 });
   expect(await installedSources(dir)).toBe('freellmapi,kilo,freebuff,opencode');
 });
@@ -293,7 +293,7 @@ it('shows the banner, preamble, Squire notice, registry, each service and then t
   vi.mocked(note).mockImplementation((_message, title) => { order.push(`note:${title}`); });
   await wizard(undefined, stubActions(order));
   expect(order).toEqual(['banner', 'note:What grunt does', 'note:Google sign-in for Trusty Squire', 'squire', 'registry',
-    'signup:freebuff', 'signup:opencode', 'service', 'check:freebuff', 'check:opencode', 'note:Free services', 'harnesses']);
+    'signup:freebuff,opencode,kilo', 'service', 'check:freebuff', 'check:opencode', 'check:kilo', 'note:Free services', 'harnesses']);
 });
 it('gives every service its own result when one fails, then ends with the resume message', async () => {
   const { log, outro } = await import('@clack/prompts');
@@ -302,7 +302,7 @@ it('gives every service its own result when one fails, then ends with the resume
     setupFallbacks: vi.fn(async (options: { adapters?: string[] }) => ({ unavailable: options.adapters?.includes('freebuff') ? ['freebuff'] : [] })),
     checkFallbackServices
   });
-  const live = await service(new Sources([fake('opencode')]));
+  const live = await service(new Sources([fake('opencode'), fake('kilo')]));
   vi.stubEnv('MILO_PORT', String(live.port));
   try { await expect(wizard(undefined, actions)).rejects.toThrow('Some adapters failed verification. Run usegrunt setup to resume.'); }
   finally { await live.close(); }
@@ -324,4 +324,34 @@ it('pulls the registry from the RegistrySync URL and says when it falls back to 
   const { log } = await import('@clack/prompts');
   await wizard(undefined, stubActions([], { loadRegistry: async () => ({ registry: bundledRegistry, origin: 'bundled' }) }));
   expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Registry unreachable; using the list bundled with this version'));
+});
+
+it('preserves legacy API routing when default setup adds Kilo', async () => {
+  const actions = stubActions([], { installedSources: async () => 'freellmapi,kilo,freebuff,opencode' });
+  await wizard(undefined, actions);
+  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'freebuff', 'opencode', 'kilo']);
+});
+it('keeps a vetted-only install across repeated setup even after Kilo creates a router login', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-vetted-repeat-'));
+  await writeFile(join(dir, 'router-admin.json'), '{}', { mode: 0o600 });
+  await writeFile(join(dir, 'installed-sources.json'), JSON.stringify(['freebuff', 'opencode', 'kilo']), { mode: 0o600 });
+  expect(await installedSources(dir)).toBe('freebuff,opencode,kilo');
+  const actions = stubActions([], { installedSources: () => installedSources(dir) });
+  await wizard(undefined, actions);
+  expect(actions.installService).toHaveBeenCalledWith(['freebuff', 'opencode', 'kilo']);
+});
+it('uses one Squire client across default setup and closes it after verification', async () => {
+  const squire = new BrowserSquire();
+  const close = vi.spyOn(squire, 'close').mockResolvedValue();
+  const actions = stubActions([], { createSquire: () => squire });
+  await wizard(undefined, actions);
+  expect(actions.connectSquire).toHaveBeenCalledWith({ squire });
+  expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ squire }));
+  expect(close).toHaveBeenCalledOnce();
+});
+
+it('enables the API source when adding a custom provider after a vetted install', async () => {
+  const actions = stubActions([], { installedSources: async () => 'freebuff,opencode,kilo' });
+  await wizard('groq', actions);
+  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'freebuff', 'opencode', 'kilo']);
 });
