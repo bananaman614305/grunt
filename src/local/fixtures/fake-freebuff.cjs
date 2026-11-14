@@ -9,6 +9,7 @@ const cwd = process.argv[process.argv.indexOf('--cwd') + 1];
 const continued = process.argv[process.argv.indexOf('--continue') + 1];
 const chatId = process.argv.includes('--continue') ? continued : crypto.randomUUID();
 let input = '';
+const bridgeMessages = [];
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
 process.stdout.write('\x1b[?2004h');
 process.stdin.on('data', chunk => {
@@ -30,8 +31,9 @@ process.stdin.on('data', chunk => {
   let reply = (process.env.MILO_TEST_UNIQUE || prompt === 'UNIQUE_REPLY') ? chatId : prompt;
   if (process.env.MILO_TEST_JSON_BRIDGE && prompt.startsWith('You are answering a Pi tool protocol')) {
     const payload = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
-    if (!JSON.stringify(payload.messages).includes('Never invent the nonce.')) throw new Error('Pi skill context was lost');
-    const result = payload.messages.filter(m => m.role === 'tool').at(-1);
+    bridgeMessages.push(...payload.messages);
+    if (!JSON.stringify(bridgeMessages).includes('Never invent the nonce.')) throw new Error('Pi skill context was lost');
+    const result = bridgeMessages.filter(m => m.role === 'tool').at(-1);
     reply = JSON.stringify(result ? {version:1,type:'final',text:result.content} : {version:1,type:'calls',calls:[{name:'read',arguments:{path:'nonce.txt'}}]});
   }
   messages.push({ variant: 'user', content: '', textAttachments: [{content: prompt}] }, { variant: 'ai', content: '', blocks: prompt === 'REFUSE' ? [] : [{ type: 'text', content: reply }], isComplete: true });

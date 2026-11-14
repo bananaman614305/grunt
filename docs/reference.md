@@ -416,10 +416,15 @@ Outside provider handoffs, only the latest user text is pasted into Freebuff, wi
 An experimental Freebuff JSON tool bridge is available with
 `MILO_FREEBUFF_JSON_BRIDGE=1`. It is **off by default and not live validated**.
 When enabled, Freebuff translates function-tool requests into the JSON protocol,
-including on the separate fallback listener. Existing source order still applies. Every bridge
-request sends the full system/developer, skill and conversation context, tool
-definitions, assistant calls and correlated Pi tool results in a fresh CLI
-session. Treat this as disclosure of that context to Freebuff.
+including on the separate fallback listener. Existing source order still applies.
+The first request sends the full system/developer, skill and conversation context
+and tool definitions. Tool results and later user turns reuse the live CLI session
+and send only messages added since its last request. Sessions are keyed by canonical
+working directory and user-history prefixes, with the complete message prefix and
+tool definitions checked before reuse. Changed history or tools starts a new session;
+concurrent calls use separate sessions. Mappings last until grunt exits, and failures,
+cancellation and shutdown close the affected sessions. Treat this as disclosure of
+that context to Freebuff.
 
 The bridge accepts a whole JSON final-answer or tool-call envelope, validates
 names and arguments against JSON Schema draft 7 with Ajv, and returns tool calls
@@ -429,7 +434,7 @@ the same complete request and call. A changed context gets different IDs. There
 is no execution ledger: Pi owns execution and retry deduplication; IDs alone do
 not provide exactly-once execution across client retries. The adapter rejects
 unmatched, duplicate and missing tool results and duplicate calls within one
-envelope. It allows one repair in another fresh session, then fails/falls back.
+envelope. It allows one repair in the same live session, then fails/falls back.
 Rejected protocol text and partial deliberation are not returned as answers or
 fallback context. Cancellation stops the bridge rather than repairing it.
 
@@ -438,8 +443,8 @@ documented option to disable its native tools. Instructions ask it to use only
 the JSON protocol, but cannot enforce that. Observed native-tool blocks reject
 the completion without repair; rejection cannot undo actions already executed.
 Use a separately restricted host environment for any authorized live trial.
-Fresh sessions prevent persisted chat reuse, but do not isolate Freebuff's file
-access or other ambient account state.
+Conversation matching prevents reuse across incompatible request histories, but
+does not isolate Freebuff's file access or other ambient account state.
 
 Freebuff's [published terms](https://freebuff.com/terms-of-service), effective
 November 12, 2026, restrict relaying access to other applications and automated
@@ -448,8 +453,8 @@ integration has been established. Do not treat a CLI login or the opt-in flag as
 that permission. Live tool and skill support remains unproven; see
 [the recorded proof and limitations](../proof/freebuff-json-bridge.md).
 
-A conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
-per canonical working directory; `MILO_APP_POOL` defaults to (2) active sessions
+With the JSON bridge disabled, a conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
+per canonical working directory; `MILO_APP_POOL` defaults to (2) active requests
 per directory. New-chat creation and association are serialized per shared on-disk project
 directory, including different working folders with the same basename. Once a
 chat is associated with its originating process, its response runs concurrently

@@ -26,7 +26,7 @@ function logError(log: string): SourceError | undefined {
   return new SourceError(/prompt_policy_refused/.test(line) ? 'refused' : /quota|hours/i.test(line) ? 'quota' : 'logged_out', `Freebuff: ${line}`);
 }
 interface Waiter { resolve(): void; reject(error: Error): void }
-// A request starts a fresh process; slots bound parallel sessions for each canonical cwd.
+// Slots bound parallel requests for each canonical cwd.
 class Pool {
   private active = 0;
   private queue: Waiter[] = [];
@@ -65,11 +65,13 @@ export function parseChat(value: unknown, prompt: string, forbidNative = false):
   if (blocks.some(b => typeof b.content !== 'string')) throw new SourceError('upstream', 'Freebuff chat format changed: missing text blocks');
   return blocks.map(b => b.content).join('\n');
 }
+interface BridgeSession { id: string; file?: string; bridge?: FreebuffTools; busy: boolean }
 export class Freebuff implements Source {
   id = 'freebuff';
   private pools = new Map<string, Pool>();
   private sessions = new Set<string>();
   private conversations = new Map<string, string>();
+  private bridgeSessions = new Map<string, BridgeSession>();
   private busy = new Set<string>();
   private creationLocks = new Map<string, Pool>();
   private shutdown = new AbortController();
@@ -87,25 +89,62 @@ export class Freebuff implements Source {
   async complete(request: ModelRequest, caller: AbortSignal) {
     if (!this.options.toolBridge) return this.completeText(request, caller);
     caller.throwIfAborted();
+    const cwd = await realpath(request.cwd);
+    request = { ...request, cwd };
     const bridge = new FreebuffTools(request);
-    const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000))]);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      signal.throwIfAborted();
-      const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0) }, signal, true);
-      signal.throwIfAborted();
-      if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
-      try { return bridge.parse(result.text); }
-      catch { if (attempt === 1) throw new SourceError('upstream', 'Freebuff JSON bridge failed validation after one repair attempt'); }
+    const turns = userTurns(request);
+    const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
+    let session: BridgeSession | undefined;
+    // Tool rounds retain the task key; a new user turn extends its prefix.
+    for (let length = turns.length; length > 0; length--) {
+      const candidate = this.bridgeSessions.get(key(turns.slice(0, length)));
+      if (!candidate || candidate.busy || !candidate.bridge || !bridge.extends(candidate.bridge)) continue;
+      session = candidate;
+      this.bridgeSessions.delete(key(turns.slice(0, length)));
+      break;
     }
-    throw new SourceError('upstream', 'Freebuff JSON bridge failed');
+    const currentKey = key(turns);
+    const previous = this.bridgeSessions.get(currentKey);
+    if (previous && !previous.busy) await this.stopBridge(previous);
+    session ??= { id: `milo-${randomUUID()}`, busy: false };
+    session.busy = true;
+    this.bridgeSessions.set(currentKey, session);
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000))]);
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        signal.throwIfAborted();
+        const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0, session.bridge) }, signal, true, session);
+        session.bridge = bridge;
+        signal.throwIfAborted();
+        if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
+        try { return bridge.parse(result.text); }
+        catch { if (attempt === 1) throw new SourceError('upstream', 'Freebuff JSON bridge failed validation after one repair attempt'); }
+      }
+      throw new SourceError('upstream', 'Freebuff JSON bridge failed');
+    } catch (error) {
+      await this.stopBridge(session);
+      throw error;
+    } finally {
+      session.busy = false;
+      // An overlapping request may have replaced this task's binding.
+      if (![...this.bridgeSessions.values()].includes(session)) await this.stopBridge(session);
+    }
   }
-  private async completeText(request: ModelRequest, caller: AbortSignal, isolated = false) {
+  private async stopBridge(session: BridgeSession) {
+    for (const [key, value] of this.bridgeSessions) if (value === session) this.bridgeSessions.delete(key);
+    if (this.sessions.delete(session.id)) await this.mux.stop(session.id);
+  }
+  private async completeText(request: ModelRequest, caller: AbortSignal, isolated = false, bridgeSession?: BridgeSession) {
+    const id = bridgeSession?.id ?? `milo-${randomUUID()}`;
+    const live = this.sessions.has(id);
     const binary = await executable('freebuff'); await executable('tmux');
-    let diagnostics: string;
-    try { diagnostics = (await exec(binary, ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536, signal: caller })).stdout; }
-    catch { throw new SourceError('upstream', 'Freebuff startup check failed; run freebuff doctor'); }
-    const diagnosticError = logError(diagnostics);
-    if (diagnosticError) throw diagnosticError;
+    if (!live) {
+      let diagnostics: string;
+      try { diagnostics = (await exec(binary, ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536, signal: caller })).stdout; }
+      catch { throw new SourceError('upstream', 'Freebuff startup check failed; run freebuff doctor'); }
+      const diagnosticError = logError(diagnostics);
+      if (diagnosticError) throw diagnosticError;
+    }
     const cwd = await realpath(request.cwd);
     if (!(await stat(cwd)).isDirectory()) throw new SourceError('upstream', 'Freebuff cwd must be a directory');
     const timeout = this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000);
@@ -113,26 +152,26 @@ export class Freebuff implements Source {
     let pool = this.pools.get(cwd);
     if (!pool) { pool = new Pool(this.options.pool ?? positive(process.env.MILO_APP_POOL, 2)); this.pools.set(cwd, pool); }
     let acquired = false;
-    const id = `milo-${randomUUID()}`;
     const directory = join(this.options.home ?? homedir(), '.config/manicode/projects', basename(cwd), 'chats');
     const turns = userTurns(request);
     const prompt = request.handoffPrompt ?? turns.at(-1);
     if (!prompt) throw new SourceError('upstream', 'No user text in this request');
     const key = cwd + ':' + createHash('sha256').update(turns[0]!).digest('hex');
     // Simultaneous requests must never send into the same pane/chat.
-    let continuation = isolated || this.busy.has(key) ? undefined : this.conversations.get(key);
+    let continuation = bridgeSession?.file ?? (isolated || this.busy.has(key) ? undefined : this.conversations.get(key));
     const ownsConversation = !isolated && !this.busy.has(key);
     if (ownsConversation) this.busy.add(key);
     let creation: Pool | undefined;
     let creating = false;
     let partial = '';
+    let completed = false;
     const releaseCreation = () => { if (creating) { creation!.release(); creating = false; } };
     try {
       await pool.acquire(signal); acquired = true;
       let previousMessages = 0;
       if (continuation) {
         try { previousMessages = (JSON.parse(await readFile(continuation, 'utf8')) as unknown[]).length; }
-        catch { this.conversations.delete(key); continuation = undefined; }
+        catch (error) { if (bridgeSession) throw error; this.conversations.delete(key); continuation = undefined; }
       }
       if (!continuation) {
         // Freebuff groups different working folders with the same basename together.
@@ -147,9 +186,11 @@ export class Freebuff implements Source {
       if (continuation) {
         try { logOffsets.set(continuation, (await readFile(join(dirname(continuation), 'log.jsonl'), 'utf8')).length); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
       }
-      this.sessions.add(id);
-      await this.mux.start(id, cwd, binary, continuation ? basename(dirname(continuation)) : undefined);
-      await delay(this.options.startup ?? 2500, undefined, { signal });
+      if (!live) {
+        this.sessions.add(id);
+        await this.mux.start(id, cwd, binary, continuation ? basename(dirname(continuation)) : undefined);
+        await delay(this.options.startup ?? 2500, undefined, { signal });
+      }
       // Persisted files can identify this process before send finishes returning.
       // Observe them concurrently, while still holding the creation lock.
       let sendComplete = false;
@@ -195,7 +236,12 @@ export class Freebuff implements Source {
           releaseCreation();
           sawUser = true;
           const text = parseChat(data, prompt, isolated);
-          if (text !== undefined && sendComplete) { if (ownsConversation) this.conversations.set(key, file); return { text }; }
+          if (text !== undefined && sendComplete) {
+            if (ownsConversation) this.conversations.set(key, file);
+            if (bridgeSession) bridgeSession.file = file;
+            completed = true;
+            return { text };
+          }
         }
         if (!sawUser && Date.now() - sentAt > 10000) throw new SourceError('upstream', 'Freebuff did not persist a user turn within 10 seconds; run freebuff doctor and check login or startup prompts');
         await delay(this.options.poll ?? 200, undefined, { signal });
@@ -207,10 +253,10 @@ export class Freebuff implements Source {
       if (error instanceof SourceError) { if (partial && !isolated) error.output = partial; throw error; }
       throw new SourceError('upstream', `Freebuff failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
-      try { await this.mux.stop(id); }
+      try { if (!bridgeSession || !completed) { this.sessions.delete(id); await this.mux.stop(id); } }
       finally {
         // An unassociated process must be stopped before another one can start.
-        releaseCreation(); this.sessions.delete(id);
+        releaseCreation();
         if (acquired) pool.release();
         if (ownsConversation) this.busy.delete(key);
       }
@@ -220,5 +266,5 @@ export class Freebuff implements Source {
     try { return (await readdir(dir, { withFileTypes: true })).filter(d => d.isDirectory()).map(d => join(dir, d.name, 'chat-messages.json')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
   }
-  async close() { this.shutdown.abort(); await Promise.all([...this.sessions].map(id => this.mux.stop(id))); await this.mux.close?.(); }
+  async close() { this.shutdown.abort(); this.bridgeSessions.clear(); await Promise.all([...this.sessions].map(id => this.mux.stop(id))); this.sessions.clear(); await this.mux.close?.(); }
 }

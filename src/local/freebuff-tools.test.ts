@@ -84,6 +84,7 @@ async function setup(reply: (prompt: string, index: number) => string | undefine
   await chmod(join(home,'freebuff'),0o755);
   vi.stubEnv('PATH',`${home}:${process.env.PATH}`);
   const starts: string[] = [], prompts: string[] = [], stops: string[] = [];
+  const history = new Map<string, unknown[]>();
   const mux: Multiplexer = {
     async start(id, _cwd, _binary, continuation) { expect(continuation).toBeUndefined(); starts.push(id); },
     async send(id, prompt) {
@@ -92,7 +93,9 @@ async function setup(reply: (prompt: string, index: number) => string | undefine
       if (content === undefined) return;
       const folder = join(home,'.config/manicode/projects',basename(home),'chats',id);
       await mkdir(folder,{recursive:true});
-      await writeFile(join(folder,'chat-messages.json'),JSON.stringify([{variant:'user',content:prompt},{variant:'ai',isComplete:true,blocks:[...(native ? [{type:'tool',name:'run_terminal_command'}] : []),{type:'text',content}]}]));
+      const messages = [...(history.get(id) ?? []), {variant:'user',content:prompt},{variant:'ai',isComplete:true,blocks:[...(native ? [{type:'tool',name:'run_terminal_command'}] : []),{type:'text',content}]}];
+      history.set(id, messages);
+      await writeFile(join(folder,'chat-messages.json'),JSON.stringify(messages));
     },
     async stop(id) { stops.push(id); }
   };
@@ -100,14 +103,16 @@ async function setup(reply: (prompt: string, index: number) => string | undefine
   return {driver,starts,prompts,stops,request:{...request,cwd:home},async close(){await driver.close();await rm(home,{recursive:true,force:true});}};
 }
 
-it('repairs once in a fresh session, never leaks rejected protocol or deliberation, and falls back cleanly', async () => {
+it('repairs once in the live session, never leaks rejected protocol or deliberation, and falls back cleanly', async () => {
   const fixture = await setup((_prompt,index) => index === 0 ? 'private deliberation' : JSON.stringify(envelope));
   try {
     const result = await fixture.driver.complete(fixture.request,new AbortController().signal);
     expect(result).toMatchObject({text:'',calls:[{function:{name:'read'}}]});
     expect(fixture.prompts).toHaveLength(2);
     expect(fixture.prompts[1]).not.toContain('private deliberation');
-    expect(fixture.stops).toEqual(fixture.starts);
+    expect(fixture.starts).toHaveLength(1);
+    expect(fixture.stops).toEqual([]);
+    expect(JSON.parse(fixture.prompts[1]!.split('\n').at(-1)!)).toEqual({version:1,messages:[]});
   } finally { await fixture.close(); }
   const invalid = await setup(() => 'private deliberation');
   try {
@@ -155,4 +160,82 @@ it('isolates successive conversations with the same first user turn', async () =
     }
     expect(new Set(fixture.starts).size).toBe(2);
   } finally {await fixture.close();}
+});
+
+
+it('keeps one live session across a Pi tool result and next user turn, sending only new messages', async () => {
+  const fixture = await setup((_prompt, index) => index === 0 ? JSON.stringify(envelope) : '{"version":1,"type":"final","text":"done"}');
+  try {
+    const first = await fixture.driver.complete(fixture.request, new AbortController().signal);
+    const toolMessages = [{role:'assistant',content:'',tool_calls:first.calls}, {role:'tool',tool_call_id:first.calls![0]!.id,content:'file contents'}];
+    const second = {...fixture.request,messages:[...fixture.request.messages,...toolMessages]};
+    await fixture.driver.complete(second, new AbortController().signal);
+    const nextMessages = [{role:'assistant',content:'done'}, {role:'user',content:'next turn'}];
+    await fixture.driver.complete({...second,messages:[...second.messages,...nextMessages]}, new AbortController().signal);
+    expect(fixture.starts).toHaveLength(1);
+    expect(fixture.stops).toEqual([]);
+    const payloads = fixture.prompts.map(prompt => JSON.parse(prompt.split('\n').at(-1)!));
+    expect(payloads[0]).toEqual({version:1,messages:fixture.request.messages,tools:fixture.request.tools});
+    expect(payloads[1]).toEqual({version:1,messages:toolMessages});
+    expect(payloads[2]).toEqual({version:1,messages:nextMessages});
+    expect(fixture.prompts[1]).not.toContain('Follow skill instructions');
+    await fixture.driver.close();
+    expect(fixture.stops).toEqual(fixture.starts);
+  } finally { await fixture.close(); }
+});
+
+
+it.each(['history', 'tools'])('starts a new session when %s no longer extends the previous request', async changed => {
+  const fixture = await setup(() => '{"version":1,"type":"final","text":"done"}');
+  try {
+    const second = {...fixture.request,messages:[...fixture.request.messages,{role:'assistant',content:'done'},{role:'user',content:'follow up'}]};
+    await fixture.driver.complete(fixture.request, new AbortController().signal);
+    await fixture.driver.complete(second, new AbortController().signal);
+    const divergent = structuredClone(second);
+    if (changed === 'history') divergent.messages[2]!.content = 'a different reply';
+    else divergent.tools = [];
+    await fixture.driver.complete(divergent, new AbortController().signal);
+    expect(fixture.starts).toHaveLength(2);
+    expect(fixture.stops).toEqual([fixture.starts[0]]);
+    const payload = JSON.parse(fixture.prompts[2]!.split('\n').at(-1)!);
+    expect(payload.messages).toEqual(divergent.messages);
+    expect(payload.tools).toEqual(divergent.tools);
+  } finally { await fixture.close(); }
+});
+
+it('does not reuse an earlier reply when the same delta is sent again', async () => {
+  const fixture = await setup((_prompt, index) => JSON.stringify({version:1,type:'final',text:`reply ${index}`}));
+  try {
+    for (let index = 0; index < 3; index++) {
+      expect(await fixture.driver.complete(fixture.request, new AbortController().signal)).toEqual({text:`reply ${index}`});
+    }
+    expect(fixture.starts).toHaveLength(1);
+    expect(fixture.prompts[1]).toBe(fixture.prompts[2]);
+  } finally { await fixture.close(); }
+});
+
+
+it('compares against the context actually sent even if the caller mutates its request', () => {
+  const input = structuredClone(request);
+  const previous = new FreebuffTools(input);
+  input.messages[0]!.content = 'changed instructions';
+  expect(new FreebuffTools(input).extends(previous)).toBe(false);
+  expect(new FreebuffTools(request).extends(previous)).toBe(true);
+});
+
+
+it('isolates overlapping requests and closes the displaced session', async () => {
+  const fixture = await setup((_prompt, index) => JSON.stringify({version:1,type:'final',text:`reply ${index}`}));
+  try {
+    const results = await Promise.all([0, 1].map(() => fixture.driver.complete(fixture.request, new AbortController().signal)));
+    expect(results.map(result => result.text).sort()).toEqual(['reply 0', 'reply 1']);
+    expect(fixture.starts).toHaveLength(2);
+    expect(new Set(fixture.starts).size).toBe(2);
+    expect(fixture.stops).toHaveLength(1);
+    await fixture.driver.complete(fixture.request, new AbortController().signal);
+    expect(fixture.starts).toHaveLength(2);
+    expect(JSON.parse(fixture.prompts[2]!.split('\n').at(-1)!)).toEqual({version:1,messages:[]});
+    await fixture.driver.close();
+    expect(new Set(fixture.stops)).toEqual(new Set(fixture.starts));
+  } finally { await fixture.close(); }
 });
