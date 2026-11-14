@@ -14,6 +14,7 @@ export class OpenCode implements Source {
   private child?: ChildProcess;
   private starting: Promise<string> | undefined;
   private sessions = new Map<string, string>();
+  private prepared = new Map<string, Promise<void>>();
   private busy = new Set<string>();
   private shutdown = new AbortController();
   constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); timeout?: number } = {}) {
@@ -48,7 +49,7 @@ export class OpenCode implements Source {
         const address = output.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
         if (address) { clearTimeout(timer); resolve(address); }
       });
-      const failed = () => { clearTimeout(timer); this.starting = undefined; this.sessions.clear(); reject(new SourceError('upstream', 'OpenCode server stopped; run opencode serve to check installation')); };
+      const failed = () => { clearTimeout(timer); this.starting = undefined; this.sessions.clear(); this.prepared.clear(); reject(new SourceError('upstream', 'OpenCode server stopped; run opencode serve to check installation')); };
       child.once('error', failed); child.once('exit', failed);
     });
     return this.starting;
@@ -83,6 +84,35 @@ export class OpenCode implements Source {
     };
     try {
       base = await this.server(); signal.throwIfAborted();
+      if (!this.options.url) {
+        // Personal MCP catalogs can fill the model context before a task starts.
+        // Disconnect them only in our own worker instance, once per directory.
+        // OpenCode's coding tools, saved login and config files stay available.
+        let prepared = this.prepared.get(cwd);
+        if (!prepared) {
+          prepared = (async () => {
+            const preparationSignal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(30000)]);
+            const prepare = async (path: string, method = 'GET') => {
+              const response = await this.fetcher(`${base}${path}`, { method, headers, redirect: 'error', signal: preparationSignal });
+              check(response);
+              return await response.json();
+            };
+            const peers = await prepare('/mcp') as Record<string, { status?: string }>;
+            if (!peers || typeof peers !== 'object' || Array.isArray(peers)) throw new SourceError('upstream', 'OpenCode returned invalid MCP status');
+            await Promise.all(Object.entries(peers).filter(([, peer]) => peer?.status === 'connected').map(async ([name]) => {
+              if (await prepare(`/mcp/${encodeURIComponent(name)}/disconnect`, 'POST') !== true) throw new SourceError('upstream', 'OpenCode could not prepare its worker tools');
+            }));
+          })();
+          this.prepared.set(cwd, prepared);
+          const pending = prepared;
+          void pending.catch(() => { if (this.prepared.get(cwd) === pending) this.prepared.delete(cwd); });
+        }
+        let cancel!: () => void;
+        const cancellation = new Promise<never>((_, reject) => { cancel = () => reject(turnSignal.reason); });
+        turnSignal.addEventListener('abort', cancel, { once: true });
+        try { turnSignal.throwIfAborted(); await Promise.race([prepared, cancellation]); }
+        finally { turnSignal.removeEventListener('abort', cancel); }
+      }
       session = continuation ?? (await call('/session', { title: 'grunt' })).id;
       if (!session || !/^[a-zA-Z0-9_-]+$/.test(session)) throw new SourceError('upstream', 'OpenCode returned an invalid session');
       this.busy.add(session);

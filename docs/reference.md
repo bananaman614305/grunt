@@ -233,7 +233,7 @@ existing installations and offline regression checks.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package is `usegrunt` (version `0.6.0`); the installed command is `usegrunt`.
+The package is `usegrunt` (version `0.6.1`); the installed command is `usegrunt`.
 The published package is `usegrunt` and this pull request does not itself publish.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
@@ -264,6 +264,14 @@ latest user message, word for word, through the session API, with no caller
 system prompt or tool definitions. Follow-ups with their user-message history
 reuse the same session; the mapping lasts until grunt exits. OpenCode runs its
 own tools and returns final text, as Freebuff does. It uses no tmux.
+
+Before prompting a worker it starts itself, grunt disconnects inherited MCP
+integrations in that worker's working-directory instance. Large optional tool
+catalogs can otherwise fill the model context and cause repeated compaction.
+OpenCode's built-in coding tools and automatic compaction remain enabled;
+your configuration files and saved login are preserved. Trusty Squire still
+handles provider signup separately during setup. A server supplied through
+`MILO_OPENCODE_URL` keeps its own MCP connections.
 
 `MILO_OPENCODE_MODEL` selects the OpenCode free model (default `big-pickle`).
 Use a currently free model from your OpenCode catalog; grunt does not buy credits
