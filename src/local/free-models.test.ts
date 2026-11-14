@@ -198,6 +198,7 @@ it('recovers an interrupted router installation using the supplied local admin c
   await ensureRouter('synthetic-password', 'synthetic-encryption', run);
   expect(run.mock.calls.map(([args]) => args[0])).toEqual(['inspect', 'pull', 'run']);
   expect(run.mock.calls[2]![0]).toContain('io.milo.router=1');
+  expect(run.mock.calls[2]![0]).toContain('PROVIDER_TIMEOUT_CUSTOM=600000');
   expect(JSON.stringify(run.mock.calls.map(([args]) => args))).not.toContain('synthetic-');
   const unrelated = vi.fn(async () => ({ stdout: 'not-grunt' }));
   await expect(ensureRouter('synthetic-password', 'synthetic-encryption', unrelated)).rejects.toThrow('belongs to another installation');
@@ -256,4 +257,62 @@ it('exits the OpenCode probe server even when the CLI ignores graceful shutdown'
     await source.close();
     expect(() => process.kill(pid!, 0)).toThrow();
   } finally { if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already closed. */ } } }
+});
+
+
+it.each([{ saved: [] }, { saved: ['kilo'] }, { saved: ['gemini'] }, { saved: ['kilo', 'gemini'] }])('adds only saved optional providers ($saved) without signup', async ({ saved }) => {
+  const squire = fakeSquire();
+  vi.mocked(squire.credentials.list).mockResolvedValue(saved.map(service => ({ service, reference: service, field_names: ['value'] })));
+  const addGrant = vi.fn();
+  await setupProviders(squire, { addGrant }, { providers: [], notify: vi.fn() });
+  expect(addGrant.mock.calls.map(([provider]) => provider)).toEqual(saved);
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it.each([true, false])('registers only vetted Kilo models, falling back when Nemotron is absent (%s)', async nemotron => {
+  const admin = new FreeLLMAdmin();
+  const ids = [...(nemotron ? ['nvidia/nemotron-3-ultra-550b-a55b:free'] : []), 'kilo-auto/free', 'stealth/glyph-cluster'];
+  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models') ? { models: ids.map(id => ({ id })) } : []);
+  await admin.addGrant('kilo', { base_url: 'https://egress.test/kilo', token: 'synthetic-grant' });
+  expect(call).toHaveBeenCalledWith('/keys/custom', {
+    baseUrl: 'https://egress.test/kilo/api/v1', apiKey: 'synthetic-grant', label: 'Milo kilo (Squire)',
+    models: ids.filter(id => id !== 'stealth/glyph-cluster').map(model => ({ model, supportsTools: true }))
+  });
+});
+
+it('registers Gemini Flash at the Google OpenAI-compatible path and orders keyed sources', async () => {
+  const admin = new FreeLLMAdmin();
+  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models') ? { models: [{ id: 'models/gemini-3.5-flash' }] } : []);
+  await admin.addGrant('gemini', { base_url: 'https://egress.test/google', token: 'synthetic-grant' });
+  expect(call).toHaveBeenCalledWith('/keys/custom', {
+    baseUrl: 'https://egress.test/google/v1beta/openai', apiKey: 'synthetic-grant', label: 'Milo gemini (Squire)',
+    models: [{ model: 'models/gemini-3.5-flash', supportsTools: true }]
+  });
+  call.mockResolvedValue([
+    { modelDbId: 1, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Milo kilo (Squire)', priority: 0 },
+    { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Milo kilo (Squire)', priority: 0 },
+    { modelDbId: 3, platform: 'custom', modelId: 'models/gemini-3.5-flash', keyLabel: 'Milo gemini (Squire)', priority: 0 },
+    { modelDbId: 4, platform: 'custom', modelId: 'stealth/glyph-cluster', keyLabel: 'Milo kilo (Squire)', priority: 0 }
+  ]);
+  await admin.configureChain();
+  expect(call).toHaveBeenCalledWith('/fallback', [
+    { modelDbId: 1, enabled: true, priority: 999996 }, { modelDbId: 2, enabled: true, priority: 999997 }, { modelDbId: 3, enabled: true, priority: 999998 },
+    { modelDbId: 4, enabled: false, priority: 999997 }
+  ], 'PUT');
+});
+
+
+it('refreshes a Kilo grant missing Nemotron and reuses complete saved providers', async () => {
+  const admin = new FreeLLMAdmin();
+  let models = [{ modelId: 'kilo-auto/free' }];
+  vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models')
+    ? { models: [{ id: 'nvidia/nemotron-3-ultra-550b-a55b:free' }, { id: 'kilo-auto/free' }] }
+    : [{ id: 1, platform: 'custom', label: 'Milo kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/v1', models }]);
+  expect(await admin.hasKey('kilo')).toBe(false);
+  models = [...models, { modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free' }];
+  expect(await admin.hasKey('kilo')).toBe(true);
+  const squire = fakeSquire(), addGrant = vi.fn();
+  await setupProviders(squire, { addGrant, hasKey: async () => true }, { providers: [], notify: vi.fn() });
+  expect(addGrant).not.toHaveBeenCalled();
+  expect(squire.credentials.grant).not.toHaveBeenCalled();
 });
