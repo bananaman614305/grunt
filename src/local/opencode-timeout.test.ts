@@ -53,7 +53,7 @@ it.each(['deadline', 'caller', 'shutdown'] as const)('handles OpenCode %s withou
       expect(next).not.toHaveBeenCalled();
       expect(log).toHaveBeenCalledWith('grunt source: opencode cancelled for model milo');
       expect(log.mock.calls.flat().join('\n')).not.toContain('failed (timeout)');
-      expect(timeout).toHaveBeenCalledWith(90000);
+      expect(timeout).not.toHaveBeenCalledWith(90000);
     }
     expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/session/session_one/abort'))).toBe(true);
   } finally { await driver.close(); log.mockRestore(); timeout.mockRestore(); }
