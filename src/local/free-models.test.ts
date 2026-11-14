@@ -1,3 +1,4 @@
+import { idleEvents } from './fixtures/opencode-events.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,6 +60,7 @@ it('types the exact latest OpenCode fixture message and reuses the session for f
   const calls: { path: string; body: unknown }[] = [];
   const fetcher: typeof fetch = async (url, init) => {
     const path = new URL(String(url)).pathname;
+    if (path === '/event') return idleEvents();
     calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     return Response.json(path === '/session' ? { id: 'session_one' } : { info: { role: 'assistant' }, parts: [{ type: 'text', text: 'bridge works 42' }] });
   };
@@ -79,7 +81,7 @@ it('types the exact latest OpenCode fixture message and reuses the session for f
 });
 
 it.each(['ProviderAuthError', 'UnknownError'])('types OpenCode %s without returning upstream secrets', async name => {
-  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => Response.json(String(url).includes('/message') ? { info: { error: { name, data: { message: 'secret' } } }, parts: [] } : { id: 'session_one' }) });
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => String(url).endsWith('/event') ? idleEvents() : Response.json(String(url).includes('/message') ? { info: { error: { name, data: { message: 'secret' } } }, parts: [] } : { id: 'session_one' }) });
   await expect(driver.complete(decode({ messages: request.messages }, 'chat', '/tmp'), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: name === 'ProviderAuthError' ? 'logged_out' : 'refused', message: name === 'ProviderAuthError' ? 'OpenCode free model requires sign-in' : 'OpenCode provider refused the request' });
 });
 
@@ -243,16 +245,21 @@ it.each(['freebuff', 'opencode'])('shares %s human verification and resumes the 
 });
 
 
-it('exits the OpenCode probe server even when the CLI ignores graceful shutdown', async () => {
+it.each(['allow', { edit: 'ask', external_directory: { '*': 'allow' } }])('preserves inline permissions %j while denying outside access and closing the probe', async permission => {
   const pidFile = join(stateDir, 'probe.pid');
+  const configFile = join(stateDir, 'spawn-config.json');
+  vi.stubEnv('OPENCODE_CONFIG_CONTENT', JSON.stringify({ model: 'synthetic/model', permission }));
   await writeFile(join(stateDir, 'opencode'), '#!' + process.execPath + '\n' +
-    `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => {}); console.log('http://127.0.0.1:19778'); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
+    `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); require('node:fs').writeFileSync(${JSON.stringify(configFile)}, process.env.OPENCODE_CONFIG_CONTENT); process.on('SIGTERM', () => {}); console.log('http://127.0.0.1:19778'); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
   vi.stubEnv('PATH', stateDir + ':' + process.env.PATH);
-  const source = new OpenCode({ fetcher: async url => Response.json(String(url).includes('/message') ? { parts: [{ type: 'text', text: 'ready' }] } : { id: 'probe' }) });
+  const source = new OpenCode({ fetcher: async url => String(url).endsWith('/event') ? idleEvents() : Response.json(String(url).includes('/message') ? { parts: [{ type: 'text', text: 'ready' }] } : { id: 'probe' }) });
   let pid: number | undefined;
   try {
     await source.complete(request, AbortSignal.timeout(5000));
     pid = Number(await readFile(pidFile, 'utf8'));
+    expect(JSON.parse(await readFile(configFile, 'utf8'))).toEqual({
+      model: 'synthetic/model', permission: { ...(typeof permission === 'string' ? { '*': permission } : { edit: 'ask' }), external_directory: 'deny' }
+    });
     await source.close();
     expect(() => process.kill(pid!, 0)).toThrow();
   } finally { if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already closed. */ } } }
