@@ -81,8 +81,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
   } else if (['setup', 'add'].includes(process.argv[2] ?? '') || (!process.argv[2] && basename(process.argv[1]) === 'usegrunt' && process.env.GRUNT_DAEMON !== '1')) {
     const { wizard } = await import('./wizard.js');
     try {
-      if (process.argv[2] === 'add' && !process.argv[3]) throw new Error('Usage: usegrunt add <provider>');
-      await wizard(process.argv[2] === 'add' ? process.argv[3] : undefined);
+      await wizard(process.argv[2] === 'add' ? process.argv[3] ?? '' : undefined);
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'grunt setup failed'); process.exitCode = 1; }
   } else start();

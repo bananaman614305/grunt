@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import type * as ChildProcess from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
+import { BrowserSquire, FreeLLMAdmin, setup, setupURL, providerURL } from './setup.js';
 import { configure } from './main.js';
 import { createLocalApp } from './api.js';
+
+vi.mock('@clack/prompts', () => ({ confirm: vi.fn(async () => true), password: vi.fn(async () => 'synthetic-provider-key'), select: vi.fn(async () => 'unlisted-model'), isCancel: (value: unknown) => typeof value === 'symbol' }));
 
 const { docker, question } = vi.hoisted(() => ({ docker: vi.fn(), question: vi.fn(async () => '') }));
 vi.mock('node:child_process', async importOriginal => {
@@ -194,4 +196,51 @@ it('keeps Freebuff and Kilo enabled last on repeat setup without changing other 
     { modelDbId: 4, enabled: false, priority: 19 },
     { modelDbId: 5, enabled: true, priority: 0 }
   ]));
+});
+
+it.each(['https://example.test/api/v1', 'http://localhost:1234/v1', 'http://127.0.0.1:1234', 'http://[::1]:1234/v1'])('accepts safe base URL %s', value => {
+  expect(providerURL(value)?.host).toBe(new URL(value).host);
+});
+it.each(['http://example.test/v1', 'https://user:pass@example.test', 'https://example.test/v1?token=secret', 'https://example.test/#x'])('rejects unsafe URL %s', value => {
+  expect(() => providerURL(value)).toThrow();
+});
+it('vaults a hidden key and selects a discovered model, replacing the same URL on rerun', async () => {
+  const base = 'https://example.test/api/v1';
+  const records: { id: number; platform: string; label: string; baseUrl: string; models: { modelId: string }[] }[] = [];
+  let next = 0;
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => {
+    if (name === 'store_credential') return { reference: 'vault://example' };
+    return { base_url: 'https://egress.test/grant', token: 'synthetic-grant' };
+  });
+  const router = new FreeLLMAdmin();
+  const admin = vi.spyOn(router, 'call').mockImplementation(async (path, body, method) => {
+    if (path.endsWith('discover-models')) return { models: [{ id: 'unlisted-model' }] };
+    if (path === '/keys') return [...records];
+    if (method === 'DELETE') { records.splice(records.findIndex(row => path === `/keys/${row.id}`), 1); return {}; }
+    if (path === '/keys/custom') { const row = body as { baseUrl: string; label: string; models: { model: string }[] }; records.push({ ...row, id: ++next, platform: 'custom', models: row.models.map(m => ({ modelId: m.model })) }); return { keyId: next }; }
+    if (path === '/fallback' && method === 'GET') return records.map(row => ({ modelDbId: row.id, platform: row.platform, modelId: 'unlisted-model', keyLabel: row.label, enabled: false, priority: 0 }));
+    return {};
+  });
+  await setupURL(squire, router, base, () => {});
+  await setupURL(squire, router, base, () => {});
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({ baseUrl: 'https://egress.test/grant/api/v1', label: `Milo ${base} (Squire)`, models: [{ modelId: 'unlisted-model' }] });
+  expect(call).toHaveBeenCalledWith('store_credential', { service: 'example.test', label: base, value: 'synthetic-provider-key', auth_shape: 'bearer', api_hosts: ['example.test'] });
+  expect(await router.hasKey(base)).toBe(true);
+  await router.configureChain();
+  expect(admin).toHaveBeenCalledWith('/fallback', [{ modelDbId: 2, enabled: true, priority: 0 }], 'PUT');
+});
+it('cancels before reading or sending a key when the host is not confirmed', async () => {
+  const { confirm, password } = await import('@clack/prompts');
+  vi.mocked(confirm).mockResolvedValueOnce(false);
+  vi.mocked(password).mockClear();
+  await expect(setupURL(new BrowserSquire(), new FreeLLMAdmin(), 'https://example.test/v1', () => {})).rejects.toThrow('cancelled');
+  expect(password).not.toHaveBeenCalled();
+  expect(squireCall).not.toHaveBeenCalled();
+});
+it.each([[[]], [[{ id: 'unlisted-model' }]]])('fails clearly when discovery is empty or rejected', async models => {
+  const router = new FreeLLMAdmin();
+  vi.spyOn(router, 'call').mockImplementation(async () => { if (models.length) throw new Error('synthetic-provider-key'); return { models }; });
+  await expect(router.addGrant('https://example.test/v1', { base_url: 'https://egress.test/v1', token: 'synthetic' })).rejects.toThrow(models.length ? 'Model discovery failed' : 'no models');
 });

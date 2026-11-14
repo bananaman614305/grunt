@@ -5,11 +5,11 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { intro, outro, spinner, log, note, multiselect, isCancel } from '@clack/prompts';
+import { intro, outro, spinner, log, note, multiselect, text, isCancel } from '@clack/prompts';
 import chalk from 'chalk';
 import { setupFallbacks } from './fallback-setup.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
-import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
+import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, knownAdapters } from '../registry.js';
 import type { Adapter } from '../registry.js';
@@ -267,7 +267,13 @@ export async function connectHarnesses(port: number, options: { harnesses?: Harn
 const wizardActions = { banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses };
 type Optional = 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
-  if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
+  if (add === '') {
+    const answer = await text({ message: 'Provider name or base URL' });
+    if (isCancel(answer)) throw new Error('Provider setup cancelled');
+    add = answer.trim();
+    if (!add) throw new Error('Enter a provider name or base URL');
+  }
+  if (add && !providerURL(add) && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}, or paste an OpenAI-compatible base URL`);
   await actions.banner?.();
   intro(chalk.hex('#f4b41a').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
   note(PREAMBLE, 'What grunt does');

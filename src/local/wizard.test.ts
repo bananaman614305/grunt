@@ -12,7 +12,7 @@ import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
 
 vi.mock('@clack/prompts', () => ({
-  multiselect: vi.fn(async () => ['groq']), isCancel: () => false,
+  text: vi.fn(async () => 'https://example.test/v1'), multiselect: vi.fn(async () => ['groq']), isCancel: () => false,
   intro: vi.fn(), outro: vi.fn(), note: vi.fn(), log: { info: vi.fn(), warn: vi.fn(), step: vi.fn(), message: vi.fn(), success: vi.fn(), error: vi.fn() },
   spinner: () => ({ start: vi.fn(), stop: vi.fn(), error: vi.fn(), clear: vi.fn() })
 }));
@@ -301,4 +301,14 @@ it('pulls the registry from the RegistrySync URL and says when it falls back to 
   const { log } = await import('@clack/prompts');
   await wizard(undefined, stubActions([], { loadRegistry: async () => ({ registry: bundledRegistry, origin: 'bundled' }) }));
   expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Registry unreachable; using the list bundled with this version'));
+});
+
+it.each(['', 'https://example.test/v1', 'groq', 'cerebras'])('adds a provider from %j without running the default setup', async input => {
+  const actions = stubActions([]);
+  await wizard(input, actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), [input || 'https://example.test/v1']);
+  expect(actions.setupFallbacks).not.toHaveBeenCalled();
+});
+it('explains how to add an unknown provider by URL', async () => {
+  await expect(wizard('unknown', stubActions([]))).rejects.toThrow('groq, cerebras, or paste an OpenAI-compatible base URL');
 });

@@ -14,7 +14,7 @@ npx usegrunt
 
 usegrunt installs grunt on this machine. It pools free AI quota and serves one local agent.
 
-https://grunt.run. `milo` and `milo-local` remain aliases.
+`npx usegrunt add [provider-or-base-URL]` adds a provider; omit the argument to paste a URL. https://grunt.run. `milo` and `milo-local` remain aliases.
 
 Setup is Trusty Squire, the free-service list, sign-in, then your coding tools.
 

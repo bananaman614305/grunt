@@ -196,7 +196,7 @@ the grant's base URL and bearer token to FreeLLMAPI's custom-provider endpoint.
 Provider keys stay in Squire; no provider reveal approval is requested. Groq
 uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
-`usegrunt add groq` or `usegrunt add cerebras` connects another provider through the same flow.
+`usegrunt add groq` or `usegrunt add cerebras` connects a named provider; `usegrunt add https://host/api/v1` adds an OpenAI-compatible endpoint with a hidden key prompt and discovered model choice. `usegrunt add` prompts for a name or URL.
 
 When no Squire session exists, the wizard runs Squire's own connect installer
 with the OpenCode target. Squire manages login and its broker service. An existing
