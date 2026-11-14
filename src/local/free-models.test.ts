@@ -276,6 +276,24 @@ it.each([{ saved: [] }, { saved: ['kilo'] }])('adds only saved optional provider
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
+it.each([true, false])('explicit Kilo setup connects once, provisioning only when missing (%s)', async saved => {
+  const squire = fakeSquire(), addGrant = vi.fn();
+  if (saved) vi.mocked(squire.credentials.list).mockResolvedValue([{ service: 'kilo', reference: 'saved-kilo', field_names: ['value'] }]);
+  await setupProviders(squire, { addGrant }, { providers: ['kilo'], notify: vi.fn() });
+  expect(addGrant).toHaveBeenCalledTimes(1);
+  expect(addGrant).toHaveBeenCalledWith('kilo', expect.any(Object));
+  expect(squire.runs.start).toHaveBeenCalledTimes(saved ? 0 : 1);
+});
+
+it('uses the Kilo profile and gateway grant metadata for explicit signup', async () => {
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockResolvedValue({ status: 'complete', session_id: 'signup' });
+  await squire.runs.start({ service: 'kilo', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' });
+  expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({
+    url: 'https://app.kilo.ai/profile', goal: expect.stringContaining('api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"]')
+  }));
+});
+
 it.each([true, false])('registers only vetted Kilo models, falling back when Nemotron is absent (%s)', async nemotron => {
   const admin = new FreeLLMAdmin();
   const ids = [...(nemotron ? ['nvidia/nemotron-3-ultra-550b-a55b:free'] : []), 'kilo-auto/free', 'stealth/glyph-cluster'];

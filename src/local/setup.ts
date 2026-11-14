@@ -17,7 +17,7 @@ import { proxyApproval } from './approval-proxy.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile' };
 export type Provider = keyof typeof PROVIDERS;
 export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 const savedProviders = ['kilo'] as const;
@@ -102,6 +102,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
   }
   // These sources reuse existing vault access only; missing keys never start signup.
   for (const provider of savedProviders) {
+    if (options.providers?.includes(provider)) continue;
     if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
     const credential = (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     if (!credential) { options.notify(`${provider}: skipped; no saved API access`); continue; }
@@ -205,7 +206,7 @@ export class BrowserSquire implements SetupSquire {
     const session = this.sessions.get(provider);
     const result = await this.call('operate_drive', {
       ...(session ? { session_id: session } : { url }),
-      goal: goal ?? `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer. No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`,
+      goal: goal ?? `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''} No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`,
       facts: { plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 60
     });
     if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
