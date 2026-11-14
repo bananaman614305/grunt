@@ -250,7 +250,7 @@ export class BrowserSquire implements SetupSquire {
   async close() { for (const handoff of this.handoffs) handoff.close(); await this.client.close(); }
 }
 
-const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/v1', gemini: '/v1beta/openai' })[provider] ?? '/v1';
+const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway', gemini: '/v1beta/openai' })[provider] ?? '/v1';
 
 export class FreeLLMAdmin {
   private token = '';

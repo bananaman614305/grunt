@@ -275,7 +275,7 @@ it.each([true, false])('registers only vetted Kilo models, falling back when Nem
   const call = vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models') ? { models: ids.map(id => ({ id })) } : []);
   await admin.addGrant('kilo', { base_url: 'https://egress.test/kilo', token: 'synthetic-grant' });
   expect(call).toHaveBeenCalledWith('/keys/custom', {
-    baseUrl: 'https://egress.test/kilo/api/v1', apiKey: 'synthetic-grant', label: 'Milo kilo (Squire)',
+    baseUrl: 'https://egress.test/kilo/api/gateway', apiKey: 'synthetic-grant', label: 'Milo kilo (Squire)',
     models: ids.filter(id => id !== 'stealth/glyph-cluster').map(model => ({ model, supportsTools: true }))
   });
 });
@@ -307,7 +307,7 @@ it('refreshes a Kilo grant missing Nemotron and reuses complete saved providers'
   let models = [{ modelId: 'kilo-auto/free' }];
   vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models')
     ? { models: [{ id: 'nvidia/nemotron-3-ultra-550b-a55b:free' }, { id: 'kilo-auto/free' }] }
-    : [{ id: 1, platform: 'custom', label: 'Milo kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/v1', models }]);
+    : [{ id: 1, platform: 'custom', label: 'Milo kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/gateway', models }]);
   expect(await admin.hasKey('kilo')).toBe(false);
   models = [...models, { modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free' }];
   expect(await admin.hasKey('kilo')).toBe(true);

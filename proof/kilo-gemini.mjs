@@ -18,7 +18,10 @@ process.env.PROVIDER_TIMEOUT_CUSTOM = '600000';
 const { initDb, getDb } = await upstream('db/index');
 const { applyDeclarativeConfig } = await upstream('services/declarative-config');
 const { createApp } = await upstream('app');
-const originalLog = console.log;
+const stdout = process.stdout.write.bind(process.stdout);
+const originalLog = line => stdout(`${line}\n`);
+// The upstream initial migration writes its generated API key directly.
+process.stdout.write = () => true;
 console.log = console.info = console.warn = console.error = () => {};
 initDb(':memory:');
 const password = randomBytes(32).toString('hex');
@@ -36,12 +39,12 @@ try {
   await admin.configureChain();
   const key = await admin.key();
   const chain = await admin.call('/fallback', undefined, 'GET');
-  for (const provider of ['kilo', 'gemini']) {
+  for (const provider of ['kilo', 'gemini'].filter(name => grants[name])) {
     // Isolate each provider to prove its completion cannot be another source.
     await admin.call('/fallback', chain.map(row => ({ modelDbId: row.modelDbId, enabled: row.keyLabel === `Milo ${provider} (Squire)`, priority: row.priority })), 'PUT');
     const app = createLocalApp(new Sources([new FreeLLMAPI({ url: `${url}/v1`, key })]));
     const start = performance.now();
-    const response = await app.request('http://127.0.0.1/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freellmapi', messages: [{ role: 'user', content: 'Reply only OK.' }], max_tokens: 256, stream: false }) });
+    const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freellmapi', messages: [{ role: 'user', content: 'Reply only OK.' }], max_tokens: 256, stream: false }) });
     const body = await response.json();
     originalLog(JSON.stringify({ provider, status: response.status, latencyMs: Math.round(performance.now() - start) }));
     if (response.status !== 200 || !body.choices?.[0]?.message?.content) process.exitCode = 1;
