@@ -18,11 +18,10 @@ jobs:
       PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
     steps:
       - uses: actions/checkout@v4
-      - name: Check the page has its film
+      - name: Check the page is there
         run: |
           test -f site/index.html
-          test "$(ls site/film/wide | wc -l)" -eq 360
-          test "$(ls site/film/tall | wc -l)" -eq 180
+          test -f site/grunt.svg
       - name: Deploy site/ to Cloudflare Pages
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' && env.PAGES_PROJECT != ''
         run: npx --yes wrangler@4 pages deploy site --project-name "$PAGES_PROJECT" --branch main
