@@ -46,6 +46,7 @@ try {
   if (live || both) openCode = new OpenCode({ timeout: 120000 });
   else {
     const upstream = new Hono();
+    upstream.get('/event', () => new Response(new ReadableStream(), { headers: { 'Content-Type': 'text/event-stream' } }));
     upstream.post('/session', c => c.json({ id: 'proof_session' }));
     upstream.post('/session/:id/message', async c => {
       const body = await c.req.json(); assert.match(body.parts[0].text, /Continue this task from the current state/);

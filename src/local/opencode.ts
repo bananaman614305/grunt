@@ -34,7 +34,12 @@ export class OpenCode implements Source {
     const binary = await executable('opencode');
     this.starting = new Promise<string>((resolve, reject) => {
       // Keep the normal OS home and the user's existing OpenCode login.
-      const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || '{}');
+      const permission = typeof config.permission === 'string' ? { '*': config.permission } : config.permission;
+      const env = { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        ...config, permission: { ...permission, external_directory: 'deny' }
+      }) };
+      const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { stdio: ['ignore', 'pipe', 'ignore'], env });
       this.child = child;
       const timer = setTimeout(() => { child.kill(); reject(new SourceError('timeout', 'OpenCode server startup timed out')); }, 30000);
       let output = '';
@@ -57,15 +62,23 @@ export class OpenCode implements Source {
     const continuation = prior && !this.busy.has(prior) ? prior : undefined;
     const signal = AbortSignal.any([caller, this.shutdown.signal, ...(this.options.timeout ? [AbortSignal.timeout(this.options.timeout)] : [])]);
     let session: string | undefined, base: string | undefined;
+    const events = new AbortController();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let watching: Promise<never> | undefined;
+    let guardFailed = false;
+    const turnSignal = AbortSignal.any([signal, events.signal]);
     const headers = { 'Content-Type': 'application/json', 'x-opencode-directory': cwd,
       ...(process.env.OPENCODE_SERVER_PASSWORD ? { Authorization: `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? 'opencode'}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}` } : {}) };
-    const call = async (path: string, body: unknown) => {
-      const res = await this.fetcher(`${base}${path}`, { method: 'POST', headers, redirect: 'error', signal, body: JSON.stringify(body) });
+    const check = (res: Response) => {
       if (!res.ok) {
         const header = res.headers.get('Retry-After');
         const seconds = header === null ? NaN : /^\d+(?:\.\d+)?$/.test(header) ? Number(header) : (Date.parse(header) - Date.now()) / 1000;
         throw new SourceError(res.status === 403 ? 'refused' : res.status === 401 ? 'logged_out' : res.status === 429 ? 'quota' : 'upstream', `OpenCode returned HTTP ${res.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined);
       }
+    };
+    const call = async (path: string, body: unknown) => {
+      const res = await this.fetcher(`${base}${path}`, { method: 'POST', headers, redirect: 'error', signal: turnSignal, body: JSON.stringify(body) });
+      check(res);
       return await res.json();
     };
     try {
@@ -73,8 +86,41 @@ export class OpenCode implements Source {
       session = continuation ?? (await call('/session', { title: 'grunt' })).id;
       if (!session || !/^[a-zA-Z0-9_-]+$/.test(session)) throw new SourceError('upstream', 'OpenCode returned an invalid session');
       this.busy.add(session);
+      // OpenCode 1.18.31: subscribe before sending the message so a fast
+      // permission request cannot be missed, including on an existing server.
+      const stream = await this.fetcher(`${base}/event`, { headers, redirect: 'error', signal: turnSignal });
+      check(stream);
+      if (!stream.headers.get('content-type')?.includes('text/event-stream') || !stream.body) {
+        throw new SourceError('upstream', 'OpenCode permission event stream unavailable');
+      }
+      reader = stream.body.getReader();
+      watching = (async (): Promise<never> => {
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const chunk = await reader!.read();
+          if (chunk.done) throw new SourceError('upstream', 'OpenCode permission event stream closed');
+          buffer += decoder.decode(chunk.value, { stream: true });
+          let boundary: RegExpExecArray | null;
+          while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+            const frame = buffer.slice(0, boundary.index);
+            buffer = buffer.slice(boundary.index + boundary[0].length);
+            const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+            if (!data) continue;
+            const event = JSON.parse(data);
+            if (event.type !== 'permission.asked') continue;
+            const permission = event.properties;
+            if (typeof permission?.sessionID !== 'string') throw new SourceError('upstream', 'OpenCode returned an invalid permission request');
+            if (permission.sessionID !== session) continue;
+            if (typeof permission.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(permission.id)) {
+              throw new SourceError('upstream', 'OpenCode returned an invalid permission request');
+            }
+            await call(`/permission/${permission.id}/reply`, { reply: 'reject' });
+          }
+        }
+      })().catch(error => { guardFailed = true; throw error; });
       const modelID = typeof this.options.model === 'function' ? this.options.model() : this.options.model ?? 'big-pickle';
-      const reply = await call(`/session/${session}/message`, { model: { providerID: 'opencode', modelID }, parts: [{ type: 'text', text: prompt }] });
+      const reply = await Promise.race([watching, call(`/session/${session}/message`, { model: { providerID: 'opencode', modelID }, parts: [{ type: 'text', text: prompt }] })]);
       const parts: { type: string; text?: string }[] = reply.parts ?? [];
       const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (reply.info?.error) {
@@ -87,15 +133,20 @@ export class OpenCode implements Source {
       this.sessions.set(key(turns), session);
       return { text };
     } catch (error) {
+      if ((signal.aborted || guardFailed) && session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
       if (signal.aborted) {
-        if (session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
         caller.throwIfAborted();
         if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'OpenCode request cancelled during shutdown');
         throw new SourceError('timeout', 'OpenCode request timed out');
       }
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'OpenCode request failed');
-    } finally { if (session) this.busy.delete(session); }
+    } finally {
+      events.abort();
+      await reader?.cancel().catch(() => {});
+      await watching?.catch(() => {});
+      if (session) this.busy.delete(session);
+    }
   }
   async close() {
     this.shutdown.abort();

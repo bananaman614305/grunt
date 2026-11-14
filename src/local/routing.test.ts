@@ -1,3 +1,4 @@
+import { idleEvents } from './fixtures/opencode-events.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile, mkdir, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -142,7 +143,7 @@ it('hands off the live working tree against a dirty task-start checkpoint', asyn
 });
 
 it('passes OpenCode quota reply partial text to the next adapter', async () => {
-  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => Response.json(String(url).endsWith('/message')
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => String(url).endsWith('/event') ? idleEvents() : Response.json(String(url).endsWith('/message')
     ? { info: { error: { data: { statusCode: 429 } } }, parts: [{ type: 'text', text: 'partial work survives' }] }
     : { id: 'quota_session' }) });
   const next = source('freebuff');
@@ -155,6 +156,7 @@ it('keeps actual OpenCode login bars through an unhealthy models check', async (
   let signedIn = false;
   const messages: string[] = [];
   const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async (url, init) => {
+    if (String(url).endsWith('/event')) return idleEvents();
     if (!String(url).endsWith('/message')) return Response.json({ id: 'health_session' });
     messages.push(JSON.parse(String(init?.body)).parts[0].text);
     return signedIn ? Response.json({ parts: [{ type: 'text', text: 'ready' }] }) : new Response('', { status: 401 });
