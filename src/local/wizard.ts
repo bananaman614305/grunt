@@ -8,6 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { intro, outro, spinner, log, note, multiselect, isCancel } from '@clack/prompts';
 import chalk from 'chalk';
 import { setupFallbacks } from './fallback-setup.js';
+import { parallelMap } from './parallel.js';
+import { withTerminal } from './terminal.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
@@ -19,11 +21,12 @@ import type { Harness, runHarness } from './harnesses.js';
 
 export const configDir = (env = process.env) => env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal) {
-  await new Promise<void>((resolve, reject) => {
+  const run = () => new Promise<void>((resolve, reject) => {
     const child = spawn(binary, args, { stdio: interactive ? 'inherit' : 'ignore', ...(signal ? { signal } : {}) });
     child.once('error', () => reject(new Error(`Could not run ${binary}`)));
     child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${binary} failed; inspect its service status before retrying`)));
   });
+  await (interactive ? withTerminal(run) : run());
 }
 async function step<T>(label: string, task: () => Promise<T>, done: (result: T) => string = () => label): Promise<T> {
   const progress = spinner(); progress.start(label);
@@ -52,8 +55,8 @@ export async function squireBrokerExists() {
   const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', program], { env: squireEnvironment(), timeout: 10000 });
   return result.stdout === 'present';
 }
-export async function connectSquire(options: { hasBroker?: () => Promise<boolean>; run?: typeof command; installer?: string } = {}) {
-  const probe = async () => { const squire = new BrowserSquire(); try { await squire.connect(); } finally { await squire.close(); } };
+export async function connectSquire(options: { hasBroker?: () => Promise<boolean>; run?: typeof command; installer?: string; squire?: BrowserSquire } = {}) {
+  const probe = async () => { const squire = options.squire ?? new BrowserSquire(); try { await squire.connect(); } finally { if (!options.squire) await squire.close(); } };
   try { await probe(); return; }
   catch (error) {
     if (await (options.hasBroker || squireBrokerExists)()) {
@@ -88,14 +91,19 @@ export async function preflight(run = command) {
 const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
 const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 export async function installedSources(directory = configDir()) {
+  try {
+    const sources: unknown = JSON.parse(await readFile(join(directory, 'installed-sources.json'), 'utf8'));
+    if (!Array.isArray(sources) || !sources.length || sources.some(id => typeof id !== 'string' || ![...knownAdapters, 'freellmapi'].includes(id))) throw new Error('Invalid saved grunt sources');
+    return [...new Set(sources)].join(',');
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   try { await access(join(directory, 'router-admin.json')); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return 'freebuff,opencode';
+    return 'freebuff,opencode,kilo';
   }
   return 'freellmapi,kilo,freebuff,opencode';
 }
-export async function installService() {
+export async function installService(adapters?: string[]) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
   const directory = configDir(), runtime = join(directory, 'runtime');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
@@ -108,12 +116,13 @@ export async function installService() {
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = process.env.MILO_PORT || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
-  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: await installedSources(directory), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: adapters?.join(',') ?? await installedSources(directory), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
   if (process.env.MILO_FREELLMAPI_URL) env.MILO_FREELLMAPI_URL = process.env.MILO_FREELLMAPI_URL;
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await readFile(opencodeConfig); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   await installBackgroundService('milo', entry, env);
+  await writeFile(join(directory, 'installed-sources.json'), JSON.stringify(env.MILO_SOURCES!.split(',')), { mode: 0o600 });
 }
 export async function installBackgroundService(name: string, entry: string, env: Record<string, string>) {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid service name');
@@ -273,69 +282,69 @@ export async function connectHarnesses(port: number, options: { harnesses?: Harn
   if (connected.length) note(connected.map(h => `${chalk.bold(h.name)}\n  ${h.launch(port)}`).join('\n'), 'Start coding with grunt');
   return connected;
 }
-const wizardActions = { banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses };
-type Optional = 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi';
+const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses };
+type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
-  await actions.banner?.();
-  intro(chalk.hex('#f4b41a').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
-  note(PREAMBLE, 'What grunt does');
-  await step('Checking prerequisites', () => actions.preflight());
-  note(SQUIRE_NOTICE, 'Google sign-in for Trusty Squire');
-  await step('Connecting Trusty Squire', () => actions.connectSquire());
-  if (add) {
-    await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), [add]));
-    await step('Starting the grunt background service', actions.installService);
-    await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
-    outro(`${add} connected`); return;
-  }
-  const pulled = actions.loadRegistry ? await step('Pulling the free service list from the registry', () => actions.loadRegistry!()) : { registry: bundledRegistry, origin: 'bundled' as RegistryOrigin };
-  const { registry } = pulled;
-  const published = registry.published.slice(0, 10);
-  if (pulled.origin === 'remote') log.info(`Registry: ${registry.adapters.length} free services, published ${published}`);
-  else log.warn(`Registry unreachable; using the ${pulled.origin === 'cache' ? 'list saved by an earlier setup' : 'list bundled with this version'} (published ${published})`);
-  const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id));
-  log.message(registry.adapters.map(adapter => knownAdapters.has(adapter.id)
-    ? `${chalk.bold(adapter.id.padEnd(10))} ${chalk.dim(describe(adapter))}`
-    : `${chalk.dim(adapter.id.padEnd(10))} ${chalk.dim('skipped: needs a newer usegrunt')}`).join('\n'));
-  const ids = adapters.map(adapter => adapter.id);
-  const results = new Map<string, { signup?: Status; daemon?: Status; check?: Status }>(ids.map(id => [id, {}]));
-  const unavailable: string[] = [];
-  const notify = report();
+  const squire = actions.createSquire?.();
+  try {
+    await actions.banner?.();
+    intro(chalk.hex('#f4b41a').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
+    note(PREAMBLE, 'What grunt does');
+    await step('Checking prerequisites', () => actions.preflight());
+    note(SQUIRE_NOTICE, 'Google sign-in for Trusty Squire');
+    await step('Connecting Trusty Squire', () => actions.connectSquire(squire ? { squire } : {}));
+    // Capture legacy API routing before default Kilo setup creates its admin file.
+    const previous = (await actions.installedSources?.())?.split(',') ?? [];
+    if (add) {
+      await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), [add], squire ? { squire } : {}));
+      await step('Starting the grunt background service', () => actions.installService(add !== 'kilo' ? [...new Set(['freellmapi', ...previous, ...knownAdapters])] : undefined));
+      await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
+      outro(`${add} connected`); return;
+    }
+    const pulled = actions.loadRegistry ? await step('Pulling the free service list from the registry', () => actions.loadRegistry!()) : { registry: bundledRegistry, origin: 'bundled' as RegistryOrigin };
+    const { registry } = pulled;
+    const published = registry.published.slice(0, 10);
+    if (pulled.origin === 'remote') log.info(`Registry: ${registry.adapters.length} free services, published ${published}`);
+    else log.warn(`Registry unreachable; using the ${pulled.origin === 'cache' ? 'list saved by an earlier setup' : 'list bundled with this version'} (published ${published})`);
+    const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id));
+    log.message(registry.adapters.map(adapter => knownAdapters.has(adapter.id)
+      ? `${chalk.bold(adapter.id.padEnd(10))} ${chalk.dim(describe(adapter))}`
+      : `${chalk.dim(adapter.id.padEnd(10))} ${chalk.dim('skipped: needs a newer usegrunt')}`).join('\n'));
+    const ids = adapters.map(adapter => adapter.id);
+    const results = new Map<string, { signup?: Status; daemon?: Status; check?: Status }>(ids.map(id => [id, {}]));
+    const unavailable: string[] = [];
+    const notify = report();
 
-  log.step(`Signing up for ${ids.length} free services`);
-  for (const id of ids) {
-    const outcome = await step(`${id}: installing and signing in`, () => actions.setupFallbacks({ directory: configDir(), run: command, adapters: [id], notify }), result => result.unavailable.includes(id) ? `${id}: sign-in incomplete` : `${id}: signed in`);
-    const failed = outcome.unavailable.includes(id);
-    if (failed) unavailable.push(id);
-    results.get(id)!.signup = failed ? 'fail' : 'pass';
-  }
+    log.step(`Installing and connecting ${ids.length} vetted free services (up to 3 at once)`);
+    log.info('Trusty Squire reuses existing accounts and grants. Only free access is requested. Provider verification may still need your browser; verification prompts are queued.');
+    const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify,
+      ...(squire ? { squire, connect: () => squire.connect() } : {}) });
+    unavailable.push(...outcome.unavailable);
+    for (const id of ids) results.get(id)!.signup = unavailable.includes(id) ? 'fail' : 'pass';
 
-  log.step('Connecting the services to the grunt daemon');
-  await step('Starting the grunt background service', actions.installService);
-  const port = Number(process.env.MILO_PORT || '8788');
-  await step(`Waiting for grunt to answer at http://127.0.0.1:${port}`, () => actions.checkService(port));
-  const beforeSources = new Set(unavailable);
-  if (actions.checkServiceSources) await step('Checking which services the daemon runs', () => actions.checkServiceSources!(unavailable, notify, ids));
-  for (const id of ids) results.get(id)!.daemon = beforeSources.has(id) ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
+    log.step('Connecting the services to the grunt daemon');
+    await step('Starting the grunt background service', () => actions.installService([...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])]));
+    const port = Number(process.env.MILO_PORT || '8788');
+    await step(`Waiting for grunt to answer at http://127.0.0.1:${port}`, () => actions.checkService(port));
+    const beforeSources = new Set(unavailable);
+    if (actions.checkServiceSources) await step('Checking which services the daemon runs', () => actions.checkServiceSources!(unavailable, notify, ids));
+    for (const id of ids) results.get(id)!.daemon = beforeSources.has(id) ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
 
-  log.step('Testing each service with a real request through grunt');
-  for (const id of ids) {
-    const before = unavailable.includes(id);
-    // Hold the result line until the spinner is gone so the two do not share a row.
-    const lines: string[] = [], progress = spinner();
-    progress.start(`${id}: sending a test request through grunt`);
-    try { await actions.checkFallbackServices(unavailable, port, line => lines.push(line), [id]); }
-    finally { progress.clear(); lines.forEach(notify); }
-    results.get(id)!.check = before ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
-  }
-  note([`${'service'.padEnd(10)}  sign-in  daemon  test`, ...ids.map(id => {
-    const r = results.get(id)!;
-    return `${id.padEnd(10)}  ${mark(r.signup)}        ${mark(r.daemon)}       ${mark(r.check)}`;
-  })].join('\n'), 'Free services');
+    log.step('Testing each service with a real request through grunt');
+    await parallelMap(ids, async id => {
+      const before = unavailable.includes(id);
+      await actions.checkFallbackServices(unavailable, port, notify, [id]);
+      results.get(id)!.check = before ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
+    });
+    note([`${'service'.padEnd(10)}  sign-in  daemon  test`, ...ids.map(id => {
+      const r = results.get(id)!;
+      return `${id.padEnd(10)}  ${mark(r.signup)}        ${mark(r.daemon)}       ${mark(r.check)}`;
+    })].join('\n'), 'Free services');
 
-  if (actions.connectHarnesses) await actions.connectHarnesses(port);
-  else if (actions.configurePi) await step('Pi provider', () => actions.configurePi!(port));
-  outro(unavailable.length ? `grunt is ready; incomplete fallbacks: ${unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
-  if (unavailable.length) throw new Error('Some adapters failed verification. Run usegrunt setup to resume.');
+    if (actions.connectHarnesses) await actions.connectHarnesses(port);
+    else if (actions.configurePi) await step('Pi provider', () => actions.configurePi!(port));
+    outro(unavailable.length ? `grunt is ready; incomplete fallbacks: ${unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
+    if (unavailable.length) throw new Error('Some adapters failed verification. Run usegrunt setup to resume.');
+  } finally { await squire?.close(); }
 }

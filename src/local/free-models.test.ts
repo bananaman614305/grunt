@@ -335,3 +335,21 @@ it('refreshes a Kilo grant missing Nemotron and reuses complete saved providers'
   expect(addGrant).not.toHaveBeenCalled();
   expect(squire.credentials.grant).not.toHaveBeenCalled();
 });
+
+it('batches concurrent provider handoffs and resumes each correct browser session', async () => {
+  const { confirm } = await import('@clack/prompts');
+  vi.mocked(confirm).mockClear();
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'humanHandoff').mockImplementation(async session => `https://handoff.test/${session}`);
+  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'operate_finish') return {};
+    if (name !== 'operate_drive') throw new Error('unexpected');
+    if (args.url) return { status: 'needs_value', session_id: new URL(String(args.url)).hostname, field: 'verification_code', remaining: 'Email verification needs a human' };
+    return { status: 'complete', session_id: args.session_id };
+  });
+  await Promise.all(['kilo', 'opencode'].map(service => squire.signup(service, `https://${service}.test/login`, 'Sign in to the free plan')));
+  expect(confirm).toHaveBeenCalledOnce();
+  const resumed = call.mock.calls.filter(([name, args]) => name === 'operate_drive' && args.session_id).map(([, args]) => args.session_id);
+  expect(resumed.sort()).toEqual(['kilo.test', 'opencode.test']);
+  expect(call.mock.calls.filter(([name]) => name === 'operate_finish').map(([, args]) => args.session_id).sort()).toEqual(['kilo.test', 'opencode.test']);
+});

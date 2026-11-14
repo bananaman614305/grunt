@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { knownAdapters } from '../registry.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { basename } from 'node:path';
@@ -33,26 +34,28 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const connection = { url, loadKey };
   const dots = new Dots({ env, timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
   const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new FreeLLMAPI(connection), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new OpenCode({ model: () => env.MILO_OPENCODE_MODEL ?? registry().adapters.find(a => a.id === 'opencode')?.model ?? 'big-pickle', ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' })];
-  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? ['freebuff', 'opencode'];
-  const routing = ids.every(id => ['freebuff', 'opencode'].includes(id)) ? { registry } : undefined;
+  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? [...knownAdapters];
+  const routing = ids.every(id => knownAdapters.has(id)) ? { registry } : undefined;
   return new Sources(ids.map(id => { const source = registered.find(s => s.id === id); if (!source) throw new Error(`Unknown grunt source: ${id}`); return source; }), routing);
 }
 export function start(env = process.env) {
   let registry = structuredClone(bundledRegistry);
   const sources = configure(env, () => registry);
   const directory = configDir(env);
+  let squire: BrowserSquire | undefined;
   const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
+    afterEnsure: async () => { await squire?.close(); squire = undefined; },
     changed: current => { registry = current; }, notify: console.error,
     ensure: async (adapter, signal) => {
       if (!sources.sources.some(source => source.id === adapter.id)) return;
       sources.preparing.add(adapter.id);
-      const squire = new BrowserSquire({ background: true, signal });
+      const client = squire ??= new BrowserSquire({ background: true, signal });
       try {
-        const result = await setupFallbacks({ directory, run: (binary, args) => command(binary, args, false, signal), notify: console.error, adapters: [adapter.id], squire, signal,
-          connect: () => squire.connect() });
+        const result = await setupFallbacks({ directory, run: (binary, args) => command(binary, args, false, signal), notify: console.error, adapters: [adapter.id], squire: client, signal,
+          connect: () => client.connect() });
         if (result.unavailable.length) throw new Error('Adapter setup incomplete');
         sources.healthy(adapter.id);
-      } finally { sources.preparing.delete(adapter.id); await squire.close(); }
+      } finally { sources.preparing.delete(adapter.id); }
     }
   });
   // Load the private cache before accepting tasks, without waiting for the network.

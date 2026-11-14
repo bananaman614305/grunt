@@ -12,7 +12,8 @@ export interface Adapter {
   model?: string;
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
-export const knownAdapters = new Set(['freebuff', 'opencode']);
+const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo' };
+export const knownAdapters = new Set(Object.keys(installers));
 export function validateRegistry(value: unknown): Registry {
   const fail = () => { throw new Error('Invalid adapter registry'); };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
@@ -28,7 +29,7 @@ export function validateRegistry(value: unknown): Registry {
       || !['agent', 'model'].includes(String(a.kind)) || !['stable', 'experimental'].includes(String(a.tier))
       || typeof a.weight !== 'number' || !Number.isFinite(a.weight) || a.weight <= 0 || a.weight > 1
       || !Array.isArray(a.modalities) || !a.modalities.length || a.modalities.some(m => !['text', 'image'].includes(m))
-      || new Set(a.modalities).size !== a.modalities.length || typeof a.install !== 'string' || !/^npm:[a-z0-9@/._-]+$/.test(a.install)
+      || new Set(a.modalities).size !== a.modalities.length || typeof a.install !== 'string' || !(/^npm:[a-z0-9@/._-]+$/.test(a.install) || (a.id === 'kilo' && a.install === 'builtin:kilo'))
       || (a.model !== undefined && (typeof a.model !== 'string' || !a.model.trim()))) return fail();
     if (a.signup !== undefined) {
       if (typeof a.signup !== 'string') return fail();
@@ -37,7 +38,7 @@ export function validateRegistry(value: unknown): Registry {
       if (url.protocol !== 'https:' || url.username || url.password) return fail();
     }
     // Known adapters have fixed installers and capabilities; registry data never supplies code.
-    if (knownAdapters.has(a.id) && (a.kind !== 'agent' || a.install !== (a.id === 'freebuff' ? 'npm:freebuff' : 'npm:opencode-ai')
+    if (knownAdapters.has(a.id) && (a.kind !== (a.id === 'kilo' ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
       || a.modalities.some(m => m !== 'text'))) return fail();
     ids.add(a.id);
     weights[a.tier as Adapter['tier']] += a.weight;

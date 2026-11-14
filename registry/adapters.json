@@ -1,10 +1,40 @@
 {
   "version": 1,
-  "published": "2026-11-11T00:00:00Z",
+  "published": "2026-11-14T22:10:00Z",
   "adapters": [
-    { "id": "freebuff", "kind": "agent", "tier": "stable", "weight": 0.4,
-      "modalities": ["text"], "install": "npm:freebuff", "signup": "https://freebuff.com/login" },
-    { "id": "opencode", "kind": "agent", "tier": "stable", "weight": 0.4,
-      "modalities": ["text"], "install": "npm:opencode-ai", "model": "big-pickle" }
+    {
+      "id": "freebuff",
+      "kind": "agent",
+      "tier": "stable",
+      "weight": 0.3,
+      "modalities": [
+        "text"
+      ],
+      "install": "npm:freebuff",
+      "signup": "https://freebuff.com/login"
+    },
+    {
+      "id": "opencode",
+      "kind": "agent",
+      "tier": "stable",
+      "weight": 0.3,
+      "modalities": [
+        "text"
+      ],
+      "install": "npm:opencode-ai",
+      "model": "big-pickle"
+    },
+    {
+      "id": "kilo",
+      "kind": "model",
+      "tier": "stable",
+      "weight": 0.4,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:kilo",
+      "signup": "https://app.kilo.ai/profile",
+      "model": "kilo-auto/free"
+    }
   ]
 }

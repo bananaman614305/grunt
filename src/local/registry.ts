@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { bundledRegistry, knownAdapters, validateRegistry } from '../registry.js';
 import type { Adapter, Registry } from '../registry.js';
+import { parallelMap } from './parallel.js';
 
 export const REGISTRY_INTERVAL = 24 * 60 * 60 * 1000;
 export class RegistrySync {
@@ -18,6 +19,7 @@ export class RegistrySync {
     ensure?: (adapter: Adapter, signal: AbortSignal) => Promise<void>;
     notify?: (text: string) => void;
     changed?: (registry: Registry) => void;
+    afterEnsure?: () => Promise<void>;
   }) {}
   get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id)); }
   async load() {
@@ -52,11 +54,11 @@ export class RegistrySync {
       } else if (response.status !== 304) throw new Error('Registry unavailable');
     } catch { this.options.notify?.('Registry update unavailable; keeping the last good list'); }
     if (this.controller.signal.aborted) return;
-    for (const adapter of this.enabled) {
-      if (!this.options.ensure) continue;
+    try { await parallelMap(this.enabled, async adapter => {
+      if (!this.options.ensure || this.controller.signal.aborted) return;
       try { await this.options.ensure(adapter, this.controller.signal); }
       catch { this.options.notify?.(`${adapter.id}: setup needs attention; run usegrunt setup to finish sign-in`); }
-    }
+    }); } finally { await this.options.afterEnsure?.(); }
   }
   async start() {
     await this.load();

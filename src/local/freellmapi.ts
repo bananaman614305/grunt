@@ -56,6 +56,12 @@ export class FreeLLMAPI implements Source {
       });
     } catch { throw new SourceError(signal.aborted ? 'timeout' : 'upstream', 'Local FreeLLMAPI is unavailable'); }
     if (!response.ok) throw new SourceError(response.status === 403 ? 'refused' : response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `FreeLLMAPI returned HTTP ${response.status}`);
+    // FreeLLMAPI treats a pinned model as a preference and can fall back to
+    // another provider. Never attribute that provider's answer to Kilo.
+    if (this.id === 'kilo' && response.headers.get('x-routed-via') !== `custom/${this.options.model}`) {
+      await response.body?.cancel();
+      throw new SourceError('upstream', 'Kilo did not answer; the local backend selected another route');
+    }
     const result = await response.json() as { choices?: { message?: { content?: string | null; tool_calls?: ToolCall[]; refusal?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const message = result.choices?.[0]?.message;
     if (message?.refusal) throw new SourceError('refused', 'FreeLLMAPI provider refused the request');

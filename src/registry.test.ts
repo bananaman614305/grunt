@@ -10,11 +10,11 @@ const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('ships only Freebuff and OpenCode and validates tier weights', () => {
-  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode']);
+it('ships vetted Freebuff, OpenCode and Kilo and validates tier weights', () => {
+  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo']);
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
   const experimental = { ...bundledRegistry.adapters[0]!, id: 'future', tier: 'experimental', weight: 0.2 };
-  expect(validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters, experimental] }).adapters).toHaveLength(3);
+  expect(validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters.map(a => ({ ...a, weight: a.weight * 0.8 })), experimental] }).adapters).toHaveLength(4);
   expect(() => validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters, { ...experimental, weight: 0.3 }] })).toThrow();
 });
 it.each([

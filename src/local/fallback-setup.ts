@@ -2,7 +2,9 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BrowserSquire } from './setup.js';
+import { BrowserSquire, setup } from './setup.js';
+import type { SetupSquire } from './setup.js';
+import { parallelMap } from './parallel.js';
 import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
@@ -54,7 +56,8 @@ export async function setupFallbacks(options: {
   directory: string;
   run(binary: string, args: string[], interactive?: boolean): Promise<void>;
   notify(line: string): void;
-  squire?: Signup;
+  squire?: Signup & Partial<Pick<SetupSquire, 'runs'>>;
+  setupProvider?: typeof setup;
   signedIn?: () => Promise<boolean>;
   login?: (squire: Signup) => Promise<void>;
   verify?: () => Promise<void>;
@@ -69,76 +72,94 @@ export async function setupFallbacks(options: {
   const savedConfig = join(options.directory, 'opencode-free.json');
   try { await access(savedConfig); process.env.OPENCODE_CONFIG = savedConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  let connected = false;
-  const connect = async () => { if (!connected) { if (options.connect) await options.connect(); else if (owned) await (squire as BrowserSquire).connect(); connected = true; } };
+  let connection: Promise<void> | undefined;
+  const connect = () => connection ??= (async () => { if (options.connect) await options.connect(); else if (owned) await (squire as BrowserSquire).connect(); })();
   const install = async (binary: string, pkg: string) => {
     try { await options.run(binary, ['--version']); }
-    catch { await options.run('npm', ['install', '--global', pkg], true); }
+    catch { await options.run('npm', ['install', '--global', pkg]); }
   };
   options.notify('Free routes run their own tools with your filesystem permissions in the working directory. Free model providers may retain prompts.');
   try {
-    if (!options.adapters || options.adapters.includes('freebuff')) try {
-      await install('freebuff', 'freebuff');
-      // Older CLIs accept --version but cannot run the login diagnostic.
-      try { await options.run('freebuff', ['doctor']); }
-      catch {
-        options.notify('Freebuff: repairing the installed CLI before checking sign-in');
-        try {
-          await options.run('npm', ['install', '--global', 'freebuff@latest'], true);
-          await options.run('freebuff', ['doctor']);
-        } catch {
-          throw new FreebuffCompatibilityError('Freebuff CLI repair incomplete. The active freebuff on PATH must support doctor. Run npm install --global freebuff@latest, remove older Freebuff binaries earlier on PATH, then rerun usegrunt setup. Continuing with OpenCode.');
-        }
-      }
-      try { await options.run('tmux', ['-V']); }
-      catch {
-        if (process.platform === 'darwin') await options.run('brew', ['install', 'tmux'], true);
-        else {
-          let manager: string | undefined;
-          for (const candidate of ['apt-get', 'dnf']) {
-            try { await options.run(candidate, ['--version']); manager = candidate; break; } catch { /* Try the next supported OS package manager. */ }
+    const tasks: Record<string, () => Promise<void>> = {
+      freebuff: async () => { try {
+        await install('freebuff', 'freebuff');
+        // Older CLIs accept --version but cannot run the login diagnostic.
+        try { await options.run('freebuff', ['doctor']); }
+        catch {
+          options.notify('Freebuff: repairing the installed CLI before checking sign-in');
+          try {
+            await options.run('npm', ['install', '--global', 'freebuff@latest']);
+            await options.run('freebuff', ['doctor']);
+          } catch {
+            throw new FreebuffCompatibilityError('Freebuff CLI repair incomplete. The active freebuff on PATH must support doctor. Run npm install --global freebuff@latest, remove older Freebuff binaries earlier on PATH, then rerun usegrunt setup. Continuing with OpenCode.');
           }
-          if (!manager) throw new Error('Install tmux with your OS package manager');
-          const args = ['install', '-y', 'tmux'];
-          await options.run(process.getuid?.() === 0 ? manager : 'sudo', process.getuid?.() === 0 ? args : [manager, ...args], true);
         }
-      }
-      const signedIn = options.signedIn ?? freebuffSignedIn;
-      if (!await signedIn()) { await connect(); if (options.login) await options.login(squire); else await loginFreebuff(squire, options.signal); }
-      if (!await signedIn()) throw new Error('Freebuff is still signed out; rerun setup to resume');
-      options.notify('Freebuff: signed in; grunt will start its loopback bridge with the background service');
-    } catch (error) {
-      unavailable.push('freebuff');
-      if (error instanceof FreebuffCompatibilityError) options.notify(error.message);
-      else options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun usegrunt setup. Continuing with OpenCode.');
-    }
-    if (!options.adapters || options.adapters.includes('opencode')) try {
-      await install('opencode', 'opencode-ai');
-      const verify = options.verify ?? (() => verifyOpenCode(new OpenCode(), options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000)));
-      try { await verify(); }
-      catch (error) {
-        if (!(error instanceof SourceError) || error.code !== 'logged_out') throw error;
+        try { await options.run('tmux', ['-V']); }
+        catch {
+          if (process.platform === 'darwin') await options.run('brew', ['install', 'tmux'], true);
+          else {
+            let manager: string | undefined;
+            for (const candidate of ['apt-get', 'dnf']) {
+              try { await options.run(candidate, ['--version']); manager = candidate; break; } catch { /* Try the next supported OS package manager. */ }
+            }
+            if (!manager) throw new Error('Install tmux with your OS package manager');
+            const args = ['install', '-y', 'tmux'];
+            await options.run(process.getuid?.() === 0 ? manager : 'sudo', process.getuid?.() === 0 ? args : [manager, ...args], true);
+          }
+        }
+        const signedIn = options.signedIn ?? freebuffSignedIn;
+        if (!await signedIn()) { await connect(); if (options.login) await options.login(squire); else await loginFreebuff(squire, options.signal); }
+        if (!await signedIn()) throw new Error('Freebuff is still signed out; rerun setup to resume');
+        options.notify('Freebuff: signed in; grunt will start its loopback bridge with the background service');
+      } catch (error) {
+        unavailable.push('freebuff');
+        if (error instanceof FreebuffCompatibilityError) options.notify(error.message);
+        else options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun usegrunt setup. Continuing with OpenCode.');
+      } },
+      opencode: async () => { try {
+        await install('opencode', 'opencode-ai');
+        const verify = options.verify ?? (() => verifyOpenCode(new OpenCode(), options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000)));
+        try { await verify(); }
+        catch (error) {
+          if (!(error instanceof SourceError) || error.code !== 'logged_out') throw error;
+          await connect();
+          const findCredential = async () => (await squire.credentials.list()).find(c => c.service?.trim().toLowerCase() === 'opencode'
+            && c.auth_strategy !== 'username_password' && c.field_names.some(field => /^(?:api_?key|token|key)$/i.test(field)));
+          let credential = await findCredential();
+          if (!credential) {
+            await squire.signup('opencode', 'https://opencode.ai/auth', "Use the user's existing OpenCode account or sign up for free access. Use operate_extract to store an OpenCode Zen API key directly in this user's Squire vault under service opencode. Never include its value in your answer. No payment, paid plans, extra accounts or account switching. Stop if free access requires payment. Report human verification for browser handoff; do not bypass it.");
+            credential = await findCredential();
+          }
+          if (!credential) throw new Error('No OpenCode access was created');
+          const grant = await squire.credentials.grant(credential.reference);
+          const path = join(options.directory, 'opencode-free.json');
+          await mkdir(options.directory, { recursive: true, mode: 0o700 });
+          await writeFile(path, JSON.stringify({ provider: { opencode: { options: { baseURL: grant.base_url.replace(/\/$/, '') + '/zen/v1', apiKey: grant.token } } } }), { mode: 0o600 });
+          process.env.OPENCODE_CONFIG = path;
+          await verify();
+        }
+        options.notify('OpenCode: free model answered');
+      } catch {
+        unavailable.push('opencode');
+        options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
+      } },
+      kilo: async () => { try {
         await connect();
-        const findCredential = async () => (await squire.credentials.list()).find(c => c.service?.trim().toLowerCase() === 'opencode'
-          && c.auth_strategy !== 'username_password' && c.field_names.some(field => /^(?:api_?key|token|key)$/i.test(field)));
-        let credential = await findCredential();
-        if (!credential) {
-          await squire.signup('opencode', 'https://opencode.ai/auth', "Use the user's existing OpenCode account or sign up for free access. Use operate_extract to store an OpenCode Zen API key directly in this user's Squire vault under service opencode. Never include its value in your answer. No payment, paid plans, extra accounts or account switching. Stop if free access requires payment. Report human verification for browser handoff; do not bypass it.");
-          credential = await findCredential();
-        }
-        if (!credential) throw new Error('No OpenCode access was created');
-        const grant = await squire.credentials.grant(credential.reference);
-        const path = join(options.directory, 'opencode-free.json');
-        await mkdir(options.directory, { recursive: true, mode: 0o700 });
-        await writeFile(path, JSON.stringify({ provider: { opencode: { options: { baseURL: grant.base_url.replace(/\/$/, '') + '/zen/v1', apiKey: grant.token } } } }), { mode: 0o600 });
-        process.env.OPENCODE_CONFIG = path;
-        await verify();
-      }
-      options.notify('OpenCode: free model answered');
-    } catch {
-      unavailable.push('opencode');
-      options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
-    }
-    return { unavailable };
-  } finally { if (owned && connected) await (squire as BrowserSquire).close(); }
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Kilo: free API access connected through Squire');
+      } catch {
+        unavailable.push('kilo');
+        options.notify('Kilo setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } }
+      };
+    const adapters = options.adapters ?? ['freebuff', 'opencode'];
+    await parallelMap(adapters, async id => {
+      const task = tasks[id];
+      if (!task) throw new Error('Unsupported vetted adapter');
+      await task();
+    }, 3, options.signal);
+    options.signal?.throwIfAborted();
+    return { unavailable: adapters.filter(id => unavailable.includes(id)) };
+  } finally { if (owned && connection) await (squire as BrowserSquire).close(); }
 }
