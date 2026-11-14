@@ -420,7 +420,7 @@ restarting. The checkpoint creates no branch commit or stash entry. Outside a
 git repository, only task text and output are sent.
 
 The owner curates `registry/adapters.json`. The **Publish adapter registry**
-workflow accepts manual dispatch only by `lunchboxfortwo` on `main`, validates
+workflow accepts manual dispatch only by the repository owner on `main`, validates
 the registry, uploads it atomically to the Fly gateway volume, and checks
 `GET /v1/registry`. Ordinary code deployments do not publish registry edits.
 Before the first dispatch the endpoint returns HTTP 503. Published data
@@ -429,7 +429,9 @@ weights total (0.2) when both tiers are present. Unknown adapter identifiers
 are ignored locally and cannot install new code.
 
 The daemon synchronizes on startup and every twenty-four hours with
-If-None-Match. It writes the valid registry and ETag atomically in a private
+If-None-Match. It tries `https://api.grunt.run/v1/registry` first and falls back
+to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
+unreachable. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
 `registry.json` in its existing config directory. A gateway or cache failure
 keeps the last good list, falling back to the packaged list on a fresh install.
 Known adapters are installed and checked during sync with up to three concurrent

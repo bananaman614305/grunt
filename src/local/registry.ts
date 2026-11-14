@@ -6,6 +6,7 @@ import type { Adapter, Registry } from '../registry.js';
 import { parallelMap } from './parallel.js';
 
 export const REGISTRY_INTERVAL = 24 * 60 * 60 * 1000;
+const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);
   private etag: string | undefined;
@@ -36,10 +37,19 @@ export class RegistrySync {
   }
   private async refresh() {
     try {
-      const response = await (this.options.fetcher ?? fetch)(this.options.url ?? 'https://api.grunt.run/v1/registry', {
-        headers: this.etag ? { 'If-None-Match': this.etag } : {}, redirect: 'error',
-        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10000)])
-      });
+      let response: Response | undefined;
+      for (const url of this.options.url ? [this.options.url] : REGISTRY_URLS) {
+        try {
+          response = await (this.options.fetcher ?? fetch)(url, {
+            headers: this.etag ? { 'If-None-Match': this.etag } : {}, redirect: 'error',
+            signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10000)])
+          });
+          if (response.status === 200 || response.status === 304) break;
+          await response.body?.cancel();
+          response = undefined;
+        } catch { if (this.controller.signal.aborted) throw new Error('Registry sync cancelled'); }
+      }
+      if (!response) throw new Error('Registry unavailable');
       if (response.status === 200) {
         const registry = validateRegistry(await response.json());
         const etag = response.headers.get('ETag') ?? undefined;
