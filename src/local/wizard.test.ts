@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
 import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
-import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry } from './wizard.js';
+import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry, installedSources } from './wizard.js';
 import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -263,6 +263,29 @@ const stubActions = (order: string[], overrides: Record<string, unknown> = {}) =
   checkFallbackServices: vi.fn(async (_unavailable: string[], _port: number, notify: (line: string) => void, ids: string[]) => { order.push(`check:${ids}`); notify(`${ids[0]}: PASS — ${ids[0]} answered through the grunt service`); }),
   connectHarnesses: vi.fn(async () => { order.push('harnesses'); return []; }),
   ...overrides
+});
+it('connects Kilo and restarts the daemon before reporting success', async () => {
+  const order: string[] = [];
+  const actions = stubActions(order);
+  actions.setup.mockImplementation(async () => { order.push('grant'); return { key: 'synthetic' }; });
+  actions.checkService.mockImplementation(async () => { order.push('ready'); });
+  await wizard('kilo', actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo']);
+  expect(order).toEqual(['banner', 'squire', 'grant', 'service', 'ready']);
+  expect(actions.setupFallbacks).not.toHaveBeenCalled();
+  expect(actions.connectHarnesses).not.toHaveBeenCalled();
+});
+it('does not restart the daemon or report success when Kilo setup fails', async () => {
+  const actions = stubActions([]);
+  actions.setup.mockRejectedValue(new Error('No Kilo access'));
+  await expect(wizard('kilo', actions)).rejects.toThrow('No Kilo access');
+  expect(actions.installService).not.toHaveBeenCalled();
+});
+it('keeps registered API sources enabled across repeat service installs', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-sources-test-'));
+  expect(await installedSources(dir)).toBe('freebuff,opencode');
+  await writeFile(join(dir, 'router-admin.json'), '{}', { mode: 0o600 });
+  expect(await installedSources(dir)).toBe('freellmapi,kilo,freebuff,opencode');
 });
 it('shows the banner, preamble, Squire notice, registry, each service and then the harness step in order', async () => {
   const { note } = await import('@clack/prompts');

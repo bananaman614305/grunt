@@ -87,6 +87,14 @@ export async function preflight(run = command) {
 }
 const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
 const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+export async function installedSources(directory = configDir()) {
+  try { await access(join(directory, 'router-admin.json')); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return 'freebuff,opencode';
+  }
+  return 'freellmapi,kilo,freebuff,opencode';
+}
 export async function installService() {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
   const directory = configDir(), runtime = join(directory, 'runtime');
@@ -100,7 +108,8 @@ export async function installService() {
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = process.env.MILO_PORT || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
-  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: 'freebuff,opencode', PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: await installedSources(directory), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  if (process.env.MILO_FREELLMAPI_URL) env.MILO_FREELLMAPI_URL = process.env.MILO_FREELLMAPI_URL;
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await readFile(opencodeConfig); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -276,6 +285,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
   await step('Connecting Trusty Squire', () => actions.connectSquire());
   if (add) {
     await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), [add]));
+    await step('Starting the grunt background service', actions.installService);
+    await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
     outro(`${add} connected`); return;
   }
   const pulled = actions.loadRegistry ? await step('Pulling the free service list from the registry', () => actions.loadRegistry!()) : { registry: bundledRegistry, origin: 'bundled' as RegistryOrigin };
