@@ -94,6 +94,12 @@ it.each(['upstream', 'timeout'] as const)('switches on the first %s failure and 
   clock.mockReturnValue(1000 + 15 * 60 * 1000 + 1);
   expect(await sources.complete({ ...request, userMessages: ['after recovery'] }, AbortSignal.timeout(1000))).toEqual({ text: 'restored' });
 });
+it('a refusal moves the request to the next source', async () => {
+  const { a, b, sources } = routed();
+  vi.mocked(a.complete).mockRejectedValue(new SourceError('refused', 'policy'));
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(b.complete).toHaveBeenCalledTimes(1);
+});
 it('cancellation never switches', async () => {
   const { a, b, sources } = routed();
   vi.mocked(a.complete).mockRejectedValue(new SourceError('cancelled', 'stop'));
