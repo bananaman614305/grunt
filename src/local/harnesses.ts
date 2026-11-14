@@ -65,7 +65,7 @@ export async function configureOpenCode(port = 8788): Promise<Change> {
   const directory = opencodeConfigDir(), path = join(directory, 'opencode.json');
   try { await access(path); }
   catch {
-    try { await access(join(directory, 'opencode.jsonc')); throw new Error(`OpenCode uses ${join(directory, 'opencode.jsonc')}, which setup does not edit. Add the grunt provider by hand: see the README`); }
+    try { await access(join(directory, 'opencode.jsonc')); throw new Error(`OpenCode uses ${join(directory, 'opencode.jsonc')}, which setup does not edit. Add the grunt provider by hand: see docs/reference.md`); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   const saved = await readJson(path, 'OpenCode config');
