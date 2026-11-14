@@ -168,7 +168,7 @@ it('gateway tool replies retain their wire shapes and tool results survive trans
   expect(turn.messages).toEqual([{ role: 'assistant', content: '', tool_calls: [tool] }, { role: 'tool', content: 'file contents', tool_call_id: 'call_1' }]);
 });
 it('README includes copyable config for each harness', async () => {
-  const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+  const readme = await readFile(new URL('../../docs/reference.md', import.meta.url), 'utf8');
   for (const name of ['opencode', 'pi', 'Claude Code', 'Codex']) expect(readme).toContain(name);
   for (const key of ['baseURL', 'openai-completions', 'ANTHROPIC_BASE_URL', 'wire_api = "responses"']) expect(readme).toContain(key);
 });

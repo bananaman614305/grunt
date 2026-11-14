@@ -1,6 +1,6 @@
 # Milo
 
-One TypeScript Node app. Read README.md for setup and behavior.
+One TypeScript Node app. Read README.md and docs/reference.md for setup and behavior.
 
 - `src/agent.ts`: Milo front agent, tools and in-process worker pool.
 - `src/router.ts`: one whitelist utility picker; never use a Google model.
