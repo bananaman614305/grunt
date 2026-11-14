@@ -117,8 +117,9 @@ removed. There is no Jev, billing, roster service, worker tooling or monorepo.
 
 ## Use grunt as your harness's model
 
-Run the separate local daemon on your own machine (Node 22+, Linux or macOS,
-`opencode` on PATH, and `tmux` with an existing logged-in `freebuff` for the last fallback):
+Run the separate local daemon on your own machine (Node 22+, Linux or macOS).
+Setup installs the vetted adapters and tmux when needed and connects accounts
+through Trusty Squire:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -162,11 +163,19 @@ interactive terminal it opens with a short animation (any key skips it; CI,
 pipes and narrow terminals get a one-line title). It explains what grunt does,
 then says that Trusty Squire needs one Google sign-in before it installs and
 connects the local broker. Setup pulls the free service list from the grunt
-registry (falling back to the saved or bundled list, and saying so), signs in
-to each service, installs the grunt background service, and sends each service
-a test request through grunt. Each service gets a PASS/FAIL line and a summary
-row. Incomplete setup exits unsuccessfully with a repair step; rerun it to
-resume. For a foreground daemon, run `usegrunt serve`.
+registry (falling back to the saved or bundled list, and saying so). The bundled
+vetted pool contains Freebuff, OpenCode and Kilo. Setup installs and connects
+up to three services concurrently, starts the background daemon, then verifies
+up to three services concurrently with real requests through grunt. Each service
+gets its own PASS/FAIL line and summary row. Incomplete setup exits unsuccessfully
+with a repair step; rerun it to resume. For a foreground daemon, run `usegrunt serve`.
+
+The jobs share one Squire connection, cached credential metadata and reusable
+grants. Browser handoffs arriving together share a confirmation prompt; later
+handoffs queue while other jobs continue. Interactive installers and confirmations
+take turns owning the terminal. Provider verification remains individual, and
+Squire has no batch-grant API. Grouped prompts do not create shared provider
+accounts or bypass a provider's verification.
 
 Setup ends by offering to connect grunt to the coding tools it finds on PATH
 (Pi is preselected; non-interactive runs connect Pi only). Each choice adds a
@@ -179,11 +188,12 @@ and is started with the printed `ANTHROPIC_BASE_URL` command. A changed file is
 first copied to `<file>.grunt-backup-<time>`. Each tool is reported connected
 only after it answers one real request through grunt.
 
-Freebuff pairs its CLI through Squire's browser. Setup installs tmux when
-needed. OpenCode first tries its free model without an account and requests
-sign-in only if that model requires it. Captcha, passkey and email verification
-show a browser handoff and wait for the user to resume. Existing accounts are
-reused; no extra Google accounts are created.
+Freebuff pairs its CLI through Squire's browser. Setup installs tmux when needed.
+OpenCode first tries its free model without an account and requests sign-in only
+if that model requires it. Kilo reuses saved API access or signs up for its free
+access through Squire. Captcha, passkey and email verification show a browser
+handoff and wait for the user to resume. Existing accounts are reused; no extra
+Google accounts are created.
 
 Before making changes, setup checks Node, npm, Pi, tar and the user service
 manager. A missing prerequisite prints its install or repair step and stops.
@@ -191,8 +201,9 @@ manager. A missing prerequisite prints its install or repair step and stops.
 Existing vault API keys are reused. Missing keys are created through Squire's
 browser and captured directly into its vault. Human verification opens a browser
 handoff, including email confirmation, and signup resumes in that same session.
-Provider refusals stop setup. grunt calls `grant_app_access` and sends only
-the grant's base URL and bearer token to FreeLLMAPI's custom-provider endpoint.
+An incomplete or refused service is reported while other service jobs finish.
+grunt calls `grant_app_access` and sends only the grant's base URL and bearer
+token to FreeLLMAPI's custom-provider endpoint.
 Provider keys stay in Squire; no provider reveal approval is requested. Groq
 uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
@@ -213,17 +224,18 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-Fresh setup enables Freebuff and OpenCode. After named provider setup creates a
-local router login, repeat service installs preserve the source order
-`freellmapi,kilo,freebuff,opencode`. The daemon loads the saved router login itself
-at startup and retries if the router is temporarily unavailable. Setup keeps a
-runtime outside the npx cache, so cache cleanup does
-not remove the service. Pi's other providers are preserved. `PI_CODING_AGENT_DIR`
-selects a nondefault Pi agent directory.
+Fresh setup enables the vetted registry pool: Freebuff, OpenCode and Kilo in the
+bundled list. It also preserves an existing `freellmapi` route from an earlier
+API-provider setup. Service installs save their selected sources in
+`installed-sources.json` under grunt's config directory so later installs retain
+them. The daemon loads the saved router login at startup and retries if the
+router is temporarily unavailable. Setup keeps a runtime outside the npx cache,
+so cache cleanup does not remove the service. Pi's other providers are preserved.
+`PI_CODING_AGENT_DIR` selects a nondefault Pi agent directory.
 
-Named provider setup installs the pinned FreeLLMAPI Node server as a separate
-background service; Docker is not required. Linux uses systemd user units; macOS uses launchd
-(macOS remains untested). The router data and private login live under grunt's
+Kilo setup and named API-provider setup install the pinned FreeLLMAPI Node server
+as a separate background service; Docker is not required. Linux uses systemd user
+units; macOS uses launchd (macOS remains untested). The router data and private login live under grunt's
 config directory. `MILO_FREELLMAPI_URL` chooses its numeric loopback address and
 is saved in grunt's service configuration. The router's database is created under
 umask `0077`. `MILO_ROUTER_RUNTIME=docker` retains the older Docker installer for
@@ -233,7 +245,7 @@ existing installations and offline regression checks.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package is `usegrunt` (version `0.6.1`); the installed command is `usegrunt`.
+The package is `usegrunt` (version `0.6.2`); the installed command is `usegrunt`.
 The published package is `usegrunt` and this pull request does not itself publish.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
@@ -243,7 +255,10 @@ configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
 cap is (4096) tokens. Select `freellmapi` for the free chain, which tries keyed
 Kilo's free Nemotron 3 Ultra before keyed `kilo-auto/free` when configured. Select
 `kilo` for Auto explicitly. The anonymous Kilo fallback remains available without
-an account.
+an account. The default registry source `kilo` selects Auto, rather than the
+legacy `freellmapi` chain's Nemotron-first preference. It requires the backend's
+`X-Routed-Via` header to identify `custom/kilo-auto/free`; a backend fallback to
+another route cannot count as a successful Kilo answer or setup check.
 The separate Freebuff bridge listens only on `127.0.0.1:8789` and contains only
 the Freebuff source, preventing a routing loop. FreeLLMAPI supports priority
 ordering: keyed providers come first, Kilo next, Freebuff last. Setup enables
@@ -368,8 +383,8 @@ Run `codex`. See the [official configuration reference](https://learn.chatgpt.co
 Codex is opt-in. With the official `codex` CLI already signed in using ChatGPT,
 set `MILO_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
 spends your Codex plan allowance, including the weekly limit. Without
-`MILO_SOURCES`, grunt uses only Freebuff and OpenCode and never launches Codex.
-With Codex enabled, select model `codex` to use only Codex.
+`MILO_SOURCES`, grunt uses the vetted Freebuff, OpenCode and Kilo pool and never
+launches Codex. With Codex enabled, select model `codex` to use only Codex.
 API-key logins do not enable this source. Missing or signed-out Codex is omitted
 from `/v1/models`; grunt continues through the free chain on usage limits.
 
@@ -383,8 +398,9 @@ Codex default back at grunt, which would create a routing loop.
 
 ### Sources and app sessions
 
-The launch registry contains Freebuff and OpenCode with equal selection
-probability after renormalization. Both adapters currently support text only.
+The bundled registry contains Freebuff and OpenCode at weight 0.3 each and Kilo
+at weight 0.4. All three currently support text only; Kilo also forwards function
+tool definitions and returns tool calls for the harness to execute.
 Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
@@ -416,8 +432,9 @@ The daemon synchronizes on startup and every twenty-four hours with
 If-None-Match. It writes the valid registry and ETag atomically in a private
 `registry.json` in its existing config directory. A gateway or cache failure
 keeps the last good list, falling back to the packaged list on a fresh install.
-Known adapters are installed and checked during sync; removing a registry entry
-disables it without uninstalling its files. The legacy `MILO_CONFIG_DIR` and
+Known adapters are installed and checked during sync with up to three concurrent
+jobs and a shared Squire connection; removing a registry entry disables it without
+uninstalling its files. The legacy `MILO_CONFIG_DIR` and
 `MILO_PORT` settings remain supported. `GRUNT_REGISTRY_URL` overrides the sync
 endpoint for local development.
 
