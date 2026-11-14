@@ -3,78 +3,300 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>grunt</title>
-<meta name="description" content="Free AI is everywhere. grunt puts it to work: one model your coding agent can use, built from free sources, running on your computer.">
+<title>grunt · free AI, put to work</title>
+<meta name="description" content="grunt runs your coding agent on free AI from all over the web. One command, $0 unless you say so.">
 <link rel="icon" href="favicon.svg">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@900&family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<meta property="og:title" content="grunt: free AI, put to work">
+<meta property="og:description" content="grunt runs your coding agent on free AI from all over the web. $0 unless you say so.">
+<meta property="og:image" content="https://grunt.run/og.png">
+<meta property="og:url" content="https://grunt.run">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@900&family=Saira+Stencil+One&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
 <style>
-  /* Night shift: one screen, centred under a warm work light. */
+  /* Mockup A v2. World: a job site at night. Caution tape, a work light, a hi-vis hub, and a paper receipt to close. Single dark look on purpose. */
   :root {
     color-scheme: dark;
-    --bg: #0d121c; --ink: #ede6d8; --dim: #97a0b1; --line: #232c3c; --panel: #151c2a; --gold: #f2b531; --ongold: #1a1406;
+    --bg: #0d121c; --ink: #ede6d8; --dim: #97a0b1; --line: #26303f; --panel: #141b28;
+    --gold: #f2b531; --ongold: #1a1406; --vest: #f28c28; --reflect: #d9dee6; --paper: #efe8d8; --onpaper: #1d1a14; --paperdim: #6b6355;
     --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
     --tall: "Big Shoulders Display", "Arial Narrow", sans-serif;
+    --stencil: "Saira Stencil One", "Big Shoulders Display", "Arial Narrow", sans-serif;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; overflow-x: clip; min-height: 100%; background: var(--bg); color: var(--ink); font: 400 18px/1.55 var(--sans); }
-  body { display: grid; place-items: center; min-height: 100vh; min-height: 100svh; overflow-x: clip; }
-  main { width: 100%; max-width: 620px; text-align: center; padding-block: 40px;
-    padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
-  .light { position: relative; display: grid; place-items: center; margin-bottom: 18px; }
-  .light::before { content: ""; position: absolute; top: -70px; bottom: -70px; left: 50%; width: min(460px, 100vw); transform: translateX(-50%); pointer-events: none;
-    background: radial-gradient(closest-side, rgba(242, 181, 49, .26), rgba(242, 181, 49, .07) 55%, transparent); }
-  .light img { position: relative; width: 128px; height: 128px; }
-  .name { margin: 0 0 22px; font: 900 34px/1 var(--tall); color: var(--gold); letter-spacing: .02em; }
-  h1 { margin: 0 0 14px; font: 900 clamp(40px, 8vw, 62px)/.98 var(--tall); text-transform: uppercase; text-wrap: balance; }
+  html, body { overflow-x: clip; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 400 17px/1.55 var(--sans); }
+  ::selection { background: var(--gold); color: var(--ongold); }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+
+  /* caution tape across the top */
+  .tape { position: relative; overflow: hidden; height: 34px; background: var(--gold); transform: rotate(-1.2deg); margin: 14px -12px 0;
+    box-shadow: 0 6px 14px rgba(0,0,0,.45); }
+  .tape::before, .tape::after { content: ""; position: absolute; left: 0; right: 0; height: 5px;
+    background: repeating-linear-gradient(-45deg, var(--ongold) 0 8px, transparent 8px 16px); }
+  .tape::before { top: 0; } .tape::after { bottom: 0; }
+  .tape p { margin: 0; padding-left: 22px; white-space: nowrap; font: 400 15px/34px var(--stencil); letter-spacing: .14em; color: var(--ongold); }
+  .tape p span { display: inline-block; margin-right: .6em; }
+
+  main { width: 100%; max-width: 640px; margin: 0 auto; text-align: center; padding-block: 26px 56px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .word { font: 400 30px/1 var(--stencil); color: var(--gold); letter-spacing: .04em; }
+  .top a { font: 500 13px/1 var(--mono); color: var(--dim); text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 8px 13px; }
+  .top a:hover { color: var(--ink); border-color: var(--dim); }
+
+  /* work light: a cone from above onto the grunt */
+  .avatar { position: relative; display: grid; place-items: center; padding-top: 30px; margin-bottom: 16px; }
+  .avatar::before { content: ""; position: absolute; top: -40px; left: 50%; width: min(420px, 100%); height: 260px; transform: translateX(-50%); pointer-events: none;
+    background: radial-gradient(60% 70% at 50% 0%, rgba(242,181,49,.22), rgba(242,181,49,.05) 60%, transparent 75%);
+    clip-path: polygon(42% 0, 58% 0, 100% 100%, 0 100%); }
+  .avatar img { position: relative; width: 112px; height: 112px; filter: drop-shadow(0 10px 18px rgba(0,0,0,.5)); }
+
+  h1 { margin: 0 0 12px; font: 900 clamp(28px, 8.6vw, 58px)/.98 var(--tall); text-transform: uppercase; }
+  h1 span, h1 em { display: block; }
   h1 em { font-style: normal; color: var(--gold); }
-  p { margin: 0 auto 28px; max-width: 44ch; }
+  .lede { margin: 0 auto 24px; max-width: 42ch; text-wrap: pretty; }
   .install { display: flex; gap: 10px; flex-wrap: wrap; text-align: left; }
-  .install code { flex: 1 1 220px; min-width: 0; font: 500 20px/1 var(--mono); background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 18px 20px; white-space: nowrap; overflow-x: auto; }
+  .install code { flex: 1 1 220px; min-width: 0; font: 500 19px/1 var(--mono); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; white-space: nowrap; overflow-x: auto; }
   .install code::before { content: "$ "; color: var(--gold); }
   .install button { font: 900 20px/1 var(--tall); letter-spacing: .06em; text-transform: uppercase; color: var(--ongold); background: var(--gold);
-    border: 0; border-radius: 10px; padding: 0 26px; min-height: 58px; cursor: pointer; }
+    border: 0; border-radius: 10px; padding: 0 26px; min-height: 56px; cursor: pointer; transition: background .15s; }
   .install button:hover { background: #ffc94d; }
-  :focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
-  .sources b { font-weight: 600; }
-  small { display: block; margin-top: 14px; color: var(--dim); font-size: 15px; }
-  .sources { list-style: none; margin: 36px auto 0; padding: 0; max-width: 420px; text-align: left; border-top: 1px solid var(--line); }
-  .sources li { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 10px 2px; border-bottom: 1px solid var(--line); }
-  .sources span { font: 500 13px/1.3 var(--mono); color: var(--dim); }
-  .sources .on span { color: var(--gold); }
-  .label { margin: 36px 0 -26px; font: 500 12px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
-  footer { margin-top: 32px; color: var(--dim); font: 500 13px/1.5 var(--mono); }
+  .promise { margin-top: 14px; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; font: 500 13px/1.4 var(--mono); }
+  .promise b { color: var(--gold); font-weight: 600; }
+  .promise span { color: var(--dim); }
   @media (max-width: 480px) { .install button { flex: 1 1 100%; } }
+
+  /* pipeline */
+  .pipe { margin: 34px auto 4px; max-width: 470px; }
+  .pipe svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .src rect { fill: var(--panel); stroke: var(--gold); stroke-width: 1.2; }
+  .src.opt rect { stroke: var(--dim); stroke-dasharray: 4 4; stroke-opacity: .7; }
+  .pipe text { font-family: var(--mono); font-size: 14px; font-weight: 600; fill: var(--ink); }
+  .ptag path { fill: var(--gold); }
+  .ptag line { stroke: var(--dim); stroke-width: 1; }
+  .ptag text { font-size: 12.5px; font-weight: 600; fill: var(--ongold); }
+  .src.opt .ptag path { fill: var(--paper); }
+  .wire { fill: none; stroke: var(--gold); stroke-opacity: .6; stroke-width: 1.6; stroke-dasharray: 4 6; animation: flow 1.6s linear infinite; }
+  .wire.opt { stroke: var(--dim); stroke-opacity: .35; }
+  .hub { fill: var(--vest); }
+  .stripe { fill: var(--reflect); opacity: .9; }
+  .hubtext { font-family: var(--stencil) !important; font-weight: 400 !important; font-size: 23px !important; fill: var(--onpaper) !important; letter-spacing: .06em; }
+  .out { font-size: 13px !important; font-weight: 500 !important; fill: var(--dim) !important; }
+  .legend { display: flex; justify-content: center; gap: 18px; font: 500 12px/1 var(--mono); color: var(--dim); }
+  .legend i { display: inline-block; width: 18px; height: 10px; border-radius: 3px; border: 1.2px solid var(--gold); vertical-align: -1px; margin-right: 6px; }
+  .legend i.d { border: 1.2px dashed var(--dim); }
+  .src.add rect { stroke: var(--gold); stroke-dasharray: 4 4; fill: transparent; }
+  .src.add text { fill: var(--gold); }
+  .src.add .ptag path { fill: transparent; stroke: var(--gold); stroke-dasharray: 3 3; }
+  .src.add .ptag text { fill: var(--gold); }
+  .wire.add { stroke: var(--gold); stroke-opacity: .3; }
+  .src { cursor: default; } .src rect { transition: fill .2s; }
+  .src.lit rect { fill: #1f2737; }
+  .wire.lit { stroke: var(--gold); stroke-opacity: 1; stroke-width: 2.4; }
+  .stamp { position: absolute; left: 34%; bottom: 128px; transform: rotate(-14deg); border: 3px solid #9e2410; color: #9e2410; border-radius: 6px;
+    padding: 4px 10px 3px; font: 400 26px/1 var(--stencil); letter-spacing: .1em; text-align: center; opacity: .95; mix-blend-mode: multiply; }
+  .stamp small { display: block; font: 600 9px/1.2 var(--mono); letter-spacing: .2em; text-transform: uppercase; }
+  body { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+  .how { margin: 40px auto 0; max-width: 520px; text-align: left; }
+  .how h2 { margin: 0 0 14px; font: 400 22px/1 var(--stencil); letter-spacing: .06em; color: var(--gold); text-align: center; }
+  .how ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+  .how li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; align-items: center; }
+  .how svg { width: 44px; height: 44px; fill: none; stroke: var(--gold); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .how circle { fill: var(--gold); stroke: none; }
+  .how p { margin: 0; font-size: 15.5px; line-height: 1.45; color: var(--dim); text-wrap: pretty; }
+  .how b { color: var(--ink); font-weight: 600; }
+  .xshare { display: inline-flex; align-items: center; gap: 10px; margin-top: 34px; padding: 12px 18px; border: 1.5px solid var(--gold); border-radius: 10px;
+    color: var(--gold); text-decoration: none; font: 400 17px/1 var(--stencil); letter-spacing: .08em; text-transform: uppercase; transition: background .15s, color .15s; }
+  .xshare svg { width: 18px; height: 18px; fill: currentColor; }
+  .xshare:hover { background: var(--gold); color: var(--ongold); }
+  .pilink text { fill: var(--gold); text-decoration: underline; font-size: 15px; }
+  .pilink .hit { fill: transparent; }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #clock { white-space: nowrap; }
+  .glint { fill: #fff; opacity: 0; }
+  .glint.go { animation: glint 1s cubic-bezier(.2,.7,.2,1) .2s 1 both; }
+  @keyframes glint { 0% { opacity: .95; transform: skewX(-20deg) translateX(0); } 100% { opacity: .95; transform: skewX(-20deg) translateX(230px); } }
+  .src .ptag text, .src .ptag path { transition: fill .3s; }
+  .src.tapped rect { stroke: #6b6355; }
+  .src.tapped .ptag path { fill: #c2361f; }
+  .src.tapped .ptag text { fill: var(--paper); font-size: 10.5px; }
+  .wire.dead { stroke: #6b6355; stroke-opacity: .35; animation: none; }
+  .lede .intro { color: var(--gold); font-weight: 600; }
+  .install button.punch { font-family: var(--stencil); font-weight: 400; color: #9e2410; animation: punch .35s cubic-bezier(.2,.7,.2,1);
+    background: radial-gradient(circle, var(--bg) 0 2.5px, transparent 3px) 4px 2px / 16px 10px repeat-x, var(--paper);
+    box-shadow: inset 0 0 0 2px #9e2410; }
+  .install button.punch:hover { background: radial-gradient(circle, var(--bg) 0 2.5px, transparent 3px) 4px 2px / 16px 10px repeat-x, var(--paper); }
+  .install code.punched { border-color: var(--gold); transition: border-color .2s; }
+  @keyframes punch { 0% { transform: scale(1.12) rotate(-4deg); } 100% { transform: none; } }
+  .barcode { display: flex; height: 34px; gap: 0; margin: 16px 0 4px; }
+  .barcode i { display: block; height: 100%; background: var(--onpaper); }
+  .receipt .code { text-align: center; font-size: 11px; letter-spacing: .3em; color: var(--paperdim); }
+  .wordmark { height: 34px; width: auto; overflow: visible; }
+  .wordmark text { font: 400 34px var(--stencil); fill: var(--gold); letter-spacing: .04em; }
+  .tape .curl { position: absolute; top: 0; right: 0; width: 30px; height: 100%; z-index: 2;
+    background: linear-gradient(to bottom left, var(--bg) 0 50%, #b07c16 50% 100%); filter: drop-shadow(-3px 3px 3px rgba(0,0,0,.45)); }
+  .tape { margin-right: 10px; }
+  .plate rect { fill: #3a4558; stroke: #566178; stroke-width: .8; }
+  .plate circle { fill: #8a94a8; }
+  .plate text { font: 600 10px var(--mono) !important; fill: var(--reflect) !important; letter-spacing: .12em; }
+  @keyframes flow { to { stroke-dashoffset: -20; } }
+
+  /* receipt footer */
+  .receipt { position: relative; width: min(330px, 100%); margin: 44px auto 0; background: var(--paper); color: var(--onpaper);
+    padding: 22px 22px 30px; text-align: left; transform: rotate(-1.5deg); font: 500 13.5px/1.7 var(--mono); font-variant-numeric: tabular-nums;
+    box-shadow: 0 14px 30px rgba(0,0,0,.5); }
+  .receipt::after { content: ""; position: absolute; left: 0; right: 0; bottom: -10px; height: 10px;
+    background: linear-gradient(-45deg, transparent 6px, var(--paper) 0) 0 0 / 12px 10px, linear-gradient(45deg, transparent 6px, var(--paper) 0) 0 0 / 12px 10px; }
+  .receipt h2 { margin: 0 0 2px; font: 400 22px/1 var(--stencil); letter-spacing: .06em; text-align: center; }
+  .receipt .meta { text-align: center; color: var(--paperdim); font-size: 12px; margin-bottom: 12px; }
+  .receipt ul { list-style: none; margin: 0; padding: 10px 0; border-block: 1px dashed var(--paperdim); }
+  .receipt li { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: end; }
+  .receipt li::after { content: ""; grid-column: 2; grid-row: 1; border-bottom: 1px dotted var(--paperdim); margin-bottom: 7px; }
+  .receipt li span { grid-column: 3; grid-row: 1; }
+  .receipt .total { display: flex; justify-content: space-between; margin-top: 10px; font: 900 26px/1 var(--tall); letter-spacing: .03em; }
+  .receipt .fine { margin-top: 14px; text-align: center; color: var(--paperdim); font-size: 12px; line-height: 1.5; }
+
+  @media (prefers-reduced-motion: reduce) { .wire, .glint.go, .install button.punch { animation: none; } }
 </style>
 </head>
 <body>
+
+<div class="tape" aria-hidden="true"><p id="tape"></p><span class="curl"></span></div>
+
 <main>
-  <div class="light"><img src="grunt.svg" alt="The grunt: a worker in a hard hat with an unlit cigar" width="128" height="128"></div>
-  <div class="name">grunt</div>
-  <h1>Free AI is everywhere. <em>grunt puts it to work.</em></h1>
-  <p>It turns the free AI scattered across the web into one model your coding agent can use. It runs on your computer and costs nothing.</p>
-  <div class="install">
-    <code id="cmd">npx usegrunt</code>
-    <button type="button" id="copy">Copy</button>
+  <div class="top"><svg class="wordmark" viewBox="0 0 132 44" role="img" aria-label="grunt">
+    <defs><filter id="spray" x="-10%" y="-20%" width="120%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="1.6" numOctaves="2" seed="7" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="3" result="rough"/>
+      <feGaussianBlur in="rough" stdDeviation="1.6" result="blur"/>
+      <feTurbulence type="fractalNoise" baseFrequency="2.4" seed="3" result="dots"/>
+      <feComposite in="blur" in2="dots" operator="arithmetic" k1="1.6" k2="0" k3="0" k4="-.35" result="spatter"/>
+      <feMerge><feMergeNode in="spatter"/><feMergeNode in="rough"/></feMerge>
+    </filter></defs>
+    <text x="4" y="34" filter="url(#spray)">grunt</text></svg><a href="https://github.com/bananaman614305/milo" target="_blank" rel="noopener">GitHub ↗</a></div>
+  <div class="avatar"><img src="grunt.svg" alt="The grunt: a worker in a hard hat with an unlit cigar" width="112" height="112"></div>
+  <h1><span>Free AI is everywhere.</span> <em>grunt puts it to work.</em></h1>
+  <p class="lede"><b class="intro">Introducing grunt.</b> It runs your coding agent on free AI from all over the web.</p>
+  <div class="install"><code id="cmd">npx usegrunt</code><button type="button" id="copy">Copy</button></div>
+  <span class="vh" id="status" aria-live="polite"></span>
+  <div class="promise"><b>$0 unless you say so</b><span>Runs on your machine · MIT</span></div>
+
+  <section class="how" aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <ul>
+      <li><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M6 20 L14 12 H28 V28 H14 Z"/><circle cx="23" cy="20" r="2.2"/><path d="M22 34 L28 28 H40 V42 H28 Z" opacity=".55"/><path d="M30 8 L34 4 H44 V14 H34 Z" opacity=".55"/></svg>
+        <p><b>The free stuff.</b> Freebuff, OpenCode and others give AI away. Each has its own sign-up and its own daily limit.</p></li>
+      <li><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M6 34 H42"/><path d="M10 34 C10 22 16 14 24 14 C32 14 38 22 38 34"/><path d="M20 14 V24 M28 14 V24"/><path d="M4 38 H44"/></svg>
+        <p><b>grunt does the legwork.</b> It sets them up and bundles them into one model on your computer.</p></li>
+      <li><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M18 6 V16 M30 6 V16"/><path d="M12 16 H36 V24 C36 31 31 35 24 35 C17 35 12 31 12 24 Z"/><path d="M24 35 V44"/></svg>
+        <p><b>Your agent gets one plug.</b> When a source hits its limit, grunt moves to the next one and you keep coding.</p></li>
+    </ul>
+  </section>
+
+  <div class="pipe">
+    <svg viewBox="0 0 410 362" aria-labelledby="pipe-t">
+      <title id="pipe-t">Free AI sources Freebuff and OpenCode, optional Kilo, Dots and Codex, and room for your own, all feed into grunt, which serves Pi, your coding agent</title>
+      <path class="wire" data-i="0" d="M170 38 C260 38 245 183 300 183"/>
+      <path class="wire" data-i="1" d="M170 96 C260 96 245 183 300 183"/>
+      <path class="wire opt" data-i="2" d="M170 154 C260 154 245 183 300 183"/>
+      <path class="wire opt" data-i="3" d="M170 212 C260 212 245 183 300 183"/>
+      <path class="wire opt" data-i="4" d="M176 270 C266 270 245 183 300 183"/>
+      <path class="wire add" data-i="5" d="M174 328 C264 328 245 183 300 183"/>
+      <g class="src" data-i="0"><rect x="2" y="18" width="118" height="40" rx="8"/><text x="14" y="43">Freebuff</text><g class="ptag" transform="translate(126 26)"><line x1="-6" y1="12" x2="2" y2="12"/><path d="M2 12 L10 3 H40 V21 H10 Z"/><text x="13" y="16">$0</text></g></g>
+      <g class="src" data-i="1"><rect x="2" y="76" width="118" height="40" rx="8"/><text x="14" y="101">OpenCode</text><g class="ptag" transform="translate(126 84)"><line x1="-6" y1="12" x2="2" y2="12"/><path d="M2 12 L10 3 H40 V21 H10 Z"/><text x="13" y="16">$0</text></g></g>
+      <g class="src opt" data-i="2"><rect x="2" y="134" width="118" height="40" rx="8"/><text x="14" y="159">Kilo</text><g class="ptag" transform="translate(126 142)"><line x1="-6" y1="12" x2="2" y2="12"/><path d="M2 12 L10 3 H40 V21 H10 Z"/><text x="13" y="16">$0</text></g></g>
+      <g class="src opt" data-i="3"><rect x="2" y="192" width="118" height="40" rx="8"/><text x="14" y="217">Dots</text><g class="ptag" transform="translate(126 200)"><line x1="-6" y1="12" x2="2" y2="12"/><path d="M2 12 L10 3 H40 V21 H10 Z"/><text x="13" y="16">$0</text></g></g>
+      <g class="src opt" data-i="4"><rect x="2" y="250" width="118" height="40" rx="8"/><text x="14" y="275">Codex</text><g class="ptag" transform="translate(126 258)"><line x1="-6" y1="12" x2="2" y2="12"/><path d="M2 12 L10 3 H46 V21 H10 Z"/><text x="13" y="16">plan</text></g></g>
+      <g class="src add" data-i="5"><rect x="2" y="308" width="118" height="40" rx="8"/><text x="14" y="333">+ add yours</text><g class="ptag" transform="translate(126 316)"><line x1="-6" y1="12" x2="2" y2="12"/><path d="M2 12 L10 3 H44 V21 H10 Z"/><text x="13" y="16">add</text></g></g>
+      <rect class="hub" x="300" y="154" width="96" height="58" rx="8"/>
+      <rect class="stripe" x="300" y="161" width="96" height="5"/><rect class="stripe" x="300" y="200" width="96" height="5"/>
+      <clipPath id="stripes"><rect x="300" y="161" width="96" height="5"/><rect x="300" y="200" width="96" height="5"/></clipPath>
+      <g clip-path="url(#stripes)"><rect class="glint" x="250" y="150" width="22" height="70" transform="skewX(-20)"/></g>
+      <text class="hubtext" x="348" y="192" text-anchor="middle">GRUNT</text>
+      <g class="plate"><rect x="310" y="134" width="76" height="16" rx="2"/><circle cx="315" cy="142" r="1.5"/><circle cx="381" cy="142" r="1.5"/>
+        <text x="348" y="145.5" text-anchor="middle" id="unit">UNIT 0.6.0</text></g>
+      <path class="wire" d="M348 212 L348 234"/>
+      <a href="https://pi.dev" target="_blank" rel="noopener" class="pilink"><rect class="hit" x="318" y="236" width="60" height="26"/><text x="348" y="255" text-anchor="middle">Pi ↗</text></a><text class="out" x="348" y="276" text-anchor="middle">coding agent</text>
+    </svg>
   </div>
-  <small>Works with Pi, Claude Code and opencode.</small>
-  <div class="label">Free sources</div>
-  <ul class="sources">
-    <li class="on"><b>Freebuff</b><span>on</span></li>
-    <li class="on"><b>OpenCode</b><span>on</span></li>
-    <li><b>Kilo</b><span>optional</span></li>
-    <li><b>Codex</b><span>optional · uses your ChatGPT plan</span></li>
-    <li><b>Dots</b><span>optional</span></li>
-  </ul>
-  <footer>Never spends a cent unless you say so · MIT licensed</footer>
+  <div class="legend"><span><i></i>on by default</span><span><i class="d"></i>add if you like</span></div>
+
+  <div class="receipt">
+    <h2>GRUNT</h2>
+    <div class="meta">night shift · your machine<br>REG 01 · CASHIER: GRUNT · <span id="clock">02:47 AM</span></div>
+    <ul>
+      <li>Freebuff<span>$0.00</span></li>
+      <li>OpenCode<span>$0.00</span></li>
+      <li>Kilo<span>$0.00</span></li>
+      <li>Dots<span>$0.00</span></li>
+      <li>Codex<span>your plan</span></li>
+    </ul>
+    <div class="total"><span>TOTAL</span><span>$0.00</span></div>
+    <div class="stamp" aria-hidden="true">PAID<small>in full</small></div>
+    <div class="barcode" id="barcode" aria-hidden="true"></div>
+    <div class="code">npx usegrunt</div>
+    <div class="fine">MIT licensed · grunt.run</div>
+  </div>
+  <a class="xshare" id="xshare" target="_blank" rel="noopener" href="https://x.com/intent/post?text=Free%20AI%20is%20everywhere.%20grunt%20puts%20it%20to%20work.&amp;url=https%3A%2F%2Fgrunt.run">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.8 3h3.1l-6.8 7.7L22 21h-6.2l-4.9-6.3L5.3 21H2.2l7.2-8.3L2 3h6.3l4.4 5.8L17.8 3Zm-1.1 16.2h1.7L7.4 4.7H5.6l11.1 14.5Z"/></svg>
+    Post it on X
+  </a>
 </main>
+
 <script>
+  document.querySelectorAll(".src").forEach(g => {
+    const w = document.querySelector('.wire[data-i="' + g.dataset.i + '"]');
+    const on = () => { g.classList.add("lit"); w.classList.add("lit"); }, off = () => { g.classList.remove("lit"); w.classList.remove("lit"); };
+    g.addEventListener("pointerenter", on); g.addEventListener("pointerleave", off);
+  });
+  // receipt clock: the visitor's own time
+  try { document.getElementById("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch {}
+  // decorative barcode drawn from the bits of "npx usegrunt"
+  (() => { const bc = document.getElementById("barcode"); let html = "";
+    for (const ch of "npx usegrunt") for (const bit of ch.charCodeAt(0).toString(2).padStart(8, "0"))
+      html += '<i style="width:' + (bit === "1" ? 3 : 1) + 'px;margin-right:' + (bit === "1" ? 1 : 2) + 'px"></i>';
+    bc.innerHTML = html; })();
+  // glint once when the diagram comes into view
+  const glint = document.querySelector(".glint");
+  if (glint && "IntersectionObserver" in window) new IntersectionObserver((es, o) => { if (es[0].isIntersecting) { glint.classList.add("go"); o.disconnect(); } }, { threshold: .5 }).observe(document.querySelector(".pipe"));
+  // fallback demo: Freebuff runs out, OpenCode picks up, then the limit resets
+  (() => {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const g = i => document.querySelector('.src[data-i="' + i + '"]'), w = i => document.querySelector('.wire[data-i="' + i + '"]');
+    const fb = g(0), tag = fb.querySelector(".ptag text"), tagPath = fb.querySelector(".ptag path");
+    const normal = () => { fb.classList.remove("tapped"); w(0).classList.remove("dead"); tag.textContent = "$0"; tagPath.setAttribute("d", "M2 12 L10 3 H40 V21 H10 Z");
+      w(0).classList.add("lit"); w(1).classList.remove("lit"); g(1).classList.remove("lit"); };
+    const out = () => { fb.classList.add("tapped"); w(0).classList.remove("lit"); w(0).classList.add("dead"); tag.textContent = "TAPPED OUT"; tagPath.setAttribute("d", "M2 12 L10 3 H76 V21 H10 Z");
+      w(1).classList.add("lit"); g(1).classList.add("lit"); };
+    const cycle = () => { normal(); setTimeout(out, 3500); };
+    cycle(); setInterval(cycle, 8000);
+  })();
+  // unit plate shows the version published on npm; falls back to the baked-in number
+  fetch("https://registry.npmjs.org/usegrunt/latest").then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && /^[0-9.]+$/.test(d.version)) document.getElementById("unit").textContent = "UNIT " + d.version; }).catch(() => {});
+  // caution tape: whole words only, nothing cut off by the folded corner
+  (() => {
+    const tape = document.querySelector(".tape"), p = document.getElementById("tape");
+    p.innerHTML = Array(12).fill('<span>GRUNT</span><span>·</span><span>FREE AI ON THE CLOCK</span><span>·</span>').join("");
+    const fit = () => {
+      const limit = tape.clientWidth - 40; let lastShown = null;
+      for (const sp of p.children) {
+        const show = sp.offsetLeft + sp.offsetWidth <= limit;
+        sp.style.visibility = show ? "visible" : "hidden";
+        if (show) lastShown = sp;
+      }
+      if (lastShown && lastShown.textContent === "·") lastShown.style.visibility = "hidden";
+    };
+    fit(); addEventListener("resize", fit);
+    if (document.fonts) document.fonts.ready.then(fit);
+  })();
   const btn = document.getElementById("copy");
   btn.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText("npx usegrunt"); btn.textContent = "Copied"; }
-    catch { getSelection().selectAllChildren(document.getElementById("cmd")); btn.textContent = "Ctrl+C"; }
-    setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+    try { await navigator.clipboard.writeText("npx usegrunt"); btn.textContent = "Clocked in"; btn.classList.remove("punch"); void btn.offsetWidth; btn.classList.add("punch"); document.getElementById("cmd").classList.add("punched"); document.getElementById("status").textContent = "Copied npx usegrunt"; }
+    catch { getSelection().selectAllChildren(document.getElementById("cmd")); btn.textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? "Press ⌘C" : "Press Ctrl+C"; document.getElementById("status").textContent = "Command selected. " + btn.textContent + " to copy it."; }
+    setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("punch"); document.getElementById("cmd").classList.remove("punched"); }, 2600);
   });
 </script>
 </body>
