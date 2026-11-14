@@ -19,6 +19,9 @@ const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
 export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys' };
 export type Provider = keyof typeof PROVIDERS;
+export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+const savedProviders = ['kilo'] as const;
+const providerModels: Record<string, string[]> = { kilo: [KILO_NEMOTRON, 'kilo-auto/free'] };
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
 const sameService = (credential: Credential, service: string) => credential.service?.trim().toLowerCase() === service.trim().toLowerCase();
 function apiKeyField(credential: Credential, provider: Provider): string | undefined {
@@ -95,6 +98,14 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     }
     const grant = await squire.credentials.grant(credential.reference);
     await router.addGrant(provider, grant);
+    options.notify(`${provider}: connected through Squire grant`);
+  }
+  // These sources reuse existing vault access only; missing keys never start signup.
+  for (const provider of savedProviders) {
+    if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
+    const credential = (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
+    if (!credential) { options.notify(`${provider}: skipped; no saved API access`); continue; }
+    await router.addGrant(provider, await squire.credentials.grant(credential.reference));
     options.notify(`${provider}: connected through Squire grant`);
   }
   return { pending, dropped };
@@ -238,7 +249,7 @@ export class BrowserSquire implements SetupSquire {
   async close() { for (const handoff of this.handoffs) handoff.close(); await this.client.close(); }
 }
 
-const providerPath = (provider: string) => provider === 'groq' ? '/openai/v1' : '/v1';
+const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway' })[provider] ?? '/v1';
 
 export class FreeLLMAdmin {
   private token = '';
@@ -255,7 +266,13 @@ export class FreeLLMAdmin {
     const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${platform} (Squire)` && key.baseUrl?.endsWith(providerPath(platform)));
     if (!key || !key.models?.length) return false;
     const discovery = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
-    return key.models.some(model => discovery.models.some(available => available.id === model.modelId));
+    const available = new Set(discovery.models.map(model => model.id));
+    const wanted = providerModels[platform]?.filter(id => available.has(id));
+    if (wanted) {
+      const required = platform === 'kilo' ? wanted : wanted.slice(0, 1);
+      return required.length > 0 && required.every(id => key.models!.some(model => model.modelId === id));
+    }
+    return key.models.some(model => available.has(model.modelId));
   }
   async addGrant(platform: string, grant: { base_url: string; token: string }) {
     // Custom endpoints bind the grant URL and token to their own model rows.
@@ -263,12 +280,13 @@ export class FreeLLMAdmin {
     const label = `Milo ${platform} (Squire)`;
     const discovery = await this.call('/keys/custom/discover-models', { baseUrl, apiKey: grant.token }) as { models: { id: string }[] };
     const available = new Set(discovery.models.map(model => model.id));
-    const model = ['openai/gpt-oss-120b', 'gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'].find(id => available.has(id));
-    if (!model) throw new Error(`No supported chat model is currently available from ${platform}`);
+    const candidates = providerModels[platform] ?? ['openai/gpt-oss-120b', 'gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'];
+    const models = platform === 'kilo' ? candidates.filter(id => available.has(id)) : candidates.filter(id => available.has(id)).slice(0, 1);
+    if (!models.length) throw new Error(`No supported chat model is currently available from ${platform}`);
 
     const previous = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string; baseUrl?: string }[];
     await this.call('/keys/custom', { baseUrl, apiKey: grant.token,
-      label, models: [{ model, supportsTools: true }] });
+      label, models: models.map(model => ({ model, supportsTools: true })) });
     for (const key of previous) {
       if (Number.isInteger(key.id) && key.platform === 'custom' && key.label === label && key.baseUrl !== baseUrl) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
     }
@@ -284,11 +302,12 @@ export class FreeLLMAdmin {
   async configureChain(excluded: string[] = []) {
     const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean }[];
     const rows = chain.map(row => {
-      const provider = Object.keys(PROVIDERS).find(provider => row.keyLabel === `Milo ${provider} (Squire)`);
-      const fallback = row.modelId === 'freebuff' || row.modelId === 'kilo-auto/free';
+      const provider = [...Object.keys(PROVIDERS), ...savedProviders].find(provider => row.keyLabel === `Milo ${provider} (Squire)`);
+      const fallback = !provider && (row.modelId === 'freebuff' || row.modelId === 'kilo-auto/free');
+      const vetted = !provider || !providerModels[provider] || providerModels[provider].includes(row.modelId);
       return { modelDbId: row.modelDbId,
-        enabled: fallback || (provider ? row.platform === 'custom' && !excluded.includes(provider) : row.enabled === true),
-        priority: row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : row.priority };
+        enabled: fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true),
+        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
@@ -340,7 +359,7 @@ export async function ensureRouter(password: string, encryption: string, run: Do
     if (volume) await run(['volume', 'rm', 'milo-freellmapi-data']);
   }
   // Docker copies named variables from env, keeping secrets out of argv.
-  await run(['run', '-d', '--name', 'milo-freellmapi', '--label', 'io.milo.router=1', ...(process.platform === 'linux' ? ['--network', 'host'] : ['-p', '127.0.0.1:3001:3001']), '--restart', 'unless-stopped', '-v', 'milo-freellmapi-data:/app/server/data', '-e', process.platform === 'linux' ? 'HOST=127.0.0.1' : 'HOST=0.0.0.0', '-e', 'PORT=3001', '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
+  await run(['run', '-d', '--name', 'milo-freellmapi', '--label', 'io.milo.router=1', ...(process.platform === 'linux' ? ['--network', 'host'] : ['-p', '127.0.0.1:3001:3001']), '--restart', 'unless-stopped', '-v', 'milo-freellmapi-data:/app/server/data', '-e', process.platform === 'linux' ? 'HOST=127.0.0.1' : 'HOST=0.0.0.0', '-e', 'PORT=3001', '-e', 'PROVIDER_TIMEOUT_CUSTOM=600000', '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
     ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: 'milo@localhost.local', password }, ...freeConfig() })
   });
 }

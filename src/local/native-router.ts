@@ -45,6 +45,7 @@ await import(pathToFileURL(process.env.MILO_ROUTER_ENTRY).href);
     MILO_CONFIG_DIR: configDir(), MILO_ROUTER_ENTRY: entry,
     HOST: '127.0.0.1', PORT: url.port || '80', NODE_ENV: 'production',
     FREEAPI_DB_PATH: join(directory, 'router.db'),
+    PROVIDER_TIMEOUT_CUSTOM: '600000',
     PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin'
   });
 }

@@ -19,3 +19,9 @@ https://grunt.run. `milo` and `milo-local` remain aliases.
 Setup is Trusty Squire, the free-service list, sign-in, then your coding tools.
 
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md).
+
+FreeLLMAPI sources include existing Groq access, optional keyed Kilo (free Nemotron 3 Ultra first, then `kilo-auto/free`). Setup reuses a saved `kilo` vault credential through Squire egress grants and skips keyed Kilo when absent. If Nemotron disappears from Kilo's catalog, setup uses `kilo-auto/free`. Existing sources, including the anonymous Kilo and Freebuff fallbacks, stay available.
+
+Kilo free models may log prompts or use them for training; avoid sensitive prompts. Their free limits are unknown. Kilo quota errors fall through FreeLLMAPI's fallback chain. Requests allow a long timeout for Nemotron reasoning.
+
+Squire egress grants use the first allowed host and the stored authentication shape. Kilo needs `ai-gateway.kilo.ai` first.. A key that works with a one-off vault request can still require these grant metadata settings.
