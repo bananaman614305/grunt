@@ -55,7 +55,7 @@ export class OpenCode implements Source {
     const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
     const prior = this.sessions.get(key(turns)) ?? (turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined);
     const continuation = prior && !this.busy.has(prior) ? prior : undefined;
-    const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 90000)]);
+    const signal = AbortSignal.any([caller, this.shutdown.signal, ...(this.options.timeout ? [AbortSignal.timeout(this.options.timeout)] : [])]);
     let session: string | undefined, base: string | undefined;
     const headers = { 'Content-Type': 'application/json', 'x-opencode-directory': cwd,
       ...(process.env.OPENCODE_SERVER_PASSWORD ? { Authorization: `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? 'opencode'}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}` } : {}) };

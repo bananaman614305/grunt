@@ -83,26 +83,19 @@ it('switches only after 429, carries task and previous output, and bars until Re
   vi.mocked(a.complete).mockResolvedValue({ text: 'back' });
   await sources.complete({ ...request, userMessages: ['third task'] }, AbortSignal.timeout(1000)); expect(a.complete).toHaveBeenCalledTimes(3);
 });
-it.each(['upstream', 'timeout'] as const)('switches after tolerance for %s and resets the count on success', async code => {
+it.each(['upstream', 'timeout'] as const)('switches on the first %s failure and returns after the bar expires', async code => {
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
   const { a, b, sources } = routed();
   vi.mocked(a.complete).mockRejectedValue(new SourceError(code, 'failed'));
-  await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code });
-  await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code });
-  expect(b.complete).not.toHaveBeenCalled();
   expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(b.complete).toHaveBeenCalledTimes(1);
   vi.mocked(a.complete).mockResolvedValue({ text: 'restored' });
   expect(await sources.complete({ ...request, userMessages: ['before recovery'] }, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
   clock.mockReturnValue(1000 + 15 * 60 * 1000 + 1);
   expect(await sources.complete({ ...request, userMessages: ['after recovery'] }, AbortSignal.timeout(1000))).toEqual({ text: 'restored' });
 });
-it('success resets failure tolerance and cancellation never switches', async () => {
+it('cancellation never switches', async () => {
   const { a, b, sources } = routed();
-  vi.mocked(a.complete).mockRejectedValueOnce(new SourceError('upstream', 'failed')).mockResolvedValueOnce({ text: 'ok' }).mockRejectedValue(new SourceError('upstream', 'failed'));
-  await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toThrow();
-  await sources.complete(request, AbortSignal.timeout(1000));
-  for (let i = 0; i < 2; i++) await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toThrow();
-  expect(b.complete).not.toHaveBeenCalled();
   vi.mocked(a.complete).mockRejectedValue(new SourceError('cancelled', 'stop'));
   await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'cancelled' });
   expect(b.complete).not.toHaveBeenCalled();

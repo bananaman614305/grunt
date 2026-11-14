@@ -10,7 +10,7 @@ import { knownAdapters } from '../registry.js';
 
 const exec = promisify(execFile);
 export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number }
-interface Task { source?: string; failures: number; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
+interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
   private bars = new Map<string, number>();
@@ -23,7 +23,7 @@ export class StickyRouter {
     return (await exec('git', ['-C', cwd, ...args], { timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
   }
   private async createTask(request: ModelRequest): Promise<Task> {
-    const task: Task = { failures: 0, original: userTurns(request).at(-1) ?? '', output: '', switched: false, busy: false };
+    const task: Task = { original: userTurns(request).at(-1) ?? '', output: '', switched: false, busy: false };
     try { task.checkpoint = await this.git(request.cwd, ['stash', 'create']) || await this.git(request.cwd, ['rev-parse', 'HEAD']); }
     catch { /* Non-git and unborn directories use prompt/output handoff only. */ }
     return task;
@@ -52,7 +52,7 @@ export class StickyRouter {
     let task = this.tasks.get(key);
     if (!task) {
       // Reserve the task before asynchronous checkpoint creation to avoid two bindings.
-      task = { failures: 0, original: '', output: '', switched: false, busy: true };
+      task = { original: '', output: '', switched: false, busy: true };
       this.tasks.set(key, task);
       Object.assign(task, await this.createTask({ ...request, cwd }), { busy: true });
     } else {
@@ -77,12 +77,12 @@ export class StickyRouter {
           let draw = (this.options.random ?? Math.random)() * eligible.reduce((total, a) => total + a.weight, 0);
           selected = eligible.find(a => (draw -= a.weight) < 0) ?? eligible.at(-1)!;
           if (task.source) task.switched = true;
-          task.source = selected.source.id; task.failures = 0;
+          task.source = selected.source.id;
         }
         try {
           const input = task.switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
           const result = await selected.source.complete(input, signal);
-          task.failures = 0; task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
+          task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
           return result;
         } catch (error) {
@@ -93,7 +93,8 @@ export class StickyRouter {
           let until: number;
           if (failure.code === 'quota') until = this.now() + (failure.retryAfter ?? 3600) * 1000;
           else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
-          else { task.failures++; if (task.failures < 3) throw failure; until = this.now() + 15 * 60 * 1000; }
+          // Any other failure moves this task to the next source now, so the request still gets an answer.
+          else until = this.now() + 15 * 60 * 1000;
           this.bars.set(selected.source.id, until); task.switched = true;
         }
       }
