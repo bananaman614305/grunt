@@ -89,7 +89,7 @@ export class StickyRouter {
           signal.throwIfAborted();
           const failure = error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
           if (failure.output) task.output = failure.output;
-          if (failure.code === 'cancelled' || failure.code === 'refused') throw failure;
+          if (failure.code === 'cancelled') throw failure;
           let until: number;
           if (failure.code === 'quota') until = this.now() + (failure.retryAfter ?? 3600) * 1000;
           else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
