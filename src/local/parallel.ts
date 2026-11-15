@@ -1,3 +1,6 @@
+export const SETUP_CONCURRENCY = 6;
+export const BROWSER_CONCURRENCY = 3;
+
 // Limit browser/build pressure as the vetted catalog grows. Wait for started
 // jobs before rejecting so callers can safely close shared resources.
 export async function parallelMap<T, R>(items: readonly T[], task: (item: T) => Promise<R>, limit = 3, signal?: AbortSignal): Promise<R[]> {

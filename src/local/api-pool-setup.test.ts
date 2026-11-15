@@ -3,11 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
-const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), kilo: vi.fn() }));
+const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(), kilo: vi.fn() }));
 vi.mock('./pollinations-setup.js', () => ({ setupPollinations: helpers.pollinations }));
 vi.mock('./beatapi-setup.js', () => ({ setupBeatAPI: helpers.beatapi }));
+vi.mock('./clixad-setup.js', () => ({ setupClixad: helpers.clixad }));
+vi.mock('./perch-setup.js', () => ({ setupPerch: helpers.perch }));
 vi.mock('./kilo.js', () => ({ verifyKiloAccess: helpers.kilo, KILO_PARTICLE: 'particle-ai/particle-1:free' }));
-import { setup } from './setup.js';
+import { BrowserSquire, setup } from './setup.js';
+import { setupFallbacks } from './fallback-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 
 const directories: string[] = [];
@@ -22,7 +25,7 @@ async function directory() {
 }
 function client() {
   return {
-    signup: vi.fn(), call: vi.fn(),
+    signup: vi.fn(), cancelSignup: vi.fn(), call: vi.fn(),
     credentials: { list: vi.fn(), grant: vi.fn() },
     runs: { start: vi.fn(), get: vi.fn() }
   };
@@ -30,13 +33,13 @@ function client() {
 
 it('provisions the new sources with their guarded helpers without entering the legacy router path', async () => {
   const location = await directory(), squire = client();
-  const providers = ['pollinations', 'beatapi'];
+  const providers = ['pollinations', 'beatapi', 'clixad', 'perch'];
   await recordDataSharingConsent(location, providers);
   const signal = new AbortController().signal, notify = vi.fn();
   await expect(setup(notify, providers, { directory: location, squire, signal })).resolves.toEqual({});
-  for (const helper of [helpers.pollinations, helpers.beatapi]) {
-    expect(helper).toHaveBeenCalledExactlyOnceWith({ directory: location, squire, signal,
-      dataSharingApproved: expect.arrayContaining(providers), notify });
+  for (const helper of [helpers.pollinations, helpers.beatapi, helpers.clixad, helpers.perch]) {
+    expect(helper).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ directory: location, squire, signal,
+      dataSharingApproved: expect.arrayContaining(providers), notify }));
   }
   expect(squire.runs.start).not.toHaveBeenCalled();
   expect(squire.credentials.grant).not.toHaveBeenCalled();
@@ -55,10 +58,63 @@ it('checks anonymous Particle access without provisioning an account or a legacy
   expect(squire.credentials.grant).not.toHaveBeenCalled();
 });
 
-it.each(['pollinations', 'beatapi', 'kilo'])('requires current %s consent before any provisioning', async provider => {
+it.each(['pollinations', 'beatapi', 'clixad', 'perch', 'kilo'])('requires current %s consent before any provisioning', async provider => {
   const location = await directory(), squire = client();
   await expect(setup(vi.fn(), [provider], { directory: location, squire })).rejects.toThrow('grouped setup approval');
   for (const helper of Object.values(helpers)) expect(helper).not.toHaveBeenCalled();
   expect(squire.signup).not.toHaveBeenCalled();
   expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it.each(['clixad', 'perch'] as const)('passes background mode to %s without opening a new Squire connection', async provider => {
+  const location = await directory();
+  await recordDataSharingConsent(location, [provider]);
+  const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('background must not connect'));
+  const signup = vi.spyOn(BrowserSquire.prototype, 'signup').mockRejectedValue(new Error('background must not signup'));
+  const close = vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
+  const signal = new AbortController().signal, notify = vi.fn();
+  try {
+    await expect(setup(notify, [provider], { directory: location, signal, background: true })).resolves.toEqual({});
+    expect(helpers[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ directory: location,
+      squire: expect.any(BrowserSquire), signal, notify, background: true, dataSharingApproved: [provider] }));
+    expect(connect).not.toHaveBeenCalled();
+    expect(signup).not.toHaveBeenCalled();
+  } finally { connect.mockRestore(); signup.mockRestore(); close.mockRestore(); }
+});
+
+it.each(['freebuff', 'apinex'])('refuses retired %s setup before account or credential operations', async provider => {
+  const location = await directory(), squire = client();
+  await recordDataSharingConsent(location, [provider]);
+  await expect(setup(vi.fn(), [provider], { directory: location, squire })).rejects.toThrow('routing is disabled');
+  for (const helper of Object.values(helpers)) expect(helper).not.toHaveBeenCalled();
+  for (const operation of [squire.signup, squire.call, squire.credentials.list, squire.credentials.grant, squire.runs.start, squire.runs.get]) expect(operation).not.toHaveBeenCalled();
+});
+
+it.each([false, true])('dispatches both native pool additions with a shared client (background: %s)', async background => {
+  const location = await directory(), squire = client();
+  const providers = ['clixad', 'perch'];
+  await recordDataSharingConsent(location, providers);
+  const signal = new AbortController().signal, notify = vi.fn(), connect = vi.fn(async () => {}), run = vi.fn(async () => {});
+  await expect(setupFallbacks({ directory: location, squire, adapters: providers, background, signal, notify, connect, run })).resolves.toEqual({ unavailable: [] });
+  for (const provider of providers as ('clixad' | 'perch')[]) expect(helpers[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    directory: location, squire, signal, notify, dataSharingApproved: providers, ...(background ? { background: true } : {})
+  }));
+  expect(connect).toHaveBeenCalledTimes(background ? 0 : 1);
+  expect(run).not.toHaveBeenCalled();
+  expect(squire.signup).not.toHaveBeenCalled();
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('covers all eleven cold-start setup jobs using one reusable connection and no retired installers', async () => {
+  const location = await directory(), squire = client();
+  const providers = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'];
+  await recordDataSharingConsent(location, providers);
+  const signal = new AbortController().signal, notify = vi.fn(), connect = vi.fn(async () => {}), run = vi.fn(async () => {}), verify = vi.fn(async () => {});
+  const setupProvider = vi.fn(async (_notify: (line: string) => void, _providers: string[], _options?: Parameters<typeof setup>[2]) => ({}));
+  await expect(setupFallbacks({ directory: location, squire, adapters: providers, signal, notify, connect, run, verify, setupProvider })).resolves.toEqual({ unavailable: [] });
+  expect(connect).toHaveBeenCalledOnce();
+  expect(verify).toHaveBeenCalledOnce();
+  expect(run).toHaveBeenCalledExactlyOnceWith('opencode', ['--version']);
+  expect(setupProvider.mock.calls.map(call => call[1][0]).sort()).toEqual(providers.filter(id => id !== 'opencode').sort());
+  for (const call of setupProvider.mock.calls) expect(call[2]).toMatchObject({ directory: location, squire, signal });
 });

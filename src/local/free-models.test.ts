@@ -46,14 +46,13 @@ it('keeps upstream failures and credentials out of error text', async () => {
   await expect(api.complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused', message: 'FreeLLMAPI returned HTTP 403' });
 });
 
-it('registers anonymous Kilo and the separate Freebuff bridge last in the ordered chain', () => {
+it('registers only anonymous Kilo and never creates a retired Freebuff bridge fallback', () => {
   const config = freeConfig();
   expect(config.customProviders).toEqual([
-    { baseUrl: 'https://ai-gateway.kilo.ai/api/v1', apiKey: 'no-key', label: 'Kilo Free', models: [{ model: KILO_PARTICLE, supportsTools: true }] },
-    { baseUrl: 'http://127.0.0.1:8789/v1', apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: false }] }
+    { baseUrl: 'https://ai-gateway.kilo.ai/api/v1', apiKey: 'no-key', label: 'Kilo Free', models: [{ model: KILO_PARTICLE, supportsTools: true }] }
   ]);
   expect(config.routing.strategy).toBe('priority');
-  expect(config.fallback.at(-1)).toMatchObject({ modelId: 'freebuff', priority: 1000000 });
+  expect(config.fallback).toEqual([{ platform: 'custom', modelId: KILO_PARTICLE, endpoint: 'https://ai-gateway.kilo.ai/api/v1', priority: 999999 }]);
   expect(config.fallback.map(f => f.platform)).not.toContain('openrouter');
 });
 
@@ -422,6 +421,8 @@ it('legacy setup uses the same idempotent existing-key Particle migration', asyn
   await state.admin.ensureFreeFallbacks(['kilo']);
   expect(state.call.mock.calls.filter(([path]) => path === '/keys/custom')).toHaveLength(2);
   expect(state.rows.filter(row => row.modelId === KILO_PARTICLE).every(row => row.priority === 999999)).toBe(true);
+  expect(state.rows.find(row => row.keyLabel === 'Freebuff')).toMatchObject({ enabled: false, priority: 1000000 });
+  expect(state.keys.find(key => key.label === 'Freebuff')).toMatchObject({ id: 14, baseUrl: 'http://127.0.0.1:8789/v1', models: [{ modelId: 'freebuff' }] });
 });
 
 it('upgrades existing Kilo endpoints on the guarded legacy request path without another setup or provider signup', async () => {
@@ -434,6 +435,15 @@ it('upgrades existing Kilo endpoints on the guarded legacy request path without 
   expect(state.rows.filter(row => row.modelId === KILO_PARTICLE)).toHaveLength(2);
   expect(state.rows.filter(row => row.modelId === KILO_PARTICLE).every(row => row.enabled && row.priority === 999999)).toBe(true);
   expect(state.rows[2]).toMatchObject({ enabled: true, priority: 42 });
+  expect(state.rows.find(row => row.keyLabel === 'Freebuff')).toMatchObject({ enabled: false });
+});
+
+it('quarantines retired Freebuff before a failing unrelated migration and preserves its saved key', async () => {
+  const state = legacyParticleRouter({ failed: true });
+  await expect(state.admin.ensureFreeFallbacks(['kilo', 'freebuff'])).rejects.toThrow('Registration failed');
+  expect(state.rows.find(row => row.keyLabel === 'Freebuff')).toMatchObject({ enabled: false, priority: 1000000 });
+  expect(state.keys.find(key => key.label === 'Freebuff')).toMatchObject({ id: 14, models: [{ modelId: 'freebuff' }] });
+  expect(state.call.mock.calls.some(([, , method]) => method === 'DELETE')).toBe(false);
 });
 
 it('quarantines old owned rows without adding Particle until current consent is approved', async () => {

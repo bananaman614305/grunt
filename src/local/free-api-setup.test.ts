@@ -1,11 +1,10 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { Runcrate } from './runcrate.js';
-import { Apinex } from './apinex.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import * as mistralSetup from './mistral-vibe-setup.js';
 
@@ -19,9 +18,9 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-it.each(['runcrate', 'apinex'] as const)('verifies a saved %s vault key in the browser before persisting free access, then reuses its verified local grant', async provider => {
+it.each(['runcrate'] as const)('verifies a saved %s vault key in the browser before persisting free access, then reuses its verified local grant', async provider => {
   await recordDataSharingConsent(directory, [provider]);
-  const source = provider === 'runcrate' ? Runcrate : Apinex;
+  const source = Runcrate;
   const available = vi.spyOn(source.prototype, 'available').mockResolvedValueOnce(false).mockResolvedValue(true);
   const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
   vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
@@ -32,22 +31,13 @@ it.each(['runcrate', 'apinex'] as const)('verifies a saved %s vault key in the b
     if (name === 'list_credentials') return { credentials: [{ service: provider, reference: `vault://${provider}`, field_names: ['api_key'] }] };
     if (name === 'operate_drive') {
       const goal = String(args.goal);
-      if (provider === 'runcrate') {
-        expect(goal).toContain('Use GitHub OAuth for the free path');
-        expect(goal).not.toContain('Prefer Google OAuth');
-        expect(goal).toContain('at least 30 days old');
-        expect(goal).toContain('automatic top-ups disabled');
-        expect(goal).toContain('no payment method');
-        expect(goal).toContain('deepseek-ai/DeepSeek-V4.1-Flash');
-        expect(goal).toContain('["api.runcrate.ai"]');
-      } else {
-        expect(goal).toContain('personal @gmail.com');
-        expect(goal).toContain('DAILY CHECK-IN');
-        expect(goal).toContain('Verify the Free plan');
-        expect(goal).toContain('free/deepseek-v4.1-flash');
-        expect(goal).toContain('never a wallet-funded model');
-        expect(goal).toContain('["api.apinex.bond"]');
-      }
+      expect(goal).toContain('Use GitHub OAuth for the free path');
+      expect(goal).not.toContain('Prefer Google OAuth');
+      expect(goal).toContain('at least 30 days old');
+      expect(goal).toContain('automatic top-ups disabled');
+      expect(goal).toContain('no payment method');
+      expect(goal).toContain('deepseek-ai/DeepSeek-V4.1-Flash');
+      expect(goal).toContain('["api.runcrate.ai"]');
       return { session_id: `${provider}-session`, status: 'complete' };
     }
     if (name === 'operate_finish') return {};
@@ -68,9 +58,9 @@ it.each(['runcrate', 'apinex'] as const)('verifies a saved %s vault key in the b
   expect(connect).toHaveBeenCalledTimes(2);
 });
 
-it.each(['runcrate', 'apinex'] as const)('does not save %s access when browser free-account verification refuses it', async provider => {
+it.each(['runcrate'] as const)('does not save %s access when browser free-account verification refuses it', async provider => {
   await recordDataSharingConsent(directory, [provider]);
-  vi.spyOn((provider === 'runcrate' ? Runcrate : Apinex).prototype, 'available').mockResolvedValue(false);
+  vi.spyOn(Runcrate.prototype, 'available').mockResolvedValue(false);
   vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
   vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
   const call = vi.spyOn(BrowserSquire.prototype, 'call').mockImplementation(async name => {
@@ -84,13 +74,25 @@ it.each(['runcrate', 'apinex'] as const)('does not save %s access when browser f
   await expect(stat(join(directory, `${provider}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it.each(['runcrate', 'apinex'] as const)('requires grouped approval before connecting Squire for %s', async provider => {
+it.each(['runcrate'] as const)('requires grouped approval before connecting Squire for %s', async provider => {
   const connect = vi.spyOn(BrowserSquire.prototype, 'connect');
   await expect(setup(() => {}, [provider], { directory })).rejects.toThrow('grouped setup approval');
   expect(connect).not.toHaveBeenCalled();
 });
 
-it('starts both free API signups concurrently with Zro and isolates a failed free-account check', async () => {
+it('preserves existing APInex state while refusing new provisioning even with saved sharing approval', async () => {
+  const saved = JSON.stringify({ base_url: 'https://synthetic.test/apinex', token: 'synthetic-private-grant', free_account_verified: true });
+  const path = join(directory, 'apinex.json');
+  await writeFile(path, saved, { mode: 0o600 });
+  await recordDataSharingConsent(directory, ['apinex']);
+  const connect = vi.spyOn(BrowserSquire.prototype, 'connect');
+  const call = vi.spyOn(BrowserSquire.prototype, 'call');
+  await expect(setup(() => {}, ['apinex'], { directory })).rejects.toThrow('apinex routing is disabled');
+  expect(connect).not.toHaveBeenCalled(); expect(call).not.toHaveBeenCalled();
+  expect(await readFile(path, 'utf8')).toBe(saved);
+});
+
+it('starts Runcrate and Zro concurrently, rejects retired APInex, and isolates a failed free-account check', async () => {
   const started: string[] = [];
   let release: () => void = () => {};
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -107,9 +109,9 @@ it('starts both free API signups concurrently with Zro and isolates a failed fre
   });
   const pending = setupFallbacks({ directory, adapters: ['runcrate', 'apinex', 'zro'], dataSharingApproved: ['runcrate', 'apinex'],
     run: vi.fn(), notify: vi.fn(), squire, connect, setupProvider });
-  await vi.waitFor(() => expect(started).toEqual(['runcrate', 'apinex', 'zro']));
+  await vi.waitFor(() => expect(started).toEqual(['runcrate', 'zro']));
   release();
-  expect(await pending).toEqual({ unavailable: ['runcrate'] });
+  expect(await pending).toEqual({ unavailable: ['runcrate', 'apinex'] });
   expect(connect).toHaveBeenCalledOnce();
 });
 

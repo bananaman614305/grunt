@@ -51,7 +51,14 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   provider: 'beatapi', name: 'BeatAPI free model pool', version: '2026-11-15',
   disclosure: 'Prompts and project context may be retained for operations and processed by upstream providers. BeatAPI states that private content is not used for training without separate notice and consent where required; upstream retention and training guarantees are not established.',
   url: 'https://beatapi.io/privacy-policy'
-
+}, {
+  provider: 'clixad', name: 'Clixad GLM 5.3 Flash', version: '2026-11-15',
+  disclosure: 'Prompts, code and tool results pass through Clixad, OpenRouter and model providers. Clixad records usage metadata and says it stores content only when an answer is rated; it excludes training and public-dataset endpoints but does not require zero retention from upstream providers. Grunt does not submit ratings or offers, and uses the documented noninteractive sponsor opt-out.',
+  url: 'https://clixad.io/privacy.html'
+}, {
+  provider: 'perch', name: 'Perch Starter DeepSeek', version: '2026-11-15',
+  disclosure: 'Prompts, code and tool context are processed by Perch and its inference providers. The optional Starter Data Program must remain off. Setup turns off the account settings Use memory and Learn new memories without deleting saved notes; both must remain off for routing. Operational processing for service delivery, security, debugging and metering remains; retention and review limits and zero-retention coverage have not been independently verified.',
+  url: 'https://www.perchai.app/privacy#starter-data-program'
 }];
 
 const fileName = 'data-sharing-consent.json';

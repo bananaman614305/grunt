@@ -4,11 +4,13 @@ import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BrowserSquire, setup } from './setup.js';
 import type { SetupSquire } from './setup.js';
-import { parallelMap } from './parallel.js';
+import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
+import { disabledAdapters } from '../registry.js';
 import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
+import { ClixadNativeLoginRequired } from './clixad-setup.js';
 import type { Source } from './source.js';
 
 const exec = promisify(execFile);
@@ -65,12 +67,15 @@ export async function setupFallbacks(options: {
   adapters?: string[];
   connect?: () => Promise<void>;
   signal?: AbortSignal;
+  background?: boolean;
   dataSharingApproved?: readonly string[];
 }) {
   const squire = options.squire ?? new BrowserSquire({ dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
-  const unavailable: string[] = [];
-  const adapters = (options.adapters ?? ['freebuff', 'opencode']);
+  const requested = options.adapters ?? ['opencode'];
+  const unavailable = requested.filter(id => disabledAdapters.has(id));
+  const adapters = requested.filter(id => !disabledAdapters.has(id));
+  for (const id of unavailable) options.notify(`${id}: routing is disabled; other free services continue`);
   const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   if (squire instanceof BrowserSquire) squire.approveDataSharing(approved);
   // Reuse a grant created by an earlier setup before probing the free model.
@@ -184,16 +189,6 @@ export async function setupFallbacks(options: {
         unavailable.push('runcrate');
         options.notify('Runcrate free setup incomplete. GitHub must be at least 30 days old; rerun usegrunt setup to resume. Other routes remain available.');
       } },
-      apinex: async () => { try {
-        await connect();
-        if (!squire.runs) throw new Error('Provider signup requires Squire');
-        await (options.setupProvider ?? setup)(options.notify, ['apinex'], { squire: squire as SetupSquire, directory: options.directory,
-          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
-        options.notify('APInex: daily check-in verified for free DeepSeek V4.1 Flash access through Squire');
-      } catch {
-        unavailable.push('apinex');
-        options.notify('APInex free setup or daily check-in incomplete. Rerun usegrunt setup to resume; other routes remain available.');
-      } },
       'mistral-vibe': async () => { try {
         await connect();
         await (options.setupProvider ?? setup)(options.notify, ['mistral-vibe'], { squire: squire as SetupSquire, directory: options.directory,
@@ -230,6 +225,24 @@ export async function setupFallbacks(options: {
         unavailable.push('beatapi');
         options.notify('BeatAPI free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
+      clixad: async () => { try {
+        if (!options.background) await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['clixad'], { squire: squire as SetupSquire, directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Clixad: free GLM 5.3 Flash access connected');
+      } catch (error) {
+        unavailable.push('clixad');
+        options.notify(error instanceof ClixadNativeLoginRequired ? error.message : 'Clixad setup needs attention. Rerun usegrunt setup; other free routes continue.');
+      } },
+      perch: async () => { try {
+        if (!options.background) await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['perch'], { squire: squire as SetupSquire, directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Perch: Starter DeepSeek access connected with optional data sharing and account memory off');
+      } catch {
+        unavailable.push('perch');
+        options.notify('Perch Starter setup needs attention. Rerun usegrunt setup; other free routes continue.');
+      } },
       nvidia: async () => { try {
         await connect();
         if (!squire.runs) throw new Error('Provider signup requires Squire');
@@ -249,8 +262,8 @@ export async function setupFallbacks(options: {
       const task = tasks[id];
       if (!task) throw new Error('Unsupported vetted adapter');
       await task();
-    }, 3, options.signal);
+    }, SETUP_CONCURRENCY, options.signal);
     options.signal?.throwIfAborted();
-    return { unavailable: adapters.filter(id => unavailable.includes(id)) };
+    return { unavailable: requested.filter(id => unavailable.includes(id)) };
   } finally { if (owned && connection) await (squire as BrowserSquire).close(); }
 }

@@ -8,12 +8,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { intro, outro, spinner, log, note, multiselect, isCancel } from '@clack/prompts';
 import chalk from 'chalk';
 import { setupFallbacks } from './fallback-setup.js';
-import { parallelMap } from './parallel.js';
+import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 import { withTerminal } from './terminal.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
-import { bundledRegistry, knownAdapters } from '../registry.js';
+import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
 import type { Adapter } from '../registry.js';
 import { banner } from './banner.js';
 import { approveDataSharing, requiresDataSharing } from './data-sharing.js';
@@ -93,18 +93,20 @@ const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&
 export async function installedSources(directory = configDir()) {
   try {
     const sources: unknown = JSON.parse(await readFile(join(directory, 'installed-sources.json'), 'utf8'));
-    if (!Array.isArray(sources) || !sources.length || sources.some(id => typeof id !== 'string' || ![...knownAdapters, 'freellmapi'].includes(id))) throw new Error('Invalid saved grunt sources');
-    return [...new Set(sources)].join(',');
+    if (!Array.isArray(sources) || sources.some(id => typeof id !== 'string' || ![...knownAdapters, 'freellmapi'].includes(id))) throw new Error('Invalid saved grunt sources');
+    return [...new Set(sources)].filter(id => !disabledAdapters.has(id)).join(',');
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   try { await access(join(directory, 'router-admin.json')); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return 'freebuff,opencode,kilo,zro';
+    return 'opencode,kilo,zro';
   }
-  return 'freellmapi,kilo,freebuff,opencode,zro';
+  return 'freellmapi,kilo,opencode,zro';
 }
 export async function installService(adapters?: string[]) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
+  const selected = [...new Set(adapters ?? (await installedSources()).split(','))].filter(id => id && !disabledAdapters.has(id));
+  if (selected.some(id => !knownAdapters.has(id) && id !== 'freellmapi')) throw new Error('Invalid grunt service selection');
   const directory = configDir(), runtime = join(directory, 'runtime');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
   const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -116,13 +118,13 @@ export async function installService(adapters?: string[]) {
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = process.env.MILO_PORT || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
-  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: adapters?.join(',') ?? await installedSources(directory), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: selected.join(','), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
   if (process.env.MILO_FREELLMAPI_URL) env.MILO_FREELLMAPI_URL = process.env.MILO_FREELLMAPI_URL;
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await readFile(opencodeConfig); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   await installBackgroundService('milo', entry, env);
-  await writeFile(join(directory, 'installed-sources.json'), JSON.stringify(env.MILO_SOURCES!.split(',')), { mode: 0o600 });
+  await writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 });
 }
 export async function installBackgroundService(name: string, entry: string, env: Record<string, string>) {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid service name');
@@ -142,8 +144,8 @@ export async function installBackgroundService(name: string, entry: string, env:
     await command('launchctl', ['bootstrap', domain, plist]);
   }
 }
-// /v1/models asks every source whether it is available, and Freebuff runs `freebuff doctor` to answer.
-// Give each probe longer than that check, and stop after totalMs so a hung service still fails.
+// /v1/models asks every source whether it is available. Bound the combined probe
+// so a hung native CLI cannot leave the installer waiting forever.
 export async function checkService(port = 8788, totalMs = 90000) {
   const deadline = Date.now() + totalMs;
   while (Date.now() < deadline) {
@@ -286,6 +288,7 @@ export async function connectHarnesses(port: number, options: { harnesses?: Harn
 const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, approveDataSharing };
 type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi' | 'approveDataSharing';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
+  if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
   const squire = actions.createSquire?.();
   try {
@@ -296,20 +299,18 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     note(SQUIRE_NOTICE, 'Google sign-in for Trusty Squire');
     await step('Connecting Trusty Squire', () => actions.connectSquire(squire ? { squire } : {}));
     // Capture legacy API routing before default Kilo setup creates its admin file.
-    const previous = ((await actions.installedSources?.())?.split(',') ?? []);
+    const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     if (add) {
-      const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
-      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi'].includes(add)
+      const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
+      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'].includes(add)
         ? [...new Set([...(previous.length ? previous : defaults), add])]
         : [...new Set(['freellmapi', ...previous, ...defaults])];
       const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });
       if (consent.skipped.includes(add)) {
         // A declined addition still needs to replace a previously installed
         // runtime that predates consent enforcement. Keep only prior choices.
-        if (previous.length) {
-          await step('Updating the grunt background service', () => actions.installService(previous));
-          await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
-        }
+        await step('Updating the grunt background service', () => actions.installService(previous));
+        await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
         outro(`${add} skipped; data sharing was not approved`);
         return;
       }
@@ -329,9 +330,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const published = registry.published.slice(0, 10);
     if (pulled.origin === 'remote') log.info(`Registry: ${registry.adapters.length} free services, published ${published}`);
     else log.warn(`Registry unreachable; using the ${pulled.origin === 'cache' ? 'list saved by an earlier setup' : 'list bundled with this version'} (published ${published})`);
-    const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id));
+    const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id));
     log.message(registry.adapters.map(adapter => knownAdapters.has(adapter.id)
-      ? `${chalk.bold(adapter.id.padEnd(10))} ${chalk.dim(describe(adapter))}`
+      ? `${chalk.bold(adapter.id.padEnd(10))} ${chalk.dim(disabledAdapters.has(adapter.id) ? 'disabled pending integration review' : describe(adapter))}`
       : `${chalk.dim(adapter.id.padEnd(10))} ${chalk.dim('skipped: needs a newer usegrunt')}`).join('\n'));
     const requested = adapters.map(adapter => adapter.id);
     const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: requested });
@@ -352,7 +353,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       return;
     }
 
-    log.step(`Installing and connecting ${ids.length} vetted free services (up to 3 at once)`);
+    log.step(`Installing and connecting ${ids.length} vetted free services (up to ${SETUP_CONCURRENCY} at once)`);
     log.info('Trusty Squire reuses existing accounts and grants. Only free access is requested. Provider verification may still need your browser; verification prompts are queued.');
     const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify,
       ...(consent.approved.length ? { dataSharingApproved: consent.approved } : {}),

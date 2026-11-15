@@ -20,7 +20,7 @@ const payload = { model: 'grunt', messages: [{ role: 'user', content: 'hello' }]
 const response = (model = ZRO_DEEPSEEK) => Response.json({ model, choices: [{ message: { content: 'Hello' } }], usage: { prompt_tokens: 37, completion_tokens: 2 } });
 
 it('ships Zro by default and keeps unvetted NVIDIA out of fresh signup', async () => {
-  expect(bundledRegistry.adapters.map(a => a.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi']);
+  expect(bundledRegistry.adapters.map(a => a.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
   expect(configure({}).sources.find(s => s.id === 'zro')).toBeInstanceOf(Zro);
   const calls: string[] = [];
   const squire = { signup: vi.fn(), runs: { start: vi.fn(), get: vi.fn() }, credentials: { list: vi.fn(), grant: vi.fn() } };
@@ -147,7 +147,7 @@ it('skips every unapproved sharing service while connecting Zro and LiveKit', as
   const squire = { signup, runs: { start: vi.fn(), get: vi.fn() }, credentials: { list: vi.fn(), grant: vi.fn() } };
   const result = await setupFallbacks({ directory: await directory(), adapters: bundledRegistry.adapters.map(adapter => adapter.id),
     squire, run, notify: () => {}, setupProvider: provider });
-  expect(result.unavailable).toEqual(['freebuff', 'opencode', 'kilo', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'pollinations', 'beatapi']);
+  expect(result.unavailable).toEqual(['opencode', 'kilo', 'tokenharbor', 'runcrate', 'mistral-vibe', 'pollinations', 'beatapi', 'clixad', 'perch']);
   expect(run).not.toHaveBeenCalled(); expect(signup).not.toHaveBeenCalled();
   expect(provider).toHaveBeenCalledTimes(2); expect(provider.mock.calls.map(call => call[1])).toEqual([['zro'], ['livekit']]);
 });

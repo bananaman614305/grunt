@@ -21,8 +21,8 @@ export class Sources {
   private router: StickyRouter | undefined;
   // Adapters whose background setup has not finished yet.
   readonly preparing = new Set<string>();
-  constructor(public readonly sources: Source[], routing?: RoutingOptions) {
-    if (!sources.length || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
+  constructor(public readonly sources: Source[], routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set()) {
+    if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
     if (routing) this.router = new StickyRouter(sources, routing);
   }
   healthy(id: string) { this.router?.healthy(id); }
@@ -35,6 +35,8 @@ export class Sources {
     return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+    signal.throwIfAborted();
+    if (this.disabledModels.has(request.model)) throw new SourceError('refused', `${request.model} routing is disabled`);
     if (this.router) return this.router.complete(request, signal);
     const known = this.sources.some(s => s.id === request.model);
     if (request.model !== 'milo' && !known) console.error(`grunt model mapping: ${request.model} -> milo`);

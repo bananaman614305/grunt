@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
 import type * as Prompts from '@clack/prompts';
 import { withTerminal } from './terminal.js';
+import { BROWSER_CONCURRENCY, parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 
 vi.mock('@clack/prompts', async importOriginal => ({ ...await importOriginal<typeof Prompts>(), confirm: vi.fn(async () => true) }));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -11,6 +12,142 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
+
+it('shares one connection across six setup jobs and caps actual browser RPCs at three', async () => {
+  const squire = new BrowserSquire();
+  const internals = squire as unknown as { connectOnce(): Promise<void>; client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } };
+  const connected = deferred<void>(), release = deferred<void>();
+  const connect = vi.spyOn(internals, 'connectOnce').mockImplementation(() => connected.promise);
+  const started: number[] = [];
+  let active = 0, peak = 0;
+  const rpc = vi.spyOn(internals.client, 'callTool').mockImplementation(async request => {
+    const { name } = request as { name: string };
+    if (name === 'operate_drive' || name === 'operate_start') {
+      active++; peak = Math.max(peak, active);
+      await release.promise; active--;
+    }
+    return { content: [], structuredContent: {} };
+  });
+  vi.spyOn(internals.client, 'close').mockResolvedValue();
+  const pending = parallelMap(Array.from({ length: 12 }, (_, i) => i), async i => {
+    started.push(i);
+    await squire.connect();
+    // Exercise the public RPC path used by provider helpers as well as drive.
+    await squire.call(i % 2 ? 'operate_start' : 'operate_drive', { service: `provider-${i}` });
+  }, SETUP_CONCURRENCY);
+  expect(started).toEqual([0, 1, 2, 3, 4, 5]); expect(connect).toHaveBeenCalledOnce();
+  connected.resolve();
+  await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(BROWSER_CONCURRENCY));
+  expect(active).toBe(3); release.resolve(); await pending;
+  expect(peak).toBe(3); expect(active).toBe(0); expect(connect).toHaveBeenCalledOnce();
+  expect(rpc).toHaveBeenCalledTimes(12);
+  await squire.close();
+});
+
+it('removes a cancelled queued provider before dispatch and lets the next provider continue', async () => {
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  const release = deferred<void>();
+  const urls: unknown[] = [];
+  vi.spyOn(client, 'callTool').mockImplementation(async request => {
+    const { name, arguments: args } = request as { name: string; arguments: Record<string, unknown> };
+    if (name === 'operate_drive') {
+      urls.push(args.url);
+      await release.promise;
+      return { content: [], structuredContent: { status: 'complete', session_id: `tab-${urls.indexOf(args.url)}` } };
+    }
+    return { content: [], structuredContent: {} };
+  });
+  vi.spyOn(client, 'close').mockResolvedValue();
+  const first = Array.from({ length: 3 }, (_, i) => squire.signup(`first-${i}`, `https://first-${i}.test`, 'Sign in'));
+  const cancelled = squire.signup('queued', 'https://queued.test', 'Sign in').catch(error => error);
+  const other = squire.signup('other', 'https://other.test', 'Sign in');
+  await vi.waitFor(() => expect(urls).toHaveLength(3));
+  await squire.cancelSignup('queued');
+  expect(await cancelled).toBeInstanceOf(Error);
+  release.resolve(); await Promise.all([...first, other]);
+  expect(urls).toEqual(['https://first-0.test', 'https://first-1.test', 'https://first-2.test', 'https://other.test']);
+  await squire.close();
+});
+
+it('keeps a dispatched initial RPC in its browser slot until late session cleanup is possible', async () => {
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  const releases = Array.from({ length: 3 }, () => deferred<void>());
+  const urls: unknown[] = [];
+  const rpc = vi.spyOn(client, 'callTool').mockImplementation(async request => {
+    const { name, arguments: args } = request as { name: string; arguments: Record<string, unknown> };
+    if (name === 'operate_drive') {
+      urls.push(args.url);
+      const initial = /^https:\/\/initial-(\d)\.test$/.exec(String(args.url));
+      if (initial) await releases[Number(initial[1])]!.promise;
+      return { content: [], structuredContent: { status: 'complete', session_id: String(args.url) } };
+    }
+    return { content: [], structuredContent: {} };
+  });
+  vi.spyOn(client, 'close').mockResolvedValue();
+  const initial = releases.map((_, i) => squire.signup(`initial-${i}`, `https://initial-${i}.test`, 'Sign in').catch(error => error));
+  await vi.waitFor(() => expect(urls).toHaveLength(3));
+  await squire.cancelSignup('initial-0'); expect(await initial[0]).toBeInstanceOf(Error);
+  const other = squire.signup('other', 'https://other.test', 'Sign in');
+  await new Promise(resolve => setImmediate(resolve));
+  expect(urls).toHaveLength(3);
+  releases[0]!.resolve(); await other;
+  await vi.waitFor(() => expect(rpc.mock.calls.some(([request]) => {
+    const value = request as { name: string; arguments: Record<string, unknown> };
+    return value.name === 'operate_finish' && value.arguments.session_id === 'https://initial-0.test' && value.arguments.outcome === 'none';
+  })).toBe(true));
+  expect(urls).toHaveLength(4);
+  releases[1]!.resolve(); releases[2]!.resolve();
+  await Promise.all(initial); await squire.close();
+});
+
+it('releases browser slots before waiting for grouped human verification', async () => {
+  const { confirm } = await import('@clack/prompts');
+  const prompted = deferred<void>();
+  vi.mocked(confirm).mockImplementationOnce(options => new Promise(resolve => {
+    prompted.resolve();
+    options.signal!.addEventListener('abort', () => resolve(false), { once: true });
+  }));
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.test/verify');
+  const rpc = vi.spyOn(client, 'callTool').mockImplementation(async request => {
+    const { name, arguments: args } = request as { name: string; arguments: Record<string, unknown> };
+    return { content: [], structuredContent: name === 'operate_drive'
+      ? { status: args.url === 'https://other.test' ? 'complete' : 'needs_value', field: 'captcha', session_id: String(args.url) } : {} };
+  });
+  vi.spyOn(client, 'close').mockResolvedValue();
+  const waiting = Array.from({ length: 3 }, (_, i) => squire.signup(`waiting-${i}`, `https://waiting-${i}.test`, 'Sign in').catch(error => error));
+  await prompted.promise;
+  await expect(squire.signup('other', 'https://other.test', 'Sign in')).resolves.toBeUndefined();
+  expect(rpc.mock.calls.filter(([request]) => (request as { name: string }).name === 'operate_drive')).toHaveLength(4);
+  await squire.close(); await Promise.all(waiting);
+});
+
+it('cancels queued browser work on close while retaining late owned session cleanup', async () => {
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  const release = deferred<void>();
+  const rpc = vi.spyOn(client, 'callTool').mockImplementation(async request => {
+    const { name, arguments: args } = request as { name: string; arguments: Record<string, unknown> };
+    if (name === 'operate_drive') {
+      await release.promise;
+      return { content: [], structuredContent: { status: 'complete', session_id: String(args.url) } };
+    }
+    return { content: [], structuredContent: {} };
+  });
+  const closed = vi.spyOn(client, 'close').mockResolvedValue();
+  const jobs = Array.from({ length: 6 }, (_, i) => squire.signup(`provider-${i}`, `https://provider-${i}.test`, 'Sign in').catch(error => error));
+  await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(3));
+  const closing = squire.close();
+  expect(closed).not.toHaveBeenCalled();
+  release.resolve(); await closing; await Promise.all(jobs);
+  expect(rpc.mock.calls.filter(([request]) => (request as { name: string }).name === 'operate_drive')).toHaveLength(3);
+  expect(rpc.mock.calls.filter(([request]) => (request as { name: string }).name === 'operate_finish')).toHaveLength(3);
+  expect(closed).toHaveBeenCalledOnce();
+});
 
 it('dismisses the observed cookie overlay without treating echoed instructions as a refusal', async () => {
   const squire = new BrowserSquire();

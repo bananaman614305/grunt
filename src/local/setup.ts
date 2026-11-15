@@ -16,6 +16,7 @@ import { freeConfig, loopback } from './freellmapi.js';
 import { proxyApproval } from './approval-proxy.js';
 import { VerificationQueue } from './verification-queue.js';
 import { withTerminal } from './terminal.js';
+import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
@@ -25,12 +26,15 @@ import { setupMistralVibe } from './mistral-vibe-setup.js';
 import { setupLiveKit } from './livekit-setup.js';
 import { setupPollinations } from './pollinations-setup.js';
 import { setupBeatAPI } from './beatapi-setup.js';
+import { setupClixad } from './clixad-setup.js';
+import { setupPerch } from './perch-setup.js';
+import { disabledAdapters } from '../registry.js';
 import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } from './data-sharing.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', clixad: 'https://app.clixad.io', perch: 'https://www.perchai.app' };
 const freeProviderInstructions: Record<string, string> = {
   runcrate: ' Verify that the GitHub account is at least 30 days old. Use the normal Get your free tokens link at https://www.runcrate.ai/dashboard/api-keys#free-card to activate its recurring weekly allowance; verify the free tier is active via GitHub and not paused. Leave optional marketing unchecked. Verify no paid subscription, no purchased balance, no payment method and automatic top-ups disabled. If any of these checks fails, stop and report it; do not change billing settings or create another account. Use only deepseek-ai/DeepSeek-V4.1-Flash at api.runcrate.ai. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Reuse an existing vaulted key where possible; never reset or rotate it.',
   apinex: ' Verify the Free plan and complete today\'s ordinary DAILY CHECK-IN to activate recurring free quota. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Use only free/deepseek-v4.1-flash at api.apinex.bond, never a wallet-funded model or paid sibling. Verify the check-in for the current UTC date is actually claimed and free quota is active; absence of a check-in modal alone is insufficient. Do not use or change any existing paid wallet balance. Dismiss any paid upsell after check-in. Do not add billing, top up a wallet, buy credits, or use any paid balance. If check-in or free access cannot be confirmed, stop and report it. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
@@ -149,6 +153,9 @@ export class BrowserSquire implements SetupSquire {
   private sessions = new Map<string, string>();
   private services = new Map<string, AbortController>();
   private callSignals = new WeakMap<ObjectValue, AbortSignal>();
+  private queueSignals = new WeakMap<ObjectValue, AbortSignal>();
+  private browserActive = 0;
+  private browserQueue: { grant(): void }[] = [];
   private initialDriveSignal = new AbortController().signal;
   private finishing = new Map<string, Promise<void>>();
   private recoveryChoices = new Map<string, Set<string>>();
@@ -205,8 +212,43 @@ export class BrowserSquire implements SetupSquire {
     // Known-session calls can be aborted immediately and cleaned up by ID.
     const initial = name === 'operate_drive' && !args.session_id;
     this.callSignals.set(args, initial ? this.initialDriveSignal : this.serviceSignal(provider));
+    // Waiting work must remain cancellable even when its eventual first RPC
+    // needs to retain a late response containing the owned browser session ID.
+    this.queueSignals.set(args, this.serviceSignal(provider));
     try { return await this.call(name, args); }
-    finally { this.callSignals.delete(args); }
+    finally { this.callSignals.delete(args); this.queueSignals.delete(args); }
+  }
+  private async browserSlot(signal: AbortSignal): Promise<() => void> {
+    signal.throwIfAborted();
+    const release = () => {
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        this.browserActive--;
+        this.browserQueue.shift()?.grant();
+      };
+    };
+    if (this.browserActive < BROWSER_CONCURRENCY) {
+      this.browserActive++;
+      return release();
+    }
+    return new Promise((resolve, reject) => {
+      const entry = { grant: () => {
+        signal.removeEventListener('abort', cancelled);
+        this.browserActive++;
+        resolve(release());
+      } };
+      const cancelled = () => {
+        const index = this.browserQueue.indexOf(entry);
+        if (index !== -1) this.browserQueue.splice(index, 1);
+        signal.removeEventListener('abort', cancelled);
+        reject(new Error('Provider signup cancelled'));
+      };
+      this.browserQueue.push(entry);
+      signal.addEventListener('abort', cancelled, { once: true });
+      if (signal.aborted) cancelled();
+    });
   }
   async cancelSignup(provider: string): Promise<void> {
     let controller = this.services.get(provider);
@@ -254,20 +296,28 @@ export class BrowserSquire implements SetupSquire {
     }
   }
   async call(name: string, args: ObjectValue, connectionCheck = false): Promise<ObjectValue> {
-    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: name === 'operate_finish' ? 10000 : 60000, ...(name === 'operate_finish' ? {} : { signal: this.callSignals.get(args) ?? this.signal }) }).catch(error => {
-      if (connectionCheck) throw error;
-      throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
-    });
-    if (result.isError) {
-      const reason = connectionCheck ? (result.content as { type: string; text?: string }[])
-        .filter(part => part.type === 'text').map(part => part.text ?? '').join(' ') : '';
-      throw new Error(reason || `Squire ${name} failed; inspect Squire for the required action`);
-    }
-    if (result.structuredContent) return object(result.structuredContent);
-    for (const part of result.content as { type: string; text?: string }[]) {
-      if (part.type === 'text' && part.text) { try { return object(JSON.parse(part.text)); } catch { /* Do not echo upstream output. */ } }
-    }
-    throw new Error(`Squire ${name} returned an unsupported result`);
+    const provider = typeof args.service === 'string' ? args.service
+      : [...this.sessions].find(([, id]) => id === args.session_id)?.[0];
+    const queueSignal = this.queueSignals.get(args) ?? (provider ? this.serviceSignal(provider) : this.signal);
+    const release = name === 'operate_drive' || name === 'operate_start' ? await this.browserSlot(queueSignal) : undefined;
+    try {
+      // A slot can be granted just before cancellation. Recheck before dispatch.
+      if (release) queueSignal.throwIfAborted();
+      const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: name === 'operate_finish' ? 10000 : 60000, ...(name === 'operate_finish' ? {} : { signal: this.callSignals.get(args) ?? queueSignal }) }).catch(error => {
+        if (connectionCheck) throw error;
+        throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
+      });
+      if (result.isError) {
+        const reason = connectionCheck ? (result.content as { type: string; text?: string }[])
+          .filter(part => part.type === 'text').map(part => part.text ?? '').join(' ') : '';
+        throw new Error(reason || `Squire ${name} failed; inspect Squire for the required action`);
+      }
+      if (result.structuredContent) return object(result.structuredContent);
+      for (const part of result.content as { type: string; text?: string }[]) {
+        if (part.type === 'text' && part.text) { try { return object(JSON.parse(part.text)); } catch { /* Do not echo upstream output. */ } }
+      }
+      throw new Error(`Squire ${name} returned an unsupported result`);
+    } finally { release?.(); }
   }
   credentials = {
     list: async (): Promise<Credential[]> => {
@@ -495,6 +545,12 @@ export class FreeLLMAdmin {
   }
   async ensureFreeFallbacks(dataSharingApproved?: readonly string[]) {
     const approved = dataSharingApproved ?? await readDataSharingConsent(dirname(localAdminPath()), ['kilo']);
+    // Retired Grunt-owned rows stay quarantined even if a saved sharing receipt
+    // approved them. Disable before unrelated discovery can fail.
+    const chain = await this.call('/fallback', undefined, 'GET') as FallbackRow[];
+    const retired = chain.filter(row => retiredManagedAdapter(row) && row.enabled !== false)
+      .map(row => ({ modelDbId: row.modelDbId, enabled: false, priority: row.priority }));
+    if (retired.length) await this.call('/fallback', retired, 'PUT');
     await this.migrateKiloModels(approved);
     const keys = await this.call('/keys', undefined, 'GET') as { platform: string; label: string; baseUrl?: string }[];
     for (const provider of freeConfig().customProviders) {
@@ -509,13 +565,14 @@ export class FreeLLMAdmin {
       const provider = [...Object.keys(PROVIDERS), ...savedProviders].find(provider => row.keyLabel === `Milo ${provider} (Squire)`);
       const owned = managedSharingProvider(row);
       const fallback = !provider && owned !== undefined;
-      const sharingAllowed = !owned || approved.includes(owned);
+      const retired = retiredManagedAdapter(row);
+      const sharingAllowed = !retired && (!owned || approved.includes(owned));
       const vetted = !provider || !providerModels[provider] || providerModels[provider].includes(row.modelId);
       const disabledParticle = owned === 'kilo' && row.modelId === KILO_PARTICLE && row.enabled === false;
       return { modelDbId: row.modelDbId,
         enabled: sharingAllowed && !obsoleteManagedKilo(row) && !disabledParticle
           && (fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true)),
-        priority: disabledParticle ? row.priority : owned === 'freebuff' ? 1000000 : owned === 'kilo' ? 999999 : row.priority };
+        priority: disabledParticle || retired ? row.priority : owned === 'kilo' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
@@ -609,19 +666,25 @@ function managedSharingProvider(row: Pick<FallbackRow, 'platform' | 'modelId' | 
   if (row.platform !== 'custom') return;
   if (row.keyLabel === 'Milo kilo (Squire)' || row.keyLabel === 'Kilo Free') return 'kilo';
   if (row.keyLabel === 'Freebuff' && row.modelId === 'freebuff') return 'freebuff';
+  for (const provider of disabledAdapters) if (row.keyLabel === `Milo ${provider} (Squire)`) return provider;
   return;
 }
 const obsoleteManagedKilo = (row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>) => managedSharingProvider(row) === 'kilo' && row.modelId !== KILO_PARTICLE;
+// Keep legacy label recognition for retirement; never recreate these rows.
+const retiredManagedAdapter = (row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>) => {
+  const provider = managedSharingProvider(row);
+  return provider !== undefined && disabledAdapters.has(provider);
+};
 // Reconcile only Grunt-owned sharing rows before a legacy backend request. This
 // never provisions a router, changes custom rows, or enables a disabled row.
 export async function guardRouterSharing(url: string, directory: string): Promise<void> {
-  const approved = await readDataSharingConsent(directory, ['kilo', 'freebuff']);
+  const approved = await readDataSharingConsent(directory, ['kilo']);
   const admin = await readLocalAdmin(join(directory, 'router-admin.json'));
   if (!admin) throw new Error('Local router admin state is required to enforce data-sharing choices; rerun usegrunt setup');
   const router = new FreeLLMAdmin(url);
   await router.login(admin.password);
   const chain = await router.call('/fallback', undefined, 'GET') as FallbackRow[];
-  const updates = chain.filter(row => { const provider = managedSharingProvider(row); return provider && (!approved.includes(provider) || obsoleteManagedKilo(row)) && row.enabled !== false; })
+  const updates = chain.filter(row => { const provider = managedSharingProvider(row); return provider && (retiredManagedAdapter(row) || !approved.includes(provider) || obsoleteManagedKilo(row)) && row.enabled !== false; })
     .map(row => ({ modelDbId: row.modelDbId, enabled: false, priority: row.priority }));
   if (updates.length) await router.call('/fallback', updates, 'PUT');
   const patched = chain.map(row => ({ ...row, ...updates.find(update => update.modelDbId === row.modelDbId) }));
@@ -682,7 +745,9 @@ function readyRouter(signal?: AbortSignal): Promise<FreeLLMAdmin> {
   void starting.finally(() => { if (routerStarts.get(key) === starting) routerStarts.delete(key); }).catch(() => {});
   return starting;
 }
-export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; dataSharingApproved?: readonly string[] } = {}) {
+export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[] } = {}) {
+  const retired = providers.find(provider => disabledAdapters.has(provider));
+  if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? process.env.MILO_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
   const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(location, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   const unapproved = dataSharingPolicies(providers).filter(policy => !approved.includes(policy.provider));
@@ -696,14 +761,24 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
       notify('Kilo: free Particle-1 access verified; no account or API key required');
       providers = providers.filter(provider => provider !== 'kilo');
     }
+    // Idle sync never claims Clixad rewards or changes native account settings.
+    if (options.background) {
+      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
+      for (const provider of ['clixad', 'perch'] as const) {
+        if (!providers.includes(provider)) continue;
+        await (provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser, background: true,
+          dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
+        providers = providers.filter(id => id !== provider);
+      }
+    }
     if (!providers.length) return {};
     await owned?.connect();
     options.signal?.throwIfAborted();
-    for (const provider of ['pollinations', 'beatapi'] as const) {
+    for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
       if (!providers.includes(provider)) continue;
-      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call'>;
+      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
       if (typeof browser.signup !== 'function') throw new Error(`${provider} signup requires a browser-capable Squire client`);
-      await (provider === 'pollinations' ? setupPollinations : setupBeatAPI)({ directory: location, squire: browser,
+      await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser,
         dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(id => id !== provider);
     }

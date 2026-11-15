@@ -174,7 +174,7 @@ it('stops native setup without replacing the missing key of an existing database
   expect(logins).toEqual([]);
 });
 
-it('keeps Freebuff last, quarantines Auto, and preserves disabled Particle on repeat setup', async () => {
+it('keeps Freebuff retired, quarantines Auto, and preserves disabled Particle on repeat setup', async () => {
   const chain = [
     { modelDbId: 1, platform: 'custom', modelId: 'freebuff', priority: 3, keyLabel: 'Freebuff', enabled: false },
     { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', priority: 4, keyLabel: 'Kilo Free', enabled: false },
@@ -192,7 +192,7 @@ it('keeps Freebuff last, quarantines Auto, and preserves disabled Particle on re
   const router = new FreeLLMAdmin();
   await router.configureChain([], ['kilo', 'freebuff']); await router.configureChain([], ['kilo', 'freebuff']);
   expect(updates).toEqual([1, 2].map(() => [
-    { modelDbId: 1, enabled: true, priority: 1000000 },
+    { modelDbId: 1, enabled: false, priority: 3 },
     { modelDbId: 2, enabled: false, priority: 999999 },
     { modelDbId: 3, enabled: true, priority: 17 },
     { modelDbId: 4, enabled: false, priority: 19 },

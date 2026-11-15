@@ -1,9 +1,9 @@
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { bundledRegistry, knownAdapters, validateRegistry } from '../registry.js';
+import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from '../registry.js';
 import type { Adapter, Registry } from '../registry.js';
-import { parallelMap } from './parallel.js';
+import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 
 export const REGISTRY_INTERVAL = 24 * 60 * 60 * 1000;
 const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
@@ -22,7 +22,7 @@ export class RegistrySync {
     changed?: (registry: Registry) => void;
     afterEnsure?: () => Promise<void>;
   }) {}
-  get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id)); }
+  get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)); }
   async load() {
     try {
       const saved = JSON.parse(await readFile(join(this.options.directory, 'registry.json'), 'utf8'));
@@ -68,7 +68,7 @@ export class RegistrySync {
       if (!this.options.ensure || this.controller.signal.aborted) return;
       try { await this.options.ensure(adapter, this.controller.signal); }
       catch { this.options.notify?.(`${adapter.id}: setup needs attention; run usegrunt setup to finish sign-in`); }
-    }); } finally { await this.options.afterEnsure?.(); }
+    }, SETUP_CONCURRENCY); } finally { await this.options.afterEnsure?.(); }
   }
   async start() {
     await this.load();

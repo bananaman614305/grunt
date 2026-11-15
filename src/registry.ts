@@ -13,8 +13,10 @@ export interface Adapter {
   models?: string[];
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
-const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi' };
+const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch' };
 export const knownAdapters = new Set(Object.keys(installers));
+// Retain schema compatibility with saved registries while stopping every app route.
+export const disabledAdapters = new Set(['freebuff', 'apinex']);
 export function validateRegistry(value: unknown): Registry {
   const fail = () => { throw new Error('Invalid adapter registry'); };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();

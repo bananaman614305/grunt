@@ -127,50 +127,38 @@ removed. There is no Jev, billing, roster service, worker tooling or monorepo.
 
 Run the separate local daemon on your own machine (Linux or macOS). Use Node 22
 or 24 LTS for the setup wizard.
-Setup installs the vetted adapters and tmux when needed and connects accounts
-through Trusty Squire:
+Setup installs the vetted adapters and connects accounts through Trusty Squire:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
 node dist/local/main.js setup
 # Published package: npx usegrunt setup; installed bin: usegrunt.
-# Freebuff alone, without API setup: MILO_SOURCES=freebuff node dist/local/main.js
+# Anonymous Kilo Particle only, after current sharing approval:
+# MILO_SOURCES=kilo node dist/local/main.js
 ```
 
 It binds only `127.0.0.1:8788`. `MILO_PORT` changes the port. It provides
 `GET /v1/models`, Chat Completions, Anthropic Messages, and OpenAI Responses,
 including SSE. Choose model `milo` for automatic source selection, or a source
-id such as `freebuff`. This process is separate from the Fly server and Docker
-entry point. Local callers can invoke Freebuff with your filesystem permissions;
-keep this endpoint on your own machine.
+id such as `kilo`. This process is separate from the Fly server and Docker
+entry point. Keep this endpoint on your own machine.
 
 Requests containing function tools follow the same source selection and fallback
-rules as other requests. Selecting `freebuff` keeps Freebuff eligible even when
-Pi attaches tool definitions, including on the separate fallback listener.
-FreeLLMAPI and Gateway forward tool definitions to their upstream APIs. Without
-the JSON bridge, Freebuff remains a delegate returning final text; routing a
-request to it does not enable Pi's own tool loop.
-
-Freebuff returns only text after the last non-text block in its completed reply.
-Earlier deliberation and tool activity are omitted.
-
-Freebuff acts as a delegate: it runs its own tools and can edit files in the
-working directory. Your harness receives final text; its own tool loop does not
-run for that turn. grunt extracts cwd from harness context (including environment
+rules as other requests. Native API sources forward function definitions;
+validated JSON bridges return correlated calls for the caller's harness to
+execute. OpenCode runs its own delegate tools and returns final text. grunt
+extracts cwd from harness context (including environment
 blocks), accepts an explicit absolute `cwd`, and otherwise uses the daemon's
 working directory. It logs the chosen directory. Check it before asking for edits.
 Text and function-tool turns are translated across APIs. Native Responses tools
-are accepted by the app delegate; the Chat Completions gateway cannot forward
-those tools and fails over to the app source. Unsupported media blocks return an
+require a compatible delegate; ordinary Chat Completions sources accept function
+tools. Unsupported tools and media blocks return an
 error rather than silently losing context.
 
 ### Free API and account setup
 
-The pool changes below describe the held 0.6.6 draft. The published 0.6.5 package
-still has nine sources and its previous Kilo behavior. The eleven-source draft
-is not published while Freebuff's provider-policy review and supported scope
-remain unresolved.
+This reference describes the eleven-source pool and setup behavior in 0.6.6.
 
 `npx usegrunt` (or `npx usegrunt setup`) starts the terminal wizard. In a wide
 interactive terminal it opens with a short animation (any key skips it; CI,
@@ -178,21 +166,23 @@ pipes and narrow terminals get a one-line title). It explains what grunt does,
 then says that Trusty Squire needs one Google sign-in before it installs and
 connects the local broker. Setup pulls the free service list from the grunt
 registry (falling back to the saved or bundled list, and saying so). The bundled
-vetted pool contains Freebuff, OpenCode, Kilo and Zro in the stable tier, plus
-Token Harbor, Runcrate, APInex, Mistral Vibe Free, LiveKit, Pollinations and BeatAPI
+vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
+Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch
 in the experimental tier.
 Provider approval and free-account eligibility still apply. Setup installs and connects
-up to three services concurrently, starts the background daemon, then verifies
+up to six services concurrently, starts the background daemon, then verifies
 up to three services concurrently with real requests through grunt. Each service
 gets its own PASS/FAIL line and summary row. Incomplete setup exits unsuccessfully
 with a repair step; rerun it to resume. For a foreground daemon, run `usegrunt serve`.
 
 The jobs share one Squire connection, cached credential metadata and reusable
-grants. Browser handoffs arriving together share a confirmation prompt; later
+grants. Up to three provider browser operations can run concurrently. Browser
+handoffs arriving together share a confirmation prompt; later
 handoffs queue while other jobs continue. Interactive installers and confirmations
 take turns owning the terminal. Provider verification remains individual, and
 Squire has no batch-grant API. Grouped prompts do not create shared provider
-accounts or bypass a provider's verification.
+accounts or bypass a provider's verification. Reusing one Google or GitHub
+identity does not remove each provider's own sign-in and security requirements.
 
 Setup helpers can cancel one provider without stopping other jobs or the shared
 broker. A pending initial browser operation may finish before its owned tab can
@@ -209,7 +199,6 @@ and is started with the printed `ANTHROPIC_BASE_URL` command. A changed file is
 first copied to `<file>.grunt-backup-<time>`. Each tool is reported connected
 only after it answers one real request through grunt.
 
-Freebuff pairs its CLI through Squire's browser. Setup installs tmux when needed.
 OpenCode first tries its free model without an account and requests sign-in only
 if that model requires it. Kilo verifies its anonymous Particle 1 free route
 after the required sharing approval; it needs no account, API key or signup.
@@ -219,11 +208,11 @@ Google accounts are created.
 
 Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
 
-The foreground wizard groups the nine data-sharing disclosures for Freebuff, OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, APInex, Mistral Vibe Free, Pollinations and BeatAPI into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this group. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval where applicable, including when an existing grant is present. Daily background provisioning runs at midnight UTC to renew daily check-ins; unresolved verification leaves that source unavailable while other services continue.
+The foreground wizard groups the nine active disclosures for OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, Mistral Vibe Free, Pollinations, BeatAPI, Clixad and Perch into one approval. A private local receipt records approved policy versions. Retired Freebuff and APInex records do not authorize routing. Declining or cancelling skips the active sharing providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this group. Changed or new policies require another grouped approval. Background setup never prompts; signup and routing require current approval where applicable. Daily background provisioning runs at midnight UTC; unresolved verification leaves that source unavailable while other services continue.
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
 
-Kilo's default in pending 0.6.6 is `particle-ai/particle-1:free`, a distinct model
+Kilo's default in 0.6.6 is `particle-ai/particle-1:free`, a distinct model
 post-trained from DeepSeek V4.1 Flash, with a listed 1M-token context and native
 function calls. It calls the public `https://ai-gateway.kilo.ai/api/v1` endpoint
 without an account or API key. Before inference, grunt checks that the exact
@@ -245,17 +234,16 @@ The additional experimental routes have these requirements:
 | Source | Selected route | Free-account requirements and allowance |
 | --- | --- | --- |
 | Runcrate | `deepseek-ai/DeepSeek-V4.1-Flash` | GitHub login with an account at least 30 days old; no paid balance, payment method or automatic top-ups. Its recurring weekly allowance is not quantified. |
-| APInex | `free/deepseek-v4.1-flash` | Personal `@gmail.com` Google login and daily check-in with Turnstile. Existing wallet funds remain untouched. The observed daily allowance is 25 million weighted units, approximately 8.33 million actual DeepSeek tokens at weight 3. The `free/` route never spends wallet funds. |
 | Mistral Vibe Free | Native CLI alias `zai-glm-5-3-flash`, wire model `zai-glm-5-3-flash-vibe-free` | Free plan with a $10 monthly Vibe Code allowance; no card, purchased credits or pay-as-you-go. This is native coding allowance, not ordinary Mistral API credit. |
 | LiveKit | `deepseek-ai/deepseek-v4.1-flash` | Build plan at $0 per month, no card, and one free project. The documented $2.50 monthly included inference allowance resets at the start of each calendar month and has a hard stop; no paid fallback. |
 | BeatAPI | `deepseek-v4.1-flash-free` | Personal Google login through Squire; no paid funds, card, subscription or automatic recharge. One successful request per minute. The ordinary one-time $2 welcome credit is separate from this continuous free route and is not spent by it. No numeric daily or token-per-minute limit is promised. |
 | Pollinations | `community/morriszdweck/glm-5.3-flash-free` | Google login through Squire, a hard numeric zero-budget key with Quest Pollen Only enabled, usage-only account permissions, and a positive unused Quest balance. No paid funds or billing. Community availability is best effort, with no promised daily quota or fixed reset. |
+| Clixad | Native `glm-5.3-flash` | Existing or ordinary free GitHub account pairing, positive free allowance and a wallet balance of exactly zero. No deposit or paid credits. Model selection and native free/zero-charge metadata are checked. |
+| Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
 
-Runcrate and APInex keys are captured into Squire. Setup stops if an account
+Runcrate keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
-buy credits. APInex's private receipt must include today's UTC check-in; after
-the day changes, rerun setup to renew it. Runtime requests also check that its
-free subscription is active and has remaining allowance. Mistral setup installs
+buy credits. Mistral setup installs
 the pinned native Vibe CLI (`3.1.2`) privately and uses its own browser pairing, credential storage
 and isolated configuration under grunt's `mistral-vibe` directory. It needs
 `uv` or Python 3.12 or later. A general `MISTRAL_API_KEY` from the shell cannot
@@ -322,10 +310,54 @@ in `beatapi.json` and `pollinations.json`; their provider keys stay in Squire.
 Verification receipts expire after 30 days. Neither setup displays or
 stores a plaintext provider key in grunt's files, harness configuration or logs.
 
+Clixad uses the official Node CLI `0.0.1-beta.51`, installed privately with pinned
+package integrity, and its ordinary GitHub device login with read-only identity
+and email scopes. The native CLI owns `~/.clixad/config.json`; grunt checks private
+file metadata without reading auth contents. Its `ask` command dispatches the
+pinned `glm-5.3-flash` model through a validated JSON tool bridge. Native actions
+are blocked and each request gets a private working directory. The documented
+headless sponsor opt-out is used; grunt does not submit ratings, offers or feedback.
+
+Clixad requires wallet balance zero, positive free allowance and native metadata
+showing `free: true`, zero charged credits and balance zero. Explicit setup and
+user calls check the native wallet; that command can claim the ordinary daily
+streak bonus. Idle availability checks use only local metadata and the public
+catalog, and never call the wallet or streak endpoints. Grunt checks wallet state
+before and after user inference. There is no atomic free-only switch: an external
+deposit during a request can defeat a pre-request zero-wallet check before the
+post-check rejects the answer. Keep that account unfunded. The native SSE omits
+the served model; the wire pin and official aggregate usage ledger support the
+route selection, without independent physical-model attestation.
+
+Perch uses the pinned official `perchai-cli` `2.4.132`, a private native login and
+the active Starter plan. A placeholder Starter label before activation is
+insufficient; setup uses the ordinary free activation flow when needed. The
+allowance is 20,000 Perch Tokens per month, in provider plan units, with no surprise
+overages. Setup verifies the optional Starter Data Program is off and turns off
+both Use memory and Learn new memories through official CLI settings, without
+deleting saved notes. A 30-day receipt is bound to the native account identity;
+routing freshly verifies that identity and both memory settings. Keep Starter
+active with the Data Program and both memory switches off.
+
+The Perch backend pins `deepseek-flash-starter`, the official
+`DeepSeek V4.1 Flash 1017 (Starter)` option and its corresponding DeepSeek model
+identifier. These are aliases for the same provider-selected route, rather than
+independent physical-model attestation. Each request uses a private, checked
+context and a validated JSON tool bridge; native actions are denied. Owned
+PTY/process cleanup runs on completion, cancellation and timeout. Clixad and Perch
+are backend sources: Pi, Codex, OpenCode and Claude Code remain the frontend choices.
+Existing installations can run `usegrunt add clixad` or `usegrunt add perch` to
+perform the same signup, current sharing approval and native eligibility checks.
+
+Both native backends validate returned output and reported usage against a local
+budget of at most 4,096 tokens, with bounded output bytes and a process lifetime
+of at most 175 seconds. Neither CLI offers a hard upstream output-token cap:
+generation and free-allowance use can exceed that local acceptance budget before
+grunt rejects a completion.
+
 The grouped disclosure includes each provider's data policy. Token Harbor permits
 retention, staff review and upstream training. Runcrate's upstream retention and
-training guarantees are unestablished; APInex's retention duration and upstream
-training policy are unestablished. Free Mistral Vibe prompts and code may be used
+training guarantees are unestablished. Free Mistral Vibe prompts and code may be used
 for improvement, with no established zero-retention guarantee.
 For [BeatAPI](https://beatapi.io/privacy-policy), prompts may be retained for
 operations and processed upstream. It states private content is not used for
@@ -334,6 +366,14 @@ remain unestablished. [Pollinations](https://pollinations.ai/privacy) sends cont
 through its OSAII community operator and Poe/Together processing, whose retention,
 staff review and training guarantees are unestablished. Both require the current
 grouped approval before signup or runtime routing.
+[Clixad](https://clixad.io/privacy.html) sends prompts, code and tool results through
+Clixad, OpenRouter and model providers. It records usage metadata and says content
+is stored when an answer is rated. It excludes training/public-dataset endpoints
+but does not require zero upstream retention. [Perch](https://www.perchai.app/privacy#starter-data-program)
+processes task and tool context for service delivery, security, debugging and
+metering even with the optional Data Program off. Retention, review limits and
+zero-retention coverage have not been independently verified. Both require the
+current grouped sharing approval.
 
 NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain. Cloudflare Qwen is excluded from the pool by the owner's choice.
 
@@ -348,15 +388,15 @@ handoff, including email confirmation, and signup resumes in that same session.
 An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
 token to FreeLLMAPI's custom-provider endpoint for those API providers.
-Zro, Token Harbor, Runcrate and APInex keep private grants in `zro.json`,
-`tokenharbor.json`, `runcrate.json` and `apinex.json` and call
+Zro, Token Harbor and Runcrate keep private grants in `zro.json`,
+`tokenharbor.json` and `runcrate.json` and call
 `/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to
-`zro.moonmath.ai`, `tokenharbor.ai`, `api.runcrate.ai` and `api.apinex.bond`.
+`zro.moonmath.ai`, `tokenharbor.ai` and `api.runcrate.ai`.
 NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the grant's
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
 API-provider keys stay in Squire; no provider reveal approval is requested.
-Mistral Vibe and LiveKit's native CLIs own their separate local credential
+Mistral Vibe, LiveKit, Clixad and Perch's native CLIs own their separate local credential
 exchanges and storage.
 Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
@@ -377,8 +417,8 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-Fresh setup offers the bundled Freebuff, OpenCode, Kilo, Zro, Token Harbor,
-Runcrate, APInex, Mistral Vibe Free, LiveKit, Pollinations and BeatAPI pool, enabling providers only after their
+Fresh setup offers the bundled OpenCode, Kilo, Zro, Token Harbor, Runcrate,
+Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch pool, enabling providers only after their
 required data-sharing approval.
 It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
@@ -402,28 +442,22 @@ need this separate router service.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The next package release is `usegrunt` `0.6.6`; the installed command is
-`usegrunt`. BeatAPI and Pollinations passed real Grunt short prompts, function-tool
-calls, correlated results and large contexts without charges: 210,090 input
-tokens for BeatAPI and 210,223 for Pollinations on its fixed route without
-fallback. The actual production Particle 1 source passed short-prompt, native
-function/result and 210,165-input-token context checks with zero reported cost,
-without an account or key. The reviewed candidate is installed on Chad at port
-8792 and returned a Kilo hello reply, preserving its previous source choices.
-BeatAPI and Pollinations are not enabled on Chad yet. All 706 local tests, lint,
-a clean build and independent review passed; public publication remains held.
-These checks do not claim a separate blank-machine onboarding run. The sources added in
-0.6.4 and 0.6.5 retain their recorded production-adapter and long-context validation.
-The 0.6.6 release is held: native Freebuff DeepSeek selection worked, but the
-Grunt bridge received an explicit relaying-policy HTTP 403 and a strike. Testing
-stopped, the pin prototype was removed, and no pin shipped. Read-only review is
-examining the provider's supported scope for transparent, human-initiated use of
-one's own account; there are no further live retries or origin-concealment changes.
-On November 15, the existing account's official Developer API page showed a $0
-prepaid balance and required at least $10 before key creation. No recurring free
-API entitlement was established; the page did not show the interactive free
-allowance as usable API credit.
-The public package remains 0.6.5 with nine sources.
+The package version is `usegrunt` `0.6.6`; the installed command is
+`usegrunt`. Production adapters passed real Grunt prompt, function-tool,
+correlated-result and large-context checks: BeatAPI at 210,090 input tokens,
+Pollinations at 210,223 without fallback, Kilo Particle at 210,165 anonymously
+with zero reported cost, and Clixad at 210,321 with free/zero-charge metadata and
+zero account balance before and after. Perch's actual production source passed
+all four probes, including a context with 226,316 input tokens and 101 output
+tokens. Its 153 focused source/helper tests and independent review passed.
+After these probes, Starter showed 19,726 of 20,000 PT remaining, with the Data
+Program and both memory switches off; this is an observed account snapshot,
+not a promised remaining balance for another user.
+The packaged Clixad setup helper installed its pinned private CLI, reused existing
+native authentication, passed the background probe and returned a production
+hello with 252 input and 63 output tokens. The reviewed Kilo candidate was also
+verified on Chad at port 8792. These checks do not claim a separate blank-machine
+onboarding run.
 Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
 update the two existing file overlays described under Deploy, not the image.
 
@@ -440,13 +474,13 @@ The 0.6.6 migration retires Grunt-owned Auto, Nemotron and other non-Particle
 rows labeled `Kilo Free` or `Milo kilo (Squire)`, even when an older approval
 exists. With current Particle-specific consent and a verified catalog entry,
 the runtime guard can add Particle to an existing Grunt-owned backend key using
-backend-held credentials. It ranks enabled owned Particle rows before Freebuff,
-preserves a previously disabled Particle row, and leaves user custom keys, rows,
+backend-held credentials. It preserves a previously disabled Particle row and
+its priority, and leaves user custom keys, rows,
 flags and priorities untouched. This guard creates no account, provider key or
 router service. Fresh legacy bootstrap also uses only Particle for Kilo; it does
 not restore Auto or Nemotron fallback. Metadata-only migration was verified on
 Chad: owned Auto/Nemotron rows are disabled and owned Particle rows are enabled.
-The published 0.6.5 package used Auto Free by default and a Nemotron-first legacy
+Version 0.6.5 used Auto Free by default and a Nemotron-first legacy
 chain. Auto Free is no longer the default in 0.6.6, and its changing pool does not
 guarantee DeepSeek. Particle is specifically post-trained from DeepSeek V4.1 Flash;
 it is not the standard DeepSeek model.
@@ -457,13 +491,10 @@ DeepSeek V4.1 Flash and its 1017 variant as paid, at $0.30 per million input
 tokens and $1.20 per million output tokens, with no free standard DeepSeek ID.
 The separately listed free Particle route does not make either standard route free.
 See [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free).
-The separate Freebuff bridge starts only when the legacy `freellmapi` source is
-configured. It listens only on `127.0.0.1:8789` and contains only the Freebuff
-source, preventing a routing loop. Fresh Kilo Particle setup needs neither this
-bridge nor the legacy router. FreeLLMAPI supports priority
-ordering: keyed providers come first, Kilo next, Freebuff last. Setup enables
-only those providers in the chain, excluding Google, OpenRouter and unvetted
-aggregators.
+Grunt-owned Freebuff fallback rows are disabled, and the port-8789 bridge no
+longer starts. Fresh Kilo Particle setup needs no legacy router. FreeLLMAPI
+continues priority routing for eligible configured providers; custom user rows
+retain their own flags and priorities.
 
 FreeLLMAPI's signed catalog handles model and quota updates. Free installations
 receive its delayed monthly snapshot; live catalog access is a separate upstream
@@ -478,7 +509,7 @@ port, using your normal OS home and existing OpenCode login. It sends only the
 latest user message, word for word, through the session API, with no caller
 system prompt or tool definitions. Follow-ups with their user-message history
 reuse the same session; the mapping lasts until grunt exits. OpenCode runs its
-own tools and returns final text, as Freebuff does. It uses no tmux.
+own tools and returns final text. It uses no tmux.
 
 Before prompting a worker it starts itself, grunt disconnects inherited MCP
 integrations in that worker's working-directory instance. Large optional tool
@@ -606,14 +637,15 @@ Codex default back at grunt, which would create a routing loop.
 
 ### Sources and app sessions
 
-The bundled registry has four stable adapters: Freebuff and OpenCode at weight
-0.192 each, Kilo at 0.256 and Zro at 0.16. Experimental Token Harbor, Runcrate,
-APInex, Mistral Vibe Free, LiveKit, Pollinations and BeatAPI share 0.2 equally,
-about 0.0285714 each. Stable weights total 0.8. All eleven accept text rather than images.
-Kilo, Zro, Token Harbor, Runcrate, APInex, LiveKit and BeatAPI forward function tool definitions
+The bundled registry has three stable adapters in relative proportions 6:8:5:
+OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
+`0.21052631578947367`. Stable weights total 0.8. Eight experimental sources have
+weight 0.025 each: Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations,
+BeatAPI, Clixad and Perch. Their weights total 0.2. All eleven accept text rather than images.
+Kilo, Zro, Token Harbor, Runcrate, LiveKit and BeatAPI forward function tool definitions
 and return tool calls for the harness to execute. Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
-Pollinations also uses a validated JSON tool bridge for its fixed community model. Providers
+Pollinations, Clixad and Perch also use validated JSON tool bridges for their fixed routes. Providers
 with data-sharing policies require current approval before they can be selected.
 LiveKit's [inference data-retention policy](https://docs.livekit.io/agents/models/inference/)
 states zero retention and no training by LiveKit or its underlying providers on
@@ -652,7 +684,7 @@ to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
 unreachable. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
 `registry.json` in its existing config directory. A gateway or cache failure
 keeps the last good list, falling back to the packaged list on a fresh install.
-Known adapters are installed and checked during sync with up to three concurrent
+Known adapters are installed and checked during sync with up to six concurrent
 jobs and a shared Squire connection; removing a registry entry disables it without
 uninstalling its files. The legacy `MILO_CONFIG_DIR` and
 `MILO_PORT` settings remain supported. `GRUNT_REGISTRY_URL` overrides the sync
@@ -663,83 +695,20 @@ Codex or FreeLLMAPI retain their existing ordered behavior. They are outside the
 launch registry. Codex still requires explicit opt-in. The Fly personal-agent
 API remains separate from this local daemon.
 
-Outside provider handoffs, only the latest user text is pasted into Freebuff, without system/developer prompts, tools, results, or known harness context envelopes. Title, summary, topic and warm-up requests are answered locally; classification and the selected working directory are logged. Side-call detection uses system/developer instructions, including Claude Code's recorded session-naming prompt; an ordinary user request for a summary still reaches the source. Detection remains heuristic.
+### Retired sources
 
-An experimental Freebuff JSON tool bridge is available with
-`MILO_FREEBUFF_JSON_BRIDGE=1`. It is **off by default and not live validated**.
-When enabled, Freebuff translates function-tool requests into the JSON protocol,
-including on the separate fallback listener. Existing source order still applies. Every bridge
-request sends the full system/developer, skill and conversation context, tool
-definitions, assistant calls and correlated Pi tool results in a fresh CLI
-session. Treat this as disclosure of that context to Freebuff.
+Freebuff and APInex cannot be selected or routed through grunt in 0.6.6. Saved
+source selections and environment values are filtered, old consent receipts do
+not reactivate them, Grunt-owned Freebuff backend rows are disabled, and no
+port-8789 bridge starts. The person's native Freebuff application and account
+are preserved. The prior DeepSeek-selection experiment received an explicit
+relaying-policy refusal; no pin shipped.
 
-The bridge accepts a whole JSON final-answer or tool-call envelope, validates
-names and arguments against JSON Schema draft 7 with Ajv, and returns tool calls
-for Pi to execute with its existing permissions. Unsupported schemas fail closed;
-arguments are never coerced or supplied with defaults. IDs are deterministic for
-the same complete request and call. A changed context gets different IDs. There
-is no execution ledger: Pi owns execution and retry deduplication; IDs alone do
-not provide exactly-once execution across client retries. The adapter rejects
-unmatched, duplicate and missing tool results and duplicate calls within one
-envelope. It allows one repair in another fresh session, then fails/falls back.
-Rejected protocol text and partial deliberation are not returned as answers or
-fallback context. Cancellation stops the bridge rather than repairing it.
-
-This is not a sandbox. Freebuff CLI (tested help: version 0.2.36) exposes no
-documented option to disable its native tools. Instructions ask it to use only
-the JSON protocol, but cannot enforce that. Observed native-tool blocks reject
-the completion without repair; rejection cannot undo actions already executed.
-Use a separately restricted host environment for any authorized live trial.
-Fresh sessions prevent persisted chat reuse, but do not isolate Freebuff's file
-access or other ambient account state.
-
-Freebuff's [published terms](https://freebuff.com/terms-of-service), effective
-November 12, 2026, restrict relaying access to other applications and automated
-operation without written permission. No supported authorization for this
-integration has been established. Do not treat a CLI login or the opt-in flag as
-that permission. Live tool and skill support remains unproven; see
-[the recorded proof and limitations](../proof/freebuff-json-bridge.md).
-
-A conversation is keyed by canonical working directory and a hash of its first user text. Follow-ups resume its saved Freebuff chat using `--continue`; concurrent requests use separate chats. The in-memory mapping lasts until the daemon exits. Each turn runs in a dedicated tmux session. Requests queue
-per canonical working directory; `MILO_APP_POOL` defaults to (2) active sessions
-per directory. New-chat creation and association are serialized per shared on-disk project
-directory, including different working folders with the same basename. Once a
-chat is associated with its originating process, its response runs concurrently
-with other associated turns; replies and startup logs are read only from that chat. SIGINT/SIGTERM
-cancel work and close only grunt's own sessions and server on its private tmux socket.
-The private server stays alive between turns so ending the last session cannot
-race with launching the next; daemon shutdown waits for launches and closes it explicitly.
-`MILO_APP_TIMEOUT_MS` defaults to (600000), including queue time. More sessions
-consume your account's free hours faster. Freebuff automation may conflict with
-its terms; using your account this way is your choice.
-
-Errors carry `not_installed`, `logged_out`, `quota`, `timeout`, `refused`, or `upstream` in
-the harness's error envelope. Missing executables are detected immediately.
-Freebuff refusals (`prompt_policy_refused`) in the chat log return a typed `refused` error immediately and permit source failover. Long pastes stored in text attachments are supported.
-
-The driver runs a bounded `freebuff doctor` preflight and reads startup log errors before waiting for a saved user message. A turn that is never persisted fails with a startup error after (10 seconds). Recognized login and exhausted-hours diagnostics return typed errors immediately. Known refusal, quota and login failures use generic messages rather than returning raw native diagnostic payloads.
-Unrecognized startup failures return a clear upstream error; they do not wait
-for the full model-turn timeout. Stable malformed chat data returns an explicit format error.
-Authentication, quota, missing-app and upstream availability failures can try the
-next configured source. Timeouts stop instead of replaying potentially unfinished
-filesystem work. Use `MILO_SOURCES=freebuff` to keep requests on the app path.
-
-The source interface is in `src/local/source.ts`; `Multiplexer` is in
-`src/local/multiplexer.ts`. Register another app in local configuration without
-changing API handlers. Offline tests replay recorded harness request shapes and
-run a fake Freebuff TUI through real tmux; they require tmux but no credentials.
-The [fixture notes](../src/local/fixtures/README.md) describe the recorded clients,
-sanitized request fields and synthetic responses used by those tests.
-
-To demonstrate the built daemon offline, run `pnpm build && node src/local/proof.mjs`.
-It starts the real local entry point with a temporary fake Freebuff on PATH,
-exercises all three APIs with and without SSE, and removes its temporary chats.
-
-To replay chat-ownership races through the built HTTP API, run
-`pnpm build && node src/local/ownership-proof.mjs`. This uses a filesystem-writing
-multiplexer that delays send completion until both processes have persisted their
-chat. It verifies exact cwd/chat ownership, follow-up continuation, and a quota-only
-startup log alongside a successful request from another folder named `project`.
+APInex changed its recurring 25-million-unit daily entitlement to require a $5
+top-up. Grunt does not make that purchase; a one-time Telegram reward does not
+qualify as ongoing free access. Historical Freebuff bridge experiments and their
+limitations remain in [the recorded evidence](../proof/freebuff-json-bridge.md),
+not as supported routing instructions for this release.
 
 ### Dots through the grunt connector (optional)
 

@@ -22,6 +22,21 @@ it('does not ask for providers without a known data-sharing requirement', async 
   expect(prompt).not.toHaveBeenCalled();
 });
 
+it('groups the new native providers without renewing existing provider approvals', async () => {
+  const path = await directory();
+  await recordDataSharingConsent(path, sharingIds);
+  const prompt = vi.fn(async (policies: readonly DataSharingPolicy[]) => {
+    expect(policies.map(policy => policy.provider)).toEqual(['clixad', 'perch']);
+    expect(policies[0]!.disclosure).toContain('does not require zero retention');
+    expect(policies[1]!.disclosure).toContain('Data Program must remain off');
+    return true;
+  });
+  const providers = [...sharingIds, 'clixad', 'perch'];
+  expect(await approveDataSharing({ directory: path, providers, interactive: true, prompt })).toEqual({ approved: providers, skipped: [] });
+  expect(prompt).toHaveBeenCalledOnce();
+  expect(await readDataSharingConsent(path, providers)).toEqual(providers);
+});
+
 it('approves a whole provider batch with one prompt and saves a private receipt', async () => {
   const path = await directory();
   const prompt = vi.fn(async (policies: readonly DataSharingPolicy[]) => { expect(policies.map(policy => policy.provider)).toEqual(sharingIds); return true; });

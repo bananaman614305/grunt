@@ -44,7 +44,7 @@ it('handles a missing binary without changing the free source chain', async () =
   vi.stubEnv('PATH', dir + '/missing');
   expect(await new Codex().available()).toBe(false);
   await expect(new Codex().complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'not_installed' });
-  expect(configure({}).sources.map(s => s.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi']);
+  expect(configure({}).sources.map(s => s.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
 });
 it('passes exact text and cwd, parses only the final agent text, and resumes through the API', async () => {
   const source = new Codex({ model: 'custom' });
@@ -109,7 +109,7 @@ it('never launches Codex for default-config API requests', async () => {
       expect(res.status).toBe(200);
       expect((await res.json()).choices[0].message.content).toBe('free answer');
     }
-    expect(sources.sources.map(s => s.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi']);
+    expect(sources.sources.map(s => s.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
     expect(fs.existsSync(join(dir, 'calls'))).toBe(false);
     expect(configure({ MILO_SOURCES: 'opencode,codex,freellmapi' }).sources.map(s => s.id)).toEqual(['opencode', 'codex', 'freellmapi']);
   } finally { vi.unstubAllGlobals(); }

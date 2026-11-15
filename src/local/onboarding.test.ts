@@ -8,7 +8,7 @@ import { BrowserSquire } from './setup.js';
 import { SourceError, Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { createLocalApp } from './api.js';
-import { parallelMap } from './parallel.js';
+import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 import { VerificationQueue } from './verification-queue.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
 import { RegistrySync } from './registry.js';
@@ -18,9 +18,8 @@ const deferred = () => { let resolve!: () => void; const promise = new Promise<v
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-onboarding-')); dirs.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('overlaps all vetted setup jobs and shares one Squire connection despite concurrent signup needs', async () => {
+it('overlaps agent setup with anonymous Kilo and shares one Squire connection for OpenCode and Zro', async () => {
   const release = deferred(), started = new Set<string>();
-  let signed = false;
   const entry = { service: 'opencode', reference: 'vault://opencode', field_names: ['api_key'] };
   const squire = {
     signup: vi.fn(async () => {}), runs: { start: vi.fn(), get: vi.fn() },
@@ -28,27 +27,26 @@ it('overlaps all vetted setup jobs and shares one Squire connection despite conc
   };
   let checked = false;
   const connect = vi.fn(async () => { await release.promise; });
-  const provider = vi.fn(async () => { started.add('kilo'); await release.promise; return {}; });
-  const pending = setupFallbacks({ dataSharingApproved: ['freebuff', 'opencode', 'kilo', 'tokenharbor'], directory: await directory(), adapters: ['freebuff', 'opencode', 'kilo'], squire, connect,
-    run: async binary => { if (binary === 'freebuff') { started.add('freebuff'); await release.promise; } },
-    notify: () => {}, signedIn: async () => signed, login: async () => { signed = true; },
+  const provider = vi.fn(async (_notify: (line: string) => void, providers?: string[]) => { started.add(providers![0]!); await release.promise; return {}; });
+  const pending = setupFallbacks({ dataSharingApproved: ['opencode', 'kilo'], directory: await directory(), adapters: ['opencode', 'kilo', 'zro'], squire, connect,
+    run: async () => {}, notify: () => {},
     verify: async () => { started.add('opencode'); if (!checked) { checked = true; throw new SourceError('logged_out', 'sign in'); } },
     setupProvider: provider });
-  // Anonymous Kilo setup starts while the shared browser connection is pending.
-  await vi.waitFor(() => { expect(started).toEqual(new Set(['freebuff', 'opencode', 'kilo'])); expect(connect).toHaveBeenCalledOnce(); });
+  // Anonymous Kilo starts while both account-based routes await one connection.
+  await vi.waitFor(() => { expect(started).toEqual(new Set(['opencode', 'kilo'])); expect(connect).toHaveBeenCalledOnce(); });
   release.resolve();
   expect(await pending).toEqual({ unavailable: [] });
-  expect(started).toEqual(new Set(['freebuff', 'opencode', 'kilo']));
+  expect(started).toEqual(new Set(['opencode', 'kilo', 'zro']));
   expect(connect).toHaveBeenCalledOnce();
   expect(provider).toHaveBeenCalledWith(expect.any(Function), ['kilo'], expect.objectContaining({ squire, directory: expect.any(String), dataSharingApproved: expect.arrayContaining(['kilo']) }));
 });
 
-it('isolates a Kilo refusal and completes both agent installs', async () => {
+it('isolates a Kilo refusal and completes the other free routes', async () => {
   const verify = vi.fn(async () => {});
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
-  const result = await setupFallbacks({ dataSharingApproved: ['freebuff', 'opencode', 'kilo', 'tokenharbor'], directory: await directory(), adapters: ['freebuff', 'opencode', 'kilo'], squire,
-    run: async () => {}, notify: () => {}, signedIn: async () => true, verify,
-    setupProvider: async () => { throw new Error('refused'); } });
+  const result = await setupFallbacks({ dataSharingApproved: ['opencode', 'kilo'], directory: await directory(), adapters: ['opencode', 'kilo', 'zro'], squire,
+    run: async () => {}, notify: () => {}, verify,
+    setupProvider: async (_notify, providers) => { if (providers?.includes('kilo')) throw new Error('refused'); return {}; } });
   expect(result).toEqual({ unavailable: ['kilo'] }); expect(verify).toHaveBeenCalledOnce();
 });
 
@@ -122,8 +120,9 @@ it('runs registry background provisioning concurrently too', async () => {
   const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }),
     ensure: async adapter => { started.push(adapter.id); await hold.promise; } });
   const pending = sync.sync();
-  await vi.waitFor(() => expect(started).toEqual(['freebuff', 'opencode', 'kilo']));
-  hold.resolve(); await pending; expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi']); await sync.close();
+  const ids = sync.enabled.map(adapter => adapter.id);
+  await vi.waitFor(() => expect(started).toEqual(ids.slice(0, SETUP_CONCURRENCY)));
+  hold.resolve(); await pending; expect(started).toEqual(ids); await sync.close();
 });
 
 it('pins Kilo installer and capabilities instead of accepting executable registry data', () => {
@@ -165,5 +164,5 @@ it('closes each registry setup session after all jobs settle and starts a fresh 
   const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }), afterEnsure: finish,
     ensure: async adapter => { active++; attempts.push(session); await new Promise(resolve => setImmediate(resolve)); active--; if (adapter.id === 'kilo') throw new Error('retry later'); } });
   await sync.sync(); await sync.sync(); await sync.close();
-  expect(finish).toHaveBeenCalledTimes(2); expect(attempts).toEqual([...bundledRegistry.adapters.map(() => 0), ...bundledRegistry.adapters.map(() => 1)]);
+  expect(finish).toHaveBeenCalledTimes(2); expect(attempts).toEqual([...sync.enabled.map(() => 0), ...sync.enabled.map(() => 1)]);
 });
