@@ -29,7 +29,7 @@ it('overlaps all vetted setup jobs and shares one Squire connection despite conc
   let checked = false;
   const connect = vi.fn(async () => { await release.promise; });
   const provider = vi.fn(async () => { started.add('kilo'); await release.promise; return { key: 'synthetic-router' }; });
-  const pending = setupFallbacks({ directory: await directory(), adapters: ['freebuff', 'opencode', 'kilo'], squire, connect,
+  const pending = setupFallbacks({ dataSharingApproved: ['freebuff', 'opencode', 'kilo', 'tokenharbor'], directory: await directory(), adapters: ['freebuff', 'opencode', 'kilo'], squire, connect,
     run: async binary => { if (binary === 'freebuff') { started.add('freebuff'); await release.promise; } },
     notify: () => {}, signedIn: async () => signed, login: async () => { signed = true; },
     verify: async () => { started.add('opencode'); if (!checked) { checked = true; throw new SourceError('logged_out', 'sign in'); } },
@@ -40,13 +40,13 @@ it('overlaps all vetted setup jobs and shares one Squire connection despite conc
   expect(await pending).toEqual({ unavailable: [] });
   expect(started).toEqual(new Set(['freebuff', 'opencode', 'kilo']));
   expect(connect).toHaveBeenCalledOnce();
-  expect(provider).toHaveBeenCalledWith(expect.any(Function), ['kilo'], { squire });
+  expect(provider).toHaveBeenCalledWith(expect.any(Function), ['kilo'], expect.objectContaining({ squire, directory: expect.any(String), dataSharingApproved: expect.arrayContaining(['kilo']) }));
 });
 
 it('isolates a Kilo refusal and completes both agent installs', async () => {
   const verify = vi.fn(async () => {});
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
-  const result = await setupFallbacks({ directory: await directory(), adapters: ['freebuff', 'opencode', 'kilo'], squire,
+  const result = await setupFallbacks({ dataSharingApproved: ['freebuff', 'opencode', 'kilo', 'tokenharbor'], directory: await directory(), adapters: ['freebuff', 'opencode', 'kilo'], squire,
     run: async () => {}, notify: () => {}, signedIn: async () => true, verify,
     setupProvider: async () => { throw new Error('refused'); } });
   expect(result).toEqual({ unavailable: ['kilo'] }); expect(verify).toHaveBeenCalledOnce();
@@ -123,7 +123,7 @@ it('runs registry background provisioning concurrently too', async () => {
     ensure: async adapter => { started.push(adapter.id); await hold.promise; } });
   const pending = sync.sync();
   await vi.waitFor(() => expect(started).toEqual(['freebuff', 'opencode', 'kilo']));
-  hold.resolve(); await pending; await sync.close();
+  hold.resolve(); await pending; expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit']); await sync.close();
 });
 
 it('pins Kilo installer and capabilities instead of accepting executable registry data', () => {
@@ -165,5 +165,5 @@ it('closes each registry setup session after all jobs settle and starts a fresh 
   const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }), afterEnsure: finish,
     ensure: async adapter => { active++; attempts.push(session); await new Promise(resolve => setImmediate(resolve)); active--; if (adapter.id === 'kilo') throw new Error('retry later'); } });
   await sync.sync(); await sync.sync(); await sync.close();
-  expect(finish).toHaveBeenCalledTimes(2); expect(attempts).toEqual([0, 0, 0, 1, 1, 1]);
+  expect(finish).toHaveBeenCalledTimes(2); expect(attempts).toEqual([...bundledRegistry.adapters.map(() => 0), ...bundledRegistry.adapters.map(() => 1)]);
 });

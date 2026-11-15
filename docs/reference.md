@@ -108,9 +108,17 @@ summary and attaches the full plan. This adapter never calls OpenRouter.
 ## Deploy
 
 The Docker image contains only the compiled app, page and production dependencies.
-On pushes to main, GitHub builds and smoke-tests the exact image, then deploys
-it to Fly app `milo-gateway` in `iad` using the existing `FLY_API_TOKEN` secret.
+GitHub Actions is disabled at the owner's request. Run build and smoke checks
+locally and deploy the tested image manually to Fly app `milo-gateway` in `iad`
+using authorized app-scoped access. Do not enable or dispatch workflows.
 The `milo_data` volume mounts at `/data`. Keep a single Fly machine for SQLite.
+
+The current gateway registry release uses two persisted Machine file overlays,
+`/app/dist/registry.js` and `/app/dist/registry/adapters.json`, on the existing
+`dc5e3347e62c112f9f757709d3155eabad25d5e7` image. The next full image deployment
+must include the updated registry validator and remove these two overlays from
+the Machine configuration, or they can mask newer files in that image. Publish
+the on-volume registry separately after validating the deployed code.
 
 This replaces the former OpenAI-compatible gateway. The old `/v1/*` routes are
 removed. There is no Jev, billing, roster service, worker tooling or monorepo.
@@ -164,7 +172,9 @@ pipes and narrow terminals get a one-line title). It explains what grunt does,
 then says that Trusty Squire needs one Google sign-in before it installs and
 connects the local broker. Setup pulls the free service list from the grunt
 registry (falling back to the saved or bundled list, and saying so). The bundled
-vetted pool contains Freebuff, OpenCode and Kilo. Setup installs and connects
+vetted pool contains Freebuff, OpenCode, Kilo and Zro in the stable tier, plus
+Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit in the experimental tier.
+Provider approval and free-account eligibility still apply. Setup installs and connects
 up to three services concurrently, starts the background daemon, then verifies
 up to three services concurrently with real requests through grunt. Each service
 gets its own PASS/FAIL line and summary row. Incomplete setup exits unsuccessfully
@@ -195,17 +205,86 @@ access through Squire. Captcha, passkey and email verification show a browser
 handoff and wait for the user to resume. Existing accounts are reused; no extra
 Google accounts are created.
 
-Before making changes, setup checks Node, npm, Pi, tar and the user service
+Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
+
+The foreground wizard groups the Freebuff, OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free data-sharing disclosures into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this seven-provider group. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval where applicable, including when an existing grant is present. Daily background provisioning runs at midnight UTC to renew daily check-ins; unresolved verification leaves that source unavailable while other services continue.
+
+Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
+
+The additional experimental routes have these requirements:
+
+| Source | Selected route | Free-account requirements and allowance |
+| --- | --- | --- |
+| Runcrate | `deepseek-ai/DeepSeek-V4.1-Flash` | GitHub login with an account at least 30 days old; no paid balance, payment method or automatic top-ups. Its recurring weekly allowance is not quantified. |
+| APInex | `free/deepseek-v4.1-flash` | Personal `@gmail.com` Google login and daily check-in with Turnstile. Existing wallet funds remain untouched. The observed daily allowance is 25 million weighted units, approximately 8.33 million actual DeepSeek tokens at weight 3. The `free/` route never spends wallet funds. |
+| Mistral Vibe Free | Native CLI alias `zai-glm-5-3-flash`, wire model `zai-glm-5-3-flash-vibe-free` | Free plan with a $10 monthly Vibe Code allowance; no card, purchased credits or pay-as-you-go. This is native coding allowance, not ordinary Mistral API credit. |
+| LiveKit | `deepseek-ai/deepseek-v4.1-flash` | Build plan at $0 per month, no card, and one free project. The documented $2.50 monthly included inference allowance resets at the start of each calendar month and has a hard stop; no paid fallback. |
+
+Runcrate and APInex keys are captured into Squire. Setup stops if an account
+fails the free-account checks; it does not remove billing, switch identities or
+buy credits. APInex's private receipt must include today's UTC check-in; after
+the day changes, rerun setup to renew it. Runtime requests also check that its
+free subscription is active and has remaining allowance. Mistral setup installs
+the pinned native Vibe CLI (`3.1.2`) privately and uses its own browser pairing, credential storage
+and isolated configuration under grunt's `mistral-vibe` directory. It needs
+`uv` or Python 3.12 or later. A general `MISTRAL_API_KEY` from the shell cannot
+replace that native login. Its free-plan receipt expires after 30 days and setup
+rechecks it. These checks record account state; keep billing disabled afterward.
+
+LiveKit setup uses the personal Google identity already connected to Squire and
+reuses or creates one owned free `grunt-free` project. It automatically installs
+the official `lk` CLI version `2.19.4` under grunt's private `livekit` directory,
+with pinned archive checksums for Linux and macOS on x64 or arm64. Squire completes
+the ordinary CLI browser pairing; no rooms or agent hosting are needed.
+`usegrunt add livekit` runs the same setup for an existing installation.
+
+The official CLI retains its credentials in `~/.livekit/cli-config.yaml` with
+mode `0600`, in a private directory. Grunt checks file metadata without reading
+the native API secrets or requesting a raw vault secret. Each request uses the
+verified project's explicit selector and an empty project configuration in a
+private working directory. The CLI creates a ten-minute inference-only JWT that
+stays in backend memory. Requests go only to
+`https://agent-gateway.livekit.cloud/v1` with the fixed DeepSeek model; quota
+exhaustion can hand off to another eligible free source, never a paid fallback.
+
+LiveKit's private `livekit/free-build.json` receipt records the verified Build
+project and billing state for up to 30 days. Missing or expired verification
+requires a fresh browser check through setup. The observed dashboard showed Build,
+a $0 next invoice and no payment method, but did not expose remaining inference
+credit. The $2.50 figure is the documented monthly allowance, not a measured
+remaining balance. Keep the account on Build: an external billing upgrade can
+invalidate the free-account assumptions recorded by setup.
+
+The grouped disclosure includes each provider's data policy. Token Harbor permits
+retention, staff review and upstream training. Runcrate's upstream retention and
+training guarantees are unestablished; APInex's retention duration and upstream
+training policy are unestablished. Free Mistral Vibe prompts and code may be used
+for improvement, with no established zero-retention guarantee.
+
+NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain. Cloudflare Qwen is excluded from the pool by the owner's choice.
+
+Before making changes, setup checks Node, npm, tar and the user service
 manager. A missing prerequisite prints its install or repair step and stops.
+Coding harnesses such as Pi are optional; setup can install the service before
+you install a harness.
 
 Existing vault API keys are reused. Missing keys are created through Squire's
 browser and captured directly into its vault. Human verification opens a browser
 handoff, including email confirmation, and signup resumes in that same session.
 An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
-token to FreeLLMAPI's custom-provider endpoint.
-Provider keys stay in Squire; no provider reveal approval is requested. Groq
-uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
+token to FreeLLMAPI's custom-provider endpoint for those API providers.
+Zro, Token Harbor, Runcrate and APInex keep private grants in `zro.json`,
+`tokenharbor.json`, `runcrate.json` and `apinex.json` and call
+`/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to
+`zro.moonmath.ai`, `tokenharbor.ai`, `api.runcrate.ai` and `api.apinex.bond`.
+NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the grant's
+`/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
+scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
+API-provider keys stay in Squire; no provider reveal approval is requested.
+Mistral Vibe and LiveKit's native CLIs own their separate local credential
+exchanges and storage.
+Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
 `usegrunt add groq`, `usegrunt add cerebras`, or `usegrunt add kilo` connects another
 provider through the same flow, then restarts grunt with the API sources enabled.
@@ -224,8 +303,10 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-Fresh setup enables the vetted registry pool: Freebuff, OpenCode and Kilo in the
-bundled list. It also preserves an existing `freellmapi` route from an earlier
+Fresh setup offers the bundled Freebuff, OpenCode, Kilo, Zro, Token Harbor,
+Runcrate, APInex, Mistral Vibe Free and LiveKit pool, enabling providers only after their
+required data-sharing approval.
+It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
 them. The daemon loads the saved router login at startup and retries if the
@@ -245,8 +326,15 @@ existing installations and offline regression checks.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package is `usegrunt` (version `0.6.2`); the installed command is `usegrunt`.
-The published package is `usegrunt` and this pull request does not itself publish.
+The package version is `usegrunt` `0.6.5`; the installed command is
+`usegrunt`. The production LiveKit adapter passed a short prompt, a function-tool
+call, its correlated result follow-up and a context with 210,077 input tokens
+through Grunt. The adapter and setup also passed independent code review and local regression checks.
+These checks do not claim a separate blank-machine onboarding run. The three
+sources added in 0.6.4 retain their recorded production-adapter and long-context
+validation.
+Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
+update the two existing file overlays described under Deploy, not the image.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
 provider failover. There is no direct OpenRouter free API route. An already
@@ -254,8 +342,7 @@ configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
 `MILO_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
 cap is (4096) tokens. Select `freellmapi` for the free chain, which tries keyed
 Kilo's free Nemotron 3 Ultra before keyed `kilo-auto/free` when configured. Select
-`kilo` for Auto explicitly. The anonymous Kilo fallback remains available without
-an account. The default registry source `kilo` selects Auto, rather than the
+`kilo` for Auto explicitly. The anonymous Kilo fallback requires the same current Kilo data-sharing approval as keyed Kilo access, even though it does not require an account. Grunt-owned Kilo and Freebuff backend rows are disabled when their approval is absent; custom backend rows retain their own flags and priorities. Legacy backend requests reconcile these rows from the existing private admin file before forwarding, and fail closed if that state cannot be checked. The default registry source `kilo` selects Auto, rather than the
 legacy `freellmapi` chain's Nemotron-first preference. It requires the backend's
 `X-Routed-Via` header to identify `custom/kilo-auto/free`; a backend fallback to
 another route cannot count as a successful Kilo answer or setup check.
@@ -288,9 +375,16 @@ your configuration files and saved login are preserved. Trusty Squire still
 handles provider signup separately during setup. A server supplied through
 `MILO_OPENCODE_URL` keeps its own MCP connections.
 
-`MILO_OPENCODE_MODEL` selects the OpenCode free model (default `big-pickle`).
+New conversations rotate across `deepseek-v4.1-flash-free`,
+`glm-5.3-flash-free` and `big-pickle`. Follow-ups stay with their successful
+model and session. A model that returns a quota error cools down while another
+pool member is tried; the other Grunt sources remain available when the pool
+is exhausted. Providers may share quotas across models, so this does not imply
+three independent credit balances.
+
+`MILO_OPENCODE_MODEL` overrides the pool with one explicit model.
 Use a currently free model from your OpenCode catalog; grunt does not buy credits
-or switch to paid models. `MILO_OPENCODE_URL` optionally connects an existing
+or switch to paid models automatically. `MILO_OPENCODE_URL` optionally connects an existing
 numeric loopback server. If it uses HTTP Basic auth, set
 `OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD` in grunt's environment.
 Avoid configuring that OpenCode server to call grunt, which would create a loop.
@@ -383,8 +477,8 @@ Run `codex`. See the [official configuration reference](https://learn.chatgpt.co
 Codex is opt-in. With the official `codex` CLI already signed in using ChatGPT,
 set `MILO_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
 spends your Codex plan allowance, including the weekly limit. Without
-`MILO_SOURCES`, grunt uses the vetted Freebuff, OpenCode and Kilo pool and never
-launches Codex. With Codex enabled, select model `codex` to use only Codex.
+`MILO_SOURCES`, grunt uses the bundled free pool and current data-sharing
+approvals; it never launches Codex. With Codex enabled, select model `codex` to use only Codex.
 API-key logins do not enable this source. Missing or signed-out Codex is omitted
 from `/v1/models`; grunt continues through the free chain on usage limits.
 
@@ -398,9 +492,17 @@ Codex default back at grunt, which would create a routing loop.
 
 ### Sources and app sessions
 
-The bundled registry contains Freebuff and OpenCode at weight 0.3 each and Kilo
-at weight 0.4. All three currently support text only; Kilo also forwards function
-tool definitions and returns tool calls for the harness to execute.
+The bundled registry has four stable adapters: Freebuff and OpenCode at weight
+0.192 each, Kilo at 0.256 and Zro at 0.16. Experimental Token Harbor, Runcrate,
+APInex, Mistral Vibe Free and LiveKit have weight 0.04 each. Stable weights total 0.8 and
+experimental weights total 0.2. All nine accept text rather than images.
+Kilo, Zro, Token Harbor, Runcrate, APInex and LiveKit forward function tool definitions
+and return tool calls for the harness to execute. Mistral Vibe uses a validated
+text bridge for harness tool calls while its native tools remain disabled. Providers
+with data-sharing policies require current approval before they can be selected.
+LiveKit's [inference data-retention policy](https://docs.livekit.io/agents/models/inference/)
+states zero retention and no training by LiveKit or its underlying providers on
+all plans; it does not add a policy to the existing approval group.
 Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
@@ -419,11 +521,11 @@ adapter's last four KB of output, and an instruction to continue without
 restarting. The checkpoint creates no branch commit or stash entry. Outside a
 git repository, only task text and output are sent.
 
-The owner curates `registry/adapters.json`. The **Publish adapter registry**
-workflow accepts manual dispatch only by the repository owner on `main`, validates
-the registry, uploads it atomically to the Fly gateway volume, and checks
-`GET /v1/registry`. Ordinary code deployments do not publish registry edits.
-Before the first dispatch the endpoint returns HTTP 503. Published data
+The owner curates `registry/adapters.json` and publishes it manually using
+authorized Fly access. Validate the registry, upload it atomically to the
+gateway volume, and check `GET /v1/registry`; GitHub Actions must remain disabled.
+Ordinary code deployments do not publish registry edits.
+Before the first valid registry is published the endpoint returns HTTP 503. Published data
 survives deploys and has an ETag. Stable weights total (0.8) and experimental
 weights total (0.2) when both tiers are present. Unknown adapter identifiers
 are ignored locally and cannot install new code.
@@ -541,7 +643,7 @@ Select model `dots` for the dot only. Model `milo` moves to the next source when
 
 grunt stores its generated device secret in `dots.json` under `MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`, with mode `0600`, and reuses it for later authorizations. It is a grunt relay secret, never an OpenAI token; do not share that file. Local pairing requires a navigation from the configured gateway and a ticket that gateway confirms was approved. It refuses arbitrary origins, return URLs, unapproved tickets, reused tickets and expired tickets.
 
-The public relay runs on `milo-gateway` at api.grunt.run. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: grunt will not forward an existing device secret to another origin. The gateway's `MILO_PUBLIC_URL` defaults to `https://api.grunt.run` and controls OAuth metadata. Deployment uses the existing merge-to-main workflow.
+The public relay runs on `milo-gateway` at api.grunt.run. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: grunt will not forward an existing device secret to another origin. The gateway's `MILO_PUBLIC_URL` defaults to `https://api.grunt.run` and controls OAuth metadata. Deployment is manual; GitHub Actions remains disabled.
 
 The relay sends a signed event containing only a request ID and fixed summary. The dot reads the conversation with `milo_get_request`, then calls `milo_submit_reply(requestId, text)` or `milo_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry earlier user and assistant turns. Prompt text is removed from SQLite when answered or expired; replies remain only until local acknowledgment or expiry. Text is never written to application logs. The relay temporarily stores conversation text and the dot receives it, so send only content you intend to share.
 

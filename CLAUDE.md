@@ -13,6 +13,9 @@ One TypeScript Node app. Read README.md and docs/reference.md for setup and beha
 Run `pnpm lint`, `pnpm test`, and `pnpm build`. Use Node 22 or later.
 Tests use a fake OpenRouter and never need a real key or network.
 
+GitHub Actions is disabled for this project at the owner's request. Run checks
+locally; do not enable or dispatch GitHub Actions workflows.
+
 Keys arrive in a Bearer header. Hash them for identity. Never write keys or
 upstream error payloads to the database, logs, source or test fixtures. Synthetic
 keys are permitted in offline tests. Workers get a brief and notes, never raw chat.

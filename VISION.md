@@ -16,6 +16,8 @@ A default install spends no money and no paid allowance.
 Every source that can cost money or plan quota is off until the person names it.
 grunt never buys credits, never upgrades a plan, and never switches to a paid model on its own.
 When a free source carries a hidden price, such as prompt retention or terms risk, grunt says so in plain words.
+Setup asks once for the data-sharing policies of Freebuff, OpenCode, Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free together, and remembers the approved policies.
+Declining skips those sources and continues with Zro and LiveKit, subject to their free-account checks; changed policies require approval again before signup or routing. LiveKit documents zero retention and no training for inference, so it adds no sharing policy.
 
 ## Free tokens are personal
 
@@ -31,7 +33,9 @@ It does not serve industrial or bulk workloads.
 The registry lists the adapters that offer free tokens, with a tier and a fixed weight for each.
 A weight is the chance that an adapter is picked for a new task.
 Stable adapters share 0.8 of the weight and experimental adapters share 0.2.
-The bundled starting pool has three stable adapters: Freebuff and OpenCode at 0.3 each, and Kilo at 0.4.
+The bundled starting pool has four stable adapters: Freebuff and OpenCode at 0.192 each, Kilo at 0.256 and Zro at 0.16.
+Five experimental sources have weight 0.04 each: Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit. Each joins after its required data-sharing approval and free-account checks. LiveKit uses the free Build plan's included inference allowance with a hard stop, no card and no paid fallback.
+Cloudflare Qwen is excluded from this pool by the owner's choice; NVIDIA remains optional while its account verification is unvetted.
 New sources enter by pull request, are tested, and reach people only when the owner publishes the registry.
 The registry can only select adapters that grunt already has code for; it cannot add code.
 The daemon pulls the registry once a day and keeps the last good copy when the gateway is down.
@@ -54,9 +58,9 @@ The daemon serves the model endpoint on localhost and binds loopback only.
 The harness keeps the agent loop, tools and conversation; grunt answers its model calls.
 Adapters act with the person's own filesystem permissions.
 The gateway serves the published registry; it never receives prompts, files or keys.
-Provider keys stay in the person's vault, and grunt receives scoped, revocable grants instead.
-No key, token or device secret appears in logs, terminal output or config.
-grunt reuses logins the person already holds and never reads or rewrites another tool's login files.
+API-provider keys stay in the person's vault, and grunt receives scoped, revocable grants instead. Native CLIs keep their credentials in their own private storage; LiveKit signs ten-minute inference-only tokens for grunt to hold in memory.
+No key, token or device secret appears in logs, terminal output or harness config.
+grunt reuses logins the person already holds. Official native CLIs manage their own login files; grunt does not copy their credentials.
 
 ## One command to a working agent
 

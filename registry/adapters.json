@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "published": "2026-11-14T22:10:00Z",
+  "published": "2026-11-15T06:09:28Z",
   "adapters": [
     {
       "id": "freebuff",
       "kind": "agent",
       "tier": "stable",
-      "weight": 0.3,
+      "weight": 0.192,
       "modalities": [
         "text"
       ],
@@ -17,24 +17,100 @@
       "id": "opencode",
       "kind": "agent",
       "tier": "stable",
-      "weight": 0.3,
+      "weight": 0.192,
       "modalities": [
         "text"
       ],
       "install": "npm:opencode-ai",
-      "model": "big-pickle"
+      "models": [
+        "deepseek-v4.1-flash-free",
+        "glm-5.3-flash-free",
+        "big-pickle"
+      ]
     },
     {
       "id": "kilo",
       "kind": "model",
       "tier": "stable",
-      "weight": 0.4,
+      "weight": 0.256,
       "modalities": [
         "text"
       ],
       "install": "builtin:kilo",
       "signup": "https://app.kilo.ai/profile",
       "model": "kilo-auto/free"
+    },
+    {
+      "id": "zro",
+      "kind": "model",
+      "tier": "stable",
+      "weight": 0.16,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:zro",
+      "signup": "https://zro.moonmath.ai/overview",
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "id": "tokenharbor",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.04,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:tokenharbor",
+      "signup": "https://tokenharbor.ai/dashboard",
+      "model": "deepseek-v4.1-flash:free"
+    },
+    {
+      "id": "runcrate",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.04,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:runcrate",
+      "signup": "https://www.runcrate.ai/inference/free",
+      "model": "deepseek-ai/DeepSeek-V4.1-Flash"
+    },
+    {
+      "id": "apinex",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.04,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:apinex",
+      "signup": "https://apinex.bond/register",
+      "model": "free/deepseek-v4.1-flash"
+    },
+    {
+      "id": "mistral-vibe",
+      "kind": "agent",
+      "tier": "experimental",
+      "weight": 0.04,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:mistral-vibe",
+      "signup": "https://console.mistral.ai/",
+      "model": "zai-glm-5-3-flash-vibe-free"
+    },
+    {
+      "id": "livekit",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.04,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:livekit",
+      "signup": "https://cloud.livekit.io/",
+      "model": "deepseek-ai/deepseek-v4.1-flash"
     }
   ]
 }

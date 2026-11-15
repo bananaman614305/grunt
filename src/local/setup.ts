@@ -16,12 +16,25 @@ import { freeConfig, loopback } from './freellmapi.js';
 import { proxyApproval } from './approval-proxy.js';
 import { VerificationQueue } from './verification-queue.js';
 import { withTerminal } from './terminal.js';
+import { Nvidia, writeNvidiaGrant } from './nvidia.js';
+import { Zro, writeZroGrant } from './zro.js';
+import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
+import { Runcrate, writeRuncrateGrant } from './runcrate.js';
+import { Apinex, writeApinexGrant } from './apinex.js';
+import { setupMistralVibe } from './mistral-vibe-setup.js';
+import { setupLiveKit } from './livekit-setup.js';
+import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } from './data-sharing.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io' };
+const freeProviderInstructions: Record<string, string> = {
+  runcrate: ' Verify that the GitHub account is at least 30 days old. Use the normal Get your free tokens link at https://www.runcrate.ai/dashboard/api-keys#free-card to activate its recurring weekly allowance; verify the free tier is active via GitHub and not paused. Leave optional marketing unchecked. Verify no paid subscription, no purchased balance, no payment method and automatic top-ups disabled. If any of these checks fails, stop and report it; do not change billing settings or create another account. Use only deepseek-ai/DeepSeek-V4.1-Flash at api.runcrate.ai. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Reuse an existing vaulted key where possible; never reset or rotate it.',
+  apinex: ' Verify the Free plan and complete today\'s ordinary DAILY CHECK-IN to activate recurring free quota. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Use only free/deepseek-v4.1-flash at api.apinex.bond, never a wallet-funded model or paid sibling. Verify the check-in for the current UTC date is actually claimed and free quota is active; absence of a check-in modal alone is insufficient. Do not use or change any existing paid wallet balance. Dismiss any paid upsell after check-in. Do not add billing, top up a wallet, buy credits, or use any paid balance. If check-in or free access cannot be confirmed, stop and report it. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
+};
 export type Provider = keyof typeof PROVIDERS;
 export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+export { NVIDIA_DEEPSEEK } from './nvidia.js';
 const savedProviders = ['kilo'] as const;
 const providerModels: Record<string, string[]> = { kilo: [KILO_NEMOTRON, 'kilo-auto/free'] };
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
@@ -69,7 +82,7 @@ export interface SetupSquire {
   runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string }> };
 }
 export class SetupPending extends Error {}
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; verifySaved?: readonly Provider[]; dataSharingApproved?: readonly string[] } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string) => {
@@ -81,7 +94,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
     const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
-    if (!credential) {
+    if (!credential || options.verifySaved?.includes(provider)) {
       const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
       if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
       if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason); continue; }
@@ -103,7 +116,9 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     options.notify(`${provider}: connected through Squire grant`);
   }
   // These sources reuse existing vault access only; missing keys never start signup.
-  for (const provider of savedProviders) {
+  const approved = options.dataSharingApproved ?? await readDataSharingConsent(dirname(localAdminPath()), savedProviders);
+  for (const provider of options.reuseSaved === false ? [] : savedProviders) {
+    if (dataSharingPolicies([provider]).length && !approved.includes(provider)) continue;
     if (options.providers?.includes(provider)) continue;
     if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
     const credential = (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
@@ -125,20 +140,26 @@ export function squireEnvironment() {
   };
 }
 export class BrowserSquire implements SetupSquire {
-  constructor(private options: { background?: boolean; signal?: AbortSignal } = {}) {}
+  constructor(private options: { background?: boolean; signal?: AbortSignal; dataSharingApproved?: readonly string[] } = {}) {}
+  approveDataSharing(providers: readonly string[]) { this.options.dataSharingApproved = [...new Set(providers)]; }
   private client = new Client({ name: 'grunt setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
+  private recoveryChoices = new Map<string, Set<string>>();
+  private pending = new Set<Promise<Run>>();
+  private closed = false;
+  private shutdown = new AbortController();
+  private get signal() { return this.options.signal ? AbortSignal.any([this.options.signal, this.shutdown.signal]) : this.shutdown.signal; }
   private handoffs: { url: string; close(): void }[] = [];
   private connection: Promise<void> | undefined;
   private metadata: Promise<Credential[]> | undefined;
   private grants = new Map<string, Promise<{ base_url: string; token: string }>>();
   private verification = new VerificationQueue(items => withTerminal(async () => {
-    this.options.signal?.throwIfAborted();
+    this.signal.throwIfAborted();
     for (const item of items) console.log(`Complete ${item.service} verification in this browser: ${item.url}`);
     const { confirm, isCancel } = await import('@clack/prompts');
-    const done = await confirm({ message: `Finished verification for ${items.map(item => item.service).join(', ')}? Resume setup.`, initialValue: true });
+    const done = await confirm({ message: `Finished verification for ${items.map(item => item.service).join(', ')}? Resume setup.`, initialValue: true, signal: this.signal });
     if (isCancel(done) || !done) throw new Error('Provider verification cancelled');
-    this.options.signal?.throwIfAborted();
+    this.signal.throwIfAborted();
   }));
   connect(): Promise<void> {
     return this.connection ??= this.connectOnce().catch(error => { this.connection = undefined; throw error; });
@@ -179,7 +200,7 @@ export class BrowserSquire implements SetupSquire {
     }
   }
   async call(name: string, args: ObjectValue, connectionCheck = false): Promise<ObjectValue> {
-    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 60000, ...(this.options.signal ? { signal: this.options.signal } : {}) }).catch(error => {
+    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: name === 'operate_finish' ? 10000 : 60000, ...(name === 'operate_finish' ? {} : { signal: this.signal }) }).catch(error => {
       if (connectionCheck) throw error;
       throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
     });
@@ -215,49 +236,96 @@ export class BrowserSquire implements SetupSquire {
     return { base_url: result.base_url, token: result.token };
   }
 
+  private async finishSession(provider: string, completed = false) {
+    const id = this.sessions.get(provider);
+    if (!id) return;
+    try {
+      await this.call('operate_finish', { session_id: id, outcome: completed ? 'result' : 'none',
+        ...(completed ? { summary: 'grunt provider key stored in user vault' } : {}) });
+      if (this.sessions.get(provider) === id) this.sessions.delete(provider);
+      this.recoveryChoices.delete(provider);
+    } catch { /* Preserve the original error; close retries a failed cleanup. */ }
+  }
   async signup(service: string, url: string, goal: string): Promise<void> {
     const deadline = Date.now() + 600000;
-    while (Date.now() < deadline) {
-      this.options.signal?.throwIfAborted();
-      const result = await this.drive(service, url, goal);
-      if (result.run.state === 'completed') return;
-      if (result.run.state !== 'running') throw new Error(`${service}: signup could not be completed`);
-    }
-    throw new Error(`${service}: signup timed out; rerun setup to resume`);
+    try {
+      while (Date.now() < deadline) {
+        this.signal.throwIfAborted();
+        const result = await this.drive(service, url, goal);
+        if (result.run.state === 'completed') return;
+        if (result.run.state !== 'running') throw new Error(`${service}: signup could not be completed`);
+      }
+      throw new Error(`${service}: signup timed out; rerun setup to resume`);
+    } finally { await this.finishSession(service); }
   }
   private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
-    const session = this.sessions.get(provider);
-    const result = await this.call('operate_drive', {
-      ...(session ? { session_id: session } : { url }),
-      goal: goal ?? `Use the user's existing ${provider} account or sign up for the free plan. Create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''} No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`,
-      facts: { plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 60
-    });
-    if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
-    const reason = setupReason(result.reason, result.remaining);
-    const classification = [result.reason, result.remaining].filter(value => typeof value === 'string').join(' ').replace(/[_-]/g, ' ');
-    const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(classification);
-    if (refusal) throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
-    if (result.status === 'complete') {
-      this.metadata = undefined; // A browser capture may have added a credential.
-      const id = this.sessions.get(provider);
-      if (id) { await this.call('operate_finish', { session_id: id, outcome: 'result', summary: 'grunt provider key stored in user vault' }); this.sessions.delete(provider); }
-      return { run: { id: provider, state: 'completed' }, decision: 'silent' };
-    }
-    const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
-    if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
-    if (humanStep && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
-    if (humanStep && this.sessions.has(provider)) {
-      const url = await this.humanHandoff(this.sessions.get(provider)!);
-      if (this.options.background) {
-        console.log(`Complete ${provider} verification in this browser: ${url}`);
-        await delay(5000, undefined, this.options.signal ? { signal: this.options.signal } : {});
+    if (this.closed) throw new Error('Squire setup is closed');
+    const pending = this.driveOnce(provider, url, goal);
+    this.pending.add(pending);
+    try { return await pending; }
+    catch (error) { await this.finishSession(provider); throw error; }
+    finally { this.pending.delete(pending); }
+  }
+  private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
+    const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route data-sharing disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
+    const instruction = customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`;
+    let answer: string | undefined;
+    while (true) {
+      this.signal.throwIfAborted();
+      const session = this.sessions.get(provider);
+      const result = await this.call('operate_drive', {
+        ...(session ? { session_id: session } : { url }), goal: instruction,
+        facts: { plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 60,
+        ...(answer ? { answer } : {})
+      });
+      if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
+      // The driver's remaining field can repeat our own goal, including refusal
+      // and human-verification instructions. That is not evidence from the site.
+      const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
+      const remaining = typeof result.remaining === 'string' && result.remaining.trim()
+        && !normalize(instruction).includes(normalize(result.remaining))
+        && !normalize(result.remaining).includes(normalize(instruction)) ? result.remaining : undefined;
+      const reason = setupReason(result.reason, remaining);
+      const classification = [result.reason, remaining].filter(value => typeof value === 'string').join(' ').replace(/[_-]/g, ' ');
+      const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(classification);
+      if (refusal) throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
+      if (result.status === 'complete') {
+        this.metadata = undefined; // A browser capture may have added a credential.
+        await this.finishSession(provider, true);
+        return { run: { id: provider, state: 'completed' }, decision: 'silent' };
+      }
+      const uncertain = result.status === 'low_confidence' || result.status === 'no_progress';
+      if (uncertain && this.sessions.has(provider)) {
+        const used = this.recoveryChoices.get(provider) ?? new Set<string>();
+        this.recoveryChoices.set(provider, used);
+        // Only resume choices the browser actually offered. Never guess consent,
+        // payment, arbitrary Continue controls, or repeat a dispatched OAuth click.
+        const choice = Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
+          && /^(?:reject optional|reject all(?: cookies)?|only necessary(?: cookies)?|continue without accepting|more signup options)$/i.test(label.trim())
+          && !used.has(label.trim().toLowerCase()));
+        if (choice && used.size < 4) {
+          used.add((choice[1] as string).trim().toLowerCase()); answer = choice[0]; continue;
+        }
+      }
+      const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
+      if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
+      // A driver that cannot choose the next action still owns a resumable tab.
+      // Share that exact browser instead of silently dropping the signup.
+      const handoff = humanStep || uncertain || result.status === 'stuck';
+      if (handoff && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
+      if (handoff && this.sessions.has(provider)) {
+        const url = await this.humanHandoff(this.sessions.get(provider)!);
+        if (this.options.background) {
+          console.log(`Complete ${provider} verification in this browser: ${url}`);
+          await delay(5000, undefined, { signal: this.signal });
+          return { run: { id: provider, state: 'running' }, decision: 'silent' };
+        }
+        await this.verification.wait({ service: provider, url });
         return { run: { id: provider, state: 'running' }, decision: 'silent' };
       }
-      await this.verification.wait({ service: provider, url });
-      return { run: { id: provider, state: 'running' }, decision: 'silent' };
+      await this.finishSession(provider);
+      return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason: reason || 'Signup could not be completed' };
     }
-    this.sessions.delete(provider);
-    return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason: reason || 'Signup could not be completed' };
   }
   async humanHandoff(session: string) {
     const share = await this.call('operate_share', { session_id: session });
@@ -269,7 +337,14 @@ export class BrowserSquire implements SetupSquire {
     start: async (input: ProvisionInput) => this.drive(input.service as Provider),
     get: async (id: string) => { const result = await this.drive(id as Provider); return { state: result.run.state, ...(result.approval_url ? { approval_url: result.approval_url } : {}), ...(result.reason ? { reason: result.reason } : {}) }; }
   };
-  async close() { for (const handoff of this.handoffs) handoff.close(); await this.client.close(); }
+  async close() {
+    this.closed = true;
+    this.shutdown.abort();
+    await Promise.allSettled([...this.pending]);
+    await Promise.allSettled([...this.sessions.keys()].map(provider => this.finishSession(provider)));
+    for (const handoff of this.handoffs) handoff.close();
+    await this.client.close();
+  }
 }
 
 const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway' })[provider] ?? '/v1';
@@ -322,15 +397,18 @@ export class FreeLLMAdmin {
       }
     }
   }
-  async configureChain(excluded: string[] = []) {
+  async configureChain(excluded: string[] = [], dataSharingApproved?: readonly string[]) {
+    const approved = dataSharingApproved ?? await readDataSharingConsent(dirname(localAdminPath()), DATA_SHARING_POLICIES.map(policy => policy.provider));
     const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean }[];
     const rows = chain.map(row => {
       const provider = [...Object.keys(PROVIDERS), ...savedProviders].find(provider => row.keyLabel === `Milo ${provider} (Squire)`);
-      const fallback = !provider && (row.modelId === 'freebuff' || row.modelId === 'kilo-auto/free');
+      const owned = managedSharingProvider(row);
+      const fallback = !provider && owned !== undefined;
+      const sharingAllowed = !owned || approved.includes(owned);
       const vetted = !provider || !providerModels[provider] || providerModels[provider].includes(row.modelId);
       return { modelDbId: row.modelDbId,
-        enabled: fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true),
-        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : row.priority };
+        enabled: sharingAllowed && (fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true)),
+        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : owned === 'freebuff' ? 1000000 : owned === 'kilo' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
@@ -393,9 +471,9 @@ type LocalAdmin = { password: string; encryption: string };
 function localAdminPath() {
   return join(process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo'), 'router-admin.json');
 }
-async function readLocalAdmin(): Promise<LocalAdmin | undefined> {
+async function readLocalAdmin(path = localAdminPath()): Promise<LocalAdmin | undefined> {
   let handle;
-  try { handle = await open(localAdminPath(), constants.O_RDONLY | constants.O_NOFOLLOW); }
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw new Error('Cannot read the local router admin file; setup stopped');
@@ -419,6 +497,27 @@ async function saveLocalAdmin(admin: LocalAdmin) {
   } catch { throw new Error('Cannot save the local router admin file; setup stopped'); }
   finally { await rm(temporary, { force: true }).catch(() => {}); }
 }
+type FallbackRow = { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean };
+function managedSharingProvider(row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>): string | undefined {
+  if (row.platform !== 'custom') return;
+  if (row.keyLabel === 'Milo kilo (Squire)' || (row.keyLabel === 'Kilo Free' && row.modelId === 'kilo-auto/free')) return 'kilo';
+  if (row.keyLabel === 'Freebuff' && row.modelId === 'freebuff') return 'freebuff';
+  return;
+}
+// Reconcile only Grunt-owned sharing rows before a legacy backend request. This
+// never provisions a router, changes custom rows, or enables a disabled row.
+export async function guardRouterSharing(url: string, directory: string): Promise<void> {
+  const approved = await readDataSharingConsent(directory, ['kilo', 'freebuff']);
+  if (approved.includes('kilo') && approved.includes('freebuff')) return;
+  const admin = await readLocalAdmin(join(directory, 'router-admin.json'));
+  if (!admin) throw new Error('Local router admin state is required to enforce data-sharing choices; rerun usegrunt setup');
+  const router = new FreeLLMAdmin(url);
+  await router.login(admin.password);
+  const chain = await router.call('/fallback', undefined, 'GET') as FallbackRow[];
+  const updates = chain.filter(row => { const provider = managedSharingProvider(row); return provider && !approved.includes(provider) && row.enabled !== false; })
+    .map(row => ({ modelDbId: row.modelDbId, enabled: false, priority: row.priority }));
+  if (updates.length) await router.call('/fallback', updates, 'PUT');
+}
 // Read the login already created by setup; never provision or change router state.
 export async function loadRouterKey(url: string): Promise<string> {
   const admin = await readLocalAdmin();
@@ -429,13 +528,16 @@ export async function loadRouterKey(url: string): Promise<string> {
   if (typeof key !== 'string' || !key.trim()) throw new Error('Local router returned an invalid API key');
   return key;
 }
-export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal } = {}) {
-  const owned = options.squire ? undefined : new BrowserSquire(options.signal ? { signal: options.signal } : {});
-  const squire = options.squire ?? owned!;
-  const router = new FreeLLMAdmin();
-  try {
-    await owned?.connect();
-    options.signal?.throwIfAborted();
+const routerStarts = new Map<string, Promise<FreeLLMAdmin>>();
+// Provider signups overlap, but they must share one local router initialization.
+// Otherwise two fresh jobs can generate different encryption keys for one DB.
+function readyRouter(signal?: AbortSignal): Promise<FreeLLMAdmin> {
+  const key = JSON.stringify([localAdminPath(), process.env.MILO_FREELLMAPI_URL, process.env.MILO_ROUTER_RUNTIME]);
+  const existing = routerStarts.get(key);
+  if (existing) return existing;
+  const starting = (async () => {
+    const router = new FreeLLMAdmin();
+    signal?.throwIfAborted();
     const saved = await readLocalAdmin();
     if (!saved && process.env.MILO_ROUTER_RUNTIME !== 'docker') {
       const database = join(dirname(localAdminPath()), 'freellmapi', 'router.db');
@@ -455,20 +557,114 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
       const { ensureNativeRouter } = await import('./native-router.js');
       let running = false;
       if (saved) { try { await router.login(admin.password); running = true; } catch { /* Repair an unavailable backend. */ } }
-      if (!running) await ensureNativeRouter(options.signal);
+      if (!running) await ensureNativeRouter(signal);
     }
     let ready = false;
     for (let attempt = 0; attempt < 60; attempt++) {
-      options.signal?.throwIfAborted();
-      try { await router.login(admin.password); ready = true; break; } catch { await delay(1000, undefined, options.signal ? { signal: options.signal } : {}); }
+      signal?.throwIfAborted();
+      try { await router.login(admin.password); ready = true; break; } catch { await delay(1000, undefined, signal ? { signal } : {}); }
     }
     if (!ready) throw new Error('Local FreeLLMAPI did not start; inspect its health before resuming setup');
     await router.ensureFreeFallbacks();
     await router.configureChain();
-    const result = await setupProviders(squire, router, { providers, notify });
+    return router;
+  })();
+  routerStarts.set(key, starting);
+  void starting.finally(() => { if (routerStarts.get(key) === starting) routerStarts.delete(key); }).catch(() => {});
+  return starting;
+}
+export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; dataSharingApproved?: readonly string[] } = {}) {
+  const location = options.directory ?? process.env.MILO_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+  const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(location, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
+  const unapproved = dataSharingPolicies(providers).filter(policy => !approved.includes(policy.provider));
+  if (unapproved.length) throw new Error(`${unapproved.map(policy => policy.name).join(', ')} data sharing requires the grouped setup approval`);
+  const owned = options.squire ? undefined : new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), dataSharingApproved: approved });
+  if (options.squire instanceof BrowserSquire) options.squire.approveDataSharing(approved);
+  const squire = options.squire ?? owned!;
+  try {
+    await owned?.connect();
+    options.signal?.throwIfAborted();
+    if (providers.includes('livekit')) {
+      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup'>;
+      if (typeof browser.signup !== 'function') throw new Error('LiveKit native signup requires a browser-capable Squire client');
+      await setupLiveKit({ directory: location, squire: browser, notify, ...(options.signal ? { signal: options.signal } : {}) });
+      providers = providers.filter(provider => provider !== 'livekit');
+    }
+    if (providers.includes('mistral-vibe')) {
+      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup'>;
+      if (typeof browser.signup !== 'function') throw new Error('Mistral Vibe native signup requires a browser-capable Squire client');
+      await setupMistralVibe({ directory: location, squire: browser, notify, ...(options.signal ? { signal: options.signal } : {}) });
+      providers = providers.filter(provider => provider !== 'mistral-vibe');
+    }
+    for (const provider of ['runcrate', 'apinex'] as const) {
+      if (!providers.includes(provider)) continue;
+      const source = provider === 'runcrate' ? new Runcrate({ directory: location }) : new Apinex({ directory: location });
+      const writeGrant = provider === 'runcrate' ? writeRuncrateGrant : writeApinexGrant;
+      try {
+        const result = await setupProviders(squire, {
+          hasKey: async id => id === provider && await source.available(),
+          addGrant: async (id, grant) => {
+            if (id !== provider) throw new Error(`Unexpected ${provider} credential`);
+            await writeGrant(grant, location);
+            if (!await source.available()) throw new Error(`${provider}: verified free access is unavailable`);
+          }
+        }, { providers: [provider], notify, reuseSaved: false, verifySaved: [provider] });
+        if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
+      } finally { await source.close(); }
+      providers = providers.filter(id => id !== provider);
+    }
+    if (!providers.length) return {};
+    if (providers.includes('zro')) {
+      const source = new Zro({ directory: location });
+      try {
+        const result = await setupProviders(squire, {
+          hasKey: async provider => provider === 'zro' && await source.available(),
+          addGrant: async (provider, grant) => {
+            if (provider !== 'zro') throw new Error('Unexpected Zro credential');
+            await writeZroGrant(grant, location);
+          }
+        }, { providers: ['zro'], notify, reuseSaved: false, verifySaved: ['zro'] });
+        if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
+      } finally { await source.close(); }
+      providers = providers.filter(provider => provider !== 'zro');
+      if (!providers.length) return {};
+    }
+    if (providers.includes('tokenharbor')) {
+      const source = new TokenHarbor({ directory: location });
+      try {
+        const result = await setupProviders(squire, {
+          hasKey: async provider => provider === 'tokenharbor' && await source.available(),
+          addGrant: async (provider, grant) => {
+            if (provider !== 'tokenharbor') throw new Error('Unexpected Token Harbor credential');
+            await writeTokenHarborGrant(grant, location);
+          }
+        }, { providers: ['tokenharbor'], notify, reuseSaved: false, verifySaved: ['tokenharbor'] });
+        if (result.dropped.length) throw new Error('Token Harbor setup incomplete; rerun usegrunt setup');
+      } finally { await source.close(); }
+      providers = providers.filter(provider => provider !== 'tokenharbor');
+      if (!providers.length) return {};
+    }
+    if (providers.includes('nvidia')) {
+      const source = new Nvidia();
+      try {
+        const result = await setupProviders(squire, {
+          hasKey: async provider => provider === 'nvidia' && await source.available(),
+          addGrant: async (provider, grant) => {
+            if (provider !== 'nvidia') throw new Error('Unexpected NVIDIA credential');
+            await writeNvidiaGrant(grant);
+          }
+        }, { providers: ['nvidia'], notify, reuseSaved: false });
+        if (result.dropped.length) throw new Error('NVIDIA setup incomplete; rerun usegrunt setup');
+      } finally { await source.close(); }
+      providers = providers.filter(provider => provider !== 'nvidia');
+      if (!providers.length) return {};
+    }
+    const router = await readyRouter(options.signal);
+    options.signal?.throwIfAborted();
+    const result = await setupProviders(squire, router, { providers, notify, dataSharingApproved: approved });
     const dropped = new Set(result.dropped);
     if (dropped.size) throw new Error(`Provider setup incomplete: ${[...dropped].join(', ')}`);
-    await router.configureChain([...dropped]);
+    await router.configureChain([...dropped], approved);
     return { key: await router.key() };
   } catch (error) {
     // Child-process and SDK errors may contain request data. Keep those local.

@@ -8,6 +8,7 @@ import { parallelMap } from './parallel.js';
 import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
+import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import type { Source } from './source.js';
 
 const exec = promisify(execFile);
@@ -64,10 +65,14 @@ export async function setupFallbacks(options: {
   adapters?: string[];
   connect?: () => Promise<void>;
   signal?: AbortSignal;
+  dataSharingApproved?: readonly string[];
 }) {
-  const squire = options.squire ?? new BrowserSquire();
+  const squire = options.squire ?? new BrowserSquire({ dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
   const unavailable: string[] = [];
+  const adapters = options.adapters ?? ['freebuff', 'opencode'];
+  const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
+  if (squire instanceof BrowserSquire) squire.approveDataSharing(approved);
   // Reuse a grant created by an earlier setup before probing the free model.
   const savedConfig = join(options.directory, 'opencode-free.json');
   try { await access(savedConfig); process.env.OPENCODE_CONFIG = savedConfig; }
@@ -146,15 +151,85 @@ export async function setupFallbacks(options: {
       kilo: async () => { try {
         await connect();
         if (!squire.runs) throw new Error('Provider signup requires Squire');
-        await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, ...(options.signal ? { signal: options.signal } : {}) });
+        await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, directory: options.directory, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Kilo: free API access connected through Squire');
       } catch {
         unavailable.push('kilo');
         options.notify('Kilo setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } },
+      zro: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['zro'], { squire: squire as SetupSquire, directory: options.directory, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Zro: daily free DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('zro');
+        options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } },
+      tokenharbor: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['tokenharbor'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Token Harbor: approved free DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('tokenharbor');
+        options.notify('Token Harbor setup incomplete or data sharing not approved. Run usegrunt setup to finish; other routes remain available.');
+      } },
+      runcrate: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['runcrate'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Runcrate: GitHub-verified weekly free DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('runcrate');
+        options.notify('Runcrate free setup incomplete. GitHub must be at least 30 days old; rerun usegrunt setup to resume. Other routes remain available.');
+      } },
+      apinex: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['apinex'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('APInex: daily check-in verified for free DeepSeek V4.1 Flash access through Squire');
+      } catch {
+        unavailable.push('apinex');
+        options.notify('APInex free setup or daily check-in incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } },
+      'mistral-vibe': async () => { try {
+        await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['mistral-vibe'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Mistral Vibe: native free GLM 5.3 Flash access connected through Squire');
+      } catch {
+        unavailable.push('mistral-vibe');
+        options.notify('Mistral Vibe native free setup incomplete. Install uv or Python 3.12+ if missing, then rerun usegrunt setup; other routes remain available.');
+      } },
+      livekit: async () => { try {
+        await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['livekit'], { squire: squire as SetupSquire, directory: options.directory,
+          ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('LiveKit: native free Build DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('livekit');
+        options.notify('LiveKit free Build signup or native CLI pairing incomplete. Rerun usegrunt setup; other routes remain available.');
+      } },
+      nvidia: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['nvidia'], { squire: squire as SetupSquire, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('NVIDIA: free DeepSeek V4.1 Flash API access connected through Squire');
+      } catch {
+        unavailable.push('nvidia');
+        options.notify('NVIDIA setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } }
       };
-    const adapters = options.adapters ?? ['freebuff', 'opencode'];
     await parallelMap(adapters, async id => {
+      if (requiresDataSharing(id) && !approved.includes(id)) {
+        unavailable.push(id);
+        options.notify(`${id}: skipped until the grouped data-sharing approval is granted`);
+        return;
+      }
       const task = tasks[id];
       if (!task) throw new Error('Unsupported vetted adapter');
       await task();
