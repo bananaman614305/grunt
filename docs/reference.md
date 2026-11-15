@@ -125,7 +125,8 @@ removed. There is no Jev, billing, roster service, worker tooling or monorepo.
 
 ## Use grunt as your harness's model
 
-Run the separate local daemon on your own machine (Node 22+, Linux or macOS).
+Run the separate local daemon on your own machine (Linux or macOS). Use Node 22
+or 24 LTS for the setup wizard.
 Setup installs the vetted adapters and tmux when needed and connects accounts
 through Trusty Squire:
 
@@ -192,6 +193,10 @@ handoffs queue while other jobs continue. Interactive installers and confirmatio
 take turns owning the terminal. Provider verification remains individual, and
 Squire has no batch-grant API. Grouped prompts do not create shared provider
 accounts or bypass a provider's verification.
+
+Setup helpers can cancel one provider without stopping other jobs or the shared
+broker. A pending initial browser operation may finish before its owned tab can
+be closed; cancelled providers do not continue or open another handoff.
 
 Setup ends by offering to connect grunt to the coding tools it finds on PATH
 (Pi is preselected; non-interactive runs connect Pi only). Each choice adds a
@@ -414,6 +419,10 @@ Grunt bridge received an explicit relaying-policy HTTP 403 and a strike. Testing
 stopped, the pin prototype was removed, and no pin shipped. Read-only review is
 examining the provider's supported scope for transparent, human-initiated use of
 one's own account; there are no further live retries or origin-concealment changes.
+On November 15, the existing account's official Developer API page showed a $0
+prepaid balance and required at least $10 before key creation. No recurring free
+API entitlement was established; the page did not show the interactive free
+allowance as usable API credit.
 The public package remains 0.6.5 with nine sources.
 Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
 update the two existing file overlays described under Deploy, not the image.
@@ -614,9 +623,10 @@ working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
 
 A quota error switches immediately and bars that adapter until Retry-After,
-or one hour. Three consecutive upstream failures or timeouts in a task bar it
-for fifteen minutes. A missing installation or expired login bars it until a
-successful health check. Cancellation and provider refusal do not switch.
+or one hour. In registry routing, other upstream failures, timeouts and provider
+refusals switch immediately and bar the adapter for fifteen minutes. A missing
+installation or expired login bars it until a successful health check. Caller
+cancellation stops the chain.
 When no eligible adapter remains, the API returns HTTP 429 and, when known,
 the earliest Retry-After. Agent adapters return final text, so streaming headers
 are sent after completion; quota failures retain their HTTP status.
@@ -636,7 +646,7 @@ survives deploys and has an ETag. Stable weights total (0.8) and experimental
 weights total (0.2) when both tiers are present. Unknown adapter identifiers
 are ignored locally and cannot install new code.
 
-The daemon synchronizes on startup and every twenty-four hours with
+The daemon synchronizes on startup and at midnight UTC with
 If-None-Match. It tries `https://api.grunt.run/v1/registry` first and falls back
 to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
 unreachable. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
@@ -707,7 +717,7 @@ Errors carry `not_installed`, `logged_out`, `quota`, `timeout`, `refused`, or `u
 the harness's error envelope. Missing executables are detected immediately.
 Freebuff refusals (`prompt_policy_refused`) in the chat log return a typed `refused` error immediately and permit source failover. Long pastes stored in text attachments are supported.
 
-The driver runs a bounded `freebuff doctor` preflight and reads startup log errors before waiting for a saved user message. A turn that is never persisted fails with a startup error after (10 seconds). Recognized login and exhausted-hours diagnostics return typed errors immediately.
+The driver runs a bounded `freebuff doctor` preflight and reads startup log errors before waiting for a saved user message. A turn that is never persisted fails with a startup error after (10 seconds). Recognized login and exhausted-hours diagnostics return typed errors immediately. Known refusal, quota and login failures use generic messages rather than returning raw native diagnostic payloads.
 Unrecognized startup failures return a clear upstream error; they do not wait
 for the full model-turn timeout. Stable malformed chat data returns an explicit format error.
 Authentication, quota, missing-app and upstream availability failures can try the
@@ -718,6 +728,8 @@ The source interface is in `src/local/source.ts`; `Multiplexer` is in
 `src/local/multiplexer.ts`. Register another app in local configuration without
 changing API handlers. Offline tests replay recorded harness request shapes and
 run a fake Freebuff TUI through real tmux; they require tmux but no credentials.
+The [fixture notes](../src/local/fixtures/README.md) describe the recorded clients,
+sanitized request fields and synthetic responses used by those tests.
 
 To demonstrate the built daemon offline, run `pnpm build && node src/local/proof.mjs`.
 It starts the real local entry point with a temporary fake Freebuff on PATH,

@@ -18,7 +18,7 @@ https://grunt.run. `milo` and `milo-local` remain aliases.
 
 The published 0.6.5 package has a nine-source pool. This branch prepares a held 0.6.6 draft with eleven sources: Freebuff, OpenCode, Kilo, Zro, Token Harbor, Runcrate, APInex, Mistral Vibe Free, LiveKit, Pollinations and BeatAPI. The draft is not published; Freebuff's provider-policy review and supported scope remain unresolved after a relaying-policy refusal. Setup connects Trusty Squire, connects up to three services at once, tests each, then connects your coding tools. Browser verification is queued when a provider needs you. Pi is optional.
 
-[Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md).
+[Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/milo/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/milo/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/milo/blob/main/CLAUDE.md).
 
 In the 0.6.6 draft, one grouped data-sharing approval covers nine providers, including Pollinations and BeatAPI. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old; APInex needs a personal Gmail Google login and daily free check-in. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The draft's default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves previously connected API sources.
 
