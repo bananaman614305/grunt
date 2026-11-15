@@ -2,11 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import type * as ClixadSetup from './clixad-setup.js';
 
 const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(), kilo: vi.fn() }));
 vi.mock('./pollinations-setup.js', () => ({ setupPollinations: helpers.pollinations }));
 vi.mock('./beatapi-setup.js', () => ({ setupBeatAPI: helpers.beatapi }));
-vi.mock('./clixad-setup.js', () => ({ setupClixad: helpers.clixad }));
+vi.mock('./clixad-setup.js', async importOriginal => ({ ...await importOriginal<typeof ClixadSetup>(), setupClixad: helpers.clixad }));
 vi.mock('./perch-setup.js', () => ({ setupPerch: helpers.perch }));
 vi.mock('./kilo.js', () => ({ verifyKiloAccess: helpers.kilo, KILO_PARTICLE: 'particle-ai/particle-1:free' }));
 import { BrowserSquire, setup } from './setup.js';
@@ -14,6 +15,7 @@ import { setupFallbacks } from './fallback-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 
 const directories: string[] = [];
+const guardedProviders = ['pollinations', 'beatapi', 'clixad', 'perch'] as const;
 afterEach(async () => {
   vi.clearAllMocks();
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
@@ -66,7 +68,7 @@ it.each(['pollinations', 'beatapi', 'clixad', 'perch', 'kilo'])('requires curren
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
-it.each(['clixad', 'perch'] as const)('passes background mode to %s without opening a new Squire connection', async provider => {
+it.each(guardedProviders)('passes background mode to %s without opening a new Squire connection', async provider => {
   const location = await directory();
   await recordDataSharingConsent(location, [provider]);
   const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('background must not connect'));
@@ -90,19 +92,51 @@ it.each(['freebuff', 'apinex'])('refuses retired %s setup before account or cred
   for (const operation of [squire.signup, squire.call, squire.credentials.list, squire.credentials.grant, squire.runs.start, squire.runs.get]) expect(operation).not.toHaveBeenCalled();
 });
 
-it.each([false, true])('dispatches both native pool additions with a shared client (background: %s)', async background => {
+it.each([false, true])('dispatches all four guarded pool additions with a shared client (background: %s)', async background => {
   const location = await directory(), squire = client();
-  const providers = ['clixad', 'perch'];
+  const providers = [...guardedProviders];
   await recordDataSharingConsent(location, providers);
   const signal = new AbortController().signal, notify = vi.fn(), connect = vi.fn(async () => {}), run = vi.fn(async () => {});
   await expect(setupFallbacks({ directory: location, squire, adapters: providers, background, signal, notify, connect, run })).resolves.toEqual({ unavailable: [] });
-  for (const provider of providers as ('clixad' | 'perch')[]) expect(helpers[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+  for (const provider of providers) expect(helpers[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
     directory: location, squire, signal, notify, dataSharingApproved: providers, ...(background ? { background: true } : {})
   }));
   expect(connect).toHaveBeenCalledTimes(background ? 0 : 1);
   expect(run).not.toHaveBeenCalled();
   expect(squire.signup).not.toHaveBeenCalled();
   expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it.each(guardedProviders)('leaves a failed %s background check unavailable without retrying interactive provisioning', async provider => {
+  const location = await directory(), squire = client();
+  await recordDataSharingConsent(location, [provider]);
+  const signal = new AbortController().signal, notify = vi.fn(), connect = vi.fn(async () => {}), run = vi.fn(async () => {});
+  helpers[provider].mockRejectedValueOnce(new Error('Saved free access needs foreground verification'));
+  await expect(setupFallbacks({ directory: location, squire, adapters: [provider], background: true,
+    signal, notify, connect, run })).resolves.toEqual({ unavailable: [provider] });
+  expect(helpers[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ background: true, directory: location, squire, signal }));
+  for (const operation of [connect, run, squire.signup, squire.call, squire.credentials.grant, squire.runs.start]) expect(operation).not.toHaveBeenCalled();
+});
+
+it('continues all other guarded background checks after BeatAPI needs foreground verification', async () => {
+  const location = await directory(), squire = client(), providers = [...guardedProviders];
+  await recordDataSharingConsent(location, providers);
+  const connect = vi.fn(async () => {}), run = vi.fn(async () => {});
+  helpers.beatapi.mockRejectedValueOnce(new Error('Saved free access needs foreground verification'));
+  await expect(setupFallbacks({ directory: location, squire, adapters: providers, background: true,
+    notify: vi.fn(), connect, run })).resolves.toEqual({ unavailable: ['beatapi'] });
+  for (const provider of providers) expect(helpers[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ background: true }));
+  for (const operation of [connect, run, squire.signup, squire.call, squire.credentials.grant, squire.runs.start]) expect(operation).not.toHaveBeenCalled();
+});
+
+it.each([false, true])('preserves the foreground/background intent at the fallback dispatcher boundary (%s)', async background => {
+  const location = await directory(), squire = client(), providers = [...guardedProviders];
+  await recordDataSharingConsent(location, providers);
+  const setupProvider = vi.fn<typeof setup>(async () => ({}));
+  await expect(setupFallbacks({ directory: location, squire, adapters: providers, background,
+    notify: vi.fn(), run: vi.fn(), connect: vi.fn(async () => {}), setupProvider })).resolves.toEqual({ unavailable: [] });
+  expect(setupProvider).toHaveBeenCalledTimes(providers.length);
+  for (const provider of providers) expect(setupProvider).toHaveBeenCalledWith(expect.any(Function), [provider], expect.objectContaining({ background, directory: location, squire }));
 });
 
 it('covers all eleven cold-start setup jobs using one reusable connection and no retired installers', async () => {

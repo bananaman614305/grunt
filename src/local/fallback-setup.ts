@@ -208,18 +208,18 @@ export async function setupFallbacks(options: {
         options.notify('LiveKit free Build signup or native CLI pairing incomplete. Rerun usegrunt setup; other routes remain available.');
       } },
       pollinations: async () => { try {
-        await connect();
+        if (!options.background) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['pollinations'], { squire: squire as SetupSquire, directory: options.directory,
-          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Pollinations: community GLM 5.3 Flash access connected through Squire');
       } catch {
         unavailable.push('pollinations');
         options.notify('Pollinations free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       beatapi: async () => { try {
-        await connect();
+        if (!options.background) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['beatapi'], { squire: squire as SetupSquire, directory: options.directory,
-          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('BeatAPI: free DeepSeek V4.1 Flash access connected through Squire');
       } catch {
         unavailable.push('beatapi');

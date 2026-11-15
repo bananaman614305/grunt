@@ -163,3 +163,44 @@ it('persists only the scoped backend grant and declared verification facts', asy
   expect(Object.keys(value).sort()).toEqual(['base_url', 'free_account_verified', 'key_zero_budget_verified', 'model', 'quest_pollen_only', 'token', 'upstream_origin', 'verified_at', 'version']);
   expect(value.base_url).toBe(grant.base_url);
 });
+
+it('verifies valid background access without changing receipts, approving Squire sharing, or contacting its vault/browser', async () => {
+  await recordDataSharingConsent(directory, ['pollinations']); await writePollinationsGrant(saved(), directory);
+  const file = pollinationsGrantPath(directory), before = await readFile(file), beforeStat = await stat(file);
+  const consent = await readFile(join(directory, 'data-sharing-consent.json')), browser = squire(), fetcher = metadata();
+  await setupPollinations({ directory, squire: browser, fetcher, background: true });
+  expect(fetcher).toHaveBeenCalledTimes(3); expect(await readFile(file)).toEqual(before); expect((await stat(file)).mtimeMs).toBe(beforeStat.mtimeMs);
+  expect(await readFile(join(directory, 'data-sharing-consent.json'))).toEqual(consent);
+  expect(browser.approveDataSharing).not.toHaveBeenCalled(); expect(browser.signup).not.toHaveBeenCalled(); expect(browser.credentials.list).not.toHaveBeenCalled(); expect(browser.credentials.grant).not.toHaveBeenCalled();
+});
+
+it.each(['guard-failure', 'expired-receipt', 'missing-receipt'])('requires foreground setup without deleting or recreating background state on %s', async mode => {
+  await recordDataSharingConsent(directory, ['pollinations']);
+  const file = pollinationsGrantPath(directory);
+  if (mode !== 'missing-receipt') await writeFile(file, JSON.stringify({ ...saved(), ...(mode === 'expired-receipt' ? { verified_at: new Date(Date.now()-31*86400000).toISOString() } : {}) }), { mode: 0o600 });
+  const before = mode === 'missing-receipt' ? undefined : await readFile(file), consent = await readFile(join(directory, 'data-sharing-consent.json'));
+  const browser = squire(), fetcher = metadata({ paid: 1 });
+  await expect(setupPollinations({ directory, squire: browser, fetcher, background: true })).rejects.toThrow('needs foreground setup');
+  if (before) expect(await readFile(file)).toEqual(before); else await expect(stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(join(directory, 'data-sharing-consent.json'))).toEqual(consent);
+  expect(browser.approveDataSharing).not.toHaveBeenCalled(); expect(browser.signup).not.toHaveBeenCalled(); expect(browser.credentials.list).not.toHaveBeenCalled(); expect(browser.credentials.grant).not.toHaveBeenCalled();
+  if (mode !== 'guard-failure') expect(fetcher).not.toHaveBeenCalled();
+});
+
+it.each(['pre-aborted', 'in-flight'])('cancels a %s background check without revoking its saved grant or approving/minting/browser operations', async mode => {
+  await recordDataSharingConsent(directory, ['pollinations']); await writePollinationsGrant(saved(), directory);
+  const file = pollinationsGrantPath(directory), before = await readFile(file), browser = squire(), controller = new AbortController();
+  const fetcher = vi.fn<typeof fetch>(async (_url, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('private network diagnostic')), { once: true }); }));
+  if (mode === 'pre-aborted') controller.abort(new Error('private cancellation reason'));
+  const pending = setupPollinations({ directory, squire: browser, fetcher, signal: controller.signal, background: true });
+  const rejected = expect(pending).rejects.toThrow('needs foreground setup');
+  if (mode === 'in-flight') { await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3)); controller.abort(new Error('private cancellation reason')); }
+  await rejected; expect(fetcher).toHaveBeenCalledTimes(mode === 'in-flight' ? 3 : 0);
+  expect(await readFile(file)).toEqual(before); expect(browser.approveDataSharing).not.toHaveBeenCalled(); expect(browser.signup).not.toHaveBeenCalled(); expect(browser.credentials.list).not.toHaveBeenCalled(); expect(browser.credentials.grant).not.toHaveBeenCalled();
+});
+
+it('does not inherit stale passed approval or contact Squire when background stored consent is missing', async () => {
+  await writePollinationsGrant(saved(), directory); const before = await readFile(pollinationsGrantPath(directory)), browser = squire(), fetcher = metadata();
+  await expect(setupPollinations({ directory, squire: browser, fetcher, background: true, dataSharingApproved: ['pollinations'] })).rejects.toThrow('needs foreground setup');
+  expect(await readFile(pollinationsGrantPath(directory))).toEqual(before); expect(fetcher).not.toHaveBeenCalled(); expect(browser.approveDataSharing).not.toHaveBeenCalled(); expect(browser.signup).not.toHaveBeenCalled(); expect(browser.credentials.list).not.toHaveBeenCalled(); expect(browser.credentials.grant).not.toHaveBeenCalled();
+});

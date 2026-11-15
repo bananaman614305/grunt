@@ -29,8 +29,10 @@ export interface PollinationsSetupOptions {
   dataSharingApproved?: readonly string[];
   notify?(line: string): void;
   fetcher?: typeof fetch;
+  background?: boolean;
 }
 const failure = () => new Error('Pollinations free signup or key guard verification did not complete; rerun usegrunt setup');
+const foregroundNeeded = () => new Error('Pollinations needs foreground setup; run usegrunt setup to verify or reconnect access');
 async function bounded<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
   let aborted: (() => void) | undefined;
   try {
@@ -58,6 +60,17 @@ const owned = (credential: Credential) => (credential.label ?? credential.name)?
 
 /** All secrets stay in Squire's vault or the private backend grant file. */
 export async function setupPollinations(options: PollinationsSetupOptions): Promise<void> {
+  if (options.background) {
+    const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(10000)]);
+    try {
+      if (signal.aborted) throw foregroundNeeded();
+      const approved = await bounded(() => readDataSharingConsent(options.directory, ['pollinations']), signal);
+      if (!approved.includes('pollinations') || (options.dataSharingApproved && !options.dataSharingApproved.includes('pollinations'))) throw foregroundNeeded();
+      const saved = await bounded(() => readPollinationsGrant(options.directory), signal);
+      await bounded(() => verifyPollinationsAccess(saved, { signal, ...(options.fetcher ? { fetcher: options.fetcher } : {}) }), signal);
+      return;
+    } catch { throw foregroundNeeded(); }
+  }
   const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   if (!approved.includes('pollinations')) throw new Error('Pollinations data sharing requires the grouped setup approval');
   if (options.signal?.aborted) throw failure();

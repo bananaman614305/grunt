@@ -110,21 +110,26 @@ it.each([
   await squire.close();
 });
 
-it('never attests or sends DONE in background setup', async () => {
+it.each([
+  { status: 'low_confidence', options: offered },
+  { status: 'no_progress', options: offered },
+  { status: 'low_confidence', options: { reject: 'Reject Optional' } },
+  { status: 'needs_value', field: 'captcha', options: offered },
+  { status: 'stuck' }
+])('stops background handoffs before sharing, attesting, or retrying while other providers continue: %j', async response => {
   const { confirm } = await import('@clack/prompts');
-  const controller = new AbortController();
-  const squire = new BrowserSquire({ background: true, signal: controller.signal });
-  let reached!: () => void;
-  const background = new Promise<void>(resolve => { reached = resolve; });
-  vi.spyOn(console, 'log').mockImplementation(() => reached());
-  vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.test/perch');
-  const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
-    ? { status: 'low_confidence', session_id: 'owned-tab', options: offered } : {});
-  const pending = squire.runs.start(input).catch(error => error);
-  await background; controller.abort();
-  expect(await pending).toBeInstanceOf(Error);
-  expect(confirm).not.toHaveBeenCalled();
+  const squire = new BrowserSquire({ background: true });
+  const handoff = vi.spyOn(squire, 'humanHandoff');
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => name === 'operate_drive'
+    ? args.url === 'https://other.test' ? { status: 'complete', session_id: 'other-tab' } : { ...response, session_id: 'owned-tab' } : {});
+  await expect(squire.runs.start(input)).rejects.toThrow('run usegrunt setup in the foreground');
+  expect(confirm).not.toHaveBeenCalled(); expect(handoff).not.toHaveBeenCalled(); expect(log).not.toHaveBeenCalled();
   expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(1);
+  expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'owned-tab', outcome: 'none' });
+  await expect(squire.signup('other', 'https://other.test', 'Sign in')).resolves.toBeUndefined();
+  expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(2);
+  expect(call.mock.calls.filter(([name]) => name === 'operate_share')).toHaveLength(0);
   expect(call.mock.calls.filter(([name]) => name === 'operate_drive').every(([, args]) => args.answer === undefined)).toBe(true);
   await squire.close();
 });

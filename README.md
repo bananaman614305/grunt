@@ -14,6 +14,9 @@ npx usegrunt
 
 usegrunt installs grunt on this machine. It pools free AI quota and serves one local agent.
 
+Restarts reuse saved connections. Background verification preserves them on
+temporary failures and asks for foreground setup when human verification is needed.
+
 https://grunt.run. `milo` and `milo-local` remain aliases.
 
 The 0.6.6 pool has eleven sources: OpenCode, Kilo, Zro, Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch. Setup connects Trusty Squire once, connects up to six services at once with up to three browser operations, tests each, then connects your coding tools. Provider-specific human verification is grouped or queued when needed. Pi is optional.

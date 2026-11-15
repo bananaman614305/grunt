@@ -281,12 +281,49 @@ it('repairs changed native memory settings only during foreground setup after pl
 it('background checks reject changed memory settings without altering them or opening a browser', async () => {
   const f = await fixture();
   await Perch.writePerchFreePlanReceipt(directory, plan());
+  const before = await readFile(f.paths.receipt);
   f.identity.mockReset().mockResolvedValue({ email: 'person@example.test' });
   f.verifyMemory.mockRejectedValue(new Error('Learn new memories is On'));
   vi.spyOn(Perch, 'verifyPerchInstallation').mockResolvedValue();
   await expect(setupPerch({ ...f.options, background: true })).rejects.toThrow('active Starter verification');
   expect(f.configureMemory).not.toHaveBeenCalled(); expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.install).not.toHaveBeenCalled();
-  await expect(stat(f.paths.receipt)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(f.paths.receipt)).toEqual(before);
+});
+
+it.each(['identity request failed', 'identity unavailable', 'identity changed', 'memory request failed', 'memory account changed'])('background failure preserves the existing receipt byte-for-byte: %s', async failure => {
+  const f = await fixture();
+  await Perch.writePerchFreePlanReceipt(directory, plan());
+  const before = await readFile(f.paths.receipt);
+  const modified = (await stat(f.paths.receipt)).mtimeMs;
+  vi.spyOn(Perch, 'verifyPerchInstallation').mockResolvedValue();
+  f.identity.mockReset().mockResolvedValue({ email: 'person@example.test' });
+  if (failure === 'identity request failed') f.identity.mockRejectedValue(new Error('temporary native OAuth network failure'));
+  if (failure === 'identity unavailable') f.identity.mockResolvedValue(null);
+  if (failure === 'identity changed') f.identity.mockResolvedValue({ email: 'different@example.test' });
+  if (failure === 'memory request failed') f.verifyMemory.mockRejectedValue(new Error('temporary memory settings network failure'));
+  if (failure === 'memory account changed') f.verifyMemory.mockResolvedValue({ email: 'different@example.test' });
+  await expect(setupPerch({ ...f.options, background: true })).rejects.toThrow('active Starter verification');
+  expect(await readFile(f.paths.receipt)).toEqual(before);
+  expect((await stat(f.paths.receipt)).mtimeMs).toBe(modified);
+  expect(f.configureMemory).not.toHaveBeenCalled(); expect(f.install).not.toHaveBeenCalled();
+  expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.squire.cancelSignup).not.toHaveBeenCalled();
+  expect(f.squire.approveDataSharing).not.toHaveBeenCalled(); expect(f.command).not.toHaveBeenCalled();
+});
+
+it.each(['expired plan', 'changed privacy'])('background rejects %s without deleting or rewriting the local verification', async failure => {
+  const f = await fixture();
+  const saved = failure === 'expired plan'
+    ? { ...plan(), checkedAt: new Date(Date.now() - 31 * 86400000).toISOString() }
+    : { ...plan(), dataProgramEnabled: true };
+  await writeFile(f.paths.receipt, JSON.stringify(saved) + '\n', { mode: 0o600 });
+  const before = await readFile(f.paths.receipt);
+  const modified = (await stat(f.paths.receipt)).mtimeMs;
+  vi.spyOn(Perch, 'verifyPerchInstallation').mockResolvedValue();
+  await expect(setupPerch({ ...f.options, background: true })).rejects.toThrow('active Starter verification');
+  expect(await readFile(f.paths.receipt)).toEqual(before);
+  expect((await stat(f.paths.receipt)).mtimeMs).toBe(modified);
+  expect(f.identity).not.toHaveBeenCalled(); expect(f.verifyMemory).not.toHaveBeenCalled();
+  expect(f.configureMemory).not.toHaveBeenCalled(); expect(f.install).not.toHaveBeenCalled(); expect(f.squire.signup).not.toHaveBeenCalled();
 });
 
 it('does not treat a changed memory account as a setting that foreground setup may repair', async () => {

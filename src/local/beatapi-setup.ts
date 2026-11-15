@@ -1,6 +1,6 @@
 import { rm } from 'node:fs/promises';
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
-import { BEATAPI_MODEL, BEATAPI_ORIGIN, beatapiGrantPath, verifyBeatAPIAccess, writeBeatAPIGrant } from './beatapi.js';
+import { BEATAPI_MODEL, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, verifyBeatAPIAccess, writeBeatAPIGrant } from './beatapi.js';
 interface Credential { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null; label?: string; allowed_hosts?: string[] }
 export interface BeatAPISetupSquire {
   signup(service: string, url: string, goal: string): Promise<void>;
@@ -8,7 +8,7 @@ export interface BeatAPISetupSquire {
   credentials: { list(): Promise<Credential[]>; grant(reference: string): Promise<{ base_url: string; token: string }> };
   approveDataSharing?(providers: readonly string[]): void;
 }
-export interface BeatAPISetupOptions { directory: string; squire: BeatAPISetupSquire; signal?: AbortSignal; dataSharingApproved?: readonly string[]; notify?(line: string): void; fetcher?: typeof fetch }
+export interface BeatAPISetupOptions { directory: string; squire: BeatAPISetupSquire; signal?: AbortSignal; dataSharingApproved?: readonly string[]; notify?(line: string): void; fetcher?: typeof fetch; background?: boolean }
 const failure = () => new Error('BeatAPI free account or key verification did not complete; rerun usegrunt setup');
 async function bounded<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
   let abort: (() => void) | undefined;
@@ -26,9 +26,21 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
   const saved = await readDataSharingConsent(options.directory, ['beatapi']);
   if (!saved.includes('beatapi') || (options.dataSharingApproved && !options.dataSharingApproved.includes('beatapi'))) throw new Error('BeatAPI data sharing requires the current grouped setup approval');
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(600000)]);
+  // A daemon can verify existing access, but cannot provision accounts, mint
+  // grants, invalidate receipts or launch browser verification. Foreground
+  // setup also reuses healthy access rather than disrupting a working route.
+  try {
+    const grant = await bounded(() => readBeatAPIGrant(options.directory), signal);
+    const usage = await bounded(() => verifyBeatAPIAccess(grant, { ...(options.fetcher ? { fetcher: options.fetcher } : {}), signal }), signal);
+    signal.throwIfAborted();
+    if (usage.credit_balance !== grant.baseline_balance) throw failure();
+    options.notify?.('BeatAPI: existing verified free access reused');
+    return;
+  } catch { if (signal.aborted) throw failure(); }
+  if (options.background) throw new Error('BeatAPI needs foreground verification; run usegrunt add beatapi');
   const invalidate = () => rm(beatapiGrantPath(options.directory), { force: true });
   try {
-    await invalidate(); signal.throwIfAborted(); options.squire.approveDataSharing?.(saved);
+    signal.throwIfAborted(); await invalidate(); signal.throwIfAborted(); options.squire.approveDataSharing?.(saved);
     const fresh = async () => {
       const result = await bounded(() => options.squire.call('list_credentials', { service: 'beatapi', fields: 'summary' }), signal);
       if (!Array.isArray(result.credentials)) throw failure(); return (result.credentials as Credential[]).filter(eligible);

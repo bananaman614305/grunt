@@ -419,6 +419,8 @@ export class BrowserSquire implements SetupSquire {
         return { run: { id: provider, state: 'completed' }, decision: 'silent' };
       }
       const uncertain = result.status === 'low_confidence' || result.status === 'no_progress';
+      const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
+      if (this.options.background && (humanStep || uncertain || result.status === 'stuck')) throw new Error('Provider signup needs verification; run usegrunt setup in the foreground to resume');
       if (uncertain && this.sessions.has(provider)) {
         const used = this.recoveryChoices.get(provider) ?? new Set<string>();
         this.recoveryChoices.set(provider, used);
@@ -431,7 +433,6 @@ export class BrowserSquire implements SetupSquire {
           used.add((choice[1] as string).trim().toLowerCase()); answer = choice[0]; continue;
         }
       }
-      const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
       // DONE is a driver choice, not evidence that the account meets the goal.
       // Only the human can attest to every condition, and a generic captcha
       // confirmation must never become an attestation of account/plan state.
@@ -447,11 +448,6 @@ export class BrowserSquire implements SetupSquire {
         const handoffSession = this.sessions.get(provider)!;
         const url = await this.humanHandoff(handoffSession);
         this.serviceSignal(provider).throwIfAborted();
-        if (this.options.background) {
-          console.log(`Complete ${provider} verification in this browser: ${url}`);
-          await delay(5000, undefined, { signal: this.serviceSignal(provider) });
-          return { run: { id: provider, state: 'running' }, decision: 'silent' };
-        }
         await this.scoped(this.verification.wait({ service: provider, url, ...(manualCompletion ? { goal: instruction } : {}) }), this.serviceSignal(provider));
         this.serviceSignal(provider).throwIfAborted();
         if (manualCompletion) {
@@ -783,12 +779,13 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
       notify('Kilo: free Particle-1 access verified; no account or API key required');
       providers = providers.filter(provider => provider !== 'kilo');
     }
-    // Idle sync never claims Clixad rewards or changes native account settings.
+    // Idle sync only reuses verified state for these guarded sources. It never
+    // deletes their receipts, provisions a browser or changes account settings.
     if (options.background) {
       const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
-      for (const provider of ['clixad', 'perch'] as const) {
+      for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
         if (!providers.includes(provider)) continue;
-        await (provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser, background: true,
+        await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser, background: true,
           dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
         providers = providers.filter(id => id !== provider);
       }
