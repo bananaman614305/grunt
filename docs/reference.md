@@ -167,6 +167,7 @@ opens a live terminal view; `--json` prints a single structured snapshot.
 These commands only read the local daemon's `GET /v1/status`; they do not start
 the daemon, run provider health checks, install services or consume inference.
 An older daemon without that endpoint needs a runtime update through setup.
+`usegrunt --help` prints command usage without starting the daemon.
 
 The watch view uses green for a source with an observed successful reply, cyan
 for an active request, blue for connecting/verifying, yellow for a required
@@ -200,9 +201,9 @@ normal full verification instructions. Only provider IDs are shared with the
 status view: browser capability links, requested goals, credentials, prompts,
 responses and working directories are excluded from status metadata. Approvals
 remain per provider, with existing grouped confirmations unchanged. Once all
-jobs settle, setup releases its Squire client and setup lease, prints the normal
-summary, and opens the keyboard-driven watch view. Noninteractive setup exits
-normally. Closing setup before completion pauses unfinished signups; closing
+jobs settle, setup prints the normal summary, then releases its Squire client
+and setup lease before opening the keyboard-driven watch view. Noninteractive
+setup exits normally. Closing setup before completion pauses unfinished signups; closing
 the final watch view only closes the view.
 
 `/v1/status` uses the same loopback Host/Origin restrictions as inference and
