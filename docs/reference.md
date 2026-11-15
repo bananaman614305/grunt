@@ -445,7 +445,10 @@ create an account or capture a provider key.
 
 When the first account-dependent job needs Squire and no session exists, setup
 runs Squire's own connect installer with the OpenCode target. Parallel jobs share
-that pending bootstrap rather than starting duplicate installers. Squire manages
+that pending bootstrap rather than starting duplicate installers. Its supported
+child-only `OPENCODE_CONFIG` override points to the private
+`squire-opencode.json` in Grunt's configuration directory, separating bootstrap
+configuration from the user's coding-tool config and provider grant file. Squire manages
 login and its broker service. An existing
 session with an unavailable broker reports the connection error for repair.
 Setup does not pair with Beeline or create agents or Rooms.
