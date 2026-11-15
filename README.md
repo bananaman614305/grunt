@@ -25,7 +25,29 @@ The curated pool has eleven sources: OpenCode, Kilo, Zro, Token Harbor, Runcrate
 
 In 0.6.7, setup starts the persistent daemon before provider jobs and checks each provider as it finishes. The first verified reply makes grunt ready; setup then applies your coding-tool choices while the remaining jobs continue. Eligible anonymous Kilo and OpenCode routes can work while account-dependent providers wait for Squire sign-in. Up to six provider jobs, three browser operations and three reply checks can run concurrently; readiness does not wait for the whole pool.
 
-The original `npx usegrunt` terminal stays open as the approval console until the remaining jobs finish. Use a connected coding tool in another terminal while it works. Closing the console pauses unfinished signups; verified daemon routes keep running, and rerunning setup resumes the rest. Partial provider failures are reported without failing an installation that has at least one verified route. Perch remains in the default pool, but its human verification does not have to finish before another route becomes usable. Setup duration depends on downloads, prerequisites and verification; no cold-start time is promised.
+The original `npx usegrunt` terminal shows a live source dashboard after the first verified reply, while remaining signups continue. It yields to browser confirmations and resumes afterward. Use a connected coding tool in another terminal while it works. Closing the console pauses unfinished signups; verified daemon routes keep running, and rerunning setup resumes the rest. Partial provider failures are reported without failing an installation that has at least one verified route. Perch remains in the default pool, but its human verification does not have to finish before another route becomes usable. Setup duration depends on downloads, prerequisites and verification; no cold-start time is promised.
+
+Reopen the dashboard in a separate terminal:
+
+```bash
+npx usegrunt status --watch
+# One snapshot, suitable for scripts:
+npx usegrunt status --json
+# An older installation on a custom port:
+npx usegrunt status --watch --port 8792
+```
+
+The dashboard uses green for verified replies, cyan for requests in progress,
+blue for setup, yellow for approvals or limits, and red for failures. Arrow keys
+select a source, Enter shows details, `d` toggles disabled sources, and `q` closes
+the view without stopping the daemon. During unfinished setup the view is
+passive so Squire owns the keyboard; those keys become available after setup.
+Status refreshes use cached observations and never send test prompts. Model
+labels describe registry configuration, not an attestation of the latest reply.
+Unobserved sources and unreported credit balances are shown honestly. Narrow
+terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
+prints a single plain snapshot. New setup remembers the installed port;
+`--port` overrides `MILO_PORT`, the saved port, and the default 8788.
 
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/milo/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/milo/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/milo/blob/main/CLAUDE.md).
 

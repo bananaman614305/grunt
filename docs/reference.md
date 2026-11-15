@@ -143,7 +143,7 @@ node dist/local/main.js setup
 ```
 
 It binds only `127.0.0.1:8788`. `MILO_PORT` changes the port. It provides
-`GET /v1/models`, Chat Completions, Anthropic Messages, and OpenAI Responses,
+`GET /v1/models`, `GET /v1/status`, Chat Completions, Anthropic Messages, and OpenAI Responses,
 including SSE. Choose model `milo` for automatic source selection, or a source
 id such as `kilo`. This process is separate from the Fly server and Docker
 entry point. Keep this endpoint on your own machine.
@@ -159,6 +159,58 @@ Text and function-tool turns are translated across APIs. Native Responses tools
 require a compatible delegate; ordinary Chat Completions sources accept function
 tools. Unsupported tools and media blocks return an
 error rather than silently losing context.
+
+### Source dashboard
+
+`usegrunt status` prints one cached pool snapshot. `usegrunt status --watch`
+opens a live terminal view; `--json` prints a single structured snapshot.
+These commands only read the local daemon's `GET /v1/status`; they do not start
+the daemon, run provider health checks, install services or consume inference.
+An older daemon without that endpoint needs a runtime update through setup.
+`usegrunt --help` prints command usage without starting the daemon.
+
+The watch view uses green for a source with an observed successful reply, cyan
+for an active request, blue for connecting/verifying, yellow for a required
+approval or rate limit, red for an error, and gray for unavailable, disabled or
+unobserved sources. Available credentials alone do not count as a verified
+reply. Concurrent source requests have individual activity counts. A failed or
+stale status fetch replaces the healthy banner with an explicit offline state.
+Last-reply timing measures the latest successful source call, not a live speed
+test. Retry times describe a reported delay or Grunt's routing cooldown, not a
+guaranteed upstream quota reset. Registry model labels describe configuration;
+they do not attest to a provider's physical model. Balances are not invented.
+
+Arrow keys select a source, Enter toggles its details, `d` shows or hides
+disabled sources, and `q`/Ctrl-C exits the watch view while the daemon keeps
+running. `a` gives foreground-setup guidance; a separate watch terminal cannot
+approve another setup process's verification. Narrow panes omit model and
+timing columns. `NO_COLOR` disables color; labels and symbols still describe
+every state. Piped output and dumb terminals print one snapshot without cursor
+control sequences. `--watch --json` is rejected rather than emitting a mixed
+interactive stream.
+
+Port selection is `--port`, then `MILO_PORT`, then the private numeric
+`installed-port.json` saved by successful setup, then 8788. Existing installations
+on a custom port can pass `--port` until setup records it. For example, Chad uses
+`usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
+
+After its first successful route and coding-tool configuration, interactive
+setup displays a passive live dashboard. The terminal ownership queue suspends
+it around interactive installers and Squire confirmations, which retain their
+normal full verification instructions. Only provider IDs are shared with the
+status view: browser capability links, requested goals, credentials, prompts,
+responses and working directories are excluded from status metadata. Approvals
+remain per provider, with existing grouped confirmations unchanged. Once all
+jobs settle, setup prints the normal summary, then releases its Squire client
+and setup lease before opening the keyboard-driven watch view. Noninteractive
+setup exits normally. Closing setup before completion pauses unfinished signups; closing
+the final watch view only closes the view.
+
+`/v1/status` uses the same loopback Host/Origin restrictions as inference and
+`Cache-Control: no-store`. Its version-1 JSON contains the snapshot timestamp,
+active call count and per-source observations, including safe failure codes,
+last success/timing and finite retry timestamps when known. Observations reset
+when the daemon restarts, then rebuild from normal runtime activity.
 
 ### Free API and account setup
 

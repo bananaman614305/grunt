@@ -321,3 +321,100 @@ it('refuses a symlinked private Squire bootstrap client file before launching th
   expect(run).not.toHaveBeenCalled();
   expect(await readFile(protectedFile, 'utf8')).toBe('{"preserved":true}');
 });
+
+it('starts a passive dashboard at first readiness and releases setup ownership before entering its interactive view', async () => {
+  const { readSetupSession } = await import('./setup-session.js');
+  const stub = actions(), late = deferred(), ready = deferred(), order: string[] = [];
+  const stop = vi.fn(async () => { order.push('stop'); });
+  const startDashboard = vi.fn(() => { order.push('start'); return { stop }; });
+  const watchDashboard = vi.fn(async () => {
+    order.push('watch');
+    expect(await readSetupSession(directory)).toBeUndefined();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+  stub.connectHarnesses.mockImplementation(async () => { order.push('harness'); });
+  stub.setupFallbacks.mockImplementation(async options => {
+    await options.onSettled?.('kilo', true); ready.resolve();
+    await late.promise; return { unavailable: ['perch'] };
+  });
+  const running = wizard(undefined, { ...stub, startDashboard, watchDashboard });
+  await ready.promise;
+  try {
+    expect(order).toEqual(['harness', 'start']);
+    expect(startDashboard).toHaveBeenCalledWith(expect.objectContaining({ port: Number(process.env.MILO_PORT || 8788) }));
+    expect(stop).not.toHaveBeenCalled(); expect(watchDashboard).not.toHaveBeenCalled();
+  } finally { late.resolve(); await running; }
+  expect(order).toEqual(['harness', 'start', 'stop', 'watch']);
+});
+
+it('publishes only selected approval IDs through its lease and removes the queue subscription before cleanup', async () => {
+  const { BrowserSquire } = await import('./setup.js');
+  const { readSetupSession } = await import('./setup-session.js');
+  const squire = new BrowserSquire(), closed = vi.spyOn(squire, 'close').mockResolvedValue();
+  let changed!: (services: readonly string[]) => void;
+  const unsubscribe = vi.fn();
+  vi.spyOn(squire, 'onVerificationChange').mockImplementation(observer => { changed = observer; observer([]); return unsubscribe; });
+  const stub = actions(), ready = deferred(), late = deferred();
+  stub.setupFallbacks.mockImplementation(async options => {
+    await options.onSettled?.('kilo', true); ready.resolve(); await late.promise;
+    return { unavailable: ['perch'] };
+  });
+  const watchDashboard = vi.fn(async () => { expect(unsubscribe).toHaveBeenCalledOnce(); expect(closed).toHaveBeenCalledOnce(); });
+  const running = wizard(undefined, { ...stub, createSquire: () => squire, watchDashboard });
+  await ready.promise;
+  try {
+    changed(['perch', 'unselected-provider']);
+    await vi.waitFor(async () => { expect([...(await readSetupSession(directory))?.approvals ?? []]).toEqual(['perch']); });
+    changed([]);
+    await vi.waitFor(async () => { expect((await readSetupSession(directory))?.approvals).toBeUndefined(); });
+  } finally { late.resolve(); await running; }
+  expect(watchDashboard).toHaveBeenCalledOnce();
+});
+
+it('closes the passive dashboard and lease when a later setup job fails without entering interactive watch', async () => {
+  const { readSetupSession } = await import('./setup-session.js');
+  const stub = actions(), stop = vi.fn(async () => {}), watchDashboard = vi.fn(async () => {});
+  stub.setupFallbacks.mockImplementation(async options => {
+    await options.onSettled?.('kilo', true); throw new Error('setup interrupted');
+  });
+  await expect(wizard(undefined, { ...stub, startDashboard: () => ({ stop }), watchDashboard })).rejects.toThrow('setup interrupted');
+  expect(stop).toHaveBeenCalledOnce(); expect(watchDashboard).not.toHaveBeenCalled();
+  expect(await readSetupSession(directory)).toBeUndefined();
+});
+
+it('admits a provider and configures its coding tool during a held browser confirmation without overwriting the prompt', async () => {
+  const prompts = await import('@clack/prompts');
+  const harnesses = await import('./harnesses.js');
+  const { readSetupSession } = await import('./setup-session.js');
+  const configured = vi.fn(async () => undefined), run = vi.fn(async () => 'hello');
+  const harness = { id: 'pi' as const, name: 'Synthetic Pi', binary: 'synthetic-pi', configure: configured,
+    check: () => ({ args: ['hello'] }), launch: () => 'synthetic-pi' };
+  vi.spyOn(harnesses, 'detectHarnesses').mockResolvedValue([harness]);
+  const stub = actions(), held = deferred(), release = deferred(), early = deferred();
+  let confirmation!: Promise<void>;
+  stub.setupFallbacks.mockImplementation(async options => {
+    confirmation = withTerminal(async () => { held.resolve(); await release.promise; });
+    await held.promise;
+    for (const logger of Object.values(prompts.log)) vi.mocked(logger).mockClear();
+    vi.mocked(prompts.note).mockClear();
+    options.notify('perch: waiting for its browser verification');
+    await options.onSettled?.('kilo', true);
+    early.resolve();
+    await confirmation;
+    return { unavailable: ['perch'] };
+  });
+  const watchDashboard = vi.fn(async () => {
+    expect(prompts.log.info).toHaveBeenCalledWith(expect.stringContaining('Source dashboard:'));
+    expect(prompts.note).toHaveBeenCalledWith(expect.stringContaining('synthetic-pi'), 'Start coding with grunt');
+  });
+  const running = wizard(undefined, { ...stub,
+    prepareHarnesses: port => prepareHarnesses(port, { choose: async () => [harness], run }), watchDashboard });
+  await early.promise;
+  try {
+    expect(configured).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
+    expect((await readSetupSession(directory))?.pending.has('kilo')).toBe(false);
+    for (const logger of Object.values(prompts.log)) expect(logger).not.toHaveBeenCalled();
+    expect(prompts.note).not.toHaveBeenCalled();
+  } finally { release.resolve(); await running; }
+  expect(watchDashboard).toHaveBeenCalledOnce();
+});

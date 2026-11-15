@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.8] - 2026-11-15
+
+### Added
+
+- Add `usegrunt status`, `status --watch` and `status --json` for cached source activity, verified replies, approval needs and routing cooldowns. The color terminal view supports narrow panes, keyboard details, disabled sources and plain output.
+- Show a passive source dashboard during parallel onboarding after the first verified reply. Yield to foreground confirmations, then open the interactive watch view after setup releases its browser client and ownership lease.
+- Remember the successfully installed daemon port so the status command can reopen a custom-port installation. Status reads never invoke providers or expose browser handoff links, credentials, prompts or upstream error payloads.
+
+### Validation
+
+- All 1,082 tests across 61 files passed, along with lint, TypeScript checks and a clean build. Independent review found no remaining blockers.
+- A real terminal verified all eleven rows, colors, selection, details, resizing, offline state, quit behavior and screen/input restoration. A live Kilo reply moved from unknown through answering to ready; forty cached status reads added no provider calls.
+
 ## [0.6.7] - 2026-11-15
 
 ### Changed
