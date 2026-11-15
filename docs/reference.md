@@ -113,6 +113,13 @@ locally and deploy the tested image manually to Fly app `milo-gateway` in `iad`
 using authorized app-scoped access. Do not enable or dispatch workflows.
 The `milo_data` volume mounts at `/data`. Keep a single Fly machine for SQLite.
 
+The current gateway registry release uses two persisted Machine file overlays,
+`/app/dist/registry.js` and `/app/dist/registry/adapters.json`, on the existing
+`dc5e3347e62c112f9f757709d3155eabad25d5e7` image. The next full image deployment
+must include the updated registry validator and remove these two overlays from
+the Machine configuration, or they can mask newer files in that image. Publish
+the on-volume registry separately after validating the deployed code.
+
 This replaces the former OpenAI-compatible gateway. The old `/v1/*` routes are
 removed. There is no Jev, billing, roster service, worker tooling or monorepo.
 
