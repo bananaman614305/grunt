@@ -69,12 +69,16 @@ export async function setupFallbacks(options: {
   signal?: AbortSignal;
   background?: boolean;
   dataSharingApproved?: readonly string[];
+  onSettled?: (id: string, available: boolean) => void | Promise<void>;
 }) {
   const squire = options.squire ?? new BrowserSquire({ dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
-  const requested = options.adapters ?? ['opencode'];
+  const requested = [...new Set(options.adapters ?? ['opencode'])];
+  // A registry may list account-based providers first. Keep their shared
+  // browser login from occupying every worker before anonymous routes start.
+  const anonymous = ['kilo', 'opencode'];
+  const execution = [...anonymous.filter(id => requested.includes(id)), ...requested.filter(id => !anonymous.includes(id))];
   const unavailable = requested.filter(id => disabledAdapters.has(id));
-  const adapters = requested.filter(id => !disabledAdapters.has(id));
   for (const id of unavailable) options.notify(`${id}: routing is disabled; other free services continue`);
   const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   if (squire instanceof BrowserSquire) squire.approveDataSharing(approved);
@@ -87,6 +91,15 @@ export async function setupFallbacks(options: {
   const install = async (binary: string, pkg: string) => {
     try { await options.run(binary, ['--version']); }
     catch { await options.run('npm', ['install', '--global', pkg]); }
+  };
+  const settled = new Set<string>(), callbacks: Promise<void>[] = [], callbackFailures: unknown[] = [];
+  const onSettled = (id: string, available: boolean) => {
+    if (!options.onSettled || settled.has(id)) return;
+    settled.add(id);
+    // Observers may verify the daemon or configure coding tools. Start that
+    // work immediately without holding a provider worker or rejecting early.
+    callbacks.push(Promise.resolve().then(() => options.onSettled!(id, available && !options.signal?.aborted))
+      .catch(error => { callbackFailures.push(error); }));
   };
   options.notify('Free routes run their own tools with your filesystem permissions in the working directory. Free model providers may retain prompts.');
   try {
@@ -253,17 +266,33 @@ export async function setupFallbacks(options: {
         options.notify('NVIDIA setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } }
       };
-    await parallelMap(adapters, async id => {
-      if (requiresDataSharing(id) && !approved.includes(id)) {
-        unavailable.push(id);
-        options.notify(`${id}: skipped until the grouped data-sharing approval is granted`);
-        return;
-      }
-      const task = tasks[id];
-      if (!task) throw new Error('Unsupported vetted adapter');
-      await task();
-    }, SETUP_CONCURRENCY, options.signal);
+    let failure: { error: unknown } | undefined;
+    try {
+      await parallelMap(execution, async id => {
+        let available = false;
+        try {
+          if (disabledAdapters.has(id)) return;
+          if (requiresDataSharing(id) && !approved.includes(id)) {
+            unavailable.push(id);
+            options.notify(`${id}: skipped until the grouped data-sharing approval is granted`);
+            return;
+          }
+          const task = tasks[id];
+          if (!task) throw new Error('Unsupported vetted adapter');
+          await task();
+          available = !unavailable.includes(id);
+        } finally { onSettled(id, available); }
+      }, SETUP_CONCURRENCY, options.signal);
+    } catch (error) { failure = { error }; }
+    finally {
+      // Cancellation can leave queued providers unstarted. Settle those as
+      // unavailable and keep the shared client alive until observers finish.
+      for (const id of requested) onSettled(id, false);
+      await Promise.all(callbacks);
+    }
+    if (failure) throw failure.error;
     options.signal?.throwIfAborted();
+    if (callbackFailures.length) throw callbackFailures[0];
     return { unavailable: requested.filter(id => unavailable.includes(id)) };
   } finally { if (owned && connection) await (squire as BrowserSquire).close(); }
 }

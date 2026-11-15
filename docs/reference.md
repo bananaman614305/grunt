@@ -125,8 +125,12 @@ removed. There is no Jev, billing, roster service, worker tooling or monorepo.
 
 ## Use grunt as your harness's model
 
-Run the separate local daemon on your own machine (Linux or macOS). Use Node 22
-or 24 LTS for the setup wizard.
+Run the separate local daemon on your own machine (Linux with systemd or macOS
+with launchd). Use Node 22 or 24 LTS for the setup wizard; npm and tar must be
+available. Squire also needs a usable browser/display path. A headless remote
+server may need display helpers such as Xvfb/noVNC or a reachable browser
+handoff. Missing prerequisites are reported for repair; provider verification
+can still require a person. Mistral Vibe separately needs `uv` or Python 3.12+.
 Setup installs the vetted adapters and connects accounts through Trusty Squire:
 
 ```sh
@@ -158,22 +162,52 @@ error rather than silently losing context.
 
 ### Free API and account setup
 
-This reference describes the eleven-source pool and setup behavior in 0.6.6.
+The eleven-source pool is unchanged from 0.6.6. Version 0.6.7 starts routing as
+soon as the first provider is verified, while remaining signups continue.
 
 `npx usegrunt` (or `npx usegrunt setup`) starts the terminal wizard. In a wide
 interactive terminal it opens with a short animation (any key skips it; CI,
-pipes and narrow terminals get a one-line title). It explains what grunt does,
-then says that Trusty Squire needs one Google sign-in before it installs and
-connects the local broker. Setup pulls the free service list from the grunt
-registry (falling back to the saved or bundled list, and saying so). The bundled
+pipes and narrow terminals get a one-line title). After checking prerequisites,
+setup pulls the free service list from the grunt registry, falling back to the
+saved or bundled list and saying so. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch
 in the experimental tier.
-Provider approval and free-account eligibility still apply. Setup installs and connects
-up to six services concurrently, starts the background daemon, then verifies
-up to three services concurrently with real requests through grunt. Each service
-gets its own PASS/FAIL line and summary row. Incomplete setup exits unsuccessfully
-with a repair step; rerun it to resume. For a foreground daemon, run `usegrunt serve`.
+Provider approval and free-account eligibility still apply.
+
+The wizard gathers the grouped sharing approval and coding-tool choices before
+starting provider jobs, so the tool picker does not compete with browser
+approvals for terminal input. It installs the persistent daemon once for the
+setup session, before connecting providers. Providers still being prepared are
+excluded from normal routing and bulk availability probes.
+
+Up to six provider jobs run concurrently. When a setup job reports a provider
+available, setup checks that exact provider with a real request through the
+installed daemon; up to three reply checks run at once. A correctly attributed
+reply is required to verify a route. While that check runs,
+the provider stays out of automatic routing; an explicit request for its source
+ID can run the verification probe. The first verified reply announces that grunt
+is ready and applies the preselected coding-tool
+configuration. Other provider jobs and checks continue, and later routes join
+the same daemon without a restart. Each provider still gets its own PASS/FAIL
+line and final summary row.
+
+Squire bootstrap is lazy and shared: account-dependent jobs reuse one connection
+and one pending sign-in, while eligible anonymous Kilo or OpenCode access can
+become usable before that sign-in finishes. Their anonymous setup attempts are
+prioritized rather than queued behind waiting account jobs. A provider's human
+handoff does not hold up verification or use of other ready routes. Perch stays in the default
+pool; its initial human verification can remain unfinished while another source
+serves requests. No cold-installation timing is promised: npm downloads, native
+packages, browser/display prerequisites and human verification all affect it.
+
+The original setup terminal remains the approval console until provider jobs
+and their checks settle. Open a connected coding tool in another terminal to use
+the ready daemon meanwhile. Closing the console pauses unfinished signups;
+already verified daemon routes keep working. Rerun `npx usegrunt setup` to resume.
+On normal completion, failed providers are listed with repair guidance, but the
+command succeeds if at least one provider was verified. If none was verified,
+setup fails. For a foreground daemon, run `usegrunt serve`.
 
 The jobs share one Squire connection, cached credential metadata and reusable
 grants. Up to three provider browser operations can run concurrently. Browser
@@ -188,8 +222,12 @@ Setup helpers can cancel one provider without stopping other jobs or the shared
 broker. A pending initial browser operation may finish before its owned tab can
 be closed; cancelled providers do not continue or open another handoff.
 
-Setup ends by offering to connect grunt to the coding tools it finds on PATH
-(Pi is preselected; non-interactive runs connect Pi only). Each choice adds a
+Setup offers the coding tools it finds on PATH before provider jobs start
+(an installed Pi is preselected; non-interactive runs connect an installed Pi
+only). It applies those choices after the first verified provider reply. If no
+coding tool was initially installed, setup can offer newly available tools after
+the provider batch finishes. Declining all tools that were already detected does
+not trigger another picker. Each choice adds a
 named **grunt** option and keeps your default model and provider:
 Pi gets a `grunt` provider in `models.json`; Codex gets its own
 `$CODEX_HOME/grunt.config.toml` for `codex --profile grunt` (`config.toml` is
@@ -405,8 +443,10 @@ the same flow, then restarts grunt with the API sources enabled. `usegrunt add k
 checks the anonymous Particle free route after current approval; it does not
 create an account or capture a provider key.
 
-When no Squire session exists, the wizard runs Squire's own connect installer
-with the OpenCode target. Squire manages login and its broker service. An existing
+When the first account-dependent job needs Squire and no session exists, setup
+runs Squire's own connect installer with the OpenCode target. Parallel jobs share
+that pending bootstrap rather than starting duplicate installers. Squire manages
+login and its broker service. An existing
 session with an unavailable broker reports the connection error for repair.
 Setup does not pair with Beeline or create agents or Rooms.
 
@@ -425,7 +465,9 @@ API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
 them. The daemon loads the saved router login at startup and retries if the
 router is temporarily unavailable. Setup keeps a runtime outside the npx cache,
-so cache cleanup does not remove the service. Pi's other providers are preserved.
+so cache cleanup does not remove the service. In the ready-first flow, providers
+join this installed runtime as their checks finish; the wizard does not reinstall
+or restart it for each provider. Pi's other providers are preserved.
 `PI_CODING_AGENT_DIR` selects a nondefault Pi agent directory.
 
 Named API-provider setup can install the pinned FreeLLMAPI Node server
@@ -442,8 +484,8 @@ need this separate router service.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package version is `usegrunt` `0.6.6`; the installed command is
-`usegrunt`. Production adapters passed real Grunt prompt, function-tool,
+The installed command is `usegrunt`. In 0.6.6, production adapters passed real
+Grunt prompt, function-tool,
 correlated-result and large-context checks: BeatAPI at 210,090 input tokens,
 Pollinations at 210,223 without fallback, Kilo Particle at 210,165 anonymously
 with zero reported cost, and Clixad at 210,321 with free/zero-charge metadata and
@@ -525,6 +567,12 @@ latest user message, word for word, through the session API, with no caller
 system prompt or tool definitions. Follow-ups with their user-message history
 reuse the same session; the mapping lasts until grunt exits. OpenCode runs its
 own tools and returns final text. It uses no tmux.
+
+An OpenCode worker started by grunt checks for grunt's saved authentication
+configuration when that worker first starts. Account setup can therefore finish
+after the daemon starts and become usable without restarting the daemon. This
+does not change a separately supplied OpenCode server or promise that an already
+running worker reloads changed credentials.
 
 Before prompting a worker it starts itself, grunt disconnects inherited MCP
 integrations in that worker's working-directory instance. Large optional tool
@@ -700,8 +748,15 @@ unreachable. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the 
 `registry.json` in its existing config directory. A gateway or cache failure
 keeps the last good list, falling back to the packaged list on a fresh install.
 Known adapters are installed and checked during sync with up to six concurrent
-jobs and a shared Squire connection; removing a registry entry disables it without
-uninstalling its files. The legacy `MILO_CONFIG_DIR` and
+jobs and a shared Squire connection. During foreground setup, a private session
+lease owns all providers selected for that session, including providers already
+verified. The daemon skips duplicate signup work for those providers. Pending
+providers are also excluded from normal routing and bulk availability checks.
+Heartbeat expiry and owner-process liveness prevent a crashed setup console
+from leaving a permanent exclusion; normal cleanup removes only that session's
+lease. This foreground gate is separate from routine background preparation;
+background checks do not themselves block an already-bound healthy route.
+Removing a registry entry disables it without uninstalling its files. The legacy `MILO_CONFIG_DIR` and
 `MILO_PORT` settings remain supported. `GRUNT_REGISTRY_URL` overrides the sync
 endpoint for local development.
 

@@ -1,4 +1,4 @@
-import { guardRouterSharing } from './setup.js';
+import { guardRouterSharing, RouterSetupPending } from './setup.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
@@ -15,7 +15,10 @@ export class ManagedRouter implements Source {
   async complete(request: ModelRequest, signal: AbortSignal) {
     signal.throwIfAborted();
     try { await guardRouterSharing(this.url, this.directory); }
-    catch { throw new SourceError('refused', 'Cannot enforce saved router data-sharing choices; rerun usegrunt setup'); }
+    catch (error) {
+      if (error instanceof RouterSetupPending) throw new SourceError('not_installed', 'A managed provider is still being verified; other ready sources remain available');
+      throw new SourceError('refused', 'Cannot enforce saved router data-sharing choices; rerun usegrunt setup');
+    }
     signal.throwIfAborted();
     return this.source.complete(request, signal);
   }

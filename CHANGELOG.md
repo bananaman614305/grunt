@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.7] - 2026-11-15
+
+### Changed
+
+- Start the local daemon before provider provisioning and make Grunt usable after the first correctly attributed provider reply. Continue the other signups and queued Squire confirmations in the setup terminal; later provider failures do not turn a working installation into a failure.
+- Bootstrap Squire lazily so anonymous Kilo and OpenCode access can become usable while account-based providers connect. Choose coding tools before concurrent signups request input, then apply their configuration after the first verified reply.
+- Verify at most three providers concurrently without occupying the six provisioning slots. Admit each provider independently without restarting the daemon.
+
+### Fixed
+
+- Coordinate foreground setup and daemon maintenance with short-lived, private setup ownership. Pending providers are excluded from automatic routing and health discovery, and foreground-owned signups are not duplicated by the daemon.
+- Discover a Grunt-owned OpenCode configuration created after daemon startup when launching its private CLI server. Preserve inherited configuration for anonymous access when that file does not exist.
+- Keep Squire's bootstrap client configuration in Grunt's private directory, so its installer cannot race coding-tool configuration writes. Cancel owned installation commands when setup ownership is lost, and make settled-provider verification one-shot even when preparation metadata remains present.
+
+### Validation
+
+- All 1,026 tests across 57 files passed, along with lint, TypeScript checks and a clean build.
+- An isolated live runtime verified anonymous Kilo and returned a correctly attributed automatic-route reply while Perch remained unfinished. The unfinished provider received no health checks or inference. The test did not install Squire or create provider accounts and is not a blank-machine signup benchmark.
+
 ## [0.6.6] - 2026-11-15
 
 ### Added
