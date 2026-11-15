@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -75,6 +75,7 @@ it('cancels a held npm install without later publishing a unit, restarting or re
   expect(await readFile(unit, 'utf8')).toBe('previous service');
   expect((await stat(unit)).mtimeMs).toBe(before.mtimeMs);
   expect(await readFile(join(directory, 'milo', 'installed-sources.json'), 'utf8')).toBe('["opencode"]');
+  await expect(readFile(join(directory, 'milo', 'installed-port.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('propagates ownership cancellation to systemd and does not continue with enable/restart/persistence', async () => {
@@ -100,6 +101,18 @@ it('publishes a successful installation with the same owner signal on every chil
   for (const [, , options] of fixture.spawn.mock.calls) expect(options.signal).toBe(fixture.controller!.signal);
   expect(fixture.spawn.mock.calls.at(-1)![1]).toEqual(['--user', 'restart', 'milo.service']);
   expect(await readFile(join(directory, 'milo', 'installed-sources.json'), 'utf8')).toBe('["kilo"]');
+  expect(JSON.parse(await readFile(join(directory, 'milo', 'installed-port.json'), 'utf8'))).toBe(18792);
+  expect((await stat(join(directory, 'milo', 'installed-port.json'))).mode & 0o777).toBe(0o600);
+});
+
+it('atomically replaces a stale port hint without following its symlink or changing the unrelated target', async () => {
+  const hint = join(directory, 'milo', 'installed-port.json'), unrelated = join(directory, 'unrelated-file');
+  await writeFile(unrelated, 'preserve this file', { mode: 0o600 });
+  await symlink(unrelated, hint);
+  await installService(['kilo']);
+  expect(await readFile(unrelated, 'utf8')).toBe('preserve this file');
+  expect(JSON.parse(await readFile(hint, 'utf8'))).toBe(18792);
+  expect((await stat(hint)).mode & 0o777).toBe(0o600);
 });
 
 it('keeps the no-options installation API compatible', async () => {

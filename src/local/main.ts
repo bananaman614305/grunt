@@ -87,6 +87,8 @@ export function start(env = process.env) {
       for (const id of session?.pending ?? []) if (sources.sources.some(source => source.id === id)) sources.pending.add(id);
       sources.verifying.clear();
       for (const id of session?.verifying ?? []) if (sources.pending.has(id)) sources.verifying.add(id);
+      sources.approvals.clear();
+      for (const id of session?.approvals ?? []) if (sources.pending.has(id)) sources.approvals.add(id);
       reconcile();
       return session;
     });
@@ -136,7 +138,13 @@ export function start(env = process.env) {
   return { server, close };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
+  if (process.argv[2] === 'status') {
+    const { statusCommand } = await import('./dashboard.js');
+    try { await statusCommand(process.argv.slice(3)); }
+    catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
+  } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
+    console.log('Usage: usegrunt [setup | add <provider> | status [--watch] [--json] [--port <port>]]\n\nRun setup to connect free sources, or status --watch in a separate terminal to view the pool.');
+  } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }
     catch { console.error('Dots pairing failed. Use the fallback code from the Allow page: usegrunt dots link <code>.'); process.exitCode = 1; }

@@ -150,6 +150,8 @@ export function squireEnvironment() {
 export class BrowserSquire implements SetupSquire {
   constructor(private options: { background?: boolean; signal?: AbortSignal; dataSharingApproved?: readonly string[] } = {}) {}
   approveDataSharing(providers: readonly string[]) { this.options.dataSharingApproved = [...new Set(providers)]; }
+  pendingVerificationServices(): readonly string[] { return this.verification.services(); }
+  onVerificationChange(observer: (services: readonly string[]) => void) { return this.verification.subscribe(observer); }
   private client = new Client({ name: 'grunt setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
   private services = new Map<string, AbortController>();

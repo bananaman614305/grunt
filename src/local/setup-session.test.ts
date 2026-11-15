@@ -61,6 +61,32 @@ it('keeps verification separate from admission and can hold a failed probe', asy
   expect(await readSetupSession(path)).toEqual({ owned: new Set(['kilo', 'perch']), pending: new Set(['kilo']), verifying: new Set() });
 });
 
+it('shares approval IDs with a separate status reader without admitting the provider or storing browser links', async () => {
+  const path = await directory(), session = await begin(path);
+  await session.setApprovals(['perch']);
+  const state = await readSetupSession(path);
+  expect(state?.approvals).toEqual(new Set(['perch']));
+  expect(state?.pending).toEqual(new Set(['kilo', 'perch']));
+  await expect(session.setApprovals(['https://example.invalid/private-handoff'])).rejects.toThrow('coordinate provider setup');
+  expect(JSON.stringify(await saved(path))).not.toContain('https:');
+  await session.verify('perch');
+  expect((await readSetupSession(path))?.approvals).toBeUndefined();
+  await session.setApprovals(['perch']);
+  expect((await readSetupSession(path))?.approvals).toBeUndefined();
+  await session.release('perch');
+  expect((await readSetupSession(path))?.pending.has('perch')).toBe(false);
+});
+
+it('ignores corrupt optional approval metadata while preserving a valid setup exclusion', async () => {
+  const path = await directory(); await begin(path);
+  const file = await statePath(path), state = await saved(path);
+  state.approvals = ['https://example.invalid/private-handoff', 'unselected', 42, 'perch'];
+  await writeFile(file, JSON.stringify(state), { mode: 0o600 });
+  const read = await readSetupSession(path);
+  expect(read?.pending).toEqual(new Set(['kilo', 'perch']));
+  expect(read?.approvals).toEqual(new Set(['perch']));
+});
+
 it('expires routing exclusions when the owner stops heartbeating', async () => {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
   const path = await directory(); await begin(path);

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add `usegrunt status`, `status --watch` and `status --json` for cached source activity, verified replies, approval needs and routing cooldowns. The color terminal view supports narrow panes, keyboard details, disabled sources and plain output.
+- Show a passive source dashboard during parallel onboarding after the first verified reply. Yield to foreground confirmations, then open the interactive watch view after setup releases its browser client and ownership lease.
+- Remember the successfully installed daemon port so the status command can reopen a custom-port installation. Status reads never invoke providers or expose browser handoff links, credentials, prompts or upstream error payloads.
+
 ## [0.6.7] - 2026-11-15
 
 ### Changed

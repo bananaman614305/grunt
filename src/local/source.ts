@@ -19,6 +19,7 @@ export interface Source {
 }
 export class Sources {
   private router: StickyRouter | undefined;
+  private observation: SourceStatus;
   // Adapters whose background setup has not finished yet.
   readonly preparing = new Set<string>();
   // Foreground signups must not probe or dispatch incomplete sources. Routine
@@ -26,15 +27,31 @@ export class Sources {
   readonly pending = new Set<string>();
   // An exact-ID setup probe may run without admitting that source to the pool.
   readonly verifying = new Set<string>();
-  constructor(public readonly sources: Source[], routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set()) {
+  // Foreground approval metadata contains adapter IDs only, never handoff URLs.
+  readonly approvals = new Set<string>();
+  constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set()) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
-    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending });
+    this.observation = new SourceStatus(sources.map(source => source.id), routing?.now);
+    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending, observation: this.observation });
   }
-  healthy(id: string) { this.router?.healthy(id); }
+  healthy(id: string) { this.router?.healthy(id); this.observation.healthy(id); }
+  status(): PoolSnapshot {
+    return this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
+      pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
+      ...(this.router ? { listed: (id: string) => this.router!.listed(id), cooldown: (id: string) => this.router!.cooldown(id) } : {}),
+      model: id => {
+        const adapter = this.routing?.registry().adapters.find(adapter => adapter.id === id);
+        // A rotation is a configured set, not an assertion about which model
+        // generated the latest answer. Never inspect private adapter configs.
+        const model = adapter?.models && adapter.models.length > 1 ? 'Free model rotation' : adapter?.models?.[0] ?? adapter?.model;
+        return model && /^[a-zA-Z0-9][a-zA-Z0-9._:/+ -]{0,159}$/.test(model) ? model : undefined;
+      }
+    });
+  }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await s.available()) return null;
-      if (this.router?.needsHealthCheck(s.id) && await s.healthCheck?.().catch(() => false)) this.healthy(s.id);
+      if (this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
+      if (this.router?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
       return s.id;
     }));
     return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];
@@ -50,7 +67,7 @@ export class Sources {
       if (this.router && !this.router.supportsInput(source.id, request.imageInput)) throw new SourceError('refused', `${request.model} does not support this input modality`);
       // A setup probe is one exact-source call, never sticky failover or a
       // retry of a provider refusal. The source retains every normal guard.
-      const completion = await source.complete(request, signal);
+      const completion = await this.observation.complete(source, request, signal);
       signal.throwIfAborted();
       this.router?.verified(source.id);
       answeredBy.set(completion, source.id);
@@ -65,7 +82,7 @@ export class Sources {
       signal.throwIfAborted();
       if (this.pending.has(source.id)) continue;
       let completion: Completion;
-      try { completion = await source.complete(request, signal); }
+      try { completion = await this.observation.complete(source, request, signal); }
       catch (error) {
         if (signal.aborted || (error instanceof SourceError && error.code === 'cancelled')) {
           console.error(`grunt source: ${source.id} cancelled for model ${request.model}`);
@@ -115,3 +132,5 @@ export class Gateway implements Source {
 }
 import { StickyRouter } from './routing.js';
 import type { RoutingOptions } from './routing.js';
+import { SourceStatus } from './source-status.js';
+import type { PoolSnapshot } from './source-status.js';
