@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.6] - Unreleased (draft, held)
+
+### Added
+
+- Connect BeatAPI's `deepseek-v4.1-flash-free` through Squire with a key restricted to free models. Its continuous free route permits one successful request per minute and leaves the separate one-time $2 welcome credit untouched. No numeric daily or token-per-minute allowance is promised.
+- Connect Pollinations' `community/morriszdweck/glm-5.3-flash-free` through Squire with a hard zero-budget, Quest-only key and minimal usage permissions. A positive unused Quest balance is required; the one-time first-key reward supplies it and the zero-priced route does not spend it. Grunt pins that single community route, verifies its free-access metadata and model identity, and bridges function calls through validated JSON. Availability is best effort, with no promised daily quota or reset schedule.
+
+### Changed
+
+- Expand the automatic pool from nine to eleven sources. Keep stable sources at 80%; seven experimental sources share the remaining 20% equally, about 2.857% each.
+- Include BeatAPI and Pollinations in the grouped sharing approval, bringing it to nine provider policies. Their upstream retention and training guarantees are unestablished. Declining still permits eligible Zro and LiveKit setup.
+- Switch the default Kilo source from Auto Free to `particle-ai/particle-1:free`, a distinct model post-trained from DeepSeek V4.1 Flash with a listed one-million-token context and native function calls. The anonymous route needs no account or API key and allows 200 requests per hour per IP, subject to upstream capacity, without one-time credits. Standard DeepSeek catalog routes remain paid. Kilo's changed Particle-specific training disclosure requires fresh grouped approval.
+- Retire Grunt-owned legacy Kilo Auto and Nemotron rows. With current Particle consent, the legacy guard can register Particle against an existing owned key and prioritize its enabled rows before Freebuff, preserving disabled Particle rows and all user custom keys, rows and priorities. Runtime migration creates no account, key or router service. Metadata-only migration was verified on the existing Chad backend.
+
+### Validation status
+
+- BeatAPI and Pollinations passed real Grunt short-prompt, function-tool, correlated-result and large-context proofs without charges: BeatAPI with 210,090 input tokens and Pollinations with 210,223. All 706 local tests, lint, a clean build and independent review passed; a separate blank-machine onboarding run is not claimed.
+- The actual production Particle 1 source passed a short prompt, a native function call, its correlated result and a 210,165-input-token context with reported cost zero, without an account or key. The reviewed candidate is installed on Chad at port 8792 and returned a Kilo hello reply. Existing source choices were preserved; BeatAPI and Pollinations are not enabled on that service yet. Public npm and gateway publication remain held.
+- Release blocker: native Freebuff DeepSeek selection worked, but the Grunt bridge received an explicit relaying-policy HTTP 403 and a strike. Testing stopped and no pin shipped. Provider-policy review and the supported scope for transparent, human-initiated use of one's own account remain unresolved. The public 0.6.5 package still has nine sources; the eleven-source draft is not released.
+
 ## [0.6.5] - 2026-11-15
 
 ### Added

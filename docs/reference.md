@@ -166,6 +166,11 @@ error rather than silently losing context.
 
 ### Free API and account setup
 
+The pool changes below describe the held 0.6.6 draft. The published 0.6.5 package
+still has nine sources and its previous Kilo behavior. The eleven-source draft
+is not published while Freebuff's provider-policy review and supported scope
+remain unresolved.
+
 `npx usegrunt` (or `npx usegrunt setup`) starts the terminal wizard. In a wide
 interactive terminal it opens with a short animation (any key skips it; CI,
 pipes and narrow terminals get a one-line title). It explains what grunt does,
@@ -173,7 +178,8 @@ then says that Trusty Squire needs one Google sign-in before it installs and
 connects the local broker. Setup pulls the free service list from the grunt
 registry (falling back to the saved or bundled list, and saying so). The bundled
 vetted pool contains Freebuff, OpenCode, Kilo and Zro in the stable tier, plus
-Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit in the experimental tier.
+Token Harbor, Runcrate, APInex, Mistral Vibe Free, LiveKit, Pollinations and BeatAPI
+in the experimental tier.
 Provider approval and free-account eligibility still apply. Setup installs and connects
 up to three services concurrently, starts the background daemon, then verifies
 up to three services concurrently with real requests through grunt. Each service
@@ -200,16 +206,34 @@ only after it answers one real request through grunt.
 
 Freebuff pairs its CLI through Squire's browser. Setup installs tmux when needed.
 OpenCode first tries its free model without an account and requests sign-in only
-if that model requires it. Kilo reuses saved API access or signs up for its free
-access through Squire. Captcha, passkey and email verification show a browser
+if that model requires it. Kilo verifies its anonymous Particle 1 free route
+after the required sharing approval; it needs no account, API key or signup.
+Captcha, passkey and email verification for other providers show a browser
 handoff and wait for the user to resume. Existing accounts are reused; no extra
 Google accounts are created.
 
 Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
 
-The foreground wizard groups the Freebuff, OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free data-sharing disclosures into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this seven-provider group. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval where applicable, including when an existing grant is present. Daily background provisioning runs at midnight UTC to renew daily check-ins; unresolved verification leaves that source unavailable while other services continue.
+The foreground wizard groups the nine data-sharing disclosures for Freebuff, OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, APInex, Mistral Vibe Free, Pollinations and BeatAPI into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this group. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval where applicable, including when an existing grant is present. Daily background provisioning runs at midnight UTC to renew daily check-ins; unresolved verification leaves that source unavailable while other services continue.
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
+
+Kilo's default in pending 0.6.6 is `particle-ai/particle-1:free`, a distinct model
+post-trained from DeepSeek V4.1 Flash, with a listed 1M-token context and native
+function calls. It calls the public `https://ai-gateway.kilo.ai/api/v1` endpoint
+without an account or API key. Before inference, grunt checks that the exact
+catalog entry is free, has at least 200K context and supports tools and output
+limits. It accepts only that exact returned model with zero reported inference
+cost and valid correlated function calls. A fallback model cannot pass as Particle.
+The [documented anonymous limit](https://kilo.ai/docs/gateway/models-and-providers)
+is 200 requests per hour per IP, subject to upstream capacity. This is ongoing
+rate-limited zero-cost access rather than a one-time credit balance.
+
+The catalog permits training on Particle prompts. Retention and staff-review
+guarantees are unestablished. The Kilo consent policy is now
+`2026-11-15-particle`; an earlier Auto Free approval does not authorize this
+route. Setup asks for the changed disclosure in the existing grouped approval,
+and background routing leaves Kilo unavailable until the current policy is approved.
 
 The additional experimental routes have these requirements:
 
@@ -219,6 +243,8 @@ The additional experimental routes have these requirements:
 | APInex | `free/deepseek-v4.1-flash` | Personal `@gmail.com` Google login and daily check-in with Turnstile. Existing wallet funds remain untouched. The observed daily allowance is 25 million weighted units, approximately 8.33 million actual DeepSeek tokens at weight 3. The `free/` route never spends wallet funds. |
 | Mistral Vibe Free | Native CLI alias `zai-glm-5-3-flash`, wire model `zai-glm-5-3-flash-vibe-free` | Free plan with a $10 monthly Vibe Code allowance; no card, purchased credits or pay-as-you-go. This is native coding allowance, not ordinary Mistral API credit. |
 | LiveKit | `deepseek-ai/deepseek-v4.1-flash` | Build plan at $0 per month, no card, and one free project. The documented $2.50 monthly included inference allowance resets at the start of each calendar month and has a hard stop; no paid fallback. |
+| BeatAPI | `deepseek-v4.1-flash-free` | Personal Google login through Squire; no paid funds, card, subscription or automatic recharge. One successful request per minute. The ordinary one-time $2 welcome credit is separate from this continuous free route and is not spent by it. No numeric daily or token-per-minute limit is promised. |
+| Pollinations | `community/morriszdweck/glm-5.3-flash-free` | Google login through Squire, a hard numeric zero-budget key with Quest Pollen Only enabled, usage-only account permissions, and a positive unused Quest balance. No paid funds or billing. Community availability is best effort, with no promised daily quota or fixed reset. |
 
 Runcrate and APInex keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
@@ -255,11 +281,54 @@ credit. The $2.50 figure is the documented monthly allowance, not a measured
 remaining balance. Keep the account on Build: an external billing upgrade can
 invalidate the free-account assumptions recorded by setup.
 
+BeatAPI setup uses the person's existing Google account through Squire and
+restricts the Grunt-owned key to free models. The selected DeepSeek route sends
+native function definitions and correlated tool results. Nonbillable account
+metadata is checked before and after inference: settled credits must remain
+zero and the wallet balance must match the verified zero or signup-credit
+baseline. A changed balance stops routing for repair with `usegrunt add beatapi`.
+After each successful request, the source cools down for one minute; grunt can
+immediately use another eligible free source. Its observed 210,081-token input
+took about 121 seconds, so the long-context proof is not a speed guarantee.
+
+Pollinations setup captures a Grunt-owned key directly into Squire with a budget
+of exactly numeric `0`; blank or unlimited budgets are rejected. Quest Pollen
+Only must be enabled, with only the `usage` account permission. An individual
+model allowlist is used when the normal dashboard offers it; runtime always
+pins the one vetted community route. The source rechecks key validity and expiry,
+budget, permissions, balance and the route's zero-price catalog entry before
+inference. An explicit one-candidate request prevents provider fallback, and
+the response must identify both the requested community route and
+`poe/GLM-5.3-Flash-T`. Function calls use a validated JSON bridge with correlated
+tool results; the upstream route does not receive native function definitions.
+
+The ordinary first-key reward of 0.25 Quest Pollen supplies the positive balance
+required for access. The zero-priced community route leaves it unused; it does
+not require ongoing earning or purchases while that balance remains positive.
+Under the current terms, the wallet expires after twelve consecutive months of
+inactivity, with API requests or sign-in resetting the clock. This is a one-time
+reward supporting a currently free route, not a recurring credit grant or a
+permanent availability guarantee. A depleted or expired allowance leaves the
+source unavailable. Rerun `usegrunt add pollinations` to repair access through
+the ordinary signup flow.
+
+Grunt stores these sources' private Squire egress grants and verification receipts
+in `beatapi.json` and `pollinations.json`; their provider keys stay in Squire.
+Verification receipts expire after 30 days. Neither setup displays or
+stores a plaintext provider key in grunt's files, harness configuration or logs.
+
 The grouped disclosure includes each provider's data policy. Token Harbor permits
 retention, staff review and upstream training. Runcrate's upstream retention and
 training guarantees are unestablished; APInex's retention duration and upstream
 training policy are unestablished. Free Mistral Vibe prompts and code may be used
 for improvement, with no established zero-retention guarantee.
+For [BeatAPI](https://beatapi.io/privacy-policy), prompts may be retained for
+operations and processed upstream. It states private content is not used for
+training without separate notice and consent where required; upstream guarantees
+remain unestablished. [Pollinations](https://pollinations.ai/privacy) sends context
+through its OSAII community operator and Poe/Together processing, whose retention,
+staff review and training guarantees are unestablished. Both require the current
+grouped approval before signup or runtime routing.
 
 NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain. Cloudflare Qwen is excluded from the pool by the owner's choice.
 
@@ -286,10 +355,10 @@ Mistral Vibe and LiveKit's native CLIs own their separate local credential
 exchanges and storage.
 Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
-`usegrunt add groq`, `usegrunt add cerebras`, or `usegrunt add kilo` connects another
-provider through the same flow, then restarts grunt with the API sources enabled.
-Kilo reuses its saved profile key or opens free signup; its grant uses bearer
-authentication with `api.kilo.ai` first in the allowed hosts and `/api/gateway`.
+`usegrunt add groq` or `usegrunt add cerebras` connects another provider through
+the same flow, then restarts grunt with the API sources enabled. `usegrunt add kilo`
+checks the anonymous Particle free route after current approval; it does not
+create an account or capture a provider key.
 
 When no Squire session exists, the wizard runs Squire's own connect installer
 with the OpenCode target. Squire manages login and its broker service. An existing
@@ -304,7 +373,7 @@ provider keys appear in Pi's config or terminal output. Never share backend stat
 Existing routers with keys are preserved if their local admin state is missing.
 
 Fresh setup offers the bundled Freebuff, OpenCode, Kilo, Zro, Token Harbor,
-Runcrate, APInex, Mistral Vibe Free and LiveKit pool, enabling providers only after their
+Runcrate, APInex, Mistral Vibe Free, LiveKit, Pollinations and BeatAPI pool, enabling providers only after their
 required data-sharing approval.
 It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
@@ -314,25 +383,38 @@ router is temporarily unavailable. Setup keeps a runtime outside the npx cache,
 so cache cleanup does not remove the service. Pi's other providers are preserved.
 `PI_CODING_AGENT_DIR` selects a nondefault Pi agent directory.
 
-Kilo setup and named API-provider setup install the pinned FreeLLMAPI Node server
+Named API-provider setup can install the pinned FreeLLMAPI Node server
 as a separate background service; Docker is not required. Linux uses systemd user
 units; macOS uses launchd (macOS remains untested). The router data and private login live under grunt's
 config directory. `MILO_FREELLMAPI_URL` chooses its numeric loopback address and
 is saved in grunt's service configuration. The router's database is created under
 umask `0077`. `MILO_ROUTER_RUNTIME=docker` retains the older Docker installer for
 existing installations and offline regression checks.
+The default Kilo Particle source calls the public gateway directly and does not
+need this separate router service.
 
 `MILO_SQUIRE_HOME` and `MILO_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package version is `usegrunt` `0.6.5`; the installed command is
-`usegrunt`. The production LiveKit adapter passed a short prompt, a function-tool
-call, its correlated result follow-up and a context with 210,077 input tokens
-through Grunt. The adapter and setup also passed independent code review and local regression checks.
-These checks do not claim a separate blank-machine onboarding run. The three
-sources added in 0.6.4 retain their recorded production-adapter and long-context
-validation.
+The next package release is `usegrunt` `0.6.6`; the installed command is
+`usegrunt`. BeatAPI and Pollinations passed real Grunt short prompts, function-tool
+calls, correlated results and large contexts without charges: 210,090 input
+tokens for BeatAPI and 210,223 for Pollinations on its fixed route without
+fallback. The actual production Particle 1 source passed short-prompt, native
+function/result and 210,165-input-token context checks with zero reported cost,
+without an account or key. The reviewed candidate is installed on Chad at port
+8792 and returned a Kilo hello reply, preserving its previous source choices.
+BeatAPI and Pollinations are not enabled on Chad yet. All 706 local tests, lint,
+a clean build and independent review passed; public publication remains held.
+These checks do not claim a separate blank-machine onboarding run. The sources added in
+0.6.4 and 0.6.5 retain their recorded production-adapter and long-context validation.
+The 0.6.6 release is held: native Freebuff DeepSeek selection worked, but the
+Grunt bridge received an explicit relaying-policy HTTP 403 and a strike. Testing
+stopped, the pin prototype was removed, and no pin shipped. Read-only review is
+examining the provider's supported scope for transparent, human-initiated use of
+one's own account; there are no further live retries or origin-concealment changes.
+The public package remains 0.6.5 with nine sources.
 Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
 update the two existing file overlays described under Deploy, not the image.
 
@@ -340,14 +422,36 @@ Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1
 provider failover. There is no direct OpenRouter free API route. An already
 configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
 `MILO_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
-cap is (4096) tokens. Select `freellmapi` for the free chain, which tries keyed
-Kilo's free Nemotron 3 Ultra before keyed `kilo-auto/free` when configured. Select
-`kilo` for Auto explicitly. The anonymous Kilo fallback requires the same current Kilo data-sharing approval as keyed Kilo access, even though it does not require an account. Grunt-owned Kilo and Freebuff backend rows are disabled when their approval is absent; custom backend rows retain their own flags and priorities. Legacy backend requests reconcile these rows from the existing private admin file before forwarding, and fail closed if that state cannot be checked. The default registry source `kilo` selects Auto, rather than the
-legacy `freellmapi` chain's Nemotron-first preference. It requires the backend's
-`X-Routed-Via` header to identify `custom/kilo-auto/free`; a backend fallback to
-another route cannot count as a successful Kilo answer or setup check.
-The separate Freebuff bridge listens only on `127.0.0.1:8789` and contains only
-the Freebuff source, preventing a routing loop. FreeLLMAPI supports priority
+cap is (4096) tokens. Select `freellmapi` for a previously configured legacy
+chain; select `kilo` for the direct Particle 1 free source. Grunt-owned backend
+rows require current sharing approval; custom backend rows retain their own flags
+and priorities. Legacy requests reconcile owned rows from the existing private
+admin file before forwarding and fail closed if that state cannot be checked.
+The 0.6.6 migration retires Grunt-owned Auto, Nemotron and other non-Particle
+rows labeled `Kilo Free` or `Milo kilo (Squire)`, even when an older approval
+exists. With current Particle-specific consent and a verified catalog entry,
+the runtime guard can add Particle to an existing Grunt-owned backend key using
+backend-held credentials. It ranks enabled owned Particle rows before Freebuff,
+preserves a previously disabled Particle row, and leaves user custom keys, rows,
+flags and priorities untouched. This guard creates no account, provider key or
+router service. Fresh legacy bootstrap also uses only Particle for Kilo; it does
+not restore Auto or Nemotron fallback. Metadata-only migration was verified on
+Chad: owned Auto/Nemotron rows are disabled and owned Particle rows are enabled.
+The published 0.6.5 package used Auto Free by default and a Nemotron-first legacy
+chain. Auto Free is no longer the default in 0.6.6, and its changing pool does not
+guarantee DeepSeek. Particle is specifically post-trained from DeepSeek V4.1 Flash;
+it is not the standard DeepSeek model.
+On November 15, 2026, both official model catalogs
+([API gateway](https://api.kilo.ai/api/gateway/models),
+[AI gateway](https://ai-gateway.kilo.ai/api/v1/models)) listed the standard
+DeepSeek V4.1 Flash and its 1017 variant as paid, at $0.30 per million input
+tokens and $1.20 per million output tokens, with no free standard DeepSeek ID.
+The separately listed free Particle route does not make either standard route free.
+See [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free).
+The separate Freebuff bridge starts only when the legacy `freellmapi` source is
+configured. It listens only on `127.0.0.1:8789` and contains only the Freebuff
+source, preventing a routing loop. Fresh Kilo Particle setup needs neither this
+bridge nor the legacy router. FreeLLMAPI supports priority
 ordering: keyed providers come first, Kilo next, Freebuff last. Setup enables
 only those providers in the chain, excluding Google, OpenRouter and unvetted
 aggregators.
@@ -391,9 +495,10 @@ Avoid configuring that OpenCode server to call grunt, which would create a loop.
 See the [server API](https://opencode.ai/v1/docs/server/).
 
 [OpenCode's free models](https://opencode.ai/docs/zen) may be free only for a
-limited time, and some retain prompts for training. [Kilo Auto Free](https://kilo.ai/docs/getting-started/using-kilo-for-free)
-may route to providers that log prompts and outputs and use them to improve
-their services. Do not send confidential data through these free routes.
+limited time, and some retain prompts for training. Kilo's Particle free catalog
+permits training on prompts, with unestablished retention and staff-review
+guarantees; [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free)
+also describes its free access. Do not send confidential data through these free routes.
 
 ### opencode
 
@@ -494,11 +599,12 @@ Codex default back at grunt, which would create a routing loop.
 
 The bundled registry has four stable adapters: Freebuff and OpenCode at weight
 0.192 each, Kilo at 0.256 and Zro at 0.16. Experimental Token Harbor, Runcrate,
-APInex, Mistral Vibe Free and LiveKit have weight 0.04 each. Stable weights total 0.8 and
-experimental weights total 0.2. All nine accept text rather than images.
-Kilo, Zro, Token Harbor, Runcrate, APInex and LiveKit forward function tool definitions
+APInex, Mistral Vibe Free, LiveKit, Pollinations and BeatAPI share 0.2 equally,
+about 0.0285714 each. Stable weights total 0.8. All eleven accept text rather than images.
+Kilo, Zro, Token Harbor, Runcrate, APInex, LiveKit and BeatAPI forward function tool definitions
 and return tool calls for the harness to execute. Mistral Vibe uses a validated
-text bridge for harness tool calls while its native tools remain disabled. Providers
+text bridge for harness tool calls while its native tools remain disabled.
+Pollinations also uses a validated JSON tool bridge for its fixed community model. Providers
 with data-sharing policies require current approval before they can be selected.
 LiveKit's [inference data-retention policy](https://docs.livekit.io/agents/models/inference/)
 states zero retention and no training by LiveKit or its underlying providers on
