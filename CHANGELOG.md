@@ -18,6 +18,7 @@
 
 - All 1,026 tests across 57 files passed, along with lint, TypeScript checks and a clean build.
 - An isolated live runtime verified anonymous Kilo and returned a correctly attributed automatic-route reply while Perch remained unfinished. The unfinished provider received no health checks or inference. The test did not install Squire or create provider accounts and is not a blank-machine signup benchmark.
+- The installed candidate matched all 70 packaged runtime files. Current warm checks passed for ten sources, including a successful bounded Mistral Vibe recheck after an initial failure. Runcrate returned an upstream rate-limit response with a reset delay; its exact quota bucket was not established. No provider account or funding changes were made.
 
 ## [0.6.6] - 2026-11-15
 
