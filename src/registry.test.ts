@@ -10,9 +10,10 @@ const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('ships vetted Freebuff, OpenCode, Kilo, Zro and opt-in Token Harbor and validates tier weights', () => {
-  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor']);
+it('ships the eight vetted sources without Cloudflare and validates tier weights', () => {
+  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe']);
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
+  expect(bundledRegistry.adapters.some(a => /cloudflare|qwen/.test(a.id))).toBe(false);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.8);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'experimental').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.2);
   expect(() => validateRegistry({ ...bundledRegistry, adapters: bundledRegistry.adapters.map(a => a.id === 'tokenharbor' ? { ...a, weight: 0.3 } : a) })).toThrow();
@@ -47,17 +48,31 @@ it('gateway down keeps cached list and persists private cache', async () => {
   await restarted.load(); await restarted.sync(); expect(restarted.current).toEqual(updated);
   expect(fetcher.mock.calls[1]![1]?.headers).toMatchObject({ 'If-None-Match': '"published"' });
 });
-it('syncs at startup and daily, and stops syncing on close', async () => {
-  vi.useFakeTimers();
+it('syncs at startup and each UTC midnight, and stops syncing on close', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-15T22:00:00Z'));
   const fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 304 }));
   const sync = new RegistrySync({ directory: await directory(), fetcher });
   try {
     await sync.start(); expect(fetcher).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(REGISTRY_INTERVAL - 1); expect(fetcher).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1000 - 1); expect(fetcher).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1); expect(fetcher).toHaveBeenCalledTimes(2);
-    await sync.close(); await vi.advanceTimersByTimeAsync(REGISTRY_INTERVAL); expect(fetcher).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(REGISTRY_INTERVAL); expect(fetcher).toHaveBeenCalledTimes(3);
+    await sync.close(); await vi.advanceTimersByTimeAsync(REGISTRY_INTERVAL); expect(fetcher).toHaveBeenCalledTimes(3);
   } finally { await sync.close(); vi.useRealTimers(); }
 });
+it('keeps daily provisioning scheduled when cleanup fails after a background run', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-15T23:00:00Z'));
+  const notify = vi.fn(), afterEnsure = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('Squire close failed')).mockResolvedValue(undefined);
+  const fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 304 }));
+  const sync = new RegistrySync({ directory: await directory(), fetcher, afterEnsure, notify });
+  try {
+    await sync.start();
+    await vi.advanceTimersByTimeAsync(3600000); expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenCalledWith('Background setup incomplete; run usegrunt setup to resume');
+    await vi.advanceTimersByTimeAsync(REGISTRY_INTERVAL); expect(fetcher).toHaveBeenCalledTimes(3);
+  } finally { await sync.close(); vi.useRealTimers(); }
+});
+
 it.each([new Response('bad json'), Response.json({ version: 9 }), new Response(null, { status: 503 }), new Response(null, { status: 304 })])('retains the bundled list on invalid or unavailable responses', async response => {
   const sync = new RegistrySync({ directory: await directory(), fetcher: async () => response });
   await sync.load(); await sync.sync(); expect(sync.current).toEqual(bundledRegistry);

@@ -455,7 +455,7 @@ it('starts a guarded runtime without signup when sharing is declined on a fresh 
   expect(actions.checkService).toHaveBeenCalledOnce();
 });
 
-it.each(['tokenharbor', 'kilo'])('upgrades the previous runtime when the explicitly added %s is declined without enabling it', async add => {
+it.each(['tokenharbor', 'kilo', 'runcrate', 'apinex', 'mistral-vibe'])('upgrades the previous runtime when the explicitly added %s is declined without enabling it', async add => {
   const order: string[] = [];
   const previous = ['freellmapi', 'freebuff', 'opencode'];
   const actions = stubActions(order, {

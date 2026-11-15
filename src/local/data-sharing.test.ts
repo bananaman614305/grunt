@@ -7,7 +7,7 @@ import type { DataSharingPolicy } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), isCancel: (value: unknown) => typeof value === 'symbol' }));
 const originalPolicies = DATA_SHARING_POLICIES.map(policy => ({ ...policy }));
-const sharingIds = ['freebuff', 'opencode', 'kilo', 'tokenharbor'];
+const sharingIds = ['freebuff', 'opencode', 'kilo', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe'];
 const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-data-sharing-')); directories.push(path); return path; }
 afterEach(async () => {

@@ -123,7 +123,7 @@ it('runs registry background provisioning concurrently too', async () => {
     ensure: async adapter => { started.push(adapter.id); await hold.promise; } });
   const pending = sync.sync();
   await vi.waitFor(() => expect(started).toEqual(['freebuff', 'opencode', 'kilo']));
-  hold.resolve(); await pending; expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor']); await sync.close();
+  hold.resolve(); await pending; expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe']); await sync.close();
 });
 
 it('pins Kilo installer and capabilities instead of accepting executable registry data', () => {

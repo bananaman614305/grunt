@@ -240,7 +240,8 @@ const PREAMBLE = [
 ].join('\n');
 const SQUIRE_NOTICE = [
   'Some free services only work with an account. Trusty Squire is a local',
-  'browser helper that signs up for them for you using Google sign-in (OAuth).',
+  'browser helper that signs up for them using their supported sign-in.',
+  'Most use Google; Runcrate’s card-free access needs GitHub sign-in.',
   '',
   'Next, a browser may open and ask you to sign in to Google once. If Trusty',
   'Squire is already connected on this machine, setup reuses it. A captcha or',
@@ -298,7 +299,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const previous = (await actions.installedSources?.())?.split(',') ?? [];
     if (add) {
       const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
-      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor'].includes(add)
+      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe'].includes(add)
         ? [...new Set([...(previous.length ? previous : defaults), add])]
         : [...new Set(['freellmapi', ...previous, ...defaults])];
       const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });

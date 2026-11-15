@@ -31,6 +31,18 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   provider: 'tokenharbor', name: 'Token Harbor', version: '2026-11-15',
   disclosure: 'Prompts and responses may be retained, read by staff, and used by upstream providers for training.',
   url: 'https://team.tokenharbor.ai/faq'
+}, {
+  provider: 'runcrate', name: 'Runcrate', version: '2026-11-15',
+  disclosure: 'Free inference is served by third-party model providers under their own terms. Runcrate does not save API prompts or responses by default and does not train on saved prompts; upstream retention and training guarantees are not established.',
+  url: 'https://www.runcrate.ai/inference/free'
+}, {
+  provider: 'apinex', name: 'APInex', version: '2026-11-15',
+  disclosure: 'Account and usage metadata are collected. Prompt retention duration and upstream no-training guarantees are not established for the free route.',
+  url: 'https://apinex.bond/legal/privacy'
+}, {
+  provider: 'mistral-vibe', name: 'Mistral Vibe Free (GLM 5.3 Flash)', version: '2026-11-15',
+  disclosure: 'The native coding agent sends task and project context to Mistral-hosted GLM. Free-plan prompt and code data may be used to improve services; no zero-retention guarantee is established for this route.',
+  url: 'https://legal.mistral.ai/terms/privacy-policy'
 }];
 
 const fileName = 'data-sharing-consent.json';

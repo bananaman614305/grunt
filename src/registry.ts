@@ -13,7 +13,7 @@ export interface Adapter {
   models?: string[];
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
-const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor' };
+const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe' };
 export const knownAdapters = new Set(Object.keys(installers));
 export function validateRegistry(value: unknown): Registry {
   const fail = () => { throw new Error('Invalid adapter registry'); };
@@ -30,7 +30,7 @@ export function validateRegistry(value: unknown): Registry {
       || !['agent', 'model'].includes(String(a.kind)) || !['stable', 'experimental'].includes(String(a.tier))
       || typeof a.weight !== 'number' || !Number.isFinite(a.weight) || a.weight <= 0 || a.weight > 1
       || !Array.isArray(a.modalities) || !a.modalities.length || a.modalities.some(m => !['text', 'image'].includes(m))
-      || new Set(a.modalities).size !== a.modalities.length || typeof a.install !== 'string' || !(/^npm:[a-z0-9@/._-]+$/.test(a.install) || (['kilo', 'nvidia', 'zro', 'tokenharbor'].includes(String(a.id)) && a.install === `builtin:${a.id}`))
+      || new Set(a.modalities).size !== a.modalities.length || typeof a.install !== 'string' || !(/^npm:[a-z0-9@/._-]+$/.test(a.install) || (knownAdapters.has(String(a.id)) && a.install === installers[a.id as keyof typeof installers]))
       || (a.model !== undefined && (typeof a.model !== 'string' || !a.model.trim()))
       || (a.models !== undefined && (a.id !== 'opencode' || a.model !== undefined || !Array.isArray(a.models) || !a.models.length || a.models.length > 20
         || a.models.some(model => typeof model !== 'string' || !model.trim()) || new Set(a.models).size !== a.models.length))) return fail();
@@ -41,7 +41,7 @@ export function validateRegistry(value: unknown): Registry {
       if (url.protocol !== 'https:' || url.username || url.password) return fail();
     }
     // Known adapters have fixed installers and capabilities; registry data never supplies code.
-    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
+    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
       || a.modalities.some(m => m !== 'text'))) return fail();
     ids.add(a.id);
     weights[a.tier as Adapter['tier']] += a.weight;

@@ -20,7 +20,7 @@ const payload = { model: 'grunt', messages: [{ role: 'user', content: 'hello' }]
 const response = (model = ZRO_DEEPSEEK) => Response.json({ model, choices: [{ message: { content: 'Hello' } }], usage: { prompt_tokens: 37, completion_tokens: 2 } });
 
 it('ships Zro by default and keeps unvetted NVIDIA out of fresh signup', async () => {
-  expect(bundledRegistry.adapters.map(a => a.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor']);
+  expect(bundledRegistry.adapters.map(a => a.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe']);
   expect(configure({}).sources.find(s => s.id === 'zro')).toBeInstanceOf(Zro);
   const calls: string[] = [];
   const squire = { signup: vi.fn(), runs: { start: vi.fn(), get: vi.fn() }, credentials: { list: vi.fn(), grant: vi.fn() } };
@@ -147,7 +147,7 @@ it('skips every unapproved sharing service before installation while connecting 
   const squire = { signup, runs: { start: vi.fn(), get: vi.fn() }, credentials: { list: vi.fn(), grant: vi.fn() } };
   const result = await setupFallbacks({ directory: await directory(), adapters: bundledRegistry.adapters.map(adapter => adapter.id),
     squire, run, notify: () => {}, setupProvider: provider });
-  expect(result.unavailable).toEqual(['freebuff', 'opencode', 'kilo', 'tokenharbor']);
+  expect(result.unavailable).toEqual(['freebuff', 'opencode', 'kilo', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe']);
   expect(run).not.toHaveBeenCalled(); expect(signup).not.toHaveBeenCalled();
   expect(provider).toHaveBeenCalledOnce(); expect(provider.mock.calls[0]?.[1]).toEqual(['zro']);
 });

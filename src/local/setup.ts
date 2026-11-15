@@ -19,11 +19,18 @@ import { withTerminal } from './terminal.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
+import { Runcrate, writeRuncrateGrant } from './runcrate.js';
+import { Apinex, writeApinexGrant } from './apinex.js';
+import { setupMistralVibe } from './mistral-vibe-setup.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } from './data-sharing.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai' };
+const freeProviderInstructions: Record<string, string> = {
+  runcrate: ' Verify that the GitHub account is at least 30 days old. Use the normal Get your free tokens link at https://www.runcrate.ai/dashboard/api-keys#free-card to activate its recurring weekly allowance; verify the free tier is active via GitHub and not paused. Leave optional marketing unchecked. Verify no paid subscription, no purchased balance, no payment method and automatic top-ups disabled. If any of these checks fails, stop and report it; do not change billing settings or create another account. Use only deepseek-ai/DeepSeek-V4.1-Flash at api.runcrate.ai. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Reuse an existing vaulted key where possible; never reset or rotate it.',
+  apinex: ' Verify the Free plan and complete today\'s ordinary DAILY CHECK-IN to activate recurring free quota. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Use only free/deepseek-v4.1-flash at api.apinex.bond, never a wallet-funded model or paid sibling. Verify the check-in for the current UTC date is actually claimed and free quota is active; absence of a check-in modal alone is insufficient. Do not use or change any existing paid wallet balance. Dismiss any paid upsell after check-in. Do not add billing, top up a wallet, buy credits, or use any paid balance. If check-in or free access cannot be confirmed, stop and report it. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
+};
 export type Provider = keyof typeof PROVIDERS;
 export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 export { NVIDIA_DEEPSEEK } from './nvidia.js';
@@ -260,7 +267,7 @@ export class BrowserSquire implements SetupSquire {
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
     const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route data-sharing disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
-    const instruction = customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. Prefer Google OAuth using the user's Squire-connected identity. Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`;
+    const instruction = customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`;
     let answer: string | undefined;
     while (true) {
       this.signal.throwIfAborted();
@@ -576,6 +583,30 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
   try {
     await owned?.connect();
     options.signal?.throwIfAborted();
+    if (providers.includes('mistral-vibe')) {
+      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup'>;
+      if (typeof browser.signup !== 'function') throw new Error('Mistral Vibe native signup requires a browser-capable Squire client');
+      await setupMistralVibe({ directory: location, squire: browser, notify, ...(options.signal ? { signal: options.signal } : {}) });
+      providers = providers.filter(provider => provider !== 'mistral-vibe');
+    }
+    for (const provider of ['runcrate', 'apinex'] as const) {
+      if (!providers.includes(provider)) continue;
+      const source = provider === 'runcrate' ? new Runcrate({ directory: location }) : new Apinex({ directory: location });
+      const writeGrant = provider === 'runcrate' ? writeRuncrateGrant : writeApinexGrant;
+      try {
+        const result = await setupProviders(squire, {
+          hasKey: async id => id === provider && await source.available(),
+          addGrant: async (id, grant) => {
+            if (id !== provider) throw new Error(`Unexpected ${provider} credential`);
+            await writeGrant(grant, location);
+            if (!await source.available()) throw new Error(`${provider}: verified free access is unavailable`);
+          }
+        }, { providers: [provider], notify, reuseSaved: false, verifySaved: [provider] });
+        if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
+      } finally { await source.close(); }
+      providers = providers.filter(id => id !== provider);
+    }
+    if (!providers.length) return {};
     if (providers.includes('zro')) {
       const source = new Zro({ directory: location });
       try {

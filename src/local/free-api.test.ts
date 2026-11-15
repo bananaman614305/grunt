@@ -110,12 +110,14 @@ it.each(['timeout', 'shutdown', 'caller'] as const)('preserves %s cancellation a
 });
 
 it.each(['deepseek-v4.1-flash', 'DeepSeek-V4.1-Flash', 'deepseek/deepseek-v4.1-flash',
+  'deepseek-ai/DeepSeek-V4.1-Flash', 'free/deepseek-v4.1-flash',
   'deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4.1-flash-1017', 'deepseek-v4.1-flash-free',
   'deepseek-v4.1-flash:free', 'deepseek-flash'])('recognizes documented V4.1 identity %s', model => {
   expect(isDeepSeekV41Model(model)).toBe(true);
 });
 
 it.each([undefined, null, '', 'deepseek-v4-flash', 'deepseek-v3.2', 'unrelated-model',
+  'deepseek-ai/DeepSeek-V4-Flash', 'free/deepseek-v3.2',
   'deepseek-v4.1-flash-custom', 'other/deepseek-v4.1-flash', { model: 'deepseek-v4.1-flash' }])('does not verify missing or different model identity %s', model => {
   expect(isDeepSeekV41Model(model)).toBe(false);
 });

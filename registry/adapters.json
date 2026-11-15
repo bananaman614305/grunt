@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "published": "2026-11-14T22:10:00Z",
+  "published": "2026-11-15T05:20:08Z",
   "adapters": [
     {
       "id": "freebuff",
@@ -56,13 +56,49 @@
       "id": "tokenharbor",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.2,
+      "weight": 0.05,
       "modalities": [
         "text"
       ],
       "install": "builtin:tokenharbor",
       "signup": "https://tokenharbor.ai/dashboard",
       "model": "deepseek-v4.1-flash:free"
+    },
+    {
+      "id": "runcrate",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.05,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:runcrate",
+      "signup": "https://www.runcrate.ai/inference/free",
+      "model": "deepseek-ai/DeepSeek-V4.1-Flash"
+    },
+    {
+      "id": "apinex",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.05,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:apinex",
+      "signup": "https://apinex.bond/register",
+      "model": "free/deepseek-v4.1-flash"
+    },
+    {
+      "id": "mistral-vibe",
+      "kind": "agent",
+      "tier": "experimental",
+      "weight": 0.05,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:mistral-vibe",
+      "signup": "https://console.mistral.ai/",
+      "model": "zai-glm-5-3-flash-vibe-free"
     }
   ]
 }

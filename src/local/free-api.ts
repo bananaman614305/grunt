@@ -5,11 +5,14 @@ import { join } from 'node:path';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
 
-// Probe-only providers: these are not enabled by the published adapter registry.
+// Low-level pinned clients. Production wrappers add provider-specific access
+// receipts, quota checks and data-sharing consent before enabling a route.
 export const FREE_API_PROVIDERS = {
   zro: { model: 'deepseek-v4.1-flash', prefix: '/v1' },
   amd: { model: 'DeepSeek-V4.1-Flash', prefix: '/radeon/api/v1' },
-  tokenharbor: { model: 'deepseek-v4.1-flash:free', prefix: '/v1' }
+  tokenharbor: { model: 'deepseek-v4.1-flash:free', prefix: '/v1' },
+  runcrate: { model: 'deepseek-ai/DeepSeek-V4.1-Flash', prefix: '/v1' },
+  apinex: { model: 'free/deepseek-v4.1-flash', prefix: '/v1' }
 } as const;
 export type FreeApiProvider = keyof typeof FREE_API_PROVIDERS;
 export interface FreeApiGrant { base_url: string; token: string }
@@ -17,9 +20,9 @@ export interface FreeApiGrant { base_url: string; token: string }
 // https://api-docs.deepseek.com/api/list-models/ . Other aliases below are the
 // explicit V4.1 IDs used by these providers, not loose family-name matches.
 const deepSeekV41Aliases = new Set(['deepseek-flash', 'deepseek-v4.1-flash', 'deepseek-v4.1-flash-1017',
-  'deepseek-v4.1-flash-free', 'deepseek-v4.1-flash:free']);
+  'deepseek-v4.1-flash-free', 'deepseek-v4.1-flash:free', 'free/deepseek-v4.1-flash']);
 export function isDeepSeekV41Model(value: unknown): boolean {
-  return typeof value === 'string' && deepSeekV41Aliases.has(value.toLowerCase().replace(/^deepseek\//, ''));
+  return typeof value === 'string' && deepSeekV41Aliases.has(value.toLowerCase().replace(/^deepseek(?:-ai)?\//, ''));
 }
 const directory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
 function providerName(value: string): FreeApiProvider {

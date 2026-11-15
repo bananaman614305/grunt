@@ -73,9 +73,19 @@ export class RegistrySync {
   async start() {
     await this.load();
     if (this.controller.signal.aborted) return;
-    this.timer = setInterval(() => { void this.sync(); }, REGISTRY_INTERVAL);
-    this.timer.unref();
+    // Daily free quotas/check-ins reset at UTC midnight. Recheck then rather
+    // than leaving an expired APInex receipt idle until the install-time hour.
+    const schedule = () => {
+      if (this.controller.signal.aborted) return;
+      const now = Date.now();
+      const midnight = Math.floor(now / REGISTRY_INTERVAL) * REGISTRY_INTERVAL + REGISTRY_INTERVAL;
+      this.timer = setTimeout(() => {
+        void this.sync().catch(() => this.options.notify?.('Background setup incomplete; run usegrunt setup to resume')).finally(schedule);
+      }, midnight - now);
+      this.timer.unref();
+    };
+    schedule();
     await this.sync();
   }
-  async close() { if (this.timer) clearInterval(this.timer); this.controller.abort(); await this.pending; }
+  async close() { if (this.timer) clearTimeout(this.timer); this.controller.abort(); await this.pending; }
 }

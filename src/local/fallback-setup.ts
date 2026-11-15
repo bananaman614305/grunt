@@ -176,6 +176,35 @@ export async function setupFallbacks(options: {
         unavailable.push('tokenharbor');
         options.notify('Token Harbor setup incomplete or data sharing not approved. Run usegrunt setup to finish; other routes remain available.');
       } },
+      runcrate: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['runcrate'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Runcrate: GitHub-verified weekly free DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('runcrate');
+        options.notify('Runcrate free setup incomplete. GitHub must be at least 30 days old; rerun usegrunt setup to resume. Other routes remain available.');
+      } },
+      apinex: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['apinex'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('APInex: daily check-in verified for free DeepSeek V4.1 Flash access through Squire');
+      } catch {
+        unavailable.push('apinex');
+        options.notify('APInex free setup or daily check-in incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } },
+      'mistral-vibe': async () => { try {
+        await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['mistral-vibe'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Mistral Vibe: native free GLM 5.3 Flash access connected through Squire');
+      } catch {
+        unavailable.push('mistral-vibe');
+        options.notify('Mistral Vibe native free setup incomplete. Install uv or Python 3.12+ if missing, then rerun usegrunt setup; other routes remain available.');
+      } },
       nvidia: async () => { try {
         await connect();
         if (!squire.runs) throw new Error('Provider signup requires Squire');
