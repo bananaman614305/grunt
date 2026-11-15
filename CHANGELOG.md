@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.5] - 2026-11-15
+
+### Added
+
+- Add LiveKit's DeepSeek V4.1 Flash route to automatic setup and `usegrunt add livekit`. Squire connects the free Build account and one free project, then completes the official CLI's browser pairing.
+- Install LiveKit CLI 2.19.4 privately on Linux and macOS, for x64 and arm64, using pinned release checksums. Its credentials stay in the official private CLI configuration; grunt holds only ten-minute inference tokens in memory.
+- Restrict LiveKit to the free Build plan's documented $2.50 monthly included inference allowance, which resets at the start of the calendar month and has a hard stop. No card, paid fallback, room or agent hosting is needed. The observed dashboard showed Build, a $0 next invoice and no payment method; it did not expose the remaining inference balance.
+
+### Changed
+
+- Expand the automatic pool from eight to nine sources. Keep stable weights at 80%; Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit now receive 4% each.
+- Keep the existing seven grouped data-sharing policies. LiveKit documents [zero retention and no training for inference](https://docs.livekit.io/agents/models/inference/) and adds no sharing approval. Declining the grouped policies still permits eligible Zro and LiveKit setup.
+
+### Validation
+
+- The production LiveKit adapter passed four Grunt proofs: a short prompt, a function-tool call, its correlated result follow-up and a context with 210,077 input tokens. Independent code review and local regression checks passed; a separate blank-machine onboarding run is not claimed.
+
 ## [0.6.4] - 2026-11-15
 
 ### Added

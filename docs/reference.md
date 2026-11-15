@@ -173,7 +173,7 @@ then says that Trusty Squire needs one Google sign-in before it installs and
 connects the local broker. Setup pulls the free service list from the grunt
 registry (falling back to the saved or bundled list, and saying so). The bundled
 vetted pool contains Freebuff, OpenCode, Kilo and Zro in the stable tier, plus
-Token Harbor, Runcrate, APInex and Mistral Vibe Free in the experimental tier.
+Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit in the experimental tier.
 Provider approval and free-account eligibility still apply. Setup installs and connects
 up to three services concurrently, starts the background daemon, then verifies
 up to three services concurrently with real requests through grunt. Each service
@@ -207,7 +207,7 @@ Google accounts are created.
 
 Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
 
-The foreground wizard groups the Freebuff, OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free data-sharing disclosures into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while Zro continues. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval, including when an existing grant is present. Daily background provisioning runs at midnight UTC to renew daily check-ins; unresolved verification leaves that source unavailable while other services continue.
+The foreground wizard groups the Freebuff, OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free data-sharing disclosures into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this seven-provider group. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval where applicable, including when an existing grant is present. Daily background provisioning runs at midnight UTC to renew daily check-ins; unresolved verification leaves that source unavailable while other services continue.
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
 
@@ -218,6 +218,7 @@ The additional experimental routes have these requirements:
 | Runcrate | `deepseek-ai/DeepSeek-V4.1-Flash` | GitHub login with an account at least 30 days old; no paid balance, payment method or automatic top-ups. Its recurring weekly allowance is not quantified. |
 | APInex | `free/deepseek-v4.1-flash` | Personal `@gmail.com` Google login and daily check-in with Turnstile. Existing wallet funds remain untouched. The observed daily allowance is 25 million weighted units, approximately 8.33 million actual DeepSeek tokens at weight 3. The `free/` route never spends wallet funds. |
 | Mistral Vibe Free | Native CLI alias `zai-glm-5-3-flash`, wire model `zai-glm-5-3-flash-vibe-free` | Free plan with a $10 monthly Vibe Code allowance; no card, purchased credits or pay-as-you-go. This is native coding allowance, not ordinary Mistral API credit. |
+| LiveKit | `deepseek-ai/deepseek-v4.1-flash` | Build plan at $0 per month, no card, and one free project. The documented $2.50 monthly included inference allowance resets at the start of each calendar month and has a hard stop; no paid fallback. |
 
 Runcrate and APInex keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
@@ -229,6 +230,30 @@ and isolated configuration under grunt's `mistral-vibe` directory. It needs
 `uv` or Python 3.12 or later. A general `MISTRAL_API_KEY` from the shell cannot
 replace that native login. Its free-plan receipt expires after 30 days and setup
 rechecks it. These checks record account state; keep billing disabled afterward.
+
+LiveKit setup uses the personal Google identity already connected to Squire and
+reuses or creates one owned free `grunt-free` project. It automatically installs
+the official `lk` CLI version `2.19.4` under grunt's private `livekit` directory,
+with pinned archive checksums for Linux and macOS on x64 or arm64. Squire completes
+the ordinary CLI browser pairing; no rooms or agent hosting are needed.
+`usegrunt add livekit` runs the same setup for an existing installation.
+
+The official CLI retains its credentials in `~/.livekit/cli-config.yaml` with
+mode `0600`, in a private directory. Grunt checks file metadata without reading
+the native API secrets or requesting a raw vault secret. Each request uses the
+verified project's explicit selector and an empty project configuration in a
+private working directory. The CLI creates a ten-minute inference-only JWT that
+stays in backend memory. Requests go only to
+`https://agent-gateway.livekit.cloud/v1` with the fixed DeepSeek model; quota
+exhaustion can hand off to another eligible free source, never a paid fallback.
+
+LiveKit's private `livekit/free-build.json` receipt records the verified Build
+project and billing state for up to 30 days. Missing or expired verification
+requires a fresh browser check through setup. The observed dashboard showed Build,
+a $0 next invoice and no payment method, but did not expose remaining inference
+credit. The $2.50 figure is the documented monthly allowance, not a measured
+remaining balance. Keep the account on Build: an external billing upgrade can
+invalidate the free-account assumptions recorded by setup.
 
 The grouped disclosure includes each provider's data policy. Token Harbor permits
 retention, staff review and upstream training. Runcrate's upstream retention and
@@ -257,7 +282,8 @@ NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the 
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
 API-provider keys stay in Squire; no provider reveal approval is requested.
-Mistral Vibe's native CLI owns its separate local credential exchange and storage.
+Mistral Vibe and LiveKit's native CLIs own their separate local credential
+exchanges and storage.
 Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
 `usegrunt add groq`, `usegrunt add cerebras`, or `usegrunt add kilo` connects another
@@ -278,7 +304,7 @@ provider keys appear in Pi's config or terminal output. Never share backend stat
 Existing routers with keys are preserved if their local admin state is missing.
 
 Fresh setup offers the bundled Freebuff, OpenCode, Kilo, Zro, Token Harbor,
-Runcrate, APInex and Mistral Vibe Free pool, enabling providers only after their
+Runcrate, APInex, Mistral Vibe Free and LiveKit pool, enabling providers only after their
 required data-sharing approval.
 It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
@@ -300,10 +326,13 @@ existing installations and offline regression checks.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-This package is `usegrunt` version `0.6.4`; the installed command is `usegrunt`.
-The new production adapters passed short prompts, function-tool calls and result
-follow-ups; all three models also passed contexts larger than 200,000 tokens
-through Grunt. These checks do not claim a separate blank-machine onboarding run.
+The package version is `usegrunt` `0.6.5`; the installed command is
+`usegrunt`. The production LiveKit adapter passed a short prompt, a function-tool
+call, its correlated result follow-up and a context with 210,077 input tokens
+through Grunt. The adapter and setup also passed independent code review and local regression checks.
+These checks do not claim a separate blank-machine onboarding run. The three
+sources added in 0.6.4 retain their recorded production-adapter and long-context
+validation.
 Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
 update the two existing file overlays described under Deploy, not the image.
 
@@ -465,12 +494,15 @@ Codex default back at grunt, which would create a routing loop.
 
 The bundled registry has four stable adapters: Freebuff and OpenCode at weight
 0.192 each, Kilo at 0.256 and Zro at 0.16. Experimental Token Harbor, Runcrate,
-APInex and Mistral Vibe Free have weight 0.05 each. Stable weights total 0.8 and
-experimental weights total 0.2. All eight accept text rather than images.
-Kilo, Zro, Token Harbor, Runcrate and APInex forward function tool definitions
+APInex, Mistral Vibe Free and LiveKit have weight 0.04 each. Stable weights total 0.8 and
+experimental weights total 0.2. All nine accept text rather than images.
+Kilo, Zro, Token Harbor, Runcrate, APInex and LiveKit forward function tool definitions
 and return tool calls for the harness to execute. Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled. Providers
 with data-sharing policies require current approval before they can be selected.
+LiveKit's [inference data-retention policy](https://docs.livekit.io/agents/models/inference/)
+states zero retention and no training by LiveKit or its underlying providers on
+all plans; it does not add a policy to the existing approval group.
 Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
