@@ -216,7 +216,7 @@ The additional experimental routes have these requirements:
 | Source | Selected route | Free-account requirements and allowance |
 | --- | --- | --- |
 | Runcrate | `deepseek-ai/DeepSeek-V4.1-Flash` | GitHub login with an account at least 30 days old; no paid balance, payment method or automatic top-ups. Its recurring weekly allowance is not quantified. |
-| APInex | `free/deepseek-v4.1-flash` | Personal `@gmail.com` Google login, daily check-in with Turnstile, and zero wallet balance. The observed daily allowance is 25 million weighted units, approximately 8.33 million actual DeepSeek tokens at weight 3. The `free/` route never spends wallet funds. |
+| APInex | `free/deepseek-v4.1-flash` | Personal `@gmail.com` Google login and daily check-in with Turnstile. Existing wallet funds remain untouched. The observed daily allowance is 25 million weighted units, approximately 8.33 million actual DeepSeek tokens at weight 3. The `free/` route never spends wallet funds. |
 | Mistral Vibe Free | Native CLI alias `zai-glm-5-3-flash`, wire model `zai-glm-5-3-flash-vibe-free` | Free plan with a $10 monthly Vibe Code allowance; no card, purchased credits or pay-as-you-go. This is native coding allowance, not ordinary Mistral API credit. |
 
 Runcrate and APInex keys are captured into Squire. Setup stops if an account
