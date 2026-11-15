@@ -178,9 +178,13 @@ it('keeps actual OpenCode login bars through an unhealthy models check', async (
 it('hands off current persisted Freebuff output when quota is already logged', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'grunt-current-output-'));
   try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(cwd, 'opencode')); await chmod(join(cwd, 'opencode'), 0o755);
+    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(cwd, 'freebuff')); await chmod(join(cwd, 'freebuff'), 0o755);
+    // The injected multiplexer never runs tmux; satisfy its availability check locally.
+    await writeFile(join(cwd, 'tmux'), '#!/bin/sh\nexit 99\n', { mode: 0o700 });
     vi.stubEnv('PATH', `${cwd}:${process.env.PATH}`);
-    const mux = { start: async () => {}, stop: async () => {}, send: async (_id: string, prompt: string) => {
+    vi.stubEnv('MILO_TEST_DOCTOR_DELAY', '0');
+    vi.stubEnv('MILO_TEST_DOCTOR_ERROR', '');
+    const mux = { start: async (_id: string, _cwd: string, binary: string) => { expect(binary).toBe(join(cwd, 'freebuff')); }, stop: async () => {}, send: async (_id: string, prompt: string) => {
       const dir = join(cwd, '.config/manicode/projects', cwd.split('/').at(-1)!, 'chats/current');
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, 'chat-messages.json'), JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: false, blocks: [{ type: 'text', content: 'CURRENT PARTIAL WORK' }] }]));

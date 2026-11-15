@@ -1,4 +1,4 @@
-export interface Verification { service: string; url: string }
+export interface Verification { service: string; url: string; goal?: string }
 // Group handoffs arriving together; only one terminal prompt may own stdin.
 // Other installation/browser jobs keep running while the user verifies.
 export class VerificationQueue {

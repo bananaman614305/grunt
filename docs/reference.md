@@ -458,6 +458,16 @@ native authentication, passed the background probe and returned a production
 hello with 252 input and 63 output tokens. The reviewed Kilo candidate was also
 verified on Chad at port 8792. These checks do not claim a separate blank-machine
 onboarding run.
+Perch's packaged onboarding required operator assistance in the browser. The
+official native Google pairing, matching identity and memory-off checks completed;
+this does not establish unattended fresh signup. Later account views disagreed
+on the included quota. Grunt records the vetted 20,000 PT recurring floor and does
+not promise the larger displayed amount or count signup bonuses as recurring.
+When Squire cannot choose a control and explicitly offers goal completion, setup
+shows the full requested goal and asks for a default-No confirmation that every
+condition was personally verified. Only that confirmation can resume the same
+owned session with the offered completion choice. Captcha completion alone cannot
+attest to plan or privacy conditions; background setup never makes that choice.
 Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
 update the two existing file overlays described under Deploy, not the image.
 

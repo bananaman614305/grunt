@@ -181,7 +181,7 @@ export async function checkServiceSources(unavailable: string[], notify = consol
     notify(`${id}: FAIL — ${unit.origin} sets MILO_SOURCES=${unit.sources.join(',')}, which lacks ${id}. Setup does not edit it; add ${id} there or remove that setting.`);
   }
 }
-export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['freebuff', 'opencode'], wait = { limit: 180000, interval: 2000 }) {
+export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['opencode'], wait = { limit: 180000, interval: 2000 }) {
   const directory = await mkdtemp(join(tmpdir(), 'milo-free-check-'));
   try {
     for (const source of adapters) {

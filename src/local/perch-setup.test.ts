@@ -33,6 +33,7 @@ async function fixture() {
   const verifyMemory = vi.fn<typeof Perch.verifyPerchMemory>().mockResolvedValue({ email: 'person@example.test' });
   const install = vi.fn<typeof installPerch>().mockResolvedValue(paths);
   const command = vi.fn<PerchProcesses['command']>(async (_program, _args, options) => {
+    options.onLine?.('Signing in using https://app.perchai.app.', 'stdout');
     options.onLine?.('Open https://app.perchai.app/api/perch-terminal/cli-auth/start?state=private-pairing-nonce', 'stdout');
     await writeFile(paths.authFile, 'synthetic CLI-owned private session', { mode: 0o600 });
     return { code: 0, stdout: 'native login completed' };
@@ -54,6 +55,13 @@ it('verifies active Starter before official native pairing and checks the exact 
   await recordDataSharingConsent(directory, ['perch', 'kilo']);
   await setupPerch({ ...f.options, dataSharingApproved: [], notify });
   expect(f.squire.signup.mock.calls.map(([provider]) => provider)).toEqual(['perch', 'perch', 'perch']);
+  // The native app host is a download landing page in ordinary browsers.
+  expect(f.squire.signup.mock.calls.map(([, url]) => url)).toEqual([
+    'https://chat.perchai.app/',
+    'https://app.perchai.app/api/perch-terminal/cli-auth/start?state=private-pairing-nonce',
+    'https://chat.perchai.app/'
+  ]);
+  expect(f.squire.signup.mock.calls[0]![2]).toContain('Open the visible account settings');
   expect(f.squire.signup.mock.calls[0]![2]).toContain('ACTIVE Starter');
   expect(f.squire.signup.mock.calls[0]![2]).toContain('placeholder before activation is insufficient');
   expect(f.squire.signup.mock.calls[0]![2]).toContain('Starter Data Program is OFF');
@@ -135,7 +143,7 @@ it('requires final active-Starter and privacy confirmation after native pairing'
   await expect(stat(f.paths.receipt)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it.each(['https://attacker.test/api/perch-terminal/cli-auth/start', 'https://app.perchai.app/api/perch-terminal/cli-auth/start/other'])('never forwards an untrusted pairing URL to Squire (%s)', async url => {
+it.each(['https://attacker.test/api/perch-terminal/cli-auth/start', 'https://app.perchai.app/api/perch-terminal/cli-auth/start/other', 'https://app.perchai.app/api/perch-terminal/cli-auth/start.'])('never forwards an untrusted pairing URL to Squire (%s)', async url => {
   const f = await fixture();
   f.command.mockImplementation(async (_program, _args, options) => {
     options.onLine?.(`Open ${url}`, 'stdout');
@@ -144,6 +152,17 @@ it.each(['https://attacker.test/api/perch-terminal/cli-auth/start', 'https://app
   await expect(setupPerch(f.options)).rejects.toThrow('active Starter verification');
   expect(f.squire.signup).toHaveBeenCalledTimes(1);
   await expect(stat(f.paths.receipt)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('preserves punctuation in the actual native authorization query unchanged', async () => {
+  const f = await fixture();
+  const original = f.command.getMockImplementation()!;
+  f.command.mockImplementation((program, args, options) => original(program, args, {
+    ...options,
+    onLine: (line, stream) => options.onLine?.(line.replace('state=private-pairing-nonce', 'state=private-pairing-nonce.'), stream)
+  }));
+  await setupPerch(f.options);
+  expect(f.squire.signup.mock.calls[1]![1]).toBe('https://app.perchai.app/api/perch-terminal/cli-auth/start?state=private-pairing-nonce.');
 });
 
 it('honors the native login expiry without patching its timeout or retrying a new authorization', async () => {

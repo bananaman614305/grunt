@@ -178,8 +178,15 @@ export class BrowserSquire implements SetupSquire {
       const changed = () => prompt.abort();
       for (const signal of signals) signal.addEventListener('abort', changed, { once: true });
       try {
-        for (const item of active) console.log(`Complete ${item.service} verification in this browser: ${item.url}`);
-        const done = await this.scoped(confirm({ message: `Finished verification for ${active.map(item => item.service).join(', ')}? Resume setup.`, initialValue: true, signal: prompt.signal }), prompt.signal);
+        for (const item of active) {
+          console.log(`Complete ${item.service} verification in this browser: ${item.url}`);
+          if (item.goal) console.log(`${item.service} requested goal; verify every condition before confirming:\n${item.goal}`);
+        }
+        const attest = active.some(item => item.goal !== undefined);
+        const message = attest
+          ? `I personally verified ALL conditions in each full requested goal displayed above (${active.filter(item => item.goal !== undefined).map(item => item.service).join(', ')}), and completed any other listed verification. Confirm these goals are complete?`
+          : `Finished verification for ${active.map(item => item.service).join(', ')}? Resume setup.`;
+        const done = await this.scoped(confirm({ message, initialValue: !attest, signal: prompt.signal }), prompt.signal);
         this.signal.throwIfAborted();
         if (signals.some(signal => signal.aborted)) continue;
         if (isCancel(done) || !done) throw new Error('Provider verification cancelled');
@@ -400,7 +407,10 @@ export class BrowserSquire implements SetupSquire {
         && !normalize(result.remaining).includes(normalize(instruction)) ? result.remaining : undefined;
       const reason = setupReason(result.reason, remaining);
       const classification = [result.reason, remaining].filter(value => typeof value === 'string').join(' ').replace(/[_-]/g, ' ');
-      const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(classification);
+      const observedField = typeof result.field === 'string' && result.field.trim()
+        && !normalize(instruction).includes(normalize(result.field))
+        && !normalize(result.field).includes(normalize(instruction)) ? result.field : undefined;
+      const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(`${classification} ${observedField ?? ''}`);
       if (refusal) throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
       if (result.status === 'complete') {
         this.metadata = undefined; // A browser capture may have added a credential.
@@ -422,21 +432,33 @@ export class BrowserSquire implements SetupSquire {
         }
       }
       const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
+      // DONE is a driver choice, not evidence that the account meets the goal.
+      // Only the human can attest to every condition, and a generic captcha
+      // confirmation must never become an attestation of account/plan state.
+      const manualCompletion = uncertain && !humanStep
+        && !/\b(?:block(?:ed|ing)?|policy|restrict(?:ed|ion|ions)?)\b/i.test(`${classification} ${String(result.field)}`)
+        && object(result.options).DONE === 'The goal is complete';
       if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
       // A driver that cannot choose the next action still owns a resumable tab.
       // Share that exact browser instead of silently dropping the signup.
       const handoff = humanStep || uncertain || result.status === 'stuck';
       if (handoff && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
       if (handoff && this.sessions.has(provider)) {
-        const url = await this.humanHandoff(this.sessions.get(provider)!);
+        const handoffSession = this.sessions.get(provider)!;
+        const url = await this.humanHandoff(handoffSession);
         this.serviceSignal(provider).throwIfAborted();
         if (this.options.background) {
           console.log(`Complete ${provider} verification in this browser: ${url}`);
           await delay(5000, undefined, { signal: this.serviceSignal(provider) });
           return { run: { id: provider, state: 'running' }, decision: 'silent' };
         }
-        await this.scoped(this.verification.wait({ service: provider, url }), this.serviceSignal(provider));
+        await this.scoped(this.verification.wait({ service: provider, url, ...(manualCompletion ? { goal: instruction } : {}) }), this.serviceSignal(provider));
         this.serviceSignal(provider).throwIfAborted();
+        if (manualCompletion) {
+          if (this.sessions.get(provider) !== handoffSession) throw new Error('Provider verification session changed; rerun setup');
+          answer = 'DONE';
+          continue;
+        }
         return { run: { id: provider, state: 'running' }, decision: 'silent' };
       }
       await this.finishSession(provider);

@@ -59,6 +59,7 @@ export function perchEnvironment(directory = directoryDefault(), requestDirector
     PERCH_CLI_HEAP_DIAG: 'off', PERCH_GIT_ATTRIBUTION: 'off' };
 }
 export interface PerchFreePlanReceipt {
+  // The vetted recurring allowance floor, rather than a live balance or bonus.
   version: 1; plan: 'Starter'; email: string; monthlyAllowancePT: 20000; dataProgramEnabled: false; memoryUseEnabled: false; memoryLearningEnabled: false; checkedAt: string;
 }
 export interface PerchInstallReceipt {

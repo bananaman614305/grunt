@@ -128,7 +128,7 @@ function email(value: unknown): string {
   if (typeof value !== 'string' || value.length > 254 || !/^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(value)) throw setupFailure();
   return value.trim().toLowerCase();
 }
-const freeGoal = (identity?: string) => `Use only the existing authorized personal account${identity ? ` whose native CLI email is ${JSON.stringify(identity)}` : ' using the personal Google identity already connected to Squire'}. Verify this exact account has ACTIVE Starter ($0), with 20,000 Perch Tokens renewing monthly. A Starter placeholder before activation is insufficient: if no active plan exists, use the ordinary See plans / Start Free action to activate Starter only. Never activate a paid trial, Pro, Ultra, a subscription, a pass, purchases, top-ups or overage. Do not add a card or payment method. If paid billing, paid credits, a paid plan or overage is visible, stop without changing it. Do not assert hidden saved-card inventory. Verify the optional Starter Data Program is OFF; if it is on, turn off only that optional program through normal settings and verify the saved OFF state. Leave optional marketing off. Do not enable optional memory or claim it is disabled unless the UI actually verifies that state. Do not switch identities, downgrade, remove billing, create a duplicate account or enable BYOK. Finish only after confirming active Starter and Data Program OFF for this identity. Report required human verification for browser handoff; stop on refusal and do not bypass verification.`;
+const freeGoal = (identity?: string) => `Use only the existing authorized personal account${identity ? ` whose native CLI email is ${JSON.stringify(identity)}` : ' using the personal Google identity already connected to Squire'}. Open the visible account settings in this Perch web app using the top-right avatar button labelled Open account settings; use Account and Billing to verify the plan and allowance, and Privacy to verify the Starter Data Program. Verify this exact account has ACTIVE Starter ($0), with a vetted recurring allowance of at least 20,000 Perch Tokens per month; 20,000 is the conservative supported monthly floor, not a claim about a larger displayed offer. Exclude one-time bonuses when checking this recurring floor. A Starter placeholder before activation is insufficient: if no active plan exists, use the ordinary See plans / Start Free action to activate Starter only. Never activate a paid trial, Pro, Ultra, a subscription, a pass, purchases, top-ups or overage. Do not add a card or payment method. If paid billing, paid credits, a paid plan or overage is visible, stop without changing it. Do not assert hidden saved-card inventory. Verify the optional Starter Data Program is OFF; if it is on, turn off only that optional program through normal settings and verify the saved OFF state. Leave optional marketing off. Do not enable optional memory or claim it is disabled unless the UI actually verifies that state. Do not switch identities, downgrade, remove billing, create a duplicate account or enable BYOK. Finish only after confirming active Starter and Data Program OFF for this identity. Report required human verification for browser handoff; stop on refusal and do not bypass verification.`;
 async function browser(options: PerchSetupOptions, url: string, goal: string, signal: AbortSignal) {
   await bounded(() => options.squire.signup('perch', url, goal), signal);
 }
@@ -149,6 +149,9 @@ async function nativeLogin(options: PerchSetupOptions, signal: AbortSignal, expe
       onLine(line) {
         const match = line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').match(/https:\/\/[^\s"'<>`]+/);
         if (!match) return;
+        // The official login command first prints its application homepage as
+        // prose, before emitting the actual scoped native authorization URL.
+        if (['https://app.perchai.app', 'https://app.perchai.app/', 'https://app.perchai.app.', 'https://app.perchai.app/.'].includes(match[0])) return;
         const url = new URL(match[0]);
         if (url.origin !== 'https://app.perchai.app' || url.pathname !== '/api/perch-terminal/cli-auth/start' || url.username || url.password || url.hash) throw setupFailure();
         if (pairingURL) { if (url.href !== pairingURL) throw setupFailure(); return; }
@@ -201,14 +204,14 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
     if (options.background) throw new Error('Perch requires foreground Starter setup');
     if (saved && identity && !sameEmail(saved.email, identity.email)) throw setupFailure();
     const expected = identity?.email ?? saved?.email;
-    await browser(options, 'https://app.perchai.app', freeGoal(expected), signal);
+    await browser(options, 'https://chat.perchai.app/', freeGoal(expected), signal);
     if (!identity) {
       await nativeLogin(options, signal, expected);
       await Perch.assertPerchPrivateAuth(options.directory);
       identity = await bounded(() => identify(options.directory, signal, options.processes), signal);
       if (!identity || (expected && !sameEmail(expected, identity.email))) throw setupFailure();
       identity = { email: email(identity.email) };
-      await browser(options, 'https://app.perchai.app', freeGoal(identity.email), signal);
+      await browser(options, 'https://chat.perchai.app/', freeGoal(identity.email), signal);
     }
     if (signal.aborted) throw setupFailure();
     const configured = await bounded(() => configureMemory(options.directory, signal, options.processes), signal);

@@ -155,7 +155,7 @@ it('dismisses the observed cookie overlay without treating echoed instructions a
   const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
     if (name !== 'operate_drive') return {};
     return args.answer ? { status: 'complete', session_id: 'cookie-tab' }
-      : { status: 'low_confidence', session_id: 'cookie-tab', reason: 'model confidence is below the drive threshold', remaining: args.goal,
+      : { status: 'low_confidence', session_id: 'cookie-tab', reason: 'model confidence is below the drive threshold', remaining: args.goal, field: args.goal,
         options: { cookie_reject: 'Reject Optional', cookie_accept: 'Accept All' } };
   });
   await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'completed' } });
