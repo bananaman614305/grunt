@@ -30,6 +30,7 @@
 - The packaged Clixad setup helper installed the pinned private CLI, reused native authentication, passed the background probe and returned a production hello with 252 input and 63 output tokens. A separate blank-machine onboarding run is not claimed.
 - Perch's initial native Google pairing required operator assistance. After verified Starter eligibility, matching identity and memory-off checks, the production helper reused that login, passed its background check and returned a Grunt hello with 16,245 input and 38 output tokens. Conflicting quota views are recorded conservatively; no larger recurring allowance is promised.
 - All 954 tests across 51 files passed, along with lint, TypeScript checks and a clean build. Independent final integration review passed, including retired-only upgrades, the manual-attestation boundary and noninteractive restart coverage. GitHub Actions remains disabled.
+- The final installed package returned real, correctly attributed replies through all eleven providers on Chad at port 8792. Freebuff and APInex requests were rejected. A second restart kept all eleven available, preserved receipt bytes and modification times, and opened no verification handoffs. The gateway's eleven-source registry, ETag behavior and health checks were verified.
 
 ## [0.6.5] - 2026-11-15
 

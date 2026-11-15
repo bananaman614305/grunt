@@ -468,6 +468,11 @@ shows the full requested goal and asks for a default-No confirmation that every
 condition was personally verified. Only that confirmation can resume the same
 owned session with the offered completion choice. Captcha completion alone cannot
 attest to plan or privacy conditions; background setup never makes that choice.
+The final 0.6.6 runtime on Chad returned correctly attributed replies through all
+eleven automatic sources and rejected both retired source IDs. A subsequent
+restart kept all eleven available without changing the saved access receipts or
+opening verification handoffs. The release passed 954 local tests, lint,
+TypeScript checks and a clean build; GitHub Actions remains disabled.
 Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
 update the two existing file overlays described under Deploy, not the image.
 
