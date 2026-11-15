@@ -164,7 +164,7 @@ pipes and narrow terminals get a one-line title). It explains what grunt does,
 then says that Trusty Squire needs one Google sign-in before it installs and
 connects the local broker. Setup pulls the free service list from the grunt
 registry (falling back to the saved or bundled list, and saying so). The bundled
-vetted pool contains Freebuff, OpenCode and Kilo. Setup installs and connects
+vetted pool contains Freebuff, OpenCode, Kilo and Zro, with opt-in Token Harbor in the experimental tier. Setup installs and connects
 up to three services concurrently, starts the background daemon, then verifies
 up to three services concurrently with real requests through grunt. Each service
 gets its own PASS/FAIL line and summary row. Incomplete setup exits unsuccessfully
@@ -195,15 +195,28 @@ access through Squire. Captcha, passkey and email verification show a browser
 handoff and wait for the user to resume. Existing accounts are reused; no extra
 Google accounts are created.
 
-Before making changes, setup checks Node, npm, Pi, tar and the user service
+Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
+
+The foreground wizard groups the Freebuff, OpenCode (including Big Pickle), Kilo and Token Harbor data-sharing disclosures into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while Zro continues. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval, including when an existing grant is present.
+
+Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
+
+NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain.
+
+Before making changes, setup checks Node, npm, tar and the user service
 manager. A missing prerequisite prints its install or repair step and stops.
+Coding harnesses such as Pi are optional; setup can install the service before
+you install a harness.
 
 Existing vault API keys are reused. Missing keys are created through Squire's
 browser and captured directly into its vault. Human verification opens a browser
 handoff, including email confirmation, and signup resumes in that same session.
 An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
-token to FreeLLMAPI's custom-provider endpoint.
+token to FreeLLMAPI's custom-provider endpoint for those API providers.
+Zro and Token Harbor keep private grants in `zro.json` and `tokenharbor.json` and call `/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to `zro.moonmath.ai` and `tokenharbor.ai`. NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the grant's
+`/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
+scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
 Provider keys stay in Squire; no provider reveal approval is requested. Groq
 uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
@@ -245,7 +258,7 @@ existing installations and offline regression checks.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package is `usegrunt` (version `0.6.2`); the installed command is `usegrunt`.
+The package is `usegrunt` (version `0.6.3`); the installed command is `usegrunt`.
 The published package is `usegrunt` and this pull request does not itself publish.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
@@ -254,8 +267,7 @@ configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
 `MILO_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
 cap is (4096) tokens. Select `freellmapi` for the free chain, which tries keyed
 Kilo's free Nemotron 3 Ultra before keyed `kilo-auto/free` when configured. Select
-`kilo` for Auto explicitly. The anonymous Kilo fallback remains available without
-an account. The default registry source `kilo` selects Auto, rather than the
+`kilo` for Auto explicitly. The anonymous Kilo fallback requires the same current Kilo data-sharing approval as keyed Kilo access, even though it does not require an account. Grunt-owned Kilo and Freebuff backend rows are disabled when their approval is absent; custom backend rows retain their own flags and priorities. Legacy backend requests reconcile these rows from the existing private admin file before forwarding, and fail closed if that state cannot be checked. The default registry source `kilo` selects Auto, rather than the
 legacy `freellmapi` chain's Nemotron-first preference. It requires the backend's
 `X-Routed-Via` header to identify `custom/kilo-auto/free`; a backend fallback to
 another route cannot count as a successful Kilo answer or setup check.
@@ -288,9 +300,16 @@ your configuration files and saved login are preserved. Trusty Squire still
 handles provider signup separately during setup. A server supplied through
 `MILO_OPENCODE_URL` keeps its own MCP connections.
 
-`MILO_OPENCODE_MODEL` selects the OpenCode free model (default `big-pickle`).
+New conversations rotate across `deepseek-v4.1-flash-free`,
+`glm-5.3-flash-free` and `big-pickle`. Follow-ups stay with their successful
+model and session. A model that returns a quota error cools down while another
+pool member is tried; the other Grunt sources remain available when the pool
+is exhausted. Providers may share quotas across models, so this does not imply
+three independent credit balances.
+
+`MILO_OPENCODE_MODEL` overrides the pool with one explicit model.
 Use a currently free model from your OpenCode catalog; grunt does not buy credits
-or switch to paid models. `MILO_OPENCODE_URL` optionally connects an existing
+or switch to paid models automatically. `MILO_OPENCODE_URL` optionally connects an existing
 numeric loopback server. If it uses HTTP Basic auth, set
 `OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD` in grunt's environment.
 Avoid configuring that OpenCode server to call grunt, which would create a loop.

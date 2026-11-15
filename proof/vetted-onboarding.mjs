@@ -12,7 +12,7 @@ const { configDir, command } = await load('local/wizard');
 const { configure } = await load('local/main');
 const { createLocalApp } = await load('local/api');
 const ids = bundledRegistry.adapters.map(a => a.id);
-assert.deepEqual(ids, ['freebuff', 'opencode', 'kilo']);
+assert.deepEqual(ids, ['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor']);
 process.env.MILO_SETUP_NO_HUMAN = '1';
 const start = performance.now();
 const setup = await setupFallbacks({ directory: configDir(), run: command, adapters: ids,

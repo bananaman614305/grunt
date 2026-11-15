@@ -81,7 +81,7 @@ it('stays off by default and makes no gateway call without explicit opt-in or se
   const source = new Dots({ env: { MILO_DOTS_URL: 'https://api.grunt.run' }, fetcher });
   expect(await source.available()).toBe(false);
   await expect(source.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'not_installed' });
-  const sources = configure({}); expect(sources.sources.map(s => s.id)).toEqual(['freebuff', 'opencode', 'kilo']);
+  const sources = configure({}); expect(sources.sources.map(s => s.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor']);
   const app = createLocalApp(new Sources([source]));
   expect((await (await app.request('http://127.0.0.1:8788/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['milo']);
   expect(fetcher).not.toHaveBeenCalled();

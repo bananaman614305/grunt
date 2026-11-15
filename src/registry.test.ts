@@ -10,12 +10,12 @@ const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('ships vetted Freebuff, OpenCode and Kilo and validates tier weights', () => {
-  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo']);
+it('ships vetted Freebuff, OpenCode, Kilo, Zro and opt-in Token Harbor and validates tier weights', () => {
+  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor']);
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
-  const experimental = { ...bundledRegistry.adapters[0]!, id: 'future', tier: 'experimental', weight: 0.2 };
-  expect(validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters.map(a => ({ ...a, weight: a.weight * 0.8 })), experimental] }).adapters).toHaveLength(4);
-  expect(() => validateRegistry({ ...bundledRegistry, adapters: [...bundledRegistry.adapters, { ...experimental, weight: 0.3 }] })).toThrow();
+  expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.8);
+  expect(bundledRegistry.adapters.filter(a => a.tier === 'experimental').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.2);
+  expect(() => validateRegistry({ ...bundledRegistry, adapters: bundledRegistry.adapters.map(a => a.id === 'tokenharbor' ? { ...a, weight: 0.3 } : a) })).toThrow();
 });
 it.each([
   { version: 2 }, { published: 'invalid' }, { adapters: [] },
@@ -23,6 +23,16 @@ it.each([
   { adapters: [{ ...bundledRegistry.adapters[0], modalities: ['video'] }] },
   { adapters: [bundledRegistry.adapters[0], bundledRegistry.adapters[0]] }
 ])('rejects invalid registries: %j', invalid => { expect(() => validateRegistry({ ...bundledRegistry, ...invalid })).toThrow(); });
+
+it('validates OpenCode model pools without ambiguous scalar settings', () => {
+  const opencode = bundledRegistry.adapters.find(adapter => adapter.id === 'opencode')!;
+  expect(opencode.models).toEqual(['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle']);
+  for (const invalid of [[], [''], ['big-pickle', 'big-pickle'], [123], ['valid', null]]) {
+    expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...opencode, models: invalid }] })).toThrow();
+  }
+  expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...opencode, model: 'big-pickle' }] })).toThrow();
+  expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...bundledRegistry.adapters[0], models: ['big-pickle'] }] })).toThrow();
+});
 
 it('gateway down keeps cached list and persists private cache', async () => {
   const path = await directory();

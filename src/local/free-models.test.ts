@@ -64,7 +64,7 @@ it('types the exact latest OpenCode fixture message and reuses the session for f
     calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     return Response.json(path === '/session' ? { id: 'session_one' } : { info: { role: 'assistant' }, parts: [{ type: 'text', text: 'bridge works 42' }] });
   };
-  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher });
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher, model: 'big-pickle' });
   const app = createLocalApp(new Sources([driver]));
   fixture.cwd = '/tmp'; fixture.model = 'opencode'; fixture.stream = false; fixture.tools = [];
   expect((await (await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) })).json()).choices[0].message.content).toBe('bridge works 42');
@@ -149,9 +149,9 @@ it('preserves disabled providers and enables Kilo in the router chain', async ()
     { modelDbId: 1, platform: 'groq', modelId: 'groq', priority: 1 },
     { modelDbId: 2, platform: 'mistral', modelId: 'mistral', priority: 2 },
     { modelDbId: 3, platform: 'nvidia', modelId: 'nvidia', priority: 3 },
-    { modelDbId: 4, platform: 'custom', modelId: 'kilo-auto/free', priority: 4 }
+    { modelDbId: 4, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Kilo Free', priority: 4 }
   ]);
-  await admin.configureChain(['groq']);
+  await admin.configureChain(['groq'], ['kilo']);
   expect(call).toHaveBeenCalledWith('/fallback', [
     { modelDbId: 1, enabled: false, priority: 1 },
     { modelDbId: 2, enabled: false, priority: 2 },
@@ -181,7 +181,8 @@ it.each([
   try { await setupProviders(squire, { addGrant }, { notify }); } catch (error) { message = (error as Error).message; }
   expect(message).toBe('Provider refused groq signup; setup stopped' + (detail ? ': Provider denied automated account creation.' : ''));
   for (const secret of ['synthetic-private-value', 'short-secret', 'https://example.test', 'gsk_syntheticprivatevalue', 'SyntheticPass!42', 'SyntheticToken!42', 'Synthetic Secret!42', 'SyntheticKey!42', 'SyntheticCode!42', 'SyntheticCredential!42']) expect(message).not.toContain(secret);
-  expect(call).toHaveBeenCalledTimes(1);
+  expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(1);
+  expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'signup', outcome: 'none' });
   expect(addGrant).not.toHaveBeenCalled();
   expect(notify).not.toHaveBeenCalled();
 });
@@ -271,7 +272,7 @@ it.each([{ saved: [] }, { saved: ['kilo'] }])('adds only saved optional provider
   const squire = fakeSquire();
   vi.mocked(squire.credentials.list).mockResolvedValue(saved.map(service => ({ service, reference: service, field_names: ['value'] })));
   const addGrant = vi.fn();
-  await setupProviders(squire, { addGrant }, { providers: [], notify: vi.fn() });
+  await setupProviders(squire, { addGrant }, { providers: [], notify: vi.fn(), dataSharingApproved: ['kilo'] });
   expect(addGrant.mock.calls.map(([provider]) => provider)).toEqual(saved);
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
@@ -313,7 +314,7 @@ it('orders keyed Kilo sources and disables unvetted models', async () => {
     { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Milo kilo (Squire)', priority: 0 },
     { modelDbId: 4, platform: 'custom', modelId: 'stealth/glyph-cluster', keyLabel: 'Milo kilo (Squire)', priority: 0 }
   ]);
-  await admin.configureChain();
+  await admin.configureChain([], ['kilo']);
   expect(call).toHaveBeenCalledWith('/fallback', [
     { modelDbId: 1, enabled: true, priority: 999996 }, { modelDbId: 2, enabled: true, priority: 999997 },
     { modelDbId: 4, enabled: false, priority: 999997 }
@@ -331,7 +332,7 @@ it('refreshes a Kilo grant missing Nemotron and reuses complete saved providers'
   models = [...models, { modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free' }];
   expect(await admin.hasKey('kilo')).toBe(true);
   const squire = fakeSquire(), addGrant = vi.fn();
-  await setupProviders(squire, { addGrant, hasKey: async () => true }, { providers: [], notify: vi.fn() });
+  await setupProviders(squire, { addGrant, hasKey: async () => true }, { providers: [], notify: vi.fn(), dataSharingApproved: ['kilo'] });
   expect(addGrant).not.toHaveBeenCalled();
   expect(squire.credentials.grant).not.toHaveBeenCalled();
 });

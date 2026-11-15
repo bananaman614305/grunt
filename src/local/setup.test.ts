@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
 import { configure } from './main.js';
 import { createLocalApp } from './api.js';
+import { recordDataSharingConsent } from './data-sharing.js';
 
 const { docker, question } = vi.hoisted(() => ({ docker: vi.fn(), question: vi.fn(async () => '') }));
 vi.mock('node:child_process', async importOriginal => {
@@ -121,7 +122,8 @@ it.each(['environment', 'saved login', 'router recovers'])('answers daemon reque
     if (!online) throw new Error('router down');
     return original(...args);
   });
-  const sources = configure({ MILO_SOURCES: 'freellmapi,kilo', ...(mode === 'environment' ? { MILO_FREELLMAPI_KEY: 'synthetic-env-key' } : {}) });
+  await recordDataSharingConsent(stateDir, ['kilo', 'freebuff']);
+  const sources = configure({ MILO_CONFIG_DIR: stateDir, MILO_SOURCES: 'freellmapi,kilo', ...(mode === 'environment' ? { MILO_FREELLMAPI_KEY: 'synthetic-env-key' } : {}) });
   const app = createLocalApp(sources);
   const send = () => app.request('http://127.0.0.1:8788/v1/chat/completions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -186,7 +188,7 @@ it('keeps Freebuff and Kilo enabled last on repeat setup without changing other 
     return {};
   });
   const router = new FreeLLMAdmin();
-  await router.configureChain(); await router.configureChain();
+  await router.configureChain([], ['kilo', 'freebuff']); await router.configureChain([], ['kilo', 'freebuff']);
   expect(updates).toEqual([1, 2].map(() => [
     { modelDbId: 1, enabled: true, priority: 1000000 },
     { modelDbId: 2, enabled: true, priority: 999999 },
@@ -194,4 +196,30 @@ it('keeps Freebuff and Kilo enabled last on repeat setup without changing other 
     { modelDbId: 4, enabled: false, priority: 19 },
     { modelDbId: 5, enabled: true, priority: 0 }
   ]));
+});
+
+it('shares router bootstrap while two provider jobs sign up concurrently', async () => {
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Set<string>();
+  const squire = {
+    credentials: {
+      list: vi.fn(async () => []),
+      grant: vi.fn(async () => ({ base_url: 'https://grant.test', token: 'synthetic' }))
+    },
+    runs: {
+      start: vi.fn(async (input: { service: string }) => {
+        entered.add(input.service); await hold;
+        return { decision: 'drop' as const, run: { id: input.service, state: 'dropped' } };
+      }),
+      get: vi.fn(async () => ({ state: 'dropped' }))
+    }
+  };
+  const jobs = ['kilo', 'groq'].map(provider => setup(() => {}, [provider], { squire, dataSharingApproved: ['kilo'] }).then(value => ({ value }), error => ({ error })));
+  await vi.waitFor(() => expect(entered).toEqual(new Set(['kilo', 'groq'])));
+  expect(docker.mock.calls.filter(([, args]) => args[0] === 'run' && args.includes('-d'))).toHaveLength(1);
+  const saved = JSON.parse(await readFile(join(stateDir, 'router-admin.json'), 'utf8'));
+  expect(logins).toEqual([saved.password]);
+  release();
+  expect((await Promise.all(jobs)).every(result => 'error' in result)).toBe(true);
 });

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
 import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
@@ -10,15 +10,21 @@ import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
+import { approveDataSharing, dataSharingPolicies, recordDataSharingConsent } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({
-  multiselect: vi.fn(async () => ['groq']), isCancel: () => false,
+  multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
   intro: vi.fn(), outro: vi.fn(), note: vi.fn(), log: { info: vi.fn(), warn: vi.fn(), step: vi.fn(), message: vi.fn(), success: vi.fn(), error: vi.fn() },
   spinner: () => ({ start: vi.fn(), stop: vi.fn(), error: vi.fn(), clear: vi.fn() })
 }));
 
 let dir: string;
-afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); if (dir) await rm(dir, { recursive: true, force: true }); });
+let consentDir: string;
+beforeEach(async () => { consentDir = await mkdtemp(join(tmpdir(), 'grunt-wizard-consent-')); vi.stubEnv('MILO_CONFIG_DIR', consentDir); });
+afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); if (dir) await rm(dir, { recursive: true, force: true }); await rm(consentDir, { recursive: true, force: true }); });
+const defaultIds = () => bundledRegistry.adapters.map(adapter => adapter.id);
+const sharingIds = () => dataSharingPolicies(defaultIds()).map(policy => policy.provider);
+const approvedBatch = async ({ providers }: { providers: readonly string[] }) => ({ approved: dataSharingPolicies(providers).map(policy => policy.provider), skipped: [] });
 it('adds the Pi provider without removing user providers and preserves it on repeat setup', async () => {
   dir = await mkdtemp(join(tmpdir(), 'milo-pi-test-'));
   vi.stubEnv('PI_CODING_AGENT_DIR', dir);
@@ -52,9 +58,14 @@ it('refuses to reinstall an existing broker when its probe fails', async () => {
   expect(run).not.toHaveBeenCalled();
 });
 it('stops at a missing prerequisite with its fix before Squire or service changes', async () => {
+  const run = vi.fn(async (binary: string) => { if (binary === 'tar') throw new Error('missing'); });
+  await expect(preflight(run)).rejects.toThrow('Install tar');
+  expect(run.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'tar']);
+});
+it('allows service onboarding before a coding harness such as Pi is installed', async () => {
   const run = vi.fn(async (binary: string) => { if (binary === 'pi') throw new Error('missing'); });
-  await expect(preflight(run)).rejects.toThrow('npm install --global @mariozechner/pi-coding-agent');
-  expect(run.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'pi']);
+  await expect(preflight(run)).resolves.toBeUndefined();
+  expect(run.mock.calls.map(([binary]) => binary)).not.toContain('pi');
 });
 it('installs once only when the probe fails and no broker exists', async () => {
   const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValueOnce(new Error('broker missing')).mockResolvedValue();
@@ -71,7 +82,7 @@ it.each([true, false])('sets up both default free routes, signing Freebuff in on
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() } };
   const login = vi.fn(async () => { await squire.signup('freebuff', 'https://freebuff.com/login', 'pair'); ready = true; });
   const run = vi.fn(async () => {}), verify = vi.fn(async () => {});
-  expect(await setupFallbacks({ directory: dir, run, notify: () => {}, squire, signedIn: async () => ready, login, verify })).toEqual({ unavailable: [] });
+  expect(await setupFallbacks({ directory: dir, dataSharingApproved: ['freebuff', 'opencode'], run, notify: () => {}, squire, signedIn: async () => ready, login, verify })).toEqual({ unavailable: [] });
   expect(run.mock.calls).toEqual(expect.arrayContaining([['freebuff', ['--version']], ['freebuff', ['doctor']], ['tmux', ['-V']], ['opencode', ['--version']]]));
   expect(squire.signup).toHaveBeenCalledTimes(signed ? 0 : 1);
   expect(verify).toHaveBeenCalledOnce();
@@ -83,7 +94,7 @@ it('installs missing CLIs, continues OpenCode after Freebuff refusal, and skips 
   const run = vi.fn(async (_binary: string, args: string[]) => { if (args[0] === '--version') throw new Error('missing'); });
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() } };
   const verify = vi.fn(async () => {});
-  const result = await setupFallbacks({ directory: dir, run, notify: () => {}, squire, signedIn: async () => false, login: async () => { throw new Error('refused'); }, verify });
+  const result = await setupFallbacks({ directory: dir, dataSharingApproved: ['freebuff', 'opencode'], run, notify: () => {}, squire, signedIn: async () => false, login: async () => { throw new Error('refused'); }, verify });
   expect(result.unavailable).toEqual(['freebuff']);
   expect(run.mock.calls).toContainEqual(['npm', ['install', '--global', 'freebuff']]);
   expect(run.mock.calls).toContainEqual(['npm', ['install', '--global', 'opencode-ai']]);
@@ -99,7 +110,7 @@ it.each([true, false])('connects an account only when OpenCode requires it, reus
   const list = vi.fn().mockResolvedValueOnce(exists ? [entry] : []).mockResolvedValue([entry]);
   const squire = { signup: vi.fn(async () => {}), credentials: { list, grant: vi.fn(async () => ({ base_url: 'https://grant.test/opencode', token: 'synthetic-grant' })) } };
   const verify = vi.fn().mockRejectedValueOnce(new SourceError('logged_out', 'OpenCode returned HTTP 401')).mockResolvedValue(undefined);
-  const result = await setupFallbacks({ directory: dir, run: async () => {}, notify: () => {}, squire, signedIn: async () => true, verify });
+  const result = await setupFallbacks({ directory: dir, dataSharingApproved: ['freebuff', 'opencode'], run: async () => {}, notify: () => {}, squire, signedIn: async () => true, verify });
   expect(result.unavailable).toEqual([]);
   expect(squire.signup).toHaveBeenCalledTimes(exists ? 0 : 1);
   expect(squire.credentials.grant).toHaveBeenCalledWith('vault://test');
@@ -114,6 +125,7 @@ it('runs both free fallback setup steps on default installs and starts the servi
     preflight: vi.fn(async () => {}), connectSquire: vi.fn(async () => {}),
     setup: vi.fn(async () => ({ key: 'synthetic' })),
     setupFallbacks: vi.fn(async () => { order.push('fallbacks'); return { unavailable: [] }; }),
+    approveDataSharing: approvedBatch,
     installService: vi.fn(async () => { order.push('service'); }),
     configurePi: vi.fn(async () => {}), checkService: vi.fn(async () => {}), checkFallbackServices: vi.fn(async () => {})
   };
@@ -122,7 +134,7 @@ it('runs both free fallback setup steps on default installs and starts the servi
   expect(intro).toHaveBeenCalledWith(expect.stringContaining('npx usegrunt setup'));
   expect(outro).toHaveBeenCalledWith('grunt is ready');
   expect(order).toEqual(['fallbacks', 'service']);
-  expect(actions.setupFallbacks.mock.calls.map(([options]) => options.adapters)).toEqual([['freebuff', 'opencode', 'kilo']]);
+  expect(actions.setupFallbacks.mock.calls.map(([options]) => options.adapters)).toEqual([defaultIds()]);
   expect(actions.setup).not.toHaveBeenCalled();
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ run: expect.any(Function), notify: expect.any(Function) }));
   actions.setupFallbacks.mockClear();
@@ -154,7 +166,7 @@ it.each([true, false])('repairs an installed Freebuff without doctor before prob
   const signedIn = vi.fn(async () => { expect(upgraded).toBe(true); return signed; });
   const squire = { signup: vi.fn(async () => { signed = true; }), credentials: { list: vi.fn(), grant: vi.fn() } };
   const verify = vi.fn(async () => {});
-  const result = await setupFallbacks({ directory: dir, run, notify: line => output.push(line), squire, signedIn,
+  const result = await setupFallbacks({ directory: dir, dataSharingApproved: ['freebuff', 'opencode'], run, notify: line => output.push(line), squire, signedIn,
     login: async browser => browser.signup('freebuff', 'https://freebuff.com/login', 'Pair the CLI'), verify });
   expect(run).toHaveBeenCalledWith('npm', ['install', '--global', 'freebuff@latest']);
   expect(squire.signup).toHaveBeenCalledTimes(repaired ? 1 : 0);
@@ -262,6 +274,7 @@ const stubActions = (order: string[], overrides: Record<string, unknown> = {}) =
   checkService: vi.fn(async () => {}),
   checkFallbackServices: vi.fn(async (_unavailable: string[], _port: number, notify: (line: string) => void, ids: string[]) => { order.push(`check:${ids}`); notify(`${ids[0]}: PASS — ${ids[0]} answered through the grunt service`); }),
   connectHarnesses: vi.fn(async () => { order.push('harnesses'); return []; }),
+  approveDataSharing: vi.fn(approvedBatch),
   ...overrides
 });
 it('connects Kilo and restarts the daemon before reporting success', async () => {
@@ -270,7 +283,7 @@ it('connects Kilo and restarts the daemon before reporting success', async () =>
   actions.setup.mockImplementation(async () => { order.push('grant'); return { key: 'synthetic' }; });
   actions.checkService.mockImplementation(async () => { order.push('ready'); });
   await wizard('kilo', actions);
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo'], {});
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo'], { dataSharingApproved: sharingIds() });
   expect(order).toEqual(['banner', 'squire', 'grant', 'service', 'ready']);
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.connectHarnesses).not.toHaveBeenCalled();
@@ -281,11 +294,27 @@ it('does not restart the daemon or report success when Kilo setup fails', async 
   await expect(wizard('kilo', actions)).rejects.toThrow('No Kilo access');
   expect(actions.installService).not.toHaveBeenCalled();
 });
+it.each([
+  ['freebuff', 'opencode', 'kilo'],
+  ['freellmapi', 'kilo', 'freebuff', 'opencode']
+])('enables explicitly added NVIDIA while preserving saved sources %j', async (...previous) => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-add-nvidia-'));
+  await writeFile(join(dir, 'installed-sources.json'), JSON.stringify(previous), { mode: 0o600 });
+  const actions = stubActions([], { installedSources: () => installedSources(dir) });
+  await wizard('nvidia', actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['nvidia'], { dataSharingApproved: dataSharingPolicies(previous).map(policy => policy.provider) });
+  expect(actions.installService).toHaveBeenCalledWith([...previous, 'nvidia']);
+});
+it('does not add unselected adapters when explicitly adding Kilo', async () => {
+  const actions = stubActions([], { installedSources: async () => 'opencode' });
+  await wizard('kilo', actions);
+  expect(actions.installService).toHaveBeenCalledWith(['opencode', 'kilo']);
+});
 it('keeps registered API sources enabled across repeat service installs', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-sources-test-'));
-  expect(await installedSources(dir)).toBe('freebuff,opencode,kilo');
+  expect(await installedSources(dir)).toBe('freebuff,opencode,kilo,zro');
   await writeFile(join(dir, 'router-admin.json'), '{}', { mode: 0o600 });
-  expect(await installedSources(dir)).toBe('freellmapi,kilo,freebuff,opencode');
+  expect(await installedSources(dir)).toBe('freellmapi,kilo,freebuff,opencode,zro');
 });
 it('shows the banner, preamble, Squire notice, registry, each service and then the harness step in order', async () => {
   const { note } = await import('@clack/prompts');
@@ -293,7 +322,7 @@ it('shows the banner, preamble, Squire notice, registry, each service and then t
   vi.mocked(note).mockImplementation((_message, title) => { order.push(`note:${title}`); });
   await wizard(undefined, stubActions(order));
   expect(order).toEqual(['banner', 'note:What grunt does', 'note:Google sign-in for Trusty Squire', 'squire', 'registry',
-    'signup:freebuff,opencode,kilo', 'service', 'check:freebuff', 'check:opencode', 'check:kilo', 'note:Free services', 'harnesses']);
+    `signup:${defaultIds()}`, 'service', ...defaultIds().map(id => `check:${id}`), 'note:Free services', 'harnesses']);
 });
 it('gives every service its own result when one fails, then ends with the resume message', async () => {
   const { log, outro } = await import('@clack/prompts');
@@ -302,7 +331,7 @@ it('gives every service its own result when one fails, then ends with the resume
     setupFallbacks: vi.fn(async (options: { adapters?: string[] }) => ({ unavailable: options.adapters?.includes('freebuff') ? ['freebuff'] : [] })),
     checkFallbackServices
   });
-  const live = await service(new Sources([fake('opencode'), fake('kilo')]));
+  const live = await service(new Sources(defaultIds().filter(id => id !== 'freebuff').map(id => fake(id))));
   vi.stubEnv('MILO_PORT', String(live.port));
   try { await expect(wizard(undefined, actions)).rejects.toThrow('Some adapters failed verification. Run usegrunt setup to resume.'); }
   finally { await live.close(); }
@@ -329,7 +358,7 @@ it('pulls the registry from the RegistrySync URL and says when it falls back to 
 it('preserves legacy API routing when default setup adds Kilo', async () => {
   const actions = stubActions([], { installedSources: async () => 'freellmapi,kilo,freebuff,opencode' });
   await wizard(undefined, actions);
-  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'freebuff', 'opencode', 'kilo']);
+  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', ...defaultIds()]);
 });
 it('keeps a vetted-only install across repeated setup even after Kilo creates a router login', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-vetted-repeat-'));
@@ -338,7 +367,7 @@ it('keeps a vetted-only install across repeated setup even after Kilo creates a 
   expect(await installedSources(dir)).toBe('freebuff,opencode,kilo');
   const actions = stubActions([], { installedSources: () => installedSources(dir) });
   await wizard(undefined, actions);
-  expect(actions.installService).toHaveBeenCalledWith(['freebuff', 'opencode', 'kilo']);
+  expect(actions.installService).toHaveBeenCalledWith(defaultIds());
 });
 it('uses one Squire client across default setup and closes it after verification', async () => {
   const squire = new BrowserSquire();
@@ -353,5 +382,129 @@ it('uses one Squire client across default setup and closes it after verification
 it('enables the API source when adding a custom provider after a vetted install', async () => {
   const actions = stubActions([], { installedSources: async () => 'freebuff,opencode,kilo' });
   await wizard('groq', actions);
+  expect(actions.installService).toHaveBeenCalledWith([...new Set(['freellmapi', 'freebuff', 'opencode', 'kilo', ...defaultIds()])]);
+});
+
+it('asks once for the sharing batch before parallel signup and reuses the saved approval', async () => {
+  const order: string[] = [], scopes: string[][] = [];
+  const prompt = vi.fn(async () => { order.push('approval'); return true; });
+  const actions = stubActions(order, {
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt }),
+    createSquire: () => {
+      const squire = new BrowserSquire();
+      vi.spyOn(squire, 'close').mockResolvedValue();
+      vi.spyOn(squire, 'approveDataSharing').mockImplementation(ids => { scopes.push([...ids]); });
+      return squire;
+    }
+  });
+  expect(defaultIds()).toContain('tokenharbor');
+  await wizard(undefined, actions);
+  await wizard(undefined, actions);
+  expect(prompt).toHaveBeenCalledOnce();
+  expect(order.indexOf('approval')).toBeLessThan(order.indexOf(`signup:${defaultIds()}`));
+  expect(scopes).toEqual([sharingIds(), sharingIds()]);
+  expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: defaultIds(), dataSharingApproved: sharingIds() }));
+  expect(actions.installService).toHaveBeenCalledWith(defaultIds());
+});
+
+it.each([false, Symbol('cancel')])('continues other onboarding when grouped data sharing is declined or cancelled', async answer => {
+  const order: string[] = [];
+  const prompt = vi.fn(async () => answer);
+  const actions = stubActions(order, {
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt })
+  });
+  await wizard(undefined, actions);
+  const remaining = defaultIds().filter(id => !sharingIds().includes(id));
+  expect(prompt).toHaveBeenCalledOnce();
+  expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: remaining }));
+  expect(actions.installService).toHaveBeenCalledWith(remaining);
+  expect(order).not.toContain('check:tokenharbor');
+  expect(order).not.toContain('check:freebuff');
+  expect(order).not.toContain('check:opencode');
+  expect(order).not.toContain('check:kilo');
+  expect(order).toContain('check:zro');
+});
+
+it.each([false, Symbol('cancel')])('upgrades the old runtime despite declined sharing without enabling a registry-removed source', async answer => {
+  const adapters = bundledRegistry.adapters.filter(adapter => ['freebuff', 'opencode', 'kilo'].includes(adapter.id));
+  const order: string[] = [];
+  const actions = stubActions(order, {
+    installedSources: async () => 'freellmapi,freebuff,opencode,kilo,zro',
+    loadRegistry: async () => ({ registry: { ...bundledRegistry, adapters }, origin: 'remote' as const }),
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt: async () => answer })
+  });
+  actions.checkService.mockImplementation(async () => { order.push('ready'); });
+  await wizard(undefined, actions);
+  expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'freebuff', 'opencode', 'kilo']);
+  expect(actions.checkService).toHaveBeenCalledOnce();
+  expect(order).toEqual(['banner', 'squire', 'service', 'ready']);
+  expect(actions.checkFallbackServices).not.toHaveBeenCalled();
+  expect(actions.connectHarnesses).not.toHaveBeenCalled();
+});
+
+it('starts a guarded runtime without signup when sharing is declined on a fresh installation', async () => {
+  const adapter = bundledRegistry.adapters.find(adapter => adapter.id === 'tokenharbor')!;
+  const actions = stubActions([], {
+    loadRegistry: async () => ({ registry: { ...bundledRegistry, adapters: [adapter] }, origin: 'remote' as const }),
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt: async () => false })
+  });
+  await wizard(undefined, actions);
+  expect(actions.setupFallbacks).not.toHaveBeenCalled();
+  expect(actions.installService).toHaveBeenCalledWith(['tokenharbor']);
+  expect(actions.checkService).toHaveBeenCalledOnce();
+});
+
+it.each(['tokenharbor', 'kilo'])('upgrades the previous runtime when the explicitly added %s is declined without enabling it', async add => {
+  const order: string[] = [];
+  const previous = ['freellmapi', 'freebuff', 'opencode'];
+  const actions = stubActions(order, {
+    installedSources: async () => previous.join(','),
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt: async () => false })
+  });
+  actions.checkService.mockImplementation(async () => { order.push('ready'); });
+  await wizard(add, actions);
+  expect(actions.setup).not.toHaveBeenCalled();
+  expect(actions.setupFallbacks).not.toHaveBeenCalled();
+  expect(actions.installService).toHaveBeenCalledWith(previous);
+  expect(actions.checkService).toHaveBeenCalledOnce();
+  expect(order).toEqual(['banner', 'squire', 'service', 'ready']);
+});
+
+it('does not enable an explicitly declined addition after cancellation', async () => {
+  const actions = stubActions([], {
+    installedSources: async () => 'freebuff,opencode,kilo',
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt: async () => Symbol('cancel') })
+  });
+  await wizard('tokenharbor', actions);
+  expect(actions.setup).not.toHaveBeenCalled();
+  expect(actions.installService).toHaveBeenCalledWith(['freebuff', 'opencode', 'kilo']);
+  expect(actions.checkService).toHaveBeenCalledOnce();
+});
+
+it('adds Zro while preserving saved custom API routing and without enabling optional NVIDIA', async () => {
+  const actions = stubActions([], { installedSources: async () => 'freellmapi,opencode' });
+  await wizard('zro', actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['zro'], { dataSharingApproved: ['opencode'] });
+  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'opencode', 'zro']);
+});
+
+it('keeps an already approved sharing source when adding a custom API provider', async () => {
+  await recordDataSharingConsent(consentDir, sharingIds());
+  const actions = stubActions([], {
+    installedSources: async () => 'freebuff,opencode,kilo,tokenharbor',
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: false })
+  });
+  await wizard('groq', actions);
+  expect(actions.installService).toHaveBeenCalledWith([...new Set(['freellmapi', 'freebuff', 'opencode', 'kilo', 'tokenharbor', ...defaultIds()])]);
+});
+
+it('keeps Zro and a custom API source when all grouped sharing providers are declined during add', async () => {
+  const actions = stubActions([], {
+    installedSources: async () => 'freebuff,opencode,kilo',
+    approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt: async () => false })
+  });
+  await wizard('groq', actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['groq'], {});
+  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'zro']);
 });

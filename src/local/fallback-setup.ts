@@ -8,6 +8,7 @@ import { parallelMap } from './parallel.js';
 import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
+import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import type { Source } from './source.js';
 
 const exec = promisify(execFile);
@@ -64,10 +65,14 @@ export async function setupFallbacks(options: {
   adapters?: string[];
   connect?: () => Promise<void>;
   signal?: AbortSignal;
+  dataSharingApproved?: readonly string[];
 }) {
-  const squire = options.squire ?? new BrowserSquire();
+  const squire = options.squire ?? new BrowserSquire({ dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
   const unavailable: string[] = [];
+  const adapters = options.adapters ?? ['freebuff', 'opencode'];
+  const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
+  if (squire instanceof BrowserSquire) squire.approveDataSharing(approved);
   // Reuse a grant created by an earlier setup before probing the free model.
   const savedConfig = join(options.directory, 'opencode-free.json');
   try { await access(savedConfig); process.env.OPENCODE_CONFIG = savedConfig; }
@@ -146,15 +151,47 @@ export async function setupFallbacks(options: {
       kilo: async () => { try {
         await connect();
         if (!squire.runs) throw new Error('Provider signup requires Squire');
-        await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, ...(options.signal ? { signal: options.signal } : {}) });
+        await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, directory: options.directory, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Kilo: free API access connected through Squire');
       } catch {
         unavailable.push('kilo');
         options.notify('Kilo setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } },
+      zro: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['zro'], { squire: squire as SetupSquire, directory: options.directory, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Zro: daily free DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('zro');
+        options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } },
+      tokenharbor: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['tokenharbor'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Token Harbor: approved free DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('tokenharbor');
+        options.notify('Token Harbor setup incomplete or data sharing not approved. Run usegrunt setup to finish; other routes remain available.');
+      } },
+      nvidia: async () => { try {
+        await connect();
+        if (!squire.runs) throw new Error('Provider signup requires Squire');
+        await (options.setupProvider ?? setup)(options.notify, ['nvidia'], { squire: squire as SetupSquire, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('NVIDIA: free DeepSeek V4.1 Flash API access connected through Squire');
+      } catch {
+        unavailable.push('nvidia');
+        options.notify('NVIDIA setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } }
       };
-    const adapters = options.adapters ?? ['freebuff', 'opencode'];
     await parallelMap(adapters, async id => {
+      if (requiresDataSharing(id) && !approved.includes(id)) {
+        unavailable.push(id);
+        options.notify(`${id}: skipped until the grouped data-sharing approval is granted`);
+        return;
+      }
       const task = tasks[id];
       if (!task) throw new Error('Unsupported vetted adapter');
       await task();

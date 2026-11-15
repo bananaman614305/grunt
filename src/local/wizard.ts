@@ -16,6 +16,7 @@ import { RegistrySync } from './registry.js';
 import { bundledRegistry, knownAdapters } from '../registry.js';
 import type { Adapter } from '../registry.js';
 import { banner } from './banner.js';
+import { approveDataSharing, requiresDataSharing } from './data-sharing.js';
 import { HARNESSES, configurePi, connectHarness, detectHarnesses } from './harnesses.js';
 import type { Harness, runHarness } from './harnesses.js';
 
@@ -75,7 +76,6 @@ export async function preflight(run = command) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Run setup on Linux with systemd or macOS with launchd.');
   for (const [binary, args, fix] of [
     ['npm', ['--version'], 'Install Node.js 22 or 24 LTS including npm.'],
-    ['pi', ['--version'], 'Run npm install --global @mariozechner/pi-coding-agent.'],
     ['tar', ['--version'], 'Install tar using your system package manager.']
   ] as const) {
     try { await run(binary, [...args]); } catch { throw new Error(fix + ' Then run npx usegrunt setup.'); }
@@ -99,9 +99,9 @@ export async function installedSources(directory = configDir()) {
   try { await access(join(directory, 'router-admin.json')); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return 'freebuff,opencode,kilo';
+    return 'freebuff,opencode,kilo,zro';
   }
-  return 'freellmapi,kilo,freebuff,opencode';
+  return 'freellmapi,kilo,freebuff,opencode,zro';
 }
 export async function installService(adapters?: string[]) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
@@ -282,8 +282,8 @@ export async function connectHarnesses(port: number, options: { harnesses?: Harn
   if (connected.length) note(connected.map(h => `${chalk.bold(h.name)}\n  ${h.launch(port)}`).join('\n'), 'Start coding with grunt');
   return connected;
 }
-const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses };
-type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi';
+const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, approveDataSharing };
+type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi' | 'approveDataSharing';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
   const squire = actions.createSquire?.();
@@ -297,8 +297,29 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     // Capture legacy API routing before default Kilo setup creates its admin file.
     const previous = (await actions.installedSources?.())?.split(',') ?? [];
     if (add) {
-      await step('FreeLLMAPI and provider grants', () => actions.setup(line => log.info(line), [add], squire ? { squire } : {}));
-      await step('Starting the grunt background service', () => actions.installService(add !== 'kilo' ? [...new Set(['freellmapi', ...previous, ...knownAdapters])] : undefined));
+      const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor'].includes(add)
+        ? [...new Set([...(previous.length ? previous : defaults), add])]
+        : [...new Set(['freellmapi', ...previous, ...defaults])];
+      const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });
+      if (consent.skipped.includes(add)) {
+        // A declined addition still needs to replace a previously installed
+        // runtime that predates consent enforcement. Keep only prior choices.
+        if (previous.length) {
+          await step('Updating the grunt background service', () => actions.installService(previous));
+          await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
+        }
+        outro(`${add} skipped; data sharing was not approved`);
+        return;
+      }
+      squire?.approveDataSharing?.(consent.approved);
+      const consentOptions = consent.approved.length ? { dataSharingApproved: consent.approved } : {};
+      await step('Connecting free provider access', () => actions.setup(line => log.info(line), [add], { ...(squire ? { squire } : {}), ...consentOptions }));
+      // Explicit additions must survive the saved source list from an older
+      // install. Keep its routing choices rather than enabling every adapter.
+      const approved = new Set(consent.approved);
+      const enabled = sources.filter(id => !requiresDataSharing(id) || approved.has(id));
+      await step('Starting the grunt background service', () => actions.installService(enabled));
       await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
       outro(`${add} connected`); return;
     }
@@ -311,14 +332,29 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     log.message(registry.adapters.map(adapter => knownAdapters.has(adapter.id)
       ? `${chalk.bold(adapter.id.padEnd(10))} ${chalk.dim(describe(adapter))}`
       : `${chalk.dim(adapter.id.padEnd(10))} ${chalk.dim('skipped: needs a newer usegrunt')}`).join('\n'));
-    const ids = adapters.map(adapter => adapter.id);
-    const results = new Map<string, { signup?: Status; daemon?: Status; check?: Status }>(ids.map(id => [id, {}]));
+    const requested = adapters.map(adapter => adapter.id);
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: requested });
+    squire?.approveDataSharing?.(consent.approved);
+    const ids = requested.filter(id => !consent.skipped.includes(id));
+    const results = new Map<string, { signup?: Status; daemon?: Status; check?: Status }>(requested.map(id => [id, consent.skipped.includes(id) ? { signup: 'skip', daemon: 'skip', check: 'skip' } : {}]));
     const unavailable: string[] = [];
     const notify = report();
+    if (consent.skipped.length) log.info(`Skipped data-sharing services: ${consent.skipped.join(', ')}. Other free services continue.`);
+    if (!ids.length) {
+      // Upgrade older runtimes even after a declined batch: otherwise their
+      // existing provider sessions could keep routing without consent guards.
+      // Honor registry removals, while retaining a user's custom API routing.
+      const retained = previous.filter(id => id === 'freellmapi' || requested.includes(id));
+      await step('Updating the grunt background service', () => actions.installService(retained.length ? retained : requested));
+      await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
+      outro('No approved free services are available; the background service now enforces your data-sharing choices');
+      return;
+    }
 
     log.step(`Installing and connecting ${ids.length} vetted free services (up to 3 at once)`);
     log.info('Trusty Squire reuses existing accounts and grants. Only free access is requested. Provider verification may still need your browser; verification prompts are queued.');
     const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify,
+      ...(consent.approved.length ? { dataSharingApproved: consent.approved } : {}),
       ...(squire ? { squire, connect: () => squire.connect() } : {}) });
     unavailable.push(...outcome.unavailable);
     for (const id of ids) results.get(id)!.signup = unavailable.includes(id) ? 'fail' : 'pass';
@@ -337,7 +373,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       await actions.checkFallbackServices(unavailable, port, notify, [id]);
       results.get(id)!.check = before ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
     });
-    note([`${'service'.padEnd(10)}  sign-in  daemon  test`, ...ids.map(id => {
+    note([`${'service'.padEnd(10)}  sign-in  daemon  test`, ...requested.map(id => {
       const r = results.get(id)!;
       return `${id.padEnd(10)}  ${mark(r.signup)}        ${mark(r.daemon)}       ${mark(r.check)}`;
     })].join('\n'), 'Free services');

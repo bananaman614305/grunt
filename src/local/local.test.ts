@@ -352,7 +352,7 @@ it('starts setup from the usegrunt bin without arguments', async () => {
     });
     expect(result.code).toBe(1);
     expect(result.output).toContain('pools the free AI inference quota');
-    expect(result.output).toContain('npm install --global @mariozechner/pi-coding-agent');
+    expect(result.output).toContain('Install tar using your system package manager.');
     expect(result.output).not.toContain('grunt model API:');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
