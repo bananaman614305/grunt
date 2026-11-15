@@ -7,7 +7,7 @@ import type { DataSharingPolicy } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), isCancel: (value: unknown) => typeof value === 'symbol' }));
 const originalPolicies = DATA_SHARING_POLICIES.map(policy => ({ ...policy }));
-const sharingIds = ['freebuff', 'opencode', 'kilo', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe'];
+const sharingIds = ['freebuff', 'opencode', 'kilo', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'pollinations', 'beatapi'];
 const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-data-sharing-')); directories.push(path); return path; }
 afterEach(async () => {
@@ -18,7 +18,7 @@ afterEach(async () => {
 
 it('does not ask for providers without a known data-sharing requirement', async () => {
   const prompt = vi.fn(async () => true);
-  expect(await approveDataSharing({ directory: await directory(), providers: ['zro'], interactive: true, prompt })).toEqual({ approved: [], skipped: [] });
+  expect(await approveDataSharing({ directory: await directory(), providers: ['zro', 'livekit'], interactive: true, prompt })).toEqual({ approved: [], skipped: [] });
   expect(prompt).not.toHaveBeenCalled();
 });
 
@@ -53,7 +53,7 @@ it('requires new approval when a provider policy changes', async () => {
 
 it.each([false, Symbol('cancel')])('skips only sharing providers when the group approval is declined or cancelled', async answer => {
   const path = await directory();
-  expect(await approveDataSharing({ directory: path, providers: ['zro', ...sharingIds], interactive: true, prompt: async () => answer })).toEqual({ approved: [], skipped: sharingIds });
+  expect(await approveDataSharing({ directory: path, providers: ['zro', 'livekit', ...sharingIds], interactive: true, prompt: async () => answer })).toEqual({ approved: [], skipped: sharingIds });
   expect(await readDataSharingConsent(path, sharingIds)).toEqual([]);
   await expect(readFile(join(path, 'data-sharing-consent.json'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
@@ -86,4 +86,34 @@ it('does not let a provider outside the approved batch inherit consent', async (
   expect(await approveDataSharing({ directory: path, providers: ['tokenharbor', 'new-sharing'], interactive: true, prompt })).toEqual({ approved: ['tokenharbor'], skipped: ['new-sharing'] });
   expect(prompt).toHaveBeenCalledOnce();
   expect(prompt.mock.calls[0]![0].map(policy => policy.provider)).toEqual(['new-sharing']);
+});
+
+it('adds Pollinations to the existing consent batch without inheriting old approvals or reprompting for them', async () => {
+  const path = await directory();
+  const previous = sharingIds.filter(id => id !== 'pollinations');
+  await recordDataSharingConsent(path, previous);
+  const prompt = vi.fn(async (policies: readonly DataSharingPolicy[]) => {
+    expect(policies.map(policy => policy.provider)).toEqual(['pollinations']);
+    expect(policies[0]!.disclosure).toMatch(/OSAII.*Poe\/Together/);
+    expect(policies[0]!.disclosure).toContain('guarantees are not established');
+    return true;
+  });
+  expect(await readDataSharingConsent(path, ['pollinations'])).toEqual([]);
+  expect(await approveDataSharing({ directory: path, providers: ['livekit', ...sharingIds], interactive: true, prompt })).toEqual({ approved: [...previous, 'pollinations'], skipped: [] });
+  expect(prompt).toHaveBeenCalledOnce();
+  await approveDataSharing({ directory: path, providers: sharingIds, interactive: true, prompt });
+  expect(prompt).toHaveBeenCalledOnce();
+});
+
+it('groups both new sharing sources into one approval while reusing the previous pool consent', async () => {
+  const path = await directory();
+  const previous = sharingIds.filter(id => !['pollinations', 'beatapi'].includes(id));
+  await recordDataSharingConsent(path, previous);
+  const prompt = vi.fn(async (policies: readonly DataSharingPolicy[]) => {
+    expect(policies.map(policy => policy.provider)).toEqual(['pollinations', 'beatapi']);
+    expect(policies[1]!.disclosure).toContain('upstream retention and training guarantees are not established');
+    return true;
+  });
+  expect(await approveDataSharing({ directory: path, providers: ['zro', 'livekit', ...sharingIds], interactive: true, prompt })).toEqual({ approved: [...previous, 'pollinations', 'beatapi'], skipped: [] });
+  expect(prompt).toHaveBeenCalledOnce();
 });

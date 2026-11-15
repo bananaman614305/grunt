@@ -28,14 +28,14 @@ it('overlaps all vetted setup jobs and shares one Squire connection despite conc
   };
   let checked = false;
   const connect = vi.fn(async () => { await release.promise; });
-  const provider = vi.fn(async () => { started.add('kilo'); await release.promise; return { key: 'synthetic-router' }; });
+  const provider = vi.fn(async () => { started.add('kilo'); await release.promise; return {}; });
   const pending = setupFallbacks({ dataSharingApproved: ['freebuff', 'opencode', 'kilo', 'tokenharbor'], directory: await directory(), adapters: ['freebuff', 'opencode', 'kilo'], squire, connect,
     run: async binary => { if (binary === 'freebuff') { started.add('freebuff'); await release.promise; } },
     notify: () => {}, signedIn: async () => signed, login: async () => { signed = true; },
     verify: async () => { started.add('opencode'); if (!checked) { checked = true; throw new SourceError('logged_out', 'sign in'); } },
     setupProvider: provider });
-  // Kilo needs the shared connection before it can enter provider setup.
-  await vi.waitFor(() => { expect(started).toEqual(new Set(['freebuff', 'opencode'])); expect(connect).toHaveBeenCalledOnce(); });
+  // Anonymous Kilo setup starts while the shared browser connection is pending.
+  await vi.waitFor(() => { expect(started).toEqual(new Set(['freebuff', 'opencode', 'kilo'])); expect(connect).toHaveBeenCalledOnce(); });
   release.resolve();
   expect(await pending).toEqual({ unavailable: [] });
   expect(started).toEqual(new Set(['freebuff', 'opencode', 'kilo']));
@@ -123,7 +123,7 @@ it('runs registry background provisioning concurrently too', async () => {
     ensure: async adapter => { started.push(adapter.id); await hold.promise; } });
   const pending = sync.sync();
   await vi.waitFor(() => expect(started).toEqual(['freebuff', 'opencode', 'kilo']));
-  hold.resolve(); await pending; expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit']); await sync.close();
+  hold.resolve(); await pending; expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi']); await sync.close();
 });
 
 it('pins Kilo installer and capabilities instead of accepting executable registry data', () => {

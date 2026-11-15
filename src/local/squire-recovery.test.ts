@@ -1,10 +1,16 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
 import type * as Prompts from '@clack/prompts';
+import { withTerminal } from './terminal.js';
 
 vi.mock('@clack/prompts', async importOriginal => ({ ...await importOriginal<typeof Prompts>(), confirm: vi.fn(async () => true) }));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 const input = { service: 'kilo', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' } as const;
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
 
 it('dismisses the observed cookie overlay without treating echoed instructions as a refusal', async () => {
   const squire = new BrowserSquire();
@@ -113,4 +119,121 @@ it('cancels an outstanding human prompt before closing its browser', async () =>
   await squire.close();
   expect(await signup).toBeInstanceOf(Error);
   expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'captcha-tab', outcome: 'none' });
+});
+
+it('retains a bounded initial MCP response for cleanup after scoped cancellation while another service continues', async () => {
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  const late = deferred<unknown>();
+  let initialSignal: AbortSignal | undefined;
+  const rpc = vi.spyOn(client, 'callTool').mockImplementation(async (request, _schema, options) => {
+    const { name, arguments: args } = request as { name: string; arguments: Record<string, unknown> };
+    const signal = (options as { signal?: AbortSignal }).signal;
+    if (name === 'operate_drive' && args.url === 'https://cancelled.test') {
+      initialSignal = signal;
+      // Model actual MCP cancellation: an aborted request loses its response.
+      return await Promise.race([late.promise, new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('MCP cancelled')), { once: true }))]);
+    }
+    return { content: [], structuredContent: name === 'operate_drive' ? { status: 'complete', session_id: 'other-tab' } : {} };
+  });
+  const closed = vi.spyOn(client, 'close').mockResolvedValue();
+  const signup = squire.signup('cancelled', 'https://cancelled.test', 'Sign in').catch(error => error);
+  await vi.waitFor(() => expect(initialSignal).toBeDefined());
+  await squire.cancelSignup('cancelled');
+  expect(await signup).toBeInstanceOf(Error);
+  expect(initialSignal!.aborted).toBe(false);
+  await expect(squire.signup('other', 'https://other.test', 'Sign in')).resolves.toBeUndefined();
+  expect(closed).not.toHaveBeenCalled();
+  late.resolve({ content: [], structuredContent: { status: 'needs_value', field: 'captcha', session_id: 'late-owned-tab' } });
+  await vi.waitFor(() => expect(rpc.mock.calls.some(([request]) => {
+    const value = request as { name: string; arguments: { session_id?: string; outcome?: string } };
+    return value.name === 'operate_finish' && value.arguments.session_id === 'late-owned-tab' && value.arguments.outcome === 'none';
+  })).toBe(true));
+  expect(rpc.mock.calls.filter(([request]) => (request as { name: string }).name === 'operate_share')).toHaveLength(0);
+  await expect(squire.signup('cancelled', 'https://cancelled.test', 'Sign in again')).rejects.toThrow('cancelled');
+  expect(rpc.mock.calls.filter(([request]) => (request as { arguments: { url?: string } }).arguments.url === 'https://cancelled.test')).toHaveLength(1);
+  await squire.close();
+});
+
+it('aborts known-session MCP work and finishes that session without closing the shared client', async () => {
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  let continuationSignal: AbortSignal | undefined;
+  const rpc = vi.spyOn(client, 'callTool').mockImplementation(async (request, _schema, options) => {
+    const { name, arguments: args } = request as { name: string; arguments: Record<string, unknown> };
+    if (name === 'operate_drive' && args.session_id === 'known-tab') {
+      continuationSignal = (options as { signal: AbortSignal }).signal;
+      return await new Promise((_resolve, reject) => continuationSignal!.addEventListener('abort', () => reject(new Error('MCP cancelled')), { once: true }));
+    }
+    return { content: [], structuredContent: name === 'operate_drive' ? { status: 'budget', session_id: 'known-tab' } : {} };
+  });
+  const closed = vi.spyOn(client, 'close').mockResolvedValue();
+  await squire.runs.start(input);
+  const continuation = squire.runs.get('kilo').catch(error => error);
+  await vi.waitFor(() => expect(continuationSignal).toBeDefined());
+  await squire.cancelSignup('kilo');
+  expect(await continuation).toBeInstanceOf(Error);
+  expect(continuationSignal!.aborted).toBe(true);
+  expect(closed).not.toHaveBeenCalled();
+  expect(rpc.mock.calls.filter(([request]) => (request as { name: string }).name === 'operate_finish')).toHaveLength(1);
+  await squire.close();
+});
+
+it('prevents a cancelled service from starting later without affecting a different service', async () => {
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'complete', session_id: 'other-tab' } : {});
+  await squire.cancelSignup('cancelled');
+  await expect(squire.signup('cancelled', 'https://cancelled.test', 'Sign in')).rejects.toThrow('cancelled');
+  expect(call).not.toHaveBeenCalled();
+  await expect(squire.signup('other', 'https://other.test', 'Sign in')).resolves.toBeUndefined();
+  expect(call).toHaveBeenCalledWith('operate_finish', expect.objectContaining({ session_id: 'other-tab', outcome: 'result' }));
+  await squire.close();
+});
+
+it('removes cancelled handoffs waiting for the terminal while another service can still prompt', async () => {
+  const { confirm } = await import('@clack/prompts');
+  vi.mocked(confirm).mockClear();
+  const started = deferred<void>(), hold = deferred<void>();
+  const terminal = withTerminal(async () => { started.resolve(); await hold.promise; });
+  await started.promise;
+  const squire = new BrowserSquire();
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const handoff = vi.spyOn(squire, 'humanHandoff').mockImplementation(async session => `https://handoff.test/${session}`);
+  vi.spyOn(squire, 'call').mockImplementation(async (name, args) => name === 'operate_drive'
+    ? { status: 'needs_value', field: 'captcha', session_id: String(args.url).includes('cancelled') ? 'cancelled-tab' : 'other-tab' } : {});
+  const cancelled = squire.signup('cancelled', 'https://cancelled.test', 'Sign in').catch(error => error);
+  const other = squire.runs.start(input);
+  await vi.waitFor(() => expect(handoff).toHaveBeenCalledTimes(2));
+  await squire.cancelSignup('cancelled');
+  hold.resolve(); await terminal;
+  expect(await cancelled).toBeInstanceOf(Error);
+  await expect(other).resolves.toMatchObject({ run: { state: 'running' } });
+  expect(vi.mocked(confirm).mock.calls.every(([options]) => !options.message.includes('cancelled'))).toBe(true);
+  expect(log.mock.calls.every(([line]) => !String(line).includes('cancelled-tab'))).toBe(true);
+  await squire.close();
+});
+
+it('cancels one active grouped handoff prompt and lets the remaining service resume', async () => {
+  const { confirm } = await import('@clack/prompts');
+  vi.mocked(confirm).mockClear();
+  const prompted = deferred<void>();
+  vi.mocked(confirm).mockImplementationOnce(options => new Promise(resolve => {
+    prompted.resolve();
+    options.signal!.addEventListener('abort', () => resolve(false), { once: true });
+  }));
+  const squire = new BrowserSquire();
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.test/verify');
+  vi.spyOn(squire, 'call').mockImplementation(async (name, args) => name === 'operate_drive'
+    ? { status: 'needs_value', field: 'captcha', session_id: String(args.url).includes('cancelled') ? 'cancelled-tab' : 'other-tab' } : {});
+  const cancelled = squire.signup('cancelled', 'https://cancelled.test', 'Sign in').catch(error => error);
+  const other = squire.runs.start(input);
+  await prompted.promise;
+  await squire.cancelSignup('cancelled');
+  expect(await cancelled).toBeInstanceOf(Error);
+  await expect(other).resolves.toMatchObject({ run: { state: 'running' } });
+  expect(vi.mocked(confirm).mock.calls).toHaveLength(2);
+  expect(vi.mocked(confirm).mock.calls[1]![0].message).toContain('kilo');
+  expect(vi.mocked(confirm).mock.calls[1]![0].message).not.toContain('cancelled');
+  await squire.close();
 });

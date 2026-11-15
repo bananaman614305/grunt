@@ -13,7 +13,7 @@ export interface Adapter {
   models?: string[];
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
-const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit' };
+const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi' };
 export const knownAdapters = new Set(Object.keys(installers));
 export function validateRegistry(value: unknown): Registry {
   const fail = () => { throw new Error('Invalid adapter registry'); };
@@ -41,7 +41,7 @@ export function validateRegistry(value: unknown): Registry {
       if (url.protocol !== 'https:' || url.username || url.password) return fail();
     }
     // Known adapters have fixed installers and capabilities; registry data never supplies code.
-    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
+    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit', 'pollinations', 'beatapi'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
       || a.modalities.some(m => m !== 'text'))) return fail();
     ids.add(a.id);
     weights[a.tier as Adapter['tier']] += a.weight;

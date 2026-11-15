@@ -70,7 +70,7 @@ export async function setupFallbacks(options: {
   const squire = options.squire ?? new BrowserSquire({ dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
   const unavailable: string[] = [];
-  const adapters = options.adapters ?? ['freebuff', 'opencode'];
+  const adapters = (options.adapters ?? ['freebuff', 'opencode']);
   const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   if (squire instanceof BrowserSquire) squire.approveDataSharing(approved);
   // Reuse a grant created by an earlier setup before probing the free model.
@@ -149,10 +149,8 @@ export async function setupFallbacks(options: {
         options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
       } },
       kilo: async () => { try {
-        await connect();
-        if (!squire.runs) throw new Error('Provider signup requires Squire');
         await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, directory: options.directory, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
-        options.notify('Kilo: free API access connected through Squire');
+        options.notify('Kilo: free Particle-1 access verified without signup');
       } catch {
         unavailable.push('kilo');
         options.notify('Kilo setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
@@ -213,6 +211,24 @@ export async function setupFallbacks(options: {
       } catch {
         unavailable.push('livekit');
         options.notify('LiveKit free Build signup or native CLI pairing incomplete. Rerun usegrunt setup; other routes remain available.');
+      } },
+      pollinations: async () => { try {
+        await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['pollinations'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Pollinations: community GLM 5.3 Flash access connected through Squire');
+      } catch {
+        unavailable.push('pollinations');
+        options.notify('Pollinations free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
+      } },
+      beatapi: async () => { try {
+        await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['beatapi'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('BeatAPI: free DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('beatapi');
+        options.notify('BeatAPI free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       nvidia: async () => { try {
         await connect();

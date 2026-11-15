@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { ManagedRouter } from './managed-router.js';
 import { FreeLLMAdmin, setupProviders } from './setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { KILO_PARTICLE } from './kilo.js';
 import type { ModelRequest } from './source.js';
 
 const paths: string[] = [];
@@ -21,23 +22,31 @@ it('rechecks a revoked receipt and disables only owned Kilo rows before forwardi
   const path = await directory(); await recordDataSharingConsent(path, ['kilo', 'freebuff']);
   const source = backend(), events: string[] = [];
   source.complete.mockImplementation(async () => { events.push('forward'); return { text: 'custom provider answered' }; });
+  const rows = [
+    { modelDbId: 1, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Kilo Free', priority: 999999, enabled: true },
+    { modelDbId: 2, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Milo kilo (Squire)', priority: 999996, enabled: true },
+    { modelDbId: 3, platform: 'custom', modelId: 'freebuff', keyLabel: 'Freebuff', priority: 1000000, enabled: true },
+    { modelDbId: 4, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'My custom provider', priority: 42, enabled: true },
+    { modelDbId: 5, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'Kilo Free', priority: 999999, enabled: true }
+  ];
   const call = vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(async (url, body, method) => {
     if (url === '/auth/login') return { token: 'synthetic-login' };
-    if (url === '/fallback' && method === 'GET') return [
-      { modelDbId: 1, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Kilo Free', priority: 999999, enabled: true },
-      { modelDbId: 2, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Milo kilo (Squire)', priority: 999996, enabled: true },
-      { modelDbId: 3, platform: 'custom', modelId: 'freebuff', keyLabel: 'Freebuff', priority: 1000000, enabled: true },
-      { modelDbId: 4, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'My custom provider', priority: 42, enabled: true }
-    ];
-    if (url === '/fallback' && method === 'PUT') events.push('disable');
+    if (url === '/keys' && method === 'GET') return [];
+    if (url === '/fallback' && method === 'GET') return rows;
+    if (url === '/fallback' && method === 'PUT') {
+      events.push('disable');
+      for (const update of body as { modelDbId: number; enabled: boolean }[]) Object.assign(rows.find(row => row.modelDbId === update.modelDbId)!, update);
+    }
     return {};
   });
   const wrapped = new ManagedRouter(source, 'http://127.0.0.1:3001/v1', path);
-  await wrapped.complete(request, AbortSignal.timeout(1000)); expect(call).not.toHaveBeenCalled();
+  await wrapped.complete(request, AbortSignal.timeout(1000));
+  expect(call).toHaveBeenCalledWith('/fallback', [{ modelDbId: 1, enabled: false, priority: 999999 }, { modelDbId: 2, enabled: false, priority: 999996 }], 'PUT');
   await rm(join(path, 'data-sharing-consent.json')); await recordDataSharingConsent(path, ['freebuff']);
   await wrapped.complete(request, AbortSignal.timeout(1000));
-  expect(events).toEqual(['forward', 'disable', 'forward']);
-  expect(call).toHaveBeenCalledWith('/fallback', [{ modelDbId: 1, enabled: false, priority: 999999 }, { modelDbId: 2, enabled: false, priority: 999996 }], 'PUT');
+  expect(events).toEqual(['disable', 'forward', 'disable', 'forward']);
+  expect(call).toHaveBeenCalledWith('/fallback', [{ modelDbId: 5, enabled: false, priority: 999999 }], 'PUT');
+  expect(rows[3]).toMatchObject({ enabled: true, priority: 42 });
 });
 
 it.each(['missing', 'unsafe'])('refuses to forward when unapproved managed rows cannot be checked (%s admin)', async state => {

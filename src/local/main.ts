@@ -15,6 +15,9 @@ import { Runcrate } from './runcrate.js';
 import { Apinex } from './apinex.js';
 import { MistralVibe } from './mistral-vibe.js';
 import { LiveKit } from './livekit.js';
+import { Pollinations } from './pollinations.js';
+import { BeatAPI } from './beatapi.js';
+import { Kilo } from './kilo.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
@@ -51,8 +54,8 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     // default while retaining explicit environment and custom-model overrides.
     return adapter?.models ?? (adapter?.model && adapter.model !== 'big-pickle' ? [adapter.model] : DEFAULT_OPENCODE_MODELS);
   };
-  const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new Apinex({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' })];
-  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+  const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env) }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new Apinex({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' })];
+  const ids = (env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id));
   const routing = ids.every(id => knownAdapters.has(id)) ? { registry } : undefined;
   return new Sources(ids.map(id => {
     const source = registered.find(source => source.id === id);
@@ -95,7 +98,7 @@ export function start(env = process.env) {
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   // A distinct source list prevents FreeLLMAPI -> grunt -> FreeLLMAPI recursion.
-  const fallback = env.MILO_FREEBUFF_BRIDGE !== '0' && sources.sources.some(s => ['freellmapi', 'kilo'].includes(s.id)) ? new Sources([new ConsentSource(new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' }), directory)]) : undefined;
+  const fallback = env.MILO_FREEBUFF_BRIDGE !== '0' && sources.sources.some(s => s.id === 'freellmapi') ? new Sources([new ConsentSource(new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' }), directory)]) : undefined;
   const bridge = fallback ? serve({ fetch: createLocalApp(fallback, { port: 8789 }).fetch, hostname: HOST, port: 8789 }) : undefined;
   let closing = false;
   const close = async () => { if (closing) return; closing = true; await sync.close(); await sources.close(); await fallback?.close(); bridge?.close(); server.close(); };
