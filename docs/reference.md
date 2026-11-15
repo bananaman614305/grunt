@@ -172,7 +172,9 @@ pipes and narrow terminals get a one-line title). It explains what grunt does,
 then says that Trusty Squire needs one Google sign-in before it installs and
 connects the local broker. Setup pulls the free service list from the grunt
 registry (falling back to the saved or bundled list, and saying so). The bundled
-vetted pool contains Freebuff, OpenCode, Kilo and Zro, with opt-in Token Harbor in the experimental tier. Setup installs and connects
+vetted pool contains Freebuff, OpenCode, Kilo and Zro in the stable tier, plus
+Token Harbor, Runcrate, APInex and Mistral Vibe Free in the experimental tier.
+Provider approval and free-account eligibility still apply. Setup installs and connects
 up to three services concurrently, starts the background daemon, then verifies
 up to three services concurrently with real requests through grunt. Each service
 gets its own PASS/FAIL line and summary row. Incomplete setup exits unsuccessfully
@@ -205,11 +207,36 @@ Google accounts are created.
 
 Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
 
-The foreground wizard groups the Freebuff, OpenCode (including Big Pickle), Kilo and Token Harbor data-sharing disclosures into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while Zro continues. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval, including when an existing grant is present.
+The foreground wizard groups the Freebuff, OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free data-sharing disclosures into one approval. A private local receipt records the approved policy versions, avoiding repeat prompts. Declining or cancelling skips those providers while Zro continues. A new or changed policy requires a new grouped approval. Background setup never prompts, and both signup and runtime routing require current approval, including when an existing grant is present. Daily background provisioning runs at midnight UTC to renew daily check-ins; unresolved verification leaves that source unavailable while other services continue.
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
 
-NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain.
+The additional experimental routes have these requirements:
+
+| Source | Selected route | Free-account requirements and allowance |
+| --- | --- | --- |
+| Runcrate | `deepseek-ai/DeepSeek-V4.1-Flash` | GitHub login with an account at least 30 days old; no paid balance, payment method or automatic top-ups. Its recurring weekly allowance is not quantified. |
+| APInex | `free/deepseek-v4.1-flash` | Personal `@gmail.com` Google login, daily check-in with Turnstile, and zero wallet balance. The observed daily allowance is 25 million weighted units, approximately 8.33 million actual DeepSeek tokens at weight 3. The `free/` route never spends wallet funds. |
+| Mistral Vibe Free | Native CLI alias `zai-glm-5-3-flash`, wire model `zai-glm-5-3-flash-vibe-free` | Free plan with a $10 monthly Vibe Code allowance; no card, purchased credits or pay-as-you-go. This is native coding allowance, not ordinary Mistral API credit. |
+
+Runcrate and APInex keys are captured into Squire. Setup stops if an account
+fails the free-account checks; it does not remove billing, switch identities or
+buy credits. APInex's private receipt must include today's UTC check-in; after
+the day changes, rerun setup to renew it. Runtime requests also check that its
+free subscription is active and has remaining allowance. Mistral setup installs
+the pinned native Vibe CLI (`3.1.2`) privately and uses its own browser pairing, credential storage
+and isolated configuration under grunt's `mistral-vibe` directory. It needs
+`uv` or Python 3.12 or later. A general `MISTRAL_API_KEY` from the shell cannot
+replace that native login. Its free-plan receipt expires after 30 days and setup
+rechecks it. These checks record account state; keep billing disabled afterward.
+
+The grouped disclosure includes each provider's data policy. Token Harbor permits
+retention, staff review and upstream training. Runcrate's upstream retention and
+training guarantees are unestablished; APInex's retention duration and upstream
+training policy are unestablished. Free Mistral Vibe prompts and code may be used
+for improvement, with no established zero-retention guarantee.
+
+NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain. Cloudflare Qwen is excluded from the pool by the owner's choice.
 
 Before making changes, setup checks Node, npm, tar and the user service
 manager. A missing prerequisite prints its install or repair step and stops.
@@ -222,11 +249,16 @@ handoff, including email confirmation, and signup resumes in that same session.
 An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
 token to FreeLLMAPI's custom-provider endpoint for those API providers.
-Zro and Token Harbor keep private grants in `zro.json` and `tokenharbor.json` and call `/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to `zro.moonmath.ai` and `tokenharbor.ai`. NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the grant's
+Zro, Token Harbor, Runcrate and APInex keep private grants in `zro.json`,
+`tokenharbor.json`, `runcrate.json` and `apinex.json` and call
+`/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to
+`zro.moonmath.ai`, `tokenharbor.ai`, `api.runcrate.ai` and `api.apinex.bond`.
+NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the grant's
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
-Provider keys stay in Squire; no provider reveal approval is requested. Groq
-uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
+API-provider keys stay in Squire; no provider reveal approval is requested.
+Mistral Vibe's native CLI owns its separate local credential exchange and storage.
+Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
 `usegrunt add groq`, `usegrunt add cerebras`, or `usegrunt add kilo` connects another
 provider through the same flow, then restarts grunt with the API sources enabled.
@@ -245,8 +277,9 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-Fresh setup offers the bundled Freebuff, OpenCode, Kilo, Zro and Token Harbor
-pool, enabling providers only after their required data-sharing approval.
+Fresh setup offers the bundled Freebuff, OpenCode, Kilo, Zro, Token Harbor,
+Runcrate, APInex and Mistral Vibe Free pool, enabling providers only after their
+required data-sharing approval.
 It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
@@ -267,8 +300,12 @@ existing installations and offline regression checks.
 home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
-The package is `usegrunt` (version `0.6.3`); the installed command is `usegrunt`.
-The published package is `usegrunt` and this pull request does not itself publish.
+This package is `usegrunt` version `0.6.4`; the installed command is `usegrunt`.
+The new production adapters passed short prompts, function-tool calls and result
+follow-ups; all three models also passed contexts larger than 200,000 tokens
+through Grunt. These checks do not claim a separate blank-machine onboarding run.
+Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
+update the two existing file overlays described under Deploy, not the image.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
 provider failover. There is no direct OpenRouter free API route. An already
@@ -427,9 +464,12 @@ Codex default back at grunt, which would create a routing loop.
 ### Sources and app sessions
 
 The bundled registry has four stable adapters: Freebuff and OpenCode at weight
-0.192 each, Kilo at 0.256 and Zro at 0.16. Experimental Token Harbor has weight
-0.2. All five support text only; Kilo, Zro and Token Harbor also forward function
-tool definitions and return tool calls for the harness to execute. Providers
+0.192 each, Kilo at 0.256 and Zro at 0.16. Experimental Token Harbor, Runcrate,
+APInex and Mistral Vibe Free have weight 0.05 each. Stable weights total 0.8 and
+experimental weights total 0.2. All eight accept text rather than images.
+Kilo, Zro, Token Harbor, Runcrate and APInex forward function tool definitions
+and return tool calls for the harness to execute. Mistral Vibe uses a validated
+text bridge for harness tool calls while its native tools remain disabled. Providers
 with data-sharing policies require current approval before they can be selected.
 Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same

@@ -16,7 +16,7 @@ A default install spends no money and no paid allowance.
 Every source that can cost money or plan quota is off until the person names it.
 grunt never buys credits, never upgrades a plan, and never switches to a paid model on its own.
 When a free source carries a hidden price, such as prompt retention or terms risk, grunt says so in plain words.
-Setup asks once for the data-sharing policies of Freebuff, OpenCode, Kilo and Token Harbor together, and remembers the approved policies.
+Setup asks once for the data-sharing policies of Freebuff, OpenCode, Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free together, and remembers the approved policies.
 Declining skips those sources and continues with Zro; changed policies require approval again before signup or routing.
 
 ## Free tokens are personal
@@ -34,7 +34,8 @@ The registry lists the adapters that offer free tokens, with a tier and a fixed 
 A weight is the chance that an adapter is picked for a new task.
 Stable adapters share 0.8 of the weight and experimental adapters share 0.2.
 The bundled starting pool has four stable adapters: Freebuff and OpenCode at 0.192 each, Kilo at 0.256 and Zro at 0.16.
-Experimental Token Harbor has weight 0.2 and joins after data-sharing approval.
+Four experimental sources have weight 0.05 each: Token Harbor, Runcrate, APInex and Mistral Vibe Free. Each joins after the required data-sharing approval and free-account checks.
+Cloudflare Qwen is excluded from this pool by the owner's choice; NVIDIA remains optional while its account verification is unvetted.
 New sources enter by pull request, are tested, and reach people only when the owner publishes the registry.
 The registry can only select adapters that grunt already has code for; it cannot add code.
 The daemon pulls the registry once a day and keeps the last good copy when the gateway is down.
