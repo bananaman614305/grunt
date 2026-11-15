@@ -108,8 +108,9 @@ summary and attaches the full plan. This adapter never calls OpenRouter.
 ## Deploy
 
 The Docker image contains only the compiled app, page and production dependencies.
-On pushes to main, GitHub builds and smoke-tests the exact image, then deploys
-it to Fly app `milo-gateway` in `iad` using the existing `FLY_API_TOKEN` secret.
+GitHub Actions is disabled at the owner's request. Run build and smoke checks
+locally and deploy the tested image manually to Fly app `milo-gateway` in `iad`
+using authorized app-scoped access. Do not enable or dispatch workflows.
 The `milo_data` volume mounts at `/data`. Keep a single Fly machine for SQLite.
 
 This replaces the former OpenAI-compatible gateway. The old `/v1/*` routes are
@@ -237,8 +238,9 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-Fresh setup enables the vetted registry pool: Freebuff, OpenCode and Kilo in the
-bundled list. It also preserves an existing `freellmapi` route from an earlier
+Fresh setup offers the bundled Freebuff, OpenCode, Kilo, Zro and Token Harbor
+pool, enabling providers only after their required data-sharing approval.
+It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
 them. The daemon loads the saved router login at startup and retries if the
@@ -402,8 +404,8 @@ Run `codex`. See the [official configuration reference](https://learn.chatgpt.co
 Codex is opt-in. With the official `codex` CLI already signed in using ChatGPT,
 set `MILO_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
 spends your Codex plan allowance, including the weekly limit. Without
-`MILO_SOURCES`, grunt uses the vetted Freebuff, OpenCode and Kilo pool and never
-launches Codex. With Codex enabled, select model `codex` to use only Codex.
+`MILO_SOURCES`, grunt uses the bundled free pool and current data-sharing
+approvals; it never launches Codex. With Codex enabled, select model `codex` to use only Codex.
 API-key logins do not enable this source. Missing or signed-out Codex is omitted
 from `/v1/models`; grunt continues through the free chain on usage limits.
 
@@ -417,9 +419,11 @@ Codex default back at grunt, which would create a routing loop.
 
 ### Sources and app sessions
 
-The bundled registry contains Freebuff and OpenCode at weight 0.3 each and Kilo
-at weight 0.4. All three currently support text only; Kilo also forwards function
-tool definitions and returns tool calls for the harness to execute.
+The bundled registry has four stable adapters: Freebuff and OpenCode at weight
+0.192 each, Kilo at 0.256 and Zro at 0.16. Experimental Token Harbor has weight
+0.2. All five support text only; Kilo, Zro and Token Harbor also forward function
+tool definitions and return tool calls for the harness to execute. Providers
+with data-sharing policies require current approval before they can be selected.
 Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
@@ -438,11 +442,11 @@ adapter's last four KB of output, and an instruction to continue without
 restarting. The checkpoint creates no branch commit or stash entry. Outside a
 git repository, only task text and output are sent.
 
-The owner curates `registry/adapters.json`. The **Publish adapter registry**
-workflow accepts manual dispatch only by the repository owner on `main`, validates
-the registry, uploads it atomically to the Fly gateway volume, and checks
-`GET /v1/registry`. Ordinary code deployments do not publish registry edits.
-Before the first dispatch the endpoint returns HTTP 503. Published data
+The owner curates `registry/adapters.json` and publishes it manually using
+authorized Fly access. Validate the registry, upload it atomically to the
+gateway volume, and check `GET /v1/registry`; GitHub Actions must remain disabled.
+Ordinary code deployments do not publish registry edits.
+Before the first valid registry is published the endpoint returns HTTP 503. Published data
 survives deploys and has an ETag. Stable weights total (0.8) and experimental
 weights total (0.2) when both tiers are present. Unknown adapter identifiers
 are ignored locally and cannot install new code.
@@ -560,7 +564,7 @@ Select model `dots` for the dot only. Model `milo` moves to the next source when
 
 grunt stores its generated device secret in `dots.json` under `MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`, with mode `0600`, and reuses it for later authorizations. It is a grunt relay secret, never an OpenAI token; do not share that file. Local pairing requires a navigation from the configured gateway and a ticket that gateway confirms was approved. It refuses arbitrary origins, return URLs, unapproved tickets, reused tickets and expired tickets.
 
-The public relay runs on `milo-gateway` at api.grunt.run. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: grunt will not forward an existing device secret to another origin. The gateway's `MILO_PUBLIC_URL` defaults to `https://api.grunt.run` and controls OAuth metadata. Deployment uses the existing merge-to-main workflow.
+The public relay runs on `milo-gateway` at api.grunt.run. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: grunt will not forward an existing device secret to another origin. The gateway's `MILO_PUBLIC_URL` defaults to `https://api.grunt.run` and controls OAuth metadata. Deployment is manual; GitHub Actions remains disabled.
 
 The relay sends a signed event containing only a request ID and fixed summary. The dot reads the conversation with `milo_get_request`, then calls `milo_submit_reply(requestId, text)` or `milo_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry earlier user and assistant turns. Prompt text is removed from SQLite when answered or expired; replies remain only until local acknowledgment or expiry. Text is never written to application logs. The relay temporarily stores conversation text and the dot receives it, so send only content you intend to share.
 
