@@ -205,6 +205,15 @@ export async function setupFallbacks(options: {
         unavailable.push('mistral-vibe');
         options.notify('Mistral Vibe native free setup incomplete. Install uv or Python 3.12+ if missing, then rerun usegrunt setup; other routes remain available.');
       } },
+      livekit: async () => { try {
+        await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['livekit'], { squire: squire as SetupSquire, directory: options.directory,
+          ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('LiveKit: native free Build DeepSeek V4.1 Flash access connected through Squire');
+      } catch {
+        unavailable.push('livekit');
+        options.notify('LiveKit free Build signup or native CLI pairing incomplete. Rerun usegrunt setup; other routes remain available.');
+      } },
       nvidia: async () => { try {
         await connect();
         if (!squire.runs) throw new Error('Provider signup requires Squire');

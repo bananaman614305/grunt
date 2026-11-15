@@ -10,8 +10,8 @@ const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('ships the eight vetted sources without Cloudflare and validates tier weights', () => {
-  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe']);
+it('ships the nine vetted sources without Cloudflare and validates tier weights', () => {
+  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit']);
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
   expect(bundledRegistry.adapters.some(a => /cloudflare|qwen/.test(a.id))).toBe(false);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.8);

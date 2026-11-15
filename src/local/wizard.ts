@@ -299,7 +299,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const previous = (await actions.installedSources?.())?.split(',') ?? [];
     if (add) {
       const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
-      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe'].includes(add)
+      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit'].includes(add)
         ? [...new Set([...(previous.length ? previous : defaults), add])]
         : [...new Set(['freellmapi', ...previous, ...defaults])];
       const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });

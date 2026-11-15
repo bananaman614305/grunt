@@ -499,12 +499,12 @@ it('keeps an already approved sharing source when adding a custom API provider',
   expect(actions.installService).toHaveBeenCalledWith([...new Set(['freellmapi', 'freebuff', 'opencode', 'kilo', 'tokenharbor', ...defaultIds()])]);
 });
 
-it('keeps Zro and a custom API source when all grouped sharing providers are declined during add', async () => {
+it('keeps Zro, LiveKit and a custom API source when sharing providers are declined during add', async () => {
   const actions = stubActions([], {
     installedSources: async () => 'freebuff,opencode,kilo',
     approveDataSharing: (options: Parameters<typeof approveDataSharing>[0]) => approveDataSharing({ ...options, interactive: true, prompt: async () => false })
   });
   await wizard('groq', actions);
   expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['groq'], {});
-  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'zro']);
+  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'zro', 'livekit']);
 });
