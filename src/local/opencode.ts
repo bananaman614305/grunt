@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
 import { loopback } from './freellmapi.js';
@@ -29,7 +29,7 @@ export class OpenCode implements Source {
   private prepared = new Map<string, Promise<void>>();
   private busy = new Set<string>();
   private shutdown = new AbortController();
-  constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); models?: readonly string[] | (() => readonly string[]); timeout?: number } = {}) {
+  constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); models?: readonly string[] | (() => readonly string[]); timeout?: number; configFile?: string } = {}) {
     if (options.url) loopback(options.url);
   }
   private get fetcher() { return this.options.fetcher ?? fetch; }
@@ -44,27 +44,43 @@ export class OpenCode implements Source {
   private async server(): Promise<string> {
     if (this.options.url) return this.options.url.replace(/\/$/, '');
     if (this.starting) return this.starting;
-    const binary = await executable('opencode');
-    this.starting = new Promise<string>((resolve, reject) => {
+    const starting = (async () => {
+      const binary = await executable('opencode');
       // Keep the normal OS home and the user's existing OpenCode login.
       const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || '{}');
       const permission = typeof config.permission === 'string' ? { '*': config.permission } : config.permission;
-      const env = { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({
+      const env: NodeJS.ProcessEnv = { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({
         ...config, permission: { ...permission, external_directory: 'deny' }
       }) };
-      const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { stdio: ['ignore', 'pipe', 'ignore'], env });
-      this.child = child;
-      const timer = setTimeout(() => { child.kill(); reject(new SourceError('timeout', 'OpenCode server startup timed out')); }, 30000);
-      let output = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        output = (output + chunk.toString()).slice(-8192);
-        const address = output.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
-        if (address) { clearTimeout(timer); resolve(address); }
+      if (this.options.configFile) {
+        try {
+          const stat = await lstat(this.options.configFile);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) throw new Error('Invalid private config');
+          // Signup may create this private grant after the daemon was started.
+          // Let the CLI read it; provider values never enter this process.
+          env.OPENCODE_CONFIG = this.options.configFile;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new SourceError('logged_out', 'OpenCode private configuration is unavailable; rerun usegrunt setup');
+        }
+      }
+      this.shutdown.signal.throwIfAborted();
+      return new Promise<string>((resolve, reject) => {
+        const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { stdio: ['ignore', 'pipe', 'ignore'], env });
+        this.child = child;
+        const timer = setTimeout(() => { child.kill(); reject(new SourceError('timeout', 'OpenCode server startup timed out')); }, 30000);
+        let output = '';
+        child.stdout.on('data', (chunk: Buffer) => {
+          output = (output + chunk.toString()).slice(-8192);
+          const address = output.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
+          if (address) { clearTimeout(timer); resolve(address); }
+        });
+        const failed = () => { clearTimeout(timer); this.starting = undefined; this.sessions.clear(); this.sessionModels.clear(); this.sessionParents.clear(); this.prepared.clear(); reject(new SourceError('upstream', 'OpenCode server stopped; run opencode serve to check installation')); };
+        child.once('error', failed); child.once('exit', failed);
       });
-      const failed = () => { clearTimeout(timer); this.starting = undefined; this.sessions.clear(); this.sessionModels.clear(); this.sessionParents.clear(); this.prepared.clear(); reject(new SourceError('upstream', 'OpenCode server stopped; run opencode serve to check installation')); };
-      child.once('error', failed); child.once('exit', failed);
-    });
-    return this.starting;
+    })();
+    this.starting = starting;
+    void starting.catch(() => { if (this.starting === starting) this.starting = undefined; });
+    return starting;
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
     const signal = AbortSignal.any([caller, this.shutdown.signal, ...(this.options.timeout ? [AbortSignal.timeout(this.options.timeout)] : [])]);

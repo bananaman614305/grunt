@@ -6,6 +6,7 @@ import { ManagedRouter } from './managed-router.js';
 import { FreeLLMAdmin, setupProviders } from './setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { KILO_PARTICLE } from './kilo.js';
+import { beginSetupSession } from './setup-session.js';
 import type { ModelRequest } from './source.js';
 
 const paths: string[] = [];
@@ -17,6 +18,52 @@ async function directory(admin = true) {
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(paths.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: process.cwd(), stream: false };
 const backend = () => ({ id: 'freellmapi', available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: 'custom provider answered' })) });
+
+it('holds pending owned legacy routes without changing user flags, then admits them after verification', async () => {
+  const path = await directory(); await recordDataSharingConsent(path, ['kilo']);
+  const session = await beginSetupSession(path, ['kilo', 'perch']);
+  const rows = [
+    { modelDbId: 1, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'Kilo Free', priority: 999999, enabled: true },
+    { modelDbId: 2, platform: 'custom', modelId: 'custom-model', keyLabel: 'My provider', priority: 44, enabled: true }
+  ];
+  const original = structuredClone(rows);
+  vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(async (route, _body, method) => {
+    if (route === '/auth/login') return { token: 'synthetic-login' };
+    if (route === '/fallback' && method === 'GET') return structuredClone(rows);
+    throw new Error('Unexpected mutation');
+  });
+  const migrate = vi.spyOn(FreeLLMAdmin.prototype, 'migrateKiloModels').mockResolvedValue();
+  const source = backend(), guarded = new ManagedRouter(source, 'http://127.0.0.1:3001', path);
+  try {
+    await expect(guarded.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'not_installed' });
+    expect(source.complete).not.toHaveBeenCalled(); expect(migrate).not.toHaveBeenCalled();
+    expect(rows).toEqual(original);
+    await session.release('kilo');
+    await expect(guarded.complete(request, new AbortController().signal)).resolves.toEqual({ text: 'custom provider answered' });
+    expect(source.complete).toHaveBeenCalledOnce();
+    expect(migrate).toHaveBeenCalledExactlyOnceWith(['kilo'], original);
+    expect(rows).toEqual(original);
+  } finally { await session.close(); }
+});
+
+it('keeps purely custom legacy routes usable while Kilo is pending without creating owned Kilo models', async () => {
+  const path = await directory(); await recordDataSharingConsent(path, ['kilo']);
+  const session = await beginSetupSession(path, ['kilo']);
+  const rows = [{ modelDbId: 9, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'My custom provider', priority: 12, enabled: true }];
+  vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(async (route, _body, method) => {
+    if (route === '/auth/login') return { token: 'synthetic-login' };
+    if (route === '/fallback' && method === 'GET') return structuredClone(rows);
+    throw new Error('Unexpected mutation');
+  });
+  const migrate = vi.spyOn(FreeLLMAdmin.prototype, 'migrateKiloModels').mockResolvedValue();
+  const source = backend();
+  try {
+    await expect(new ManagedRouter(source, 'http://127.0.0.1:3001', path).complete(request, new AbortController().signal)).resolves.toEqual({ text: 'custom provider answered' });
+    expect(migrate).toHaveBeenCalledExactlyOnceWith([], rows);
+    expect(source.complete).toHaveBeenCalledOnce();
+    expect(rows[0]).toMatchObject({ enabled: true, priority: 12 });
+  } finally { await session.close(); }
+});
 
 it('retires owned Freebuff despite saved approval and rechecks Kilo consent before forwarding custom routes', async () => {
   const path = await directory(); await recordDataSharingConsent(path, ['kilo', 'freebuff']);

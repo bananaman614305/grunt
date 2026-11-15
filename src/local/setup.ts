@@ -31,6 +31,7 @@ import { setupPerch } from './perch-setup.js';
 import { disabledAdapters } from '../registry.js';
 import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } from './data-sharing.js';
+import { readSetupSession } from './setup-session.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
@@ -695,6 +696,7 @@ const retiredManagedAdapter = (row: Pick<FallbackRow, 'platform' | 'modelId' | '
 };
 // Reconcile only Grunt-owned sharing rows before a legacy backend request. This
 // never provisions a router, changes custom rows, or enables a disabled row.
+export class RouterSetupPending extends Error {}
 export async function guardRouterSharing(url: string, directory: string): Promise<void> {
   const approved = await readDataSharingConsent(directory, ['kilo']);
   const admin = await readLocalAdmin(join(directory, 'router-admin.json'));
@@ -706,7 +708,14 @@ export async function guardRouterSharing(url: string, directory: string): Promis
     .map(row => ({ modelDbId: row.modelDbId, enabled: false, priority: row.priority }));
   if (updates.length) await router.call('/fallback', updates, 'PUT');
   const patched = chain.map(row => ({ ...row, ...updates.find(update => update.modelDbId === row.modelDbId) }));
-  await router.migrateKiloModels(approved, patched);
+  const pending = (await readSetupSession(directory))?.pending;
+  if (patched.some(row => {
+    const provider = managedSharingProvider(row);
+    return provider && row.enabled !== false && pending?.has(provider);
+  })) throw new RouterSetupPending('A managed provider is still being verified');
+  // An old aggregate backend must not create a new owned route before the
+  // corresponding direct source has passed its foreground verification.
+  await router.migrateKiloModels(approved.filter(provider => !pending?.has(provider)), patched);
 }
 // Read the login already created by setup; never provision or change router state.
 export async function loadRouterKey(url: string): Promise<string> {

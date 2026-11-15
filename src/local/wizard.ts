@@ -1,6 +1,7 @@
 import { promisify } from 'node:util';
 import { spawn, execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile, cp, mkdtemp, rm, access } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, readFile, writeFile, cp, mkdtemp, rm, access, lstat, open } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,13 +18,16 @@ import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js
 import type { Adapter } from '../registry.js';
 import { banner } from './banner.js';
 import { approveDataSharing, requiresDataSharing } from './data-sharing.js';
-import { HARNESSES, configurePi, connectHarness, detectHarnesses } from './harnesses.js';
+import { configurePi, connectHarness, detectHarnesses } from './harnesses.js';
 import type { Harness, runHarness } from './harnesses.js';
+import { beginSetupSession } from './setup-session.js';
 
 export const configDir = (env = process.env) => env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
-export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal) {
+export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal, env?: NodeJS.ProcessEnv) {
+  signal?.throwIfAborted();
   const run = () => new Promise<void>((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: interactive ? 'inherit' : 'ignore', ...(signal ? { signal } : {}) });
+    signal?.throwIfAborted();
+    const child = spawn(binary, args, { stdio: interactive ? 'inherit' : 'ignore', ...(signal ? { signal } : {}), ...(env ? { env } : {}) });
     child.once('error', () => reject(new Error(`Could not run ${binary}`)));
     child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${binary} failed; inspect its service status before retrying`)));
   });
@@ -56,18 +60,52 @@ export async function squireBrokerExists() {
   const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', program], { env: squireEnvironment(), timeout: 10000 });
   return result.stdout === 'present';
 }
-export async function connectSquire(options: { hasBroker?: () => Promise<boolean>; run?: typeof command; installer?: string; squire?: BrowserSquire } = {}) {
-  const probe = async () => { const squire = options.squire ?? new BrowserSquire(); try { await squire.connect(); } finally { if (!options.squire) await squire.close(); } };
+async function squireBootstrapEnvironment(signal?: AbortSignal): Promise<NodeJS.ProcessEnv> {
+  signal?.throwIfAborted();
+  const directory = configDir();
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  signal?.throwIfAborted();
+  const parent = await lstat(directory);
+  if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== process.getuid?.() || (parent.mode & 0o777) !== 0o700) {
+    throw new Error('Squire setup requires a private grunt configuration directory');
+  }
+  const path = join(directory, 'squire-opencode.json');
+  const file = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 262144) {
+      throw new Error('Squire setup requires a private grunt-owned client configuration file');
+    }
+    signal?.throwIfAborted();
+    if (!stat.size) await file.writeFile('{}\n');
+  } finally { await file.close(); }
+  signal?.throwIfAborted();
+  // The supported Squire override applies only to this installer child. It
+  // must never rewrite the user's OpenCode config or a provider grant config.
+  return { ...process.env, OPENCODE_CONFIG: path };
+}
+export async function connectSquire(options: { hasBroker?: () => Promise<boolean>; run?: typeof command; installer?: string; squire?: BrowserSquire; signal?: AbortSignal } = {}) {
+  const probe = async () => {
+    options.signal?.throwIfAborted();
+    const squire = options.squire ?? new BrowserSquire(options.signal ? { signal: options.signal } : {});
+    try { await squire.connect(); options.signal?.throwIfAborted(); }
+    finally { if (!options.squire) await squire.close(); }
+  };
   try { await probe(); return; }
   catch (error) {
-    if (await (options.hasBroker || squireBrokerExists)()) {
+    options.signal?.throwIfAborted();
+    const exists = await (options.hasBroker || squireBrokerExists)();
+    options.signal?.throwIfAborted();
+    if (exists) {
       throw new Error(`Existing trusty-squire-broker failed its connection probe: ${error instanceof Error ? error.message : String(error)}. Repair the broker, then rerun usegrunt setup.`, { cause: error });
     }
   }
   if (process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
   // Only a machine without a broker may enter the installer.
   const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
-  await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true);
+  const env = await squireBootstrapEnvironment(options.signal);
+  options.signal?.throwIfAborted();
+  await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true, options.signal, env);
   await probe();
 }
 export async function preflight(run = command) {
@@ -103,45 +141,60 @@ export async function installedSources(directory = configDir()) {
   }
   return 'freellmapi,kilo,opencode,zro';
 }
-export async function installService(adapters?: string[]) {
+export async function installService(adapters?: string[], options: { signal?: AbortSignal } = {}) {
+  const stage = async <T>(operation: () => Promise<T>) => {
+    options.signal?.throwIfAborted();
+    const result = await operation();
+    options.signal?.throwIfAborted();
+    return result;
+  };
+  options.signal?.throwIfAborted();
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
-  const selected = [...new Set(adapters ?? (await installedSources()).split(','))].filter(id => id && !disabledAdapters.has(id));
+  const selected = [...new Set(adapters ?? (await stage(() => installedSources())).split(','))].filter(id => id && !disabledAdapters.has(id));
   if (selected.some(id => !knownAdapters.has(id) && id !== 'freellmapi')) throw new Error('Invalid grunt service selection');
   const directory = configDir(), runtime = join(directory, 'runtime');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
   const root = fileURLToPath(new URL('../../', import.meta.url));
-  await mkdir(runtime, { recursive: true, mode: 0o700 });
-  await cp(join(root, 'dist'), join(runtime, 'dist'), { recursive: true });
-  const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', private: true, type: 'module', dependencies: pkg.dependencies }), { mode: 0o600 });
-  await command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']);
+  await stage(() => mkdir(runtime, { recursive: true, mode: 0o700 }));
+  await stage(() => cp(join(root, 'dist'), join(runtime, 'dist'), { recursive: true }));
+  const pkg = JSON.parse(await stage(() => readFile(join(root, 'package.json'), 'utf8')));
+  await stage(() => writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', private: true, type: 'module', dependencies: pkg.dependencies }), { mode: 0o600 }));
+  await stage(() => command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], false, options.signal));
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = process.env.MILO_PORT || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
   const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: selected.join(','), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
   if (process.env.MILO_FREELLMAPI_URL) env.MILO_FREELLMAPI_URL = process.env.MILO_FREELLMAPI_URL;
   const opencodeConfig = join(directory, 'opencode-free.json');
-  try { await readFile(opencodeConfig); env.OPENCODE_CONFIG = opencodeConfig; }
+  try { await stage(() => readFile(opencodeConfig)); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  await installBackgroundService('milo', entry, env);
-  await writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 });
+  await stage(() => installBackgroundService('milo', entry, env, options));
+  await stage(() => writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 }));
 }
-export async function installBackgroundService(name: string, entry: string, env: Record<string, string>) {
+export async function installBackgroundService(name: string, entry: string, env: Record<string, string>, options: { signal?: AbortSignal } = {}) {
+  const stage = async <T>(operation: () => Promise<T>) => {
+    options.signal?.throwIfAborted();
+    const result = await operation();
+    options.signal?.throwIfAborted();
+    return result;
+  };
+  const run = (binary: string, args: string[]) => stage(() => command(binary, args, false, options.signal));
+  options.signal?.throwIfAborted();
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid service name');
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
-    await mkdir(units, { recursive: true });
-    await writeFile(join(units, `${name}.service`), `[Unit]\nDescription=grunt model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
-    await command('systemctl', ['--user', 'daemon-reload']);
-    await command('systemctl', ['--user', 'enable', `${name}.service`]);
-    await command('systemctl', ['--user', 'restart', `${name}.service`]);
+    await stage(() => mkdir(units, { recursive: true }));
+    await stage(() => writeFile(join(units, `${name}.service`), `[Unit]\nDescription=grunt model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 }));
+    await run('systemctl', ['--user', 'daemon-reload']);
+    await run('systemctl', ['--user', 'enable', `${name}.service`]);
+    await run('systemctl', ['--user', 'restart', `${name}.service`]);
   } else {
     const agents = join(homedir(), 'Library', 'LaunchAgents');
-    await mkdir(agents, { recursive: true });
+    await stage(() => mkdir(agents, { recursive: true }));
     const plist = join(agents, `ai.${name}.service.plist`), domain = `gui/${process.getuid!()}`;
-    await writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.${name}.service</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(entry)}</string></array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer></dict></plist>`, { mode: 0o600 });
-    await command('launchctl', ['bootout', `${domain}/ai.${name}.service`]).catch(() => {});
-    await command('launchctl', ['bootstrap', domain, plist]);
+    await stage(() => writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.${name}.service</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(entry)}</string></array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer></dict></plist>`, { mode: 0o600 }));
+    await run('launchctl', ['bootout', `${domain}/ai.${name}.service`]).catch(() => {});
+    await run('launchctl', ['bootstrap', domain, plist]);
   }
 }
 // /v1/models asks every source whether it is available. Bound the combined probe
@@ -181,20 +234,22 @@ export async function checkServiceSources(unavailable: string[], notify = consol
     notify(`${id}: FAIL — ${unit.origin} sets MILO_SOURCES=${unit.sources.join(',')}, which lacks ${id}. Setup does not edit it; add ${id} there or remove that setting.`);
   }
 }
-export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['opencode'], wait = { limit: 180000, interval: 2000 }) {
+export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['opencode'], wait: { limit: number; interval: number; signal?: AbortSignal; retryPreparing?: boolean } = { limit: 180000, interval: 2000 }) {
   const directory = await mkdtemp(join(tmpdir(), 'milo-free-check-'));
   try {
     for (const source of adapters) {
+      wait.signal?.throwIfAborted();
       if (unavailable.includes(source)) { notify(`${source}: FAIL — setup incomplete`); continue; }
       const deadline = Date.now() + wait.limit;
       let failure: string | undefined, waiting = false;
       for (let attempt = 1; ; attempt++) {
+        wait.signal?.throwIfAborted();
         let preparing = false;
         try {
           const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files. Check ${attempt}.` }], stream: false, max_tokens: 256 }),
-            signal: AbortSignal.timeout(120000)
+            signal: AbortSignal.any([AbortSignal.timeout(120000), ...(wait.signal ? [wait.signal] : [])])
           });
           preparing = response.headers.get('x-grunt-preparing')?.split(',').includes(source) ?? false;
           const answered = response.headers.get('x-grunt-source');
@@ -206,9 +261,9 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
         } catch { failure = 'grunt did not answer'; }
         // Retry only while grunt still runs this adapter's background setup. Each attempt
         // is a new prompt, so the router does not keep a fallback source from an earlier try.
-        if (!failure || !preparing || Date.now() + wait.interval > deadline) break;
+        if (!failure || wait.retryPreparing === false || !preparing || Date.now() + wait.interval > deadline) break;
         if (!waiting) { waiting = true; notify(`${source}: grunt is still preparing this adapter; waiting`); }
-        await delay(wait.interval);
+        await delay(wait.interval, undefined, wait.signal ? { signal: wait.signal } : {});
       }
       if (failure) { unavailable.push(source); notify(`${source}: FAIL — ${failure}`); }
       else notify(`${source}: PASS — ${source} answered through the grunt service`);
@@ -235,19 +290,19 @@ const PREAMBLE = [
   'sends each request to a free service that can answer it.',
   '',
   'Setup will:',
-  '  1. Connect Trusty Squire (one Google sign-in)',
-  '  2. Pull the current list of free services from the grunt registry',
-  '  3. Sign up for each service, connect it to grunt and test it',
-  '  4. Connect grunt to the coding tools installed here'
+  '  1. Pull the free service list and ask for grouped sharing approval',
+  '  2. Start grunt and connect your coding tools when a source answers',
+  '  3. Connect Trusty Squire when an account-based source needs it',
+  '  4. Continue remaining signups and browser confirmations alongside use'
 ].join('\n');
 const SQUIRE_NOTICE = [
   'Some free services only work with an account. Trusty Squire is a local',
   'browser helper that signs up for them using their supported sign-in.',
   'Most use Google; Runcrate’s card-free access needs GitHub sign-in.',
   '',
-  'Next, a browser may open and ask you to sign in to Google once. If Trusty',
-  'Squire is already connected on this machine, setup reuses it. A captcha or',
-  'email check pauses setup until you finish it in the browser.'
+  'Account-based setup may open a browser for Google sign-in. An existing',
+  'Squire connection is reused. Anonymous sources can start first. A captcha',
+  'or email check pauses only its source while other setup jobs continue.'
 ].join('\n');
 type Status = 'pass' | 'fail' | 'skip';
 const mark = (status: Status | undefined) => status === 'pass' ? chalk.green('✔') : status === 'fail' ? chalk.red('✘') : chalk.dim('–');
@@ -258,10 +313,15 @@ const report = (shown = new Set<string>()) => (line: string) => {
   if (shown.has(line)) return; shown.add(line);
   if (/: PASS\b/.test(line)) log.success(line); else if (/: FAIL\b/.test(line)) log.error(line); else log.info(line);
 };
-export async function connectHarnesses(port: number, options: { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness } = {}) {
+type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness };
+type HarnessPlan = (() => Promise<Harness[]>) & { discoverLater?: true };
+export async function prepareHarnesses(port: number, options: HarnessOptions = {}): Promise<HarnessPlan> {
   log.step('Connect grunt to your coding tools');
   const found = await detectHarnesses(options.harnesses);
-  if (!found.length) { log.warn(`No supported coding tool found on PATH (${HARNESSES.map(h => h.binary).join(', ')}). Install one, then rerun usegrunt setup.`); return []; }
+  if (!found.length) {
+    log.info('No supported coding tool is currently installed. Grunt will become usable through its local API.');
+    return Object.assign(async () => [] as Harness[], { discoverLater: true as const });
+  }
   log.info(`Found: ${found.map(h => h.name).join(', ')}. grunt is added as an extra, named option; your default model and provider stay as they are.`);
   const interactive = process.stdin.isTTY && process.stdout.isTTY && process.env.MILO_SETUP_NO_HUMAN !== '1';
   const choose = options.choose ?? (async (list: Harness[]) => {
@@ -270,37 +330,51 @@ export async function connectHarnesses(port: number, options: { harnesses?: Harn
       options: list.map(h => ({ value: h.id, label: h.name, hint: h.launch(port) })), initialValues: list.filter(h => h.id === 'pi').map(h => h.id) });
     return isCancel(picked) ? [] : list.filter(h => picked.includes(h.id));
   });
-  const connected: Harness[] = [];
-  for (const harness of await choose(found)) {
-    const progress = spinner(); progress.start(`${harness.name}: adding grunt and sending a test request through it`);
-    try {
-      const { change } = await connectHarness(harness, port, options.run);
-      progress.stop(`${harness.name}: PASS — answered through grunt`);
-      if (change?.backup) log.info(`${harness.name}: previous config saved as ${change.backup}`);
-      connected.push(harness);
-    } catch (error) {
-      progress.error(`${harness.name}: FAIL — ${error instanceof Error ? error.message : String(error)}`);
+  // Choose once before provider jobs can request browser confirmations. Applying
+  // the saved choices later never reads stdin or waits for a Squire prompt.
+  const selected = await withTerminal(() => choose(found));
+  return async () => {
+    const connected: Harness[] = [];
+    for (const harness of selected) {
+      const progress = spinner(); progress.start(`${harness.name}: adding grunt and sending a test request through it`);
+      try {
+        const { change } = await connectHarness(harness, port, options.run);
+        progress.stop(`${harness.name}: PASS — answered through grunt`);
+        if (change?.backup) log.info(`${harness.name}: previous config saved as ${change.backup}`);
+        connected.push(harness);
+      } catch (error) {
+        progress.error(`${harness.name}: FAIL — ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
-  }
-  if (connected.length) note(connected.map(h => `${chalk.bold(h.name)}\n  ${h.launch(port)}`).join('\n'), 'Start coding with grunt');
-  return connected;
+    if (connected.length) note(connected.map(h => `${chalk.bold(h.name)}\n  ${h.launch(port)}`).join('\n'), 'Start coding with grunt');
+    return connected;
+  };
 }
-const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, approveDataSharing };
-type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'configurePi' | 'approveDataSharing';
+export async function connectHarnesses(port: number, options: HarnessOptions = {}) {
+  return (await prepareHarnesses(port, options))();
+}
+const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing };
+type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
   if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
   const squire = actions.createSquire?.();
+  let session: Awaited<ReturnType<typeof beginSetupSession>> | undefined;
+  let connection: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  let abortSetup: (() => void) | undefined;
+  const closeSquire = () => closing ??= (async () => { await squire?.close(); })();
+  const connect = () => connection ??= step('Connecting Trusty Squire', () => actions.connectSquire({ ...(squire ? { squire } : {}), ...(session ? { signal: session.signal } : {}) }));
   try {
     await actions.banner?.();
     intro(chalk.hex('#f4b41a').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
     note(PREAMBLE, 'What grunt does');
     await step('Checking prerequisites', () => actions.preflight());
     note(SQUIRE_NOTICE, 'Google sign-in for Trusty Squire');
-    await step('Connecting Trusty Squire', () => actions.connectSquire(squire ? { squire } : {}));
     // Capture legacy API routing before default Kilo setup creates its admin file.
     const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     if (add) {
+      await connect();
       const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
       const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'].includes(add)
         ? [...new Set([...(previous.length ? previous : defaults), add])]
@@ -353,36 +427,101 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       return;
     }
 
-    log.step(`Installing and connecting ${ids.length} vetted free services (up to ${SETUP_CONCURRENCY} at once)`);
-    log.info('Trusty Squire reuses existing accounts and grants. Only free access is requested. Provider verification may still need your browser; verification prompts are queued.');
-    const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify,
-      ...(consent.approved.length ? { dataSharingApproved: consent.approved } : {}),
-      ...(squire ? { squire, connect: () => squire.connect() } : {}) });
-    unavailable.push(...outcome.unavailable);
-    for (const id of ids) results.get(id)!.signup = unavailable.includes(id) ? 'fail' : 'pass';
-
-    log.step('Connecting the services to the grunt daemon');
-    await step('Starting the grunt background service', () => actions.installService([...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])]));
     const port = Number(process.env.MILO_PORT || '8788');
-    await step(`Waiting for grunt to answer at http://127.0.0.1:${port}`, () => actions.checkService(port));
-    const beforeSources = new Set(unavailable);
-    if (actions.checkServiceSources) await step('Checking which services the daemon runs', () => actions.checkServiceSources!(unavailable, notify, ids));
-    for (const id of ids) results.get(id)!.daemon = beforeSources.has(id) ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
-
-    log.step('Testing each service with a real request through grunt');
-    await parallelMap(ids, async id => {
-      const before = unavailable.includes(id);
-      await actions.checkFallbackServices(unavailable, port, notify, [id]);
-      results.get(id)!.check = before ? 'skip' : unavailable.includes(id) ? 'fail' : 'pass';
+    const harnessPlan = actions.prepareHarnesses ? await actions.prepareHarnesses(port) : undefined;
+    if (harnessPlan?.discoverLater) log.info('Setup will check again for coding tools after provider installations finish.');
+    const applyHarnesses = harnessPlan ?? (async () => {
+      if (actions.connectHarnesses) await actions.connectHarnesses(port);
+      else if (actions.configurePi) await step('Pi provider', () => actions.configurePi!(port));
     });
+    session = await beginSetupSession(configDir(), ids);
+    abortSetup = () => { void closeSquire().catch(() => {}); };
+    session.signal.addEventListener('abort', abortSetup, { once: true });
+    session.signal.throwIfAborted();
+    await step('Starting the grunt background service', () => actions.installService([...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])], { signal: session!.signal }));
+    await step(`Waiting for grunt to answer at http://127.0.0.1:${port}`, () => actions.checkService(port));
+
+    // Keep at most three real verification requests in flight without holding a
+    // provider-install worker. A queued check receives the released slot directly.
+    let activeChecks = 0;
+    const queuedChecks: (() => void)[] = [];
+    const check = async <T>(task: () => Promise<T>) => {
+      if (activeChecks < 3) activeChecks++;
+      else await new Promise<void>(resolve => queuedChecks.push(resolve));
+      try { return await task(); }
+      finally { const next = queuedChecks.shift(); if (next) next(); else activeChecks--; }
+    };
+    const settled = new Map<string, Promise<void>>();
+    let firstReady: Promise<void> | undefined;
+    let readyCount = 0;
+    const firstAnswer = () => firstReady ??= (async () => {
+      log.success(`grunt is ready at http://127.0.0.1:${port}; a free provider answered`);
+      log.info('Start using grunt now. Keep this setup terminal open for remaining signups and browser confirmations; working requests do not wait for them.');
+      try { await applyHarnesses(); }
+      catch { log.warn('grunt is ready; coding-tool configuration needs attention. Rerun setup to finish connecting your tool.'); }
+    })();
+    const onSettled = (id: string, available: boolean): Promise<void> => {
+      if (!ids.includes(id)) return Promise.reject(new Error('Unexpected provider setup result'));
+      const previousResult = settled.get(id);
+      if (previousResult) return previousResult;
+      const task = (async () => {
+        const result = results.get(id)!;
+        result.signup = available ? 'pass' : 'fail';
+        if (!available) {
+          if (!unavailable.includes(id)) unavailable.push(id);
+          result.daemon = result.check = 'skip';
+          notify(`${id}: FAIL — setup incomplete`);
+          return;
+        }
+        const passed = await check(async () => {
+          try {
+            session!.signal.throwIfAborted();
+            await session!.verify(id);
+            if (actions.checkServiceSources) await actions.checkServiceSources(unavailable, notify, [id]);
+            result.daemon = unavailable.includes(id) ? 'fail' : 'pass';
+            if (result.daemon === 'fail') { result.check = 'skip'; await session!.hold(id); return false; }
+            await actions.checkFallbackServices(unavailable, port, notify, [id], { limit: 180000, interval: 2000, signal: session!.signal, retryPreparing: false });
+            session!.signal.throwIfAborted();
+            result.check = unavailable.includes(id) ? 'fail' : 'pass';
+            if (result.check === 'pass') await session!.release(id);
+            else await session!.hold(id);
+            session!.signal.throwIfAborted();
+            return result.check === 'pass';
+          } catch {
+            await session!.hold(id).catch(() => {});
+            if (!unavailable.includes(id)) unavailable.push(id);
+            result.check = 'fail';
+            result.daemon ??= 'fail';
+            notify(`${id}: FAIL — verification incomplete; other ready sources continue`);
+            return false;
+          }
+        });
+        if (passed) { readyCount++; await firstAnswer(); }
+      })();
+      settled.set(id, task);
+      return task;
+    };
+    log.step(`Installing and connecting ${ids.length} vetted free services (up to ${SETUP_CONCURRENCY} at once)`);
+    log.info('Trusty Squire reuses existing accounts and grants. Only free access is requested. Sources become usable independently; verification prompts are queued.');
+    const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify, onSettled, connect,
+      signal: session.signal, ...(consent.approved.length ? { dataSharingApproved: consent.approved } : {}), ...(squire ? { squire } : {}) });
+    // Compatibility for injected setup implementations that return only a final
+    // result. Production emits settlement events as soon as each source finishes.
+    await parallelMap(ids, id => onSettled(id, !outcome.unavailable.includes(id)));
+    await Promise.all(settled.values());
+    session.signal.throwIfAborted();
     note([`${'service'.padEnd(10)}  sign-in  daemon  test`, ...requested.map(id => {
       const r = results.get(id)!;
       return `${id.padEnd(10)}  ${mark(r.signup)}        ${mark(r.daemon)}       ${mark(r.check)}`;
     })].join('\n'), 'Free services');
 
-    if (actions.connectHarnesses) await actions.connectHarnesses(port);
-    else if (actions.configurePi) await step('Pi provider', () => actions.configurePi!(port));
+    if (!readyCount) throw new Error('No adapters passed verification. Run usegrunt setup to resume.');
+    // OpenCode may have been installed by its provider job. Only rediscover
+    // when no tool existed initially, never after the user selected none.
+    if (harnessPlan?.discoverLater && actions.connectHarnesses) await actions.connectHarnesses(port);
     outro(unavailable.length ? `grunt is ready; incomplete fallbacks: ${unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready');
-    if (unavailable.length) throw new Error('Some adapters failed verification. Run usegrunt setup to resume.');
-  } finally { await squire?.close(); }
+  } finally {
+    if (session && abortSetup) session.signal.removeEventListener('abort', abortSetup);
+    try { await closeSquire(); } finally { await session?.close(); }
+  }
 }

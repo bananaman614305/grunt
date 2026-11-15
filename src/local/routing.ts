@@ -9,7 +9,7 @@ import type { Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
 
 const exec = promisify(execFile);
-export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number }
+export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string> }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
@@ -18,7 +18,11 @@ export class StickyRouter {
   private now() { return (this.options.now ?? Date.now)(); }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) this.bars.delete(id); }
+  verified(id: string) { this.bars.delete(id); }
   listed(id: string) { return knownAdapters.has(id) && this.options.registry().adapters.some(a => a.id === id); }
+  supportsInput(id: string, imageInput = false) {
+    return knownAdapters.has(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
+  }
   private async git(cwd: string, args: string[]) {
     return (await exec('git', ['-C', cwd, ...args], { timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
   }
@@ -67,7 +71,7 @@ export class StickyRouter {
         for (const source of this.sources) {
           const adapter = adapters.find(a => a.id === source.id);
           if (!task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
-          if (!adapter || (this.bars.get(source.id) ?? 0) > this.now()) continue;
+          if (!adapter || this.options.pending?.has(source.id) || (this.bars.get(source.id) ?? 0) > this.now()) continue;
           if (source.id === task.source || await source.available().catch(() => false)) eligible.push({ source, weight: adapter.weight });
         }
         signal.throwIfAborted();

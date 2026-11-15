@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire } from './setup.js';
+import type { setupFallbacks } from './fallback-setup.js';
 import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
 import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry, installedSources, installService } from './wizard.js';
@@ -106,7 +107,7 @@ it.each([true, false])('connects an account only when OpenCode requires it, reus
 });
 
 
-it('runs both free fallback setup steps on default installs and starts the service afterwards', async () => {
+it('starts the service before connecting the free providers on default installs', async () => {
   const order: string[] = [];
   const actions = {
     preflight: vi.fn(async () => {}), connectSquire: vi.fn(async () => {}),
@@ -120,7 +121,7 @@ it('runs both free fallback setup steps on default installs and starts the servi
   const { intro, outro } = await import('@clack/prompts');
   expect(intro).toHaveBeenCalledWith(expect.stringContaining('npx usegrunt setup'));
   expect(outro).toHaveBeenCalledWith('grunt is ready');
-  expect(order).toEqual(['fallbacks', 'service']);
+  expect(order).toEqual(['service', 'fallbacks']);
   expect(actions.setupFallbacks.mock.calls.map(([options]) => options.adapters)).toEqual([defaultIds()]);
   expect(actions.setup).not.toHaveBeenCalled();
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ run: expect.any(Function), notify: expect.any(Function) }));
@@ -234,7 +235,7 @@ const stubActions = (order: string[], overrides: Record<string, unknown> = {}) =
   preflight: vi.fn(async () => {}), connectSquire: vi.fn(async () => { order.push('squire'); }),
   setup: vi.fn(async () => ({ key: 'synthetic' })),
   loadRegistry: vi.fn(async () => { order.push('registry'); return { registry: bundledRegistry, origin: 'remote' as const }; }),
-  setupFallbacks: vi.fn(async (options: { adapters?: string[] }) => { order.push(`signup:${options.adapters}`); return { unavailable: [] }; }),
+  setupFallbacks: vi.fn(async (options: Parameters<typeof setupFallbacks>[0]) => { await options.connect?.(); order.push(`signup:${options.adapters}`); return { unavailable: [] }; }),
   installService: vi.fn(async () => { order.push('service'); }),
   checkService: vi.fn(async () => {}),
   checkFallbackServices: vi.fn(async (_unavailable: string[], _port: number, notify: (line: string) => void, ids: string[]) => { order.push(`check:${ids}`); notify(`${ids[0]}: PASS — ${ids[0]} answered through the grunt service`); }),
@@ -281,13 +282,17 @@ it('keeps registered API sources enabled across repeat service installs', async 
   await writeFile(join(dir, 'router-admin.json'), '{}', { mode: 0o600 });
   expect(await installedSources(dir)).toBe('freellmapi,kilo,opencode,zro');
 });
-it('shows the banner, preamble, Squire notice, registry, each service and then the harness step in order', async () => {
+it('starts the daemon before signups and connects tools after the first result before the final summary', async () => {
   const { note } = await import('@clack/prompts');
   const order: string[] = [];
   vi.mocked(note).mockImplementation((_message, title) => { order.push(`note:${title}`); });
   await wizard(undefined, stubActions(order));
-  expect(order).toEqual(['banner', 'note:What grunt does', 'note:Google sign-in for Trusty Squire', 'squire', 'registry',
-    `signup:${defaultIds()}`, 'service', ...defaultIds().map(id => `check:${id}`), 'note:Free services', 'harnesses']);
+  expect(order.slice(0, 7)).toEqual(['banner', 'note:What grunt does', 'note:Google sign-in for Trusty Squire', 'registry',
+    'service', 'squire', `signup:${defaultIds()}`]);
+  for (const id of defaultIds()) expect(order).toContain(`check:${id}`);
+  expect(order.indexOf('harnesses')).toBeGreaterThan(order.indexOf('check:opencode'));
+  expect(order.indexOf('harnesses')).toBeLessThan(order.indexOf('check:perch'));
+  expect(order.at(-1)).toBe('note:Free services');
 });
 it('gives every service its own result when one fails, then ends with the resume message', async () => {
   const { log, outro } = await import('@clack/prompts');
@@ -298,7 +303,7 @@ it('gives every service its own result when one fails, then ends with the resume
   });
   const live = await service(new Sources(defaultIds().filter(id => id !== 'beatapi').map(id => fake(id))));
   vi.stubEnv('MILO_PORT', String(live.port));
-  try { await expect(wizard(undefined, actions)).rejects.toThrow('Some adapters failed verification. Run usegrunt setup to resume.'); }
+  try { await expect(wizard(undefined, actions)).resolves.toBeUndefined(); }
   finally { await live.close(); }
   expect(vi.mocked(log.error).mock.calls.map(([line]) => line)).toContain('beatapi: FAIL — setup incomplete');
   expect(vi.mocked(log.success).mock.calls.map(([line]) => line)).toContain('opencode: PASS — opencode answered through the grunt service');
@@ -323,7 +328,7 @@ it('pulls the registry from the RegistrySync URL and says when it falls back to 
 it('preserves legacy API routing when default setup adds Kilo', async () => {
   const actions = stubActions([], { installedSources: async () => 'freellmapi,kilo,freebuff,opencode' });
   await wizard(undefined, actions);
-  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', ...defaultIds()]);
+  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', ...defaultIds()], expect.objectContaining({ signal: expect.any(AbortSignal) }));
 });
 it('keeps a vetted-only install across repeated setup even after Kilo creates a router login', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-vetted-repeat-'));
@@ -332,14 +337,14 @@ it('keeps a vetted-only install across repeated setup even after Kilo creates a 
   expect(await installedSources(dir)).toBe('opencode,kilo');
   const actions = stubActions([], { installedSources: () => installedSources(dir) });
   await wizard(undefined, actions);
-  expect(actions.installService).toHaveBeenCalledWith(defaultIds());
+  expect(actions.installService).toHaveBeenCalledWith(defaultIds(), expect.objectContaining({ signal: expect.any(AbortSignal) }));
 });
 it('uses one Squire client across default setup and closes it after verification', async () => {
   const squire = new BrowserSquire();
   const close = vi.spyOn(squire, 'close').mockResolvedValue();
   const actions = stubActions([], { createSquire: () => squire });
   await wizard(undefined, actions);
-  expect(actions.connectSquire).toHaveBeenCalledWith({ squire });
+  expect(actions.connectSquire).toHaveBeenCalledWith(expect.objectContaining({ squire, signal: expect.any(AbortSignal) }));
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ squire }));
   expect(close).toHaveBeenCalledOnce();
 });
@@ -360,12 +365,12 @@ it('cold-starts all eleven vetted sources after one shared sign-in and one conse
   await wizard(undefined, actions);
   expect(connect).toHaveBeenCalledOnce();
   expect(prompt).toHaveBeenCalledOnce();
-  expect(order.indexOf('identity-ready')).toBeLessThan(order.indexOf('sharing-approved'));
+  expect(order.indexOf('sharing-approved')).toBeLessThan(order.indexOf('identity-ready'));
   expect(order.indexOf('sharing-approved')).toBeLessThan(order.indexOf(`signup:${ids}`));
   expect(actions.setupFallbacks).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
     squire, adapters: ids, dataSharingApproved: dataSharingPolicies(ids).map(policy => policy.provider)
   }));
-  expect(actions.installService).toHaveBeenCalledExactlyOnceWith(ids);
+  expect(actions.installService).toHaveBeenCalledExactlyOnceWith(ids, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(actions.checkFallbackServices.mock.calls.map(call => call[3])).toEqual(ids.map(id => [id]));
   expect(actions.setup).not.toHaveBeenCalled();
   expect(close).toHaveBeenCalledOnce();
@@ -386,7 +391,7 @@ it('removes both retired source IDs from an older saved selection while preservi
   expect(await installedSources(consentDir)).toBe('freellmapi,opencode');
   const actions = stubActions([], { installedSources: () => installedSources(consentDir) });
   await wizard(undefined, actions);
-  expect(actions.installService).toHaveBeenCalledExactlyOnceWith(['freellmapi', ...defaultIds()]);
+  expect(actions.installService).toHaveBeenCalledExactlyOnceWith(['freellmapi', ...defaultIds()], expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(await readFile(join(consentDir, 'native-user-state'), 'utf8')).toBe('preserved');
 });
 
@@ -422,7 +427,7 @@ it('replaces an older retired-only runtime with a guarded empty service when its
   expect(actions.setup).not.toHaveBeenCalled();
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.checkFallbackServices).not.toHaveBeenCalled();
-  expect(order).toEqual(['banner', 'squire', 'service', 'ready']);
+  expect(order).toEqual(['banner', 'service', 'ready']);
 });
 
 it('replaces a retired-only runtime even when a new provider addition is declined', async () => {
@@ -465,7 +470,7 @@ it('asks once for the sharing batch before parallel signup and reuses the saved 
   expect(order.indexOf('approval')).toBeLessThan(order.indexOf(`signup:${defaultIds()}`));
   expect(scopes).toEqual([sharingIds(), sharingIds()]);
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: defaultIds(), dataSharingApproved: sharingIds() }));
-  expect(actions.installService).toHaveBeenCalledWith(defaultIds());
+  expect(actions.installService).toHaveBeenCalledWith(defaultIds(), expect.objectContaining({ signal: expect.any(AbortSignal) }));
 });
 
 it.each([false, Symbol('cancel')])('continues other onboarding when grouped data sharing is declined or cancelled', async answer => {
@@ -478,7 +483,7 @@ it.each([false, Symbol('cancel')])('continues other onboarding when grouped data
   const remaining = defaultIds().filter(id => !sharingIds().includes(id));
   expect(prompt).toHaveBeenCalledOnce();
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: remaining }));
-  expect(actions.installService).toHaveBeenCalledWith(remaining);
+  expect(actions.installService).toHaveBeenCalledWith(remaining, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(order).not.toContain('check:tokenharbor');
   expect(order).not.toContain('check:freebuff');
   expect(order).not.toContain('check:opencode');
@@ -499,7 +504,7 @@ it.each([false, Symbol('cancel')])('upgrades the old runtime despite declined sh
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'opencode', 'kilo']);
   expect(actions.checkService).toHaveBeenCalledOnce();
-  expect(order).toEqual(['banner', 'squire', 'service', 'ready']);
+  expect(order).toEqual(['banner', 'service', 'ready']);
   expect(actions.checkFallbackServices).not.toHaveBeenCalled();
   expect(actions.connectHarnesses).not.toHaveBeenCalled();
 });
@@ -568,4 +573,17 @@ it('keeps Zro, LiveKit and a custom API source when sharing providers are declin
   await wizard('groq', actions);
   expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['groq'], {});
   expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'zro', 'livekit']);
+});
+
+it.each(['refused', 'quota'] as const)('does not retry a settled %s provider while its verification header still says preparing', async code => {
+  const complete = vi.fn(async () => { throw new SourceError(code, 'synthetic provider refusal'); });
+  const sources = new Sources([fake('opencode', complete)]);
+  sources.preparing.add('opencode');
+  sources.verifying.add('opencode');
+  const live = await service(sources), unavailable: string[] = [];
+  try {
+    await checkFallbackServices(unavailable, live.port, () => {}, ['opencode'], { limit: 3000, interval: 1, retryPreparing: false });
+  } finally { await live.close(); }
+  expect(complete).toHaveBeenCalledOnce();
+  expect(unavailable).toEqual(['opencode']);
 });

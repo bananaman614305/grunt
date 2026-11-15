@@ -14,12 +14,18 @@ npx usegrunt
 
 usegrunt installs grunt on this machine. It pools free AI quota and serves one local agent.
 
-Restarts reuse saved connections. Background verification preserves them on
+Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
+
+Daemon restarts reuse saved connections. Background verification preserves them on
 temporary failures and asks for foreground setup when human verification is needed.
 
 https://grunt.run. `milo` and `milo-local` remain aliases.
 
-The 0.6.6 pool has eleven sources: OpenCode, Kilo, Zro, Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch. Setup connects Trusty Squire once, connects up to six services at once with up to three browser operations, tests each, then connects your coding tools. Provider-specific human verification is grouped or queued when needed. Pi is optional.
+The curated pool has eleven sources: OpenCode, Kilo, Zro, Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch. Pi is optional.
+
+In 0.6.7, setup starts the persistent daemon before provider jobs and checks each provider as it finishes. The first verified reply makes grunt ready; setup then applies your coding-tool choices while the remaining jobs continue. Eligible anonymous Kilo and OpenCode routes can work while account-dependent providers wait for Squire sign-in. Up to six provider jobs, three browser operations and three reply checks can run concurrently; readiness does not wait for the whole pool.
+
+The original `npx usegrunt` terminal stays open as the approval console until the remaining jobs finish. Use a connected coding tool in another terminal while it works. Closing the console pauses unfinished signups; verified daemon routes keep running, and rerunning setup resumes the rest. Partial provider failures are reported without failing an installation that has at least one verified route. Perch remains in the default pool, but its human verification does not have to finish before another route becomes usable. Setup duration depends on downloads, prerequisites and verification; no cold-start time is promised.
 
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/milo/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/milo/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/milo/blob/main/CLAUDE.md).
 
@@ -27,7 +33,7 @@ In 0.6.6, one grouped data-sharing approval covers nine active providers. Setup 
 
 LiveKit adds DeepSeek V4.1 Flash through its free Build plan, using one free project and the official CLI's browser login. The documented included inference allowance is $2.50 per calendar month with a hard stop and no card. Keep the account on Build. LiveKit documents [zero data retention and no training for inference](https://docs.livekit.io/agents/models/inference/), so it needs no sharing approval. The route passed short-prompt, tool-call and 210,077-token context checks through Grunt.
 
-The four additions are BeatAPI, Pollinations, Clixad and Perch. BeatAPI's ongoing free DeepSeek route permits one successful request per minute and leaves its separate $2 welcome credit untouched. Pollinations' fixed community GLM route needs a numeric zero-budget, Quest-only key and a positive unused Quest balance; the zero-priced route does not spend its one-time first-key reward. Clixad uses its native free GLM route with a zero wallet balance. Perch uses active Starter access with 20,000 Perch Tokens per month, the optional Data Program off, and both memory switches off. Native CLI output limits are local checks and cannot hard-cap upstream generation; keep Clixad's wallet at zero and Perch on Starter. See the reference for model-attestation and billing limits.
+The four additions in 0.6.6 are BeatAPI, Pollinations, Clixad and Perch. BeatAPI's ongoing free DeepSeek route permits one successful request per minute and leaves its separate $2 welcome credit untouched. Pollinations' fixed community GLM route needs a numeric zero-budget, Quest-only key and a positive unused Quest balance; the zero-priced route does not spend its one-time first-key reward. Clixad uses its native free GLM route with a zero wallet balance. Perch uses active Starter access with 20,000 Perch Tokens per month, the optional Data Program off, and both memory switches off. Native CLI output limits are local checks and cannot hard-cap upstream generation; keep Clixad's wallet at zero and Perch on Starter. See the reference for model-attestation and billing limits.
 
 Within OpenCode, new conversations rotate across DeepSeek V4.1 Flash Free,
 GLM 5.3 Flash Free and Big Pickle. Follow-ups keep their model, and quota errors

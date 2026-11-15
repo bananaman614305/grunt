@@ -21,14 +21,19 @@ export class Sources {
   private router: StickyRouter | undefined;
   // Adapters whose background setup has not finished yet.
   readonly preparing = new Set<string>();
+  // Foreground signups must not probe or dispatch incomplete sources. Routine
+  // background checks remain metadata and do not interrupt already-bound work.
+  readonly pending = new Set<string>();
+  // An exact-ID setup probe may run without admitting that source to the pool.
+  readonly verifying = new Set<string>();
   constructor(public readonly sources: Source[], routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set()) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
-    if (routing) this.router = new StickyRouter(sources, routing);
+    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending });
   }
   healthy(id: string) { this.router?.healthy(id); }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.router && !this.router.listed(s.id) || !await s.available()) return null;
+      if (this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await s.available()) return null;
       if (this.router?.needsHealthCheck(s.id) && await s.healthCheck?.().catch(() => false)) this.healthy(s.id);
       return s.id;
     }));
@@ -37,6 +42,20 @@ export class Sources {
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal.throwIfAborted();
     if (this.disabledModels.has(request.model)) throw new SourceError('refused', `${request.model} routing is disabled`);
+    if (this.pending.has(request.model)) {
+      if (!this.verifying.has(request.model)) throw new SourceError('not_installed', `${request.model} setup is still in progress`);
+      const source = this.sources.find(source => source.id === request.model);
+      if (!source) throw new SourceError('not_installed', `No source for model ${request.model}`);
+      if (this.router && !this.router.listed(source.id)) throw new SourceError('not_installed', `${request.model} is not in the current provider registry`);
+      if (this.router && !this.router.supportsInput(source.id, request.imageInput)) throw new SourceError('refused', `${request.model} does not support this input modality`);
+      // A setup probe is one exact-source call, never sticky failover or a
+      // retry of a provider refusal. The source retains every normal guard.
+      const completion = await source.complete(request, signal);
+      signal.throwIfAborted();
+      this.router?.verified(source.id);
+      answeredBy.set(completion, source.id);
+      return completion;
+    }
     if (this.router) return this.router.complete(request, signal);
     const known = this.sources.some(s => s.id === request.model);
     if (request.model !== 'milo' && !known) console.error(`grunt model mapping: ${request.model} -> milo`);
@@ -44,6 +63,7 @@ export class Sources {
     let last = new SourceError('not_installed', `No source for model ${request.model}`);
     for (const source of candidates) {
       signal.throwIfAborted();
+      if (this.pending.has(source.id)) continue;
       let completion: Completion;
       try { completion = await source.complete(request, signal); }
       catch (error) {
