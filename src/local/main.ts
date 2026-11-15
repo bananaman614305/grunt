@@ -1,20 +1,24 @@
 #!/usr/bin/env node
-import { knownAdapters } from '../registry.js';
+import { disabledAdapters, knownAdapters } from '../registry.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { basename } from 'node:path';
 import { serve } from '@hono/node-server';
 import { createLocalApp } from './api.js';
-import { Freebuff, positive } from './freebuff.js';
+import { positive } from './freebuff.js';
 import { Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { Nvidia } from './nvidia.js';
 import { Zro } from './zro.js';
 import { TokenHarbor } from './tokenharbor.js';
 import { Runcrate } from './runcrate.js';
-import { Apinex } from './apinex.js';
 import { MistralVibe } from './mistral-vibe.js';
 import { LiveKit } from './livekit.js';
+import { Pollinations } from './pollinations.js';
+import { BeatAPI } from './beatapi.js';
+import { Kilo } from './kilo.js';
+import { Clixad } from './clixad.js';
+import { Perch } from './perch.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
@@ -51,15 +55,15 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     // default while retaining explicit environment and custom-model overrides.
     return adapter?.models ?? (adapter?.model && adapter.model !== 'big-pickle' ? [adapter.model] : DEFAULT_OPENCODE_MODELS);
   };
-  const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new FreeLLMAPI({ ...connection, id: 'kilo', model: 'kilo-auto/free' }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new Apinex({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) }), new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' })];
-  const ids = env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+  const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env) }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) })];
+  const ids = (env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id)).filter(id => id && !disabledAdapters.has(id));
   const routing = ids.every(id => knownAdapters.has(id)) ? { registry } : undefined;
   return new Sources(ids.map(id => {
     const source = registered.find(source => source.id === id);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && id !== 'tokenharbor' ? new ConsentSource(source, configDir(env)) : source;
     return !routing && knownAdapters.has(id) ? new RegistrySource(consent, registry) : consent;
-  }), routing);
+  }), routing, disabledAdapters);
 }
 export function start(env = process.env) {
   let registry = structuredClone(bundledRegistry);
@@ -77,7 +81,7 @@ export function start(env = process.env) {
       const client = squire ??= new BrowserSquire({ background: true, signal, dataSharingApproved: approved });
       client.approveDataSharing([...new Set([...(await readDataSharingConsent(directory, [...knownAdapters])), ...approved])]);
       try {
-        const result = await setupFallbacks({ directory, run: (binary, args) => command(binary, args, false, signal), notify: console.error, adapters: [adapter.id], squire: client, signal, dataSharingApproved: approved,
+        const result = await setupFallbacks({ directory, run: (binary, args) => command(binary, args, false, signal), notify: console.error, adapters: [adapter.id], squire: client, signal, background: true, dataSharingApproved: approved,
           connect: () => client.connect() });
         if (result.unavailable.length) throw new Error('Adapter setup incomplete');
         sources.healthy(adapter.id);
@@ -94,11 +98,8 @@ export function start(env = process.env) {
   if (port > 65535) throw new Error('MILO_PORT must be at most 65535');
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
-  // A distinct source list prevents FreeLLMAPI -> grunt -> FreeLLMAPI recursion.
-  const fallback = env.MILO_FREEBUFF_BRIDGE !== '0' && sources.sources.some(s => ['freellmapi', 'kilo'].includes(s.id)) ? new Sources([new ConsentSource(new Freebuff({ toolBridge: env.MILO_FREEBUFF_JSON_BRIDGE === '1' }), directory)]) : undefined;
-  const bridge = fallback ? serve({ fetch: createLocalApp(fallback, { port: 8789 }).fetch, hostname: HOST, port: 8789 }) : undefined;
   let closing = false;
-  const close = async () => { if (closing) return; closing = true; await sync.close(); await sources.close(); await fallback?.close(); bridge?.close(); server.close(); };
+  const close = async () => { if (closing) return; closing = true; await sync.close(); await sources.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, close };
 }

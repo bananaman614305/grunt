@@ -1,23 +1,12 @@
 {
   "version": 1,
-  "published": "2026-11-15T06:09:28Z",
+  "published": "2026-11-15T19:14:43.749Z",
   "adapters": [
-    {
-      "id": "freebuff",
-      "kind": "agent",
-      "tier": "stable",
-      "weight": 0.192,
-      "modalities": [
-        "text"
-      ],
-      "install": "npm:freebuff",
-      "signup": "https://freebuff.com/login"
-    },
     {
       "id": "opencode",
       "kind": "agent",
       "tier": "stable",
-      "weight": 0.192,
+      "weight": 0.25263157894736843,
       "modalities": [
         "text"
       ],
@@ -32,19 +21,18 @@
       "id": "kilo",
       "kind": "model",
       "tier": "stable",
-      "weight": 0.256,
+      "weight": 0.3368421052631579,
       "modalities": [
         "text"
       ],
       "install": "builtin:kilo",
-      "signup": "https://app.kilo.ai/profile",
-      "model": "kilo-auto/free"
+      "model": "particle-ai/particle-1:free"
     },
     {
       "id": "zro",
       "kind": "model",
       "tier": "stable",
-      "weight": 0.16,
+      "weight": 0.21052631578947367,
       "modalities": [
         "text"
       ],
@@ -56,7 +44,7 @@
       "id": "tokenharbor",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.04,
+      "weight": 0.025,
       "modalities": [
         "text"
       ],
@@ -68,7 +56,7 @@
       "id": "runcrate",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.04,
+      "weight": 0.025,
       "modalities": [
         "text"
       ],
@@ -77,22 +65,10 @@
       "model": "deepseek-ai/DeepSeek-V4.1-Flash"
     },
     {
-      "id": "apinex",
-      "kind": "model",
-      "tier": "experimental",
-      "weight": 0.04,
-      "modalities": [
-        "text"
-      ],
-      "install": "builtin:apinex",
-      "signup": "https://apinex.bond/register",
-      "model": "free/deepseek-v4.1-flash"
-    },
-    {
       "id": "mistral-vibe",
       "kind": "agent",
       "tier": "experimental",
-      "weight": 0.04,
+      "weight": 0.025,
       "modalities": [
         "text"
       ],
@@ -104,13 +80,61 @@
       "id": "livekit",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.04,
+      "weight": 0.025,
       "modalities": [
         "text"
       ],
       "install": "builtin:livekit",
       "signup": "https://cloud.livekit.io/",
       "model": "deepseek-ai/deepseek-v4.1-flash"
+    },
+    {
+      "id": "pollinations",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.025,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:pollinations",
+      "signup": "https://enter.pollinations.ai/",
+      "model": "community/morriszdweck/glm-5.3-flash-free"
+    },
+    {
+      "id": "beatapi",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.025,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:beatapi",
+      "signup": "https://beatapi.io/",
+      "model": "deepseek-v4.1-flash-free"
+    },
+    {
+      "id": "clixad",
+      "kind": "agent",
+      "tier": "experimental",
+      "weight": 0.025,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:clixad",
+      "signup": "https://app.clixad.io",
+      "model": "glm-5.3-flash"
+    },
+    {
+      "id": "perch",
+      "kind": "agent",
+      "tier": "experimental",
+      "weight": 0.025,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:perch",
+      "signup": "https://www.perchai.app",
+      "model": "deepseek-flash-starter"
     }
   ]
 }

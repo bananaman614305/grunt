@@ -16,7 +16,7 @@ A default install spends no money and no paid allowance.
 Every source that can cost money or plan quota is off until the person names it.
 grunt never buys credits, never upgrades a plan, and never switches to a paid model on its own.
 When a free source carries a hidden price, such as prompt retention or terms risk, grunt says so in plain words.
-Setup asks once for the data-sharing policies of Freebuff, OpenCode, Kilo, Token Harbor, Runcrate, APInex and Mistral Vibe Free together, and remembers the approved policies.
+Setup asks once for the nine active data-sharing policies of OpenCode, Kilo, Token Harbor, Runcrate, Mistral Vibe Free, Pollinations, BeatAPI, Clixad and Perch together, and remembers the approved policies. Retired Freebuff and APInex receipts do not authorize routing.
 Declining skips those sources and continues with Zro and LiveKit, subject to their free-account checks; changed policies require approval again before signup or routing. LiveKit documents zero retention and no training for inference, so it adds no sharing policy.
 
 ## Free tokens are personal
@@ -31,10 +31,12 @@ It does not serve industrial or bulk workloads.
 ## The owner curates the source list
 
 The registry lists the adapters that offer free tokens, with a tier and a fixed weight for each.
+The 0.6.6 pool has eleven sources. Freebuff and APInex are retired from grunt routing; the person's native Freebuff application is preserved.
 A weight is the chance that an adapter is picked for a new task.
 Stable adapters share 0.8 of the weight and experimental adapters share 0.2.
-The bundled starting pool has four stable adapters: Freebuff and OpenCode at 0.192 each, Kilo at 0.256 and Zro at 0.16.
-Five experimental sources have weight 0.04 each: Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit. Each joins after its required data-sharing approval and free-account checks. LiveKit uses the free Build plan's included inference allowance with a hard stop, no card and no paid fallback.
+The bundled starting pool has three stable adapters in relative proportions 6:8:5: OpenCode at about 0.252632, Kilo at about 0.336842 and Zro at about 0.210526.
+Kilo selects the anonymous free `particle-ai/particle-1:free` route, a distinct model post-trained from DeepSeek V4.1 Flash with a listed one-million-token context. It supports native function calls and ongoing rate-limited access without one-time credits. Its catalog permits training, so the changed Kilo policy requires approval again before setup or routing. Kilo Auto Free is no longer the default.
+Eight experimental sources have weight 0.025 each: Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch. Each joins after its required data-sharing approval and free-account checks. LiveKit uses the free Build plan's included inference allowance with a hard stop, no card and no paid fallback. Pollinations requires a hard zero-budget Quest-only key, a positive unused Quest balance and the fixed vetted community model; BeatAPI uses only its free model without spending welcome credit. Clixad requires a zero wallet balance, and Perch requires active Starter access with optional data sharing and both memory switches off. Native local output checks do not hard-cap upstream generation or allowance use.
 Cloudflare Qwen is excluded from this pool by the owner's choice; NVIDIA remains optional while its account verification is unvetted.
 New sources enter by pull request, are tested, and reach people only when the owner publishes the registry.
 The registry can only select adapters that grunt already has code for; it cannot add code.
@@ -77,7 +79,7 @@ One refused provider drops out; the rest still install.
 grunt is not a harness, a model host, a credit reseller, or a billing service.
 It does not compete with frontier models on benchmarks; it competes on cost to the person, which is zero.
 It is not an industrial-scale inference pool.
-It does not route to Google models, OpenRouter, or unvetted aggregators.
+It does not select Google models, add a paid OpenRouter source, or admit unvetted aggregators. A vetted free provider may use its own upstream processors, disclosed during setup.
 Every change ships with a reproduction or demonstration that runs offline against fakes, plus live proof where accounts allow.
 
 A change aligns when it adds a tested free source through the curated registry, keeps a task moving through a new limit or failure, removes a setup step, or makes a cost visible.

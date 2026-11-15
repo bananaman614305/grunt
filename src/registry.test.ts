@@ -10,10 +10,13 @@ const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('ships the nine vetted sources without Cloudflare and validates tier weights', () => {
-  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit']);
+it('ships exactly eleven active vetted sources with stable and experimental tier weights', () => {
+  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
-  expect(bundledRegistry.adapters.some(a => /cloudflare|qwen/.test(a.id))).toBe(false);
+  expect(bundledRegistry.adapters.some(a => /cloudflare|qwen|freebuff|apinex/.test(a.id))).toBe(false);
+  expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').map(a => a.id)).toEqual(['opencode', 'kilo', 'zro']);
+  expect(bundledRegistry.adapters.filter(a => a.tier === 'experimental')).toHaveLength(8);
+  for (const adapter of bundledRegistry.adapters.filter(a => a.tier === 'experimental')) expect(adapter.weight).toBe(0.025);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.8);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'experimental').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.2);
   expect(() => validateRegistry({ ...bundledRegistry, adapters: bundledRegistry.adapters.map(a => a.id === 'tokenharbor' ? { ...a, weight: 0.3 } : a) })).toThrow();
@@ -32,7 +35,7 @@ it('validates OpenCode model pools without ambiguous scalar settings', () => {
     expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...opencode, models: invalid }] })).toThrow();
   }
   expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...opencode, model: 'big-pickle' }] })).toThrow();
-  expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...bundledRegistry.adapters[0], models: ['big-pickle'] }] })).toThrow();
+  expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!, models: ['big-pickle'] }] })).toThrow();
 });
 
 it('gateway down keeps cached list and persists private cache', async () => {
@@ -79,15 +82,15 @@ it.each([new Response('bad json'), Response.json({ version: 9 }), new Response(n
 });
 it('ignores unknown adapter code and retries provisioning known additions without removing installed adapters', async () => {
   const ensure = vi.fn().mockRejectedValueOnce(new Error('needs human')).mockResolvedValue(undefined);
-  const unknown = { ...bundledRegistry.adapters[0]!, id: 'unknown' };
+  const unknown = { ...bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!, id: 'unknown', install: 'npm:unknown' };
   const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ ...bundledRegistry, adapters: [bundledRegistry.adapters[0], unknown] }, { headers: { ETag: '"first"' } }))
     .mockResolvedValueOnce(new Response(null, { status: 304 }))
     .mockResolvedValueOnce(Response.json({ ...bundledRegistry, adapters: [bundledRegistry.adapters[1]] }));
   const sync = new RegistrySync({ directory: await directory(), fetcher, ensure });
   await sync.load(); await sync.sync(); await sync.sync();
-  expect(ensure.mock.calls.map(([adapter]) => adapter.id)).toEqual(['freebuff', 'freebuff']);
-  expect(sync.enabled.map(adapter => adapter.id)).toEqual(['freebuff']);
-  await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
+  expect(ensure.mock.calls.map(([adapter]) => adapter.id)).toEqual(['opencode', 'opencode']);
+  expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
+  await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
 });
 it('serves only manually published registry data with conditional requests', async () => {
   const path = join(await directory(), 'published.json');

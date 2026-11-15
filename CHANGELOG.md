@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.6.6] - 2026-11-15
+
+### Added
+
+- Connect BeatAPI's `deepseek-v4.1-flash-free` through Squire with a key restricted to free models. Its continuous free route permits one successful request per minute and leaves the separate one-time $2 welcome credit untouched. No numeric daily or token-per-minute allowance is promised.
+- Connect Pollinations' `community/morriszdweck/glm-5.3-flash-free` through Squire with a hard zero-budget, Quest-only key and minimal usage permissions. A positive unused Quest balance is required; the one-time first-key reward supplies it and the zero-priced route does not spend it. Grunt pins that single community route, verifies its free-access metadata and model identity, and bridges function calls through validated JSON. Availability is best effort, with no promised daily quota or reset schedule.
+- Add Clixad's native free `glm-5.3-flash` route through privately installed CLI `0.0.1-beta.51` and ordinary GitHub device pairing. Require a zero wallet before and after user inference and native free/zero-charge metadata. Idle checks never run the wallet or streak claim. There is no atomic protection against an external deposit during inference, no hard upstream output cap, and no independent physical-model attestation from the native SSE.
+- Add Perch's official Starter DeepSeek route through pinned CLI `2.4.132`, with 20,000 Perch Tokens per month and no surprise overages. Require active Starter, optional Data Program off, and both Use memory and Learn new memories off through official settings, without deleting notes. Keep native identity and memory settings verified, use private request context, deny native actions and clean up owned PTYs. Local output limits do not hard-cap upstream generation; the official model aliases are not independent physical-model attestation.
+
+### Changed
+
+- Set the automatic pool to eleven sources. OpenCode, Kilo and Zro share the stable 80% in proportions 6:8:5; eight experimental sources have weight 2.5% each.
+- Run up to six setup jobs and three provider browser operations concurrently, sharing one Squire connection and cached metadata. Reuse Google/GitHub identities, ask once for nine active sharing policies and group provider-specific human exceptions; each provider can still require its own security verification. Declining sharing still permits eligible Zro and LiveKit setup.
+- When Squire explicitly offers goal completion after navigation uncertainty, allow a grouped, default-No human attestation of the full requested goal before resuming the same session. Generic captcha confirmation, background setup and provider refusals cannot take this path.
+- Reuse valid saved connections during restart. Background verification preserves BeatAPI, Pollinations and Perch receipts on transient failure, never falls into interactive setup, and stops before creating repeated Squire handoff links.
+- Switch the default Kilo source from Auto Free to `particle-ai/particle-1:free`, a distinct model post-trained from DeepSeek V4.1 Flash with a listed one-million-token context and native function calls. The anonymous route needs no account or API key and allows 200 requests per hour per IP, subject to upstream capacity, without one-time credits. Standard DeepSeek catalog routes remain paid. Kilo's changed Particle-specific training disclosure requires fresh grouped approval.
+- Retire Grunt-owned legacy Kilo Auto and Nemotron rows. With current Particle consent, the legacy guard can register Particle against an existing owned key, preserving disabled Particle rows and their priorities and all user custom keys, rows and priorities. Runtime migration creates no account, key or router service. Metadata-only migration was verified on the existing Chad backend.
+
+### Removed
+
+- Disable Freebuff in all grunt routing, filter it from saved source/environment selections, disable owned legacy fallbacks and stop starting the port-8789 bridge. Preserve the person's native application and account. The failed DeepSeek-pin prototype is not shipped.
+- Retire APInex after its recurring 25-million-unit daily entitlement changed to require a $5 top-up. No purchase is made, and a one-time Telegram reward is excluded. Historical sharing records for either retired provider cannot re-enable routing.
+
+### Validation
+
+- BeatAPI and Pollinations passed real Grunt prompt, function-tool, correlated-result and large-context proofs without charges: 210,090 and 210,223 input tokens respectively. Kilo Particle passed the same four proofs at 210,165 input tokens with reported cost zero and no account or key; the reviewed candidate is installed on Chad at port 8792.
+- Clixad's production source passed all four proofs at 210,321 input tokens, with native free/zero-charge metadata and zero wallet balance before and after. Perch's production source passed all four at 226,316 input tokens and 101 output tokens; 153 focused source/helper tests and independent review passed. After the Perch probes, Starter showed 19,726 of 20,000 PT remaining, with the Data Program and both memory switches off.
+- The packaged Clixad setup helper installed the pinned private CLI, reused native authentication, passed the background probe and returned a production hello with 252 input and 63 output tokens. A separate blank-machine onboarding run is not claimed.
+- Perch's initial native Google pairing required operator assistance. After verified Starter eligibility, matching identity and memory-off checks, the production helper reused that login, passed its background check and returned a Grunt hello with 16,245 input and 38 output tokens. Conflicting quota views are recorded conservatively; no larger recurring allowance is promised.
+- All 954 tests across 51 files passed, along with lint, TypeScript checks and a clean build. Independent final integration review passed, including retired-only upgrades, the manual-attestation boundary and noninteractive restart coverage. GitHub Actions remains disabled.
+- The final installed package returned real, correctly attributed replies through all eleven providers on Chad at port 8792. Freebuff and APInex requests were rejected. A second restart kept all eleven available, preserved receipt bytes and modification times, and opened no verification handoffs. The gateway's eleven-source registry, ETag behavior and health checks were verified.
+
 ## [0.6.5] - 2026-11-15
 
 ### Added

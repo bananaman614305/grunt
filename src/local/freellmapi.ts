@@ -1,5 +1,6 @@
 import { SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
+import { KILO_PARTICLE } from './kilo.js';
 
 // Numeric loopback addresses avoid DNS rebinding and accidental remote routing.
 export function loopback(value: string): URL {
@@ -8,18 +9,15 @@ export function loopback(value: string): URL {
   return url;
 }
 export const KILO_URL = 'https://ai-gateway.kilo.ai/api/v1';
-export const FREEBUFF_URL = 'http://127.0.0.1:8789/v1';
 export function freeConfig() {
   return {
     customProviders: [
-      { baseUrl: KILO_URL, apiKey: 'no-key', label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
-      { baseUrl: FREEBUFF_URL, apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: false }] }
+      { baseUrl: KILO_URL, apiKey: 'no-key', label: 'Kilo Free', models: [{ model: KILO_PARTICLE, supportsTools: true }] }
     ],
     // Existing keyed provider rows retain their catalog priorities. Never enable
     // OpenRouter or unvetted aggregators by provisioning keys for them here.
     fallback: [
-      { platform: 'custom', modelId: 'kilo-auto/free', endpoint: KILO_URL, priority: 999999 },
-      { platform: 'custom', modelId: 'freebuff', endpoint: FREEBUFF_URL, priority: 1000000 }
+      { platform: 'custom', modelId: KILO_PARTICLE, endpoint: KILO_URL, priority: 999999 }
     ],
     routing: { strategy: 'priority' as const }
   };

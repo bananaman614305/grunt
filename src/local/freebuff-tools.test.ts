@@ -72,9 +72,9 @@ it('does not retain schemas from successive requests in a shared validator', () 
   } finally { compile.mockRestore(); }
 });
 
-it('advertises JSON tool protocol support only when the bridge is enabled', () => {
-  expect(configure({MILO_SOURCES:'freebuff'}).sources[0]!.supportsFunctionTools).toBe(false);
-  expect(configure({MILO_SOURCES:'freebuff',MILO_FREEBUFF_JSON_BRIDGE:'1'}).sources[0]!.supportsFunctionTools).toBe(true);
+it.each([undefined, '0', '1'])('keeps the retired Freebuff route disabled regardless of an old JSON bridge setting (%s)', bridge => {
+  const sources = configure({ MILO_SOURCES: 'freebuff', ...(bridge ? { MILO_FREEBUFF_JSON_BRIDGE: bridge } : {}) });
+  expect(sources.sources).toEqual([]);
 });
 
 // Exercise the whole adapter, including disk association, bounded repair and cleanup.

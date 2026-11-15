@@ -33,10 +33,10 @@ it.each(['freebuff', 'opencode', 'kilo'])('gates %s before consulting installed 
 });
 
 it('guards explicit vetted adapters while preserving a custom freellmapi source', async () => {
-  const sources = configure({ MILO_CONFIG_DIR: await directory(), MILO_SOURCES: 'freebuff,opencode,kilo,freellmapi,zro' });
-  expect(sources.sources.filter(source => source instanceof RegistrySource && source.source instanceof ConsentSource).map(source => source.id)).toEqual(['freebuff', 'opencode', 'kilo']);
-  expect(sources.sources.map(source => source.id)).toEqual(['freebuff', 'opencode', 'kilo', 'freellmapi', 'zro']);
-  for (const source of sources.sources.slice(0, 3)) expect(await source.available()).toBe(false);
+  const sources = configure({ MILO_CONFIG_DIR: await directory(), MILO_SOURCES: 'freebuff,apinex,opencode,kilo,freellmapi,zro' });
+  expect(sources.sources.filter(source => source instanceof RegistrySource && source.source instanceof ConsentSource).map(source => source.id)).toEqual(['opencode', 'kilo']);
+  expect(sources.sources.map(source => source.id)).toEqual(['opencode', 'kilo', 'freellmapi', 'zro']);
+  for (const source of sources.sources.filter(source => ['opencode', 'kilo'].includes(source.id))) expect(await source.available()).toBe(false);
   await sources.close();
 });
 

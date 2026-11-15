@@ -16,6 +16,7 @@ import { freeConfig, loopback } from './freellmapi.js';
 import { proxyApproval } from './approval-proxy.js';
 import { VerificationQueue } from './verification-queue.js';
 import { withTerminal } from './terminal.js';
+import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
@@ -23,11 +24,17 @@ import { Runcrate, writeRuncrateGrant } from './runcrate.js';
 import { Apinex, writeApinexGrant } from './apinex.js';
 import { setupMistralVibe } from './mistral-vibe-setup.js';
 import { setupLiveKit } from './livekit-setup.js';
+import { setupPollinations } from './pollinations-setup.js';
+import { setupBeatAPI } from './beatapi-setup.js';
+import { setupClixad } from './clixad-setup.js';
+import { setupPerch } from './perch-setup.js';
+import { disabledAdapters } from '../registry.js';
+import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } from './data-sharing.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', clixad: 'https://app.clixad.io', perch: 'https://www.perchai.app' };
 const freeProviderInstructions: Record<string, string> = {
   runcrate: ' Verify that the GitHub account is at least 30 days old. Use the normal Get your free tokens link at https://www.runcrate.ai/dashboard/api-keys#free-card to activate its recurring weekly allowance; verify the free tier is active via GitHub and not paused. Leave optional marketing unchecked. Verify no paid subscription, no purchased balance, no payment method and automatic top-ups disabled. If any of these checks fails, stop and report it; do not change billing settings or create another account. Use only deepseek-ai/DeepSeek-V4.1-Flash at api.runcrate.ai. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Reuse an existing vaulted key where possible; never reset or rotate it.',
   apinex: ' Verify the Free plan and complete today\'s ordinary DAILY CHECK-IN to activate recurring free quota. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Use only free/deepseek-v4.1-flash at api.apinex.bond, never a wallet-funded model or paid sibling. Verify the check-in for the current UTC date is actually claimed and free quota is active; absence of a check-in modal alone is insufficient. Do not use or change any existing paid wallet balance. Dismiss any paid upsell after check-in. Do not add billing, top up a wallet, buy credits, or use any paid balance. If check-in or free access cannot be confirmed, stop and report it. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
@@ -36,7 +43,7 @@ export type Provider = keyof typeof PROVIDERS;
 export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 export { NVIDIA_DEEPSEEK } from './nvidia.js';
 const savedProviders = ['kilo'] as const;
-const providerModels: Record<string, string[]> = { kilo: [KILO_NEMOTRON, 'kilo-auto/free'] };
+const providerModels: Record<string, string[]> = { kilo: [KILO_PARTICLE] };
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
 const sameService = (credential: Credential, service: string) => credential.service?.trim().toLowerCase() === service.trim().toLowerCase();
 function apiKeyField(credential: Credential, provider: Provider): string | undefined {
@@ -144,23 +151,119 @@ export class BrowserSquire implements SetupSquire {
   approveDataSharing(providers: readonly string[]) { this.options.dataSharingApproved = [...new Set(providers)]; }
   private client = new Client({ name: 'grunt setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
+  private services = new Map<string, AbortController>();
+  private callSignals = new WeakMap<ObjectValue, AbortSignal>();
+  private queueSignals = new WeakMap<ObjectValue, AbortSignal>();
+  private browserActive = 0;
+  private browserQueue: { grant(): void }[] = [];
+  private initialDriveSignal = new AbortController().signal;
+  private finishing = new Map<string, Promise<void>>();
   private recoveryChoices = new Map<string, Set<string>>();
   private pending = new Set<Promise<Run>>();
   private closed = false;
   private shutdown = new AbortController();
   private get signal() { return this.options.signal ? AbortSignal.any([this.options.signal, this.shutdown.signal]) : this.shutdown.signal; }
-  private handoffs: { url: string; close(): void }[] = [];
+  private handoffs: { url: string; close(): void; provider?: string }[] = [];
   private connection: Promise<void> | undefined;
   private metadata: Promise<Credential[]> | undefined;
   private grants = new Map<string, Promise<{ base_url: string; token: string }>>();
   private verification = new VerificationQueue(items => withTerminal(async () => {
-    this.signal.throwIfAborted();
-    for (const item of items) console.log(`Complete ${item.service} verification in this browser: ${item.url}`);
     const { confirm, isCancel } = await import('@clack/prompts');
-    const done = await confirm({ message: `Finished verification for ${items.map(item => item.service).join(', ')}? Resume setup.`, initialValue: true, signal: this.signal });
-    if (isCancel(done) || !done) throw new Error('Provider verification cancelled');
-    this.signal.throwIfAborted();
+    for (;;) {
+      this.signal.throwIfAborted();
+      const active = items.filter(item => !this.serviceSignal(item.service).aborted);
+      if (!active.length) return;
+      const prompt = new AbortController();
+      const signals = active.map(item => this.serviceSignal(item.service));
+      const changed = () => prompt.abort();
+      for (const signal of signals) signal.addEventListener('abort', changed, { once: true });
+      try {
+        for (const item of active) {
+          console.log(`Complete ${item.service} verification in this browser: ${item.url}`);
+          if (item.goal) console.log(`${item.service} requested goal; verify every condition before confirming:\n${item.goal}`);
+        }
+        const attest = active.some(item => item.goal !== undefined);
+        const message = attest
+          ? `I personally verified ALL conditions in each full requested goal displayed above (${active.filter(item => item.goal !== undefined).map(item => item.service).join(', ')}), and completed any other listed verification. Confirm these goals are complete?`
+          : `Finished verification for ${active.map(item => item.service).join(', ')}? Resume setup.`;
+        const done = await this.scoped(confirm({ message, initialValue: !attest, signal: prompt.signal }), prompt.signal);
+        this.signal.throwIfAborted();
+        if (signals.some(signal => signal.aborted)) continue;
+        if (isCancel(done) || !done) throw new Error('Provider verification cancelled');
+        return;
+      } catch (error) {
+        this.signal.throwIfAborted();
+        if (!signals.some(signal => signal.aborted)) throw error;
+      } finally { for (const signal of signals) signal.removeEventListener('abort', changed); }
+    }
   }));
+  private serviceSignal(provider: string) {
+    let controller = this.services.get(provider);
+    if (!controller) { controller = new AbortController(); this.services.set(provider, controller); }
+    return AbortSignal.any([this.signal, controller.signal]);
+  }
+  private async scoped<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    let abort: (() => void) | undefined;
+    try {
+      return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+        abort = () => reject(new Error('Provider signup cancelled'));
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      })]);
+    } finally { if (abort) signal.removeEventListener('abort', abort); }
+  }
+  private async serviceCall(provider: string, name: string, args: ObjectValue) {
+    this.serviceSignal(provider).throwIfAborted();
+    // Cancelling MCP before a first response discards its new session ID.
+    // Let that one bounded create/drive finish, then close any late session.
+    // Known-session calls can be aborted immediately and cleaned up by ID.
+    const initial = name === 'operate_drive' && !args.session_id;
+    this.callSignals.set(args, initial ? this.initialDriveSignal : this.serviceSignal(provider));
+    // Waiting work must remain cancellable even when its eventual first RPC
+    // needs to retain a late response containing the owned browser session ID.
+    this.queueSignals.set(args, this.serviceSignal(provider));
+    try { return await this.call(name, args); }
+    finally { this.callSignals.delete(args); this.queueSignals.delete(args); }
+  }
+  private async browserSlot(signal: AbortSignal): Promise<() => void> {
+    signal.throwIfAborted();
+    const release = () => {
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        this.browserActive--;
+        this.browserQueue.shift()?.grant();
+      };
+    };
+    if (this.browserActive < BROWSER_CONCURRENCY) {
+      this.browserActive++;
+      return release();
+    }
+    return new Promise((resolve, reject) => {
+      const entry = { grant: () => {
+        signal.removeEventListener('abort', cancelled);
+        this.browserActive++;
+        resolve(release());
+      } };
+      const cancelled = () => {
+        const index = this.browserQueue.indexOf(entry);
+        if (index !== -1) this.browserQueue.splice(index, 1);
+        signal.removeEventListener('abort', cancelled);
+        reject(new Error('Provider signup cancelled'));
+      };
+      this.browserQueue.push(entry);
+      signal.addEventListener('abort', cancelled, { once: true });
+      if (signal.aborted) cancelled();
+    });
+  }
+  async cancelSignup(provider: string): Promise<void> {
+    let controller = this.services.get(provider);
+    if (!controller) { controller = new AbortController(); this.services.set(provider, controller); }
+    controller.abort(new Error('Provider signup cancelled'));
+    for (const handoff of this.handoffs.filter(item => item.provider === provider)) handoff.close();
+    await this.finishSession(provider);
+  }
   connect(): Promise<void> {
     return this.connection ??= this.connectOnce().catch(error => { this.connection = undefined; throw error; });
   }
@@ -200,20 +303,28 @@ export class BrowserSquire implements SetupSquire {
     }
   }
   async call(name: string, args: ObjectValue, connectionCheck = false): Promise<ObjectValue> {
-    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: name === 'operate_finish' ? 10000 : 60000, ...(name === 'operate_finish' ? {} : { signal: this.signal }) }).catch(error => {
-      if (connectionCheck) throw error;
-      throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
-    });
-    if (result.isError) {
-      const reason = connectionCheck ? (result.content as { type: string; text?: string }[])
-        .filter(part => part.type === 'text').map(part => part.text ?? '').join(' ') : '';
-      throw new Error(reason || `Squire ${name} failed; inspect Squire for the required action`);
-    }
-    if (result.structuredContent) return object(result.structuredContent);
-    for (const part of result.content as { type: string; text?: string }[]) {
-      if (part.type === 'text' && part.text) { try { return object(JSON.parse(part.text)); } catch { /* Do not echo upstream output. */ } }
-    }
-    throw new Error(`Squire ${name} returned an unsupported result`);
+    const provider = typeof args.service === 'string' ? args.service
+      : [...this.sessions].find(([, id]) => id === args.session_id)?.[0];
+    const queueSignal = this.queueSignals.get(args) ?? (provider ? this.serviceSignal(provider) : this.signal);
+    const release = name === 'operate_drive' || name === 'operate_start' ? await this.browserSlot(queueSignal) : undefined;
+    try {
+      // A slot can be granted just before cancellation. Recheck before dispatch.
+      if (release) queueSignal.throwIfAborted();
+      const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: name === 'operate_finish' ? 10000 : 60000, ...(name === 'operate_finish' ? {} : { signal: this.callSignals.get(args) ?? queueSignal }) }).catch(error => {
+        if (connectionCheck) throw error;
+        throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
+      });
+      if (result.isError) {
+        const reason = connectionCheck ? (result.content as { type: string; text?: string }[])
+          .filter(part => part.type === 'text').map(part => part.text ?? '').join(' ') : '';
+        throw new Error(reason || `Squire ${name} failed; inspect Squire for the required action`);
+      }
+      if (result.structuredContent) return object(result.structuredContent);
+      for (const part of result.content as { type: string; text?: string }[]) {
+        if (part.type === 'text' && part.text) { try { return object(JSON.parse(part.text)); } catch { /* Do not echo upstream output. */ } }
+      }
+      throw new Error(`Squire ${name} returned an unsupported result`);
+    } finally { release?.(); }
   }
   credentials = {
     list: async (): Promise<Credential[]> => {
@@ -239,18 +350,26 @@ export class BrowserSquire implements SetupSquire {
   private async finishSession(provider: string, completed = false) {
     const id = this.sessions.get(provider);
     if (!id) return;
-    try {
-      await this.call('operate_finish', { session_id: id, outcome: completed ? 'result' : 'none',
-        ...(completed ? { summary: 'grunt provider key stored in user vault' } : {}) });
-      if (this.sessions.get(provider) === id) this.sessions.delete(provider);
-      this.recoveryChoices.delete(provider);
-    } catch { /* Preserve the original error; close retries a failed cleanup. */ }
+    const existing = this.finishing.get(id);
+    if (existing) return existing;
+    const pending = (async () => {
+      try {
+        await this.call('operate_finish', { session_id: id, outcome: completed ? 'result' : 'none',
+          ...(completed ? { summary: 'grunt provider key stored in user vault' } : {}) });
+        if (this.sessions.get(provider) === id) this.sessions.delete(provider);
+        this.recoveryChoices.delete(provider);
+        for (const handoff of this.handoffs.filter(item => item.provider === provider)) handoff.close();
+      } catch { /* Preserve the original error; close retries a failed cleanup. */ }
+    })();
+    this.finishing.set(id, pending);
+    try { await pending; }
+    finally { this.finishing.delete(id); }
   }
   async signup(service: string, url: string, goal: string): Promise<void> {
     const deadline = Date.now() + 600000;
     try {
       while (Date.now() < deadline) {
-        this.signal.throwIfAborted();
+        this.serviceSignal(service).throwIfAborted();
         const result = await this.drive(service, url, goal);
         if (result.run.state === 'completed') return;
         if (result.run.state !== 'running') throw new Error(`${service}: signup could not be completed`);
@@ -260,25 +379,26 @@ export class BrowserSquire implements SetupSquire {
   }
   private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
     if (this.closed) throw new Error('Squire setup is closed');
-    const pending = this.driveOnce(provider, url, goal);
+    const pending = this.driveOnce(provider, url, goal).catch(async error => { await this.finishSession(provider); throw error; });
     this.pending.add(pending);
-    try { return await pending; }
+    void pending.then(() => this.pending.delete(pending), () => this.pending.delete(pending));
+    try { return await this.scoped(pending, this.serviceSignal(provider)); }
     catch (error) { await this.finishSession(provider); throw error; }
-    finally { this.pending.delete(pending); }
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
     const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route data-sharing disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
     const instruction = customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`;
     let answer: string | undefined;
     while (true) {
-      this.signal.throwIfAborted();
+      this.serviceSignal(provider).throwIfAborted();
       const session = this.sessions.get(provider);
-      const result = await this.call('operate_drive', {
+      const result = await this.serviceCall(provider, 'operate_drive', {
         ...(session ? { session_id: session } : { url }), goal: instruction,
         facts: { plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 60,
         ...(answer ? { answer } : {})
       });
       if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
+      this.serviceSignal(provider).throwIfAborted();
       // The driver's remaining field can repeat our own goal, including refusal
       // and human-verification instructions. That is not evidence from the site.
       const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -287,14 +407,20 @@ export class BrowserSquire implements SetupSquire {
         && !normalize(result.remaining).includes(normalize(instruction)) ? result.remaining : undefined;
       const reason = setupReason(result.reason, remaining);
       const classification = [result.reason, remaining].filter(value => typeof value === 'string').join(' ').replace(/[_-]/g, ' ');
-      const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(classification);
+      const observedField = typeof result.field === 'string' && result.field.trim()
+        && !normalize(instruction).includes(normalize(result.field))
+        && !normalize(result.field).includes(normalize(instruction)) ? result.field : undefined;
+      const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(`${classification} ${observedField ?? ''}`);
       if (refusal) throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
       if (result.status === 'complete') {
         this.metadata = undefined; // A browser capture may have added a credential.
         await this.finishSession(provider, true);
+        this.serviceSignal(provider).throwIfAborted();
         return { run: { id: provider, state: 'completed' }, decision: 'silent' };
       }
       const uncertain = result.status === 'low_confidence' || result.status === 'no_progress';
+      const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
+      if (this.options.background && (humanStep || uncertain || result.status === 'stuck')) throw new Error('Provider signup needs verification; run usegrunt setup in the foreground to resume');
       if (uncertain && this.sessions.has(provider)) {
         const used = this.recoveryChoices.get(provider) ?? new Set<string>();
         this.recoveryChoices.set(provider, used);
@@ -307,20 +433,28 @@ export class BrowserSquire implements SetupSquire {
           used.add((choice[1] as string).trim().toLowerCase()); answer = choice[0]; continue;
         }
       }
-      const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
+      // DONE is a driver choice, not evidence that the account meets the goal.
+      // Only the human can attest to every condition, and a generic captcha
+      // confirmation must never become an attestation of account/plan state.
+      const manualCompletion = uncertain && !humanStep
+        && !/\b(?:block(?:ed|ing)?|policy|restrict(?:ed|ion|ions)?)\b/i.test(`${classification} ${String(result.field)}`)
+        && object(result.options).DONE === 'The goal is complete';
       if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
       // A driver that cannot choose the next action still owns a resumable tab.
       // Share that exact browser instead of silently dropping the signup.
       const handoff = humanStep || uncertain || result.status === 'stuck';
       if (handoff && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
       if (handoff && this.sessions.has(provider)) {
-        const url = await this.humanHandoff(this.sessions.get(provider)!);
-        if (this.options.background) {
-          console.log(`Complete ${provider} verification in this browser: ${url}`);
-          await delay(5000, undefined, { signal: this.signal });
-          return { run: { id: provider, state: 'running' }, decision: 'silent' };
+        const handoffSession = this.sessions.get(provider)!;
+        const url = await this.humanHandoff(handoffSession);
+        this.serviceSignal(provider).throwIfAborted();
+        await this.scoped(this.verification.wait({ service: provider, url, ...(manualCompletion ? { goal: instruction } : {}) }), this.serviceSignal(provider));
+        this.serviceSignal(provider).throwIfAborted();
+        if (manualCompletion) {
+          if (this.sessions.get(provider) !== handoffSession) throw new Error('Provider verification session changed; rerun setup');
+          answer = 'DONE';
+          continue;
         }
-        await this.verification.wait({ service: provider, url });
         return { run: { id: provider, state: 'running' }, decision: 'silent' };
       }
       await this.finishSession(provider);
@@ -328,9 +462,13 @@ export class BrowserSquire implements SetupSquire {
     }
   }
   async humanHandoff(session: string) {
-    const share = await this.call('operate_share', { session_id: session });
+    const provider = [...this.sessions].find(([, id]) => id === session)?.[0];
+    const share = await (provider ? this.serviceCall(provider, 'operate_share', { session_id: session }) : this.call('operate_share', { session_id: session }));
+    if (provider) this.serviceSignal(provider).throwIfAborted();
     if (typeof share.url !== 'string') throw new Error('Squire returned no browser handoff link');
-    const proxy = await proxyApproval(share.url); this.handoffs.push(proxy);
+    const proxy = await proxyApproval(share.url);
+    if (provider && this.serviceSignal(provider).aborted) { proxy.close(); throw new Error('Provider signup cancelled'); }
+    this.handoffs.push({ ...proxy, ...(provider ? { provider } : {}) });
     return proxy.url;
   }
   runs = {
@@ -389,12 +527,53 @@ export class FreeLLMAdmin {
       if (Number.isInteger(key.id) && key.platform === 'custom' && key.label === label && key.baseUrl !== baseUrl) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
     }
   }
-  async ensureFreeFallbacks() {
+  async migrateKiloModels(approved: readonly string[], savedChain?: FallbackRow[]) {
+    const chain = savedChain ?? await this.call('/fallback', undefined, 'GET') as FallbackRow[];
+    const updates = chain.filter(row => managedSharingProvider(row) === 'kilo' && row.enabled !== false
+      && (obsoleteManagedKilo(row) || !approved.includes('kilo') || row.priority !== 999999))
+      .map(row => ({ modelDbId: row.modelDbId, enabled: approved.includes('kilo') && !obsoleteManagedKilo(row),
+        priority: obsoleteManagedKilo(row) || !approved.includes('kilo') ? row.priority : 999999 }));
+    // Quarantine before any catalog lookup/registration, so partial failures
+    // cannot leave a retired managed route enabled for the next request.
+    if (updates.length) await this.call('/fallback', updates, 'PUT');
+    if (!approved.includes('kilo')) return;
+    const keys = await this.call('/keys', undefined, 'GET') as { id?: number; platform: string; label: string; baseUrl?: string; models?: { modelId: string }[] }[];
+    const complete = new Set(keys.filter(key => key.platform === 'custom' && key.models?.some(model => model.modelId === KILO_PARTICLE)).map(key => key.baseUrl));
+    for (const key of keys) {
+      if (key.platform !== 'custom' || !['Kilo Free', 'Milo kilo (Squire)'].includes(key.label) || !Number.isInteger(key.id) || !key.id || key.id < 1
+        || !key.baseUrl || complete.has(key.baseUrl) || !Array.isArray(key.models)) continue;
+      const catalog = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
+      if (!catalog.models.some(model => model.id === KILO_PARTICLE)) continue;
+      // The backend reuses this exact credential. Never read or replace it.
+      // Omitted capability flags preserve an existing custom row's settings;
+      // the backend already defaults newly inserted chat models to tools-on.
+      const registered = await this.call('/keys/custom', { keyId: key.id, models: [{ model: KILO_PARTICLE }] }) as {
+        modelDbId?: number; model?: string; created?: number;
+        models?: { modelDbId: number; model: string; created: boolean }[];
+      };
+      if (!Number.isInteger(registered.modelDbId) || !registered.modelDbId || registered.modelDbId < 1 || registered.model !== KILO_PARTICLE) throw new Error('Legacy Kilo Particle registration could not be verified');
+      const created = registered.models?.find(model => model.modelDbId === registered.modelDbId && model.model === KILO_PARTICLE)?.created;
+      // A user may register/disable this model while catalog discovery runs.
+      // Upsert preserves existing fallback flags; only default a new row.
+      if (created === true || (created === undefined && registered.created === 1)) {
+        await this.call('/fallback', [{ modelDbId: registered.modelDbId, enabled: true, priority: 999999 }], 'PUT');
+      }
+      complete.add(key.baseUrl);
+    }
+  }
+  async ensureFreeFallbacks(dataSharingApproved?: readonly string[]) {
+    const approved = dataSharingApproved ?? await readDataSharingConsent(dirname(localAdminPath()), ['kilo']);
+    // Retired Grunt-owned rows stay quarantined even if a saved sharing receipt
+    // approved them. Disable before unrelated discovery can fail.
+    const chain = await this.call('/fallback', undefined, 'GET') as FallbackRow[];
+    const retired = chain.filter(row => retiredManagedAdapter(row) && row.enabled !== false)
+      .map(row => ({ modelDbId: row.modelDbId, enabled: false, priority: row.priority }));
+    if (retired.length) await this.call('/fallback', retired, 'PUT');
+    await this.migrateKiloModels(approved);
     const keys = await this.call('/keys', undefined, 'GET') as { platform: string; label: string; baseUrl?: string }[];
     for (const provider of freeConfig().customProviders) {
-      if (!keys.some(key => key.platform === 'custom' && key.baseUrl === provider.baseUrl)) {
-        await this.call('/keys/custom', provider);
-      }
+      if (provider.label === 'Kilo Free' && !approved.includes('kilo')) continue;
+      if (!keys.some(key => key.platform === 'custom' && key.baseUrl === provider.baseUrl)) await this.call('/keys/custom', provider);
     }
   }
   async configureChain(excluded: string[] = [], dataSharingApproved?: readonly string[]) {
@@ -404,11 +583,14 @@ export class FreeLLMAdmin {
       const provider = [...Object.keys(PROVIDERS), ...savedProviders].find(provider => row.keyLabel === `Milo ${provider} (Squire)`);
       const owned = managedSharingProvider(row);
       const fallback = !provider && owned !== undefined;
-      const sharingAllowed = !owned || approved.includes(owned);
+      const retired = retiredManagedAdapter(row);
+      const sharingAllowed = !retired && (!owned || approved.includes(owned));
       const vetted = !provider || !providerModels[provider] || providerModels[provider].includes(row.modelId);
+      const disabledParticle = owned === 'kilo' && row.modelId === KILO_PARTICLE && row.enabled === false;
       return { modelDbId: row.modelDbId,
-        enabled: sharingAllowed && (fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true)),
-        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : owned === 'freebuff' ? 1000000 : owned === 'kilo' ? 999999 : row.priority };
+        enabled: sharingAllowed && !obsoleteManagedKilo(row) && !disabledParticle
+          && (fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true)),
+        priority: disabledParticle || retired ? row.priority : owned === 'kilo' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
@@ -500,23 +682,31 @@ async function saveLocalAdmin(admin: LocalAdmin) {
 type FallbackRow = { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean };
 function managedSharingProvider(row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>): string | undefined {
   if (row.platform !== 'custom') return;
-  if (row.keyLabel === 'Milo kilo (Squire)' || (row.keyLabel === 'Kilo Free' && row.modelId === 'kilo-auto/free')) return 'kilo';
+  if (row.keyLabel === 'Milo kilo (Squire)' || row.keyLabel === 'Kilo Free') return 'kilo';
   if (row.keyLabel === 'Freebuff' && row.modelId === 'freebuff') return 'freebuff';
+  for (const provider of disabledAdapters) if (row.keyLabel === `Milo ${provider} (Squire)`) return provider;
   return;
 }
+const obsoleteManagedKilo = (row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>) => managedSharingProvider(row) === 'kilo' && row.modelId !== KILO_PARTICLE;
+// Keep legacy label recognition for retirement; never recreate these rows.
+const retiredManagedAdapter = (row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>) => {
+  const provider = managedSharingProvider(row);
+  return provider !== undefined && disabledAdapters.has(provider);
+};
 // Reconcile only Grunt-owned sharing rows before a legacy backend request. This
 // never provisions a router, changes custom rows, or enables a disabled row.
 export async function guardRouterSharing(url: string, directory: string): Promise<void> {
-  const approved = await readDataSharingConsent(directory, ['kilo', 'freebuff']);
-  if (approved.includes('kilo') && approved.includes('freebuff')) return;
+  const approved = await readDataSharingConsent(directory, ['kilo']);
   const admin = await readLocalAdmin(join(directory, 'router-admin.json'));
   if (!admin) throw new Error('Local router admin state is required to enforce data-sharing choices; rerun usegrunt setup');
   const router = new FreeLLMAdmin(url);
   await router.login(admin.password);
   const chain = await router.call('/fallback', undefined, 'GET') as FallbackRow[];
-  const updates = chain.filter(row => { const provider = managedSharingProvider(row); return provider && !approved.includes(provider) && row.enabled !== false; })
+  const updates = chain.filter(row => { const provider = managedSharingProvider(row); return provider && (retiredManagedAdapter(row) || !approved.includes(provider) || obsoleteManagedKilo(row)) && row.enabled !== false; })
     .map(row => ({ modelDbId: row.modelDbId, enabled: false, priority: row.priority }));
   if (updates.length) await router.call('/fallback', updates, 'PUT');
+  const patched = chain.map(row => ({ ...row, ...updates.find(update => update.modelDbId === row.modelDbId) }));
+  await router.migrateKiloModels(approved, patched);
 }
 // Read the login already created by setup; never provision or change router state.
 export async function loadRouterKey(url: string): Promise<string> {
@@ -573,7 +763,9 @@ function readyRouter(signal?: AbortSignal): Promise<FreeLLMAdmin> {
   void starting.finally(() => { if (routerStarts.get(key) === starting) routerStarts.delete(key); }).catch(() => {});
   return starting;
 }
-export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; dataSharingApproved?: readonly string[] } = {}) {
+export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[] } = {}) {
+  const retired = providers.find(provider => disabledAdapters.has(provider));
+  if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? process.env.MILO_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
   const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(location, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   const unapproved = dataSharingPolicies(providers).filter(policy => !approved.includes(policy.provider));
@@ -582,8 +774,33 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
   if (options.squire instanceof BrowserSquire) options.squire.approveDataSharing(approved);
   const squire = options.squire ?? owned!;
   try {
+    if (providers.includes('kilo')) {
+      await verifyKiloAccess({ ...(options.signal ? { signal: options.signal } : {}) });
+      notify('Kilo: free Particle-1 access verified; no account or API key required');
+      providers = providers.filter(provider => provider !== 'kilo');
+    }
+    // Idle sync only reuses verified state for these guarded sources. It never
+    // deletes their receipts, provisions a browser or changes account settings.
+    if (options.background) {
+      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
+      for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
+        if (!providers.includes(provider)) continue;
+        await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser, background: true,
+          dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
+        providers = providers.filter(id => id !== provider);
+      }
+    }
+    if (!providers.length) return {};
     await owned?.connect();
     options.signal?.throwIfAborted();
+    for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
+      if (!providers.includes(provider)) continue;
+      const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
+      if (typeof browser.signup !== 'function') throw new Error(`${provider} signup requires a browser-capable Squire client`);
+      await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser,
+        dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
+      providers = providers.filter(id => id !== provider);
+    }
     if (providers.includes('livekit')) {
       const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup'>;
       if (typeof browser.signup !== 'function') throw new Error('LiveKit native signup requires a browser-capable Squire client');
