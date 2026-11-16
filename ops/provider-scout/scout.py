@@ -254,6 +254,7 @@ def run(root, smoke=False):
         args = [shutil.which('timeout') or '/usr/bin/timeout', '--signal=TERM', '--kill-after=10s', str(duration),
                 config['codex'], '--no-daemon', '--search', '-a', 'never', '-c', 'sandbox_workspace_write.network_access=true',
                 '-c', 'sandbox_workspace_write.writable_roots=[]',
+                '-c', 'mcp_servers.squire.tools.list_credentials.approval_mode="approve"',
                 'exec', '--sandbox', 'workspace-write', '--ephemeral', '--skip-git-repo-check', '--trust',
                 '-C', str(workspace), '--json',
                 '--output-schema', str(Path(__file__).parent / 'report.schema.json'),

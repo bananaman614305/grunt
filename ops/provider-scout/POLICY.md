@@ -44,7 +44,11 @@ instead of creating duplicate accounts or repeatedly requesting human approval.
 2. Reject or retain as research when those gates are missing. Never reinterpret
    unclear pricing as free. Limit candidate count and signup attempts to the run
    context. Keep lower-confidence discoveries in the report, outside the pool.
-3. For eligible offers, inspect existing Trusty Squire receipts first. Reuse the
+3. For eligible offers, inspect existing Trusty Squire receipts first. Query
+   list_credentials with the candidate's service name and fields="summary";
+   never retrieve the entire vault inventory. This metadata-only lookup is
+   preapproved for the scheduled scout. Other Squire calls keep their approval
+   requirements; record needs_approval if a required action is blocked. Reuse the
    existing account and credentials. Use Squire's supported signup/provisioning
    tools, isolated workflows and existing Google/GitHub identity. Do not restart
    the shared broker, browser or other projects' sessions. If human confirmation,

@@ -30,6 +30,14 @@ policy and ledger are outside the worker's writable roots. An expired login,
 missing web search, malformed output or timeout is reported as a failed run
 rather than a successful empty search.
 
+Each invocation permanently preapproves only Squire's `list_credentials` tool
+through `mcp_servers.squire.tools.list_credentials.approval_mode="approve"`.
+This lookup returns saved-account metadata and vault references, never secret
+values. The worker queries one candidate service at a time with `fields="summary"`.
+The override belongs to this job; it does not change global Codex settings.
+Other Squire actions retain their approval requirements, so this permission alone
+does not authorize signup, credential use, payments or production changes.
+
 `~/.local/state/usegrunt-scout/ledger.json` deduplicates offers by provider domain
 and model. Reports live under `reports/`; `last-run.json` and `cron.log` record
 execution status. State and reports are private to the operator. These are local
