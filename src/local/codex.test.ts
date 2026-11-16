@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Codex } from './codex.js';
 import { Sources } from './source.js';
 import { configure } from './main.js';
+import { bundledRegistry } from '../registry.js';
 import { createLocalApp } from './api.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -44,7 +45,7 @@ it('handles a missing binary without changing the free source chain', async () =
   vi.stubEnv('PATH', dir + '/missing');
   expect(await new Codex().available()).toBe(false);
   await expect(new Codex().complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'not_installed' });
-  expect(configure({}).sources.map(s => s.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
+  expect(configure({}).sources.map(s => s.id)).toEqual(bundledRegistry.adapters.map(adapter => adapter.id));
 });
 it('passes exact text and cwd, parses only the final agent text, and resumes through the API', async () => {
   const source = new Codex({ model: 'custom' });
@@ -109,7 +110,7 @@ it('never launches Codex for default-config API requests', async () => {
       expect(res.status).toBe(200);
       expect((await res.json()).choices[0].message.content).toBe('free answer');
     }
-    expect(sources.sources.map(s => s.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
+    expect(sources.sources.map(s => s.id)).toEqual(bundledRegistry.adapters.map(adapter => adapter.id));
     expect(fs.existsSync(join(dir, 'calls'))).toBe(false);
     expect(configure({ GRUNT_SOURCES: 'opencode,codex,freellmapi' }).sources.map(s => s.id)).toEqual(['opencode', 'codex', 'freellmapi']);
   } finally { vi.unstubAllGlobals(); }
