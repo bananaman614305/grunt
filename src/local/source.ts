@@ -192,7 +192,17 @@ export class Sources {
     }));
     return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];
   }
+  // When no source can answer, start background recovery so the next request has one.
+  setRecovery(recover: () => void) { this.recover = recover; }
+  private recover: (() => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+    try { return await this.route(request, signal); }
+    catch (error) {
+      if (error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
+      throw error;
+    }
+  }
+  private async route(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal.throwIfAborted();
     if (this.disabledModels.has(request.model)) throw new SourceError('refused', `${request.model} routing is disabled`);
     if (this.pending.has(request.model)) {
