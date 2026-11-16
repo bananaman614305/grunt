@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -16,6 +15,8 @@ import stat
 import subprocess
 from urllib.parse import urlsplit
 import uuid
+
+from url_policy import public_url as _public_url
 
 ORIGIN = 'https://github.com/bananaman614305/grunt.git'
 SHA = re.compile(r'^[0-9a-f]{40}$')
@@ -91,23 +92,6 @@ def _git_graph(checkout):
     _require(not (checkout / '.git' / 'info' / 'grafts').exists()
              and not _git(checkout, 'for-each-ref', '--format=%(refname)', 'refs/replace').strip(),
              'Candidate Git replacements and grafts are forbidden')
-
-
-def _public_url(value):
-    if not isinstance(value, str) or len(value) > 2048:
-        return False
-    try:
-        url = urlsplit(value)
-        if url.scheme != 'https' or not url.hostname or any((url.username, url.password, url.query, url.fragment)):
-            return False
-        if url.hostname.lower() == 'localhost' or url.hostname.lower().endswith(('.local', '.internal')):
-            return False
-        try:
-            return ipaddress.ip_address(url.hostname).is_global
-        except ValueError:
-            return '.' in url.hostname
-    except ValueError:
-        return False
 
 
 def _recent(value, seconds=48 * 3600):
@@ -316,7 +300,7 @@ def validate_release_request(candidate: dict, workspace: Path, source_repo: Path
         _require(candidate['free_access'] == 'recurring' and candidate['quality'] in ('target', 'above_baseline'), 'Candidate model or recurring entitlement is unqualified')
         _require(type(candidate['context_tokens']) is int and candidate['context_tokens'] >= 200000, 'Candidate needs at least 200K verified context')
         _require(candidate['signup_friction'] in ('low', 'human_approval') and candidate['setup_status'] in ('anonymous', 'reused', 'signed_up'), 'Signup is incomplete or outside accepted friction limits')
-        _require(_public_url(candidate['homepage']) and candidate['primary_sources'] and all(_public_url(value) for value in candidate['primary_sources']), 'Current public primary-source evidence is required')
+        _require(_public_url(candidate['homepage']) and candidate['primary_sources'] and all(_public_url(value, allow_navigation=True) for value in candidate['primary_sources']), 'Current public primary-source evidence is required')
         request = candidate['release_request']
         _require(isinstance(request, dict), 'Candidate release request is missing')
         source_id, model = request['source_id'], request['model']
@@ -433,8 +417,21 @@ def review_candidate(receipt: dict, state_dir: Path, run_agent) -> dict:
               'zero-cost access, >=200000 context, DeepSeek V4.1 Flash/GLM5.3 Flash-or-better coding quality, no mandatory card/SMS/Discord '
               'or affiliation gate, compatible automation/downstream terms, model identity and hard free spending guards. Verify the '
               'new provider has native tools, exact-source evidence, onboarding/default-registry/consent integration, and no weakening '
-              'of existing guards, tests or provider choices. Provider-specific user consent must remain enforced. Missing or unclear '
-              'facts mean reject or needs_approval. Do not read private credential/config files. Inspect the full diff and relevant code '
+              'of existing guards, tests or provider choices. Provider-specific user consent must remain enforced. Ordinary provider '
+              'retention, training and staff review are allowed when honestly disclosed. Unknown privacy guarantees or an absent '
+              'zero-data-retention (ZDR) free-route catalog flag alone do not establish incompatibility and must not cause rejection '
+              'or needs_approval. Never infer a ZDR/no-training promise. Alan has standing operator approval for those ordinary '
+              'sharing conditions in bounded synthetic qualification. A missing source-specific DataSharingPolicy entry is '
+              'integration_pending until implemented, not a reason to reject the offer before implementation. For a release, verify '
+              'an accurate current source policy exists and the existing recordDataSharingConsent helper recorded its fingerprint '
+              'only in the candidate private config under that approval. Consent cannot transfer from Kilo to OpenRouter or any '
+              'other source because the underlying model matches. End users must still receive grouped source-specific consent '
+              'and changed-policy fingerprint prompts; never prewrite future users receipts. Explicit stronger conditions beyond '
+              'the standing approval, such as public posting of identifiable code or selling identifiable project data, require '
+              'a specific human decision. Paid fallback, mandatory payment/card, prohibited downstream use, key exposure, CAPTCHA '
+              'bypass and confidential user data in probes remain hard stops. Missing model, context, recurring-free, downstream-terms '
+              'or consent-integration facts require rejection or needs_approval; unknown ordinary privacy guarantees alone do not. '
+              'Do not read private credential/config files. Inspect the full diff and relevant code '
               f"against base {receipt['base_sha']} at EXACT HEAD {receipt['head_sha']} in {receipt['checkout']}. "
               'Return only the requested schema, with every check true only when verified. Review these claimed facts independently: '
               + facts + '\nSupervisor check receipt: ' + json.dumps(receipt.get('checks', {}), sort_keys=True))

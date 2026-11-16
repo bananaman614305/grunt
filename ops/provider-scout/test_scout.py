@@ -142,6 +142,61 @@ class ScoutTests(unittest.TestCase):
         self.assertIn('0 ready for review', normalized['summary'])
         self.assertEqual(report['candidates'][0]['status'], 'ready_for_review')
 
+    def test_public_doc_navigation_keeps_nineteen_offer_batch_intact(self):
+        selectors = ['models','pricing','limits','rate-limits','privacy','terms','docs']
+        rows = [candidate(provider=f'Synthetic {index}', homepage=f'https://provider{index}.example',
+                          primary_sources=[f'https://provider{index}.example/docs?section={selectors[index%len(selectors)]}'],
+                          status='researched') for index in range(19)]
+        rows[7]['primary_sources'] = ['https://ony.synthetic.example/?section=models']
+        rows[12]['context_tokens'] = 42000
+        report = {'summary':'Synthetic nineteen-offer mirror','web_search_used':True,
+                  'search_queries':['synthetic free models','synthetic recurring limits'],'candidates':rows,'blockers':[]}
+        errors = []
+        ledger = scout.ingest(report,{'version':1,'candidates':{}},self.workspace,diagnostics=errors)
+        normalized = scout.normalized_report(report,ledger,errors)
+        self.assertEqual(errors,[])
+        self.assertEqual(len(ledger['candidates']),19)
+        self.assertEqual(len(normalized['candidates']),19)
+        self.assertEqual(ledger['candidates'][scout.candidate_id(rows[12])]['status'],'rejected')
+
+    def test_bad_row_is_quarantined_without_payload_or_loss_of_good_rows(self):
+        secret = 'PRIVATE_SIGNED_URL_PAYLOAD'
+        bad = candidate(provider=secret,homepage='https://bad.example/?token='+secret,reason=secret)
+        good = candidate(homepage='https://good.example',status='researched')
+        report = {'summary':secret,'web_search_used':True,'search_queries':[secret,secret],
+                  'candidates':[bad,good],'blockers':[secret]}
+        errors = []
+        ledger = scout.ingest(report,{'version':1,'candidates':{}},self.workspace,diagnostics=errors)
+        normalized = scout.normalized_report(report,ledger,errors)
+        self.assertEqual(errors,[{'row':0,'code':'invalid_homepage_url'}])
+        self.assertEqual(len(ledger['candidates']),1)
+        self.assertEqual(normalized['validation']['quarantined'],1)
+        self.assertNotIn(secret,json.dumps({'ledger':ledger,'report':normalized}))
+        self.assertEqual(normalized['candidates'][0]['homepage'],good['homepage'])
+
+    def test_ambiguous_duplicate_ids_quarantine_all_rows_and_preserve_old_record(self):
+        old = candidate(reason='Historical valid record')
+        key = scout.candidate_id(old)
+        ledger = {'version':1,'candidates':{key:old}}
+        duplicate_bad = candidate(primary_sources=['https://synthetic.example/?signature=PRIVATE'])
+        report = {'summary':'Duplicates','web_search_used':True,'search_queries':['one','two'],
+                  'candidates':[candidate(),duplicate_bad],'blockers':[]}
+        errors = []
+        updated = scout.ingest(report,ledger,self.workspace,diagnostics=errors)
+        self.assertEqual(updated,ledger)
+        self.assertEqual({item['row'] for item in errors},{0,1})
+        self.assertEqual(scout.normalized_report(report,updated,errors)['candidates'],[])
+
+    def test_malformed_candidate_is_isolated_but_invalid_envelope_still_fails(self):
+        report = {'web_search_used':True,'search_queries':['one','two'],
+                  'candidates':[None,candidate(status='researched')]}
+        errors = []
+        updated = scout.ingest(report,{'candidates':{}},self.workspace,diagnostics=errors)
+        self.assertEqual(len(updated['candidates']),1)
+        self.assertEqual(errors,[{'row':0,'code':'invalid_candidate_shape'}])
+        with self.assertRaises(ValueError):
+            scout.ingest({**report,'search_queries':'not-a-search-list'},updated,self.workspace)
+
     def test_overlapping_run_never_starts_a_worker(self):
         with open(self.workspace / 'run.lock', 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -342,6 +397,34 @@ class ScoutTests(unittest.TestCase):
         ledger = scout.load(self.workspace / 'ledger.json')['candidates']
         self.assertEqual(ledger[scout.candidate_id(stale)]['pipeline_status'],'blocked')
         self.assertEqual(ledger[scout.candidate_id(fresh)]['pipeline_status'],'released')
+
+    def test_run_never_promotes_quarantined_historical_row_or_retains_raw_payload(self):
+        _, fresh, result = self.enabled_pipeline_fixture()
+        secret = 'PRIVATE_URL_CANARY_NEVER_RETAIN'
+        historical = candidate(homepage='https://historical.example',reason='Earlier accepted record',
+                               release_request={**fresh['release_request'],'source_id':'old','head_sha':'c'*40})
+        key = scout.candidate_id(historical)
+        scout.atomic(self.workspace/'ledger.json',{'version':1,'candidates':{key:historical}})
+        bad = candidate(homepage=historical['homepage'],provider=secret,
+                        primary_sources=['https://historical.example/?signature='+secret])
+        result['result'].update(summary=secret,search_queries=[secret,secret],blockers=[secret],candidates=[bad,fresh])
+        def execute(request,*_args):
+            scout.atomic(Path(request['output_path']),result['result'])
+            return result
+        pipeline = Mock()
+        pipeline.resume_pending.return_value = []
+        pipeline.process.return_value = {'status':'released','source_id':'synthetic','head_sha':'a'*40,'reason':'verified'}
+        with patch.dict('sys.modules',{'pipeline':types.SimpleNamespace(Pipeline=Mock(return_value=pipeline))}), \
+                patch.object(scout,'run_agent',side_effect=execute),contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(scout.run(self.workspace),0)
+        pipeline.process.assert_called_once()
+        self.assertEqual(pipeline.process.call_args.args[0]['homepage'],fresh['homepage'])
+        for path in self.workspace.rglob('*.json'):
+            self.assertNotIn(secret,path.read_text(),str(path))
+        self.assertNotIn(secret,printed.getvalue())
+        state = scout.load(self.workspace/'last-run.json')
+        self.assertEqual(state['candidate_errors'],[{'row':0,'code':'invalid_primary_source_url'}])
+        self.assertEqual(scout.load(self.workspace/'ledger.json')['candidates'][key]['reason'],'Earlier accepted record')
 
     def test_superseded_resume_does_not_consume_fresh_integration_budget(self):
         _, item, result = self.enabled_pipeline_fixture()

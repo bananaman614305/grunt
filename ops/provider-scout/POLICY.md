@@ -32,6 +32,44 @@ account cycling and artificial credit multiplication. Google/GitHub OAuth and
 ordinary provider confirmations are acceptable. Data sharing is acceptable when
 disclosed, but preserve the application's provider-specific consent requirements.
 
+## Data sharing and operator approval
+
+Alan's standing operator approval covers ordinary provider retention, model
+training and staff review for eligible free-source qualification with bounded
+synthetic prompts in the candidate's private configuration. Unknown retention
+or training guarantees, or the absence of a zero-data-retention (ZDR) flag in a
+free-route catalog, do not by themselves mean a provider is incompatible or
+require rejection or needs_approval. State what official sources establish and
+what remains unknown; do not invent a ZDR or no-training promise. Unclear free
+eligibility and explicit prohibitions on downstream use remain separate gates.
+
+A missing provider-specific DataSharingPolicy entry is integration_pending,
+not a reason to reject the offer or stop before implementing that integration.
+First add an accurate entry for the exact source, with its own disclosure,
+policy URL and version. Then use the existing recordDataSharingConsent helper
+in that candidate's private config directory to record the current source's
+policy fingerprint under Alan's standing approval before synthetic inference.
+The guarded adapter and setup must honor that receipt. This permission does not
+authorize provider signup terms or inference that otherwise fail the free-access
+or downstream-use gates.
+
+Consent belongs to the exact source and current policy. In particular, a new
+OpenRouter source needs its own accurately disclosed policy; Kilo consent does
+not transfer to it because both may offer the same underlying model. Never
+inherit an existing source's consent by model name, account or upstream provider.
+Never write receipts for future end users. Their normal grouped approval must
+include the new source's disclosure, and a changed policy fingerprint must
+prompt them again before signup or routing where consent is required.
+
+Explicit material conditions beyond this standing approval, such as publishing
+user-identifiable code or selling identifiable project data, require a specific
+human decision. Report the actual condition and supporting source when marking
+needs_approval; ordinary retention, training, staff review or uncertainty about
+those practices alone are not such a condition. Never send confidential user
+code/data in scout probes. Paid fallback, mandatory payment/card, prohibited
+downstream use, exposing keys and bypassing CAPTCHA or other human verification
+remain hard stops.
+
 The current curated registry and candidate ledger appear in the run context.
 Deduplicate existing provider/model offers. Revisit rejected offers only when
 their terms/models materially change; explain what changed. Prior decisions:
@@ -48,9 +86,12 @@ instead of creating duplicate accounts or repeatedly requesting human approval.
 ## Established qualification pipeline
 
 1. Document exact model, context, zero-cost recurring entitlement, rate limits,
-   signup steps and data policy from current official sources.
+   signup steps and data policy from current official sources. Disclose ordinary
+   sharing and label unknown privacy guarantees honestly; ZDR is not required.
 2. Reject or retain as research when those gates are missing. Never reinterpret
-   unclear pricing as free. Limit candidate count and signup attempts to the run
+   unclear pricing as free or ordinary privacy uncertainty as a failed gate.
+   Keep a missing consent entry as integration_pending while implementing it.
+   Limit candidate count and signup attempts to the run
    context. Keep lower-confidence discoveries in the report, outside the pool.
 3. For eligible offers, inspect existing Trusty Squire receipts first. Query
    list_credentials with the candidate's service name and fields="summary";
@@ -61,7 +102,7 @@ instead of creating duplicate accounts or repeatedly requesting human approval.
    existing account and credentials. Use Squire's supported signup/provisioning
    tools, isolated workflows and existing Google/GitHub identity. Do not restart
    the shared broker, browser or other projects' sessions. If human confirmation,
-   changed consent, MFA or a CAPTCHA blocks progress, record needs_approval or
+   consent beyond the standing operator approval, MFA or a CAPTCHA blocks progress, record needs_approval or
    setup_blocked and stop that attempt. Never wait indefinitely or bypass it.
 4. Use only the protected Squire proxy configured by the supervisor. It permits
    signup/browser operations, service-filtered metadata and bounded credential-
@@ -90,7 +131,11 @@ instead of creating duplicate accounts or repeatedly requesting human approval.
 6. Integrate the provider in an isolated candidate branch using the existing
    adapter, free-access guards, Squire grant, consent and registry patterns.
    Use an owned mode-0700 private GRUNT_CONFIG_DIR under this workspace for candidate state; never
-   write the production configuration. Keep npm/pnpm caches inside the workspace
+   write the production configuration. Implement any missing source-specific
+   sharing entry, then record its current fingerprint in that private directory
+   through recordDataSharingConsent under the standing operator approval.
+   End-user approval must remain grouped and specific to the source/policy.
+   Keep npm/pnpm caches inside the workspace
    when sandbox restrictions prevent using a global cache or installation.
    Validate documented context, model identity, ongoing free access and hard
    spending prevention. Run the project's lint/tests/build locally. Do not edit
@@ -151,6 +196,10 @@ Return the exact requested JSON schema. Include actual search queries and curren
 primary-source URLs. Public report URLs must not contain credentials, userinfo,
 query tokens or fragments. Describe blocked approvals without secret handoff
 URLs; keep any necessary handoff solely in a private Squire workflow.
+Primary-source documentation may use known public navigation selectors such as
+`?section=models`, `?tab=pricing` or `?view=limits`. Do not add authentication,
+tracking or arbitrary query values. Homepages and proposal URLs stay query-free;
+choose a canonical public source if its link requires an unsupported selector.
 
 If this is a smoke run, do research only: no signup, implementation, PR, inference,
 browser mutation or account changes. Investigate at most three new offers.

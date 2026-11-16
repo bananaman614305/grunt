@@ -11,6 +11,7 @@ it("tracks only the root app, operator scout, proof adapters, static site, regis
     "ops/provider-scout/pipeline.py", "ops/provider-scout/test_pipeline.py",
     "ops/provider-scout/sandbox.py", "ops/provider-scout/test_sandbox.py",
     "ops/provider-scout/validation.py", "ops/provider-scout/test_validation.py",
+    "ops/provider-scout/url_policy.py", "ops/provider-scout/test_url_policy.py",
     "ops/provider-scout/promotion.py", "ops/provider-scout/test_promotion.py",
     "ops/provider-scout/worker.py", "ops/provider-scout/test_worker.py",
     "ops/provider-scout/squire_proxy.py", "ops/provider-scout/test_squire_proxy.py",

@@ -15,7 +15,12 @@ primary sources, recurring free access, at least 200,000 context tokens and
 DeepSeek V4.1 Flash, GLM 5.3 Flash or verified comparable or better coding quality.
 One-time credits, restricted affiliations, mandatory payments, SMS or Discord
 onboarding do not qualify. Data sharing must be disclosed and retain Grunt's
-provider-specific consent.
+provider-specific consent. Ordinary retention, training, staff review or unknown
+ZDR guarantees alone do not disqualify a free source. The absence of a free-route
+ZDR catalog flag establishes no privacy promise or incompatibility by itself.
+Alan's standing approval covers bounded synthetic qualification under those
+ordinary conditions; stronger explicit conditions beyond that approval need a
+specific human decision.
 
 ## Install and run
 
@@ -68,6 +73,14 @@ gate.
    consent, exact-model defaults and registry metadata. It prepares a clean
    commit, a newer patch version, a newer registry publication timestamp and
    preliminary hello/tool evidence bound to that commit and registry hash.
+   A missing source-specific sharing policy stays integration_pending while
+   the worker implements an accurate disclosure, URL and version. After that,
+   the existing `recordDataSharingConsent` helper can record its fingerprint in
+   the candidate's private config under the standing operator approval. Consent
+   from Kilo or another source does not transfer by underlying model; an
+   OpenRouter source needs its own policy. End users still receive the grouped
+   source-specific disclosure and must approve changed policy fingerprints.
+   The scout never prewrites their receipts or tests with confidential code.
 4. **Validate and review.** The trusted supervisor verifies the repository,
    current main base, allowed change scope, eligibility and evidence. A fresh
    read-only reviewer independently checks current provider facts, terms,
@@ -121,13 +134,32 @@ reports, not email or chat notifications. Missing web search, expired login,
 malformed output and timeouts are failures or explicit blockers, not successful
 empty searches.
 
-Human OAuth confirmation, MFA, CAPTCHA, changed consent and publisher approval
+Public source evidence can include known documentation selectors, such as
+`?section=models`, `?tab=pricing` or `?view=limits`. Homepages and proposal URLs
+remain query-free. Unknown selectors, signed/credential-bearing queries,
+fragments, malformed authorities and literal private/local addresses are
+rejected by the shared report and release URL policy.
+
+A malformed candidate row is quarantined with only its row number and a fixed
+error code; valid neighbors still enter the ledger. Duplicate candidate IDs are
+quarantined together. Reports record accepted/quarantined counts, and rejected
+payloads and potentially repeated envelope text are removed from the persisted
+worker result. A rejected current row cannot revive an older ledger entry for
+promotion. Invalid report envelopes, missing web research and exceeded run
+budgets still fail the entire pass.
+
+Human OAuth confirmation, MFA, CAPTCHA, consent beyond the standing operator
+approval and publisher approval
 remain genuine blockers. The job records pending approval/setup work and stops
 that attempt; it does not bypass challenges or wait indefinitely. Complete the
 ordinary authentication or private Squire handoff before rerunning. Subsequent
 runs reuse pending work and protected release checkpoints. A retry preserves
 the exact source/model/commit identity and checks existing merge/publication
 state before continuing, avoiding a second merge or duplicate publish.
+Uncertain ordinary retention/training guarantees are disclosed rather than
+treated as these blockers. Explicit requirements such as public posting of
+identifiable code or selling identifiable project data need a specific decision;
+paid fallback, prohibited downstream use and key exposure remain hard stops.
 
 To stop scheduling, use `crontab -e` and remove only the block between
 `# BEGIN usegrunt-provider-scout` and `# END usegrunt-provider-scout`. A running
