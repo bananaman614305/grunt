@@ -18,16 +18,44 @@ const launchRegistry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(
 const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
 const source = (id: string): Source => ({ id, available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: `${id} done` })) });
 function routed(random = () => 0) { const a = source('opencode'), b = source('kilo'); return { a, b, sources: new Sources([a, b], { registry: () => launchRegistry, random }) }; }
-// Pi tool definitions must not remove a native-tool agent from routing.
-it.each([false, true])('retains Pi tools and source selection (sticky=%s)', async sticky => {
+const piTools = [{ type: 'function' as const, function: { name: 'read', parameters: {} } }];
+// An explicitly named source keeps Pi tools, even one that runs its own tools.
+it.each([false, true])('honors an explicitly named native-tool agent with Pi tools (sticky=%s)', async sticky => {
   const nativeAgent = { ...source('opencode'), supportsFunctionTools: false };
-  const fallback = source('kilo');
+  const fallback = { ...source('kilo'), supportsFunctionTools: true };
   const sources = new Sources([fallback, nativeAgent], sticky ? { registry: () => launchRegistry, random: () => 0 } : undefined);
-  const input = { ...request, model: 'opencode', tools: [{ type: 'function' as const, function: { name: 'read', parameters: {} } }] };
+  const input = { ...request, model: 'opencode', tools: piTools };
   expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
   expect(nativeAgent.complete).toHaveBeenCalledWith(input, expect.any(AbortSignal));
   expect(fallback.complete).not.toHaveBeenCalled();
-  expect(await new Sources([nativeAgent], sticky ? { registry: () => launchRegistry } : undefined).complete({ ...input, model: 'milo' }, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+});
+// Automatic selection with Pi tools only picks sources that return Pi's tool calls.
+it.each([false, true])('skips native-tool agents for automatic requests with Pi tools (sticky=%s)', async sticky => {
+  const nativeAgent = { ...source('opencode'), supportsFunctionTools: false };
+  const fallback = { ...source('kilo'), supportsFunctionTools: true };
+  const sources = new Sources([nativeAgent, fallback], sticky ? { registry: () => launchRegistry, random: () => 0 } : undefined);
+  const input = { ...request, tools: piTools };
+  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  expect(nativeAgent.complete).not.toHaveBeenCalled();
+  // Requests without tools still reach the native-tool agent.
+  expect(await new Sources([nativeAgent], sticky ? { registry: () => launchRegistry } : undefined).complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+});
+it.each([false, true])('reports a clear error when no tool-capable source exists (sticky=%s)', async sticky => {
+  const nativeAgent = { ...source('opencode'), supportsFunctionTools: false };
+  const unmarked = source('kilo');
+  const sources = new Sources([nativeAgent, unmarked], sticky ? { registry: () => launchRegistry, random: () => 0 } : undefined);
+  await expect(sources.complete({ ...request, tools: piTools }, AbortSignal.timeout(1000))).rejects.toThrow(/tool-capable/);
+  expect(nativeAgent.complete).not.toHaveBeenCalled();
+  expect(unmarked.complete).not.toHaveBeenCalled();
+});
+it('moves a task bound to a native-tool agent once Pi attaches tools', async () => {
+  const nativeAgent = { ...source('opencode'), supportsFunctionTools: false };
+  const fallback = { ...source('kilo'), supportsFunctionTools: true };
+  const sources = new Sources([nativeAgent, fallback], { registry: () => launchRegistry, random: () => 0 });
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(await sources.complete({ ...request, tools: piTools }, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  // The switch carries a handoff so the tool-capable source continues the task.
+  expect(vi.mocked(fallback.complete).mock.calls[0][0].handoffPrompt).toContain('Finish the task');
 });
 afterEach(() => vi.restoreAllMocks());
 it('sticky within task, tool results and retries; draws again for the next user turn', async () => {

@@ -19,6 +19,8 @@ interface StoredMessage { info: { id: string; role: string }; parts: { id: strin
 
 export class OpenCode implements Source {
   readonly id = 'opencode';
+  // OpenCode runs its own coding tools and never returns Pi's tool calls.
+  readonly supportsFunctionTools = false;
   private child?: ChildProcess;
   private starting: Promise<string> | undefined;
   private sessions = new Map<string, string>();

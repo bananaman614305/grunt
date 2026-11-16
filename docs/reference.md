@@ -148,10 +148,15 @@ including SSE. Choose model `milo` for automatic source selection, or a source
 id such as `kilo`. This process is separate from the Fly server and Docker
 entry point. Keep this endpoint on your own machine.
 
-Requests containing function tools follow the same source selection and fallback
-rules as other requests. Native API sources forward function definitions;
-validated JSON bridges return correlated calls for the caller's harness to
-execute. OpenCode runs its own delegate tools and returns final text. grunt
+Automatic selection (`milo` or `grunt`) sends requests containing function tools
+only to sources that return tool calls to the caller's harness. Native API
+sources forward function definitions; validated JSON bridges return correlated
+calls for the caller's harness to execute. OpenCode runs its own delegate tools
+and returns final text, so it receives only requests without function tools,
+unless the caller names `opencode` explicitly. A task bound to OpenCode moves,
+with a handoff, to a tool-capable source when the harness attaches tools. When
+no tool-capable source is usable, grunt returns an error instead of a text-only
+answer. grunt
 extracts cwd from harness context (including environment
 blocks), accepts an explicit absolute `cwd`, and otherwise uses the daemon's
 working directory. It logs the chosen directory. Check it before asking for edits.
