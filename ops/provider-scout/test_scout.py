@@ -227,6 +227,13 @@ class ScoutTests(unittest.TestCase):
         self.assertFalse((self.workspace / 'ledger.json').exists())
 
     def enabled_pipeline_fixture(self):
+        refresher = patch.object(scout, 'refresh_source_main')
+        self.refresher = refresher.start()
+        self.addCleanup(refresher.stop)
+        snapshot = patch.object(scout,'read_source_snapshot',return_value={
+            'base_sha':'b'*40,'registry':{'version':1,'adapters':[{'id':'fresh-canonical-provider'}]}})
+        self.snapshot = snapshot.start()
+        self.addCleanup(snapshot.stop)
         self.worker_fixture()
         config = scout.load(self.workspace / 'config.json')
         config['release_enabled'] = True
@@ -259,11 +266,17 @@ class ScoutTests(unittest.TestCase):
                 patch.object(scout, 'run_agent', agent), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(scout.run(self.workspace), 0)
         self.assertEqual([call[0] for call in calls], ['init','resume','process'])
+        self.refresher.assert_called_once()
+        self.assertEqual(self.refresher.call_args.args[0], config['source_repo'])
+        self.snapshot.assert_called_once()
         self.assertIn('_deadline_monotonic', calls[0][1])
         self.assertIsInstance(calls[0][1]['_lock_fd'], int)
         self.assertNotIn('_deadline_monotonic', scout.load(self.workspace / 'config.json'))
         self.assertNotIn('_lock_fd', scout.load(self.workspace / 'config.json'))
         request = agent.call_args.args[0]
+        context = json.loads(request['prompt'].split('## This run\n',1)[1])
+        self.assertEqual(context['base_sha'],'b'*40)
+        self.assertEqual(context['curated_registry']['adapters'],[{'id':'fresh-canonical-provider'}])
         self.assertLessEqual(request['timeout_seconds'], 1200)
         self.assertTrue(request['require_web_search'])
         ledger = scout.load(self.workspace / 'ledger.json')
@@ -277,9 +290,13 @@ class ScoutTests(unittest.TestCase):
         scout.atomic(self.workspace / 'config.json', config)
         controller = Mock(side_effect=AssertionError('Smoke attempted release'))
         with patch.dict('sys.modules', {'pipeline':types.SimpleNamespace(Pipeline=controller)}), \
+                patch.object(scout,'refresh_source_main') as refresh, \
+                patch.object(scout,'read_source_snapshot') as snapshot, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(scout.run(self.workspace, smoke=True), 0)
         controller.assert_not_called()
+        refresh.assert_not_called()
+        snapshot.assert_not_called()
 
     def test_resumed_publication_is_durable_when_later_research_fails(self):
         config, item, _ = self.enabled_pipeline_fixture()
@@ -325,6 +342,81 @@ class ScoutTests(unittest.TestCase):
         ledger = scout.load(self.workspace / 'ledger.json')['candidates']
         self.assertEqual(ledger[scout.candidate_id(stale)]['pipeline_status'],'blocked')
         self.assertEqual(ledger[scout.candidate_id(fresh)]['pipeline_status'],'released')
+
+    def test_superseded_resume_does_not_consume_fresh_integration_budget(self):
+        _, item, result = self.enabled_pipeline_fixture()
+        stale = candidate(homepage='https://old.synthetic.example',
+                          release_request={**item['release_request'],'source_id':'old','head_sha':'c'*40})
+        scout.atomic(self.workspace / 'ledger.json', {'version':1,'candidates':{scout.candidate_id(stale):stale}})
+        pipeline = Mock()
+        pipeline.resume_pending.return_value = [{'status':'superseded','source_id':'old','head_sha':'c'*40,
+                                                 'reason':'main_changed_requires_fresh_review'}]
+        pipeline.process.return_value = {'status':'released','source_id':'synthetic','head_sha':'a'*40,'reason':'verified'}
+        agent = Mock(return_value=result)
+        with patch.dict('sys.modules',{'pipeline':types.SimpleNamespace(Pipeline=Mock(return_value=pipeline))}), \
+                patch.object(scout,'run_agent',agent), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(self.workspace),0)
+        pipeline.process.assert_called_once()
+        context = json.loads(agent.call_args.args[0]['prompt'].split('## This run\n',1)[1])
+        self.assertEqual(context['max_integrations'],1)
+        ledger = scout.load(self.workspace / 'ledger.json')['candidates']
+        self.assertEqual(ledger[scout.candidate_id(stale)]['pipeline_status'],'superseded')
+        self.assertEqual(ledger[scout.candidate_id(item)]['pipeline_status'],'released')
+
+    def test_release_disabled_run_does_not_refresh_source(self):
+        self.worker_fixture()
+        with patch.object(scout,'refresh_source_main') as refresh, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(self.workspace),0)
+        refresh.assert_not_called()
+
+    def test_source_refresh_only_fetches_canonical_main_with_bounded_safe_process(self):
+        process = Mock(pid=999999999)
+        process.wait.return_value = 0
+        with patch.object(scout.subprocess,'Popen',return_value=process) as launch, \
+                patch.object(scout.os,'killpg') as kill, \
+                patch.dict(os.environ,{'GITHUB_TOKEN':'must-not-inherit','GIT_CONFIG_COUNT':'99'}):
+            scout.refresh_source_main(self.workspace,timeout=300)
+        args = launch.call_args.args[0]
+        env = launch.call_args.kwargs['env']
+        self.assertIn('core.hooksPath=/dev/null',args)
+        self.assertIn('core.fsmonitor=false',args)
+        helpers = [arg for arg in args if arg.startswith('credential.')]
+        executable = str(Path(scout.shutil.which('gh')).resolve())
+        self.assertEqual(helpers,['credential.helper=',
+                                 'credential.https://github.com.helper=!' + scout.shlex.quote(executable) + ' auth git-credential'])
+        self.assertEqual(args[-2:],['https://github.com/bananaman614305/milo.git',
+                                    '+refs/heads/main:refs/remotes/origin/main'])
+        self.assertIn('--no-write-fetch-head',args)
+        self.assertNotIn('checkout',args)
+        self.assertNotIn('reset',args)
+        self.assertNotIn('GITHUB_TOKEN',env)
+        self.assertNotIn('GIT_CONFIG_COUNT',env)
+        self.assertEqual(env['GIT_CONFIG_GLOBAL'],'/dev/null')
+        self.assertEqual(env['GIT_TERMINAL_PROMPT'],'0')
+        self.assertTrue(launch.call_args.kwargs['start_new_session'])
+        process.wait.assert_any_call(timeout=60)
+        self.assertEqual(kill.call_count,2)
+
+    def test_source_snapshot_reads_registry_at_pinned_canonical_commit(self):
+        head = 'a'*40
+        processes = []
+        def launch(args, **kwargs):
+            process = Mock(pid=999999999,returncode=0)
+            process.communicate.return_value = ((head+'\n').encode() if args[-3:-1] == ['rev-parse','--verify']
+                                                 else b'{"version":1,"adapters":[{"id":"canonical"}]}', None)
+            processes.append((args,kwargs,process))
+            return process
+        with patch.object(scout.subprocess,'Popen',side_effect=launch), patch.object(scout.os,'killpg'):
+            snapshot = scout.read_source_snapshot(self.workspace)
+        self.assertEqual(snapshot,{'base_sha':head,'registry':{'version':1,'adapters':[{'id':'canonical'}]}})
+        self.assertEqual(processes[0][0][-3:],['rev-parse','--verify','refs/remotes/origin/main^{commit}'])
+        self.assertEqual(processes[1][0][-2:],['show',head+':registry/adapters.json'])
+        for args,kwargs,process in processes:
+            self.assertIn('core.hooksPath=/dev/null',args)
+            self.assertIn('core.fsmonitor=false',args)
+            self.assertEqual(kwargs['env']['GIT_NO_REPLACE_OBJECTS'],'1')
+            self.assertTrue(kwargs['start_new_session'])
+            process.stdout.close.assert_called_once()
 
     def test_pipeline_cancellation_records_status_and_restores_handlers(self):
         _, _, result = self.enabled_pipeline_fixture()

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Operator-only, twice-daily discovery, qualification and guarded release."""
 import argparse
+import contextlib
 import datetime as dt
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -245,6 +247,100 @@ def record_pipeline_result(ledger, result, candidate=None):
                                               pipeline_updated_at=now())
 
 
+def refresh_source_main(source_repo, timeout=60):
+    """Refresh the canonical tracking ref without changing the source tree."""
+    if timeout <= 0:
+        raise ValueError('Source refresh budget exhausted')
+    executable = shutil.which('gh')
+    if not executable or not Path(executable).is_absolute():
+        raise ValueError('Trusted GitHub authentication helper is unavailable')
+    helper = Path(executable).resolve(strict=True)
+    info = helper.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+        raise ValueError('Trusted GitHub authentication helper is unavailable')
+    args = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+            '-c', 'credential.helper=',
+            '-c', 'credential.https://github.com.helper=!' + shlex.quote(str(helper)) + ' auth git-credential',
+            '-c', 'http.followRedirects=false',
+            '-c', 'maintenance.auto=false', '-c', 'gc.auto=0',
+            '-C', str(source_repo), 'fetch', '--no-tags', '--no-recurse-submodules',
+            '--no-auto-maintenance', '--no-write-fetch-head',
+            'https://github.com/bananaman614305/milo.git',
+            '+refs/heads/main:refs/remotes/origin/main']
+    env = {key: value for key, value in os.environ.items()
+           if key in ('HOME', 'PATH', 'LANG', 'LC_ALL')}
+    env.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1', GIT_TERMINAL_PROMPT='0')
+    process = None
+    try:
+        process = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        if process.wait(timeout=min(timeout, 60)) != 0:
+            raise ValueError('Canonical source refresh failed')
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError('Canonical source refresh failed') from None
+    finally:
+        if process is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+
+
+def read_source_snapshot(source_repo, timeout=60):
+    """Read registry bytes from the exact fetched main commit, not the tree."""
+    deadline = time.monotonic() + min(timeout, 60)
+    prefix = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+              '--no-pager', '-C', str(source_repo)]
+    env = {key: value for key, value in os.environ.items()
+           if key in ('HOME', 'PATH', 'LANG', 'LC_ALL')}
+    env.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1',
+               GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1')
+
+    def read(arguments):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError('Source snapshot budget exhausted')
+        process = None
+        try:
+            process = subprocess.Popen([*prefix, *arguments], env=env, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       start_new_session=True)
+            output, _ = process.communicate(timeout=min(remaining, 30))
+            if process.returncode != 0 or len(output) > 2 * 1024 * 1024:
+                raise ValueError('Canonical source snapshot failed')
+            return output
+        except (OSError, subprocess.SubprocessError):
+            raise ValueError('Canonical source snapshot failed') from None
+        finally:
+            if process is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                finally:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                    process.stdout.close()
+
+    head = read(['rev-parse', '--verify', 'refs/remotes/origin/main^{commit}']).decode('ascii').strip()
+    if not re.fullmatch(r'[0-9a-f]{40}', head):
+        raise ValueError('Canonical source snapshot has no valid commit')
+    registry = json.loads(read(['show', head + ':registry/adapters.json']))
+    if not isinstance(registry, dict):
+        raise ValueError('Canonical registry is invalid')
+    return {'base_sha': head, 'registry': registry}
+
+
 def run(root, smoke=False):
     private_directory(root)
     lock_fd = os.open(root / 'run.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -265,6 +361,8 @@ def run(root, smoke=False):
         atomic(root / 'last-run.json', state)
         ledger = load(root / 'ledger.json', {'version': 1, 'candidates': {}})
         pipeline = None
+        resume_consumed = False
+        snapshot = None
         output = directory / 'result.json'
         previous_handlers = {}
         def cancel(*_):
@@ -273,18 +371,23 @@ def run(root, smoke=False):
             previous_handlers[number] = signal.signal(number, cancel)
         try:
             if not smoke and config.get('release_enabled') is True:
+                refresh_source_main(config['source_repo'], deadline - time.monotonic())
+                snapshot = read_source_snapshot(config['source_repo'], deadline - time.monotonic())
+                state['source_main_refreshed_at'] = now()
                 from pipeline import Pipeline
                 pipeline = Pipeline({**config, '_deadline_monotonic': deadline, '_lock_fd': lock.fileno()}, root)
                 state['pipeline_results'] = pipeline.resume_pending()
                 for result in state['pipeline_results']:
                     record_pipeline_result(ledger, result)
+                resume_consumed = any(result.get('status') != 'superseded' for result in state['pipeline_results'])
                 atomic(root / 'ledger.json', ledger)
-            registry = load(Path(config['source_repo']) / 'registry/adapters.json')
+            registry = snapshot['registry'] if snapshot else load(Path(config['source_repo']) / 'registry/adapters.json')
             context = {'date_utc': now(), 'smoke': smoke, 'source_repo': config['source_repo'],
                        'workspace': str(workspace), 'curated_registry': registry,
+                       'base_sha': snapshot['base_sha'] if snapshot else None,
                        'previous_candidates': list(ledger['candidates'].values())[-200:],
                        'max_candidates': 3 if smoke else 20, 'max_signups': 0 if smoke else 2,
-                       'max_integrations': 0 if smoke or state.get('pipeline_results') else 1,
+                       'max_integrations': 0 if smoke or resume_consumed else 1,
                        'release_enabled': bool(pipeline)}
             policy = (Path(__file__).parent / 'POLICY.md').read_text()
             prompt = policy + '\n\n## This run\n' + json.dumps(context, indent=2)
@@ -307,7 +410,7 @@ def run(root, smoke=False):
                                config, progress)
             report = result['result']
             updated = ingest(report, ledger, workspace, smoke)
-            if pipeline is not None and not state.get('pipeline_results'):
+            if pipeline is not None and not resume_consumed:
                 submitted = [updated['candidates'][candidate_id(item)] for item in report['candidates']]
                 eligible = [item for item in submitted
                             if item['status'] == 'ready_for_review' and item.get('release_request')

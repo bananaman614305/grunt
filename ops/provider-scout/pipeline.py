@@ -205,6 +205,14 @@ class Pipeline:
             self._budget()
             config = {**self.config, 'release_check_runner': self._runner()}
             result = self.promote(receipt, config, self.releases)
+            if result.get('reason') in ('main_changed_requires_fresh_review', 'npm_version_requires_fresh_review'):
+                publication = self.releases / ('release-' + receipt['head_sha']) / 'checkpoint.json'
+                state = _read(publication) if publication.exists() else {}
+                if not state.get('merge_sha'):
+                    # This exact authorization is stale. Repeatedly attempting
+                    # it would prevent the worker's rebased candidate advancing.
+                    checkpoint['phase'] = 'superseded'
+                    result['status'] = 'superseded'
             return self._result(checkpoint, result.pop('status'), **{key: value for key, value in result.items() if key not in ('source_id', 'head_sha')})
         except TimeoutError:
             return self._result(checkpoint, 'deferred', 'pipeline_budget_exhausted')
@@ -225,6 +233,8 @@ class Pipeline:
             path = directory / 'checkpoint.json'
             if path.exists():
                 checkpoint = _read(path)
+                if checkpoint.get('phase') == 'superseded':
+                    return checkpoint['result']
                 if checkpoint.get('result', {}).get('status') == 'released':
                     return checkpoint['result']
                 # A corrected, explicitly resubmitted candidate needs fresh
@@ -249,6 +259,8 @@ class Pipeline:
         for path in sorted(self.releases.glob('pipeline-*/checkpoint.json')):
             try:
                 checkpoint = _read(path)
+                if checkpoint.get('phase') == 'superseded':
+                    continue
                 if checkpoint.get('result', {}).get('status') == 'released':
                     continue
                 if checkpoint.get('phase') != 'promotion' and checkpoint.get('result', {}).get('status') in ('blocked', 'needs_approval'):

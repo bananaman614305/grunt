@@ -313,6 +313,72 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(after['candidate'], before['candidate'])
         self.assertEqual(after['receipt'], before['receipt'])
 
+    def test_stale_premerge_authority_is_retired_and_does_not_repeat(self):
+        for reason in ('main_changed_requires_fresh_review', 'npm_version_requires_fresh_review'):
+            for durable_checkpoint in (False, True):
+                with self.subTest(reason=reason, durable_checkpoint=durable_checkpoint):
+                    with tempfile.TemporaryDirectory(dir=self.base) as root:
+                        self.root = Path(root)
+                        self.calls.clear()
+                        def promote(receipt, config, directory):
+                            result = self.promote(receipt, config, directory)
+                            if durable_checkpoint:
+                                state = pipeline._private(directory / ('release-' + receipt['head_sha']))
+                                pipeline._write(state / 'checkpoint.json', {'head_sha': receipt['head_sha']})
+                            return {**result, 'status': 'blocked', 'reason': reason}
+                        supervisor = self.make(promote=promote)
+                        retired = supervisor.process(self.candidate)
+                        self.assertEqual(retired['status'], 'superseded')
+                        self.assertEqual(retired['reason'], reason)
+                        self.assertEqual(pipeline._read(self.checkpoint())['phase'], 'superseded')
+                        self.calls.clear()
+                        self.assertEqual(self.make().resume_pending(), [])
+                        self.assertEqual(self.calls, [])
+                        self.assertEqual(self.make().process(self.candidate), retired)
+                        self.assertEqual(self.calls, ['validate'])
+
+    def test_stale_retired_candidate_does_not_prevent_another_pending_release(self):
+        def stale_promote(receipt, config, directory):
+            result = self.promote(receipt, config, directory)
+            return {**result, 'status': 'blocked', 'reason': 'main_changed_requires_fresh_review'}
+        self.assertEqual(self.make(promote=stale_promote).process(self.candidate)['status'], 'superseded')
+        self.receipt['head_sha'] = 'e' * 40
+        self.candidate['release_request']['head_sha'] = self.receipt['head_sha']
+        self.promotion_status = 'pending_publication'
+        self.assertEqual(self.make().process(self.candidate)['status'], 'pending_publication')
+        self.calls.clear()
+        self.promotion_status = 'released'
+        resumed = self.make().resume_pending()
+        self.assertEqual(len(resumed), 1)
+        self.assertEqual(resumed[0]['head_sha'], 'e' * 40)
+        self.assertEqual(resumed[0]['status'], 'released')
+        self.assertEqual(self.calls, ['promote'])
+
+    def test_already_merged_release_is_never_retired_for_stale_version_or_main(self):
+        for reason in ('main_changed_requires_fresh_review', 'npm_version_requires_fresh_review'):
+            with self.subTest(reason=reason):
+                with tempfile.TemporaryDirectory(dir=self.base) as root:
+                    self.root = Path(root)
+                    self.calls.clear()
+                    def promote(receipt, config, directory):
+                        result = self.promote(receipt, config, directory)
+                        state = pipeline._private(directory / ('release-' + receipt['head_sha']))
+                        pipeline._write(state / 'checkpoint.json', {'head_sha': receipt['head_sha'], 'merge_sha': 'f' * 40})
+                        return {**result, 'status': 'blocked', 'reason': reason}
+                    first = self.make(promote=promote).process(self.candidate)
+                    self.assertEqual(first['status'], 'blocked')
+                    original = pipeline._read(self.checkpoint())
+                    self.assertEqual(original['phase'], 'promotion')
+                    self.calls.clear()
+                    resumed = self.make(promote=promote).resume_pending()
+                    self.assertEqual(resumed[0]['status'], 'blocked')
+                    self.assertEqual(resumed[0]['reason'], reason)
+                    self.assertEqual(self.calls, ['promote'])
+                    self.assertEqual(pipeline._read(self.checkpoint())['receipt'], original['receipt'])
+                    self.calls.clear()
+                    self.assertEqual(self.make().resume_pending()[0]['status'], 'released')
+                    self.assertEqual(self.calls, ['promote'])
+
     def test_changed_candidate_cannot_reuse_reviews_on_resume(self):
         self.probe_outcome = 'deferred'
         self.make().process(self.candidate)
