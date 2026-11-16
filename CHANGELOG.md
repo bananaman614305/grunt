@@ -4,6 +4,7 @@
 
 ### Added
 
+- Allow honestly disclosed ordinary retention, training and review in provider scouting under the operator's standing approval. Unknown zero-retention guarantees no longer block integration; end-user source-specific grouped consent remains required.
 - Make Grunt the current project, repository, configuration and interface name, with explicit compatibility for existing installations. Restore public-only GitHub Actions CI on standard Ubuntu runners. See the [compatibility guide](docs/reference.md#compatibility-with-existing-installations).
 
 - Run the operator's twice-daily provider scout with guarded Squire signup, isolated checks and live routing probes, two independent reviews, and resumable PR merge/npm publication. Qualified providers reach new installations only after the published package and its default registry are verified. See the [operator guide](ops/provider-scout/README.md).
@@ -11,6 +12,7 @@
 
 ### Fixed
 
+- Accept safe documentation navigation URLs in scouting evidence and isolate malformed candidate rows, preserving valid findings without admitting rejected rows to promotion.
 - Keep the bundled provider registry as the minimum revision, so an older remote registry or cache cannot hide providers included in a newer release.
 - Send automatic requests that carry function tools only to sources that return tool calls to the harness. OpenCode runs its own tools and returns final text, so it now receives tool-bearing requests only when the caller names `opencode`. A task bound to OpenCode hands off to a tool-capable source once tools appear. When none is usable, grunt returns a clear error instead of a text-only reply. This restores the filter from #45 that #47 removed while only FreeLLMAPI and Gateway supported tools.
 

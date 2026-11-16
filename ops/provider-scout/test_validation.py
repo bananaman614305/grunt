@@ -319,6 +319,17 @@ class ReleaseGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.ValidationError, 'changed after validation'):
             gate.run_checks(receipt, mutate)
 
+    def test_document_navigation_is_evidence_but_credentials_are_not(self):
+        self.candidate['primary_sources'] = ['https://provider.example.com/docs?section=models']
+        self.assertTrue(self.validate()['qualified'])
+        self.candidate['primary_sources'] = ['https://provider.example.com/docs?section=models&token=synthetic-secret']
+        with self.assertRaisesRegex(gate.ValidationError, 'public primary-source'):
+            self.validate()
+        self.candidate['primary_sources'] = ['https://provider.example.com/docs?section=models']
+        self.candidate['homepage'] = 'https://provider.example.com/?section=models'
+        with self.assertRaisesRegex(gate.ValidationError, 'public primary-source'):
+            self.validate()
+
     def test_fresh_review_has_read_only_contract_and_host_identity(self):
         receipt = self.validate()
         requests = []
@@ -344,6 +355,27 @@ class ReleaseGateTests(unittest.TestCase):
             gate.review_candidate(receipt, self.root / 'reviews', lambda request: result)
         result = self.approval(receipt)
         result['checks']['terms'] = False
+        with self.assertRaisesRegex(gate.ValidationError, 'incomplete'):
+            gate.review_candidate(receipt, self.root / 'reviews', lambda request: result)
+
+    def test_review_keeps_unknown_privacy_distinct_from_consent_and_free_access(self):
+        self.candidate['data_policy'] = 'Free-route retention and training guarantees are unknown.'
+        receipt = self.validate()
+        requests = []
+        def reviewer(request):
+            requests.append(request)
+            return self.approval(receipt)
+        gate.review_candidate(receipt, self.root / 'reviews', reviewer)
+        prompt = requests[0]['prompt']
+        self.assertIn('standing operator approval', prompt)
+        self.assertIn('unknown ordinary privacy guarantees alone do not', prompt)
+        self.assertIn('End users must still receive grouped source-specific consent', prompt)
+        self.assertIn('never prewrite future users receipts', prompt)
+        self.assertIn('Paid fallback, mandatory payment/card, prohibited downstream use', prompt)
+        self.assertIn('Do not read private credential/config files', prompt)
+        # Disclosure does not waive the actual release consent/code gates.
+        result = self.approval(receipt)
+        result['checks']['consent'] = False
         with self.assertRaisesRegex(gate.ValidationError, 'incomplete'):
             gate.review_candidate(receipt, self.root / 'reviews', lambda request: result)
 

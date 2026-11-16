@@ -20,6 +20,7 @@ import time
 from urllib.parse import urlsplit
 
 from worker import WorkerError, run_agent
+from url_policy import public_url
 
 BEGIN = '# BEGIN usegrunt-provider-scout'
 END = '# END usegrunt-provider-scout'
@@ -67,11 +68,10 @@ def load(path, default=None):
     return json.loads(path.read_text())
 
 
-def public_url(value):
-    if not isinstance(value, str) or len(value) > 2048:
-        return False
-    parsed = urlsplit(value)
-    return parsed.scheme == 'https' and bool(parsed.hostname) and not any((parsed.username, parsed.password, parsed.query, parsed.fragment))
+class CandidateError(ValueError):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
 
 
 def candidate_id(candidate):
@@ -104,10 +104,13 @@ def ready_evidence(candidate, workspace):
 
 def qualify(candidate, workspace, smoke=False):
     # A model's requested status cannot bypass the operator's eligibility gates.
-    if not public_url(candidate['homepage']) or not candidate['primary_sources'] or not all(public_url(url) for url in candidate['primary_sources']):
-        raise ValueError('Candidate needs public primary-source URLs')
+    if not public_url(candidate['homepage']):
+        raise CandidateError('invalid_homepage_url')
+    if (not isinstance(candidate['primary_sources'], list) or not candidate['primary_sources']
+            or not all(public_url(url, allow_navigation=True) for url in candidate['primary_sources'])):
+        raise CandidateError('invalid_primary_source_url')
     if candidate['proposal_url'] is not None and not public_url(candidate['proposal_url']):
-        raise ValueError('Unsafe proposal URL')
+        raise CandidateError('invalid_proposal_url')
     failed = (candidate['free_access'] == 'one_time' or candidate['quality'] == 'below_baseline'
               or candidate['signup_friction'] == 'high'
               or candidate['context_tokens'] is not None and candidate['context_tokens'] < 200000)
@@ -125,34 +128,66 @@ def qualify(candidate, workspace, smoke=False):
     return candidate['status']
 
 
-def ingest(report, ledger, workspace, smoke=False):
-    if not isinstance(report, dict) or report.get('web_search_used') is not True or len(report.get('search_queries', [])) < 2:
+def ingest(report, ledger, workspace, smoke=False, diagnostics=None):
+    queries = report.get('search_queries') if isinstance(report, dict) else None
+    if (not isinstance(report, dict) or report.get('web_search_used') is not True
+            or not isinstance(queries, list) or len(queries) < 2
+            or any(not isinstance(query, str) or not query.strip() for query in queries)):
         raise ValueError('Scout must complete actual web research')
     candidates = report.get('candidates')
     if not isinstance(candidates, list) or len(candidates) > (3 if smoke else 20):
         raise ValueError('Candidate budget exceeded')
-    requests = [item for item in candidates if item.get('release_request') is not None]
+    requests = [item for item in candidates if isinstance(item, dict) and item.get('release_request') is not None]
     if len(requests) > (0 if smoke else 1):
         raise ValueError('Integration budget exceeded')
     updated = json.loads(json.dumps(ledger))
     stamp = now()
-    for candidate in candidates:
-        status = qualify(candidate, workspace, smoke)
-        key = candidate_id(candidate)
+    errors, rows, counts = [], [], {}
+    for index, candidate in enumerate(candidates):
+        try:
+            if not isinstance(candidate, dict) or not isinstance(candidate.get('model'), str) or not candidate['model'].strip():
+                raise CandidateError('invalid_candidate_shape')
+            key = candidate_id(candidate)
+            counts[key] = counts.get(key, 0) + 1
+            status = qualify(candidate, workspace, smoke)
+            rows.append((index, key, candidate, status))
+        except CandidateError as error:
+            errors.append({'row': index, 'code': error.code})
+        except (ValueError, TypeError, KeyError, AttributeError):
+            errors.append({'row': index, 'code': 'invalid_candidate_shape'})
+    for index, key, candidate, status in rows:
+        if counts[key] != 1:
+            errors.append({'row': index, 'code': 'duplicate_candidate_id'})
+            continue
         old = updated['candidates'].get(key, {})
         lifecycle = {name: value for name, value in old.items() if name.startswith('pipeline_')}
         updated['candidates'][key] = {**candidate, **lifecycle, 'status': status, 'first_seen': old.get('first_seen', stamp),
                                       'last_seen': stamp, 'sightings': old.get('sightings', 0) + 1}
+    if diagnostics is not None:
+        diagnostics.extend(sorted(errors, key=lambda item: item['row']))
     return updated
 
 
-def normalized_report(report, ledger):
-    candidates = [{**item, 'status': ledger['candidates'][candidate_id(item)]['status']} for item in report['candidates']]
-    changed = sum(old['status'] != new['status'] for old, new in zip(report['candidates'], candidates))
+def normalized_report(report, ledger, diagnostics=None):
+    errors = diagnostics if diagnostics is not None else []
+    rejected = {item['row'] for item in errors}
+    accepted = [item for index, item in enumerate(report['candidates']) if index not in rejected]
+    # Do not recover an old ledger record for a quarantined current row.
+    candidates = [{**item, 'status': ledger['candidates'][candidate_id(item)]['status']} for item in accepted]
+    changed = sum(old['status'] != new['status'] for old, new in zip(accepted, candidates))
     summary = report['summary']
-    if changed:
+    if changed or errors:
         ready = sum(item['status'] == 'ready_for_review' for item in candidates)
         summary = f'Operator validation adjusted {changed} candidate statuses; {len(candidates)} reviewed, {ready} ready for review.'
+    if errors:
+        summary = (f'Operator validation accepted {len(candidates)} of {len(report["candidates"])} candidate rows; '
+                   f'{len(errors)} quarantined, {ready} ready for review.')
+        # Envelope prose can repeat rejected payloads. Retain only fixed counts
+        # and codes alongside accepted rows; no raw row/provider/URL is copied.
+        return {'summary': summary, 'web_search_used': report['web_search_used'],
+                'search_queries': [], 'candidates': candidates, 'blockers': ['candidate_rows_quarantined'],
+                'validation': {'received': len(report['candidates']), 'accepted': len(candidates),
+                               'quarantined': len(errors), 'errors': errors, 'metadata_redacted': True}}
     return {**report, 'summary': summary, 'candidates': candidates}
 
 
@@ -368,6 +403,7 @@ def run(root, smoke=False):
         resume_consumed = False
         snapshot = None
         output = directory / 'result.json'
+        report_validated = False
         previous_handlers = {}
         def cancel(*_):
             raise ScoutCancelled()
@@ -414,7 +450,13 @@ def run(root, smoke=False):
                                 'smoke': smoke, 'web_search': True, 'require_web_search': True},
                                config, progress)
             report = result['result']
-            updated = ingest(report, ledger, workspace, smoke)
+            diagnostics = []
+            updated = ingest(report, ledger, workspace, smoke, diagnostics)
+            report = normalized_report(report, updated, diagnostics)
+            # Replace the transient worker output before any downstream stage:
+            # quarantined URLs/prose must not remain in the persisted raw result.
+            atomic(output, report)
+            report_validated = True
             if pipeline is not None and not resume_consumed:
                 submitted = [updated['candidates'][candidate_id(item)] for item in report['candidates']]
                 eligible = [item for item in submitted
@@ -425,13 +467,14 @@ def run(root, smoke=False):
                     outcome = pipeline.process(item)
                     record_pipeline_result(updated, outcome, item)
                     state.setdefault('pipeline_results', []).append(outcome)
-            report = normalized_report(report, updated)
             atomic(root / 'ledger.json', updated)
             state.update(status='completed', summary=report['summary'], candidates_seen=len(report['candidates']),
                          ready_for_review=sum(value['status'] == 'ready_for_review' for value in updated['candidates'].values()),
                          blockers=report['blockers'], tool_counts=result['tool_counts'],
                          approval_rejections=result.get('approval_rejections', 0),
                          report=str(root / 'reports' / (stamp + '.json')))
+            if diagnostics:
+                state.update(candidates_quarantined=len(diagnostics), candidate_errors=diagnostics)
             atomic(root / 'reports' / (stamp + '.json'), {**report, 'operator_status': state})
         except ScoutCancelled:
             for number in previous_handlers:
@@ -445,6 +488,8 @@ def run(root, smoke=False):
             state.update(status='failed', reason='worker, output or pipeline validation failed')
         finally:
             try:
+                if not report_validated and output.exists():
+                    atomic(output, {'status': 'quarantined', 'reason': 'report_validation_failed'})
                 state['finished_at'] = now()
                 atomic(root / 'last-run.json', state)
             finally:
