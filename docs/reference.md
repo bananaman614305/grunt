@@ -250,8 +250,18 @@ Timestamps are milliseconds since the Unix epoch.
 The queue starts automatically in every installed daemon running 0.6.9 or later;
 it is per user and uses that user's configured providers, consent and accounts.
 No separate cron job is required. New setup installs it with the daemon.
-Existing users run `npx usegrunt@latest setup` to replace their saved background
-runtime. A newer CLI or npm publication alone does not upgrade an older service.
+Existing users run `npx usegrunt update` to replace their saved background
+runtime. The updater resolves the latest official npm release itself, verifies
+the package integrity, prepares dependencies without install scripts, then
+replaces the managed runtime and restarts the existing service. It preserves
+service configuration, custom ports and sources, account grants, consent,
+native authentication and `maintenance.json`. It does not invoke the signup
+wizard. If startup verification fails, it restores the previous runtime. A
+stopped Linux service remains stopped. On macOS, the existing launch agent must
+be running before update; an unloaded or waiting job is rejected safely rather
+than changed while it might restart itself. An older local CLI that lacks the command can
+bootstrap with `npx usegrunt@latest update`.
+A newer CLI or npm publication alone does not upgrade an older service.
 Checks need the machine and daemon to be running; overdue work resumes after
 downtime, with normal staggering and deferral rules.
 

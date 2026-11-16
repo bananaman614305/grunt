@@ -61,11 +61,18 @@ source details show the last check, its outcome and the next due time. Registry
 downloads still refresh independently, and first-time onboarding stays parallel.
 
 Maintenance starts automatically with the installed daemon in 0.6.9 and later.
-Existing users update that daemon by rerunning setup:
+Existing users update that daemon with:
 
 ```bash
-npx usegrunt@latest setup
+npx usegrunt update
 ```
+
+The update command fetches the latest official release and replaces the saved
+runtime while preserving accounts, source choices, ports and maintenance state.
+It keeps the existing service configuration and restores the old runtime if the
+new one fails its startup check. It does not repeat setup or account sign-in.
+If an older locally installed CLI does not recognize `update`, use
+`npx usegrunt@latest update` once.
 
 Installing a newer CLI alone does not replace an older background runtime. The
 queue runs while the machine and daemon are running and resumes overdue work

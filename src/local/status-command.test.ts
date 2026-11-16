@@ -2,6 +2,9 @@ import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 
 const execute = promisify(execFile);
@@ -27,11 +30,11 @@ async function daemon(body: unknown, status = 200) {
   return { port: address.port, paths };
 }
 
-function cli(args: string[]) {
+function cli(args: string[], env: NodeJS.ProcessEnv = {}) {
   // If the status branch accidentally falls through to daemon startup, an
   // invalid source selection fails instead of signing up or claiming a port.
   return execute(process.execPath, ['--import', 'tsx', entry, ...args], {
-    env: { ...process.env, NO_COLOR: '1', MILO_SOURCES: 'synthetic-never-start' }, timeout: 15000,
+    env: { ...process.env, NO_COLOR: '1', MILO_SOURCES: 'synthetic-never-start', ...env }, timeout: 15000,
   });
 }
 
@@ -57,6 +60,21 @@ it('prints a single plain snapshot for a piped watch command', async () => {
 
 it('shows CLI help without booting the daemon', async () => {
   const { stdout } = await cli(['--help']);
+  expect(stdout).toContain('update');
   expect(stdout).toContain('status');
   expect(stdout).toContain('--watch');
+});
+
+it('rejects unknown commands and invalid update arguments without starting the daemon or setup', async () => {
+  await expect(cli(['updat'])).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('Unknown grunt command') });
+  await expect(cli(['update', '--unexpected'])).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('Usage: usegrunt update') });
+});
+
+it('asks for initial setup when update has no installed runtime, without running the wizard', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-cli-update-missing-'));
+  try {
+    await expect(cli(['update'], { MILO_CONFIG_DIR: directory })).rejects.toMatchObject({
+      code: 1, stderr: expect.stringContaining('run npx usegrunt setup first')
+    });
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

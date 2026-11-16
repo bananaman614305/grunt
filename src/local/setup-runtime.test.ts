@@ -49,6 +49,33 @@ afterEach(async () => {
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-setup-runtime-')); directories.push(path); return path; }
 const request = (cwd: string, model = 'milo'): ModelRequest => ({ model, cwd, messages: [{ role: 'user', content: 'Hello while setup continues' }], tools: [], stream: false });
 
+it('defers maintenance during an updater lease while allowing existing routes to answer', async () => {
+  const path = await directory();
+  await recordDataSharingConsent(path, ['kilo']);
+  const lease = await beginSetupSession(path, []);
+  const complete = vi.spyOn(Kilo.prototype, 'complete').mockResolvedValue({ text: 'user request continues' });
+  let handler!: (request: Request) => Promise<Response>;
+  daemon.serve.mockImplementation((options: { fetch: typeof handler }) => { handler = options.fetch; return { close: daemon.close }; });
+  const signals = ['SIGINT', 'SIGTERM'] as const;
+  const previous = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
+  const running = start({ MILO_SOURCES: 'freellmapi,kilo', MILO_CONFIG_DIR: path, MILO_PORT: '18792' });
+  try {
+    await handler(new Request('http://localhost:18792/v1/status'));
+    expect(await daemon.maintenance!.check('kilo', new AbortController().signal)).toEqual({ outcome: 'deferred', code: 'foreground' });
+    expect(complete).not.toHaveBeenCalled();
+    const response = await handler(new Request('http://localhost:18792/v1/chat/completions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'kilo', cwd: path, messages: [{ role: 'user', content: 'Say hello' }] })
+    }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-grunt-source')).toBe('kilo');
+    expect(complete).toHaveBeenCalledOnce();
+  } finally {
+    await running.close(); await lease.close();
+    for (const signal of signals) for (const listener of process.listeners(signal)) if (!previous.get(signal)!.has(listener)) process.removeListener(signal, listener as () => void);
+  }
+});
+
 it.each([false, true])('omits unresolved providers before availability or completion, including legacy routing=%s', async weighted => {
   const cwd = await directory();
   const pending: Source = { id: 'opencode', available: vi.fn(() => new Promise<boolean>(() => {})), complete: vi.fn(() => new Promise(() => {})) };

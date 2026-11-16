@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.10] - 2026-11-15
+
+### Added
+
+- Add `npx usegrunt update` to fetch the latest official release and replace the installed daemon without repeating setup or sign-in. Preserve service configuration, ports, enabled sources and maintenance state, with rollback if startup fails.
+
+### Fixed
+
+- Reject unknown CLI commands instead of treating them as requests to start a daemon. Pause maintenance during an update while existing routes remain available until the runtime is ready to replace.
+
+### Validation
+
+- All 1,159 tests across 64 files passed, along with lint, TypeScript and build. Independent updater review covered rollback, cancellation, old installations, custom service state and configuration preservation.
+- Read-only validation accepted Chad's actual managed service configuration without stopping the daemon or making network requests. macOS service behavior is covered by fixtures; its existing launch agent must be running before update.
+
 ## [0.6.9] - 2026-11-15
 
 ### Added
