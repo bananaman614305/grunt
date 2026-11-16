@@ -12,9 +12,14 @@ export const answeredBy = new WeakMap<Completion, string>();
 export interface Source {
   id: string;
   supportsFunctionTools?: boolean;
+  // A source that calls output() when it first produces output gets the
+  // first-output deadline. Other sources keep only their own timeouts.
+  reportsOutput?: boolean;
   available(): Promise<boolean>;
   healthCheck?(): Promise<boolean>;
-  complete(request: ModelRequest, signal: AbortSignal): Promise<Completion>;
+  complete(request: ModelRequest, signal: AbortSignal, output?: () => void): Promise<Completion>;
+  // Called after a failed request (not a cancellation). Must not block.
+  failed?(error: SourceError): void;
   close?(): Promise<void>;
 }
 // A request that carries Pi's function tools expects tool calls back, so Pi
@@ -23,6 +28,9 @@ export interface Source {
 export const needsFunctionTools = (request: ModelRequest) => request.tools.some(tool => tool.type === 'function');
 export const toolCapable = (source: Source) => source.supportsFunctionTools === true;
 export const NO_TOOL_SOURCE = 'No tool-capable adapter is available for a request with function tools; finish setup or retry after quota resets';
+// A source that has not produced first output by this time counts as failed.
+export const FIRST_OUTPUT_MS = 60000;
+const cutoffs = new WeakSet<SourceError>();
 export class Sources {
   private router: StickyRouter | undefined;
   private observation: SourceStatus;
@@ -37,10 +45,40 @@ export class Sources {
   readonly verifying = new Set<string>();
   // Foreground approval metadata contains adapter IDs only, never handoff URLs.
   readonly approvals = new Set<string>();
-  constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set()) {
+  constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs = FIRST_OUTPUT_MS) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
     this.observation = new SourceStatus(sources.map(source => source.id), routing?.now);
-    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending, observation: this.observation });
+    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending, observation: this.observation, attempt: this.attempt });
+  }
+  // One routed call to one source, with the first-output deadline. A failure
+  // (not a cancellation) is logged and reported to the source.
+  private attempt = async (source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> => {
+    const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s) => this.firstOutput(source, r, s) };
+    try { return await this.observation.complete(timed, request, signal); }
+    catch (error) {
+      if (!signal.aborted && error instanceof SourceError && error.code !== 'cancelled') {
+        // The fixed chain below logs its own failures.
+        if (this.router) console.error(`grunt source: ${source.id} failed (${error.code}) for model ${request.model}: ${error.message}`);
+        try { source.failed?.(error); } catch { /* Diagnostics must never affect routing. */ }
+      }
+      throw error;
+    }
+  };
+  private firstOutput(source: Source, request: ModelRequest, caller: AbortSignal): Promise<Completion> {
+    if (!source.reportsOutput) return source.complete(request, caller);
+    const deadline = new AbortController();
+    const signal = AbortSignal.any([caller, deadline.signal]);
+    let timer: NodeJS.Timeout | undefined;
+    const work = source.complete(request, signal, () => { clearTimeout(timer); timer = undefined; });
+    const cutoff = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new SourceError('timeout', `${source.id} produced no output within ${this.firstOutputMs / 1000} seconds`);
+        cutoffs.add(error); deadline.abort(error); reject(error);
+      }, this.firstOutputMs);
+    });
+    // Do not wait for a hung source to clean up; it settles on its own.
+    work.catch(() => {});
+    return Promise.race([work, cutoff]).finally(() => clearTimeout(timer));
   }
   healthy(id: string) { this.router?.healthy(id); this.observation.healthy(id); }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
@@ -181,7 +219,7 @@ export class Sources {
       signal.throwIfAborted();
       if (this.pending.has(source.id)) continue;
       let completion: Completion;
-      try { completion = await this.observation.complete(source, request, signal); }
+      try { completion = await this.attempt(source, request, signal); }
       catch (error) {
         if (signal.aborted || (error instanceof SourceError && error.code === 'cancelled')) {
           console.error(`grunt source: ${source.id} cancelled for model ${request.model}`);
@@ -190,8 +228,8 @@ export class Sources {
         }
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
         console.error(`grunt source: ${source.id} failed (${last.code}) for model ${request.model}`);
-        // Only dots and OpenCode deadlines fall through; caller cancellation stops above.
-        if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode') throw last;
+        // Only dots and OpenCode deadlines and first-output deadlines fall through; caller cancellation stops above.
+        if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode' && !cutoffs.has(last)) throw last;
         continue;
       }
       console.error(`grunt source: ${source.id} answered model ${request.model}`);

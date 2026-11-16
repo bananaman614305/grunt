@@ -75,7 +75,9 @@ export class Freebuff implements Source {
   private busy = new Set<string>();
   private creationLocks = new Map<string, Pool>();
   private shutdown = new AbortController();
-  constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number; toolBridge?: boolean } = {}) {}
+  private doctorRun: Promise<void> | undefined;
+  readonly reportsOutput = true;
+  constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number; toolBridge?: boolean; doctor?: (signal: AbortSignal) => Promise<string> } = {}) {}
   get supportsFunctionTools() { return this.options.toolBridge === true; }
   private get mux() { return this.options.mux ?? (this.options.mux = new Tmux()); }
   async available() {
@@ -86,14 +88,28 @@ export class Freebuff implements Source {
     } catch { return false; }
   }
   async healthCheck() { return this.available(); }
-  async complete(request: ModelRequest, caller: AbortSignal) {
-    if (!this.options.toolBridge) return this.completeText(request, caller);
+  // After a failure, run freebuff doctor once in the background and log what it
+  // says. Only one run at a time; a failure while it runs does not queue another.
+  failed() {
+    if (this.doctorRun || this.shutdown.signal.aborted) return;
+    const signal = this.shutdown.signal;
+    const run = this.options.doctor ?? (async (signal: AbortSignal) => {
+      const { stdout, stderr } = await exec(await executable('freebuff'), ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536, signal });
+      return `${stdout}${stderr}`;
+    });
+    this.doctorRun = Promise.resolve().then(() => run(signal)).then(
+      output => { console.error(`freebuff doctor after failure:\n${output.trim().slice(-4096) || '(no output)'}`); },
+      error => { console.error(`freebuff doctor after failure did not finish: ${error instanceof Error ? error.message : 'unknown error'}`); }
+    ).finally(() => { this.doctorRun = undefined; });
+  }
+  async complete(request: ModelRequest, caller: AbortSignal, output?: () => void) {
+    if (!this.options.toolBridge) return this.completeText(request, caller, false, output);
     caller.throwIfAborted();
     const bridge = new FreebuffTools(request);
     const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000))]);
     for (let attempt = 0; attempt < 2; attempt++) {
       signal.throwIfAborted();
-      const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0) }, signal, true);
+      const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0) }, signal, true, output);
       signal.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
       try { return bridge.parse(result.text); }
@@ -101,7 +117,7 @@ export class Freebuff implements Source {
     }
     throw new SourceError('upstream', 'Freebuff JSON bridge failed');
   }
-  private async completeText(request: ModelRequest, caller: AbortSignal, isolated = false) {
+  private async completeText(request: ModelRequest, caller: AbortSignal, isolated = false, output?: () => void) {
     const binary = await executable('freebuff'); await executable('tmux');
     let diagnostics: string;
     try { diagnostics = (await exec(binary, ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536, signal: caller })).stdout; }
@@ -196,6 +212,8 @@ export class Freebuff implements Source {
           selected = file;
           releaseCreation();
           sawUser = true;
+          // First output: any reply after this turn, including tool or reasoning blocks.
+          if (output && (data as ChatMessage[]).slice((data as ChatMessage[]).findLastIndex(m => matchesUser(m, prompt)) + 1).some(m => m?.variant === 'ai')) output();
           const text = parseChat(data, prompt, isolated);
           if (text !== undefined && sendComplete) { if (ownsConversation) this.conversations.set(key, file); return { text }; }
         }
