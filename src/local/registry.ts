@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from '../registry.js';
 import type { Adapter, Registry } from '../registry.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
@@ -23,11 +24,22 @@ export class RegistrySync {
     afterEnsure?: () => Promise<void>;
   }) {}
   get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)); }
+  private accepts(registry: Registry) {
+    const incoming = Date.parse(registry.published), current = Date.parse(this.current.published);
+    // Each publication is immutable. A release's bundled list is the initial
+    // floor; only a newer publication may add, change or revoke its entries.
+    return incoming > current || incoming === current && isDeepStrictEqual(
+      { ...registry, published: '' }, { ...this.current, published: '' }
+    );
+  }
   async load() {
     try {
       const saved = JSON.parse(await readFile(join(this.options.directory, 'registry.json'), 'utf8'));
-      this.current = validateRegistry(saved.registry);
-      this.etag = typeof saved.etag === 'string' ? saved.etag : undefined;
+      const registry = validateRegistry(saved.registry);
+      if (this.accepts(registry)) {
+        this.current = registry;
+        this.etag = typeof saved.etag === 'string' ? saved.etag : undefined;
+      }
     } catch { /* A missing or damaged cache uses the packaged registry. */ }
     this.options.changed?.(this.current);
   }
@@ -37,22 +49,24 @@ export class RegistrySync {
   }
   private async refresh() {
     try {
-      let response: Response | undefined;
+      let registry: Registry | undefined, etag: string | undefined, unchanged = false;
       for (const url of this.options.url ? [this.options.url] : REGISTRY_URLS) {
         try {
-          response = await (this.options.fetcher ?? fetch)(url, {
+          const response = await (this.options.fetcher ?? fetch)(url, {
             headers: this.etag ? { 'If-None-Match': this.etag } : {}, redirect: 'error',
             signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10000)])
           });
-          if (response.status === 200 || response.status === 304) break;
+          if (response.status === 304) { unchanged = true; break; }
+          if (response.status === 200) {
+            const candidate = validateRegistry(await response.json());
+            if (!this.accepts(candidate)) continue;
+            registry = candidate; etag = response.headers.get('ETag') ?? undefined;
+            break;
+          }
           await response.body?.cancel();
-          response = undefined;
         } catch { if (this.controller.signal.aborted) throw new Error('Registry sync cancelled'); }
       }
-      if (!response) throw new Error('Registry unavailable');
-      if (response.status === 200) {
-        const registry = validateRegistry(await response.json());
-        const etag = response.headers.get('ETag') ?? undefined;
+      if (registry) {
         const temporary = join(this.options.directory, `registry.${randomUUID()}.tmp`);
         try {
           await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
@@ -61,7 +75,7 @@ export class RegistrySync {
         } finally { await rm(temporary, { force: true }); }
         this.current = registry; this.etag = etag;
         this.options.changed?.(registry);
-      } else if (response.status !== 304) throw new Error('Registry unavailable');
+      } else if (!unchanged) throw new Error('Registry unavailable');
     } catch { this.options.notify?.('Registry update unavailable; keeping the last good list'); }
     if (this.controller.signal.aborted) return;
     try { await parallelMap(this.enabled, async adapter => {

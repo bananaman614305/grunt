@@ -40,7 +40,7 @@ it('validates OpenCode model pools without ambiguous scalar settings', () => {
 
 it('gateway down keeps cached list and persists private cache', async () => {
   const path = await directory();
-  const updated = { ...bundledRegistry, published: '2026-11-12T00:00:00Z', adapters: [bundledRegistry.adapters[1]] };
+  const updated = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(), adapters: [bundledRegistry.adapters[1]] };
   const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(updated, { headers: { ETag: '"published"' } })).mockRejectedValue(new Error('offline'));
   const sync = new RegistrySync({ directory: path, fetcher });
   await sync.load(); await sync.sync();
@@ -83,9 +83,9 @@ it.each([new Response('bad json'), Response.json({ version: 9 }), new Response(n
 it('ignores unknown adapter code and retries provisioning known additions without removing installed adapters', async () => {
   const ensure = vi.fn().mockRejectedValueOnce(new Error('needs human')).mockResolvedValue(undefined);
   const unknown = { ...bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!, id: 'unknown', install: 'npm:unknown' };
-  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ ...bundledRegistry, adapters: [bundledRegistry.adapters[0], unknown] }, { headers: { ETag: '"first"' } }))
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(), adapters: [bundledRegistry.adapters[0], unknown] }, { headers: { ETag: '"first"' } }))
     .mockResolvedValueOnce(new Response(null, { status: 304 }))
-    .mockResolvedValueOnce(Response.json({ ...bundledRegistry, adapters: [bundledRegistry.adapters[1]] }));
+    .mockResolvedValueOnce(Response.json({ ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 2000).toISOString(), adapters: [bundledRegistry.adapters[1]] }));
   const sync = new RegistrySync({ directory: await directory(), fetcher, ensure });
   await sync.load(); await sync.sync(); await sync.sync();
   expect(ensure.mock.calls.map(([adapter]) => adapter.id)).toEqual(['opencode', 'opencode']);
