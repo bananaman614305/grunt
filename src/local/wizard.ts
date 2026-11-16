@@ -352,7 +352,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       return;
     }
 
-    log.step(`Installing and connecting ${ids.length} vetted free services (up to 3 at once)`);
+    log.step(`Installing and connecting ${ids.length} vetted free services (up to 4 at once)`);
     log.info('Trusty Squire reuses existing accounts and grants. Only free access is requested. Provider verification may still need your browser; verification prompts are queued.');
     const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify,
       ...(consent.approved.length ? { dataSharingApproved: consent.approved } : {}),

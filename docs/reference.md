@@ -175,8 +175,8 @@ registry (falling back to the saved or bundled list, and saying so). The bundled
 vetted pool contains Freebuff, OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit in the experimental tier.
 Provider approval and free-account eligibility still apply. Setup installs and connects
-up to three services concurrently, starts the background daemon, then verifies
-up to three services concurrently with real requests through grunt. Each service
+up to four services concurrently, starts the background daemon, then verifies
+up to four services concurrently with real requests through grunt. Each service
 gets its own PASS/FAIL line and summary row. Incomplete setup exits unsuccessfully
 with a repair step; rerun it to resume. For a foreground daemon, run `usegrunt serve`.
 
@@ -536,7 +536,7 @@ to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
 unreachable. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
 `registry.json` in its existing config directory. A gateway or cache failure
 keeps the last good list, falling back to the packaged list on a fresh install.
-Known adapters are installed and checked during sync with up to three concurrent
+Known adapters are installed and checked during sync with up to four concurrent
 jobs and a shared Squire connection; removing a registry entry disables it without
 uninstalling its files. The legacy `MILO_CONFIG_DIR` and
 `MILO_PORT` settings remain supported. `GRUNT_REGISTRY_URL` overrides the sync

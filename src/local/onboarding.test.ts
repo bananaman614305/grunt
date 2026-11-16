@@ -43,6 +43,25 @@ it('overlaps all vetted setup jobs and shares one Squire connection despite conc
   expect(provider).toHaveBeenCalledWith(expect.any(Function), ['kilo'], expect.objectContaining({ squire, directory: expect.any(String), dataSharingApproved: expect.arrayContaining(['kilo']) }));
 });
 
+it('starts four provider signups together and continues queued work after a refusal', async () => {
+  const hold = deferred(), entered: string[] = [];
+  let active = 0, peak = 0;
+  const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
+  const adapters = ['kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex'];
+  const pending = setupFallbacks({ directory: await directory(), adapters, dataSharingApproved: adapters, squire,
+    run: async () => {}, notify: () => {}, setupProvider: async (_notify, providers) => {
+      const id = providers![0]!;
+      entered.push(id); active++; peak = Math.max(peak, active);
+      await hold.promise; active--;
+      if (id === 'kilo') throw new Error('refused');
+      return { key: 'synthetic-router' };
+    } });
+  await vi.waitFor(() => expect(entered).toEqual(adapters.slice(0, 4)));
+  hold.resolve();
+  expect(await pending).toEqual({ unavailable: ['kilo'] });
+  expect(entered).toEqual(adapters); expect(peak).toBe(4); expect(active).toBe(0);
+});
+
 it('isolates a Kilo refusal and completes both agent installs', async () => {
   const verify = vi.fn(async () => {});
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
@@ -61,9 +80,10 @@ it('bounds dozens of jobs and waits for started jobs before returning a failure'
     if (i === 0) throw new Error('refused');
     return i;
   });
-  expect(entered).toEqual([0, 1, 2]); hold.resolve();
+  expect(entered).toEqual([0, 1, 2, 3]); hold.resolve();
   await expect(pending).rejects.toThrow('refused');
-  expect(active).toBe(0); expect(peak).toBe(3);
+  expect(active).toBe(0); expect(peak).toBe(4);
+  expect(entered).toEqual(Array.from({ length: 24 }, (_, i) => i));
 });
 
 it('cancels queued jobs and waits for active work before closing shared resources', async () => {
@@ -122,7 +142,7 @@ it('runs registry background provisioning concurrently too', async () => {
   const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }),
     ensure: async adapter => { started.push(adapter.id); await hold.promise; } });
   const pending = sync.sync();
-  await vi.waitFor(() => expect(started).toEqual(['freebuff', 'opencode', 'kilo']));
+  await vi.waitFor(() => expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro']));
   hold.resolve(); await pending; expect(started).toEqual(['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit']); await sync.close();
 });
 

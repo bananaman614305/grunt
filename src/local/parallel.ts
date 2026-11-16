@@ -1,6 +1,6 @@
 // Limit browser/build pressure as the vetted catalog grows. Wait for started
 // jobs before rejecting so callers can safely close shared resources.
-export async function parallelMap<T, R>(items: readonly T[], task: (item: T) => Promise<R>, limit = 3, signal?: AbortSignal): Promise<R[]> {
+export async function parallelMap<T, R>(items: readonly T[], task: (item: T) => Promise<R>, limit = 4, signal?: AbortSignal): Promise<R[]> {
   if (!Number.isInteger(limit) || limit < 1) throw new Error('Invalid concurrency limit');
   const results: R[] = new Array(items.length);
   let next = 0;

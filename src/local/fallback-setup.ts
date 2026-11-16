@@ -233,7 +233,7 @@ export async function setupFallbacks(options: {
       const task = tasks[id];
       if (!task) throw new Error('Unsupported vetted adapter');
       await task();
-    }, 3, options.signal);
+    }, 4, options.signal);
     options.signal?.throwIfAborted();
     return { unavailable: adapters.filter(id => unavailable.includes(id)) };
   } finally { if (owned && connection) await (squire as BrowserSquire).close(); }

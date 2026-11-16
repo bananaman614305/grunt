@@ -16,7 +16,7 @@ usegrunt installs grunt on this machine. It pools free AI quota and serves one l
 
 https://grunt.run. `milo` and `milo-local` remain aliases.
 
-Setup connects Trusty Squire and offers nine vetted free sources: Freebuff, OpenCode, Kilo, Zro, Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit. It connects up to three services at once, tests each, then connects your coding tools. Browser verification is queued when a provider needs you. Pi is optional.
+Setup connects Trusty Squire and offers nine vetted free sources: Freebuff, OpenCode, Kilo, Zro, Token Harbor, Runcrate, APInex, Mistral Vibe Free and LiveKit. It connects up to four services at once, tests each, then connects your coding tools. Browser verification is queued when a provider needs you. Pi is optional.
 
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md).
 
