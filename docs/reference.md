@@ -166,7 +166,7 @@ error rather than silently losing context.
 opens a live terminal view; `--json` prints a single structured snapshot.
 These commands only read the local daemon's `GET /v1/status`; they do not start
 the daemon, run provider health checks, install services or consume inference.
-An older daemon without that endpoint needs a runtime update through setup.
+An older daemon without that endpoint needs `npx usegrunt update`.
 `usegrunt --help` prints command usage without starting the daemon.
 
 The watch view uses green for a source with an observed successful reply, cyan
@@ -237,8 +237,9 @@ fresh generated reply or clear an inference cooldown. A recent successful user
 reply still satisfies its daily check as `reply` evidence.
 
 Foreground-owned sources, current user requests and routing cooldowns defer the
-check. Deferred work retries later without being counted as healthy; provider
-retry delays are honored. A source that needs sign-in is reported for foreground
+check. An update pauses the queue while existing routes remain usable until the
+runtime is ready to replace. Deferred work retries later without being counted
+as healthy; provider retry delays are honored. A source that needs sign-in is reported for foreground
 setup. Maintenance does not invoke provisioning, install tools, create accounts,
 invalidate authentication receipts or launch browser repair. The setup wizard
 retains its separate parallel first-ready flow. Source details and `--json`
