@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Send automatic requests that carry function tools only to sources that return tool calls to the harness. OpenCode runs its own tools and returns final text, so it now receives tool-bearing requests only when the caller names `opencode`. A task bound to OpenCode hands off to a tool-capable source once tools appear. When none is usable, grunt returns a clear error instead of a text-only reply. This restores the filter from #45 that #47 removed while only FreeLLMAPI and Gateway supported tools.
+
 ## [0.6.10] - 2026-11-15
 
 ### Added

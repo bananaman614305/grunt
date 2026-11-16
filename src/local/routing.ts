@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
-import { SourceError, answeredBy } from './source.js';
+import { SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
 import type { Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -50,10 +50,11 @@ export class StickyRouter {
     const prompt = `Original task:\n${task.original}\n${work}\nPrevious adapter output (last 4 KB):\n${Buffer.from(task.output).subarray(-4096).toString('utf8')}\nContinue this task from the current state. Do not restart.`;
     return { ...request, messages: [...request.messages, { role: 'user', content: prompt }], handoffPrompt: prompt };
   }
-  private exhausted() {
-    const times = [...this.bars.values()].filter(Number.isFinite);
+  private exhausted(toolsRequired = false) {
+    const times = [...this.bars.entries()].filter(([id, until]) => Number.isFinite(until)
+      && (!toolsRequired || this.sources.some(source => source.id === id && toolCapable(source)))).map(([, until]) => until);
     const seconds = times.length ? Math.max(1, Math.ceil((Math.min(...times) - this.now()) / 1000)) : undefined;
-    return new SourceError('quota', 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
+    return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal.throwIfAborted();
@@ -69,6 +70,9 @@ export class StickyRouter {
       if (task.busy) throw new SourceError('upstream', 'A request for this task is already running; retry when it finishes');
       task.busy = true;
     }
+    // A turn bound to a source without Pi tool support switches (with handoff)
+    // when Pi attaches tools, unless the caller named that source explicitly.
+    const toolsRequired = needsFunctionTools(request) && !this.sources.some(s => s.id === request.model);
     try {
       for (;;) {
         signal.throwIfAborted();
@@ -78,12 +82,13 @@ export class StickyRouter {
           const adapter = adapters.find(a => a.id === source.id);
           if (!task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
           if (!adapter || this.options.pending?.has(source.id) || (this.bars.get(source.id) ?? 0) > this.now()) continue;
+          if (toolsRequired && !toolCapable(source)) continue;
           if (source.id === task.source || await (this.options.observation ? this.options.observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
         }
         signal.throwIfAborted();
         let selected = eligible.find(candidate => candidate.source.id === task.source);
         if (!selected) {
-          if (!eligible.length) throw this.exhausted();
+          if (!eligible.length) throw this.exhausted(toolsRequired);
           let draw = (this.options.random ?? Math.random)() * eligible.reduce((total, a) => total + a.weight, 0);
           selected = eligible.find(a => (draw -= a.weight) < 0) ?? eligible.at(-1)!;
           if (task.source) task.switched = true;
