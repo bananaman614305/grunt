@@ -1,5 +1,5 @@
 import { confirm, password, select, isCancel } from '@clack/prompts';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
@@ -29,6 +29,13 @@ export function providerURL(value: string): URL | undefined {
     throw new Error('Use HTTPS (HTTP is allowed only for loopback), without user info, query or fragment');
   return url;
 }
+export function providerLabel(base: string): string {
+  const url = providerURL(base);
+  if (!url) return base;
+  const host = url.hostname.replace(/[^a-z0-9.-]/gi, '-').slice(0, 40);
+  const hash = createHash('sha256').update(url.href).digest('hex').slice(0, 12);
+  return `custom-${host}-${hash}`;
+}
 async function chooseModel(models: string[]) {
   const picked = await select({ message: 'Choose a model for your crew', options: models.map(value => ({ value, label: value })) });
   if (isCancel(picked)) throw new Error('Provider setup cancelled');
@@ -40,7 +47,7 @@ export async function setupURL(squire: BrowserSquire, router: FreeLLMAdmin, base
   if (isCancel(allowed) || !allowed) throw new Error('Provider setup cancelled');
   const key = await password({ message: `API key for ${url.host}`, validate: value => value?.trim() ? undefined : 'Enter an API key' });
   if (isCancel(key)) throw new Error('Provider setup cancelled');
-  const stored = await squire.call('store_credential', { service: url.host, label: base, value: key, auth_shape: 'bearer', api_hosts: [url.host] });
+  const stored = await squire.call('store_credential', { service: url.host, label: providerLabel(base), value: key, auth_shape: 'bearer', api_hosts: [url.host] });
   if (typeof stored.reference !== 'string') throw new Error('Squire did not return a vault reference');
   notify(`${url.host}: API key vaulted`);
   const grant = await squire.credentials.grant(stored.reference);
@@ -281,7 +288,7 @@ export class FreeLLMAdmin {
   async login(password: string) { this.token = (await this.call('/auth/login', { email: 'milo@localhost.local', password })).token; }
   async hasKey(platform: string) {
     const keys = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string; baseUrl?: string; models?: { modelId: string }[] }[];
-    const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${platform} (Squire)` && (providerURL(platform) ? !!key.baseUrl : key.baseUrl?.endsWith(providerPath(platform))));
+    const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${providerLabel(platform)} (Squire)` && (providerURL(platform) ? !!key.baseUrl : key.baseUrl?.endsWith(providerPath(platform))));
     if (!key || !key.models?.length) return false;
     const discovery = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
     return key.models.some(model => discovery.models.some(available => available.id === model.modelId));
@@ -290,7 +297,7 @@ export class FreeLLMAdmin {
     // Custom endpoints bind the grant URL and token to their own model rows.
     const custom = !!providerURL(platform);
     const baseUrl = custom ? grant.base_url : grant.base_url.replace(/\/$/, '') + providerPath(platform);
-    const label = `Milo ${platform} (Squire)`;
+    const label = `Milo ${providerLabel(platform)} (Squire)`;
     let discovery: { models: { id: string }[] };
     try { discovery = await this.call('/keys/custom/discover-models', { baseUrl, apiKey: grant.token }); }
     catch { throw new Error('Model discovery failed; check the base URL and API key (the provider may have rejected it)'); }
@@ -321,7 +328,7 @@ export class FreeLLMAdmin {
       const provider = row.keyLabel?.match(/^Milo (.+) \(Squire\)$/)?.[1];
       const fallback = row.modelId === 'freebuff' || row.modelId === 'kilo-auto/free';
       return { modelDbId: row.modelDbId,
-        enabled: fallback || (provider ? row.platform === 'custom' && !excluded.includes(provider) : row.enabled === true),
+        enabled: fallback || (provider ? row.platform === 'custom' && !excluded.map(providerLabel).includes(provider) : row.enabled === true),
         priority: row.modelId === 'freebuff' ? 1000000 : row.modelId === 'kilo-auto/free' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');

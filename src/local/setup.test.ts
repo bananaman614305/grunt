@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import type * as ChildProcess from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BrowserSquire, FreeLLMAdmin, setup, setupURL, providerURL } from './setup.js';
+import { BrowserSquire, FreeLLMAdmin, setup, setupURL, providerURL, providerLabel } from './setup.js';
 import { configure } from './main.js';
 import { createLocalApp } from './api.js';
 
@@ -17,6 +17,11 @@ vi.mock('node:child_process', async importOriginal => {
 });
 vi.mock('node:readline/promises', () => ({ createInterface: () => ({ question, close: vi.fn() }) }));
 
+// Matches @trusty-squire/mcp 1.1.39: z.string().trim().min(1).max(60).
+const credentialLabelSchema = { parse(value: unknown) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 60) throw new Error('Invalid vault label');
+  return value.trim();
+} };
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 let stateDir: string;
 let installed: boolean, volume: boolean, storedKeys: boolean, legacyAdmin: boolean;
@@ -204,13 +209,12 @@ it.each(['https://example.test/api/v1', 'http://localhost:1234/v1', 'http://127.
 it.each(['http://example.test/v1', 'https://user:pass@example.test', 'https://example.test/v1?token=secret', 'https://example.test/#x'])('rejects unsafe URL %s', value => {
   expect(() => providerURL(value)).toThrow();
 });
-it('vaults a hidden key and selects a discovered model, replacing the same URL on rerun', async () => {
-  const base = 'https://example.test/api/v1';
+it.each(['https://example.test/api/v1', 'https://my-company-production-resource.openai.azure.com/openai/v1', 'http://[::1]:1234/v1'])('vaults and replaces the same URL: %s', async base => {
   const records: { id: number; platform: string; label: string; baseUrl: string; models: { modelId: string }[] }[] = [];
   let next = 0;
   const squire = new BrowserSquire();
-  const call = vi.spyOn(squire, 'call').mockImplementation(async name => {
-    if (name === 'store_credential') return { reference: 'vault://example' };
+  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'store_credential') { credentialLabelSchema.parse(args.label); return { reference: 'vault://example' }; }
     return { base_url: 'https://egress.test/grant', token: 'synthetic-grant' };
   });
   const router = new FreeLLMAdmin();
@@ -225,8 +229,8 @@ it('vaults a hidden key and selects a discovered model, replacing the same URL o
   await setupURL(squire, router, base, () => {});
   await setupURL(squire, router, base, () => {});
   expect(records).toHaveLength(1);
-  expect(records[0]).toMatchObject({ baseUrl: 'https://egress.test/grant/api/v1', label: `Milo ${base} (Squire)`, models: [{ modelId: 'unlisted-model' }] });
-  expect(call).toHaveBeenCalledWith('store_credential', { service: 'example.test', label: base, value: 'synthetic-provider-key', auth_shape: 'bearer', api_hosts: ['example.test'] });
+  expect(records[0]).toMatchObject({ baseUrl: 'https://egress.test/grant' + new URL(base).pathname, label: `Milo ${providerLabel(base)} (Squire)`, models: [{ modelId: 'unlisted-model' }] });
+  expect(call).toHaveBeenCalledWith('store_credential', { service: new URL(base).host, label: providerLabel(base), value: 'synthetic-provider-key', auth_shape: 'bearer', api_hosts: [new URL(base).host] });
   expect(await router.hasKey(base)).toBe(true);
   await router.configureChain();
   expect(admin).toHaveBeenCalledWith('/fallback', [{ modelDbId: 2, enabled: true, priority: 0 }], 'PUT');
@@ -243,4 +247,13 @@ it.each([[[]], [[{ id: 'unlisted-model' }]]])('fails clearly when discovery is e
   const router = new FreeLLMAdmin();
   vi.spyOn(router, 'call').mockImplementation(async () => { if (models.length) throw new Error('synthetic-provider-key'); return { models }; });
   await expect(router.addGrant('https://example.test/v1', { base_url: 'https://egress.test/v1', token: 'synthetic' })).rejects.toThrow(models.length ? 'Model discovery failed' : 'no models');
+});
+
+it('distinguishes long URLs sharing a prefix and normalizes identity', () => {
+  const base = 'https://my-company-production-resource.openai.azure.com/openai/v1';
+  const label = providerLabel(base);
+  expect(credentialLabelSchema.parse(label)).toBe(label);
+  expect(label).toMatch(/^custom-[a-z0-9.-]+-[a-f0-9]{12}$/);
+  expect(providerLabel(base + '/other')).not.toBe(label);
+  expect(providerLabel(base.replace('https://my-company', 'https://MY-COMPANY'))).toBe(label);
 });
