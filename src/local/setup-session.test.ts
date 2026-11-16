@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { setImmediate } from 'node:timers/promises';
+import { setTimeout as realDelay } from 'node:timers/promises';
 import { afterEach, expect, it, vi } from 'vitest';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
 import type { SetupSession } from './setup-session.js';
@@ -119,10 +119,16 @@ it('allows a new installer after expiry even if the stale PID is alive, and the 
 it('aborts the owning signup tasks when the heartbeat cannot safely persist', async () => {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
   const path = await directory(), session = await begin(path);
-  const aborted = vi.fn(); session.signal.addEventListener('abort', aborted);
+  const aborted = vi.fn();
+  const heartbeatAborted = new Promise<void>(resolve => session.signal.addEventListener('abort', () => { aborted(); resolve(); }, { once: true }));
   await chmod(await statePath(path), 0o644);
   await vi.advanceTimersByTimeAsync(15000);
-  for (let i = 0; i < 100 && !session.signal.aborted; i++) await setImmediate();
+  // The fake interval starts real filesystem work; wait for its abort event,
+  // rather than assuming a number of event-loop turns completes that work.
+  const deadline = new AbortController();
+  try {
+    await Promise.race([heartbeatAborted, realDelay(2000, undefined, { signal: deadline.signal }).then(() => { throw new Error('Heartbeat did not abort its signup tasks'); })]);
+  } finally { deadline.abort(); }
   expect(session.signal.aborted).toBe(true); expect(aborted).toHaveBeenCalledOnce();
   await expect(session.verify('kilo')).rejects.toThrow('coordinate provider setup');
   // Until the owner cleans up, corrupt state cannot trigger duplicate setup.
@@ -135,8 +141,11 @@ it('renews the pending snapshot while the foreground owner is alive', async () =
   const path = await directory(); await begin(path);
   const initial = await saved(path);
   await vi.advanceTimersByTimeAsync(15000);
+  const deadline = vi.getRealSystemTime() + 2000;
   let current = initial;
-  for (let i = 0; i < 100 && current.expires === initial.expires; i++) { await setImmediate(); current = await saved(path); }
+  while (current.expires === initial.expires && vi.getRealSystemTime() < deadline) {
+    await realDelay(5); current = await saved(path);
+  }
   expect(current.expires).toBeGreaterThan(initial.expires);
   expect((await readSetupSession(path))?.pending).toEqual(new Set(['kilo', 'perch']));
 });
