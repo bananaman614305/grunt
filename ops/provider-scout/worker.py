@@ -320,6 +320,7 @@ def run_agent(request, config, progress=None):
                    'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_HOME'}
         env = {key: value for key, value in os.environ.items() if key in allowed}
         env['PATH'] = str(Path.home() / '.local/bin') + ':/usr/local/bin:/usr/bin:/bin'
+        env['GIT_NO_REPLACE_OBJECTS'] = '1'
         if config.get('codex_home'):
             env['CODEX_HOME'] = str(Path(config['codex_home']).resolve())
         lock_fd = request.get('lock_fd')

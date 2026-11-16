@@ -24,7 +24,7 @@ export class ProbeError extends Error {
 const fail=(code,outcome)=>{throw new ProbeError(code,outcome);};
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 async function git(checkout,args){
-  try{return(await execute('git',['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-C',checkout,...args],{timeout:10000,maxBuffer:1024*1024})).stdout.trim();}
+  try{return(await execute('git',['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-C',checkout,...args],{timeout:10000,maxBuffer:1024*1024,env:{...process.env,GIT_NO_REPLACE_OBJECTS:'1'}})).stdout.trim();}
   catch{fail('scope_changed');}
 }
 async function canonicalDirectory(path,privateMode=false){

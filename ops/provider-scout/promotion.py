@@ -94,7 +94,7 @@ def _json_fetch(fetcher, url):
 def _default_run(args, cwd=None, timeout=60):
     allowed = ('HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS')
     env = {key: value for key, value in os.environ.items() if key in allowed}
-    env.update(CI='1', GIT_TERMINAL_PROMPT='0', NPM_CONFIG_USERCONFIG='/dev/null')
+    env.update(CI='1', GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1', NPM_CONFIG_USERCONFIG='/dev/null')
     if cwd:
         env['NPM_CONFIG_CACHE'] = str(Path(cwd) / '.npm-cache')
     process = None

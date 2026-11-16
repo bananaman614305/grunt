@@ -33,6 +33,7 @@ SAFE_ENV = {'PATH': TOOLS + '/bin:/usr/bin:/bin', 'HOME': '/tmp/scout-home',
             'npm_config_globalconfig': '/tmp/scout-home/global.npmrc',
             'npm_config_registry': PUBLIC_REGISTRY, 'GIT_CONFIG_NOSYSTEM': '1',
             'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
+            'GIT_NO_REPLACE_OBJECTS': '1',
             'COREPACK_ENABLE_PROJECT_SPEC': '0', 'PNPM_PACKAGE_MANAGER_STRICT': 'false'}
 
 

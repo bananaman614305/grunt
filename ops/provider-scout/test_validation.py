@@ -247,6 +247,49 @@ class ReleaseGateTests(unittest.TestCase):
         self.validate()
         self.assertFalse(marker.exists())
 
+    def test_worker_git_replacement_cannot_hide_existing_guard_changes(self):
+        path = self.checkout / 'src/local/main.ts'
+        path.write_text(path.read_text().replace('if (isEligible(source))', 'if (isEligible(source) || true)'))
+        self.recommit()
+        baseline = self.git(self.checkout, 'show', self.base + ':src/local/main.ts') + '\n'
+        baseline = baseline.replace('if (isEligible(source))', 'if (isEligible(source) || true)')
+        env = {**os.environ, 'GIT_INDEX_FILE': str(self.root / 'replacement-index'),
+               'GIT_CONFIG_GLOBAL': '/dev/null'}
+        def git(*args, data=None):
+            return subprocess.run(['git', '-C', str(self.checkout), *args], input=data, text=True,
+                                  capture_output=True, check=True, env=env).stdout.strip()
+        git('read-tree', self.base)
+        blob = git('hash-object', '-w', '--stdin', data=baseline)
+        git('update-index', '--cacheinfo', '100644', blob, 'src/local/main.ts')
+        tree = git('write-tree')
+        replacement = git('commit-tree', tree, '-m', 'synthetic replacement baseline')
+        git('replace', self.base, replacement)
+        # Without the host override both diff and reviewer would see the
+        # attacker's replacement baseline and miss the inserted guard bypass.
+        self.assertIn('|| true', git('show', self.base + ':src/local/main.ts'))
+        self.assertNotIn('|| true', gate._git(self.checkout, 'show', self.base + ':src/local/main.ts'))
+        with self.assertRaisesRegex(gate.ValidationError, 'replacements and grafts'):
+            self.validate()
+
+    def test_graft_file_and_symlinked_git_info_are_rejected(self):
+        info = self.checkout / '.git/info'
+        graft = info / 'grafts'
+        graft.write_text(self.head + '\n')
+        with self.assertRaisesRegex(gate.ValidationError, 'replacements and grafts'):
+            self.validate()
+        graft.unlink()
+        alternate = self.root / 'alternate-info'
+        info.rename(alternate)
+        info.symlink_to(alternate, target_is_directory=True)
+        with self.assertRaisesRegex(gate.ValidationError, 'Git metadata'):
+            self.validate()
+
+    def test_late_git_graph_mutations_cannot_reuse_validation_receipt(self):
+        receipt = self.validate()
+        (self.checkout / '.git/info/grafts').write_text(self.head + '\n')
+        with self.assertRaisesRegex(gate.ValidationError, 'replacements and grafts'):
+            gate.run_checks(receipt, lambda *args, **kwargs: {'returncode': 0})
+
     def test_checks_require_injected_runner_and_strip_keys(self):
         receipt = self.validate()
         with self.assertRaisesRegex(gate.ValidationError, 'sandboxed'): gate.run_checks(receipt)

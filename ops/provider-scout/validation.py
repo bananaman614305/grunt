@@ -47,7 +47,8 @@ def _digest(data):
 
 def _git(checkout, *args, allow_nonzero=False):
     env = {key: value for key, value in os.environ.items() if key in ('HOME', 'PATH', 'LANG', 'LC_ALL')}
-    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_TERMINAL_PROMPT='0')
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_TERMINAL_PROMPT='0',
+               GIT_NO_REPLACE_OBJECTS='1')
     try:
         result = subprocess.run(['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
                                  '-C', str(checkout), *args], capture_output=True, timeout=30, env=env)
@@ -80,6 +81,16 @@ def _relative(root, value, *, directory=False, private=False):
     except OSError:
         raise ValidationError('Candidate path is unavailable') from None
     return path
+
+
+def _git_graph(checkout):
+    _require(not any(path.is_symlink() for path in (checkout / '.git', checkout / '.git' / 'info',
+                                                    checkout / '.git' / 'refs', checkout / '.git' / 'refs' / 'replace',
+                                                    checkout / '.git' / 'info' / 'grafts')),
+             'Candidate Git metadata must stay inside its own clone')
+    _require(not (checkout / '.git' / 'info' / 'grafts').exists()
+             and not _git(checkout, 'for-each-ref', '--format=%(refname)', 'refs/replace').strip(),
+             'Candidate Git replacements and grafts are forbidden')
 
 
 def _public_url(value):
@@ -319,8 +330,10 @@ def validate_release_request(candidate: dict, workspace: Path, source_repo: Path
         _require(checkout.is_relative_to(workspace / 'candidates') and checkout != workspace / 'candidates', 'Candidate checkout must be under workspace/candidates')
         _require((checkout / '.git').is_dir() and not (checkout / '.git').is_symlink(), 'Candidate must use its own clone, not a linked worktree')
         _require(not (checkout / '.git' / 'commondir').exists()
-                 and not any(path.is_symlink() for path in (checkout / '.git' / 'config', checkout / '.git' / 'objects', checkout / '.git' / 'refs')),
+                 and not any(path.is_symlink() for path in (checkout / '.git' / 'config', checkout / '.git' / 'objects', checkout / '.git' / 'refs',
+                                                           checkout / '.git' / 'info', checkout / '.git' / 'refs' / 'replace', checkout / '.git' / 'info' / 'grafts')),
                  'Candidate Git metadata must stay inside its own clone')
+        _git_graph(checkout)
         _require(Path(_git(checkout, 'rev-parse', '--show-toplevel').strip()).resolve() == checkout, 'Candidate path must be a Git worktree root')
         _require(_git(checkout, 'remote', 'get-url', 'origin').strip() == ORIGIN and _git(source_repo, 'remote', 'get-url', 'origin').strip() == ORIGIN, 'Only the canonical Grunt repository can be promoted')
         _require(_git(checkout, 'rev-parse', 'HEAD').strip() == head and not _git(checkout, 'status', '--porcelain=v1', '--untracked-files=normal').strip(), 'Candidate checkout must be clean at the requested head')
@@ -360,6 +373,7 @@ def validate_release_request(candidate: dict, workspace: Path, source_repo: Path
 
 def _unchanged(receipt):
     checkout = Path(receipt['checkout'])
+    _git_graph(checkout)
     _require(_git(checkout, 'rev-parse', 'HEAD').strip() == receipt['head_sha'] and not _git(checkout, 'status', '--porcelain=v1', '--untracked-files=normal').strip(), 'Candidate changed after validation')
     registry = _git(checkout, 'show', f"{receipt['head_sha']}:registry/adapters.json").encode()
     _require(_digest(registry) == receipt['registry_sha256'], 'Candidate registry changed after validation')
