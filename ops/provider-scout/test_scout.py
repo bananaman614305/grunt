@@ -144,7 +144,13 @@ class ScoutTests(unittest.TestCase):
         script = ('#!/usr/bin/python3\nimport sys,json,time,pathlib\nsys.stdin.read()\n'
                   'assert "--no-daemon" in sys.argv\n'
                   'assert "--add-dir" not in sys.argv\n'
-                  'assert "sandbox_workspace_write.writable_roots=[]" in sys.argv\n')
+                  'assert "sandbox_workspace_write.writable_roots=[]" in sys.argv\n'
+                  'assert sys.argv[sys.argv.index("-a")+1] == "never"\n'
+                  'assert sys.argv[sys.argv.index("--sandbox")+1] == "workspace-write"\n'
+                  'assert [a for a in sys.argv if "approval_mode=" in a] == '
+                  '[\'mcp_servers.squire.tools.list_credentials.approval_mode="approve"\']\n'
+                  'assert "--approve-for-me" not in sys.argv\n'
+                  'assert "--dangerously-bypass-approvals-and-sandbox" not in sys.argv\n')
         if sleep:
             script += 'time.sleep(30)\n'
         if web_event:
