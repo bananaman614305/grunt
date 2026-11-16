@@ -15,6 +15,7 @@ import type { Sender } from '../dots-events.js';
 import { dotsLink, readDotsLink, pairDots, dotsGateway } from './dots-link.js';
 import { Dots, DOTS_INSTRUCTION } from './dots.js';
 import { configure } from './main.js';
+import { bundledRegistry } from '../registry.js';
 import { Sources } from './source.js';
 import { createLocalApp } from './api.js';
 
@@ -81,7 +82,7 @@ it('stays off by default and makes no gateway call without explicit opt-in or se
   const source = new Dots({ env: { GRUNT_DOTS_URL: 'https://api.grunt.run' }, fetcher });
   expect(await source.available()).toBe(false);
   await expect(source.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'not_installed' });
-  const sources = configure({}); expect(sources.sources.map(s => s.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
+  const sources = configure({}); expect(sources.sources.map(s => s.id)).toEqual(bundledRegistry.adapters.map(adapter => adapter.id));
   const app = createLocalApp(new Sources([source]));
   expect((await (await app.request('http://127.0.0.1:8788/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['grunt']);
   expect(fetcher).not.toHaveBeenCalled();

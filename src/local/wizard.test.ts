@@ -378,8 +378,8 @@ it('uses one Squire client across default setup and closes it after verification
   expect(close).toHaveBeenCalledOnce();
 });
 
-it('cold-starts all eleven vetted sources after one shared sign-in and one consent batch', async () => {
-  const ids = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'];
+it('cold-starts every bundled vetted source after one shared sign-in and one consent batch', async () => {
+  const ids = defaultIds();
   const order: string[] = [];
   const squire = new BrowserSquire();
   const connect = vi.spyOn(squire, 'connect').mockImplementation(async () => { order.push('identity-ready'); });

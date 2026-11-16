@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bundledRegistry, validateRegistry } from './registry.js';
+import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from './registry.js';
 import { RegistrySync, REGISTRY_INTERVAL } from './local/registry.js';
 import { registryRoutes } from './registry-routes.js';
 
@@ -10,13 +10,20 @@ const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
-it('ships exactly eleven active vetted sources with stable and experimental tier weights', () => {
-  expect(bundledRegistry.adapters.map(adapter => adapter.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
+it('preserves the established vetted sources while allowing reviewed pool additions', () => {
+  const established = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'];
+  const ids = bundledRegistry.adapters.map(adapter => adapter.id);
+  expect(ids.filter(id => established.includes(id))).toEqual(established);
+  for (const id of ids) {
+    expect(knownAdapters.has(id)).toBe(true);
+    expect(disabledAdapters.has(id)).toBe(false);
+  }
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
   expect(bundledRegistry.adapters.some(a => /cloudflare|qwen|freebuff|apinex/.test(a.id))).toBe(false);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').map(a => a.id)).toEqual(['opencode', 'kilo', 'zro']);
-  expect(bundledRegistry.adapters.filter(a => a.tier === 'experimental')).toHaveLength(8);
-  for (const adapter of bundledRegistry.adapters.filter(a => a.tier === 'experimental')) expect(adapter.weight).toBe(0.025);
+  const experimental = bundledRegistry.adapters.filter(a => a.tier === 'experimental');
+  expect(experimental.length).toBeGreaterThanOrEqual(established.length - 3);
+  for (const adapter of experimental) expect(adapter.weight).toBeCloseTo(0.2 / experimental.length, 12);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.8);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'experimental').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(0.2);
   expect(() => validateRegistry({ ...bundledRegistry, adapters: bundledRegistry.adapters.map(a => a.id === 'tokenharbor' ? { ...a, weight: 0.3 } : a) })).toThrow();
