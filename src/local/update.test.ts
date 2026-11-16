@@ -21,16 +21,17 @@ vi.mock('node:fs/promises', async original => {
 
 const execute = promisify(execFile), directories: string[] = [];
 afterEach(async () => { cleanup.fail = false; vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-type Settings = { active?: boolean; platform?: 'linux' | 'darwin'; badReady?: boolean; stopError?: boolean; rollbackStopError?: boolean; portEnv?: string; envFile?: string; unsafeNames?: boolean; unsafeLink?: boolean; wrongExec?: boolean; corrupt?: boolean; abort?: AbortController; cancelNpm?: boolean; abortOnStop?: boolean; failBootstrap?: boolean; configMismatch?: boolean; configMissing?: boolean; legacyStatus?: boolean };
+type Settings = { brand?: 'grunt' | 'milo'; duplicate?: boolean; active?: boolean; platform?: 'linux' | 'darwin'; badReady?: boolean; stopError?: boolean; rollbackStopError?: boolean; portEnv?: string; envFile?: string; unsafeNames?: boolean; unsafeLink?: boolean; wrongExec?: boolean; corrupt?: boolean; abort?: AbortController; cancelNpm?: boolean; abortOnStop?: boolean; failBootstrap?: boolean; configMismatch?: boolean; configMissing?: boolean; legacyStatus?: boolean };
 async function fixture(settings: Settings = {}) {
   const base = await mkdtemp(join(tmpdir(), 'grunt-update-test-')); directories.push(base);
-  const directory = join(base, 'milo'), runtime = join(directory, 'runtime'), remote = join(base, 'remote'), pkg = join(remote, 'package');
+  const brand = settings.brand ?? 'milo', prefix = brand.toUpperCase();
+  const directory = join(base, brand), runtime = join(directory, 'runtime'), remote = join(base, 'remote'), pkg = join(remote, 'package');
   await mkdir(join(runtime, 'dist/local'), { recursive: true, mode: 0o700 });
   await writeFile(join(runtime, 'dist/local/main.js'), 'original runtime');
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', version: '0.1.0', type: 'module' }));
   const saved = { 'installed-sources.json': '["freellmapi","perch"]', 'installed-port.json': '8788', 'maintenance.json': '{"keep":"maintenance history"}', 'private-grant.json': 'synthetic private receipt' };
   for (const [name, contents] of Object.entries(saved)) await writeFile(join(directory, name), contents, { mode: 0o600 });
-  const unit = join(base, 'milo.service'), dropIn = join(base, 'custom.conf'), plist = join(base, 'ai.milo.service.plist');
+  const unit = join(base, `${brand}.service`), dropIn = join(base, 'custom.conf'), plist = join(base, `ai.${brand}.service.plist`);
   for (const file of [unit, dropIn, plist]) await writeFile(file, 'preserve original service configuration', { mode: 0o600 });
   await mkdir(join(pkg, 'dist/local'), { recursive: true });
   await writeFile(join(pkg, 'dist/local/main.js'), 'if(process.argv[1])throw new Error("CLI must not start while staging");export const fixture=true;');
@@ -47,8 +48,9 @@ async function fixture(settings: Settings = {}) {
     if (binary === 'systemctl') {
       if (args.includes('show')) {
         const name = args[args.indexOf('-p') + 1];
+        if (!args.includes(`${brand}.service`) && !settings.duplicate) return name === 'LoadState' ? 'not-found' : '';
         return ({ LoadState: 'loaded', ExecStart: `{ path=${process.execPath} ; argv[]=${process.execPath} ${settings.wrongExec ? '/unrelated/project/main.js' : join(runtime, 'dist/local/main.js')} ; ignore_errors=no ; }`,
-          Environment: (settings.portEnv ?? 'MILO_PORT=18792 MILO_SOURCES=freellmapi,perch MILO_FREELLMAPI_URL=http://127.0.0.1:3001/v1') + (settings.configMissing ? '' : ` MILO_CONFIG_DIR=${settings.configMismatch ? '/unrelated/configuration' : directory}`), EnvironmentFiles: settings.envFile ?? '', UnsetEnvironment: '', ActiveState: active ? 'active' : 'inactive' } as Record<string, string>)[name!] ?? '';
+          Environment: (settings.portEnv ?? `${prefix}_PORT=18792 ${prefix}_SOURCES=freellmapi,perch ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3001/v1`) + (settings.configMissing ? '' : ` ${prefix}_CONFIG_DIR=${settings.configMismatch ? '/unrelated/configuration' : directory}`), EnvironmentFiles: settings.envFile ?? '', UnsetEnvironment: '', ActiveState: active ? 'active' : 'inactive' } as Record<string, string>)[name!] ?? '';
       }
       if (args.includes('stop')) {
         stops++;
@@ -61,9 +63,12 @@ async function fixture(settings: Settings = {}) {
       return '';
     }
     if (binary === 'launchctl') {
-      if (args[0] === 'print' && args[1] === `gui/${process.getuid!()}`) return `${args[1]} = {\n services = {\n${loaded ? '123 0 ai.milo.service\n' : ''} }\n}\n`;
-      if (args[0] === 'print') return `path = ${plist}\nstate = ${active ? 'running' : 'waiting'}\n`;
-      if (args[0] === 'list') return `PID\tStatus\tLabel\n${loaded ? `${active ? '123' : '-'}\t0\tai.milo.service\n` : ''}`;
+      if (args[0] === 'print' && args[1] === `gui/${process.getuid!()}`) return `${args[1]} = {\n services = {\n${loaded ? `123 0 ai.${brand}.service\n` : ''} }\n}\n`;
+      if (args[0] === 'print') {
+        if (!args[1]?.endsWith(`/ai.${brand}.service`) && !settings.duplicate) throw new Error('Synthetic job not installed');
+        return `path = ${plist}\nstate = ${active ? 'running' : 'waiting'}\n`;
+      }
+      if (args[0] === 'list') return `PID\tStatus\tLabel\n${loaded ? `${active ? '123' : '-'}\t0\tai.${brand}.service\n` : ''}`;
       if (args[0] === 'bootout') {
         stops++; if (!loaded) throw new Error('Synthetic launchd job is already unloaded'); active = false; loaded = false;
         if (settings.abortOnStop && stops === 1) settings.abort!.abort();
@@ -76,8 +81,8 @@ async function fixture(settings: Settings = {}) {
       return '';
     }
     if (binary === 'plutil') {
-      if (args.includes('EnvironmentVariables.MILO_CONFIG_DIR') && settings.configMissing) throw new Error('Synthetic plist field missing');
-      return args.includes('ProgramArguments') ? JSON.stringify([process.execPath, join(runtime, 'dist/local/main.js')]) : args.includes('EnvironmentVariables.MILO_CONFIG_DIR') ? settings.configMismatch ? '/unrelated/configuration' : directory : '18792';
+      if (args.some(arg => arg.startsWith('EnvironmentVariables.') && !arg.startsWith(`EnvironmentVariables.${prefix}_`)) || args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) && settings.configMissing) throw new Error('Synthetic plist field missing');
+      return args.includes('ProgramArguments') ? JSON.stringify([process.execPath, join(runtime, 'dist/local/main.js')]) : args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) ? settings.configMismatch ? '/unrelated/configuration' : directory : '18792';
     }
     if (binary === 'npm') {
       expect(args).toContain('--ignore-scripts'); expect(args).toContain('--registry=https://registry.npmjs.org');
@@ -122,6 +127,26 @@ it('fetches latest even from an older CLI and replaces only the managed runtime 
   expect(f.calls.some(call => call.args.some(arg => ['enable', 'daemon-reload', '/v1/models'].includes(arg)))).toBe(false);
   await f.preserved();
 });
+it.each(['linux', 'darwin'] as const)('updates the primary Grunt service without introducing a legacy identity on %s', async platform => {
+  const f = await fixture({ brand: 'grunt', platform });
+  expect((await updateRuntime(f.options)).port).toBe(18792);
+  const actions = f.calls.filter(call => ['systemctl', 'launchctl'].includes(call.binary) && call.args.some(arg => ['start', 'stop', 'bootout', 'bootstrap'].includes(arg)));
+  expect(actions).toHaveLength(2);
+  expect(actions.every(call => call.args.some(arg => arg.includes('grunt.service')))).toBe(true);
+  expect(JSON.parse(await readFile(join(f.runtime, 'package.json'), 'utf8')).name).toBe('grunt-runtime');
+  await f.preserved();
+});
+it('honors primary Grunt settings over legacy aliases in the unchanged installed environment', async () => {
+  const f = await fixture({ brand: 'grunt', portEnv: 'MILO_PORT=8788 GRUNT_PORT=18792 MILO_CONFIG_DIR=/unrelated/old-state GRUNT_SOURCES=kilo' });
+  expect((await updateRuntime(f.options)).port).toBe(18792);
+  expect(f.calls.some(call => call.args.includes('stop') && call.args.includes('grunt.service'))).toBe(true);
+  await f.preserved();
+});
+it.each(['linux', 'darwin'] as const)('refuses two service identities claiming the same saved state on %s', async platform => {
+  const f = await fixture({ platform, duplicate: true });
+  await expect(updateRuntime(f.options)).rejects.toThrow('Multiple Grunt services');
+  expect(f.counts().stops).toBe(0); expect(f.urls).toEqual([]); await f.preserved();
+});
 it('parses effective Environment tokens without using fake port text inside another quoted variable', async () => {
   const f = await fixture({ portEnv: 'MILO_PORT=8788 "MILO_PORT=18792" "OTHER=example MILO_PORT=8788" "PRIVATE=synthetic\\x20secret\\\" value"' });
   expect((await updateRuntime(f.options)).port).toBe(18792); await f.preserved();
@@ -133,7 +158,7 @@ it('preserves an intentionally stopped Linux service without probing a possibly 
 });
 it('updates macOS by reloading the same validated plist without rewriting or enabling it', async () => {
   const f = await fixture({ platform: 'darwin' }); await updateRuntime(f.options);
-  expect(f.calls.filter(call => call.binary === 'launchctl').map(call => call.args[0])).toEqual(['print', 'print', 'bootout', 'bootstrap']);
+  expect(f.calls.filter(call => call.binary === 'launchctl').map(call => call.args[0])).toEqual(['print', 'print', 'print', 'print', 'bootout', 'bootstrap']);
   await f.preserved();
 });
 it('restores a running macOS job if bootstrap failed before registering the replacement', async () => {

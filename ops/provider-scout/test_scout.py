@@ -384,7 +384,7 @@ class ScoutTests(unittest.TestCase):
         executable = str(Path(scout.shutil.which('gh')).resolve())
         self.assertEqual(helpers,['credential.helper=',
                                  'credential.https://github.com.helper=!' + scout.shlex.quote(executable) + ' auth git-credential'])
-        self.assertEqual(args[-2:],['https://github.com/bananaman614305/milo.git',
+        self.assertEqual(args[-2:],['https://github.com/bananaman614305/grunt.git',
                                     '+refs/heads/main:refs/remotes/origin/main'])
         self.assertIn('--no-write-fetch-head',args)
         self.assertNotIn('checkout',args)
@@ -452,7 +452,7 @@ class ScoutTests(unittest.TestCase):
             if args[0] == 'timedatectl':
                 return 'America/New_York\n'
             if args[0] == 'git':
-                return 'https://github.com/bananaman614305/milo.git\n'
+                return 'https://github.com/bananaman614305/grunt.git\n'
             if args == ['crontab','-l']:
                 return installed_cron['text']
             raise AssertionError(args)
@@ -464,6 +464,7 @@ class ScoutTests(unittest.TestCase):
             scout.install(state, source)
         config = scout.load(state / 'config.json')
         self.assertEqual(config['version'], 2)
+        self.assertEqual(config['repository'], 'bananaman614305/grunt')
         self.assertFalse(config['release_enabled'])
         self.assertEqual(config['npm_ref'], 'squire:existing')
         self.assertEqual(config['custom_setting'], 'preserved')

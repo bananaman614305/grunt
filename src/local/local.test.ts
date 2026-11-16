@@ -51,8 +51,8 @@ describe('harness wire contracts', () => {
 it('models, failover, last typed error and loopback binding', async () => {
   const bad: Source = { ...fake('bad'), complete: async () => { throw new SourceError('quota', 'Free hours exhausted'); } };
   const app = createLocalApp(new Sources([bad, fake()]));
-  expect((await (await app.request('http://localhost:8788/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['milo', 'bad', 'second-app']);
-  const body = JSON.stringify({ model: 'milo', messages: [{ role: 'user', content: 'hello' }] });
+  expect((await (await app.request('http://localhost:8788/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['grunt', 'bad', 'second-app']);
+  const body = JSON.stringify({ model: 'grunt', messages: [{ role: 'user', content: 'hello' }] });
   expect((await (await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: {'Content-Type':'application/json'}, body })).json()).choices[0].message.content).toBe('hello');
   for (const path of paths) {
     const response = await createLocalApp(new Sources([bad])).request(`http://localhost:8788/v1/${path}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ input: 'hello', messages: [{ role: 'user', content: 'hello' }] }) });
@@ -62,7 +62,22 @@ it('models, failover, last typed error and loopback binding', async () => {
   await new Promise<void>(resolve => server.once('listening', resolve));
   expect(server.address()).toMatchObject({ address: '127.0.0.1' });
   await new Promise<void>(resolve => server.close(() => resolve()));
-  expect(() => configure({ MILO_SOURCES: 'unknown' })).toThrow('Unknown');
+  expect(() => configure({ GRUNT_SOURCES: 'unknown' })).toThrow('Unknown');
+});
+it('advertises the grunt model while preserving legacy requests and source configuration', async () => {
+  const source = fake('custom-app'), sources = new Sources([source]);
+  const app = createLocalApp(sources);
+  const models = await (await app.request('http://localhost:8788/v1/models')).json();
+  expect(models.data).toEqual(['grunt', 'custom-app'].map(id => ({ id, object: 'model', created: 0, owned_by: 'grunt' })));
+  expect(decode({ input: 'hello' }, 'responses', '/tmp').model).toBe('grunt');
+  for (const model of ['grunt', 'milo', 'custom-app']) {
+    expect(await sources.complete(decode({ input: 'hello', model }, 'responses', '/tmp'), new AbortController().signal)).toEqual({ text: 'hello' });
+  }
+  for (const env of [{ MILO_SOURCES: 'dots' }, { GRUNT_SOURCES: 'dots', MILO_SOURCES: 'unknown' }]) {
+    const configured = configure(env);
+    expect(configured.sources.map(source => source.id)).toEqual(['dots']);
+    await configured.close();
+  }
 });
 it('gateway only calls configured origin, preserves tools, rejects redirects and fails over availability errors', async () => {
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: 'gateway reply' } }] }));
@@ -71,6 +86,7 @@ it('gateway only calls configured origin, preserves tools, rejects redirects and
   expect(await gateway.complete(request, new AbortController().signal)).toMatchObject({ text: 'gateway reply' });
   expect(fetcher.mock.calls[0]![0]).toBe('https://configured.invalid/v1/chat/completions');
   expect(fetcher.mock.calls[0]![1]).toMatchObject({ redirect: 'error', headers: { Authorization: 'Bearer synthetic' } });
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]!.body)).model).toBe('grunt');
   expect(JSON.parse(String(fetcher.mock.calls[0]![1]!.body)).tools).toEqual(request.tools);
   const bad = new Gateway('https://configured.invalid/v1', '', async () => { throw new Error('offline'); });
   expect(await new Sources([bad, fake()]).complete(request, new AbortController().signal)).toMatchObject({ text: request.messages.at(-1)!.content });
@@ -81,7 +97,7 @@ it('cwd inference and changed Freebuff format fail clearly', async () => {
   const final = await fixture('freebuff-final');
   expect(parseChat(final, final[0].content)).toBe('hello');
   expect(() => parseChat({}, '')).toThrow('format changed');
-  expect(decode(await fixture('claude'), 'messages', '/fallback').cwd).toBe('/tmp/milo-harness-cwd');
+  expect(decode(await fixture('claude'), 'messages', '/fallback').cwd).toBe('/tmp/grunt-harness-cwd');
   expect(decode({ input: 'hi', instructions: '<cwd>/tmp/codex</cwd>' }, 'responses', '/fallback').cwd).toBe('/tmp/codex');
   expect(decode({ messages: [{ role: 'user', content: 'hi' }] }, 'chat', '/fallback').cwd).toBe('/fallback');
   expect(() => decode({ input: 'hi', cwd: 'relative' }, 'responses', '/fallback')).toThrow('absolute');
@@ -123,17 +139,17 @@ it.each([false, true])('Reproduction R1 exposes only story text through completi
   } finally { await driver.close(); await rm(home, { recursive: true, force: true }); }
 });
 it('fake Freebuff on real tmux isolates concurrent identical requests, queues, cleans up, times out and makes no fetch calls', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'milo-app-'));
+  const dir = await mkdtemp(join(tmpdir(), 'grunt-app-'));
   const originalPath = process.env.PATH;
   const fetcher = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('local path must not fetch'));
   const driver = new Freebuff({ home: dir, pool: 2, timeout: 8000, startup: 200, poll: 20 });
   try {
     await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir, 'freebuff')); await chmod(join(dir, 'freebuff'), 0o755);
-    vi.stubEnv('PATH', `${dir}:${originalPath}`); vi.stubEnv('MILO_TEST_HOME', dir);
+    vi.stubEnv('PATH', `${dir}:${originalPath}`); vi.stubEnv('GRUNT_TEST_HOME', dir);
     expect(await driver.available()).toBe(true);
     const request: ModelRequest = { model: 'freebuff', messages: [{ role: 'user', content: 'same prompt' }], tools: [], stream: false, cwd: dir };
     const app = createLocalApp(new Sources([driver]));
-    vi.stubEnv('MILO_TEST_UNIQUE','1');
+    vi.stubEnv('GRUNT_TEST_UNIQUE','1');
     for (let batch = 0; batch < 8; batch++) {
       const results = await Promise.all(Array.from({ length: 3 }, async () => {
         const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...request, messages: [{role:'user',content:`same prompt ${batch}`}] }) });
@@ -142,7 +158,7 @@ it('fake Freebuff on real tmux isolates concurrent identical requests, queues, c
       for (const result of results) expect(result).toMatchObject({status:200,body:{choices:[{message:{role:'assistant',content:expect.any(String)}}]}});
       expect(new Set(results.map(r => r.body.choices[0].message.content)).size).toBe(3);
     }
-    vi.stubEnv('MILO_TEST_UNIQUE','');
+    vi.stubEnv('GRUNT_TEST_UNIQUE','');
     expect(fetcher).not.toHaveBeenCalled();
     const timeout = new Freebuff({ home: dir, timeout: 500, startup: 100, poll: 20 });
     await expect(timeout.complete({ ...request, messages: [{ role: 'user', content: 'NEVER_COMPLETE' }] }, new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
@@ -202,25 +218,25 @@ it('answers housekeeping locally before starting any source', async () => {
   expect(complete).toHaveBeenCalledTimes(3);
 });
 it('answers through Freebuff when freebuff doctor takes longer than 5 seconds', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'milo-slow-doctor-'));
+  const dir = await mkdtemp(join(tmpdir(), 'grunt-slow-doctor-'));
   const driver = new Freebuff({home:dir, startup:200, poll:20, timeout:15000});
   try {
     await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir,'freebuff')); await chmod(join(dir,'freebuff'),0o755);
-    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('MILO_TEST_HOME',dir); vi.stubEnv('MILO_TEST_DOCTOR_DELAY','5500');
+    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('GRUNT_TEST_HOME',dir); vi.stubEnv('GRUNT_TEST_DOCTOR_DELAY','5500');
     const response = await createLocalApp(new Sources([driver])).request('http://localhost:8788/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'freebuff',cwd:dir,messages:[{role:'user',content:'slow doctor'}]})});
     expect(response.status).toBe(200);
     expect(response.headers.get('X-Grunt-Source')).toBe('freebuff');
     expect((await response.json()).choices[0].message.content).toBe('slow doctor');
-  } finally { vi.stubEnv('MILO_TEST_DOCTOR_DELAY',''); await driver.close(); await rm(dir,{recursive:true,force:true}); }
+  } finally { vi.stubEnv('GRUNT_TEST_DOCTOR_DELAY',''); await driver.close(); await rm(dir,{recursive:true,force:true}); }
 }, 30000);
 it.each(['missing','unreadable'])('recovers a %s continuation, matches CR turns, resumes chats and stops on refusal', async state => {
-  const dir = await mkdtemp(join(tmpdir(), 'milo-resume-'));
+  const dir = await mkdtemp(join(tmpdir(), 'grunt-resume-'));
   const { readdir } = await import('node:fs/promises');
   const driver = new Freebuff({home:dir, startup:200, poll:20, timeout:5000});
   try {
     await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir,'freebuff')); await chmod(join(dir,'freebuff'),0o755);
-    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('MILO_TEST_HOME',dir);
-    const req: ModelRequest = {model:'milo',messages:[{role:'user',content:'first\nline'}], tools:[], stream:false,cwd:dir};
+    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('GRUNT_TEST_HOME',dir);
+    const req: ModelRequest = {model:'grunt',messages:[{role:'user',content:'first\nline'}], tools:[], stream:false,cwd:dir};
     expect(await driver.complete(req,new AbortController().signal)).toEqual({text:'first\nline'});
     req.messages.push({role:'assistant',content:'first\nline'},{role:'user',content:'second'});
     expect(await driver.complete(req,new AbortController().signal)).toEqual({text:'second'});
@@ -250,10 +266,10 @@ it.each(['missing','unreadable'])('recovers a %s continuation, matches CR turns,
     const mux = {start:vi.fn(),send:vi.fn(),stop:vi.fn()};
     const diagnosed = new Freebuff({mux,home:dir});
     for (const [message,code] of [['Not signed in','logged_out'],['Free hours exhausted','quota']]) {
-      vi.stubEnv('MILO_TEST_DOCTOR_ERROR',message!);
+      vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR',message!);
       await expect(diagnosed.complete(req,new AbortController().signal)).rejects.toMatchObject({code});
     }
-    vi.stubEnv('MILO_TEST_DOCTOR_ERROR','');
+    vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR','');
     expect(mux.start).not.toHaveBeenCalled();
     expect(mux.send).not.toHaveBeenCalled();
     await diagnosed.close();
@@ -265,7 +281,7 @@ it.each(['missing','unreadable'])('recovers a %s continuation, matches CR turns,
 it.each([false, true])('attributes shared-basename chats and follow-ups to their originating process (quota=%s)', async quota => {
   const { mkdir } = await import('node:fs/promises');
   const { OwnershipMux } = await import('./fixtures/ownership-mux.js');
-  const home = await mkdtemp(join(tmpdir(),'milo-owner-'));
+  const home = await mkdtemp(join(tmpdir(),'grunt-owner-'));
   const a = join(home,'A','project'), b = join(home,'B','project');
   await mkdir(a,{recursive:true}); await mkdir(b,{recursive:true});
   await copyFile(new URL('./fixtures/fake-freebuff.cjs',import.meta.url),join(home,'freebuff')); await chmod(join(home,'freebuff'),0o755);
@@ -311,11 +327,11 @@ it('maps unknown background model ids to the default chain and logs the mapping'
 it('logs which source answered each request and which ones failed before it',async()=>{
   const log=vi.spyOn(console,'error').mockImplementation(()=>{});
   const down:Source={...fake('first-app'),complete:async()=>{throw new SourceError('quota','out');}};
-  try {expect(await new Sources([down,fake()]).complete(decode({input:'hi',model:'milo'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});
-    expect(log.mock.calls.map(c=>c[0])).toEqual(['grunt source: first-app failed (quota) for model milo','grunt source: second-app answered model milo']);}finally{log.mockRestore();}
+  try {expect(await new Sources([down,fake()]).complete(decode({input:'hi',model:'grunt'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});
+    expect(log.mock.calls.map(c=>c[0])).toEqual(['grunt source: first-app failed (quota) for model grunt','grunt source: second-app answered model grunt']);}finally{log.mockRestore();}
 });
 it.each([['',{}],['broken','broken']])('encodes tool arguments safely: %s',(arguments_,input)=>{
-  expect(encode({text:'',calls:[{id:'c',type:'function',function:{name:'read',arguments:arguments_ as string}}]},'milo','messages')).toMatchObject({content:[{input}]});
+  expect(encode({text:'',calls:[{id:'c',type:'function',function:{name:'read',arguments:arguments_ as string}}]},'grunt','messages')).toMatchObject({content:[{input}]});
 });
 it('prefers first absolute Primary working directory and ignores relative hints',()=>{
   const request=(instructions:string)=>decode({input:'hi',instructions},'responses','/fallback').cwd;
@@ -331,13 +347,15 @@ it('caps gateway completions when max tokens are omitted and preserves explicit 
 it('matches saved user turns with normalized newlines and surrounding whitespace',()=>{
   expect(parseChat([{variant:'user',textAttachments:[{content:'  first\nsecond\nthird  '}]},{variant:'ai',isComplete:true,blocks:[{type:'text',content:'ok'}]}],'first\r\nsecond\rthird')).toBe('ok');
 });
-it('starts the daemon through the milo-local bin symlink',async()=>{
+it.each(['grunt-local', 'milo-local'])('starts the daemon through the compatible %s bin symlink',async bin=>{
   const {symlink}=await import('node:fs/promises');
   const {spawn}=await import('node:child_process');
-  const dir=await mkdtemp(join(tmpdir(),'milo-bin-'));
-  await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,'milo-local'));
-  const child=spawn(process.execPath,['--import','tsx',join(dir,'milo-local'),'serve'],{env:{...process.env,MILO_PORT:'18789',MILO_SOURCES:'dots',MILO_CONFIG_DIR:dir},stdio:['ignore','ignore','pipe']});
-  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{child.kill();await rm(dir,{recursive:true,force:true});}
+  const dir=await mkdtemp(join(tmpdir(),'grunt-bin-'));
+  await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,bin));
+  const env = bin === 'grunt-local' ? { ...process.env, GRUNT_PORT:'18789',GRUNT_SOURCES:'dots',GRUNT_CONFIG_DIR:dir }
+    : { ...process.env, GRUNT_PORT:undefined,GRUNT_SOURCES:undefined,GRUNT_CONFIG_DIR:undefined,MILO_PORT:'18789',MILO_SOURCES:'dots',MILO_CONFIG_DIR:dir };
+  const child=spawn(process.execPath,['--import','tsx',join(dir,bin),'serve'],{env,stdio:['ignore','ignore','pipe']});
+  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } await rm(dir,{recursive:true,force:true});}
 });
 it('starts setup from the usegrunt bin without arguments', async () => {
   const { symlink, writeFile } = await import('node:fs/promises');
@@ -369,7 +387,7 @@ it.each([
     await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff'));
     await chmod(join(home, 'freebuff'), 0o755);
     vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
-    vi.stubEnv('MILO_TEST_DOCTOR_ERROR', JSON.stringify({ code: nativeCode, message: nativeCode === 'logged_out' ? 'Login required' : 'Provider diagnostic',
+    vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR', JSON.stringify({ code: nativeCode, message: nativeCode === 'logged_out' ? 'Login required' : 'Provider diagnostic',
       userEmail: 'private-user@example.test', upstreamBody: 'SENSITIVE_UPSTREAM_PAYLOAD', authToken: 'synthetic-sensitive-token' }));
     const request: ModelRequest = { model: 'freebuff', cwd: home, messages: [{ role: 'user', content: 'hello' }], tools: [], stream: false };
     await expect(source.complete(request, AbortSignal.timeout(2000))).rejects.toMatchObject({ code, message });

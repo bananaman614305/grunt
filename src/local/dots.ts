@@ -1,3 +1,4 @@
+import { gruntEnv } from '../brand.js';
 import { userTurns } from './harness.js';
 import { readDotsLink } from './dots-link.js';
 import { SourceError } from './source.js';
@@ -8,7 +9,7 @@ export class Dots implements Source {
   readonly id = 'dots';
   private shutdown = new AbortController();
   constructor(private options: { env?: NodeJS.ProcessEnv; timeout?: number; fetcher?: typeof fetch } = {}) {}
-  private get enabled() { return (this.options.env ?? process.env).MILO_SOURCES?.split(',').some(id => id.trim() === 'dots') ?? false; }
+  private get enabled() { return gruntEnv('SOURCES', this.options.env ?? process.env)?.split(',').some(id => id.trim() === 'dots') ?? false; }
   private async call(link: { gateway: string; deviceSecret: string }, path: string, signal: AbortSignal, method = 'GET', body?: unknown) {
     const response = await (this.options.fetcher ?? fetch)(link.gateway + path, { method, redirect: 'error', signal, headers: { Authorization: `Bearer ${link.deviceSecret}`, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (response.status === 204) return {};
@@ -28,7 +29,7 @@ export class Dots implements Source {
     catch { return false; }
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
-    if (!this.enabled) throw new SourceError('not_installed', 'Add dots to MILO_SOURCES to enable it');
+    if (!this.enabled) throw new SourceError('not_installed', 'Add dots to GRUNT_SOURCES to enable it');
     const link = await readDotsLink(this.options.env);
     if (!link) throw new SourceError('not_installed', 'Run usegrunt dots link to configure your dot');
     const prompt = userTurns(request).at(-1);

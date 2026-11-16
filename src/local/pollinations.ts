@@ -1,7 +1,7 @@
+import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Ajv } from 'ajv';
 import type { AnySchema } from 'ajv';
@@ -18,7 +18,7 @@ export const POLLINATIONS_RETURNED_MODEL = 'poe/GLM-5.3-Flash-T';
 export const POLLINATIONS_ORIGIN = 'https://gen.pollinations.ai';
 export const POLLINATIONS_GRANT_ORIGIN = 'https://trusty-squire-api.fly.dev';
 export const POLLINATIONS_RECEIPT_MAX_AGE_MS = 30 * 86400000;
-const directory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const directory = () => configRoot();
 export const pollinationsGrantPath = (location = directory()) => join(location, 'pollinations.json');
 interface AccessGrant { base_url: string; token: string }
 export interface PollinationsGrant extends AccessGrant {

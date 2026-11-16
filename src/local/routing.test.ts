@@ -15,7 +15,7 @@ const launchRegistry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(
   ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5
 })) };
 
-const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
+const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
 const source = (id: string): Source => ({ id, available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: `${id} done` })) });
 function routed(random = () => 0) { const a = source('opencode'), b = source('kilo'); return { a, b, sources: new Sources([a, b], { registry: () => launchRegistry, random }) }; }
 const piTools = [{ type: 'function' as const, function: { name: 'read', parameters: {} } }];
@@ -210,8 +210,8 @@ it('hands off current persisted Freebuff output when quota is already logged', a
     // The injected multiplexer never runs tmux; satisfy its availability check locally.
     await writeFile(join(cwd, 'tmux'), '#!/bin/sh\nexit 99\n', { mode: 0o700 });
     vi.stubEnv('PATH', `${cwd}:${process.env.PATH}`);
-    vi.stubEnv('MILO_TEST_DOCTOR_DELAY', '0');
-    vi.stubEnv('MILO_TEST_DOCTOR_ERROR', '');
+    vi.stubEnv('GRUNT_TEST_DOCTOR_DELAY', '0');
+    vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR', '');
     const mux = { start: async (_id: string, _cwd: string, binary: string) => { expect(binary).toBe(join(cwd, 'freebuff')); }, stop: async () => {}, send: async (_id: string, prompt: string) => {
       const dir = join(cwd, '.config/manicode/projects', cwd.split('/').at(-1)!, 'chats/current');
       await mkdir(dir, { recursive: true });

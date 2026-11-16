@@ -122,6 +122,7 @@ def build_command(request, config, schema_path):
         args.append('--search')
     servers, plugins = _integration_names(config)
     _disable_integrations(args, servers, plugins, role)
+    _override(args, 'shell_environment_policy.set.GIT_NO_REPLACE_OBJECTS', '1')
     if role == 'reviewer':
         # Preserve the user's configured model while removing every integration.
         # No --ignore-user-config/model override or broad permission profile is used.

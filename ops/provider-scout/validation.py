@@ -17,7 +17,7 @@ import subprocess
 from urllib.parse import urlsplit
 import uuid
 
-ORIGIN = 'https://github.com/bananaman614305/milo.git'
+ORIGIN = 'https://github.com/bananaman614305/grunt.git'
 SHA = re.compile(r'^[0-9a-f]{40}$')
 DIGEST = re.compile(r'^[0-9a-f]{64}$')
 SOURCE = re.compile(r'^[a-z][a-z0-9-]{0,63}$')

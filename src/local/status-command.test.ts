@@ -34,7 +34,7 @@ function cli(args: string[], env: NodeJS.ProcessEnv = {}) {
   // If the status branch accidentally falls through to daemon startup, an
   // invalid source selection fails instead of signing up or claiming a port.
   return execute(process.execPath, ['--import', 'tsx', entry, ...args], {
-    env: { ...process.env, NO_COLOR: '1', MILO_SOURCES: 'synthetic-never-start', ...env }, timeout: 15000,
+    env: { ...process.env, NO_COLOR: '1', GRUNT_SOURCES: 'synthetic-never-start', ...env }, timeout: 15000,
   });
 }
 
@@ -73,7 +73,7 @@ it('rejects unknown commands and invalid update arguments without starting the d
 it('asks for initial setup when update has no installed runtime, without running the wizard', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-cli-update-missing-'));
   try {
-    await expect(cli(['update'], { MILO_CONFIG_DIR: directory })).rejects.toMatchObject({
+    await expect(cli(['update'], { GRUNT_CONFIG_DIR: directory })).rejects.toMatchObject({
       code: 1, stderr: expect.stringContaining('run npx usegrunt setup first')
     });
   } finally { await rm(directory, { recursive: true, force: true }); }

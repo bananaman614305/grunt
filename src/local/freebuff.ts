@@ -1,3 +1,4 @@
+import { gruntEnv } from '../brand.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
@@ -106,7 +107,7 @@ export class Freebuff implements Source {
     if (!this.options.toolBridge) return this.completeText(request, caller, false, output);
     caller.throwIfAborted();
     const bridge = new FreebuffTools(request);
-    const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000))]);
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeout ?? positive(gruntEnv('APP_TIMEOUT_MS'), 600000))]);
     for (let attempt = 0; attempt < 2; attempt++) {
       signal.throwIfAborted();
       const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0) }, signal, true, output);
@@ -126,12 +127,12 @@ export class Freebuff implements Source {
     if (diagnosticError) throw diagnosticError;
     const cwd = await realpath(request.cwd);
     if (!(await stat(cwd)).isDirectory()) throw new SourceError('upstream', 'Freebuff cwd must be a directory');
-    const timeout = this.options.timeout ?? positive(process.env.MILO_APP_TIMEOUT_MS, 600000);
+    const timeout = this.options.timeout ?? positive(gruntEnv('APP_TIMEOUT_MS'), 600000);
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(timeout)]);
     let pool = this.pools.get(cwd);
-    if (!pool) { pool = new Pool(this.options.pool ?? positive(process.env.MILO_APP_POOL, 2)); this.pools.set(cwd, pool); }
+    if (!pool) { pool = new Pool(this.options.pool ?? positive(gruntEnv('APP_POOL'), 2)); this.pools.set(cwd, pool); }
     let acquired = false;
-    const id = `milo-${randomUUID()}`;
+    const id = `grunt-${randomUUID()}`;
     const directory = join(this.options.home ?? homedir(), '.config/manicode/projects', basename(cwd), 'chats');
     const turns = userTurns(request);
     const prompt = request.handoffPrompt ?? turns.at(-1);

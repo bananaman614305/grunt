@@ -6,7 +6,7 @@ export function loadConfig(path?: string): AgentConfig {
   if (!path) return {};
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); }
-  catch { throw new Error("MILO_CONFIG must name a readable JSON configuration file."); }
+  catch { throw new Error("GRUNT_CONFIG must name a readable JSON configuration file."); }
   const models = (value as { agent?: { whitelist?: unknown } } | null)?.agent?.whitelist;
   if (!Array.isArray(models) || models.length === 0) throw new Error("Configuration needs a nonempty agent.whitelist.");
   const valid = (n: unknown, min: number, max = Infinity): n is number => typeof n === "number" && Number.isFinite(n) && n >= min && n <= max;

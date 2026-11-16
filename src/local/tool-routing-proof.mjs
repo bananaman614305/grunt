@@ -15,8 +15,8 @@ const directory = await mkdtemp(join(tmpdir(), 'grunt-tools-proof-'));
 await copyFile('src/local/fixtures/fake-freebuff.cjs', join(directory, 'freebuff'));
 await chmod(join(directory, 'freebuff'), 0o755);
 process.env.PATH = `${directory}:${process.env.PATH}`;
-process.env.MILO_TEST_HOME = directory;
-process.env.MILO_TEST_REASONING = '1';
+process.env.GRUNT_TEST_HOME = directory;
+process.env.GRUNT_TEST_REASONING = '1';
 const tools = [{ type: 'function', function: { name: 'read', parameters: { type: 'object' } } }];
 const delegate = new Freebuff({ home: directory, startup: 100, poll: 20 });
 let invocations = 0;
@@ -36,7 +36,7 @@ try {
     const chain = new Sources([delegate], sticky ? { registry: () => bundledRegistry } : undefined);
     sources.push(chain);
     app = createLocalApp(chain, { port: server.address().port });
-    for (const model of ['freebuff', 'milo']) {
+    for (const model of ['freebuff', 'grunt']) {
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, cwd: directory, messages: [{ role: 'user', content: 'FT1 routing restored' }], tools }) });
       const body = await response.json();
       if (before) {

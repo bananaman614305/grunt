@@ -154,7 +154,7 @@ export class BeatAPI implements Source {
   private async once(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     try {
-      signal.throwIfAborted(); if (![this.id, 'milo'].includes(request.model) || request.imageInput) throw new SourceError('refused', 'BeatAPI requires its pinned text-only free route');
+      signal.throwIfAborted(); if (![this.id, 'grunt', 'milo'].includes(request.model) || request.imageInput) throw new SourceError('refused', 'BeatAPI requires its pinned text-only free route');
       const { validators, messages } = tools(request); if (!await this.approved()) throw new SourceError('refused', 'BeatAPI data sharing is not approved; rerun usegrunt setup');
       const grant = await this.grant(), guards = { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal };
       const before = await verifyBeatAPIAccess(grant, guards); if (before.credit_balance !== grant.baseline_balance) throw new SourceError('refused', 'BeatAPI account balance changed; rerun usegrunt setup');

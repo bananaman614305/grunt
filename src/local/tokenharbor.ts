@@ -1,5 +1,5 @@
+import { configRoot } from '../brand.js';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { FreeApi, readFreeApiGrant } from './free-api.js';
@@ -10,7 +10,7 @@ import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const TOKENHARBOR_DEEPSEEK = 'deepseek-v4.1-flash:free';
-const directory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const directory = () => configRoot();
 export async function writeTokenHarborGrant(grant: FreeApiGrant, location = directory()) {
   const url = new URL(grant.base_url);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || typeof grant.token !== 'string' || !grant.token.trim()) throw new Error('Invalid Token Harbor grant');

@@ -1,9 +1,10 @@
-// Run after building Milo and the pinned FreeLLMAPI checkout. Supply backend
+// Run after building Grunt and the pinned FreeLLMAPI checkout. Supply backend
 // egress grants as one JSON line on stdin; never supply provider keys.
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { FreeLLMAdmin, setupProviders } from '../dist/local/setup.js';
+import { ROUTER_ADMIN_EMAIL } from '../dist/local/native-router.js';
 import { FreeLLMAPI } from '../dist/local/freellmapi.js';
 import { createLocalApp } from '../dist/local/api.js';
 import { Sources } from '../dist/local/source.js';
@@ -25,7 +26,7 @@ process.stdout.write = () => true;
 console.log = console.info = console.warn = console.error = () => {};
 initDb(':memory:');
 const password = randomBytes(32).toString('hex');
-applyDeclarativeConfig({ admin: { email: 'milo@localhost.local', password } });
+applyDeclarativeConfig({ admin: { email: ROUTER_ADMIN_EMAIL, password } });
 const server = createApp().listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const url = `http://127.0.0.1:${server.address().port}`;
@@ -41,7 +42,7 @@ try {
   const chain = await admin.call('/fallback', undefined, 'GET');
   for (const provider of ['kilo'].filter(name => grants[name])) {
     // Isolate each provider to prove its completion cannot be another source.
-    await admin.call('/fallback', chain.map(row => ({ modelDbId: row.modelDbId, enabled: row.keyLabel === `Milo ${provider} (Squire)`, priority: row.priority })), 'PUT');
+    await admin.call('/fallback', chain.map(row => ({ modelDbId: row.modelDbId, enabled: row.keyLabel === `Grunt ${provider} (Squire)`, priority: row.priority })), 'PUT');
     const app = createLocalApp(new Sources([new FreeLLMAPI({ url: `${url}/v1`, key })]));
     const start = performance.now();
     const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freellmapi', messages: [{ role: 'user', content: 'Reply only OK.' }], max_tokens: 256, stream: false }) });

@@ -4,7 +4,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: deploy-milo-gateway
+  group: deploy-grunt-gateway
   cancel-in-progress: false
 jobs:
   publish:

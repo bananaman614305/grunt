@@ -3,11 +3,12 @@ import { promisify } from 'node:util';
 import { constants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { beginSetupSession } from './setup-session.js';
+import { configRoot, gruntEnv } from '../brand.js';
+import { serviceEnvironment, serviceEnvironmentTokens as environmentTokens } from './service-environment.js';
 
 const execute = promisify(execFile);
 const LATEST = 'https://registry.npmjs.org/usegrunt/latest';
@@ -19,7 +20,7 @@ export interface UpdateOptions {
   signal?: AbortSignal; platform?: 'linux' | 'darwin'; notify?: (line: string) => void;
   now?: () => number; wait?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
-interface Service { port: number; node: string; active: boolean; stop(): Promise<void>; start(): Promise<void> }
+interface Service { identity: string; port: number; node: string; active: boolean; stop(): Promise<void>; start(): Promise<void> }
 const failed = (message: string) => new Error(message);
 const runCommand: UpdateRun = async (binary, args, options = {}) => {
   try { return (await execute(binary, args, { ...options, timeout: options.timeout ?? 30000, maxBuffer: 2 * 1024 * 1024 })).stdout; }
@@ -36,34 +37,27 @@ async function privateDirectory(path: string) {
 function unquote(value: string) { return value.replace(/^"(.*)"$/, '$1'); }
 function systemdDecode(value: string) { return value.replace(/\\x([a-fA-F0-9]{2})/g, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16))); }
 function escaped(value: string) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-function environmentTokens(value: string) {
-  const result: string[] = []; let token = '', quoted = false;
-  for (let index = 0; index < value.length; index++) {
-    const c = value[index]!;
-    if (c === '\\') {
-      const hex = value.slice(index + 1, index + 4);
-      if (/^x[0-9a-fA-F]{2}$/.test(hex)) { token += String.fromCharCode(parseInt(hex.slice(1), 16)); index += 3; }
-      else {
-        const next = value[++index];
-        if (next === undefined) throw failed('The installed Grunt environment could not be parsed safely');
-        token += ({ n: '\n', t: '\t', r: '\r' } as Record<string, string>)[next] ?? next;
-      }
-    } else if (c === '"') quoted = !quoted;
-    else if (/\s/.test(c) && !quoted) { if (token) result.push(token); token = ''; }
-    else token += c;
-  }
-  if (quoted) throw failed('The installed Grunt environment could not be parsed safely');
-  if (token) result.push(token);
-  return result;
-}
 async function serviceInfo(directory: string, platform: string, run: UpdateRun, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<Service> {
   const entry = join(directory, 'runtime', 'dist', 'local', 'main.js');
   const opts = { env, signal };
   if (platform === 'linux') {
     const properties = ['LoadState', 'ExecStart', 'Environment', 'EnvironmentFiles', 'UnsetEnvironment', 'ActiveState'];
-    const values = await Promise.all(properties.map(property => run('systemctl', ['--user', 'show', 'milo.service', '-p', property, '--value'], opts)));
-    const [loaded, rawExec, environment, files, unset, state] = values as [string, string, string, string, string, string];
-    if (loaded.trim() !== 'loaded') throw failed('No installed Grunt service was found; run npx usegrunt setup first');
+    const candidates = await Promise.all(['grunt.service', 'milo.service'].map(async identity => {
+      const values = await Promise.all(properties.map(property => run('systemctl', ['--user', 'show', identity, '-p', property, '--value'], opts))).catch(() => undefined);
+      if (!values || values[0]?.trim() !== 'loaded') return;
+      const effective = serviceEnvironment(values[2] ?? '');
+      return { identity, values, effective };
+    }));
+    const loaded = candidates.filter(candidate => candidate !== undefined);
+    const matching = loaded.filter(candidate => {
+      const stateDirectory = gruntEnv('CONFIG_DIR', candidate.effective);
+      return stateDirectory?.startsWith('/') && resolve(stateDirectory) === directory;
+    });
+    if (matching.length > 1) throw failed('Multiple Grunt services own this configuration directory; stop the duplicate before updating');
+    const selectedService = matching[0];
+    if (!selectedService) throw failed(loaded.length ? 'The Grunt service uses a different configuration directory; its runtime was not changed' : 'No installed Grunt service was found; run npx usegrunt setup first');
+    const { identity, effective } = selectedService;
+    const [, rawExec, , files, unset, state] = selectedService.values as [string, string, string, string, string, string];
     const exec = systemdDecode(rawExec), node = unquote(exec.match(/(?:^|[ {])path=([^;]+);/)?.[1]?.trim() ?? '');
     const argv = exec.match(/argv\[\]=(.*?);/)?.[1]?.trim();
     if (!node.startsWith('/') || !['node', 'nodejs'].includes(basename(node)) || !new RegExp(`(?:^|[\\s"'])${escaped(entry)}(?=$|[\\s"';])`).test(exec)
@@ -72,36 +66,45 @@ async function serviceInfo(directory: string, platform: string, run: UpdateRun, 
     }
     // Environment files or explicit removals can override Environment. Refuse
     // an ambiguous endpoint rather than probing another project's port.
-    if (files.trim() || environmentTokens(unset).some(value => ['MILO_PORT', 'MILO_CONFIG_DIR'].some(name => value === name || value.startsWith(name + '=')))) throw failed('The installed Grunt port uses an unsupported environment override; its configuration was not changed');
-    const tokens = environmentTokens(environment), stateDirectory = tokens.filter(value => value.startsWith('MILO_CONFIG_DIR=')).at(-1)?.slice('MILO_CONFIG_DIR='.length);
-    if (!stateDirectory?.startsWith('/') || resolve(stateDirectory) !== directory) throw failed('The Grunt service uses a different configuration directory; its runtime was not changed');
-    const selected = port(tokens.filter(value => value.startsWith('MILO_PORT=')).at(-1)?.slice('MILO_PORT='.length));
+    if (files.trim() || environmentTokens(unset).some(value => ['GRUNT_PORT', 'GRUNT_CONFIG_DIR', 'MILO_PORT', 'MILO_CONFIG_DIR'].some(name => value === name || value.startsWith(name + '=')))) throw failed('The installed Grunt port uses an unsupported environment override; its configuration was not changed');
+    const selected = port(gruntEnv('PORT', effective));
     if (!['active', 'inactive', 'failed'].includes(state.trim())) throw failed('The Grunt service is changing state; retry the update after it settles');
-    return { port: selected, node, active: state.trim() === 'active',
-      stop: () => run('systemctl', ['--user', 'stop', 'milo.service'], { env, timeout: 210000 }).then(() => {}),
-      start: () => run('systemctl', ['--user', 'start', 'milo.service'], { env }).then(() => {}) };
+    return { identity, port: selected, node, active: state.trim() === 'active',
+      stop: () => run('systemctl', ['--user', 'stop', identity], { env, timeout: 210000 }).then(() => {}),
+      start: () => run('systemctl', ['--user', 'start', identity], { env }).then(() => {}) };
   }
-  const domain = `gui/${process.getuid!()}`, target = `${domain}/ai.milo.service`;
-  const print = await run('launchctl', ['print', target], opts);
+  const domain = `gui/${process.getuid!()}`;
+  const readVariable = (plist: string, name: string) => run('plutil', ['-extract', `EnvironmentVariables.${name}`, 'raw', '-o', '-', plist], opts).then(value => value.replace(/\r?\n$/, '')).catch(() => undefined);
+  const candidates = await Promise.all(['ai.grunt.service', 'ai.milo.service'].map(async identity => {
+    const target = `${domain}/${identity}`;
+    const print = await run('launchctl', ['print', target], opts).catch(() => undefined);
+    if (print === undefined) return;
+    const plist = unquote(print.match(/^\s*path = (.+)$/m)?.[1]?.trim() ?? '');
+    if (!plist.startsWith('/')) throw failed('No installed Grunt service was found; run npx usegrunt setup first');
+    const stat = await lstat(plist);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o022)) throw failed('The existing Grunt service file is unsafe');
+    const primary = await readVariable(plist, 'GRUNT_CONFIG_DIR');
+    const stateDirectory = primary ?? await readVariable(plist, 'MILO_CONFIG_DIR');
+    return { identity, target, print, plist, stateDirectory };
+  }));
+  const loaded = candidates.filter(candidate => candidate !== undefined);
+  const matching = loaded.filter(candidate => candidate.stateDirectory?.startsWith('/') && resolve(candidate.stateDirectory) === directory);
+  if (matching.length > 1) throw failed('Multiple Grunt services own this configuration directory; stop the duplicate before updating');
+  const selectedService = matching[0];
+  if (!selectedService) throw failed(loaded.length ? 'The Grunt service uses a different configuration directory; its runtime was not changed' : 'No installed Grunt service was found; run npx usegrunt setup first');
+  const { identity, target, print, plist } = selectedService;
   // Loaded waiting/exited KeepAlive jobs can restart themselves during a
   // filesystem swap. Support running jobs only until their intent can be
   // distinguished safely from an intentionally paused launchd service.
   if (!/^\s*state = running\s*$/m.test(print)) throw failed('Start the installed Grunt macOS service before updating; its configuration was not changed');
-  const plist = unquote(print.match(/^\s*path = (.+)$/m)?.[1]?.trim() ?? '');
-  if (!plist.startsWith('/')) throw failed('No installed Grunt service was found; run npx usegrunt setup first');
-  const stat = await lstat(plist);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o022)) throw failed('The existing Grunt service file is unsafe');
   // plutil preserves paths containing spaces without evaluating shell text.
-  const [argumentsText, portText, stateDirectory] = await Promise.all([
+  const [argumentsText, portText] = await Promise.all([
     run('plutil', ['-extract', 'ProgramArguments', 'json', '-o', '-', plist], opts),
-    run('plutil', ['-extract', 'EnvironmentVariables.MILO_PORT', 'raw', '-o', '-', plist], opts),
-    run('plutil', ['-extract', 'EnvironmentVariables.MILO_CONFIG_DIR', 'raw', '-o', '-', plist], opts).catch(() => '')
+    readVariable(plist, 'GRUNT_PORT').then(value => value ?? readVariable(plist, 'MILO_PORT'))
   ]);
-  const actualStateDirectory = stateDirectory.replace(/\r?\n$/, '');
-  if (!actualStateDirectory.startsWith('/') || resolve(actualStateDirectory) !== directory) throw failed('The Grunt service uses a different configuration directory; its runtime was not changed');
   let args: unknown; try { args = JSON.parse(argumentsText); } catch { throw failed('The existing Grunt service arguments could not be verified'); }
   if (!Array.isArray(args) || args.length !== 2 || typeof args[0] !== 'string' || !args[0].startsWith('/') || !['node', 'nodejs'].includes(basename(args[0])) || args[1] !== entry) throw failed('The existing Grunt service does not use the managed runtime; its configuration was not changed');
-  return { port: port(portText.replace(/\r?\n$/, '')), node: args[0], active: true,
+  return { identity, port: port(portText), node: args[0], active: true,
     stop: async () => {
       try { await run('launchctl', ['bootout', target], { env, timeout: 210000 }); }
       catch {
@@ -110,7 +113,7 @@ async function serviceInfo(directory: string, platform: string, run: UpdateRun, 
         // treat this as stopped when the live domain confirms no such job.
         const listing = await run('launchctl', ['print', domain], { env });
         if (!new RegExp(`^${escaped(domain)} = \\{`).test(listing) || !/^\s*services = \{\s*$/m.test(listing)
-          || listing.includes('ai.milo.service')) throw failed('Could not confirm the Grunt macOS service is stopped');
+          || listing.includes(identity)) throw failed('Could not confirm the Grunt macOS service is stopped');
       }
     },
     start: () => run('launchctl', ['bootstrap', domain, plist], { env }).then(() => {}) };
@@ -168,7 +171,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
   options.signal?.throwIfAborted();
   const env = options.env ?? process.env, platform = options.platform ?? process.platform;
   if (!['linux', 'darwin'].includes(platform)) throw failed('Grunt update requires Linux with systemd or macOS with launchd');
-  const directory = resolve(options.directory ?? env.MILO_CONFIG_DIR ?? join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo'));
+  const directory = resolve(options.directory ?? configRoot(env));
   const runtime = join(directory, 'runtime');
   try { await privateDirectory(directory); await privateDirectory(runtime); await access(join(runtime, 'dist/local/main.js'), constants.R_OK); }
   catch { throw failed('No safe installed Grunt runtime was found; run npx usegrunt setup first'); }
@@ -202,14 +205,14 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     if (manifest.name !== 'usegrunt' || manifest.version !== download.version || manifest.type !== 'module' || !manifest.dependencies || typeof manifest.dependencies !== 'object' || Array.isArray(manifest.dependencies)) throw failed('The downloaded Grunt package does not match its release metadata');
     if (Object.entries(manifest.dependencies).some(([name, version]) => !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name)
       || typeof version !== 'string' || !version.trim() || version.length > 256 || !/^[0-9A-Za-z.*^~<>=| +_-]+$/.test(version))) throw failed('The downloaded Grunt package has an unsupported dependency source');
-    await writeFile(join(candidate, 'package.json'), JSON.stringify({ name: 'milo-runtime', version: download.version, private: true, type: 'module', dependencies: manifest.dependencies }), { mode: 0o600 });
+    await writeFile(join(candidate, 'package.json'), JSON.stringify({ name: 'grunt-runtime', version: download.version, private: true, type: 'module', dependencies: manifest.dependencies }), { mode: 0o600 });
     notify(`Preparing Grunt ${download.version}`);
     await run('npm', ['install', '--prefix', candidate, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--workspaces=false', '--registry=https://registry.npmjs.org'], { env: preparationEnv, signal, timeout: 300000 });
     // Import without executing the CLI guard, including older releases where
     // --help could accidentally start another daemon.
     await run(service.node, ['--input-type=module', '-e', 'process.argv[1]="";await import(process.argv[2]);', '-', pathToFileURL(join(candidate, 'dist/local/main.js')).href], { env: preparationEnv, signal });
     const currentService = await serviceInfo(directory, platform, run, env, signal);
-    if (currentService.port !== service.port || currentService.node !== service.node || currentService.active !== service.active) throw failed('The Grunt service changed while preparing the update; retry without changing its configuration');
+    if (currentService.identity !== service.identity || currentService.port !== service.port || currentService.node !== service.node || currentService.active !== service.active) throw failed('The Grunt service changed while preparing the update; retry without changing its configuration');
     const deadline = now() + 180000;
     for (; service.active;) {
       signal.throwIfAborted();

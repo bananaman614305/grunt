@@ -3,12 +3,12 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { personId } from "./agent.js";
-import type { MiloAgent } from "./agent.js";
-export { MiloAgent, personId, workerMessages } from "./agent.js";
+import type { GruntAgent } from "./agent.js";
+export { GruntAgent, MiloAgent, personId, workerMessages } from "./agent.js";
 export { pick, DEFAULT_WHITELIST } from "./router.js";
 export type { AgentConfig, ModelPrior } from "./types.js";
 
-export function agentRoutes(agent: MiloAgent) {
+export function agentRoutes(agent: GruntAgent) {
   const app = new Hono<{ Variables: { key: string; person: string } }>();
   app.get("/", c => c.redirect("/chat"));
   app.get("/health", c => c.json({ status: "ok" }));
@@ -48,6 +48,6 @@ export function agentRoutes(agent: MiloAgent) {
       finally { clearInterval(heartbeat); unsubscribe(); }
     });
   });
-  app.onError((_err, c) => c.json({ error: "Milo couldn't complete this request. Please try again." }, 500));
+  app.onError((_err, c) => c.json({ error: "Grunt couldn't complete this request. Please try again." }, 500));
   return app;
 }

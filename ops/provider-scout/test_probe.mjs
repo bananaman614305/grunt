@@ -34,12 +34,12 @@ async function fixture(t,{realApi=false}={}){
 import {Sources} from './source.js';
 import {writeFileSync,readFileSync,existsSync} from 'node:fs';
 export function configure(env){
- if(env.MILO_SOURCES!=='${sourceId}'||!env.MILO_CONFIG_DIR)throw new Error('unsafe fixture config');
+ if(env.GRUNT_SOURCES!=='${sourceId}'||!env.GRUNT_CONFIG_DIR)throw new Error('unsafe fixture config');
  if(existsSync(${JSON.stringify(join(control,'host-only.txt'))}))throw new Error('host protected state visible');
  try{writeFileSync(${JSON.stringify(join(control,'host-only.txt'))},'forged');throw new Error('host protected state writable');}catch(error){if(error.message==='host protected state writable')throw error;}
  try{writeFileSync(${JSON.stringify(join(checkout,'README.md'))},'forged');throw new Error('reviewed checkout writable');}catch(error){if(error.message==='reviewed checkout writable')throw error;}
  if(readFileSync(${JSON.stringify(join(checkout,'README.md'))},'utf8')!=='Synthetic fixture only.\\n')throw new Error('checkout changed');
- writeFileSync(env.MILO_CONFIG_DIR+'/sandbox-marker.json',JSON.stringify({home:process.env.HOME,hostStateVisible:false}));
+ writeFileSync(env.GRUNT_CONFIG_DIR+'/sandbox-marker.json',JSON.stringify({home:process.env.HOME,hostStateVisible:false}));
  return new Sources([{id:'${sourceId}',supportsFunctionTools:true,available:async()=>true,close:async()=>{},complete:async(request)=>{
   if(request.model!=='${sourceId}'||request.maxTokens!==1024)throw new Error('unsafe fixture request');
   if(!request.tools.length)return {text:'Hello from the actual API fixture.'};
@@ -73,7 +73,7 @@ export function configure(env){
     const message=body.tools.length?{content:null,tool_calls:[{id:'probe_call',type:'function',function:{name:'scout_probe',arguments:JSON.stringify({nonce:body.tools[0].function.parameters.properties.nonce.const})}}]}:{content:'Hello from a synthetic fixture.'};
     return new Response(json({choices:[{message}]}),{status:200,headers:{'X-Grunt-Source':sourceId}});
   }})};
-  const dependencies={loadCandidate:async()=>candidate,fetcher:async url=>{assert.equal(url,'http://127.0.0.1:8792/v1/status');statusCalls++;return new Response(json({version:1,activeRequests:0}));},wait:async ms=>{waits.push(ms);},now:()=>1700000000000,random:()=>0.25,env:{HOME:'/synthetic/home',PATH:'/synthetic/path',MILO_SOURCES:'production',MILO_CONFIG_DIR:'/production/config',PROVIDER_KEY:'never-pass-me'}};
+  const dependencies={loadCandidate:async()=>candidate,fetcher:async url=>{assert.equal(url,'http://127.0.0.1:8792/v1/status');statusCalls++;return new Response(json({version:1,activeRequests:0}));},wait:async ms=>{waits.push(ms);},now:()=>1700000000000,random:()=>0.25,env:{HOME:'/synthetic/home',PATH:'/synthetic/path',GRUNT_SOURCES:'production',GRUNT_CONFIG_DIR:'/production/config',PROVIDER_KEY:'never-pass-me'}};
   return{options,dependencies,candidate,calls,waits,environments,registry,git,root,get closed(){return closed;},get statusCalls(){return statusCalls;}};
 }
 
@@ -85,7 +85,7 @@ test('two attributed bounded probes produce a private hash-only receipt and clos
   assert.deepEqual(proof.observations.map(item=>item.kind),['hello','tool']);assert.match(proof.observations[0].reply_sha256,/^[a-f0-9]{64}$/);
   assert.equal(f.calls.length,2);assert.equal(f.statusCalls,2);assert.equal(f.closed,1);assert.deepEqual(f.waits,[67500]);
   for(const call of f.calls){assert.equal(call.max_tokens,1024);assert.equal(call.model,sourceId);assert.equal(call.stream,false);assert.ok(call.cwd.startsWith(f.options.configDir+'/.scout-probe-'));}
-  assert.equal(f.environments[0].MILO_SOURCES,sourceId);assert.equal(f.environments[0].MILO_CONFIG_DIR,f.options.configDir);assert.equal(f.environments[0].PROVIDER_KEY,undefined);
+  assert.equal(f.environments[0].GRUNT_SOURCES,sourceId);assert.equal(f.environments[0].GRUNT_CONFIG_DIR,f.options.configDir);assert.equal(f.environments[0].PROVIDER_KEY,undefined);
   const encoded=await readFile(f.options.output,'utf8');assert.deepEqual(JSON.parse(encoded),proof);assert.ok(!encoded.includes('Hello from'));assert.ok(!encoded.includes('nonce'));assert.equal((await stat(f.options.output)).mode&0o777,0o600);
   assert.deepEqual(await readdir(f.options.configDir),[]);
 });

@@ -23,7 +23,7 @@ it('pins NVIDIA capabilities and configures its dedicated source', async () => {
   for (const change of [{ install: 'npm:untrusted' }, { install: 'builtin:other' }, { kind: 'agent' }, { modalities: ['image'] }]) {
     expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...adapter, ...change }] })).toThrow();
   }
-  const sources = configure({ MILO_SOURCES: 'nvidia' });
+  const sources = configure({ GRUNT_SOURCES: 'nvidia' });
   expect(sources.sources[0]).toBeInstanceOf(Nvidia);
   await sources.close();
 });
@@ -66,7 +66,7 @@ it.each(['http://grant.test', 'https://user:pass@grant.test', 'https://grant.tes
 });
 
 it('provisions NVIDIA without a local aggregator and reuses valid access', async () => {
-  const path = await directory(); vi.stubEnv('MILO_CONFIG_DIR', path);
+  const path = await directory(); vi.stubEnv('GRUNT_CONFIG_DIR', path);
   const backend = vi.spyOn(FreeLLMAdmin.prototype, 'call').mockRejectedValue(new Error('must not contact any aggregator'));
   const output: string[] = [];
   const squire = {

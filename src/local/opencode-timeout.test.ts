@@ -4,7 +4,7 @@ import { OpenCode } from './opencode.js';
 import { Sources, SourceError } from './source.js';
 import { createLocalApp } from './api.js';
 
-const request = { model: 'milo', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false };
+const request = { model: 'grunt', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false };
 
 it('falls through a fake OpenCode timeout to the next source', async () => {
   const next = vi.fn(async () => ({ text: 'fallback answer' }));
@@ -53,7 +53,7 @@ it.each(['deadline', 'caller', 'shutdown'] as const)('handles OpenCode %s withou
     } else {
       expect('error' in result).toBe(true);
       expect(next).not.toHaveBeenCalled();
-      expect(log).toHaveBeenCalledWith('grunt source: opencode cancelled for model milo');
+      expect(log).toHaveBeenCalledWith('grunt source: opencode cancelled for model grunt');
       expect(log.mock.calls.flat().join('\n')).not.toContain('failed (timeout)');
       expect(timeout).not.toHaveBeenCalledWith(90000);
     }

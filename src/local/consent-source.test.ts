@@ -33,7 +33,7 @@ it.each(['freebuff', 'opencode', 'kilo'])('gates %s before consulting installed 
 });
 
 it('guards explicit vetted adapters while preserving a custom freellmapi source', async () => {
-  const sources = configure({ MILO_CONFIG_DIR: await directory(), MILO_SOURCES: 'freebuff,apinex,opencode,kilo,freellmapi,zro' });
+  const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_SOURCES: 'freebuff,apinex,opencode,kilo,freellmapi,zro' });
   expect(sources.sources.filter(source => source instanceof RegistrySource && source.source instanceof ConsentSource).map(source => source.id)).toEqual(['opencode', 'kilo']);
   expect(sources.sources.map(source => source.id)).toEqual(['opencode', 'kilo', 'freellmapi', 'zro']);
   for (const source of sources.sources.filter(source => ['opencode', 'kilo'].includes(source.id))) expect(await source.available()).toBe(false);
@@ -43,7 +43,7 @@ it('guards explicit vetted adapters while preserving a custom freellmapi source'
 it('enforces registry revocation with a preserved custom legacy source in the same list', async () => {
   const { bundledRegistry } = await import('../registry.js');
   const registry = structuredClone(bundledRegistry);
-  const sources = configure({ MILO_CONFIG_DIR: await directory(), MILO_SOURCES: 'freellmapi,zro' }, () => registry);
+  const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_SOURCES: 'freellmapi,zro' }, () => registry);
   const zro = sources.sources.find(source => source.id === 'zro')!;
   const legacy = sources.sources.find(source => source.id === 'freellmapi')!;
   expect(zro).toBeInstanceOf(RegistrySource); expect(legacy).not.toBeInstanceOf(RegistrySource);

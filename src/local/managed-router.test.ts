@@ -16,7 +16,7 @@ async function directory(admin = true) {
   return path;
 }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(paths.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: process.cwd(), stream: false };
+const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: process.cwd(), stream: false };
 const backend = () => ({ id: 'freellmapi', available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: 'custom provider answered' })) });
 
 it('holds pending owned legacy routes without changing user flags, then admits them after verification', async () => {
@@ -71,7 +71,7 @@ it('retires owned Freebuff despite saved approval and rechecks Kilo consent befo
   source.complete.mockImplementation(async () => { events.push('forward'); return { text: 'custom provider answered' }; });
   const rows = [
     { modelDbId: 1, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Kilo Free', priority: 999999, enabled: true },
-    { modelDbId: 2, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Milo kilo (Squire)', priority: 999996, enabled: true },
+    { modelDbId: 2, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Grunt kilo (Squire)', priority: 999996, enabled: true },
     { modelDbId: 3, platform: 'custom', modelId: 'freebuff', keyLabel: 'Freebuff', priority: 1000000, enabled: true },
     { modelDbId: 4, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'My custom provider', priority: 42, enabled: true },
     { modelDbId: 5, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'Kilo Free', priority: 999999, enabled: true },
@@ -112,7 +112,7 @@ it('quarantines retired owned providers before failing Kilo discovery and never 
   const rows = [
     { modelDbId: 1, platform: 'custom', modelId: 'freebuff', keyLabel: 'Freebuff', priority: 11, enabled: true },
     { modelDbId: 2, platform: 'custom', modelId: 'freebuff', keyLabel: 'My custom source', priority: 12, enabled: true },
-    { modelDbId: 3, platform: 'custom', modelId: 'free/deepseek-v4.1-flash', keyLabel: 'Milo apinex (Squire)', priority: 13, enabled: true },
+    { modelDbId: 3, platform: 'custom', modelId: 'free/deepseek-v4.1-flash', keyLabel: 'Grunt apinex (Squire)', priority: 13, enabled: true },
     { modelDbId: 4, platform: 'custom', modelId: 'free/deepseek-v4.1-flash', keyLabel: 'My custom APInex', priority: 14, enabled: true }
   ];
   const call = vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(async (url, body, method) => {
@@ -136,9 +136,9 @@ it('quarantines retired owned providers before failing Kilo discovery and never 
 it.each(['freebuff', 'apinex'])('quarantines disabled %s Squire labels despite old approval while preserving custom labels', async provider => {
   const modelId = provider === 'apinex' ? 'free/deepseek-v4.1-flash' : 'freebuff';
   const rows = [
-    { modelDbId: 1, platform: 'custom', modelId, keyLabel: `Milo ${provider} (Squire)`, priority: 21, enabled: true },
+    { modelDbId: 1, platform: 'custom', modelId, keyLabel: `Grunt ${provider} (Squire)`, priority: 21, enabled: true },
     { modelDbId: 2, platform: 'custom', modelId, keyLabel: `My ${provider}`, priority: 22, enabled: true },
-    { modelDbId: 3, platform: 'custom', modelId, keyLabel: `Milo ${provider} (Squire)`, priority: 23, enabled: false }
+    { modelDbId: 3, platform: 'custom', modelId, keyLabel: `Grunt ${provider} (Squire)`, priority: 23, enabled: false }
   ];
   const call = vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(async (url, body, method) => {
     if (url === '/fallback' && method === 'GET') return structuredClone(rows);
@@ -154,7 +154,7 @@ it.each(['freebuff', 'apinex'])('quarantines disabled %s Squire labels despite o
 it('quarantines disabled Squire rows during legacy setup before failed discovery without deleting keys or custom rows', async () => {
   const rows = [
     { modelDbId: 1, platform: 'custom', modelId: 'freebuff', keyLabel: 'Freebuff', priority: 31, enabled: true },
-    { modelDbId: 2, platform: 'custom', modelId: 'free/deepseek-v4.1-flash', keyLabel: 'Milo apinex (Squire)', priority: 32, enabled: true },
+    { modelDbId: 2, platform: 'custom', modelId: 'free/deepseek-v4.1-flash', keyLabel: 'Grunt apinex (Squire)', priority: 32, enabled: true },
     { modelDbId: 3, platform: 'custom', modelId: 'free/deepseek-v4.1-flash', keyLabel: 'Custom APInex', priority: 33, enabled: true }
   ];
   const events: string[] = [];

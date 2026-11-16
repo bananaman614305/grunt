@@ -8,7 +8,7 @@ import {createLocalApp} from '../../dist/local/api.js';
 import {Freebuff} from '../../dist/local/freebuff.js';
 import {Sources} from '../../dist/local/source.js';
 import {OwnershipMux} from '../../dist/local/fixtures/ownership-mux.js';
-const dir=await mkdtemp(join(tmpdir(),'milo-ownership-proof-'));
+const dir=await mkdtemp(join(tmpdir(),'grunt-ownership-proof-'));
 const oldPath=process.env.PATH;
 await copyFile(new URL('./fixtures/fake-freebuff.cjs',import.meta.url),join(dir,'freebuff'));await chmod(join(dir,'freebuff'),0o755);
 process.env.PATH=`${dir}:${oldPath}`;

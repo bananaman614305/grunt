@@ -32,5 +32,5 @@ it("packages usegrunt with the primary command and compatibility aliases", () =>
   expect(pkg.name).toBe("usegrunt");
   expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
   expect(pkg.description).toBe("One-command setup for grunt");
-  expect(pkg.bin).toEqual({ usegrunt: "dist/local/main.js", milo: "dist/local/main.js", "milo-local": "dist/local/main.js" });
+  expect(pkg.bin).toEqual({ usegrunt: "dist/local/main.js", "grunt-local": "dist/local/main.js", milo: "dist/local/main.js", "milo-local": "dist/local/main.js" });
 });

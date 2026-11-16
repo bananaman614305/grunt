@@ -73,7 +73,7 @@ it('does not retain schemas from successive requests in a shared validator', () 
 });
 
 it.each([undefined, '0', '1'])('keeps the retired Freebuff route disabled regardless of an old JSON bridge setting (%s)', bridge => {
-  const sources = configure({ MILO_SOURCES: 'freebuff', ...(bridge ? { MILO_FREEBUFF_JSON_BRIDGE: bridge } : {}) });
+  const sources = configure({ GRUNT_SOURCES: 'freebuff', ...(bridge ? { GRUNT_FREEBUFF_JSON_BRIDGE: bridge } : {}) });
   expect(sources.sources).toEqual([]);
 });
 
@@ -114,7 +114,7 @@ it('repairs once in a fresh session, never leaks rejected protocol or deliberati
     await expect(invalid.driver.complete(invalid.request,new AbortController().signal)).rejects.toMatchObject({code:'upstream',output:undefined});
     expect(invalid.prompts).toHaveLength(2);
     const fallback = {id:'fallback',supportsFunctionTools:true,available:async()=>true,complete:async()=>({text:'safe fallback'})};
-    expect(await new Sources([invalid.driver,fallback]).complete({...invalid.request,model:'milo'},new AbortController().signal)).toEqual({text:'safe fallback'});
+    expect(await new Sources([invalid.driver,fallback]).complete({...invalid.request,model:'grunt'},new AbortController().signal)).toEqual({text:'safe fallback'});
   } finally {await invalid.close();}
 });
 

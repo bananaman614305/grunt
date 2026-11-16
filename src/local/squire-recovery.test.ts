@@ -167,7 +167,7 @@ it('dismisses the observed cookie overlay without treating echoed instructions a
 });
 
 it('does not loop when the same cookie choice fails to advance the page', async () => {
-  vi.stubEnv('MILO_SETUP_NO_HUMAN', '1');
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
   const squire = new BrowserSquire();
   const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => name === 'operate_drive'
     ? { status: 'low_confidence', session_id: 'stuck-tab', remaining: args.goal, options: { reject: 'Reject Optional' } } : {});

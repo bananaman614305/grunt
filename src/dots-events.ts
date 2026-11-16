@@ -39,15 +39,15 @@ export class EventError extends Error {
   constructor(readonly reason: string) { super('Callback verification failed'); }
 }
 export const eventDefinition = {
-  name: 'milo.request', description: 'A request is waiting from your linked grunt daemon. Fetch it with milo_get_request and return text with milo_submit_reply.', delivery: ['webhook'],
+  name: 'grunt.request', description: 'A request is waiting from your linked grunt daemon. Fetch it with grunt_get_request and return text with grunt_submit_reply.', delivery: ['webhook'],
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   payloadSchema: { type: 'object', properties: { requestId: { type: 'string' }, summary: { type: 'string' } }, required: ['requestId', 'summary'], additionalProperties: false }
 };
 function identity(pair: string, input: Record<string, unknown>) {
   const delivery = input.delivery as Record<string, unknown> | undefined;
-  if (input.name !== 'milo.request' || !delivery || delivery.mode !== 'webhook' || typeof delivery.url !== 'string' || (input.arguments !== undefined && (typeof input.arguments !== 'object' || input.arguments === null || Array.isArray(input.arguments) || Object.keys(input.arguments).length))) throw new Error('invalid_event_arguments');
+  if (!['grunt.request', 'milo.request'].includes(String(input.name)) || !delivery || delivery.mode !== 'webhook' || typeof delivery.url !== 'string' || (input.arguments !== undefined && (typeof input.arguments !== 'object' || input.arguments === null || Array.isArray(input.arguments) || Object.keys(input.arguments).length))) throw new Error('invalid_event_arguments');
   const url = callbackURL(delivery.url).href;
-  return { id: `sub_${hash(JSON.stringify([pair, url, 'milo.request', {}]))}`, url, delivery };
+  return { id: `sub_${hash(JSON.stringify([pair, url, input.name, {}]))}`, url, delivery, name: String(input.name) };
 }
 export class DotsEvents {
   private flushing = false;
@@ -59,7 +59,7 @@ export class DotsEvents {
     return this.sender(sub.url, body, { 'Content-Type': 'application/json', 'webhook-id': eventId, 'webhook-timestamp': String(Math.floor(now.getTime() / 1000)), 'webhook-signature': signature + previous, 'X-MCP-Subscription-Id': sub.id });
   }
   async subscribe(pair: string, input: Record<string, unknown>) {
-    const { id, url, delivery } = identity(pair, input);
+    const { id, url, delivery, name } = identity(pair, input);
     const key = delivery.secret;
     if (typeof key !== 'string' || !/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(key) || Buffer.from(key.slice(6), 'base64').length < 24 || Buffer.from(key.slice(6), 'base64').length > 64) throw new Error('invalid_signing_secret');
     if (input.ttlMs !== undefined && input.ttlMs !== null && (typeof input.ttlMs !== 'number' || !Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0)) throw new Error('invalid_ttl');
@@ -77,9 +77,9 @@ export class DotsEvents {
       if (result.status < 200 || result.status >= 300 || typeof echoed !== 'string' || !equal(challenge, echoed)) throw new EventError('challenge_failed');
     }
     const rotating = existing && !equal(existing.secret, key);
-    await this.store.db.execute({ sql: `INSERT INTO dots_subscriptions(id,pair,url,secret,previous,rotation_until,expires,verified_until) VALUES(?,?,?,?,?,?,?,?)
+    await this.store.db.execute({ sql: `INSERT INTO dots_subscriptions(id,pair,url,secret,previous,rotation_until,expires,verified_until,event_name) VALUES(?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,previous=excluded.previous,rotation_until=excluded.rotation_until,expires=excluded.expires,verified_until=excluded.verified_until`,
-    args: [id, pair, url, key, rotating ? existing.secret : existing?.previous ?? null, rotating ? now + 600000 : existing?.rotation_until ?? 0, expires, verify ? now + 600000 : existing!.verified_until] });
+    args: [id, pair, url, key, rotating ? existing.secret : existing?.previous ?? null, rotating ? now + 600000 : existing?.rotation_until ?? 0, expires, verify ? now + 600000 : existing!.verified_until, name] });
     return { id, refreshBefore: new Date(expires).toISOString(), cursor: null, truncated: false };
   }
   async unsubscribe(pair: string, input: Record<string, unknown>) {
@@ -95,7 +95,7 @@ export class DotsEvents {
       const deliveries = await this.store.rows<Subscription & { request: string; event_id: string; occurred: number; attempts: number }>(`SELECT s.*,d.request,d.event_id,d.occurred,d.attempts FROM dots_deliveries d JOIN dots_subscriptions s ON s.id=d.subscription JOIN dots_requests r ON r.id=d.request WHERE d.next_at<=? AND s.expires>? AND r.expires>? AND r.messages IS NOT NULL LIMIT 16`, [Date.now(), Date.now(), Date.now()]);
       for (const sub of deliveries) {
         let status = 503;
-        try { status = (await this.post(sub, sub.event_id, { eventId: sub.event_id, name: 'milo.request', timestamp: new Date(sub.occurred).toISOString(), data: { requestId: sub.request, summary: 'A request is waiting from your linked grunt daemon.' }, cursor: null })).status; }
+        try { status = (await this.post(sub, sub.event_id, { eventId: sub.event_id, name: sub.event_name, timestamp: new Date(sub.occurred).toISOString(), data: { requestId: sub.request, summary: 'A request is waiting from your linked grunt daemon.' }, cursor: null })).status; }
         catch { /* Network errors retry without storing diagnostics or user text. */ }
         if ((status >= 200 && status < 300) || (status >= 400 && status < 500 && status !== 429) || sub.attempts >= 4) {
           await this.store.db.execute({ sql: 'DELETE FROM dots_deliveries WHERE request=? AND subscription=?', args: [sub.request, sub.id] });

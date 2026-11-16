@@ -1,10 +1,11 @@
+import { gruntEnv } from '../brand.js';
 import { startDashboard, statusCommand } from './dashboard.js';
 import { observeTerminal, terminalBusy } from './terminal.js';
 
 export interface SetupDashboard { stop(): Promise<void> }
 export function setupDashboardEnabled() {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb'
-    && process.env.MILO_SETUP_NO_HUMAN !== '1');
+    && gruntEnv('SETUP_NO_HUMAN') !== '1');
 }
 
 // During onboarding this display is passive: the existing confirmation queue

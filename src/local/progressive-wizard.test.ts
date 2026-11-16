@@ -14,7 +14,7 @@ vi.mock('@clack/prompts', () => ({
 }));
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
 let directory: string;
-beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-progressive-wizard-')); vi.stubEnv('MILO_CONFIG_DIR', directory); });
+beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-progressive-wizard-')); vi.stubEnv('GRUNT_CONFIG_DIR', directory); });
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); });
 const actions = (ids = ['kilo', 'perch']) => ({
   preflight: vi.fn(async () => {}), connectSquire: vi.fn(async () => {}),
@@ -341,7 +341,7 @@ it('starts a passive dashboard at first readiness and releases setup ownership b
   await ready.promise;
   try {
     expect(order).toEqual(['harness', 'start']);
-    expect(startDashboard).toHaveBeenCalledWith(expect.objectContaining({ port: Number(process.env.MILO_PORT || 8788) }));
+    expect(startDashboard).toHaveBeenCalledWith(expect.objectContaining({ port: Number(process.env.GRUNT_PORT || 8788) }));
     expect(stop).not.toHaveBeenCalled(); expect(watchDashboard).not.toHaveBeenCalled();
   } finally { late.resolve(); await running; }
   expect(order).toEqual(['harness', 'start', 'stop', 'watch']);

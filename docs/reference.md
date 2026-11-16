@@ -1,6 +1,18 @@
-Compatibility: the `milo` and `milo-local` commands remain aliases for this release.
-Existing `MILO_*` variables, `milo` model/provider IDs, config paths, MCP names,
-and infrastructure names remain supported.
+# Grunt reference
+
+Grunt uses `usegrunt`, the `grunt` model/provider ID, `GRUNT_*` settings and
+`~/.config/grunt` for new installations.
+
+## Compatibility with existing installations
+
+The former `milo`/`milo-local` commands, `MILO_*` settings, model and MCP aliases
+remain accepted for existing clients. `GRUNT_*` settings take precedence. Existing
+private configuration under `~/.config/milo` and an installed `milo.service` are
+reused so saved logins, custom ports and consent receipts are preserved. New
+installations use Grunt names. These are migration aliases, not current branding.
+The already allocated gateway app, volume and database file retain their
+resource identifiers in `fly.toml`; changing those without moving the data would
+create a separate deployment or database.
 
 Chat with grunt. Hand it a bigger job, keep talking while it works, and get the
 result back in the same conversation.
@@ -16,7 +28,7 @@ Requires Node 22 and pnpm.
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
-MILO_DB=file:./milo.db pnpm start
+GRUNT_DB=file:./grunt.db pnpm start
 ```
 
 Open http://localhost:8787/chat. `pnpm dev` runs the TypeScript source.
@@ -27,8 +39,8 @@ Environment:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `8787` | HTTP port |
-| `MILO_DB` | `file:/data/milo.db` | Local SQLite file |
-| `MILO_CONFIG` | unset | Optional JSON file with `agent.whitelist` |
+| `GRUNT_DB` | `file:/data/grunt.db` | Local SQLite file |
+| `GRUNT_CONFIG` | unset | Optional JSON file with `agent.whitelist` |
 
 ## Behavior
 
@@ -57,7 +69,7 @@ quality estimates start as explicit priors; reliability and latency learn from
 call history. After a 429, 5xx or timeout, a worker retries once on the next model.
 A 429 excludes that model for sixty seconds. Jobs show the chosen model and reason.
 
-To override priors, set `MILO_CONFIG` to a JSON file shaped like:
+To override priors, set `GRUNT_CONFIG` to a JSON file shaped like:
 
 ```json
 {
@@ -96,7 +108,7 @@ Chat content, briefs, results and notes persist locally in SQLite.
 
 ```sh
 pnpm build
-MILO_DB=file:/tmp/milo-proof.db PORT=8788 node --import ./proof/fake.mjs dist/server.js
+GRUNT_DB=file:/tmp/grunt-proof.db PORT=8788 node --import ./proof/fake.mjs dist/server.js
 ```
 
 Open `/chat` on that port and enter any synthetic key. Send “hello”, “remember I
@@ -108,10 +120,16 @@ summary and attaches the full plan. This adapter never calls OpenRouter.
 ## Deploy
 
 The Docker image contains only the compiled app, page and production dependencies.
-GitHub Actions is disabled at the owner's request. Run build and smoke checks
-locally and deploy the tested image manually to Fly app `milo-gateway` in `iad`
-using authorized app-scoped access. Do not enable or dispatch workflows.
-The `milo_data` volume mounts at `/data`. Keep a single Fly machine for SQLite.
+The public repository runs CI on standard GitHub-hosted Ubuntu runners. The
+workflow runs lint, tests, build and the operator's offline verification suites.
+It refuses to run while the repository is private and does not upload artifacts
+or use Actions caches. Production deployment and npm publication remain separate
+from CI; their workflows are not enabled by turning CI on.
+
+The existing deployment is selected by `fly.toml` in `iad`, using authorized
+app-scoped access. Its existing volume mounts at `/data`; its resource and
+database identifiers are retained to preserve data. Keep a single Fly machine
+for SQLite.
 
 The current gateway registry release uses two persisted Machine file overlays,
 `/app/dist/registry.js` and `/app/dist/registry/adapters.json`, on the existing
@@ -139,16 +157,16 @@ pnpm build
 node dist/local/main.js setup
 # Published package: npx usegrunt setup; installed bin: usegrunt.
 # Anonymous Kilo Particle only, after current sharing approval:
-# MILO_SOURCES=kilo node dist/local/main.js
+# GRUNT_SOURCES=kilo node dist/local/main.js
 ```
 
-It binds only `127.0.0.1:8788`. `MILO_PORT` changes the port. It provides
+It binds only `127.0.0.1:8788`. `GRUNT_PORT` changes the port. It provides
 `GET /v1/models`, `GET /v1/status`, Chat Completions, Anthropic Messages, and OpenAI Responses,
-including SSE. Choose model `milo` for automatic source selection, or a source
+including SSE. Choose model `grunt` for automatic source selection, or a source
 id such as `kilo`. This process is separate from the Fly server and Docker
 entry point. Keep this endpoint on your own machine.
 
-Automatic selection (`milo` or `grunt`) sends requests containing function tools
+Automatic selection (`grunt` or `grunt`) sends requests containing function tools
 only to sources that return tool calls to the caller's harness. Native API
 sources forward function definitions; validated JSON bridges return correlated
 calls for the caller's harness to execute. OpenCode runs its own delegate tools
@@ -194,7 +212,7 @@ every state. Piped output and dumb terminals print one snapshot without cursor
 control sequences. `--watch --json` is rejected rather than emitting a mixed
 interactive stream.
 
-Port selection is `--port`, then `MILO_PORT`, then the private numeric
+Port selection is `--port`, then `GRUNT_PORT`, then the private numeric
 `installed-port.json` saved by successful setup, then 8788. Existing installations
 on a custom port can pass `--port` until setup records it. For example, Chad uses
 `usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
@@ -565,8 +583,10 @@ login and its broker service. An existing
 session with an unavailable broker reports the connection error for repair.
 Setup does not pair with Beeline or create agents or Rooms.
 
-grunt state lives under `$MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or
-`~/.config/milo`. Keep this directory across service restarts. Local router login
+grunt state lives under `$GRUNT_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/grunt` or
+`~/.config/grunt` for new installs. Without an explicit setting or existing Grunt
+directory, the compatibility path described above reuses the existing legacy
+directory. Keep the selected directory across service restarts. Local router login
 and encryption material are generated once and stored with mode `0600`.
 FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
@@ -588,15 +608,15 @@ or restart it for each provider. Pi's other providers are preserved.
 Named API-provider setup can install the pinned FreeLLMAPI Node server
 as a separate background service; Docker is not required. Linux uses systemd user
 units; macOS uses launchd (macOS remains untested). The router data and private login live under grunt's
-config directory. `MILO_FREELLMAPI_URL` chooses its numeric loopback address and
+config directory. `GRUNT_FREELLMAPI_URL` chooses its numeric loopback address and
 is saved in grunt's service configuration. The router's database is created under
-umask `0077`. `MILO_ROUTER_RUNTIME=docker` retains the older Docker installer for
+umask `0077`. `GRUNT_ROUTER_RUNTIME=docker` retains the older Docker installer for
 existing installations and offline regression checks.
 The default Kilo Particle source calls the public gateway directly and does not
 need this separate router service.
 
-`MILO_SQUIRE_HOME` and `MILO_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
-home without relocating grunt state. `MILO_SETUP_NO_HUMAN=1` stops before Squire
+`GRUNT_SQUIRE_HOME` and `GRUNT_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
+home without relocating grunt state. `GRUNT_SETUP_NO_HUMAN=1` stops before Squire
 onboarding or browser handoff if human verification would be needed.
 
 The installed command is `usegrunt`. In 0.6.6, production adapters passed real
@@ -629,24 +649,25 @@ The final 0.6.6 runtime on Chad returned correctly attributed replies through al
 eleven automatic sources and rejected both retired source IDs. A subsequent
 restart kept all eleven available without changing the saved access receipts or
 opening verification handoffs. The release passed 954 local tests, lint,
-TypeScript checks and a clean build; GitHub Actions remains disabled.
+TypeScript checks and a clean build; public GitHub Actions CI repeats the checks.
 Ordinary npm and gateway releases remain manual; the authorized operator scout
 can merge and publish qualified provider additions through its guarded pipeline.
-See the [provider scouting guide](../ops/provider-scout/README.md). Do not dispatch
-GitHub Actions. Gateway changes update the two existing file overlays described
+See the [provider scouting guide](../ops/provider-scout/README.md). Public CI runs
+the validation workflow; deployment/publication workflows remain separately
+controlled. Gateway changes update the two existing file overlays described
 under Deploy, not the image.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
 provider failover. There is no direct OpenRouter free API route. An already
-configured install can provide `MILO_FREELLMAPI_KEY` in its process environment;
-`MILO_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
+configured install can provide `GRUNT_FREELLMAPI_KEY` in its process environment;
+`GRUNT_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
 cap is (4096) tokens. Select `freellmapi` for a previously configured legacy
 chain; select `kilo` for the direct Particle 1 free source. Grunt-owned backend
 rows require current sharing approval; custom backend rows retain their own flags
 and priorities. Legacy requests reconcile owned rows from the existing private
 admin file before forwarding and fail closed if that state cannot be checked.
 The 0.6.6 migration retires Grunt-owned Auto, Nemotron and other non-Particle
-rows labeled `Kilo Free` or `Milo kilo (Squire)`, even when an older approval
+rows labeled `Kilo Free` or `Grunt kilo (Squire)`, even when an older approval
 exists. With current Particle-specific consent and a verified catalog entry,
 the runtime guard can add Particle to an existing Grunt-owned backend key using
 backend-held credentials. It preserves a previously disabled Particle row and
@@ -698,7 +719,7 @@ catalogs can otherwise fill the model context and cause repeated compaction.
 OpenCode's built-in coding tools and automatic compaction remain enabled;
 your configuration files and saved login are preserved. Trusty Squire still
 handles provider signup separately during setup. A server supplied through
-`MILO_OPENCODE_URL` keeps its own MCP connections.
+`GRUNT_OPENCODE_URL` keeps its own MCP connections.
 
 New conversations rotate across `deepseek-v4.1-flash-free`,
 `glm-5.3-flash-free` and `big-pickle`. Follow-ups stay with their successful
@@ -707,9 +728,9 @@ pool member is tried; the other Grunt sources remain available when the pool
 is exhausted. Providers may share quotas across models, so this does not imply
 three independent credit balances.
 
-`MILO_OPENCODE_MODEL` overrides the pool with one explicit model.
+`GRUNT_OPENCODE_MODEL` overrides the pool with one explicit model.
 Use a currently free model from your OpenCode catalog; grunt does not buy credits
-or switch to paid models automatically. `MILO_OPENCODE_URL` optionally connects an existing
+or switch to paid models automatically. `GRUNT_OPENCODE_URL` optionally connects an existing
 numeric loopback server. If it uses HTTP Basic auth, set
 `OPENCODE_SERVER_USERNAME` and `OPENCODE_SERVER_PASSWORD` in grunt's environment.
 Avoid configuring that OpenCode server to call grunt, which would create a loop.
@@ -728,19 +749,19 @@ For opencode 1.18.31, save this as `opencode.json` in your project:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "milo/milo",
+  "model": "grunt/grunt",
   "provider": {
-    "milo": {
+    "grunt": {
       "name": "grunt",
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:8788/v1", "apiKey": "local" },
-      "models": { "milo": { "name": "grunt" } }
+      "models": { "grunt": { "name": "grunt" } }
     }
   }
 }
 ```
 
-Then run `opencode -m milo/milo`. The [provider docs for this config format](https://docs.dev.opencode.ai/docs/providers/)
+Then run `opencode -m grunt/grunt`. The [provider docs for this config format](https://docs.dev.opencode.ai/docs/providers/)
 use `provider`, `npm`, and `options`. Newer native configs in the
 [current docs](https://opencode.ai/docs/providers/) use `providers`,
 `package: "@opencode/ai/providers/openai-compatible"`, and `settings` instead.
@@ -752,12 +773,12 @@ Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
 ```json
 {
   "providers": {
-    "milo": {
+    "grunt": {
       "baseUrl": "http://127.0.0.1:8788/v1",
       "api": "openai-completions",
       "apiKey": "local",
       "models": [{
-        "id": "milo", "name": "grunt", "reasoning": false, "input": ["text"],
+        "id": "grunt", "name": "grunt", "reasoning": false, "input": ["text"],
         "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
         "contextWindow": 128000, "maxTokens": 8192
       }]
@@ -766,7 +787,7 @@ Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
 }
 ```
 
-Run `pi --provider milo --model milo`. See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
+Run `pi --provider grunt --model grunt`. See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
 
 ### Claude Code
 
@@ -775,7 +796,7 @@ Claude Code 2.1.319 uses the Anthropic endpoint:
 ```sh
 ANTHROPIC_BASE_URL=http://127.0.0.1:8788 \
 ANTHROPIC_AUTH_TOKEN=local \
-claude --model milo
+claude --model grunt
 ```
 
 See [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway).
@@ -787,10 +808,10 @@ a provider credential. Custom model metadata may produce a context-window warnin
 Add to your user `config.toml` (Responses API; tested with Codex 0.167.0):
 
 ```toml
-model = "milo"
-model_provider = "milo"
+model = "grunt"
+model_provider = "grunt"
 
-[model_providers.milo]
+[model_providers.grunt]
 name = "grunt"
 base_url = "http://127.0.0.1:8788/v1"
 wire_api = "responses"
@@ -801,9 +822,9 @@ Run `codex`. See the [official configuration reference](https://learn.chatgpt.co
 ### Codex source
 
 Codex is opt-in. With the official `codex` CLI already signed in using ChatGPT,
-set `MILO_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
+set `GRUNT_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
 spends your Codex plan allowance, including the weekly limit. Without
-`MILO_SOURCES`, grunt uses the bundled free pool and current data-sharing
+`GRUNT_SOURCES`, grunt uses the bundled free pool and current data-sharing
 approvals; it never launches Codex. With Codex enabled, select model `codex` to use only Codex.
 API-key logins do not enable this source. Missing or signed-out Codex is omitted
 from `/v1/models`; grunt continues through the free chain on usage limits.
@@ -811,7 +832,7 @@ from `/v1/models`; grunt continues through the free chain on usage limits.
 grunt spawns `codex exec --json --sandbox workspace-write` in the request's working
 directory. Codex can use its tools and edit files there. grunt never reads or
 copies Codex login files, changes its config, or signs you in. Set
-`MILO_CODEX_MODEL` to override your Codex default. Only the latest user text is
+`GRUNT_CODEX_MODEL` to override your Codex default. Only the latest user text is
 sent; follow-ups resume the saved thread, keyed by working directory and user
 history. Session mappings last until grunt exits. Avoid pointing the delegated
 Codex default back at grunt, which would create a routing loop.
@@ -852,7 +873,7 @@ git repository, only task text and output are sent.
 
 The owner curates `registry/adapters.json` and publishes it manually using
 authorized Fly access. Validate the registry, upload it atomically to the
-gateway volume, and check `GET /v1/registry`; GitHub Actions must remain disabled.
+gateway volume, and check `GET /v1/registry`. CI does not publish the registry.
 Ordinary code deployments do not publish registry edits.
 Before the first valid registry is published the endpoint returns HTTP 503. Published data
 survives deploys and has an ETag. Stable weights total (0.8) and experimental
@@ -881,11 +902,11 @@ Heartbeat expiry and owner-process liveness prevent a crashed setup console
 from leaving a permanent exclusion; normal cleanup removes only that session's
 lease. This foreground gate is separate from routine background preparation;
 background checks do not themselves block an already-bound healthy route.
-Removing a registry entry disables it without uninstalling its files. The legacy `MILO_CONFIG_DIR` and
-`MILO_PORT` settings remain supported. `GRUNT_REGISTRY_URL` overrides the sync
+Removing a registry entry disables it without uninstalling its files. `GRUNT_CONFIG_DIR` and
+`GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the sync
 endpoint for local development.
 
-Explicit `MILO_SOURCES` configurations containing legacy sources such as Dots,
+Explicit `GRUNT_SOURCES` configurations containing legacy sources such as Dots,
 Codex or FreeLLMAPI retain their existing ordered behavior. They are outside the
 launch registry. Codex still requires explicit opt-in. The Fly personal-agent
 API remains separate from this local daemon.
@@ -911,25 +932,25 @@ With grunt running on your computer, tell your dot:
 
 > Join grunt: api.grunt.run/join
 
-Choose **Allow** when ChatGPT opens grunt's connection page. It sends your browser to the local daemon, redeems a single-use ticket, and returns to ChatGPT. No command or typed code is needed. The dot receives server instructions to subscribe to `milo.request` automatically and return answers with `milo_submit_reply`.
+Choose **Allow** when ChatGPT opens grunt's connection page. It sends your browser to the local daemon, redeems a single-use ticket, and returns to ChatGPT. No command or typed code is needed. The dot receives server instructions to subscribe to `grunt.request` automatically and return answers with `grunt_submit_reply`.
 
 Dots is off by default. Start grunt with an explicit source order that includes it:
 
 ```sh
-MILO_SOURCES=dots,freellmapi,opencode,kilo usegrunt serve
+GRUNT_SOURCES=dots,freellmapi,opencode,kilo usegrunt serve
 ```
 
-The normal join flow targets the default daemon port (`8788`). The OAuth authorize URL can specify `milo_port` when the daemon runs on another port. If grunt cannot be reached, or you approve on a phone, return to the Allow page and choose **Connect another computer**. Run the displayed fallback command, `usegrunt dots link <code>`, on the computer running grunt, then choose **Continue to ChatGPT** on that page. Codes and tickets are private, single-use, and expire within ten minutes. The fallback command reuses the same device secret as automatic pairing.
+The normal join flow targets the default daemon port (`8788`). The OAuth authorize URL can specify `grunt_port` when the daemon runs on another port. If grunt cannot be reached, or you approve on a phone, return to the Allow page and choose **Connect another computer**. Run the displayed fallback command, `usegrunt dots link <code>`, on the computer running grunt, then choose **Continue to ChatGPT** on that page. Codes and tickets are private, single-use, and expire within ten minutes. The fallback command reuses the same device secret as automatic pairing.
 
-Select model `dots` for the dot only. Model `milo` moves to the next source when the device is not paired, no live subscription exists, the dot reports an actual quota refusal, or no reply arrives before `MILO_DOTS_TIMEOUT_MS` (default `300000`, five minutes). Caller cancellation stops the chain. Without pairing, dots is absent from `/v1/models`. Without `dots` in `MILO_SOURCES`, normal requests and the local pairing route make no gateway calls. Replies that merely discuss usage limits are returned normally.
+Select model `dots` for the dot only. Model `grunt` moves to the next source when the device is not paired, no live subscription exists, the dot reports an actual quota refusal, or no reply arrives before `GRUNT_DOTS_TIMEOUT_MS` (default `300000`, five minutes). Caller cancellation stops the chain. Without pairing, dots is absent from `/v1/models`. Without `dots` in `GRUNT_SOURCES`, normal requests and the local pairing route make no gateway calls. Replies that merely discuss usage limits are returned normally.
 
-grunt stores its generated device secret in `dots.json` under `MILO_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/milo` or `~/.config/milo`, with mode `0600`, and reuses it for later authorizations. It is a grunt relay secret, never an OpenAI token; do not share that file. Local pairing requires a navigation from the configured gateway and a ticket that gateway confirms was approved. It refuses arbitrary origins, return URLs, unapproved tickets, reused tickets and expired tickets.
+grunt stores its generated device secret in `dots.json` under `GRUNT_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/grunt` or `~/.config/grunt`, with mode `0600`, and reuses it for later authorizations. It is a grunt relay secret, never an OpenAI token; do not share that file. Local pairing requires a navigation from the configured gateway and a ticket that gateway confirms was approved. It refuses arbitrary origins, return URLs, unapproved tickets, reused tickets and expired tickets.
 
-The public relay runs on `milo-gateway` at api.grunt.run. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `MILO_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: grunt will not forward an existing device secret to another origin. The gateway's `MILO_PUBLIC_URL` defaults to `https://api.grunt.run` and controls OAuth metadata. Deployment is manual; GitHub Actions remains disabled.
+The public relay runs at api.grunt.run using the gateway target in `fly.toml`. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `GRUNT_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: grunt will not forward an existing device secret to another origin. The gateway's `GRUNT_PUBLIC_URL` defaults to `https://api.grunt.run` and controls OAuth metadata. Deployment is separate from the public GitHub Actions CI workflow.
 
-The relay sends a signed event containing only a request ID and fixed summary. The dot reads the conversation with `milo_get_request`, then calls `milo_submit_reply(requestId, text)` or `milo_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry earlier user and assistant turns. Prompt text is removed from SQLite when answered or expired; replies remain only until local acknowledgment or expiry. Text is never written to application logs. The relay temporarily stores conversation text and the dot receives it, so send only content you intend to share.
+The relay sends a signed event containing only a request ID and fixed summary. The dot reads the conversation with `grunt_get_request`, then calls `grunt_submit_reply(requestId, text)` or `grunt_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry earlier user and assistant turns. Prompt text is removed from SQLite when answered or expired; replies remain only until local acknowledgment or expiry. Text is never written to application logs. The relay temporarily stores conversation text and the dot receives it, so send only content you intend to share.
 
-MCP Events is experimental. The live test checks whether the dot follows the server instructions and subscribes by itself. If it does not, say: “Subscribe to grunt's milo.request event, answer each request in chat, and send the answer back with milo_submit_reply.” Record the exact error if ChatGPT rejects a subscription. You can ask the dot manually to read a queued request while its subscription remains live. Whether event-triggered dot work counts against plan limits must be checked live; do not assume it is free. Every prompt asks for a chat answer without starting Codex or Work tasks, but this cannot guarantee the dot's behavior or usage accounting. Replies are text only; they cannot edit the local working directory or return local tool calls.
+MCP Events is experimental. The live test checks whether the dot follows the server instructions and subscribes by itself. If it does not, say: “Subscribe to grunt's grunt.request event, answer each request in chat, and send the answer back with grunt_submit_reply.” Record the exact error if ChatGPT rejects a subscription. You can ask the dot manually to read a queued request while its subscription remains live. Whether event-triggered dot work counts against plan limits must be checked live; do not assume it is free. Every prompt asks for a chat answer without starting Codex or Work tasks, but this cannot guarantee the dot's behavior or usage accounting. Replies are text only; they cannot edit the local working directory or return local tool calls.
 
 Disconnecting the connector revokes the grant and stops subscriptions when ChatGPT invokes the revocation endpoint. Otherwise subscriptions expire within a day; grunt cannot detect ChatGPT-only removal immediately.
 

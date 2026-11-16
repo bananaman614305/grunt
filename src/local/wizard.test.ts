@@ -21,13 +21,13 @@ vi.mock('@clack/prompts', () => ({
 
 let dir: string;
 let consentDir: string;
-beforeEach(async () => { consentDir = await mkdtemp(join(tmpdir(), 'grunt-wizard-consent-')); vi.stubEnv('MILO_CONFIG_DIR', consentDir); });
+beforeEach(async () => { consentDir = await mkdtemp(join(tmpdir(), 'grunt-wizard-consent-')); vi.stubEnv('GRUNT_CONFIG_DIR', consentDir); });
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); if (dir) await rm(dir, { recursive: true, force: true }); await rm(consentDir, { recursive: true, force: true }); });
 const defaultIds = () => bundledRegistry.adapters.map(adapter => adapter.id);
 const sharingIds = () => dataSharingPolicies(defaultIds()).map(policy => policy.provider);
 const approvedBatch = async ({ providers }: { providers: readonly string[] }) => ({ approved: dataSharingPolicies(providers).map(policy => policy.provider), skipped: [] });
 it('adds the Pi provider without removing user providers and preserves it on repeat setup', async () => {
-  dir = await mkdtemp(join(tmpdir(), 'milo-pi-test-'));
+  dir = await mkdtemp(join(tmpdir(), 'grunt-pi-test-'));
   vi.stubEnv('PI_CODING_AGENT_DIR', dir);
   const path = join(dir, 'models.json');
   await writeFile(path, JSON.stringify({ providers: { existing: { baseUrl: 'https://example.test' } }, other: 'keep' }));
@@ -45,7 +45,7 @@ it('adds the Pi provider without removing user providers and preserves it on rep
 it('reuses working Squire without a session check or installer', async () => {
   vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
   vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
-  vi.stubEnv('MILO_SETUP_NO_HUMAN', '1');
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
   const run = vi.fn(async () => {}), hasBroker = vi.fn(async () => true);
   await connectSquire({ hasBroker, run });
   expect(run).not.toHaveBeenCalled();
@@ -78,7 +78,7 @@ it('installs once only when the probe fails and no broker exists', async () => {
 
 it.each(['freebuff', 'apinex'])('skips retired %s installation and signup while continuing OpenCode', async retired => {
   const { setupFallbacks } = await import('./fallback-setup.js');
-  dir = await mkdtemp(join(tmpdir(), 'milo-retired-fallback-'));
+  dir = await mkdtemp(join(tmpdir(), 'grunt-retired-fallback-'));
   const run = vi.fn(async (_binary: string, args: string[]) => { if (args[0] === '--version') throw new Error('missing'); });
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() } };
   const signedIn = vi.fn(), login = vi.fn(), verify = vi.fn(async () => {});
@@ -93,7 +93,7 @@ it.each(['freebuff', 'apinex'])('skips retired %s installation and signup while 
 it.each([true, false])('connects an account only when OpenCode requires it, reusing a vault entry (exists: %s)', async exists => {
   const { setupFallbacks } = await import('./fallback-setup.js');
   const { SourceError } = await import('./source.js');
-  dir = await mkdtemp(join(tmpdir(), 'milo-fallback-test-'));
+  dir = await mkdtemp(join(tmpdir(), 'grunt-fallback-test-'));
   const entry = { service: 'opencode', reference: 'vault://test', field_names: ['api_key'] };
   const list = vi.fn().mockResolvedValueOnce(exists ? [entry] : []).mockResolvedValue([entry]);
   const squire = { signup: vi.fn(async () => {}), credentials: { list, grant: vi.fn(async () => ({ base_url: 'https://grant.test/opencode', token: 'synthetic-grant' })) } };
@@ -132,7 +132,7 @@ it('starts the service before connecting the free providers on default installs'
 
 it('pairs the local Freebuff CLI using its own login URL through Squire', async () => {
   const { loginFreebuff } = await import('./fallback-setup.js');
-  dir = await mkdtemp(join(tmpdir(), 'milo-login-test-'));
+  dir = await mkdtemp(join(tmpdir(), 'grunt-login-test-'));
   const program = '#!' + process.execPath + '\nconsole.log("https://freebuff.com/login?auth_code=synthetic&cli_flow=fixture"); setTimeout(() => process.exit(0), 100);\n';
   await writeFile(join(dir, 'freebuff'), program, { mode: 0o700 });
   vi.stubEnv('PATH', dir + ':' + process.env.PATH);
@@ -197,7 +197,7 @@ it('stops waiting at the limit and fails without retrying an adapter that is not
   expect(calls).toBeGreaterThan(1);
 });
 it('names a unit override whose MILO_SOURCES lacks an adapter and leaves it unchanged', async () => {
-  dir = await mkdtemp(join(tmpdir(), 'milo-unit-test-'));
+  dir = await mkdtemp(join(tmpdir(), 'grunt-unit-test-'));
   const dropIn = join(dir, '20-dots.conf'), other = join(dir, '10-other.conf');
   const content = '[Service]\nEnvironment="MILO_SOURCES=freellmapi,opencode,dots"\n';
   await writeFile(dropIn, content); await writeFile(other, '[Service]\nEnvironment="MILO_PORT=8788"\n');
@@ -205,7 +205,7 @@ it('names a unit override whose MILO_SOURCES lacks an adapter and leaves it unch
     ? 'GRUNT_DAEMON=1 MILO_PORT=8788 MILO_SOURCES=freellmapi,opencode,dots PATH=/usr/bin\n'
     : `${other} ${dropIn}\n`);
   const lines: string[] = [], unavailable: string[] = [];
-  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff', 'opencode'], () => serviceSources(run));
+  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff', 'opencode'], () => serviceSources(run, 'milo'));
   expect(lines).toEqual([`freebuff: FAIL — ${dropIn} sets MILO_SOURCES=freellmapi,opencode,dots, which lacks freebuff. Setup does not edit it; add freebuff there or remove that setting.`]);
   expect(unavailable).toEqual(['freebuff']);
   expect(await readFile(dropIn, 'utf8')).toBe(content);
@@ -213,9 +213,27 @@ it('names a unit override whose MILO_SOURCES lacks an adapter and leaves it unch
   await checkServiceSources(unavailable, line => lines.push(line), ['opencode'], async () => undefined);
   expect(lines).toHaveLength(1);
   // An adapter that setup already marked unavailable still gets the override named.
-  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff'], () => serviceSources(run));
+  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff'], () => serviceSources(run, 'milo'));
   expect(lines[1]).toContain(`${dropIn} sets MILO_SOURCES=freellmapi,opencode,dots, which lacks freebuff`);
   expect(unavailable).toEqual(['freebuff']);
+});
+
+it('uses the primary Grunt source setting and names its overriding file', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-unit-primary-test-'));
+  const dropIn = join(dir, '20-grunt.conf');
+  const content = '[Service]\nEnvironment="GRUNT_SOURCES=kilo"\n'; await writeFile(dropIn, content);
+  const run = vi.fn(async (args: string[]) => args.includes('Environment')
+    ? 'MILO_SOURCES=opencode GRUNT_SOURCES=kilo "OTHER=GRUNT_SOURCES=misleading"\n' : dropIn);
+  const lines: string[] = [];
+  await checkServiceSources([], line => lines.push(line), ['opencode'], () => serviceSources(run));
+  expect(lines).toEqual([`opencode: FAIL — ${dropIn} sets GRUNT_SOURCES=kilo, which lacks opencode. Setup does not edit it; add opencode there or remove that setting.`]);
+  expect(run.mock.calls.every(([args]) => args.includes('grunt.service'))).toBe(true);
+  expect(await readFile(dropIn, 'utf8')).toBe(content);
+});
+
+it('discovers the legacy source configuration when no primary unit is configured', async () => {
+  const run = vi.fn(async (args: string[]) => args.includes('grunt.service') ? '' : args.includes('Environment') ? 'MILO_SOURCES=opencode,kilo' : '');
+  expect(await serviceSources(run)).toEqual({ sources: ['opencode', 'kilo'], origin: 'milo.service', variable: 'MILO_SOURCES' });
 });
 
 it('passes the live check when the model list takes longer than one second', async () => {
@@ -302,7 +320,7 @@ it('gives every service its own result when one fails, then ends with the resume
     checkFallbackServices
   });
   const live = await service(new Sources(defaultIds().filter(id => id !== 'beatapi').map(id => fake(id))));
-  vi.stubEnv('MILO_PORT', String(live.port));
+  vi.stubEnv('GRUNT_PORT', String(live.port));
   try { await expect(wizard(undefined, actions)).resolves.toBeUndefined(); }
   finally { await live.close(); }
   expect(vi.mocked(log.error).mock.calls.map(([line]) => line)).toContain('beatapi: FAIL — setup incomplete');
@@ -311,8 +329,8 @@ it('gives every service its own result when one fails, then ends with the resume
   expect(order).toContain('harnesses');
 });
 it('pulls the registry from the RegistrySync URL and says when it falls back to the bundled list', async () => {
-  dir = await mkdtemp(join(tmpdir(), 'milo-registry-test-'));
-  vi.stubEnv('MILO_CONFIG_DIR', dir);
+  dir = await mkdtemp(join(tmpdir(), 'grunt-registry-test-'));
+  vi.stubEnv('GRUNT_CONFIG_DIR', dir);
   const fresh = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() };
   const fetcher = vi.fn(async () => new Response(JSON.stringify(fresh), { status: 200 }));
   expect(await loadRegistry({ fetcher })).toEqual({ registry: fresh, origin: 'remote' });
@@ -327,7 +345,7 @@ it('pulls the registry from the RegistrySync URL and says when it falls back to 
 
 it('keeps newly bundled onboarding sources when both cached and remote registries are stale', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-stale-onboarding-registry-'));
-  vi.stubEnv('MILO_CONFIG_DIR', dir);
+  vi.stubEnv('GRUNT_CONFIG_DIR', dir);
   const stale = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) - 1000).toISOString(), adapters: [bundledRegistry.adapters[1]] };
   await writeFile(join(dir, 'registry.json'), JSON.stringify({ registry: stale, etag: '"old-onboarding"' }), { mode: 0o600 });
   const fetcher = vi.fn<typeof fetch>(async () => Response.json(stale));

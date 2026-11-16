@@ -1,3 +1,4 @@
+import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -36,7 +37,7 @@ export const PERCH_MAX_OUTPUT_TOKENS = 4096;
 export const PERCH_BUILTIN_SKILLS = ['about-perch', 'browser-operator', 'data-quality', 'diagrams', 'documents', 'github', 'pdf',
   'presentations', 'release', 'research', 'skill-creator', 'spreadsheets', 'wait-operator', 'workspace'] as const;
 const builtinSkills = new Set<string>(PERCH_BUILTIN_SKILLS);
-const directoryDefault = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const directoryDefault = () => configRoot();
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export function perchPaths(directory = directoryDefault()) {
   const home = resolve(directory, 'perch'), binRoot = join(home, 'bin'), versionHome = join(binRoot, PERCH_VERSION), packageDirectory = join(versionHome, 'package');

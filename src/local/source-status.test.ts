@@ -4,7 +4,7 @@ import type { Completion, ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import { createLocalApp } from './api.js';
 
-const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'private prompt contents' }], cwd: '/tmp', tools: [], stream: false };
+const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'private prompt contents' }], cwd: '/tmp', tools: [], stream: false };
 const fake = (id: string): Source => ({ id, available: vi.fn(async () => true), healthCheck: vi.fn(async () => true), complete: vi.fn(async () => ({ text: 'private response' })) });
 const registry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(id => ({ ...bundledRegistry.adapters.find(a => a.id === id)!, weight: 0.5 })) };
 afterEach(() => vi.restoreAllMocks());

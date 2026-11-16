@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import type * as ChildProcess from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BrowserSquire, FreeLLMAdmin, setup, setupURL, providerURL, providerLabel } from './setup.js';
+import { BrowserSquire, FreeLLMAdmin, setup, setupURL, providerURL, providerLabel, ensureRouter, squireEnvironment } from './setup.js';
 import { configure } from './main.js';
 import { createLocalApp } from './api.js';
 import { recordDataSharingConsent } from './data-sharing.js';
@@ -27,24 +27,25 @@ const credentialLabelSchema = { parse(value: unknown) {
 const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 let stateDir: string;
 let installed: boolean, volume: boolean, storedKeys: boolean, legacyAdmin: boolean;
+let routerName: string;
 let keys: { id: number; platform: string; label: string; baseUrl?: string }[];
 let logins: string[];
 let squireCall: ReturnType<typeof vi.spyOn>;
 beforeEach(async () => {
-  stateDir = await mkdtemp(join(tmpdir(), 'milo-setup-test-'));
-  vi.stubEnv('MILO_CONFIG_DIR', stateDir);
-  vi.stubEnv('MILO_ROUTER_RUNTIME', 'docker');
+  stateDir = await mkdtemp(join(tmpdir(), 'grunt-setup-test-'));
+  vi.stubEnv('GRUNT_CONFIG_DIR', stateDir);
+  vi.stubEnv('GRUNT_ROUTER_RUNTIME', 'docker');
   vi.stubEnv('XDG_CONFIG_HOME', stateDir);
   Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
-  installed = false; volume = false; storedKeys = false; legacyAdmin = true; keys = []; logins = [];
+  installed = false; volume = false; storedKeys = false; legacyAdmin = true; keys = []; logins = []; routerName = 'grunt-freellmapi';
   docker.mockReset(); question.mockClear();
   docker.mockImplementation(async (_command, args) => {
     if (args[0] === 'inspect') {
-      if (!installed) throw Object.assign(new Error('missing'), { stderr: 'No such container: milo-freellmapi' });
+      if (!installed || args.at(-1) !== routerName) throw Object.assign(new Error('missing'), { stderr: 'No such container: milo-freellmapi' });
       return { stdout: '1' };
     }
     if (args[0] === 'volume' && args[1] === 'inspect') {
-      if (!volume) throw Object.assign(new Error('missing'), { stderr: 'No such volume: milo-freellmapi-data' });
+      if (!volume || args.at(-1) !== routerName + '-data') throw Object.assign(new Error('missing'), { stderr: 'No such volume: milo-freellmapi-data' });
       return { stdout: 'milo-freellmapi-data' };
     }
     if (args[0] === 'run' && args.includes('--rm')) return { stdout: storedKeys ? 'keys' : 'empty' };
@@ -111,6 +112,39 @@ it('mints a provider grant once and reuses the grant-backed router entry without
   expect(question).toHaveBeenCalledTimes(0);
 });
 
+it('creates a Grunt Docker resource for a new installation without exposing admin secrets', async () => {
+  await setup(() => {});
+  const creation = docker.mock.calls.find(([, args]) => args[0] === 'run' && args.includes('-d'));
+  expect(creation?.[1]).toContain('grunt-freellmapi');
+  expect(creation?.[1]).toContain('io.grunt.router=1');
+  expect(creation?.[1]).toContain('grunt-freellmapi-data:/app/server/data');
+  expect(JSON.stringify(creation?.[1])).not.toContain(logins[0]);
+});
+
+it('reuses an existing legacy Docker container without replacing or removing its volume', async () => {
+  installed = true; volume = true; routerName = 'milo-freellmapi';
+  const run = async (args: string[], env?: NodeJS.ProcessEnv) => docker('docker', args, { env });
+  await ensureRouter('synthetic-password', 'synthetic-encryption', run);
+  expect(docker.mock.calls.map(([, args]) => args)).toContainEqual(['start', 'milo-freellmapi']);
+  expect(docker.mock.calls.some(([, args]) => ['rm', 'run', 'pull', 'volume'].includes(args[0]))).toBe(false);
+});
+
+it('uses primary Squire home overrides and preserves the legacy fallback', () => {
+  vi.stubEnv('MILO_SQUIRE_HOME', '/legacy-squire');
+  vi.stubEnv('GRUNT_SQUIRE_HOME', '/grunt-squire');
+  vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', '/grunt-config');
+  expect(squireEnvironment()).toMatchObject({ HOME: '/grunt-squire', XDG_CONFIG_HOME: '/grunt-config' });
+  vi.stubEnv('GRUNT_SQUIRE_HOME', undefined);
+  vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', undefined);
+  expect(squireEnvironment()).toMatchObject({ HOME: '/legacy-squire', XDG_CONFIG_HOME: '/legacy-squire/.config' });
+});
+
+it.each(['Milo groq (Squire)', 'Grunt groq (Squire)'])('recognizes an existing managed provider key labelled %s without another signup', async label => {
+  keys = [{ id: 1, platform: 'custom', label, baseUrl: 'https://egress.squire.test/openai/v1', models: [{ modelId: 'openai/gpt-oss-120b' }] } as typeof keys[number]];
+  await expect(new FreeLLMAdmin().hasKey('groq')).resolves.toBe(true);
+  expect(squireCall).not.toHaveBeenCalled();
+});
+
 it.each(['environment', 'saved login', 'router recovers'])('answers daemon requests using %s without rerunning setup', async mode => {
   await setup(() => {});
   logins.length = 0;
@@ -154,7 +188,7 @@ it.each(['environment', 'saved login', 'router recovers'])('answers daemon reque
 });
 
 it.each([true, false])('recreates a keyless old router when local admin state is missing (container: %s)', async container => {
-  installed = container; volume = true;
+  routerName = 'milo-freellmapi'; installed = container; volume = true;
   await setup(() => {});
   const commands = docker.mock.calls.map(([, args]) => args);
   expect(commands).toContainEqual(['volume', 'rm', 'milo-freellmapi-data']);
@@ -164,14 +198,14 @@ it.each([true, false])('recreates a keyless old router when local admin state is
 });
 
 it.each([true, false])('preserves an old router containing provider keys when local admin state is missing (container: %s)', async container => {
-  installed = container; volume = true; storedKeys = true;
+  routerName = 'milo-freellmapi'; installed = container; volume = true; storedKeys = true;
   await expect(setup(() => {})).rejects.toThrow(/provider keys.*preserv/i);
   expect(docker.mock.calls.some(([, args]) => args[0] === 'rm' || args[0] === 'volume' && args[1] === 'rm')).toBe(false);
   expect(squireCall.mock.calls.filter(([name]) => name === 'fetch_credential' || name === 'store_credential')).toEqual([]);
 });
 
 it('stops native setup without replacing the missing key of an existing database', async () => {
-  vi.stubEnv('MILO_ROUTER_RUNTIME', 'native');
+  vi.stubEnv('GRUNT_ROUTER_RUNTIME', 'native');
   await mkdir(join(stateDir, 'freellmapi'));
   const database = join(stateDir, 'freellmapi', 'router.db');
   await writeFile(database, 'existing encrypted provider state');
@@ -260,7 +294,7 @@ it.each(['https://example.test/api/v1', 'https://my-company-production-resource.
   await setupURL(squire, router, base, () => {});
   await setupURL(squire, router, base, () => {});
   expect(records).toHaveLength(1);
-  expect(records[0]).toMatchObject({ baseUrl: 'https://egress.test/grant' + new URL(base).pathname, label: `Milo ${providerLabel(base)} (Squire)`, models: [{ modelId: 'unlisted-model' }] });
+  expect(records[0]).toMatchObject({ baseUrl: 'https://egress.test/grant' + new URL(base).pathname, label: `Grunt ${providerLabel(base)} (Squire)`, models: [{ modelId: 'unlisted-model' }] });
   expect(call).toHaveBeenCalledWith('store_credential', { service: new URL(base).host, label: providerLabel(base), value: 'synthetic-provider-key', auth_shape: 'bearer', api_hosts: [new URL(base).host] });
   expect(await router.hasKey(base)).toBe(true);
   await router.configureChain();

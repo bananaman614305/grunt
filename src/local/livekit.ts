@@ -1,3 +1,4 @@
+import { configRoot } from '../brand.js';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
@@ -24,7 +25,7 @@ export interface LiveKitFreeBuildReceipt {
   projectURL: string;
   checkedAt: string;
 }
-const configDirectory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const configDirectory = () => configRoot();
 export function livekitPaths(directory = configDirectory(), nativeDirectory = join(homedir(), '.livekit')) {
   const home = resolve(directory, 'livekit');
   return { home, binary: join(home, 'bin', process.platform === 'win32' ? 'lk.exe' : 'lk'),

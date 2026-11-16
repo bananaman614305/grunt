@@ -98,6 +98,7 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(overrides['sandbox_workspace_write.network_access'])
         self.assertEqual(overrides['sandbox_workspace_write.writable_roots'], [])
         self.assertEqual(overrides['sandbox_mode'], 'workspace-write')
+        self.assertEqual(overrides['shell_environment_policy.set.GIT_NO_REPLACE_OBJECTS'], '1')
         for forbidden in ('fetch_credential','grant_app_access','inject_card','checkout','delete_credential'):
             self.assertNotIn(forbidden, overrides['mcp_servers.squire.enabled_tools'])
 
@@ -118,6 +119,7 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn('--ignore-user-config', args)
         self.assertFalse(self.overrides(args)['mcp_servers.squire.enabled'])
         self.assertNotIn('mcp_servers.squire.command', self.overrides(args))
+        self.assertEqual(self.overrides(args)['shell_environment_policy.set.GIT_NO_REPLACE_OBJECTS'], '1')
 
     def test_cli_disable_paths_do_not_embed_literal_quote_characters(self):
         args = []

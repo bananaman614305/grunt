@@ -1,4 +1,4 @@
-// Run after pnpm build with MILO_SOURCES=codex and an already signed-in official codex CLI on PATH.
+// Run after pnpm build with GRUNT_SOURCES=codex and an already signed-in official codex CLI on PATH.
 import { serve } from '@hono/node-server';
 import { createLocalApp } from '../../dist/local/api.js';
 import { configure } from '../../dist/local/main.js';
@@ -10,7 +10,7 @@ const server = serve({ fetch: createLocalApp(sources, options).fetch, hostname: 
 await new Promise(resolve => server.once('listening', resolve));
 options.port = server.address().port;
 try {
-  for (const model of ['milo', 'codex']) {
+  for (const model of ['grunt', 'codex']) {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/chat/completions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, cwd: process.cwd(), messages: [{ role: 'user', content: 'Reply with exactly: codex bridge works. Do not use tools.' }] })

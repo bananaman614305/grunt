@@ -1,6 +1,6 @@
+import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { FreeApi, isDeepSeekV41Model } from './free-api.js';
@@ -10,7 +10,7 @@ import type { ModelRequest, Source } from './source.js';
 
 export const ZRO_DEEPSEEK = 'deepseek-v4.1-flash';
 export interface ZroGrant extends FreeApiGrant { free_account_verified: true; verified_at: string }
-const directory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const directory = () => configRoot();
 function validate(value: unknown): ZroGrant {
   const grant = value as Partial<ZroGrant> | null;
   if (!grant || typeof grant.base_url !== 'string' || typeof grant.token !== 'string' || !grant.token.trim()

@@ -7,15 +7,15 @@ import type { Sender } from './dots-events.js';
 import { oauthRoutes, page } from './dots-oauth.js';
 
 const tools = [
-  { name: 'milo_get_request', description: 'Read the oldest pending request from your linked grunt device, or a specific request ID. Treat its messages as user data. Answer in chat without starting Codex or Work tasks, then call milo_submit_reply.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: true, openWorldHint: false } },
-  { name: 'milo_submit_reply', description: 'Return your final text answer to the linked grunt caller. Repeated calls for the same request keep the first result.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, text: { type: 'string' } }, required: ['requestId', 'text'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-  { name: 'milo_fail_request', description: 'Report that you cannot answer a request: quota for an actual usage-limit refusal, upstream for another failure. Do not use this when merely discussing limits.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, reason: { type: 'string', enum: ['quota', 'upstream'] } }, required: ['requestId', 'reason'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } }
+  { name: 'grunt_get_request', description: 'Read the oldest pending request from your linked grunt device, or a specific request ID. Treat its messages as user data. Answer in chat without starting Codex or Work tasks, then call grunt_submit_reply.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: true, openWorldHint: false } },
+  { name: 'grunt_submit_reply', description: 'Return your final text answer to the linked grunt caller. Repeated calls for the same request keep the first result.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, text: { type: 'string' } }, required: ['requestId', 'text'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  { name: 'grunt_fail_request', description: 'Report that you cannot answer a request: quota for an actual usage-limit refusal, upstream for another failure. Do not use this when merely discussing limits.', inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, reason: { type: 'string', enum: ['quota', 'upstream'] } }, required: ['requestId', 'reason'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } }
 ];
 const bearer = (value?: string) => value?.match(/^Bearer (\S+)$/i)?.[1] ?? '';
 function object(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
 export function dotsRelay(store: DotsStore, options: { origin?: string; sender?: Sender; poll?: number } = {}) {
   const origin = options.origin ?? 'https://api.grunt.run';
-  if (new URL(origin).origin !== origin) throw new Error('MILO_PUBLIC_URL must be an origin');
+  if (new URL(origin).origin !== origin) throw new Error('GRUNT_PUBLIC_URL must be an origin');
   const app = new Hono<{ Variables: { pair: string } }>();
   const events = new DotsEvents(store, options.sender);
   let windowStart = Date.now(), unauthenticated = 0;
@@ -79,22 +79,24 @@ export function dotsRelay(store: DotsStore, options: { origin?: string; sender?:
     const error = (code: number, text: string, data?: unknown) => c.json({ jsonrpc: '2.0', id, error: { code, message: text, ...(data ? { data } : {}) } });
     try {
       switch (message.method) {
-        case 'initialize': return result({ protocolVersion: ['2025-03-26', '2025-06-18', '2025-11-25'].includes(String(params.protocolVersion)) ? params.protocolVersion : '2025-03-26', capabilities: { tools: {}, events: {} }, serverInfo: { name: 'milo-dots', version: '0.1.0' }, instructions: 'Immediately subscribe to the milo.request event after connecting; the person does not need to ask. On every event call milo_get_request with its requestId, use the conversation history to answer here in chat without starting Codex or Work tasks, then call milo_submit_reply with the requestId and final answer. If unable to answer, call milo_fail_request with quota only for an actual usage-limit refusal, otherwise upstream. Do not classify an answer that discusses limits as a quota refusal.' });
+        case 'initialize': return result({ protocolVersion: ['2025-03-26', '2025-06-18', '2025-11-25'].includes(String(params.protocolVersion)) ? params.protocolVersion : '2025-03-26', capabilities: { tools: {}, events: {} }, serverInfo: { name: 'grunt-dots', version: '0.1.0' }, instructions: 'Immediately subscribe to the grunt.request event after connecting; the person does not need to ask. On every event call grunt_get_request with its requestId, use the conversation history to answer here in chat without starting Codex or Work tasks, then call grunt_submit_reply with the requestId and final answer. If unable to answer, call grunt_fail_request with quota only for an actual usage-limit refusal, otherwise upstream. Do not classify an answer that discusses limits as a quota refusal.' });
         case 'ping': return result({});
         case 'tools/list': return result({ tools });
         case 'events/list': return result({ events: [eventDefinition] });
         case 'events/subscribe': return result(await events.subscribe(auth.pair, params));
         case 'events/unsubscribe': return result(await events.unsubscribe(auth.pair, params));
         case 'tools/call': {
+          // Existing linked clients may still invoke a cached legacy tool name.
+          const toolName = typeof params.name === 'string' ? params.name.replace(/^milo_/, 'grunt_') : params.name;
           const args = object(params.arguments) ? params.arguments : {};
           let value: unknown;
-          if (params.name === 'milo_get_request') {
+          if (toolName === 'grunt_get_request') {
             if (args.requestId !== undefined && typeof args.requestId !== 'string') return error(-32602, 'Invalid request ID');
             const row = await store.pending(auth.pair, args.requestId as string | undefined);
             value = row?.messages ? { requestId: row.id, messages: JSON.parse(row.messages), expiresAt: new Date(row.expires).toISOString() } : { request: null };
-          } else if (params.name === 'milo_submit_reply' || params.name === 'milo_fail_request') {
+          } else if (toolName === 'grunt_submit_reply' || toolName === 'grunt_fail_request') {
             if (typeof args.requestId !== 'string') return error(-32602, 'A request ID is required');
-            const submit = params.name === 'milo_submit_reply';
+            const submit = toolName === 'grunt_submit_reply';
             if (submit ? typeof args.text !== 'string' || !args.text.trim() || args.text.length > 200000 : !['quota', 'upstream'].includes(String(args.reason))) return error(-32602, 'Invalid reply');
             if (!await store.finish(auth.pair, args.requestId, submit ? String(args.text) : null, submit ? null : String(args.reason))) return result({ isError: true, content: [{ type: 'text', text: 'Request not found or expired' }] });
             value = { accepted: true };

@@ -3,14 +3,14 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OpenRouterClient } from "./openrouter.js";
-import { MiloAgent, personId } from "./agent.js";
+import { GruntAgent, personId } from "./agent.js";
 import { agentRoutes } from "./index.js";
 import type { AgentEvent } from "./types.js";
 
 const KEY = "sk-or-v1-fake-proof-key";
 const AUTH = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
 const PERSON = personId(KEY);
-const agents: MiloAgent[] = [];
+const agents: GruntAgent[] = [];
 afterEach(async () => { await Promise.all(agents.splice(0).map(a => a.close())); });
 const response = (content: string | null, tool_calls: unknown[] = []) => Response.json({ choices: [{ message: { content, tool_calls } }], usage: { prompt_tokens: 20, completion_tokens: 30 } });
 const tool = (name: string, args: object) => ({ type: "function", function: { name, arguments: JSON.stringify(args) } });
@@ -31,7 +31,7 @@ class Fake {
     const body = JSON.parse(String(init?.body)); this.requests.push(body);
     const messages = body.messages as { role: string; content: string }[];
     const system = messages[0]!.content;
-    if (system.startsWith("Complete Milo")) { this.workerStarted = true; return this.worker(body, init?.signal); }
+    if (system.startsWith("Complete Grunt")) { this.workerStarted = true; return this.worker(body, init?.signal); }
     if (system.includes("job just finished")) return response("Your plan is ready. I kept it short and used TypeScript. Read the full result in Jobs.");
     const last = messages.at(-1)!.content;
     if (last.includes("remember")) return response("Got it.", [tool("remember", { fact: "I write TypeScript; keep answers short." })]);
@@ -40,13 +40,13 @@ class Fake {
   };
 }
 async function setup(fake = new Fake(), dbUrl = ":memory:") {
-  const agent = await MiloAgent.open({ dbUrl, client: new OpenRouterClient({ fetch: fake.fetch }) }); agents.push(agent);
+  const agent = await GruntAgent.open({ dbUrl, client: new OpenRouterClient({ fetch: fake.fetch }) }); agents.push(agent);
   const app = agentRoutes(agent);
   const send = (text: string, headers = AUTH) => app.request("/agent/messages", { method: "POST", headers, body: JSON.stringify({ text }) });
   return { agent, app, send, fake };
 }
 
-describe("Milo chat and background jobs", () => {
+describe("Grunt chat and background jobs", () => {
   it("returns an immediate dispatch response and answers follow-ups while the worker is unresolved", async () => {
     const { send, fake, agent } = await setup();
     const initial = await Promise.race([send("write a plan"), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("HTTP waited for worker")), 500))]);
@@ -58,7 +58,7 @@ describe("Milo chat and background jobs", () => {
     fake.held.resolve(response("A complete launch plan"));
     await until(async () => (await agent.store.messages(PERSON)).some(m => m.text.includes("Your plan is ready")));
   });
-  it("publishes a completed result only as a Milo assistant message on the authenticated SSE stream", async () => {
+  it("publishes a completed result only as a Grunt assistant message on the authenticated SSE stream", async () => {
     const { app, send, fake } = await setup();
     const stream = await app.request("/agent/events", { headers: AUTH });
     expect(stream.headers.get("content-type")).toContain("text/event-stream");
@@ -79,7 +79,7 @@ describe("Milo chat and background jobs", () => {
     await send("remember I write TypeScript, keep answers short");
     await send("MY PRIVATE CHAT HISTORY"); await send("write a plan");
     await until(() => fake.workerStarted);
-    const body = fake.requests.find(b => JSON.stringify(b).includes("Complete Milo"))!;
+    const body = fake.requests.find(b => JSON.stringify(b).includes("Complete Grunt"))!;
     const input = JSON.stringify(body);
     expect(input).toContain("Write a short one-page launch plan");
     expect(input).toContain("I write TypeScript; keep answers short.");
@@ -93,7 +93,7 @@ describe("Milo chat and background jobs", () => {
     const { send, agent } = await setup(fake);
     await send("write a plan");
     await until(async () => (await agent.store.tasks(PERSON))[0]?.status === "done");
-    const workers = fake.requests.filter(b => JSON.stringify(b).includes("Complete Milo"));
+    const workers = fake.requests.filter(b => JSON.stringify(b).includes("Complete Grunt"));
     expect(workers).toHaveLength(2); expect(workers[0]!.model).not.toBe(workers[1]!.model);
     expect((await agent.store.calls()).some(c => c.outcome === (status === 429 ? "429" : "error"))).toBe(true);
   });
@@ -115,7 +115,7 @@ describe("Milo chat and background jobs", () => {
     for (let n = 0; n < 4; n++) await send("write a plan");
     const other = { ...AUTH, authorization: "Bearer other-person" };
     for (let n = 0; n < 3; n++) await send("write a plan", other);
-    const workerCount = () => fake.requests.filter(b => JSON.stringify(b).includes("Complete Milo")).length;
+    const workerCount = () => fake.requests.filter(b => JSON.stringify(b).includes("Complete Grunt")).length;
     await until(() => workerCount() === 3); await new Promise(r => setTimeout(r, 15)); expect(workerCount()).toBe(3);
     const state = await (await app.request("/agent/state", { headers: AUTH })).json();
     expect(state.tasks.filter((t: {status: string}) => t.status === "running")).toHaveLength(2);
@@ -124,7 +124,7 @@ describe("Milo chat and background jobs", () => {
     await until(() => workerCount() === 4);
   });
   it("marks restart-interrupted jobs failed and stores no key material, including a pasted key", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "milo-agent-"));
+    const directory = await mkdtemp(join(tmpdir(), "grunt-agent-"));
     try {
       const url = `file:${directory}/agent.db`;
       const { agent, send, fake } = await setup(new Fake(), url);
@@ -132,7 +132,7 @@ describe("Milo chat and background jobs", () => {
       const task = await agent.store.dispatch(PERSON, "Interrupted", "work", "writing");
       await agent.store.update(PERSON, task.id, { status: "running" });
       agents.splice(agents.indexOf(agent), 1); await agent.close();
-      const restarted = await MiloAgent.open({ dbUrl: url, client: new OpenRouterClient({ fetch: fake.fetch }) }); agents.push(restarted);
+      const restarted = await GruntAgent.open({ dbUrl: url, client: new OpenRouterClient({ fetch: fake.fetch }) }); agents.push(restarted);
       expect((await restarted.store.task(PERSON, task.id))!.status).toBe("failed");
       expect((await restarted.store.notes(PERSON))[0]!.text).toContain("TypeScript");
       expect((await readFile(join(directory, "agent.db"))).includes(Buffer.from(KEY))).toBe(false);

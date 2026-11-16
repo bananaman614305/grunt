@@ -1,6 +1,6 @@
+import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SourceError } from './source.js';
@@ -8,7 +8,7 @@ import type { ModelRequest, Source, ToolCall } from './source.js';
 
 export const NVIDIA_DEEPSEEK = 'deepseek-ai/deepseek-v4.1-flash';
 export interface NvidiaGrant { base_url: string; token: string }
-const configDirectory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const configDirectory = () => configRoot();
 function validateGrant(value: unknown): NvidiaGrant {
   const grant = value as Partial<NvidiaGrant> | null;
   if (!grant || typeof grant.base_url !== 'string' || typeof grant.token !== 'string' || !grant.token.trim()) throw new Error('Invalid NVIDIA Squire grant');

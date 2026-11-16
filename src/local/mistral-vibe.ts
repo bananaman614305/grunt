@@ -1,7 +1,7 @@
+import { configRoot } from '../brand.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SourceError } from './source.js';
@@ -20,7 +20,7 @@ export interface MistralVibeFreePlanReceipt {
   purchasedCredits: 0;
   checkedAt: string;
 }
-const configDirectory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const configDirectory = () => configRoot();
 export function mistralVibePaths(directory = configDirectory()) {
   const home = resolve(directory, 'mistral-vibe');
   return { home, binary: join(home, 'bin', process.platform === 'win32' ? 'vibe.exe' : 'vibe'), python: join(home, 'tools', 'mistral-vibe', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'), work: join(home, 'work'), receipt: join(home, 'free-plan.json') };

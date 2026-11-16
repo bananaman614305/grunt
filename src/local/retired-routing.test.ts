@@ -44,20 +44,20 @@ it.each([-1000, 1000])('never re-enables retired routes from stale or freshly re
     await sync.sync();
     expect(ensure.mock.calls.map(([adapter]) => adapter.id)).toEqual(expectedIds);
     expect(await readFile(join(path, 'registry.json'), 'utf8')).toBe(saved);
-    const sources = configure({ MILO_CONFIG_DIR: path }, () => sync.current);
+    const sources = configure({ GRUNT_CONFIG_DIR: path }, () => sync.current);
     expect(sources.sources.map(source => source.id)).toEqual(expectedIds);
     await sources.close();
   } finally { await sync.close(); }
 });
 
 it.each(['freebuff,apinex,opencode', 'opencode,freebuff,apinex'])('filters old saved source selections (%s)', async selection => {
-  const sources = configure({ MILO_SOURCES: selection, MILO_CONFIG_DIR: await directory() });
+  const sources = configure({ GRUNT_SOURCES: selection, GRUNT_CONFIG_DIR: await directory() });
   expect(sources.sources.map(source => source.id)).toEqual(['opencode']);
   await sources.close();
 });
 
 it.each(['opencode', 'opencode,codex'])('rejects explicit retired models before probing or routing to any remaining source (%s)', async selection => {
-  const sources = configure({ MILO_SOURCES: selection, MILO_CONFIG_DIR: await directory() });
+  const sources = configure({ GRUNT_SOURCES: selection, GRUNT_CONFIG_DIR: await directory() });
   const available = sources.sources.map(source => vi.spyOn(source, 'available').mockResolvedValue(true));
   const completions = sources.sources.map(source => vi.spyOn(source, 'complete').mockResolvedValue({ text: 'must not answer' }));
   const fetcher = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected network'));
@@ -77,12 +77,12 @@ it.each(['opencode', 'opencode,codex'])('rejects explicit retired models before 
 });
 
 it.each(['freebuff,apinex', ''])('keeps an empty or retired-only saved installation reachable without silently selecting a replacement (%s)', async selection => {
-  const sources = configure({ MILO_SOURCES: selection, MILO_CONFIG_DIR: await directory() });
+  const sources = configure({ GRUNT_SOURCES: selection, GRUNT_CONFIG_DIR: await directory() });
   expect(sources.sources).toEqual([]);
   const app = createLocalApp(sources);
   const response = await app.request('http://localhost:8788/v1/models');
   expect(response.status).toBe(200);
-  expect((await response.json()).data.map((model: { id: string }) => model.id)).toEqual(['grunt', 'milo']);
+  expect((await response.json()).data.map((model: { id: string }) => model.id)).toEqual(['grunt']);
   await expect(sources.complete({ model: 'grunt', cwd: await directory(), messages: [{ role: 'user', content: 'Hello' }], tools: [], stream: false }, new AbortController().signal)).rejects.toThrow();
   await sources.close();
 });

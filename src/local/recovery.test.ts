@@ -54,7 +54,7 @@ describe('Sources recovery trigger', () => {
   const failing = (id: string, code: SourceError['code']): Source => ({
     id, available: async () => false, complete: async () => { throw new SourceError(code, `${id} cannot answer`); }
   });
-  const request = { model: 'milo', cwd: '/tmp', messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false };
+  const request = { model: 'grunt', cwd: '/tmp', messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false };
 
   it('starts recovery when no source can answer', async () => {
     const recover = vi.fn();

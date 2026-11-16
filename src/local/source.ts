@@ -190,7 +190,7 @@ export class Sources {
       if (this.router?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
       return s.id;
     }));
-    return [...(this.router ? ['grunt'] : []), 'milo', ...available.filter((id): id is string => id !== null)];
+    return ['grunt', ...available.filter((id): id is string => id !== null)];
   }
   // When no source can answer, start background recovery so the next request has one.
   setRecovery(recover: () => void) { this.recover = recover; }
@@ -221,9 +221,11 @@ export class Sources {
     }
     if (this.router) return this.router.complete(request, signal);
     const known = this.sources.some(s => s.id === request.model);
-    if (request.model !== 'milo' && !known) console.error(`grunt model mapping: ${request.model} -> milo`);
-    const toolsRequired = (request.model === 'milo' || !known) && needsFunctionTools(request);
-    const candidates = request.model === 'milo' || !known ? this.sources.filter(s => !toolsRequired || toolCapable(s)) : this.sources.filter(s => s.id === request.model);
+    // Older harness configurations may still request the former model name.
+    const automatic = request.model === 'grunt' || request.model === 'milo' || !known;
+    if (automatic && !['grunt', 'milo'].includes(request.model)) console.error(`grunt model mapping: ${request.model} -> grunt`);
+    const toolsRequired = automatic && needsFunctionTools(request);
+    const candidates = automatic ? this.sources.filter(s => !toolsRequired || toolCapable(s)) : this.sources.filter(s => s.id === request.model);
     let last = toolsRequired ? new SourceError('not_installed', NO_TOOL_SOURCE) : new SourceError('not_installed', `No source for model ${request.model}`);
     for (const source of candidates) {
       signal.throwIfAborted();
@@ -256,7 +258,7 @@ export class Gateway implements Source {
   private url: string;
   constructor(url: string, private key: string, private fetcher: typeof fetch = fetch) {
     const parsed = new URL(url);
-    if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('Invalid MILO_GATEWAY_URL');
+    if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('Invalid GRUNT_GATEWAY_URL');
     this.url = `${url.replace(/\/$/, '')}/chat/completions`;
   }
   async available() { return true; }
@@ -267,7 +269,7 @@ export class Gateway implements Source {
       response = await this.fetcher(this.url, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.key}` },
-        body: JSON.stringify({ model: 'milo', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: request.maxTokens ?? 4096 })
+        body: JSON.stringify({ model: 'grunt', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: request.maxTokens ?? 4096 })
       });
     } catch { signal.throwIfAborted(); throw new SourceError('upstream', 'grunt gateway is unavailable'); }
     if (!response.ok) throw new SourceError(response.status === 401 || response.status === 403 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `grunt gateway returned HTTP ${response.status}`);

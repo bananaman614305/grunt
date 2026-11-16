@@ -1,9 +1,9 @@
 {
-  "model": "milo",
+  "model": "grunt",
   "messages": [
     {
       "role": "system",
-      "content": "Working directory: /tmp/milo-harness-cwd"
+      "content": "Working directory: /tmp/grunt-harness-cwd"
     },
     {
       "role": "user",

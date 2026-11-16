@@ -6,7 +6,7 @@ import { loadConfig } from "./config.js";
 import { DEFAULT_WHITELIST } from "./router.js";
 
 it("loads validated operator priors and rejects malformed configurations", () => {
-  const dir = mkdtempSync(join(tmpdir(), "milo-config-"));
+  const dir = mkdtempSync(join(tmpdir(), "grunt-config-"));
   const file = join(dir, "config.json");
   try {
     expect(loadConfig()).toEqual({});

@@ -17,13 +17,15 @@ import time
 import urllib.error
 import urllib.request
 
-REPOSITORY = 'bananaman614305/milo'
+REPOSITORY = 'bananaman614305/grunt'
 ORIGIN = 'https://github.com/' + REPOSITORY + '.git'
 NPM = 'https://registry.npmjs.org/usegrunt'
 SHA = re.compile(r'^[0-9a-f]{40}$')
 DIGEST = re.compile(r'^[0-9a-f]{64}$')
 VERSION = re.compile(r'^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
 REVIEW_CHECKS = ('model', 'context', 'free_access', 'terms', 'signup', 'consent', 'code_scope')
+CI_WORKFLOW = '.github/workflows/ci.yml'
+CI_CHECK = 'test'
 
 
 class PromotionError(Exception):
@@ -268,7 +270,14 @@ def _publisher_request(config, artifact, staging):
     reference = config.get('npm_credential_reference')
     if not isinstance(reference, str) or not re.fullmatch(r'vault://[A-Za-z0-9_-]+/[A-Za-z0-9_./-]+', reference):
         raise PromotionError('npm_credential_not_configured')
-    module = Path(config.get('squire_module', Path.home() / '.config/milo/runtime/dist/local/setup.js'))
+    module = config.get('squire_module')
+    if module is None:
+        current = Path.home() / '.config/grunt/runtime/dist/local/setup.js'
+        # Explicit migration compatibility: reuse an existing legacy runtime
+        # only while the renamed Grunt runtime has not been installed.
+        legacy = Path.home() / '.config/milo/runtime/dist/local/setup.js'
+        module = current if current.exists() or not legacy.is_file() else legacy
+    module = Path(module)
     if not module.is_absolute() or module.is_symlink() or not module.is_file():
         raise PromotionError('trusted_squire_runtime_unavailable')
     return {**artifact, 'package_file': str(staging / 'package.json'), 'readme_file': str(staging / 'README.md'),
@@ -311,6 +320,78 @@ def preflight_publisher(config, state_dir, run=None):
     return result
 
 
+def _public_repository(api, run):
+    repository = json.loads(run(['gh', 'api', api]))
+    if (repository.get('full_name') != REPOSITORY or repository.get('private') is not False
+            or repository.get('visibility') != 'public'):
+        raise PromotionError('public_repository_required')
+
+
+def _ci_pending(api, head, run):
+    """Return a pending reason or verify the exact canonical CI workflow run."""
+    permissions = json.loads(run(['gh', 'api', api + '/actions/permissions']))
+    if permissions.get('enabled') is not True:
+        raise PromotionError('github_actions_not_enabled')
+    workflow = json.loads(run(['gh', 'api', api + '/actions/workflows/ci.yml']))
+    workflow_id = workflow.get('id')
+    if type(workflow_id) is not int or workflow_id < 1 or workflow.get('path') != CI_WORKFLOW:
+        raise PromotionError('canonical_ci_workflow_not_verified')
+    if workflow.get('state') != 'active':
+        return 'canonical_ci_workflow_inactive'
+    checks = json.loads(run(['gh', 'api', api + '/commits/' + head + '/check-runs?filter=latest&per_page=100']))
+    rows = checks.get('check_runs')
+    if not isinstance(rows, list) or type(checks.get('total_count')) is not int or checks['total_count'] != len(rows):
+        raise PromotionError('ci_check_results_incomplete')
+    target = [row for row in rows if row.get('name') == CI_CHECK and row.get('app', {}).get('slug') == 'github-actions']
+    if not target:
+        return 'canonical_ci_check_not_reported'
+    if len(target) != 1:
+        raise PromotionError('canonical_ci_check_ambiguous')
+    for row in rows:
+        if row.get('head_sha') != head:
+            raise PromotionError('ci_head_binding_changed')
+        if row.get('status') != 'completed':
+            return 'exact_head_ci_pending'
+        if row.get('conclusion') not in ('success', 'neutral', 'skipped'):
+            raise PromotionError('exact_head_ci_failed')
+    check = target[0]
+    if check.get('conclusion') != 'success':
+        raise PromotionError('canonical_ci_check_not_successful')
+    suite = check.get('check_suite', {}).get('id')
+    if type(suite) is not int or suite < 1:
+        raise PromotionError('ci_workflow_binding_changed')
+    runs = json.loads(run(['gh', 'api', api + '/actions/workflows/ci.yml/runs?head_sha=' + head + '&per_page=100']))
+    entries = runs.get('workflow_runs')
+    if not isinstance(entries, list) or type(runs.get('total_count')) is not int or runs['total_count'] != len(entries):
+        raise PromotionError('ci_workflow_results_incomplete')
+    associated = [entry for entry in entries if entry.get('check_suite_id') == suite]
+    if len(associated) != 1:
+        raise PromotionError('ci_workflow_binding_changed')
+    entry = associated[0]
+    # REST run paths may include a revision suffix, e.g. ci.yml@main. Bind the
+    # file component and stable workflow ID, never merely the displayed job name.
+    path = entry.get('path')
+    workflow_path = path.split('@', 1)[0] if isinstance(path, str) else None
+    if (entry.get('head_sha') != head or entry.get('workflow_id') != workflow_id
+            or workflow_path != CI_WORKFLOW or entry.get('repository', {}).get('full_name') != REPOSITORY
+            or entry.get('event') not in ('pull_request', 'push', 'merge_group')):
+        raise PromotionError('ci_workflow_binding_changed')
+    if entry.get('status') != 'completed':
+        return 'exact_head_ci_pending'
+    if entry.get('conclusion') != 'success':
+        raise PromotionError('exact_head_ci_failed')
+    status = json.loads(run(['gh', 'api', api + '/commits/' + head + '/status?per_page=100']))
+    statuses = status.get('statuses')
+    if (status.get('sha') != head or not isinstance(statuses, list)
+            or type(status.get('total_count')) is not int or status['total_count'] != len(statuses)):
+        raise PromotionError('ci_status_results_incomplete')
+    if statuses and status.get('state') in ('failure', 'error'):
+        raise PromotionError('exact_head_ci_failed')
+    if statuses and (status.get('state') != 'success' or any(item.get('state') != 'success' for item in statuses)):
+        return 'exact_head_ci_pending'
+    return None
+
+
 def promote_candidate(receipt, config, state_dir, run=None, fetcher=None):
     """Merge and publish one reviewed source; retry safely from private checkpoints.
 
@@ -321,6 +402,8 @@ def promote_candidate(receipt, config, state_dir, run=None, fetcher=None):
     run, fetcher = run or _default_run, fetcher or _fetch
     if config.get('release_enabled', config.get('publish_enabled')) is not True:
         return {'status': 'disabled', 'reason': 'automatic_release_not_enabled'}
+    if config.get('repository', REPOSITORY) != REPOSITORY:
+        return {'status': 'blocked', 'reason': 'unexpected_repository'}
     _private(state_dir)
     lock_fd = os.open(state_dir / 'promotion.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(lock_fd, 'w') as lock:
@@ -363,6 +446,8 @@ def promote_candidate(receipt, config, state_dir, run=None, fetcher=None):
             state = state or {'phase': 'new', 'head_sha': receipt['head_sha'], 'version': version, 'source_id': receipt['source_id']}
             if state.get('head_sha') != receipt['head_sha'] or state.get('version') != version:
                 raise PromotionError('release_checkpoint_conflict')
+            api = 'repos/' + REPOSITORY
+            _public_repository(api, run)
             if not stage.exists():
                 run(['git', 'clone', '--no-hardlinks', '--no-checkout', str(checkout), str(stage)], timeout=120)
                 run(['git', 'checkout', '--detach', receipt['head_sha']], cwd=stage)
@@ -391,12 +476,6 @@ def promote_candidate(receipt, config, state_dir, run=None, fetcher=None):
                 preflight_publisher(config, root, run)
                 state['publisher_preflight'] = True
                 _write(checkpoint, state)
-            api = 'repos/' + REPOSITORY
-            permissions = json.loads(run(['gh', 'api', api + '/actions/permissions']))
-            if permissions.get('enabled') is not False:
-                run(['gh', 'api', '--method', 'PUT', api + '/actions/permissions', '-F', 'enabled=false'])
-                if json.loads(run(['gh', 'api', api + '/actions/permissions'])).get('enabled') is not False:
-                    raise PromotionError('github_actions_must_be_disabled')
             if not state.get('merge_sha'):
                 if not re.fullmatch(r'scout/[a-z0-9][a-z0-9-]{0,80}', branch):
                     raise PromotionError('unexpected_candidate_branch')
@@ -414,12 +493,20 @@ def promote_candidate(receipt, config, state_dir, run=None, fetcher=None):
                     latest = _json_fetch(fetcher, NPM + '/latest')
                     _next_npm_patch(latest, version)
                     if not pull:
+                        # Check visibility again immediately before operations
+                        # that can cause hosted CI to run. Never alter Actions
+                        # permissions or use paid/private repository execution.
+                        _public_repository(api, run)
+                        if json.loads(run(['gh', 'api', api + '/actions/permissions'])).get('enabled') is not True:
+                            raise PromotionError('github_actions_not_enabled')
                         run(['git', 'push', ORIGIN, 'HEAD:refs/heads/' + branch], cwd=stage, timeout=120)
                         body = root / 'pull-request.md'
                         body.write_text('Adds the independently reviewed ' + receipt['source_id'] + ' free provider.\n\n'
                                         'Exact-source reply, native tool calls, recurring free access and spending guards passed. '
-                                        'Local lint/tests/build and two independent reviews are bound to `' + receipt['head_sha'] + '`.\n')
+                                        'Local lint/tests/build and two independent reviews are bound to `' + receipt['head_sha'] + '`. '
+                                        'The public repository standard CI must pass at this exact head before merge.\n')
                         body.chmod(0o600)
+                        _public_repository(api, run)
                         run([shutil.which('gh-axi') or 'gh', 'pr', 'create', '--repo', REPOSITORY, '--base', 'main', '--head', branch,
                              '--title', 'v' + version + ' feat: add ' + receipt['source_id'] + ' free provider', '--body-file', str(body)], cwd=stage, timeout=120)
                         pulls = json.loads(run(['gh', 'api', api + '/pulls?state=open&base=main&head=bananaman614305:' + branch]))
@@ -434,12 +521,30 @@ def promote_candidate(receipt, config, state_dir, run=None, fetcher=None):
                             or detail.get('head', {}).get('repo', {}).get('full_name') != REPOSITORY):
                         raise PromotionError('pull_request_binding_changed')
                     if detail.get('draft'):
+                        _public_repository(api, run)
                         run([shutil.which('gh-axi') or 'gh', 'pr', 'ready', str(number), '--repo', REPOSITORY], cwd=stage)
+                    pending = _ci_pending(api, receipt['head_sha'], run)
+                    if pending is None:
+                        # GitHub computes mergeability asynchronously. Native gh
+                        # still enforces reviews, branch rules and required CI.
+                        detail = json.loads(run(['gh', 'api', api + '/pulls/' + str(number)]))
+                        if (detail.get('head', {}).get('sha') != receipt['head_sha']
+                                or detail.get('base', {}).get('sha') != receipt['base_sha']
+                                or detail.get('head', {}).get('repo', {}).get('full_name') != REPOSITORY):
+                            raise PromotionError('pull_request_binding_changed')
+                        if detail.get('mergeable') is not True or detail.get('mergeable_state') != 'clean':
+                            pending = 'pull_request_not_mergeable_yet'
+                    if pending:
+                        state.update(phase='ci_pending', pr_number=number, last_error=pending)
+                        _write(checkpoint, state)
+                        return {'status': 'ci_pending', 'reason': pending, 'source_id': receipt['source_id'],
+                                'head_sha': receipt['head_sha'], 'version': version, 'pr_number': number}
                     current_base = json.loads(run(['gh', 'api', api + '/git/ref/heads/main']))['object']['sha']
                     if current_base != receipt['base_sha']:
                         raise PromotionError('main_changed_requires_fresh_review')
                     # The wrapper does not support --match-head-commit. Native gh
                     # preserves branch protections and the exact reviewed head.
+                    _public_repository(api, run)
                     run(['gh', 'pr', 'merge', str(number), '--repo', REPOSITORY, '--squash', '--match-head-commit', receipt['head_sha']], cwd=stage, timeout=120)
                     detail = json.loads(run(['gh', 'api', api + '/pulls/' + str(number)]))
                     if detail.get('merged') is not True or detail.get('head', {}).get('sha') != receipt['head_sha']:

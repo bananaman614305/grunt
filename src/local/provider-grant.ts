@@ -1,11 +1,11 @@
+import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { FreeApiGrant } from './free-api.js';
 
-export const providerGrantDirectory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+export const providerGrantDirectory = () => configRoot();
 type Provider = 'runcrate' | 'apinex';
 function name(provider: Provider) {
   if (provider !== 'runcrate' && provider !== 'apinex') throw new Error('Invalid private provider');

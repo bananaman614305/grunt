@@ -1,10 +1,10 @@
 {
-  "model": "milo",
+  "model": "grunt",
   "max_tokens": 32000,
   "messages": [
     {
       "role": "system",
-      "content": "Working directory: /tmp/milo-harness-cwd"
+      "content": "Working directory: /tmp/grunt-harness-cwd"
     },
     {
       "role": "user",

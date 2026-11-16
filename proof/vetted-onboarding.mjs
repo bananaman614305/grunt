@@ -13,14 +13,14 @@ const { configure } = await load('local/main');
 const { createLocalApp } = await load('local/api');
 const ids = bundledRegistry.adapters.map(a => a.id);
 assert.deepEqual(ids, ['freebuff', 'opencode', 'kilo', 'zro', 'tokenharbor']);
-process.env.MILO_SETUP_NO_HUMAN = '1';
+process.env.GRUNT_SETUP_NO_HUMAN = '1';
 const start = performance.now();
 const setup = await setupFallbacks({ directory: configDir(), run: command, adapters: ids,
   notify: line => console.log(line) });
 assert.deepEqual(setup.unavailable, []);
 console.log(JSON.stringify({ stage: 'packaged-setup', adapters: ids, elapsedMs: Math.round(performance.now() - start), passed: true }));
 const env = { ...process.env };
-delete env.MILO_SOURCES;
+delete env.GRUNT_SOURCES;
 const sources = configure(env);
 assert.deepEqual(sources.sources.map(source => source.id), ids);
 const app = createLocalApp(sources);
