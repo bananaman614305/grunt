@@ -237,6 +237,14 @@ invalidate authentication receipts or launch browser repair. The setup wizard
 retains its separate parallel first-ready flow. Source details and `--json`
 expose cached maintenance timing/outcome/evidence without starting new checks.
 
+The queue starts automatically in every installed daemon running 0.6.9 or later;
+it is per user and uses that user's configured providers, consent and accounts.
+No separate cron job is required. New setup installs it with the daemon.
+Existing users run `npx usegrunt@latest setup` to replace their saved background
+runtime. A newer CLI or npm publication alone does not upgrade an older service.
+Checks need the machine and daemon to be running; overdue work resumes after
+downtime, with normal staggering and deferral rules.
+
 ### Free API and account setup
 
 The eleven-source pool is unchanged from 0.6.6. Version 0.6.7 starts routing as

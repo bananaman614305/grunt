@@ -58,6 +58,17 @@ does not install tools, create accounts or open sign-in flows. The dashboard's
 source details show the last check, its outcome and the next due time. Registry
 downloads still refresh independently, and first-time onboarding stays parallel.
 
+Maintenance starts automatically with the installed daemon in 0.6.9 and later.
+Existing users update that daemon by rerunning setup:
+
+```bash
+npx usegrunt@latest setup
+```
+
+Installing a newer CLI alone does not replace an older background runtime. The
+queue runs while the machine and daemon are running and resumes overdue work
+after downtime; users do not need to schedule a separate daily command.
+
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/milo/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/milo/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/milo/blob/main/CLAUDE.md).
 
 In 0.6.6, one grouped data-sharing approval covers nine active providers. Setup reuses the person's Google or GitHub identity; each provider can still require its own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
