@@ -2,21 +2,32 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { Adapter } from '../registry.js';
 import type * as RegistryModule from './registry.js';
 import { Sources, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
+import type { MaintenanceResult } from './maintenance.js';
+import type * as MaintenanceModule from './maintenance.js';
 
-const daemon = vi.hoisted(() => ({ serve: vi.fn(), close: vi.fn(), finished: vi.fn() }));
+const daemon = vi.hoisted(() => ({ serve: vi.fn(), close: vi.fn(), finished: vi.fn(), maintenance: undefined as {
+  check(id: string, signal: AbortSignal): Promise<MaintenanceResult>; providers(): readonly string[]
+} | undefined }));
 vi.mock('@hono/node-server', () => ({ serve: daemon.serve }));
+vi.mock('./maintenance.js', async importOriginal => ({ ...await importOriginal<typeof MaintenanceModule>(), DailyMaintenance: class {
+  constructor(options: NonNullable<typeof daemon.maintenance>) { daemon.maintenance = options; }
+  async start() {}
+  async close() {}
+  snapshot() { return {}; }
+} }));
 vi.mock('./registry.js', async importOriginal => {
   const actual = await importOriginal<typeof RegistryModule>();
   const { bundledRegistry } = await import('../registry.js');
   return { ...actual, RegistrySync: class {
     enabled = bundledRegistry.adapters.filter(adapter => ['kilo', 'perch'].includes(adapter.id));
-    constructor(private options: { ensure(adapter: Adapter, signal: AbortSignal): Promise<void>; afterEnsure(): Promise<void> }) {}
+    constructor(options: { ensure?: unknown; afterEnsure?: unknown }) {
+      if (options.ensure || options.afterEnsure) throw new Error('Daemon registry sync must not provision providers');
+    }
     async load() {}
-    async start() { try { await Promise.all(this.enabled.map(adapter => this.options.ensure(adapter, new AbortController().signal))); } finally { await this.options.afterEnsure(); daemon.finished(); } }
+    async start() { daemon.finished(); }
     async close() {}
   } };
 });
@@ -32,6 +43,7 @@ import { bundledRegistry } from '../registry.js';
 const directories: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks(); vi.clearAllMocks();
+  daemon.maintenance = undefined;
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-setup-runtime-')); directories.push(path); return path; }
@@ -147,6 +159,9 @@ it('serves the first ready source while another signup remains pending, then adm
   try {
     await vi.waitFor(() => expect(daemon.finished).toHaveBeenCalledOnce());
     expect(kiloAvailable).not.toHaveBeenCalled(); expect(perchAvailable).not.toHaveBeenCalled();
+    expect(daemon.maintenance?.providers()).toEqual(['kilo', 'perch']);
+    expect(await daemon.maintenance!.check('kilo', new AbortController().signal)).toEqual({ outcome: 'deferred', code: 'foreground' });
+    expect(await daemon.maintenance!.check('perch', new AbortController().signal)).toEqual({ outcome: 'deferred', code: 'foreground' });
     await lease.release('kilo');
     const models = await handler(new Request('http://localhost:18792/v1/models'));
     const ids = (await models.json()).data.map((model: { id: string }) => model.id);
@@ -154,6 +169,9 @@ it('serves the first ready source while another signup remains pending, then adm
     const answer = await complete('grunt');
     expect(answer.status).toBe(200); expect(answer.headers.get('x-grunt-source')).toBe('kilo'); expect(answer.headers.get('x-grunt-preparing')).toBe('perch');
     expect((await answer.json()).choices[0].message.content).toBe('hello from ready Kilo');
+    // Even an admitted route remains owned by foreground setup until its lease
+    // closes. Maintenance yields without delaying the user's real request.
+    expect(await daemon.maintenance!.check('kilo', new AbortController().signal)).toEqual({ outcome: 'deferred', code: 'foreground' });
     expect(perchAvailable).not.toHaveBeenCalled(); expect(perchComplete).not.toHaveBeenCalled();
     const blocked = await complete('perch'); expect(blocked.status).toBe(503);
     await lease.verify('perch');
@@ -168,6 +186,32 @@ it('serves the first ready source while another signup remains pending, then adm
     expect((await handler(new Request('http://localhost:18792/v1/models'))).status).toBe(200);
   } finally {
     await lease.close(); await running.close();
+    for (const signal of signals) for (const listener of process.listeners(signal)) if (!previous.get(signal)!.has(listener)) process.removeListener(signal, listener as () => void);
+  }
+});
+
+it('maintains only currently approved curated sources using exact replies and never provider provisioning', async () => {
+  const path = await directory(); await recordDataSharingConsent(path, ['kilo']);
+  const kiloComplete = vi.spyOn(Kilo.prototype, 'complete').mockResolvedValue({ text: 'maintenance hello' });
+  const kiloAvailable = vi.spyOn(Kilo.prototype, 'available').mockResolvedValue(true);
+  const perchComplete = vi.spyOn(Perch.prototype, 'complete').mockResolvedValue({ text: 'must not call' });
+  const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('Maintenance must not connect Squire'));
+  const signup = vi.spyOn(BrowserSquire.prototype, 'signup').mockRejectedValue(new Error('Maintenance must not sign up'));
+  let handler!: (request: Request) => Promise<Response>;
+  daemon.serve.mockImplementation((options: { fetch: typeof handler }) => { handler = options.fetch; return { close: daemon.close }; });
+  const signals = ['SIGINT', 'SIGTERM'] as const;
+  const previous = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
+  const running = start({ MILO_SOURCES: 'freellmapi,kilo,perch', MILO_CONFIG_DIR: path, MILO_PORT: '18792' });
+  try {
+    await handler(new Request('http://localhost:18792/v1/status'));
+    expect(daemon.maintenance?.providers()).toEqual(['kilo', 'perch']);
+    expect(await daemon.maintenance!.check('perch', new AbortController().signal)).toEqual({ outcome: 'deferred', code: 'consent' });
+    expect(await daemon.maintenance!.check('kilo', new AbortController().signal)).toMatchObject({ outcome: 'passed', evidence: 'reply' });
+    expect(await daemon.maintenance!.check('kilo', new AbortController().signal)).toMatchObject({ outcome: 'passed', evidence: 'reply' });
+    expect(kiloComplete).toHaveBeenCalledOnce(); expect(kiloAvailable).not.toHaveBeenCalled(); expect(perchComplete).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled(); expect(signup).not.toHaveBeenCalled();
+  } finally {
+    await running.close();
     for (const signal of signals) for (const listener of process.listeners(signal)) if (!previous.get(signal)!.has(listener)) process.removeListener(signal, listener as () => void);
   }
 });

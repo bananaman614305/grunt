@@ -1,4 +1,5 @@
 import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
+import type { MaintenanceEntry } from './maintenance.js';
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
 export interface SourceSnapshot {
@@ -12,6 +13,7 @@ export interface SourceSnapshot {
   retryAt?: number;
   errorCode?: ErrorCode;
   detail?: string;
+  maintenance?: MaintenanceEntry;
 }
 export interface PoolSnapshot { version: 1; updatedAt: number; sources: SourceSnapshot[]; activeRequests: number }
 interface Observation {
@@ -23,6 +25,7 @@ interface Observation {
   failure?: ErrorCode;
   retryAt?: number;
 }
+export interface ObservationGuard { revision: number; acceptedRevision?: number }
 const codes = new Set<ErrorCode>(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
 const failureCode = (error: unknown): ErrorCode => {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
@@ -47,11 +50,31 @@ export class SourceStatus {
     if (!entry) { entry = { state: 'unknown', active: 0, revision: 0 }; this.observations.set(id, entry); }
     return entry;
   }
+  guard(id: string): ObservationGuard { return { revision: this.entry(id).revision }; }
+  changed(id: string, guard: ObservationGuard) { return this.entry(id).revision !== (guard.acceptedRevision ?? guard.revision); }
+  metadata(id: string, guard: ObservationGuard) {
+    const entry = this.entry(id);
+    if (this.changed(id, guard) || entry.failure) return;
+    // Read-only catalog/local access is weaker than a generated reply. It must
+    // not recover failures or turn an old successful response into fresh proof.
+    entry.revision++;
+    entry.state = 'available';
+    guard.acceptedRevision = entry.revision;
+  }
   healthy(id: string) {
     const entry = this.entry(id);
     entry.revision++;
     delete entry.failure; delete entry.retryAt;
     if (entry.state !== 'ready') entry.state = 'available';
+  }
+  failed(id: string, code: ErrorCode, retryAfter?: number) {
+    const entry = this.entry(id);
+    entry.revision++;
+    entry.failure = code;
+    entry.state = code === 'quota' ? 'limited' : code === 'logged_out' || code === 'not_installed' ? 'unavailable' : 'error';
+    const seconds = code === 'quota' && typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined;
+    const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
+    if (until !== undefined && Number.isFinite(until)) entry.retryAt = until; else delete entry.retryAt;
   }
   async available(source: Source, healthCheck = false): Promise<boolean> {
     const entry = this.entry(source.id), revision = entry.revision;
@@ -60,39 +83,36 @@ export class SourceStatus {
       // A reply or explicit recovery observed after this probe started is
       // newer evidence. The caller still receives the actual probe result.
       if (entry.revision === revision) {
-        if (!result) entry.state = 'unavailable';
+        if (!result) { entry.revision++; entry.state = 'unavailable'; }
         else if (healthCheck) this.healthy(source.id);
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
       }
       return result;
     } catch (error) {
-      if (entry.revision === revision) entry.state = 'unavailable';
+      if (entry.revision === revision) { entry.revision++; entry.state = 'unavailable'; }
       throw error;
     }
   }
-  async complete(source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+  async complete(source: Source, request: ModelRequest, signal: AbortSignal, guard?: ObservationGuard): Promise<Completion> {
     const entry = this.entry(source.id), started = this.now();
     entry.active++;
     try {
       const result = await source.complete(request, signal);
       // A provider may finish after the caller cancelled. That is not evidence
       // of an admitted successful response, and must not resurrect readiness.
-      if (!signal.aborted) {
+      if (!signal.aborted && (!guard || entry.revision === guard.revision)) {
         entry.revision++;
         entry.state = 'ready'; entry.lastSuccessAt = this.now(); entry.lastReplyMs = Math.max(0, this.now() - started);
         delete entry.failure; delete entry.retryAt;
+        if (guard) guard.acceptedRevision = entry.revision;
       }
       return result;
     } catch (error) {
       const code = failureCode(error);
-      if (!signal.aborted && code !== 'cancelled') {
-        entry.revision++;
-        entry.failure = code;
-        entry.state = code === 'quota' ? 'limited' : code === 'logged_out' || code === 'not_installed' ? 'unavailable' : 'error';
+      if (!signal.aborted && code !== 'cancelled' && (!guard || entry.revision === guard.revision)) {
         const retry = error && typeof error === 'object' && 'retryAfter' in error ? error.retryAfter : undefined;
-        const seconds = code === 'quota' ? (typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 ? retry : undefined) : undefined;
-        const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
-        if (until !== undefined && Number.isFinite(until)) entry.retryAt = until; else delete entry.retryAt;
+        this.failed(source.id, code, typeof retry === 'number' ? retry : undefined);
+        if (guard) guard.acceptedRevision = entry.revision;
       }
       throw error;
     } finally { entry.active--; }

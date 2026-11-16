@@ -5,6 +5,7 @@ import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { PoolSnapshot, SourceSnapshot } from './source-status.js';
+import type { MaintenanceEntry } from './maintenance.js';
 
 const errorCodes = new Set(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
 const states = new Set(['unknown', 'available', 'ready', 'answering', 'connecting', 'verifying', 'limited', 'error', 'disabled', 'unavailable', 'approval']);
@@ -115,7 +116,9 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
   // Keep source selection visible even in short split panes.
   const hasApproval = !offline && (approvals.size > 0 || (options.approvalCount ?? 0) > 0);
   const hasHidden = !options.showDisabled && all.some(source => source.state === 'disabled');
-  const reserved = 4 + (hasApproval ? 2 : 0) + (hasHidden ? 1 : 0) + (options.details ? 7 : 0);
+  const maintenance = options.details ? visible[selectedIndex]?.maintenance : undefined;
+  const maintenanceLines = maintenance ? 2 + (maintenance.lastCheckedAt !== undefined ? 1 : 0) : 0;
+  const reserved = 4 + (hasApproval ? 2 : 0) + (hasHidden ? 1 : 0) + (options.details ? 7 + maintenanceLines : 0);
   let rowLimit = Math.max(1, (options.height ?? 100) - lines.length - reserved);
   if (rowLimit < visible.length) rowLimit = Math.max(1, rowLimit - 1);
   const start = Math.max(0, selectedIndex - rowLimit + 1), rows = visible.slice(start, start + rowLimit);
@@ -138,6 +141,11 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
     if (selected.detail && !offline) add(chalk.gray(fit(selected.detail, columns)));
     if (selected.lastSuccessAt) add(chalk.gray(fit(`Last success: ${new Date(selected.lastSuccessAt).toISOString()}`, columns)));
     if (selected.retryAt && !offline) add(chalk.yellow(fit(`Retry in ${countdown(selected.retryAt, now)} (reported or routing cooldown)`, columns)));
+    if (maintenance) {
+      add(chalk.gray(fit(`Daily check: ${maintenance.outcome ?? 'scheduled'}${maintenance.evidence ? ` · ${maintenance.evidence}` : ''}${maintenance.code ? ` (${maintenance.code})` : ''}`, columns)));
+      if (maintenance.lastCheckedAt !== undefined) add(chalk.gray(fit(`Last check: ${new Date(maintenance.lastCheckedAt).toISOString()}`, columns)));
+      add(chalk.gray(fit(`Next check: ${offline ? 'status stale' : maintenance.nextCheckAt > now ? `in ${countdown(maintenance.nextCheckAt, now)}` : 'due'}`, columns)));
+    }
     add(chalk.gray(fit('Credit balance: not reported', columns)));
   }
   add(); add(chalk.gray('─'.repeat(columns)));
@@ -152,6 +160,32 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
 }
 
 function number(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
+const maintenanceCodes = new Set([...errorCodes, 'busy', 'foreground', 'consent']);
+function parseMaintenance(value: unknown): MaintenanceEntry {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid local maintenance status');
+  const entry = value as Record<string, unknown>;
+  if (!number(entry.nextCheckAt) || entry.nextCheckAt > 8640000000000000) throw new Error('Invalid local maintenance status');
+  const result: MaintenanceEntry = { nextCheckAt: entry.nextCheckAt };
+  for (const key of ['lastAttemptAt', 'lastCheckedAt'] as const) {
+    if (entry[key] !== undefined) {
+      if (!number(entry[key]) || entry[key] > 8640000000000000) throw new Error('Invalid local maintenance status');
+      result[key] = entry[key];
+    }
+  }
+  if (entry.outcome !== undefined) {
+    if (!['passed', 'failed', 'deferred'].includes(String(entry.outcome))) throw new Error('Invalid local maintenance status');
+    result.outcome = entry.outcome as NonNullable<MaintenanceEntry['outcome']>;
+  }
+  if (entry.evidence !== undefined) {
+    if (!['reply', 'metadata', 'local'].includes(String(entry.evidence))) throw new Error('Invalid local maintenance status');
+    result.evidence = entry.evidence as NonNullable<MaintenanceEntry['evidence']>;
+  }
+  if (entry.code !== undefined) {
+    if (typeof entry.code !== 'string' || !maintenanceCodes.has(entry.code)) throw new Error('Invalid local maintenance status');
+    result.code = entry.code as NonNullable<MaintenanceEntry['code']>;
+  }
+  return result;
+}
 export function parseStatus(value: unknown): PoolSnapshot {
   if (!value || typeof value !== 'object') throw new Error('Invalid local status');
   const item = value as Record<string, unknown>;
@@ -163,6 +197,7 @@ export function parseStatus(value: unknown): PoolSnapshot {
     if (typeof source.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(source.id) || ids.has(source.id) || typeof source.state !== 'string' || !states.has(source.state) || !number(source.active)) throw new Error('Invalid local source status');
     ids.add(source.id);
     const result = { id: source.id, state: source.state, active: source.active } as SourceSnapshot;
+    if (source.maintenance !== undefined) result.maintenance = parseMaintenance(source.maintenance);
     if (source.modelKind !== undefined) {
       if (source.modelKind !== 'registry') throw new Error('Invalid local source status');
       result.modelKind = 'registry';

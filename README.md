@@ -49,6 +49,28 @@ terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
 `--port` overrides `MILO_PORT`, the saved port, and the default 8788.
 
+Daily upkeep uses a separate persistent queue. It checks one configured curated
+source at a time, then waits 60–90 seconds after that check finishes. A recent
+successful reply counts toward the daily check. Otherwise the queue sends one
+bounded hello directly to that provider, with normal consent and free-access
+guards. Idle Clixad checks use read-only metadata to avoid automatic wallet or
+streak claims; they are recorded as metadata evidence rather than a fresh reply.
+The queue defers checks during user requests, setup and cooldowns. Maintenance
+does not install tools, create accounts or open sign-in flows. The dashboard's
+source details show the last check, its outcome and the next due time. Registry
+downloads still refresh independently, and first-time onboarding stays parallel.
+
+Maintenance starts automatically with the installed daemon in 0.6.9 and later.
+Existing users update that daemon by rerunning setup:
+
+```bash
+npx usegrunt@latest setup
+```
+
+Installing a newer CLI alone does not replace an older background runtime. The
+queue runs while the machine and daemon are running and resumes overdue work
+after downtime; users do not need to schedule a separate daily command.
+
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/milo/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/milo/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/milo/blob/main/CLAUDE.md).
 
 In 0.6.6, one grouped data-sharing approval covers nine active providers. Setup reuses the person's Google or GitHub identity; each provider can still require its own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.

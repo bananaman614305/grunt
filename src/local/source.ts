@@ -26,6 +26,8 @@ export const NO_TOOL_SOURCE = 'No tool-capable adapter is available for a reques
 export class Sources {
   private router: StickyRouter | undefined;
   private observation: SourceStatus;
+  private checking = new Set<string>();
+  private maintenance: (() => Record<string, MaintenanceEntry>) | undefined;
   // Adapters whose background setup has not finished yet.
   readonly preparing = new Set<string>();
   // Foreground signups must not probe or dispatch incomplete sources. Routine
@@ -41,8 +43,9 @@ export class Sources {
     if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending, observation: this.observation });
   }
   healthy(id: string) { this.router?.healthy(id); this.observation.healthy(id); }
+  setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
   status(): PoolSnapshot {
-    return this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
+    const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
       pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
       ...(this.router ? { listed: (id: string) => this.router!.listed(id), cooldown: (id: string) => this.router!.cooldown(id) } : {}),
       model: id => {
@@ -53,6 +56,95 @@ export class Sources {
         return model && /^[a-zA-Z0-9][a-zA-Z0-9._:/+ -]{0,159}$/.test(model) ? model : undefined;
       }
     });
+    const maintenance = this.maintenance?.();
+    if (maintenance) for (const source of snapshot.sources) {
+      const entry = maintenance[source.id];
+      if (entry) source.maintenance = { ...entry };
+    }
+    return snapshot;
+  }
+  // Maintenance uses the configured source directly. It cannot silently pass
+  // because a different provider answered, nor start provisioning or repair.
+  async check(id: string, caller: AbortSignal): Promise<MaintenanceResult> {
+    caller.throwIfAborted();
+    const now = () => (this.routing?.now ?? Date.now)();
+    const source = this.sources.find(source => source.id === id);
+    if (!source) return { outcome: 'deferred', code: 'not_installed' };
+    const eligible = (): MaintenanceResult | undefined => {
+      if (this.disabledModels.has(id) || this.router && !this.router.listed(id)) return { outcome: 'deferred', code: 'not_installed' };
+      if (this.pending.has(id) || this.verifying.has(id) || this.approvals.has(id)) return { outcome: 'deferred', code: 'foreground' };
+      const snapshot = this.status(), state = snapshot.sources.find(source => source.id === id)!;
+      if (state.active || this.checking.has(id)) return { outcome: 'deferred', code: 'busy' };
+      if (state.retryAt !== undefined && state.retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt: state.retryAt };
+      if (state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
+        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
+      }
+      if (snapshot.activeRequests) return { outcome: 'deferred', code: 'busy' };
+    };
+    const previous = eligible();
+    if (previous) return previous;
+    this.checking.add(id);
+    let cwd: string | undefined;
+    let guard: ObservationGuard | undefined;
+    const newerEvidence = (): MaintenanceResult | undefined => {
+      if (!guard || !this.observation.changed(id, guard)) return;
+      const state = this.status().sources.find(source => source.id === id)!;
+      if (state.retryAt !== undefined && state.retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt: state.retryAt };
+      if (state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
+        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
+      }
+      return { outcome: 'deferred', code: state.errorCode ?? 'busy' };
+    };
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(MAINTENANCE_CHECK_TIMEOUT)]);
+    try {
+      if (id === 'clixad') {
+        // Clixad's explicit ask path invokes wallet operations which can claim
+        // a daily streak reward. Idle maintenance is restricted to its bounded
+        // read-only installation/receipt/public-model projection instead.
+        guard = this.observation.guard(id);
+        const available = await source.available();
+        signal.throwIfAborted();
+        const newer = newerEvidence();
+        if (newer) return newer;
+        if (!available) throw new SourceError('not_installed', 'Clixad read-only metadata is unavailable');
+        this.observation.metadata(id, guard);
+        return { outcome: 'passed', evidence: 'metadata' };
+      }
+      cwd = await mkdtemp(join(tmpdir(), 'grunt-maintenance-'));
+      signal.throwIfAborted();
+      // A request or foreground setup may have started during directory IO.
+      this.checking.delete(id);
+      const changed = eligible();
+      this.checking.add(id);
+      if (changed) return changed;
+      const guarded: Source = { id, available: () => source.available(), complete: async (request, signal) => {
+        const reply = await source.complete(request, signal);
+        signal.throwIfAborted();
+        if (!reply.text.trim()) throw new SourceError('upstream', 'Maintenance received no reply');
+        return reply;
+      } };
+      guard = this.observation.guard(id);
+      await this.observation.complete(guarded, { model: id, cwd, messages: [{ role: 'user', content: 'Say hello in one short sentence.' }], tools: [], stream: false, maxTokens: 1024 }, signal, guard);
+      signal.throwIfAborted();
+      const newer = newerEvidence();
+      if (newer) return newer;
+      this.router?.verified(id);
+      return { outcome: 'passed', evidence: 'reply', lastSuccessAt: now() };
+    } catch (error) {
+      caller.throwIfAborted();
+      const newer = newerEvidence();
+      if (newer) return newer;
+      const failure = signal.aborted ? new SourceError('timeout', 'Maintenance request timed out')
+        : error instanceof SourceError ? error : new SourceError('upstream', 'Maintenance request failed');
+      if (failure.code === 'cancelled') return { outcome: 'deferred', code: 'cancelled' };
+      const retryAfter = failure.code === 'quota' ? (typeof failure.retryAfter === 'number' && Number.isFinite(failure.retryAfter) && failure.retryAfter >= 0 ? failure.retryAfter : 3600) : undefined;
+      this.observation.failed(id, failure.code, retryAfter);
+      const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
+      return { outcome: 'failed', code: failure.code, ...(id === 'clixad' ? { evidence: 'metadata' } : {}), ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
+    } finally {
+      this.checking.delete(id);
+      if (cwd) await rm(cwd, { recursive: true, force: true });
+    }
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
@@ -140,4 +232,9 @@ export class Gateway implements Source {
 import { StickyRouter } from './routing.js';
 import type { RoutingOptions } from './routing.js';
 import { SourceStatus } from './source-status.js';
-import type { PoolSnapshot } from './source-status.js';
+import type { ObservationGuard, PoolSnapshot } from './source-status.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { MaintenanceEntry, MaintenanceResult } from './maintenance.js';
+import { MAINTENANCE_CHECK_TIMEOUT } from './maintenance.js';
