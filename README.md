@@ -80,6 +80,8 @@ after downtime; users do not need to schedule a separate daily command.
 
 [Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/milo/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/milo/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/milo/blob/main/CLAUDE.md).
 
+Maintainers can use the [provider scouting guide](https://github.com/bananaman614305/milo/blob/main/ops/provider-scout/README.md) for the twice-daily job on Chad. It is separate from user maintenance and is not installed by `npx usegrunt`.
+
 In 0.6.6, one grouped data-sharing approval covers nine active providers. Setup reuses the person's Google or GitHub identity; each provider can still require its own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
 
 LiveKit adds DeepSeek V4.1 Flash through its free Build plan, using one free project and the official CLI's browser login. The documented included inference allowance is $2.50 per calendar month with a hard stop and no card. Keep the account on Build. LiveKit documents [zero data retention and no training for inference](https://docs.livekit.io/agents/models/inference/), so it needs no sharing approval. The route passed short-prompt, tool-call and 210,077-token context checks through Grunt.

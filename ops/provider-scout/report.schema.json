@@ -1,0 +1,182 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "web_search_used": {
+      "type": "boolean"
+    },
+    "search_queries": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "context_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "free_access": {
+            "type": "string",
+            "enum": [
+              "recurring",
+              "one_time",
+              "unclear"
+            ]
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "target",
+              "above_baseline",
+              "below_baseline",
+              "unclear"
+            ]
+          },
+          "signup_friction": {
+            "type": "string",
+            "enum": [
+              "low",
+              "human_approval",
+              "high",
+              "unclear"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "researched",
+              "rejected",
+              "needs_approval",
+              "setup_blocked",
+              "integration_pending",
+              "ready_for_review"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "primary_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "data_policy": {
+            "type": "string"
+          },
+          "setup_status": {
+            "type": "string",
+            "enum": [
+              "not_attempted",
+              "reused",
+              "signed_up",
+              "anonymous",
+              "blocked",
+              "approval_needed"
+            ]
+          },
+          "probe": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "http_status": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reply_received": {
+                "type": "boolean"
+              },
+              "attribution_verified": {
+                "type": "boolean"
+              },
+              "tool_call_verified": {
+                "type": "boolean"
+              },
+              "free_guard_verified": {
+                "type": "boolean"
+              },
+              "evidence_file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "http_status",
+              "source_id",
+              "reply_received",
+              "attribution_verified",
+              "tool_call_verified",
+              "free_guard_verified",
+              "evidence_file"
+            ]
+          },
+          "proposal_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "homepage",
+          "model",
+          "context_tokens",
+          "free_access",
+          "quality",
+          "signup_friction",
+          "status",
+          "reason",
+          "primary_sources",
+          "data_policy",
+          "setup_status",
+          "probe",
+          "proposal_url"
+        ]
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "summary",
+    "web_search_used",
+    "search_queries",
+    "candidates",
+    "blockers"
+  ]
+}
