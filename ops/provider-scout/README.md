@@ -28,6 +28,11 @@ usegrunt-scout run --smoke  # live research only
 usegrunt-scout run          # qualification and configured supervised pipeline
 ```
 
+The supervisor requires Linux, Python 3.11 or later, Node 22 or later, Git,
+the signed-in Codex CLI and bubblewrap for isolated candidate checks/probes.
+Release additionally uses the authenticated GitHub CLI and protected Squire
+publisher access. These are operator prerequisites, separate from user setup.
+
 Installation copies the trusted runner, policy, schemas and pipeline modules to
 `~/.local/lib/usegrunt-scout`, creates a separate scout-owned checkout and adds
 one marked block to the existing crontab. It verifies the server timezone and
@@ -35,8 +40,8 @@ keeps a private crontab backup. Reinstalling replaces this job's block and
 preserves other projects' jobs and the scout's private release configuration.
 
 Automatic release requires `release_enabled: true` in the supervisor's private
-configuration, a working sandbox toolchain and a successful npm publisher
-authentication preflight. The npm credential is referenced through Squire;
+`~/.local/state/usegrunt-scout/config.json`, a working sandbox toolchain and a
+successful npm publisher authentication preflight. The npm credential is referenced through Squire;
 never place its value or vault reference in public reports or repository files.
 A research or integration result alone does not enable release. Missing
 publisher access or approval blocks promotion rather than silently skipping a
@@ -53,6 +58,9 @@ gate.
    Only metadata lookup is preapproved; other actions retain automatic approval
    review. Keys and credential-bearing grants stay in the trusted backend,
    outside model output. Reuse existing accounts and pending Squire workflows.
+   The proxy's `scout_install_grant` helper checks the exact service/reference
+   and installs a native API-adapter config under `workspace/candidate-configs`;
+   its result contains only the relative config path and installation status.
 3. **Implement in isolation.** The worker uses an owned candidate clone and
    private configuration, preserves existing guards and integrates onboarding,
    consent, exact-model defaults and registry metadata. It prepares a clean
@@ -123,7 +131,7 @@ cleans up its own process group. Do not kill the shared browser or Squire broker
 
 ```sh
 python3 -m unittest discover -s ops/provider-scout -p 'test_*.py'
-node --test ops/provider-scout/test_probe.mjs
+node --test ops/provider-scout/test_probe.mjs ops/provider-scout/test_provision.mjs
 ```
 
 The fixtures use synthetic candidates, injected runners and local servers.

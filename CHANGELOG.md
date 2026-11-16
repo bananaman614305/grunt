@@ -4,7 +4,7 @@
 
 ### Added
 
-- Complete the operator's twice-daily provider scout with guarded Squire signup, isolated checks and live routing probes, two independent reviews, and resumable PR merge/npm publication. Qualified providers reach new installations only after the published package and its default registry are verified.
+- Run the operator's twice-daily provider scout with guarded Squire signup, isolated checks and live routing probes, two independent reviews, and resumable PR merge/npm publication. Qualified providers reach new installations only after the published package and its default registry are verified. See the [operator guide](ops/provider-scout/README.md).
 - Recover sources automatically: when no source can answer a request, the daemon adds vetted providers in the background (saved Squire access first, then signup) for providers whose data-sharing approval is already recorded. One run at a time; the next request finds the new source.
 
 ### Fixed

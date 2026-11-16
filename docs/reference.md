@@ -630,8 +630,11 @@ eleven automatic sources and rejected both retired source IDs. A subsequent
 restart kept all eleven available without changing the saved access receipts or
 opening verification handoffs. The release passed 954 local tests, lint,
 TypeScript checks and a clean build; GitHub Actions remains disabled.
-Publish npm and the gateway registry manually; do not dispatch GitHub Actions. Gateway changes
-update the two existing file overlays described under Deploy, not the image.
+Ordinary npm and gateway releases remain manual; the authorized operator scout
+can merge and publish qualified provider additions through its guarded pipeline.
+See the [provider scouting guide](../ops/provider-scout/README.md). Do not dispatch
+GitHub Actions. Gateway changes update the two existing file overlays described
+under Deploy, not the image.
 
 Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
 provider failover. There is no direct OpenRouter free API route. An already
@@ -859,9 +862,14 @@ are ignored locally and cannot install new code.
 The daemon synchronizes on startup and at midnight UTC with
 If-None-Match. It tries `https://api.grunt.run/v1/registry` first and falls back
 to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
-unreachable. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
+unreachable, invalid or older than the retained registry. An explicit
+`GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
 `registry.json` in its existing config directory. A gateway or cache failure
 keeps the last good list, falling back to the packaged list on a fresh install.
+The bundled publication is the minimum revision: older cached or remote lists
+cannot hide providers shipped with that package. An existing publication
+timestamp is immutable; changed entries require a strictly newer `published`
+timestamp, including revocations. Identical same-time data may refresh the ETag.
 Registry sync only refreshes the provider directory. A separate persistent queue
 checks configured curated sources one at a time with 60–90-second gaps; it does
 not run provisioning helpers. The foreground wizard still installs providers
