@@ -17,6 +17,12 @@ export interface Source {
   complete(request: ModelRequest, signal: AbortSignal): Promise<Completion>;
   close?(): Promise<void>;
 }
+// A request that carries Pi's function tools expects tool calls back, so Pi
+// keeps the agent loop. Automatic selection skips sources that run their own
+// tools instead (OpenCode). A source the caller names explicitly stays eligible.
+export const needsFunctionTools = (request: ModelRequest) => request.tools.some(tool => tool.type === 'function');
+export const toolCapable = (source: Source) => source.supportsFunctionTools === true;
+export const NO_TOOL_SOURCE = 'No tool-capable adapter is available for a request with function tools; finish setup or retry after quota resets';
 export class Sources {
   private router: StickyRouter | undefined;
   private observation: SourceStatus;
@@ -76,8 +82,9 @@ export class Sources {
     if (this.router) return this.router.complete(request, signal);
     const known = this.sources.some(s => s.id === request.model);
     if (request.model !== 'milo' && !known) console.error(`grunt model mapping: ${request.model} -> milo`);
-    const candidates = request.model === 'milo' || !known ? this.sources : this.sources.filter(s => s.id === request.model);
-    let last = new SourceError('not_installed', `No source for model ${request.model}`);
+    const toolsRequired = (request.model === 'milo' || !known) && needsFunctionTools(request);
+    const candidates = request.model === 'milo' || !known ? this.sources.filter(s => !toolsRequired || toolCapable(s)) : this.sources.filter(s => s.id === request.model);
+    let last = toolsRequired ? new SourceError('not_installed', NO_TOOL_SOURCE) : new SourceError('not_installed', `No source for model ${request.model}`);
     for (const source of candidates) {
       signal.throwIfAborted();
       if (this.pending.has(source.id)) continue;
