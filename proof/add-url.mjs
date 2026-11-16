@@ -7,12 +7,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 const dir = await mkdtemp(join(tmpdir(), 'grunt-add-url-'));
-import { providerLabel } from '../../dist/local/setup.js';
+import { providerLabel } from '../dist/local/setup.js';
 let base = 'https://my-company-production-resource.openai.azure.com/openai/v1';
-let records = [], next = 0, enabled = [], discoveries = 0;
+let records = [], next = 0, enabled = [], discoveries = 0, readinessChecks = 0;
 const backend = serve({ hostname: '127.0.0.1', port: 0, fetch: async request => {
   const path = new URL(request.url).pathname;
   const body = ['POST', 'PUT'].includes(request.method) ? await request.json() : undefined;
+  if (path === '/v1/models') { readinessChecks++; return Response.json({ data: [{ id: 'grunt' }] }); }
   if (path === '/api/auth/login') return Response.json({ token: 'synthetic-admin' });
   if (path === '/api/keys') return Response.json(records);
   if (path === '/api/keys/custom/discover-models') {
@@ -69,14 +70,15 @@ for (const name of ['docker', 'pi', 'tar', 'npm', 'systemctl']) {
   const path = join(bin, name);
   await writeFile(path, '#!/bin/sh\nif [ "$1" = inspect ]; then echo 1; fi\nif [ "$1" = run ] && [ "$2" = --rm ]; then echo empty; fi\nexit 0\n'); await chmod(path, 0o755);
 }
-const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, MILO_CONFIG_DIR: join(dir, 'state'), MILO_ROUTER_RUNTIME: 'docker', MILO_FREELLMAPI_URL: `http://127.0.0.1:${backend.address().port}`, NODE_OPTIONS: `--import=${hook}` };
+const env = { ...process.env, HOME: dir, XDG_CONFIG_HOME: join(dir, 'config'), MILO_PORT: String(backend.address().port), PATH: `${bin}:${process.env.PATH}`, MILO_CONFIG_DIR: join(dir, 'state'), MILO_ROUTER_RUNTIME: 'docker', MILO_FREELLMAPI_URL: `http://127.0.0.1:${backend.address().port}`, NODE_OPTIONS: `--import=${hook}` };
 async function run(prompted, expectedRows = 1) {
   const child = spawn('script', ['-q', '-e', '-c', `stty -echo cols 120 rows 40 && exec ${process.execPath} dist/local/main.js add${prompted ? '' : ` ${base}`}`, '/dev/null'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-  let output = '', entered = false, confirmed = false, keyed = false, selected = false;
+  let output = '', entered = false, confirmed = false, keyed = false, selected = false, consentAnswered = false;
   const send = value => setTimeout(() => child.stdin.write(value), 100);
   const collect = chunk => {
     output += chunk;
     if (prompted && !entered && output.includes('Provider name or base URL')) { entered = true; send(base + '\r'); }
+    if (!consentAnswered && output.includes('Allow data sharing for all these free services?')) { consentAnswered = true; send('n'); }
     if (!confirmed && output.includes('Send your API key to')) { confirmed = true; send('y'); }
     if (!keyed && output.includes('API key for ' + new URL(base).host)) { keyed = true; send('synthetic-hidden-key\r'); }
     if (!selected && output.includes('Choose a model for your crew')) { selected = true; send('\r'); }
@@ -85,10 +87,11 @@ async function run(prompted, expectedRows = 1) {
   const timer = setTimeout(() => child.kill('SIGKILL'), 20000);
   const code = await new Promise(resolve => child.on('exit', resolve)); clearTimeout(timer);
   assert.equal(code, 0, output);
+  assert.equal(readinessChecks, discoveries, 'CLI must check the isolated service after every addition');
   assert(output.includes(`${base} connected`), output);
   assert(!output.includes('synthetic-hidden-key') && !output.includes('synthetic-grant'), 'CLI leaked a secret');
   assert.equal(records.length, expectedRows); assert.equal(enabled.length, expectedRows); assert.equal(enabled[0].enabled, true);
-  console.log(`PASS built usegrunt add${prompted ? ' (prompted URL)' : ' <URL>'}: host confirmed, hidden key vaulted, discovered model selected and enabled; ${expectedRows} provider rows.`);
+  console.log(`PASS built usegrunt add${prompted ? ' (prompted URL)' : ' <URL>'}: grouped consent declined or reused, host confirmed, hidden key vaulted, discovered model selected and enabled, isolated service ready; ${expectedRows} provider rows.`);
 }
 try { await run(false); await run(true); assert.equal(discoveries, 2); const firstLabel = records[0].label; base += '/other'; await run(false, 2); assert.notEqual(records[1].label, firstLabel); await run(true, 2); assert.equal(discoveries, 4); }
 finally { await new Promise(resolve => backend.close(resolve)); await rm(dir, { recursive: true, force: true }); }
