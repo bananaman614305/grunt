@@ -5,7 +5,9 @@ import { loopback } from './freellmapi.js';
 
 // Published FreeLLMAPI v0.16.24 source, pinned independently of grunt releases.
 export const FREELLMAPI_REVISION = '4c8c2f834b587b6acc3f00698ad8f6468bea1aa2';
-export async function ensureNativeRouter() {
+export async function ensureNativeRouter(signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const run = (binary: string, args: string[]) => command(binary, args, false, signal);
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt setup requires Linux or macOS');
   const directory = join(configDir(), 'freellmapi'), source = join(directory, 'source');
   const entry = join(source, 'server', 'dist', 'index.js');
@@ -14,15 +16,15 @@ export async function ensureNativeRouter() {
   try { await access(join(directory, FREELLMAPI_REVISION)); await access(entry); installed = true; } catch { /* First install or interrupted build. */ }
   if (!installed) {
     const archive = join(directory, 'source.tar.gz');
-    const response = await fetch(`https://codeload.github.com/tashfeenahmed/freellmapi/tar.gz/${FREELLMAPI_REVISION}`, { signal: AbortSignal.timeout(120000) });
+    const response = await fetch(`https://codeload.github.com/tashfeenahmed/freellmapi/tar.gz/${FREELLMAPI_REVISION}`, { signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(120000)]) });
     if (!response.ok) throw new Error('Cannot download the pinned FreeLLMAPI Node server');
     await writeFile(archive, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
     await mkdir(source, { recursive: true, mode: 0o700 });
-    await command('tar', ['-xzf', archive, '--strip-components=1', '-C', source]);
+    await run('tar', ['-xzf', archive, '--strip-components=1', '-C', source]);
     await rm(archive);
-    await command('npm', ['install', '--prefix', source, '--ignore-scripts', '--no-audit', '--no-fund']);
-    await command('npm', ['rebuild', '--prefix', source, 'better-sqlite3', 'sharp']);
-    await command(process.execPath, [join(source, 'node_modules', 'typescript', 'bin', 'tsc'), '--project', join(source, 'server', 'tsconfig.json')]);
+    await run('npm', ['install', '--prefix', source, '--ignore-scripts', '--no-audit', '--no-fund']);
+    await run('npm', ['rebuild', '--prefix', source, 'better-sqlite3', 'sharp']);
+    await run(process.execPath, [join(source, 'node_modules', 'typescript', 'bin', 'tsc'), '--project', join(source, 'server', 'tsconfig.json')]);
     await writeFile(join(directory, FREELLMAPI_REVISION), '', { mode: 0o600 });
   }
   const runner = join(directory, 'runner.mjs');
@@ -45,6 +47,7 @@ await import(pathToFileURL(process.env.MILO_ROUTER_ENTRY).href);
     MILO_CONFIG_DIR: configDir(), MILO_ROUTER_ENTRY: entry,
     HOST: '127.0.0.1', PORT: url.port || '80', NODE_ENV: 'production',
     FREEAPI_DB_PATH: join(directory, 'router.db'),
+    PROVIDER_TIMEOUT_CUSTOM: '600000',
     PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin'
   });
 }

@@ -4,21 +4,31 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { SourceError, answeredBy } from './source.js';
-import type { Completion, ModelRequest, Source } from './source.js';
+import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
 import type { Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
+import type { SourceStatus } from './source-status.js';
 
 const exec = promisify(execFile);
-export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number }
+export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; observation?: SourceStatus }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
   private bars = new Map<string, number>();
+  private barFailures = new Map<string, ErrorCode>();
   constructor(private sources: Source[], private options: RoutingOptions) {}
   private now() { return (this.options.now ?? Date.now)(); }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
-  healthy(id: string) { if (this.bars.get(id) === Infinity) this.bars.delete(id); }
+  healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
+  verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); }
+  cooldown(id: string) {
+    const until = this.bars.get(id), code = this.barFailures.get(id);
+    return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
+  }
   listed(id: string) { return knownAdapters.has(id) && this.options.registry().adapters.some(a => a.id === id); }
+  supportsInput(id: string, imageInput = false) {
+    return knownAdapters.has(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
+  }
   private async git(cwd: string, args: string[]) {
     return (await exec('git', ['-C', cwd, ...args], { timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
   }
@@ -67,8 +77,8 @@ export class StickyRouter {
         for (const source of this.sources) {
           const adapter = adapters.find(a => a.id === source.id);
           if (!task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
-          if (!adapter || (this.bars.get(source.id) ?? 0) > this.now()) continue;
-          if (source.id === task.source || await source.available().catch(() => false)) eligible.push({ source, weight: adapter.weight });
+          if (!adapter || this.options.pending?.has(source.id) || (this.bars.get(source.id) ?? 0) > this.now()) continue;
+          if (source.id === task.source || await (this.options.observation ? this.options.observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
         }
         signal.throwIfAborted();
         let selected = eligible.find(candidate => candidate.source.id === task.source);
@@ -81,7 +91,7 @@ export class StickyRouter {
         }
         try {
           const input = task.switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
-          const result = await selected.source.complete(input, signal);
+          const result = await (this.options.observation ? this.options.observation.complete(selected.source, input, signal) : selected.source.complete(input, signal));
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
           return result;
@@ -95,7 +105,7 @@ export class StickyRouter {
           else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
           // Any other failure moves this task to the next source now, so the request still gets an answer.
           else until = this.now() + 15 * 60 * 1000;
-          this.bars.set(selected.source.id, until); task.switched = true;
+          this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, failure.code); task.switched = true;
         }
       }
     } finally {

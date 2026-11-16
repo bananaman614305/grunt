@@ -1,5 +1,6 @@
 import { SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
+import { KILO_PARTICLE } from './kilo.js';
 
 // Numeric loopback addresses avoid DNS rebinding and accidental remote routing.
 export function loopback(value: string): URL {
@@ -8,18 +9,15 @@ export function loopback(value: string): URL {
   return url;
 }
 export const KILO_URL = 'https://ai-gateway.kilo.ai/api/v1';
-export const FREEBUFF_URL = 'http://127.0.0.1:8789/v1';
 export function freeConfig() {
   return {
     customProviders: [
-      { baseUrl: KILO_URL, apiKey: 'no-key', label: 'Kilo Free', models: [{ model: 'kilo-auto/free', supportsTools: true }] },
-      { baseUrl: FREEBUFF_URL, apiKey: 'no-key', label: 'Freebuff', models: [{ model: 'freebuff', supportsTools: false }] }
+      { baseUrl: KILO_URL, apiKey: 'no-key', label: 'Kilo Free', models: [{ model: KILO_PARTICLE, supportsTools: true }] }
     ],
     // Existing keyed provider rows retain their catalog priorities. Never enable
     // OpenRouter or unvetted aggregators by provisioning keys for them here.
     fallback: [
-      { platform: 'custom', modelId: 'kilo-auto/free', endpoint: KILO_URL, priority: 999999 },
-      { platform: 'custom', modelId: 'freebuff', endpoint: FREEBUFF_URL, priority: 1000000 }
+      { platform: 'custom', modelId: KILO_PARTICLE, endpoint: KILO_URL, priority: 999999 }
     ],
     routing: { strategy: 'priority' as const }
   };
@@ -56,6 +54,12 @@ export class FreeLLMAPI implements Source {
       });
     } catch { throw new SourceError(signal.aborted ? 'timeout' : 'upstream', 'Local FreeLLMAPI is unavailable'); }
     if (!response.ok) throw new SourceError(response.status === 403 ? 'refused' : response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `FreeLLMAPI returned HTTP ${response.status}`);
+    // FreeLLMAPI treats a pinned model as a preference and can fall back to
+    // another provider. Never attribute that provider's answer to Kilo.
+    if (this.id === 'kilo' && response.headers.get('x-routed-via') !== `custom/${this.options.model}`) {
+      await response.body?.cancel();
+      throw new SourceError('upstream', 'Kilo did not answer; the local backend selected another route');
+    }
     const result = await response.json() as { choices?: { message?: { content?: string | null; tool_calls?: ToolCall[]; refusal?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const message = result.choices?.[0]?.message;
     if (message?.refusal) throw new SourceError('refused', 'FreeLLMAPI provider refused the request');

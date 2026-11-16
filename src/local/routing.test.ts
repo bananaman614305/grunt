@@ -1,3 +1,4 @@
+import { idleEvents } from './fixtures/opencode-events.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile, mkdir, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,20 +10,24 @@ import { bundledRegistry } from '../registry.js';
 import { Freebuff } from './freebuff.js';
 import { OpenCode } from './opencode.js';
 import { createLocalApp } from './api.js';
+// Router behavior is tested independently of the changing published pool and weights.
+const launchRegistry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(id => ({
+  ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5
+})) };
 
 const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
 const source = (id: string): Source => ({ id, available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: `${id} done` })) });
-function routed(random = () => 0) { const a = source('freebuff'), b = source('opencode'); return { a, b, sources: new Sources([a, b], { registry: () => bundledRegistry, random }) }; }
-// Reproduction FT1: Pi tool definitions must not remove Freebuff from routing.
+function routed(random = () => 0) { const a = source('opencode'), b = source('kilo'); return { a, b, sources: new Sources([a, b], { registry: () => launchRegistry, random }) }; }
+// Pi tool definitions must not remove a native-tool agent from routing.
 it.each([false, true])('retains Pi tools and source selection (sticky=%s)', async sticky => {
-  const freebuff = { ...source('freebuff'), supportsFunctionTools: false };
-  const opencode = source('opencode');
-  const sources = new Sources([opencode, freebuff], sticky ? { registry: () => bundledRegistry, random: () => 0 } : undefined);
-  const input = { ...request, model: 'freebuff', tools: [{ type: 'function' as const, function: { name: 'read', parameters: {} } }] };
-  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'freebuff done' });
-  expect(freebuff.complete).toHaveBeenCalledWith(input, expect.any(AbortSignal));
-  expect(opencode.complete).not.toHaveBeenCalled();
-  expect(await new Sources([freebuff], sticky ? { registry: () => bundledRegistry } : undefined).complete({ ...input, model: 'milo' }, AbortSignal.timeout(1000))).toEqual({ text: 'freebuff done' });
+  const nativeAgent = { ...source('opencode'), supportsFunctionTools: false };
+  const fallback = source('kilo');
+  const sources = new Sources([fallback, nativeAgent], sticky ? { registry: () => launchRegistry, random: () => 0 } : undefined);
+  const input = { ...request, model: 'opencode', tools: [{ type: 'function' as const, function: { name: 'read', parameters: {} } }] };
+  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(nativeAgent.complete).toHaveBeenCalledWith(input, expect.any(AbortSignal));
+  expect(fallback.complete).not.toHaveBeenCalled();
+  expect(await new Sources([nativeAgent], sticky ? { registry: () => launchRegistry } : undefined).complete({ ...input, model: 'milo' }, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
 });
 afterEach(() => vi.restoreAllMocks());
 it('sticky within task, tool results and retries; draws again for the next user turn', async () => {
@@ -34,7 +39,7 @@ it('sticky within task, tool results and retries; draws again for the next user 
   await sources.complete({ ...request, messages: [...request.messages, { role: 'user', content: 'Next task' }] }, AbortSignal.timeout(1000));
   expect(b.complete).toHaveBeenCalledOnce();
 });
-it.each([[0.49, 'freebuff'], [0.5, 'opencode']] as const)('renormalizes equal launch weights at draw %s', async (draw, id) => {
+it.each([[0.49, 'opencode'], [0.5, 'kilo']] as const)('renormalizes equal launch weights at draw %s', async (draw, id) => {
   const { sources } = routed(() => draw);
   expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: `${id} done` });
 });
@@ -59,20 +64,20 @@ it('does not replace a bound adapter when a later availability probe would fail'
   expect(a.complete).toHaveBeenCalledTimes(2); expect(b.complete).not.toHaveBeenCalled();
 });
 it('disables an unlisted adapter without removing its installation', async () => {
-  let registry = bundledRegistry;
-  const a = source('freebuff'), b = source('opencode');
+  let registry = launchRegistry;
+  const a = source('opencode'), b = source('kilo');
   const sources = new Sources([a, b], { registry: () => registry, random: () => 0 });
   await sources.complete(request, AbortSignal.timeout(1000));
-  registry = { ...bundledRegistry, adapters: [bundledRegistry.adapters[1]!] };
-  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
-  expect(await sources.models()).not.toContain('freebuff');
+  registry = { ...launchRegistry, adapters: [launchRegistry.adapters[1]!] };
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  expect(await sources.models()).not.toContain('opencode');
   expect(sources.sources).toContain(a);
 });
 it('switches only after 429, carries task and previous output, and bars until Retry-After', async () => {
   let now = 1000;
-  const a = source('freebuff'), b = source('opencode');
+  const a = source('opencode'), b = source('kilo');
   vi.mocked(a.complete).mockResolvedValueOnce({ text: 'Made progress' }).mockRejectedValue(new SourceError('quota', 'quota', 120));
-  const sources = new Sources([a, b], { registry: () => bundledRegistry, random: () => 0, now: () => now });
+  const sources = new Sources([a, b], { registry: () => launchRegistry, random: () => 0, now: () => now });
   await sources.complete(request, AbortSignal.timeout(1000));
   await sources.complete(request, AbortSignal.timeout(1000));
   expect(vi.mocked(b.complete).mock.calls[0]![0].messages.at(-1)!.content).toContain('Made progress');
@@ -87,17 +92,17 @@ it.each(['upstream', 'timeout'] as const)('switches on the first %s failure and 
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
   const { a, b, sources } = routed();
   vi.mocked(a.complete).mockRejectedValue(new SourceError(code, 'failed'));
-  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
   expect(b.complete).toHaveBeenCalledTimes(1);
   vi.mocked(a.complete).mockResolvedValue({ text: 'restored' });
-  expect(await sources.complete({ ...request, userMessages: ['before recovery'] }, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(await sources.complete({ ...request, userMessages: ['before recovery'] }, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
   clock.mockReturnValue(1000 + 15 * 60 * 1000 + 1);
   expect(await sources.complete({ ...request, userMessages: ['after recovery'] }, AbortSignal.timeout(1000))).toEqual({ text: 'restored' });
 });
 it('a refusal moves the request to the next source', async () => {
   const { a, b, sources } = routed();
   vi.mocked(a.complete).mockRejectedValue(new SourceError('refused', 'policy'));
-  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
   expect(b.complete).toHaveBeenCalledTimes(1);
 });
 it('cancellation never switches', async () => {
@@ -117,7 +122,7 @@ it.each([false, true])('returns HTTP 429 with earliest retry when all candidates
 it('filters disabled, unavailable and unsupported image adapters before drawing', async () => {
   const { a, b, sources } = routed();
   vi.mocked(a.available).mockResolvedValue(false);
-  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
   expect(a.complete).not.toHaveBeenCalled();
   const app = createLocalApp(sources);
   const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] }) });
@@ -142,11 +147,11 @@ it('hands off the live working tree against a dirty task-start checkpoint', asyn
 });
 
 it('passes OpenCode quota reply partial text to the next adapter', async () => {
-  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => Response.json(String(url).endsWith('/message')
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async url => String(url).endsWith('/event') ? idleEvents() : Response.json(String(url).endsWith('/message')
     ? { info: { error: { data: { statusCode: 429 } } }, parts: [{ type: 'text', text: 'partial work survives' }] }
     : { id: 'quota_session' }) });
-  const next = source('freebuff');
-  const sources = new Sources([driver, next], { registry: () => bundledRegistry, random: () => 0 });
+  const next = source('kilo');
+  const sources = new Sources([driver, next], { registry: () => launchRegistry, random: () => 0 });
   await sources.complete(request, AbortSignal.timeout(1000));
   expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('partial work survives');
 });
@@ -155,11 +160,12 @@ it('keeps actual OpenCode login bars through an unhealthy models check', async (
   let signedIn = false;
   const messages: string[] = [];
   const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async (url, init) => {
+    if (String(url).endsWith('/event')) return idleEvents();
     if (!String(url).endsWith('/message')) return Response.json({ id: 'health_session' });
     messages.push(JSON.parse(String(init?.body)).parts[0].text);
     return signedIn ? Response.json({ parts: [{ type: 'text', text: 'ready' }] }) : new Response('', { status: 401 });
   } });
-  const sources = new Sources([driver, source('freebuff')], { registry: () => bundledRegistry, random: () => 0 });
+  const sources = new Sources([driver, source('kilo')], { registry: () => launchRegistry, random: () => 0 });
   const run = (text: string) => sources.complete({ ...request, userMessages: [text] }, AbortSignal.timeout(2000));
   await run('first'); await run('second');
   expect(messages.filter(m => m === 'first' || m === 'second')).toEqual(['first']);
@@ -173,17 +179,33 @@ it('hands off current persisted Freebuff output when quota is already logged', a
   const cwd = await mkdtemp(join(tmpdir(), 'grunt-current-output-'));
   try {
     await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(cwd, 'freebuff')); await chmod(join(cwd, 'freebuff'), 0o755);
+    // The injected multiplexer never runs tmux; satisfy its availability check locally.
+    await writeFile(join(cwd, 'tmux'), '#!/bin/sh\nexit 99\n', { mode: 0o700 });
     vi.stubEnv('PATH', `${cwd}:${process.env.PATH}`);
-    const mux = { start: async () => {}, stop: async () => {}, send: async (_id: string, prompt: string) => {
+    vi.stubEnv('MILO_TEST_DOCTOR_DELAY', '0');
+    vi.stubEnv('MILO_TEST_DOCTOR_ERROR', '');
+    const mux = { start: async (_id: string, _cwd: string, binary: string) => { expect(binary).toBe(join(cwd, 'freebuff')); }, stop: async () => {}, send: async (_id: string, prompt: string) => {
       const dir = join(cwd, '.config/manicode/projects', cwd.split('/').at(-1)!, 'chats/current');
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, 'chat-messages.json'), JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: false, blocks: [{ type: 'text', content: 'CURRENT PARTIAL WORK' }] }]));
       await writeFile(join(dir, 'log.jsonl'), 'quota exhausted');
     } };
     const driver = new Freebuff({ home: cwd, mux, startup: 1, poll: 10 });
-    const next = source('opencode');
-    const sources = new Sources([driver, next], { registry: () => bundledRegistry, random: () => 0 });
+    const next = source('kilo');
+    const legacyRegistry = { ...launchRegistry, adapters: launchRegistry.adapters.map(adapter => adapter.id === 'opencode'
+      ? { id: 'freebuff', kind: 'agent' as const, tier: 'stable' as const, weight: 0.5, modalities: ['text' as const], install: 'npm:freebuff' } : adapter) };
+    const sources = new Sources([driver, next], { registry: () => legacyRegistry, random: () => 0 });
     await sources.complete({ ...request, cwd }, AbortSignal.timeout(2000));
     expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('CURRENT PARTIAL WORK');
   } finally { vi.unstubAllEnvs(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+it('includes vetted Kilo in weighted default routing and falls through after its quota', async () => {
+  const kilo = source('kilo'), opencode = source('opencode');
+  const sources = new Sources([opencode, kilo], { registry: () => bundledRegistry, random: () => 0.99 });
+  const input = { ...request, model: 'grunt' };
+  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  expect(await sources.models()).toContain('kilo');
+  vi.mocked(kilo.complete).mockRejectedValue(new SourceError('quota', 'quota', 60));
+  expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
 });

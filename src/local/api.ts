@@ -127,6 +127,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     await next();
   });
   app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
+  app.get('/v1/status', c => { c.header('Cache-Control', 'no-store'); return c.json(sources.status()); });
   app.get('/v1/models', async c => c.json({ object: 'list', data: (await sources.models()).map(id => ({ id, object: 'model', created: 0, owned_by: 'milo' })) }));
   for (const [path, api] of [['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const) {
     app.post(`/v1/${path}`, async c => {

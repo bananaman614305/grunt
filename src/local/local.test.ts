@@ -240,7 +240,7 @@ it.each(['missing','unreadable'])('recovers a %s continuation, matches CR turns,
     }
     req.messages.push({role:'assistant',content:'second'},{role:'user',content:'REFUSE'});
     const start=Date.now();
-    await expect(driver.complete(req,new AbortController().signal)).rejects.toMatchObject({code:'refused',message:expect.stringContaining('Freebuff is not a worker for other agents.')});
+    await expect(driver.complete(req,new AbortController().signal)).rejects.toMatchObject({code:'refused',message:'Freebuff refused this request under its usage policy'});
     expect(Date.now()-start).toBeLessThan(3000);
     for (const [prompt,code] of [['STARTUP_LOGIN','logged_out'],['STARTUP_QUOTA','quota']]) {
       const started = Date.now();
@@ -352,7 +352,28 @@ it('starts setup from the usegrunt bin without arguments', async () => {
     });
     expect(result.code).toBe(1);
     expect(result.output).toContain('pools the free AI inference quota');
-    expect(result.output).toContain('npm install --global @mariozechner/pi-coding-agent');
+    expect(result.output).toContain('Install tar using your system package manager.');
     expect(result.output).not.toContain('grunt model API:');
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+it.each([
+  ['prompt_policy_refused', 'refused', 'Freebuff refused this request under its usage policy'],
+  ['quota', 'quota', 'Freebuff free-hours allowance is exhausted'],
+  ['logged_out', 'logged_out', 'Freebuff login is unavailable; rerun setup']
+])('redacts native diagnostic payloads from %s failures', async (nativeCode, code, message) => {
+  const home = await mkdtemp(join(tmpdir(), 'grunt-freebuff-redaction-'));
+  const mux = { start: vi.fn(), send: vi.fn(), stop: vi.fn() };
+  const source = new Freebuff({ home, mux });
+  try {
+    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff'));
+    await chmod(join(home, 'freebuff'), 0o755);
+    vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
+    vi.stubEnv('MILO_TEST_DOCTOR_ERROR', JSON.stringify({ code: nativeCode, message: nativeCode === 'logged_out' ? 'Login required' : 'Provider diagnostic',
+      userEmail: 'private-user@example.test', upstreamBody: 'SENSITIVE_UPSTREAM_PAYLOAD', authToken: 'synthetic-sensitive-token' }));
+    const request: ModelRequest = { model: 'freebuff', cwd: home, messages: [{ role: 'user', content: 'hello' }], tools: [], stream: false };
+    await expect(source.complete(request, AbortSignal.timeout(2000))).rejects.toMatchObject({ code, message });
+    expect(mux.start).not.toHaveBeenCalled();
+    expect(mux.send).not.toHaveBeenCalled();
+  } finally { await source.close(); await rm(home, { recursive: true, force: true }); }
 });

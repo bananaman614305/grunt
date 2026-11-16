@@ -22,6 +22,8 @@ jobs:
         run: |
           test -f site/index.html
           test -f site/grunt.svg
+          test -f site/404.html
+          test -f site/og.png
       - name: Deploy site/ to Cloudflare Pages
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' && env.PAGES_PROJECT != ''
         run: npx --yes wrangler@4 pages deploy site --project-name "$PAGES_PROJECT" --branch main

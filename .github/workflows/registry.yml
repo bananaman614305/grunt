@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   publish:
-    if: github.actor == 'lunchboxfortwo' && github.ref == 'refs/heads/main'
+    if: github.actor == github.repository_owner && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +33,6 @@ jobs:
           flyctl ssh console --app milo-gateway --user root --command 'sh -c "chown node:node /data/registry.pending.json && chmod 600 /data/registry.pending.json && mv /data/registry.pending.json /data/registry.json"'
       - name: Verify public registry
         run: |
-          curl --fail --retry 3 --retry-delay 2 https://api.grunt.run/v1/registry > /tmp/published-registry.json
+          curl --fail --retry 3 --retry-delay 2 https://milo-gateway.fly.dev/v1/registry > /tmp/published-registry.json
           node dist/registry.js /tmp/published-registry.json
           diff -u <(jq -S . registry/adapters.json) <(jq -S . /tmp/published-registry.json)

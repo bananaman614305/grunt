@@ -1,3 +1,4 @@
+import { idleEvents } from './fixtures/opencode-events.js';
 import { expect, it, vi } from 'vitest';
 import { OpenCode } from './opencode.js';
 import { Sources, SourceError } from './source.js';
@@ -22,6 +23,7 @@ it.each(['deadline', 'caller', 'shutdown'] as const)('handles OpenCode %s withou
   let started!: () => void;
   const ready = new Promise<void>(resolve => { started = resolve; });
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    if (String(url).endsWith('/event')) return idleEvents();
     if (String(url).endsWith('/message')) {
       started();
       return new Promise<Response>((_, reject) => {

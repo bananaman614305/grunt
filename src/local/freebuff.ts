@@ -23,7 +23,9 @@ export const DOCTOR_TIMEOUT_MS = 30000;
 function logError(log: string): SourceError | undefined {
   const line = log.split('\n').find(line => /prompt_policy_refused|logged.?out|unauthorized|login required|not signed in|"code"\s*:\s*"quota"|quota[ _-](?:exceeded|exhausted|reached)|free[ _-]?hours.*(?:exhaust|exceed|empty)|(?:out of|no) free hours/i.test(line));
   if (!line) return;
-  return new SourceError(/prompt_policy_refused/.test(line) ? 'refused' : /quota|hours/i.test(line) ? 'quota' : 'logged_out', `Freebuff: ${line}`);
+  if (/prompt_policy_refused/.test(line)) return new SourceError('refused', 'Freebuff refused this request under its usage policy');
+  if (/quota|hours/i.test(line)) return new SourceError('quota', 'Freebuff free-hours allowance is exhausted');
+  return new SourceError('logged_out', 'Freebuff login is unavailable; rerun setup');
 }
 interface Waiter { resolve(): void; reject(error: Error): void }
 // A request starts a fresh process; slots bound parallel sessions for each canonical cwd.

@@ -7,7 +7,7 @@ import { Sources } from './source.js';
 import { bundledRegistry } from '../registry.js';
 
 afterEach(() => vi.unstubAllEnvs());
-const body = (first = 'plant tomatoes') => ({ model: 'freebuff', messages: [{ role: 'user', content: first }] });
+const body = (first = 'plant tomatoes') => ({ model: 'opencode', messages: [{ role: 'user', content: first }] });
 it.each(['chat', 'messages', 'responses'])('decodes %s into a stable conversation scratch folder', api => {
   vi.stubEnv('XDG_STATE_HOME', '/tmp/grunt-scratch-test');
   const input = { ...body(), input: 'plant tomatoes' };
@@ -31,7 +31,7 @@ it('creates scratch before routing and reports its use in the log', async () => 
   const state = await mkdtemp(join(tmpdir(), 'grunt-scratch-'));
   vi.stubEnv('XDG_STATE_HOME', state);
   const log = vi.fn();
-  const source = { id: 'freebuff', available: async () => true, complete: async (request: { cwd: string }) => ({ text: await realpath(request.cwd) }) };
+  const source = { id: 'opencode', available: async () => true, complete: async (request: { cwd: string }) => ({ text: await realpath(request.cwd) }) };
   const app = createLocalApp(new Sources([source], { registry: () => bundledRegistry }), { log });
   const send = async (input: unknown) => {
     const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
