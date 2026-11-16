@@ -2,7 +2,6 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { Adapter } from '../registry.js';
 import type * as ClixadSetup from './clixad-setup.js';
 import type * as LocalRegistry from './registry.js';
 
@@ -20,11 +19,12 @@ vi.mock('./registry.js', async importOriginal => {
   const { bundledRegistry } = await import('../registry.js');
   return { ...actual, RegistrySync: class {
     enabled = bundledRegistry.adapters.filter(adapter => ['pollinations', 'beatapi', 'clixad', 'perch'].includes(adapter.id));
-    constructor(private options: { ensure(adapter: Adapter, signal: AbortSignal): Promise<void>; afterEnsure(): Promise<void> }) {}
+    constructor(options: { ensure?: unknown; afterEnsure?: unknown }) {
+      if (options.ensure || options.afterEnsure) throw new Error('Registry downloads must not provision providers');
+    }
     async load() {}
     async start() {
-      try { await Promise.all(this.enabled.map(adapter => this.options.ensure(adapter, new AbortController().signal))); }
-      finally { await this.options.afterEnsure(); daemon.finished(); }
+      daemon.finished();
     }
     async close() { daemon.syncClose(); }
   } };
@@ -33,6 +33,7 @@ vi.mock('./registry.js', async importOriginal => {
 import { start } from './main.js';
 import { BrowserSquire } from './setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { Sources } from './source.js';
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -40,7 +41,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
 });
 
-it('restarts the daemon by checking all four guarded providers with one shared client and no browser provisioning', async () => {
+it('restarts registry downloads independently from serial checks without provisioning helpers or Squire', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-background-provisioning-'));
   directories.push(directory);
   const providers = ['pollinations', 'beatapi', 'clixad', 'perch'] as const;
@@ -49,23 +50,19 @@ it('restarts the daemon by checking all four guarded providers with one shared c
   const signup = vi.spyOn(BrowserSquire.prototype, 'signup').mockRejectedValue(new Error('Daemon restart must not sign up'));
   const call = vi.spyOn(BrowserSquire.prototype, 'call').mockRejectedValue(new Error('Daemon restart must not provision'));
   const close = vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
+  const check = vi.spyOn(Sources.prototype, 'check').mockResolvedValue({ outcome: 'passed', evidence: 'reply', lastSuccessAt: Date.now() });
   daemon.serve.mockReturnValue({ close: daemon.serverClose });
   const signals = ['SIGINT', 'SIGTERM'] as const;
   const previousListeners = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
   const running = start({ MILO_SOURCES: providers.join(','), MILO_CONFIG_DIR: directory, MILO_PORT: '18792' });
   try {
     await vi.waitFor(() => expect(daemon.finished).toHaveBeenCalledOnce());
-    const clients = [];
-    for (const provider of providers) {
-      expect(daemon[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        directory, background: true, signal: expect.any(AbortSignal), dataSharingApproved: expect.arrayContaining(providers)
-      }));
-      clients.push(daemon[provider].mock.calls[0]![0].squire);
-    }
-    expect(clients[0]).toBeInstanceOf(BrowserSquire);
-    expect(new Set(clients).size).toBe(1);
-    for (const operation of [connect, signup, call]) expect(operation).not.toHaveBeenCalled();
-    expect(close).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(check).toHaveBeenCalledOnce());
+    expect(check).toHaveBeenCalledWith('pollinations', expect.any(AbortSignal));
+    // Registry startup no longer creates a provisioning batch. The real daily
+    // queue starts only its first access check; the next source waits its gap.
+    for (const provider of providers) expect(daemon[provider]).not.toHaveBeenCalled();
+    for (const operation of [connect, signup, call, close]) expect(operation).not.toHaveBeenCalled();
   } finally {
     await running.close();
     for (const signal of signals) for (const listener of process.listeners(signal)) {

@@ -49,6 +49,33 @@ it('uses colors and text labels, collapses model columns, and preserves source d
   expect(detail).not.toContain('Freebuff');
   expect(renderDashboard(snapshot(), { width: 80, showDisabled: true, now })).toContain('Freebuff');
 });
+it('keeps safe daily check evidence in JSON and shows last/next check in source details', async () => {
+  const data = snapshot();
+  data.sources[0]!.maintenance = { lastCheckedAt: now - 60000, lastAttemptAt: now - 60000,
+    nextCheckAt: now + 3600000, outcome: 'passed', evidence: 'reply' };
+  const parsed = parseStatus(data);
+  expect(parsed.sources[0]!.maintenance).toEqual(data.sources[0]!.maintenance);
+  const view = renderDashboard(parsed, { width: 100, height: 30, now, details: true });
+  expect(view).toContain('Daily check: passed · reply');
+  expect(view).toContain('Last check:');
+  expect(view).toContain('Next check: in 1h');
+  expect(renderDashboard(parsed, { width: 40, now, details: true }).split('\n').every(line => [...line].length <= 40)).toBe(true);
+  expect(renderDashboard(parsed, { width: 100, now, details: true, offline: true })).toContain('Next check: status stale');
+  const output = new Output(); output.isTTY = false;
+  await statusCommand(['--json'], { env: {}, output, fetcher: async () => new Response(JSON.stringify(data)) });
+  expect(JSON.parse(output.write.mock.calls[0]![0]).sources[0].maintenance).toMatchObject({ outcome: 'passed', evidence: 'reply' });
+});
+it('rejects unsafe maintenance fields and drops arbitrary payloads from status', () => {
+  const data = snapshot();
+  const maintenance = { nextCheckAt: now, outcome: 'deferred', code: 'busy', token: 'synthetic-must-not-pass', url: 'https://example.invalid/private' };
+  const parsed = parseStatus({ ...data, sources: [{ ...data.sources[0], maintenance }] });
+  expect(parsed.sources[0]!.maintenance).toEqual({ nextCheckAt: now, outcome: 'deferred', code: 'busy' });
+  for (const invalid of [{ nextCheckAt: Infinity }, { nextCheckAt: now, lastCheckedAt: 1e20 },
+    { nextCheckAt: now, outcome: 'https://example.invalid' }, { nextCheckAt: now, evidence: 'private-goal' },
+    { nextCheckAt: now, code: '\u001b[2J' }]) {
+    expect(() => parseStatus({ ...data, sources: [{ ...data.sources[0], maintenance: invalid }] })).toThrow('Invalid local maintenance status');
+  }
+});
 it('does not claim a source is ready while status is disconnected or stale', () => {
   for (const options of [{ offline: true }, { now: now + 16000 }]) {
     const view = stripVTControlCharacters(renderDashboard(snapshot(), { width: 100, color: true, ...options }));

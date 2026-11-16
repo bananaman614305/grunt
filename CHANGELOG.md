@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.9] - 2026-11-15
+
+### Added
+
+- Check free sources through a persistent daily maintenance queue, one at a time with a 60–90-second gap after each check finishes. Reuse recent successful replies, defer busy/setup/cooling-down sources, and show last/next checks in dashboard details and JSON.
+- Use bounded exact-source reply probes with normal free-access guards, and read-only metadata checks for idle Clixad to avoid automatic wallet or streak claims. Keep maintenance separate from provisioning and parallel first-time onboarding; routine upkeep no longer starts account signup, CLI installation or browser repair.
+
+### Validation
+
+- All 1,126 tests across 63 files passed, along with lint, TypeScript and build. Independent review covered scheduling, restart persistence, cleanup, foreground priority and concurrent observation ordering. A real read-only Clixad check recorded metadata evidence with zero inference calls.
+- A staggered live pass received exact-source HTTP 200 replies from all eleven providers with no failures or duplicate prompts. The actual maintenance queue resumed the saved pass for its last four providers and persisted their outcomes; its ordinary completion-to-start gaps stayed within 60–90 seconds. One longer handoff pause was recorded separately.
+
 ## [0.6.8] - 2026-11-15
 
 ### Added

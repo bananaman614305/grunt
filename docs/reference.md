@@ -212,6 +212,49 @@ active call count and per-source observations, including safe failure codes,
 last success/timing and finite retry timestamps when known. Observations reset
 when the daemon restarts, then rebuild from normal runtime activity.
 
+Daily maintenance is independent of registry downloads and onboarding. A private,
+atomic `maintenance.json` retains each configured provider's last attempt,
+completed check, safe outcome and next due time. One check runs at a time. After
+it settles, the queue waits 60 seconds plus 0–30 seconds of random jitter before
+starting another. Restarting does not replay the whole batch or bypass the quiet
+gap. In-flight checks reserve a bounded startup window in case the daemon exits
+before saving their result. Shutdown aborts its owned check and waits for actual
+cleanup before releasing the queue.
+
+A successful reply within the past 24 hours satisfies a check if no newer error
+or cooldown has invalidated that evidence. Otherwise maintenance makes one
+exact-source hello request with a 1,024-token output cap and a private empty
+working directory. Normal sharing, free-model, plan and billing guards still
+apply. A different provider cannot answer that probe through failover. Checks
+consume free inference allowance when a fresh reply is needed; the output cap
+does not cap native CLI input/context overhead.
+
+Idle Clixad checks use its existing read-only local checks and public free-model
+catalog instead of inference. Its native wallet command can claim the ordinary
+daily streak bonus and remains reserved for explicit setup and user requests.
+The maintenance result records `metadata` evidence, which does not establish a
+fresh generated reply or clear an inference cooldown. A recent successful user
+reply still satisfies its daily check as `reply` evidence.
+
+Foreground-owned sources, current user requests and routing cooldowns defer the
+check. Deferred work retries later without being counted as healthy; provider
+retry delays are honored. A source that needs sign-in is reported for foreground
+setup. Maintenance does not invoke provisioning, install tools, create accounts,
+invalidate authentication receipts or launch browser repair. The setup wizard
+retains its separate parallel first-ready flow. Source details and `--json`
+expose cached maintenance timing/outcome/evidence without starting new checks.
+Each source's optional `maintenance` object contains `nextCheckAt` and, when
+known, `lastAttemptAt`, `lastCheckedAt`, `outcome`, `evidence` and a safe `code`.
+Timestamps are milliseconds since the Unix epoch.
+
+The queue starts automatically in every installed daemon running 0.6.9 or later;
+it is per user and uses that user's configured providers, consent and accounts.
+No separate cron job is required. New setup installs it with the daemon.
+Existing users run `npx usegrunt@latest setup` to replace their saved background
+runtime. A newer CLI or npm publication alone does not upgrade an older service.
+Checks need the machine and daemon to be running; overdue work resumes after
+downtime, with normal staggering and deferral rules.
+
 ### Free API and account setup
 
 The eleven-source pool is unchanged from 0.6.6. Version 0.6.7 starts routing as
@@ -298,7 +341,7 @@ Google accounts are created.
 
 Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
 
-The foreground wizard groups the nine active disclosures for OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, Mistral Vibe Free, Pollinations, BeatAPI, Clixad and Perch into one approval. A private local receipt records approved policy versions. Retired Freebuff and APInex records do not authorize routing. Declining or cancelling skips the active sharing providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this group. Changed or new policies require another grouped approval. Background setup never prompts; signup and routing require current approval where applicable. Daily background provisioning runs at midnight UTC; unresolved verification leaves that source unavailable while other services continue.
+The foreground wizard groups the nine active disclosures for OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, Mistral Vibe Free, Pollinations, BeatAPI, Clixad and Perch into one approval. A private local receipt records approved policy versions. Retired Freebuff and APInex records do not authorize routing. Declining or cancelling skips the active sharing providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this group. Changed or new policies require another grouped approval. Background setup never prompts; signup and routing require current approval where applicable. Daily maintenance is staggered and does not provision accounts; unresolved verification leaves that source needing foreground setup while other services continue.
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
 
@@ -802,10 +845,12 @@ to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
 unreachable. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
 `registry.json` in its existing config directory. A gateway or cache failure
 keeps the last good list, falling back to the packaged list on a fresh install.
-Known adapters are installed and checked during sync with up to six concurrent
-jobs and a shared Squire connection. During foreground setup, a private session
+Registry sync only refreshes the provider directory. A separate persistent queue
+checks configured curated sources one at a time with 60–90-second gaps; it does
+not run provisioning helpers. The foreground wizard still installs providers
+with up to six concurrent jobs and a shared Squire connection. During that setup, a private session
 lease owns all providers selected for that session, including providers already
-verified. The daemon skips duplicate signup work for those providers. Pending
+verified. Daily maintenance defers those providers. Pending
 providers are also excluded from normal routing and bulk availability checks.
 Heartbeat expiry and owner-process liveness prevent a crashed setup console
 from leaving a permanent exclusion; normal cleanup removes only that session's
