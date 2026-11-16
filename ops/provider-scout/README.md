@@ -84,7 +84,11 @@ gate.
 4. **Validate and review.** The trusted supervisor verifies the repository,
    current main base, allowed change scope, eligibility and evidence. A fresh
    read-only reviewer independently checks current provider facts, terms,
-   consent and the exact code change. Reviewers receive no Squire access.
+   consent enforcement and the exact code change before authorizing isolated
+   checks and probes. At this stage, unrun supervisor checks are pending rather
+   than failed. The reviewer checks policy/fingerprint guards in code, without
+   reading private consent or credential files; the isolated source checks its
+   actual consent receipt before inference. Reviewers receive no Squire access.
 5. **Check and probe independently.** The supervisor runs frozen-lockfile
    installation with dependency scripts disabled, then lint, tests and build in
    a sandbox. Only installation receives network access. It independently sends
@@ -95,9 +99,12 @@ gate.
    observations and binds them to the reviewed head and registry. Documented
    context capacity is distinct from a context length actually exercised.
 6. **Review the finished result.** A second fresh read-only review checks the
-   same commit after supervisor checks and trusted probing. Both independent
-   reviews must approve all model, context, free-access, terms, signup, consent
-   and code-scope checks. A worker's success flags cannot authorize promotion.
+   same commit after supervisor checks and trusted probing, requiring successful
+   protected results and actual enforcement of the reviewed consent guard.
+   Standing approval or preliminary worker evidence cannot replace those results.
+   Both independent reviews must approve all model, context, free-access,
+   terms, signup, consent and code-scope checks. A worker's success flags cannot
+   authorize promotion.
 7. **Merge and publish.** With release enabled, the supervisor verifies
    publication access and public repository visibility before pushing a candidate
    branch or opening its PR. It requires successful normal CI for the exact

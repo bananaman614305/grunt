@@ -347,6 +347,72 @@ class ReleaseGateTests(unittest.TestCase):
             self.assertFalse(Path(request['output_path']).is_relative_to(self.workspace))
             self.assertEqual(set(request['schema']['properties']['checks']['required']), set(gate.REVIEW_CHECKS))
 
+    def test_pre_execution_review_distinguishes_pending_checks_and_private_consent_guards(self):
+        receipt = self.validate()
+        requests = []
+        def reviewer(request):
+            requests.append(request)
+            return self.approval(receipt)
+        gate.review_candidate(receipt, self.root / 'reviews', reviewer)
+        prompt = requests[0]['prompt']
+        self.assertIn('Review phase: pre_execution', prompt)
+        self.assertIn('run AFTER this review', prompt)
+        self.assertIn('not-yet-run checks, not a failed run', prompt)
+        self.assertIn('Any actual recorded check failure remains a failure', prompt)
+        self.assertIn('never merge or publication', prompt)
+        self.assertIn('missing or invalid consent enforcement must reject approval', prompt)
+        self.assertIn('Do not demand private consent-file inspection', prompt)
+        self.assertIn('actual private receipt before inference', prompt)
+        self.assertIn('Do not claim that pending checks', prompt)
+        self.assertIn('does not require creating another account', prompt)
+        self.assertNotIn('Review phase: post_validation', prompt)
+        self.assertFalse(receipt['checks']['passed'])
+        self.assertNotIn('probe_verified_by_supervisor', receipt)
+        self.assertEqual(set(requests[0]['schema']['properties']['checks']['required']), set(gate.REVIEW_CHECKS))
+
+    def test_pre_execution_review_keeps_recorded_check_failure_visible(self):
+        receipt = self.validate()
+        receipt['checks'].update(commands=[{'name': 'test', 'passed': False, 'network': False}],
+                                 completed_at=dt.datetime.now(gate.UTC).isoformat())
+        requests = []
+        rejected = self.approval(receipt)
+        rejected.update(verdict='reject', reasons=['The recorded test check failed.'])
+        rejected['checks']['code_scope'] = False
+        def reviewer(request):
+            requests.append(request)
+            return rejected
+        result = gate.review_candidate(receipt, self.root / 'reviews', reviewer)
+        self.assertEqual(result['verdict'], 'reject')
+        prompt = requests[0]['prompt']
+        self.assertIn('Review phase: pre_execution', prompt)
+        self.assertIn('Any actual recorded check failure remains a failure', prompt)
+        self.assertIn('"name": "test", "network": false, "passed": false', prompt)
+        self.assertIn('"completed_at":', prompt)
+
+    def test_post_validation_review_requires_completed_protected_checks_and_probe_consent(self):
+        receipt = gate.run_checks(self.validate(), lambda *args, **kwargs: {'returncode': 0})
+        receipt['reviews'] = [self.approval(receipt)]
+        receipt.update(probe_verified_by_supervisor=True, trusted_evidence_file=str(self.root / 'trusted-proof.json'),
+                       trusted_evidence_sha256='b' * 64)
+        requests = []
+        def reviewer(request):
+            requests.append(request)
+            return self.approval(receipt)
+        gate.review_candidate(receipt, self.root / 'reviews', reviewer)
+        prompt = requests[0]['prompt']
+        self.assertIn('Review phase: post_validation', prompt)
+        self.assertIn('completed successful supervisor fixed local checks', prompt)
+        self.assertIn('supervisor-verified protected hello/native-tool proof', prompt)
+        self.assertIn('worker preliminary evidence or success claims cannot substitute', prompt)
+        self.assertIn('checked the current source-specific policy fingerprint before', prompt)
+        self.assertIn('Standing operator approval alone is not proof', prompt)
+        self.assertIn('must reject approval', prompt)
+        self.assertIn('Do not rerun checks or inference', prompt)
+        self.assertIn('"probe_verified_by_supervisor": true', prompt)
+        self.assertIn('"trusted_evidence_sha256": "' + 'b' * 64 + '"', prompt)
+        self.assertNotIn('Review phase: pre_execution', prompt)
+        self.assertEqual(set(requests[0]['schema']['properties']['checks']['required']), set(gate.REVIEW_CHECKS))
+
     def test_review_wrong_commit_or_incomplete_approval_fails(self):
         receipt = self.validate()
         result = self.approval(receipt)
