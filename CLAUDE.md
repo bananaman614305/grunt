@@ -13,6 +13,13 @@ One TypeScript Node app. Read README.md and docs/reference.md for setup and beha
 Run `pnpm lint`, `pnpm test`, and `pnpm build`. Use Node 22 or later.
 Tests use a fake OpenRouter and never need a real key or network.
 
+The operator-only discovery/release pipeline lives in `ops/provider-scout`;
+see its [guide](ops/provider-scout/README.md). Verify it with
+`python3 -m unittest discover -s ops/provider-scout -p 'test_*.py'` and
+`node --test ops/provider-scout/test_probe.mjs ops/provider-scout/test_provision.mjs`. These fixtures use synthetic
+providers and local servers, not external provider accounts or publishing.
+The [harness fixture notes](src/local/fixtures/README.md) describe recorded inputs.
+
 GitHub Actions is disabled for this project at the owner's request. Run checks
 locally; do not enable or dispatch GitHub Actions workflows.
 

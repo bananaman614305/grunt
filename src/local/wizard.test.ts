@@ -313,7 +313,7 @@ it('gives every service its own result when one fails, then ends with the resume
 it('pulls the registry from the RegistrySync URL and says when it falls back to the bundled list', async () => {
   dir = await mkdtemp(join(tmpdir(), 'milo-registry-test-'));
   vi.stubEnv('MILO_CONFIG_DIR', dir);
-  const fresh = { ...bundledRegistry, published: '2026-11-12T00:00:00Z' };
+  const fresh = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() };
   const fetcher = vi.fn(async () => new Response(JSON.stringify(fresh), { status: 200 }));
   expect(await loadRegistry({ fetcher })).toEqual({ registry: fresh, origin: 'remote' });
   expect(fetcher).toHaveBeenCalledWith('https://api.grunt.run/v1/registry', expect.anything());
@@ -323,6 +323,17 @@ it('pulls the registry from the RegistrySync URL and says when it falls back to 
   const { log } = await import('@clack/prompts');
   await wizard(undefined, stubActions([], { loadRegistry: async () => ({ registry: bundledRegistry, origin: 'bundled' }) }));
   expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Registry unreachable; using the list bundled with this version'));
+});
+
+it('keeps newly bundled onboarding sources when both cached and remote registries are stale', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-stale-onboarding-registry-'));
+  vi.stubEnv('MILO_CONFIG_DIR', dir);
+  const stale = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) - 1000).toISOString(), adapters: [bundledRegistry.adapters[1]] };
+  await writeFile(join(dir, 'registry.json'), JSON.stringify({ registry: stale, etag: '"old-onboarding"' }), { mode: 0o600 });
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json(stale));
+  expect(await loadRegistry({ fetcher })).toEqual({ registry: bundledRegistry, origin: 'bundled' });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  for (const [, options] of fetcher.mock.calls) expect(options?.headers).toEqual({});
 });
 
 it('preserves legacy API routing when default setup adds Kilo', async () => {

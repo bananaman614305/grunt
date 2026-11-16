@@ -1,70 +1,139 @@
 # Maintainer provider scouting
 
-An operator-only cron job for Chad, separate from the Grunt daemon and daily user
-maintenance. It runs at **09:00 and 21:00 America/New_York**, using the server's
-timezone so daylight saving changes follow Eastern time. It uses the existing
-Codex ChatGPT sign-in, live web search and Trusty Squire MCP configuration.
-Codex subscription usage/limits still apply; there is no GitHub Actions workflow.
+This operator-only job runs on Chad at **09:00 and 21:00 America/New_York**.
+The server timezone follows Eastern daylight saving changes. It searches the
+internet for additional recurring free providers, qualifies them and can release
+successful integrations through the supervised pipeline below. It is separate
+from the daemon's daily maintenance checks and is not installed on users'
+machines by `npx usegrunt`. There is no GitHub Actions workflow for scouting or
+release.
 
-Install from the checkout on Chad:
+The job uses the operator's existing Codex ChatGPT sign-in and live web search;
+subscription usage and limits still apply. Trusty Squire handles eligible free
+account signup and vaulted access. The [policy](POLICY.md) requires current
+primary sources, recurring free access, at least 200,000 context tokens and
+DeepSeek V4.1 Flash, GLM 5.3 Flash or verified comparable or better coding quality.
+One-time credits, restricted affiliations, mandatory payments, SMS or Discord
+onboarding do not qualify. Data sharing must be disclosed and retain Grunt's
+provider-specific consent.
+
+## Install and run
+
+From the checkout on Chad:
 
 ```sh
 python3 ops/provider-scout/scout.py install --source-repo "$PWD"
 usegrunt-scout status
-usegrunt-scout run --smoke  # real web research, no signup or inference
-usegrunt-scout run          # full qualification pass
+usegrunt-scout run --smoke  # live research only
+usegrunt-scout run          # qualification and configured supervised pipeline
 ```
 
-Installation copies the runner, schema and policy into
-`~/.local/lib/usegrunt-scout`, creates a separate scout-owned checkout, and adds
-one marked block to the existing crontab. Other projects' entries are preserved.
-The installer verifies that the server timezone is America/New_York and retains
-a private crontab backup. Reinstalling replaces that block, not other jobs.
+The supervisor requires Linux, Python 3.11 or later, Node 22 or later, Git,
+the signed-in Codex CLI and bubblewrap for isolated candidate checks/probes.
+Release additionally uses the authenticated GitHub CLI and protected Squire
+publisher access. These are operator prerequisites, separate from user setup.
 
-Runs do not overlap. Each has a 45-minute deadline; smoke research is limited to
-15 minutes. The standalone worker (`--no-daemon`) uses a workspace sandbox with
-network access, existing Squire grants and its own checkout/worktrees. Its
-subprocess environment excludes inherited API keys. Raw tool transcripts and upstream error payloads are not
-retained. The workspace is writable; the supervisor's configuration, installed
-policy and ledger are outside the worker's writable roots. An expired login,
-missing web search, malformed output or timeout is reported as a failed run
-rather than a successful empty search.
+Installation copies the trusted runner, policy, schemas and pipeline modules to
+`~/.local/lib/usegrunt-scout`, creates a separate scout-owned checkout and adds
+one marked block to the existing crontab. It verifies the server timezone and
+keeps a private crontab backup. Reinstalling replaces this job's block and
+preserves other projects' jobs and the scout's private release configuration.
 
-Each invocation permanently preapproves only Squire's `list_credentials` tool
-through `mcp_servers.squire.tools.list_credentials.approval_mode="approve"`.
-This lookup returns saved-account metadata and vault references, never secret
-values. The worker queries one candidate service at a time with `fields="summary"`.
-The override belongs to this job; it does not change global Codex settings.
-Other Squire actions retain their approval requirements, so this permission alone
-does not authorize signup, credential use, payments or production changes.
+Automatic release requires `release_enabled: true` in the supervisor's private
+`~/.local/state/usegrunt-scout/config.json`, a working sandbox toolchain and a
+successful npm publisher authentication preflight. The npm credential is referenced through Squire;
+never place its value or vault reference in public reports or repository files.
+A research or integration result alone does not enable release. Missing
+publisher access or approval blocks promotion rather than silently skipping a
+gate.
 
-`~/.local/state/usegrunt-scout/ledger.json` deduplicates offers by provider domain
+## Qualification and release
+
+1. **Discover and qualify.** Every run performs live web research, deduplicates
+   provider/model offers and resumes promising pending work. Official sources
+   must establish the exact model, context, recurring entitlement, limits,
+   signup requirements and data policy. Smoke runs stop at research.
+2. **Reuse access or sign up.** The constrained Squire proxy permits
+   service-filtered account metadata and supported browser/signup operations.
+   Only metadata lookup is preapproved; other actions retain automatic approval
+   review. Keys and credential-bearing grants stay in the trusted backend,
+   outside model output. Reuse existing accounts and pending Squire workflows.
+   The proxy's `scout_install_grant` helper checks the exact service/reference
+   and installs a native API-adapter config under `workspace/candidate-configs`;
+   its result contains only the relative config path and installation status.
+3. **Implement in isolation.** The worker uses an owned candidate clone and
+   private configuration, preserves existing guards and integrates onboarding,
+   consent, exact-model defaults and registry metadata. It prepares a clean
+   commit, a newer patch version, a newer registry publication timestamp and
+   preliminary hello/tool evidence bound to that commit and registry hash.
+4. **Validate and review.** The trusted supervisor verifies the repository,
+   current main base, allowed change scope, eligibility and evidence. A fresh
+   read-only reviewer independently checks current provider facts, terms,
+   consent and the exact code change. Reviewers receive no Squire access.
+5. **Check and probe independently.** The supervisor runs frozen-lockfile
+   installation with dependency scripts disabled, then lint, tests and build in
+   a sandbox. Only installation receives network access. It independently sends
+   a bounded synthetic hello and inert native tool call through Grunt to the
+   exact provider in an isolated child process. The child cannot access
+   supervisor state; the trusted parent writes the attestation. A fallback reply
+   cannot pass. Protected evidence records the
+   observations and binds them to the reviewed head and registry. Documented
+   context capacity is distinct from a context length actually exercised.
+6. **Review the finished result.** A second fresh read-only review checks the
+   same commit after supervisor checks and trusted probing. Both independent
+   reviews must approve all model, context, free-access, terms, signup, consent
+   and code-scope checks. A worker's success flags cannot authorize promotion.
+7. **Merge and publish.** With release enabled, the supervisor verifies
+   publication access, opens or reuses the candidate PR and merges the exact
+   approved head through the normal GitHub path. It builds and publishes the
+   matching npm artifact through protected Squire-backed access, then verifies
+   the public package and bundled registry. GitHub Actions remain unused.
+
+A signup, preliminary reply or locally passing test is not a release. A source
+joins the automatic pool only after the protected release pipeline succeeds.
+New users receive its bundled registry with the new npm release when they run
+`npx usegrunt`; existing installations receive the new runtime with
+`npx usegrunt update` (`npx usegrunt@latest update` for older CLIs). Normal
+provider-specific setup and consent still apply. These pipeline tests do not
+claim that a newly discovered real provider has passed live qualification.
+
+## Protected state and blocked work
+
+Runs do not overlap. The worker's writable workspace is separate from the
+supervisor's installed policy, configuration, review receipts, trusted probe
+evidence and release checkpoints. State directories are private to the operator.
+Inherited API keys are excluded from worker/check environments; raw tool
+transcripts, credential values and upstream error payloads are not retained.
+Reviewers are read-only and have no MCP integrations. Candidate checks cannot
+access the operator's home directory or supervisor state.
+
+`~/.local/state/usegrunt-scout/ledger.json` tracks decisions by provider domain
 and model. Reports live under `reports/`; `last-run.json` and `cron.log` record
-execution status. State and reports are private to the operator. These are local
-reports, not email or chat notifications. Inspect status here or from the CLI.
-Saved reports and summaries use the supervisor's validated candidate statuses,
-including candidates downgraded when required evidence is missing.
+execution status. Inspect them with `usegrunt-scout status`. These are local
+reports, not email or chat notifications. Missing web search, expired login,
+malformed output and timeouts are failures or explicit blockers, not successful
+empty searches.
 
-The [scouting policy](POLICY.md) carries the approved model-quality, >=200K
-context, recurring-free, signup-friction and data-sharing requirements. Qualified signups reuse Squire;
-human verification is retained as pending work. Isolated integration must prove
-an exact-source Grunt reply, native tool call and free-access guards before a
-candidate can be marked ready for review. A documented context size is distinct
-from a context limit exercised in a live test. Candidate evidence remains subject
-to maintainer review; it is not automatic production approval.
+Human OAuth confirmation, MFA, CAPTCHA, changed consent and publisher approval
+remain genuine blockers. The job records pending approval/setup work and stops
+that attempt; it does not bypass challenges or wait indefinitely. Complete the
+ordinary authentication or private Squire handoff before rerunning. Subsequent
+runs reuse pending work and protected release checkpoints. A retry preserves
+the exact source/model/commit identity and checks existing merge/publication
+state before continuing, avoiding a second merge or duplicate publish.
 
-Successful candidates can produce draft PRs. The job does not merge, publish npm,
-deploy, change the production registry or enable providers on users' machines.
-Those steps stay in the existing release/review pipeline. This cron job is not
-included in the npm package or installed for ordinary `npx usegrunt` users.
-
-To stop the job, use `crontab -e` and remove only the block between
+To stop scheduling, use `crontab -e` and remove only the block between
 `# BEGIN usegrunt-provider-scout` and `# END usegrunt-provider-scout`. A running
-worker can be stopped by sending TERM to the `pid` in `last-run.json`; the runner
+job can be stopped by sending TERM to the `pid` in `last-run.json`; the runner
 cleans up its own process group. Do not kill the shared browser or Squire broker.
 
-Local verification:
+## Local verification
 
 ```sh
 python3 -m unittest discover -s ops/provider-scout -p 'test_*.py'
+node --test ops/provider-scout/test_probe.mjs ops/provider-scout/test_provision.mjs
 ```
+
+The fixtures use synthetic candidates, injected runners and local servers.
+They do not create accounts, make inference calls to real providers, merge PRs
+or publish packages.
