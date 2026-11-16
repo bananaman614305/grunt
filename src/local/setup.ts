@@ -27,7 +27,7 @@ import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } fr
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', gemini: 'https://aistudio.google.com/api-keys', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io' };
 const freeProviderInstructions: Record<string, string> = {
   runcrate: ' Verify that the GitHub account is at least 30 days old. Use the normal Get your free tokens link at https://www.runcrate.ai/dashboard/api-keys#free-card to activate its recurring weekly allowance; verify the free tier is active via GitHub and not paused. Leave optional marketing unchecked. Verify no paid subscription, no purchased balance, no payment method and automatic top-ups disabled. If any of these checks fails, stop and report it; do not change billing settings or create another account. Use only deepseek-ai/DeepSeek-V4.1-Flash at api.runcrate.ai. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Reuse an existing vaulted key where possible; never reset or rotate it.',
   apinex: ' Verify the Free plan and complete today\'s ordinary DAILY CHECK-IN to activate recurring free quota. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Use only free/deepseek-v4.1-flash at api.apinex.bond, never a wallet-funded model or paid sibling. Verify the check-in for the current UTC date is actually claimed and free quota is active; absence of a check-in modal alone is insufficient. Do not use or change any existing paid wallet balance. Dismiss any paid upsell after check-in. Do not add billing, top up a wallet, buy credits, or use any paid balance. If check-in or free access cannot be confirmed, stop and report it. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
@@ -35,8 +35,9 @@ const freeProviderInstructions: Record<string, string> = {
 export type Provider = keyof typeof PROVIDERS;
 export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 export { NVIDIA_DEEPSEEK } from './nvidia.js';
-const savedProviders = ['kilo'] as const;
-const providerModels: Record<string, string[]> = { kilo: [KILO_NEMOTRON, 'kilo-auto/free'] };
+export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const savedProviders = ['kilo', 'gemini'] as const;
+const providerModels: Record<string, string[]> = { kilo: [KILO_NEMOTRON, 'kilo-auto/free'], gemini: [GEMINI_MODEL] };
 type Credential = { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null };
 const sameService = (credential: Credential, service: string) => credential.service?.trim().toLowerCase() === service.trim().toLowerCase();
 function apiKeyField(credential: Credential, provider: Provider): string | undefined {
@@ -347,7 +348,7 @@ export class BrowserSquire implements SetupSquire {
   }
 }
 
-const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway' })[provider] ?? '/v1';
+const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway', gemini: '/v1beta/openai' })[provider] ?? '/v1';
 
 export class FreeLLMAdmin {
   private token = '';
@@ -364,7 +365,7 @@ export class FreeLLMAdmin {
     const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${platform} (Squire)` && key.baseUrl?.endsWith(providerPath(platform)));
     if (!key || !key.models?.length) return false;
     const discovery = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
-    const available = new Set(discovery.models.map(model => model.id));
+    const available = new Set(discovery.models.map(model => platform === 'gemini' ? model.id.replace(/^models\//, '') : model.id));
     const wanted = providerModels[platform]?.filter(id => available.has(id));
     if (wanted) {
       const required = platform === 'kilo' ? wanted : wanted.slice(0, 1);
@@ -377,7 +378,7 @@ export class FreeLLMAdmin {
     const baseUrl = grant.base_url.replace(/\/$/, '') + providerPath(platform);
     const label = `Milo ${platform} (Squire)`;
     const discovery = await this.call('/keys/custom/discover-models', { baseUrl, apiKey: grant.token }) as { models: { id: string }[] };
-    const available = new Set(discovery.models.map(model => model.id));
+    const available = new Set(discovery.models.map(model => platform === 'gemini' ? model.id.replace(/^models\//, '') : model.id));
     const candidates = providerModels[platform] ?? ['openai/gpt-oss-120b', 'gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'];
     const models = platform === 'kilo' ? candidates.filter(id => available.has(id)) : candidates.filter(id => available.has(id)).slice(0, 1);
     if (!models.length) throw new Error(`No supported chat model is currently available from ${platform}`);
@@ -408,7 +409,7 @@ export class FreeLLMAdmin {
       const vetted = !provider || !providerModels[provider] || providerModels[provider].includes(row.modelId);
       return { modelDbId: row.modelDbId,
         enabled: sharingAllowed && (fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true)),
-        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : owned === 'freebuff' ? 1000000 : owned === 'kilo' ? 999999 : row.priority };
+        priority: provider === 'kilo' ? (row.modelId === KILO_NEMOTRON ? 999996 : 999997) : provider === 'gemini' ? 999999.5 : owned === 'freebuff' ? 1000000 : owned === 'kilo' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');
     await this.call('/fallback/routing', { strategy: 'priority' }, 'PUT');
