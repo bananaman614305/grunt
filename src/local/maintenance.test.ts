@@ -1,5 +1,6 @@
 import { chmod, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { setImmediate } from 'node:timers/promises';
+import { setImmediate, setTimeout as realDelay } from 'node:timers/promises';
+import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -17,13 +18,26 @@ afterEach(async () => {
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-maintenance-')); directories.push(path); return path; }
 function queue(options: ConstructorParameters<typeof DailyMaintenance>[0]) { const item = new DailyMaintenance(options); queues.push(item); return item; }
 async function until(test: () => boolean) {
-  for (let i = 0; i < 3000; i++) { if (test()) return; await setImmediate(); }
-  throw new Error('Maintenance did not settle');
+  // The maintenance clock is fake, but private filesystem writes need real time.
+  const deadline = performance.now() + 2000;
+  while (!test()) {
+    if (performance.now() >= deadline) throw new Error('Maintenance did not settle');
+    await realDelay(1);
+  }
 }
 async function completed(item: DailyMaintenance, id: string) {
   await until(() => item.snapshot()[id]?.outcome !== undefined && vi.getTimerCount() === 1);
 }
 const passed = (): MaintenanceResult => ({ outcome: 'passed', evidence: 'metadata' });
+
+it('waits for delayed real work without advancing the maintenance clock', async () => {
+  let settled = false;
+  const work = realDelay(50).then(() => { settled = true; });
+  try { await until(() => settled); }
+  finally { await work; }
+  expect(Date.now()).toBe(epoch);
+  expect(vi.getTimerCount()).toBe(0);
+});
 
 it('runs one check at a time and spaces starts from the previous completion, including maximum jitter', async () => {
   const path = await directory(); let finish!: (result: MaintenanceResult) => void;

@@ -32,8 +32,12 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm lint
       - run: pnpm test
-      - run: pnpm build
+      - id: build
+        if: ${{ !cancelled() }}
+        run: pnpm build
       - name: Check the operator pipeline
+        if: ${{ !cancelled() }}
         run: python3 -W error::ResourceWarning -m unittest discover -s ops/provider-scout -p 'test_*.py'
       - name: Check isolated routing and private provisioning
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node --test ops/provider-scout/test_probe.mjs ops/provider-scout/test_provision.mjs
