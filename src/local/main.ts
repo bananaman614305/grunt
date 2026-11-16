@@ -30,9 +30,8 @@ import type { Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { RegistrySync } from './registry.js';
-import { configDir, command } from './wizard.js';
-import { setupFallbacks } from './fallback-setup.js';
-import { BrowserSquire } from './setup.js';
+import { configDir } from './wizard.js';
+import { DailyMaintenance } from './maintenance.js';
 import { readSetupSession } from './setup-session.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry) {
@@ -70,11 +69,9 @@ export function start(env = process.env) {
   let registry = structuredClone(bundledRegistry);
   const sources = configure(env, () => registry);
   const directory = configDir(env);
-  let squire: BrowserSquire | undefined;
-  const backgroundPreparing = new Set<string>();
+
   const reconcile = () => {
     sources.preparing.clear();
-    for (const id of backgroundPreparing) sources.preparing.add(id);
     for (const id of sources.pending) sources.preparing.add(id);
   };
   // Serialize snapshots so an older filesystem read cannot overwrite a newer
@@ -96,44 +93,36 @@ export function start(env = process.env) {
     return result;
   };
   const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
-    afterEnsure: async () => { await squire?.close(); squire = undefined; },
-    changed: current => { registry = current; }, notify: console.error,
-    ensure: async (adapter, signal) => {
-      if (!sources.sources.some(source => source.id === adapter.id)) return;
+    changed: current => { registry = current; }, notify: console.error
+  });
+  const maintenance = new DailyMaintenance({ directory,
+    providers: () => registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
+      && sources.sources.some(source => source.id === adapter.id)).map(adapter => adapter.id),
+    check: async (id, signal) => {
+      signal.throwIfAborted();
       const session = await refreshSession();
-      if (session?.owned.has(adapter.id)) {
-        backgroundPreparing.delete(adapter.id); reconcile();
-        return;
-      }
-      const approved = await readDataSharingConsent(directory, [adapter.id]);
-      if (requiresDataSharing(adapter.id) && !approved.includes(adapter.id)) return;
-      backgroundPreparing.add(adapter.id); reconcile();
-      const client = squire ??= new BrowserSquire({ background: true, signal, dataSharingApproved: approved });
-      client.approveDataSharing([...new Set([...(await readDataSharingConsent(directory, [...knownAdapters])), ...approved])]);
-      try {
-        const result = await setupFallbacks({ directory, run: (binary, args) => command(binary, args, false, signal), notify: console.error, adapters: [adapter.id], squire: client, signal, background: true, dataSharingApproved: approved,
-          connect: () => client.connect() });
-        if (result.unavailable.length) throw new Error('Adapter setup incomplete');
-        sources.healthy(adapter.id);
-      } finally { backgroundPreparing.delete(adapter.id); reconcile(); }
+      if (session?.owned.has(id)) return { outcome: 'deferred', code: 'foreground' };
+      const approved = await readDataSharingConsent(directory, [id]);
+      signal.throwIfAborted();
+      if (requiresDataSharing(id) && !approved.includes(id)) return { outcome: 'deferred', code: 'consent' };
+      const current = await refreshSession();
+      signal.throwIfAborted();
+      if (current?.owned.has(id)) return { outcome: 'deferred', code: 'foreground' };
+      return sources.check(id, signal);
     }
   });
-  // Load the private cache before accepting tasks, without waiting for the network.
-  // Mark adapters as preparing until their first background setup finishes.
-  const ready = sync.load().then(async () => {
-    const session = await refreshSession();
-    for (const adapter of sync.enabled) if (!session?.owned.has(adapter.id) && sources.sources.some(source => source.id === adapter.id)) backgroundPreparing.add(adapter.id);
-    reconcile();
-  });
-  void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list')).finally(() => { backgroundPreparing.clear(); reconcile(); });
-  // Warm the saved login without delaying the server; failed loads retry lazily.
-  void ready.then(() => sources.sources.find(source => !sources.pending.has(source.id) && ['freellmapi', 'kilo'].includes(source.id))?.available()).catch(() => {});
+  sources.setMaintenance(() => maintenance.snapshot());
+  // Registry downloads and access maintenance are independent. No daemon
+  // maintenance path provisions accounts or starts an interactive browser.
+  const ready = sync.load().then(refreshSession);
+  void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
+  void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
   const port = positive(env.MILO_PORT, 8788);
   if (port > 65535) throw new Error('MILO_PORT must be at most 65535');
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; await refreshSession(); return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;
-  const close = async () => { if (closing) return; closing = true; await sync.close(); await sources.close(); server.close(); };
+  const close = async () => { if (closing) return; closing = true; await Promise.all([maintenance.close(), sync.close()]); await sources.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, close };
 }

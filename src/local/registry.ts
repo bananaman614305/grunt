@@ -73,8 +73,8 @@ export class RegistrySync {
   async start() {
     await this.load();
     if (this.controller.signal.aborted) return;
-    // Daily free quotas/check-ins reset at UTC midnight. Recheck then rather
-    // than leaving an expired APInex receipt idle until the install-time hour.
+    // Refresh the directory at UTC midnight. The daemon paces provider access
+    // checks independently through its daily maintenance queue.
     const schedule = () => {
       if (this.controller.signal.aborted) return;
       const now = Date.now();
