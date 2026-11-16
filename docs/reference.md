@@ -166,7 +166,7 @@ error rather than silently losing context.
 opens a live terminal view; `--json` prints a single structured snapshot.
 These commands only read the local daemon's `GET /v1/status`; they do not start
 the daemon, run provider health checks, install services or consume inference.
-An older daemon without that endpoint needs a runtime update through setup.
+An older daemon without that endpoint needs `npx usegrunt update`.
 `usegrunt --help` prints command usage without starting the daemon.
 
 The watch view uses green for a source with an observed successful reply, cyan
@@ -237,8 +237,9 @@ fresh generated reply or clear an inference cooldown. A recent successful user
 reply still satisfies its daily check as `reply` evidence.
 
 Foreground-owned sources, current user requests and routing cooldowns defer the
-check. Deferred work retries later without being counted as healthy; provider
-retry delays are honored. A source that needs sign-in is reported for foreground
+check. An update pauses the queue while existing routes remain usable until the
+runtime is ready to replace. Deferred work retries later without being counted
+as healthy; provider retry delays are honored. A source that needs sign-in is reported for foreground
 setup. Maintenance does not invoke provisioning, install tools, create accounts,
 invalidate authentication receipts or launch browser repair. The setup wizard
 retains its separate parallel first-ready flow. Source details and `--json`
@@ -250,8 +251,18 @@ Timestamps are milliseconds since the Unix epoch.
 The queue starts automatically in every installed daemon running 0.6.9 or later;
 it is per user and uses that user's configured providers, consent and accounts.
 No separate cron job is required. New setup installs it with the daemon.
-Existing users run `npx usegrunt@latest setup` to replace their saved background
-runtime. A newer CLI or npm publication alone does not upgrade an older service.
+Existing users run `npx usegrunt update` to replace their saved background
+runtime. The updater resolves the latest official npm release itself, verifies
+the package integrity, prepares dependencies without install scripts, then
+replaces the managed runtime and restarts the existing service. It preserves
+service configuration, custom ports and sources, account grants, consent,
+native authentication and `maintenance.json`. It does not invoke the signup
+wizard. If startup verification fails, it restores the previous runtime. A
+stopped Linux service remains stopped. On macOS, the existing launch agent must
+be running before update; an unloaded or waiting job is rejected safely rather
+than changed while it might restart itself. An older local CLI that lacks the command can
+bootstrap with `npx usegrunt@latest update`.
+A newer CLI or npm publication alone does not upgrade an older service.
 Checks need the machine and daemon to be running; overdue work resumes after
 downtime, with normal staggering and deferral rules.
 

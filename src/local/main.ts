@@ -101,13 +101,13 @@ export function start(env = process.env) {
     check: async (id, signal) => {
       signal.throwIfAborted();
       const session = await refreshSession();
-      if (session?.owned.has(id)) return { outcome: 'deferred', code: 'foreground' };
+      if (session && (!session.owned.size || session.owned.has(id))) return { outcome: 'deferred', code: 'foreground' };
       const approved = await readDataSharingConsent(directory, [id]);
       signal.throwIfAborted();
       if (requiresDataSharing(id) && !approved.includes(id)) return { outcome: 'deferred', code: 'consent' };
       const current = await refreshSession();
       signal.throwIfAborted();
-      if (current?.owned.has(id)) return { outcome: 'deferred', code: 'foreground' };
+      if (current && (!current.owned.size || current.owned.has(id))) return { outcome: 'deferred', code: 'foreground' };
       return sources.check(id, signal);
     }
   });
@@ -127,12 +127,19 @@ export function start(env = process.env) {
   return { server, close };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  if (process.argv[2] === 'status') {
+  if (process.argv[2] === 'update') {
+    try {
+      if (process.argv.length > 3) throw new Error('Usage: usegrunt update');
+      const { updateRuntime } = await import('./update.js');
+      const result = await updateRuntime({ notify: line => console.log(line) });
+      console.log(`grunt updated to ${result.version}; ${result.active ? `daemon ready on port ${result.port}` : 'service remains stopped'}`);
+    } catch (error) { console.error(error instanceof Error ? error.message : 'Could not update grunt'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'status') {
     const { statusCommand } = await import('./dashboard.js');
     try { await statusCommand(process.argv.slice(3)); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | add <provider> | status [--watch] [--json] [--port <port>]]\n\nRun setup to connect free sources, or status --watch in a separate terminal to view the pool.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>]]\n\nRun setup to connect free sources, update to refresh the installed daemon, or status --watch to view the pool.');
   } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }
@@ -144,5 +151,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
       await wizard(process.argv[2] === 'add' ? process.argv[3] : undefined);
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'grunt setup failed'); process.exitCode = 1; }
-  } else start();
+  } else if (!process.argv[2] || process.argv[2] === 'serve') start();
+  else { console.error('Unknown grunt command. Run usegrunt --help.'); process.exitCode = 1; }
 }
