@@ -544,6 +544,7 @@ Mistral Vibe, LiveKit, Clixad and Perch's native CLIs own their separate local c
 exchanges and storage.
 Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
+`usegrunt add https://host/api/v1` adds an OpenAI-compatible endpoint with a hidden key prompt and discovered model choice. `usegrunt add` prompts for a name or URL.
 `usegrunt add groq` or `usegrunt add cerebras` connects another provider through
 the same flow, then restarts grunt with the API sources enabled. `usegrunt add kilo`
 checks the anonymous Particle free route after current approval; it does not

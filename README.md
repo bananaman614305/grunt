@@ -19,7 +19,7 @@ Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs n
 Daemon restarts reuse saved connections. Background verification preserves them on
 temporary failures and asks for foreground setup when human verification is needed.
 
-https://grunt.run. `milo` and `milo-local` remain aliases.
+`npx usegrunt add [provider-or-base-URL]` adds a provider; omit the argument to paste a URL. https://grunt.run. `milo` and `milo-local` remain aliases.
 
 The curated pool has eleven sources: OpenCode, Kilo, Zro, Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch. Pi is optional.
 

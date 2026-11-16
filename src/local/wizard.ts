@@ -1,3 +1,4 @@
+import { text } from '@clack/prompts';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
@@ -13,7 +14,7 @@ import { setupFallbacks } from './fallback-setup.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 import { withTerminal, terminalBusy } from './terminal.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
-import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
+import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
 import type { Adapter } from '../registry.js';
@@ -377,8 +378,14 @@ export async function connectHarnesses(port: number, options: HarnessOptions = {
 const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing, startDashboard: startSetupDashboard, watchDashboard: watchSetupDashboard };
 type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing' | 'startDashboard' | 'watchDashboard';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
+  if (add === '') {
+    const answer = await text({ message: 'Provider name or base URL' });
+    if (isCancel(answer)) throw new Error('Provider setup cancelled');
+    add = answer.trim();
+    if (!add) throw new Error('Enter a provider name or base URL');
+  }
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
-  if (add && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}`);
+  if (add && !providerURL(add) && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}, or paste an OpenAI-compatible base URL`);
   const squire = actions.createSquire?.();
   let session: Awaited<ReturnType<typeof beginSetupSession>> | undefined;
   let connection: Promise<void> | undefined;

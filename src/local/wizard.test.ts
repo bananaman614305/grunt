@@ -14,7 +14,7 @@ import type { Source } from './source.js';
 import { approveDataSharing, dataSharingPolicies, recordDataSharingConsent } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({
-  multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
+  text: vi.fn(async () => 'https://example.test/v1'), multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
   intro: vi.fn(), outro: vi.fn(), note: vi.fn(), log: { info: vi.fn(), warn: vi.fn(), step: vi.fn(), message: vi.fn(), success: vi.fn(), error: vi.fn() },
   spinner: () => ({ start: vi.fn(), stop: vi.fn(), error: vi.fn(), clear: vi.fn() })
 }));
@@ -586,4 +586,14 @@ it.each(['refused', 'quota'] as const)('does not retry a settled %s provider whi
   } finally { await live.close(); }
   expect(complete).toHaveBeenCalledOnce();
   expect(unavailable).toEqual(['opencode']);
+});
+
+it.each(['', 'https://example.test/v1', 'groq', 'cerebras'])('adds a provider from %j without running the default setup', async input => {
+  const actions = stubActions([]);
+  await wizard(input, actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), [input || 'https://example.test/v1'], expect.any(Object));
+  expect(actions.setupFallbacks).not.toHaveBeenCalled();
+});
+it('explains how to add an unknown provider by URL', async () => {
+  await expect(wizard('unknown', stubActions([]))).rejects.toThrow('or paste an OpenAI-compatible base URL');
 });

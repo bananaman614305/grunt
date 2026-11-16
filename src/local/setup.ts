@@ -1,4 +1,5 @@
-import { randomBytes } from 'node:crypto';
+import { confirm, password, select, isCancel } from '@clack/prompts';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
@@ -41,6 +42,42 @@ const freeProviderInstructions: Record<string, string> = {
   apinex: ' Verify the Free plan and complete today\'s ordinary DAILY CHECK-IN to activate recurring free quota. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Use only free/deepseek-v4.1-flash at api.apinex.bond, never a wallet-funded model or paid sibling. Verify the check-in for the current UTC date is actually claimed and free quota is active; absence of a check-in modal alone is insufficient. Do not use or change any existing paid wallet balance. Dismiss any paid upsell after check-in. Do not add billing, top up a wallet, buy credits, or use any paid balance. If check-in or free access cannot be confirmed, stop and report it. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
 };
 export type Provider = keyof typeof PROVIDERS;
+export function providerURL(value: string): URL | undefined {
+  if (!/^https?:\/\//i.test(value)) return;
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('Enter a valid provider base URL'); }
+  const local = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.search || url.hash)
+    throw new Error('Use HTTPS (HTTP is allowed only for loopback), without user info, query or fragment');
+  return url;
+}
+export function providerLabel(base: string): string {
+  const url = providerURL(base);
+  if (!url) return base;
+  const host = url.hostname.replace(/[^a-z0-9.-]/gi, '-').slice(0, 40);
+  const hash = createHash('sha256').update(url.href).digest('hex').slice(0, 12);
+  return `custom-${host}-${hash}`;
+}
+async function chooseModel(models: string[]) {
+  const picked = await select({ message: 'Choose a model for your crew', options: models.map(value => ({ value, label: value })) });
+  if (isCancel(picked)) throw new Error('Provider setup cancelled');
+  return picked;
+}
+export async function setupURL(squire: BrowserSquire, router: FreeLLMAdmin, base: string, notify: (line: string) => void) {
+  const url = providerURL(base)!;
+  const allowed = await confirm({ message: `Send your API key to ${url.host} (${base})?`, initialValue: false });
+  if (isCancel(allowed) || !allowed) throw new Error('Provider setup cancelled');
+  const key = await password({ message: `API key for ${url.host}`, validate: value => value?.trim() ? undefined : 'Enter an API key' });
+  if (isCancel(key)) throw new Error('Provider setup cancelled');
+  const stored = await squire.call('store_credential', { service: url.host, label: providerLabel(base), value: key, auth_shape: 'bearer', api_hosts: [url.host] });
+  if (typeof stored.reference !== 'string') throw new Error('Squire did not return a vault reference');
+  notify(`${url.host}: API key vaulted`);
+  const grant = await squire.credentials.grant(stored.reference);
+  // The grant replaces the origin only; retain the supplied API path verbatim.
+  await router.addGrant(base, { base_url: grant.base_url.replace(/\/$/, '') + url.pathname, token: grant.token }, chooseModel);
+  notify(`${url.host}: connected through Squire grant`);
+}
+
 export const KILO_NEMOTRON = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 export { NVIDIA_DEEPSEEK } from './nvidia.js';
 const savedProviders = ['kilo'] as const;
@@ -502,7 +539,7 @@ export class FreeLLMAdmin {
   async login(password: string) { this.token = (await this.call('/auth/login', { email: 'milo@localhost.local', password })).token; }
   async hasKey(platform: string) {
     const keys = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string; baseUrl?: string; models?: { modelId: string }[] }[];
-    const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${platform} (Squire)` && key.baseUrl?.endsWith(providerPath(platform)));
+    const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${providerLabel(platform)} (Squire)` && (providerURL(platform) ? !!key.baseUrl : key.baseUrl?.endsWith(providerPath(platform))));
     if (!key || !key.models?.length) return false;
     const discovery = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
     const available = new Set(discovery.models.map(model => model.id));
@@ -513,21 +550,26 @@ export class FreeLLMAdmin {
     }
     return key.models.some(model => available.has(model.modelId));
   }
-  async addGrant(platform: string, grant: { base_url: string; token: string }) {
+  async addGrant(platform: string, grant: { base_url: string; token: string }, choose: (models: string[]) => Promise<string> = chooseModel) {
     // Custom endpoints bind the grant URL and token to their own model rows.
-    const baseUrl = grant.base_url.replace(/\/$/, '') + providerPath(platform);
-    const label = `Milo ${platform} (Squire)`;
-    const discovery = await this.call('/keys/custom/discover-models', { baseUrl, apiKey: grant.token }) as { models: { id: string }[] };
+    const custom = !!providerURL(platform);
+    const baseUrl = custom ? grant.base_url : grant.base_url.replace(/\/$/, '') + providerPath(platform);
+    const label = `Milo ${providerLabel(platform)} (Squire)`;
+    let discovery: { models: { id: string }[] };
+    try { discovery = await this.call('/keys/custom/discover-models', { baseUrl, apiKey: grant.token }); }
+    catch { throw new Error('Model discovery failed; check the base URL and API key (the provider may have rejected it)'); }
+    if (!discovery.models?.length) throw new Error('The provider returned no models; check the base URL and API key');
     const available = new Set(discovery.models.map(model => model.id));
     const candidates = providerModels[platform] ?? ['openai/gpt-oss-120b', 'gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'];
-    const models = platform === 'kilo' ? candidates.filter(id => available.has(id)) : candidates.filter(id => available.has(id)).slice(0, 1);
-    if (!models.length) throw new Error(`No supported chat model is currently available from ${platform}`);
+    const models = custom ? [await choose([...available])] : platform === 'kilo' ? candidates.filter(id => available.has(id)) : candidates.filter(id => available.has(id)).slice(0, 1);
+    if (!models.length || models.some(model => !available.has(model))) throw new Error(`No supported chat model is currently available from ${platform}`);
 
     const previous = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string; baseUrl?: string }[];
-    await this.call('/keys/custom', { baseUrl, apiKey: grant.token,
+    const registered = await this.call('/keys/custom', { baseUrl, apiKey: grant.token,
       label, models: models.map(model => ({ model, supportsTools: true })) });
+    if (custom && !Number.isInteger(registered?.keyId)) throw new Error('The router did not confirm the provider registration');
     for (const key of previous) {
-      if (Number.isInteger(key.id) && key.platform === 'custom' && key.label === label && key.baseUrl !== baseUrl) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
+      if (Number.isInteger(key.id) && key.platform === 'custom' && key.label === label && (custom ? key.id !== registered.keyId : key.baseUrl !== baseUrl)) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
     }
   }
   async migrateKiloModels(approved: readonly string[], savedChain?: FallbackRow[]) {
@@ -583,7 +625,7 @@ export class FreeLLMAdmin {
     const approved = dataSharingApproved ?? await readDataSharingConsent(dirname(localAdminPath()), DATA_SHARING_POLICIES.map(policy => policy.provider));
     const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean }[];
     const rows = chain.map(row => {
-      const provider = [...Object.keys(PROVIDERS), ...savedProviders].find(provider => row.keyLabel === `Milo ${provider} (Squire)`);
+      const provider = row.keyLabel?.match(/^Milo (.+) \(Squire\)$/)?.[1];
       const owned = managedSharingProvider(row);
       const fallback = !provider && owned !== undefined;
       const retired = retiredManagedAdapter(row);
@@ -592,7 +634,7 @@ export class FreeLLMAdmin {
       const disabledParticle = owned === 'kilo' && row.modelId === KILO_PARTICLE && row.enabled === false;
       return { modelDbId: row.modelDbId,
         enabled: sharingAllowed && !obsoleteManagedKilo(row) && !disabledParticle
-          && (fallback || (provider ? row.platform === 'custom' && vetted && !excluded.includes(provider) : row.enabled === true)),
+          && (fallback || (provider ? row.platform === 'custom' && vetted && !excluded.map(providerLabel).includes(provider) : row.enabled === true)),
         priority: disabledParticle || retired ? row.priority : owned === 'kilo' ? 999999 : row.priority };
     });
     await this.call('/fallback', rows, 'PUT');
@@ -774,7 +816,7 @@ function readyRouter(signal?: AbortSignal): Promise<FreeLLMAdmin> {
   void starting.finally(() => { if (routerStarts.get(key) === starting) routerStarts.delete(key); }).catch(() => {});
   return starting;
 }
-export async function setup(notify = console.log, providers: Provider[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[] } = {}) {
+export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[] } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? process.env.MILO_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
@@ -889,7 +931,8 @@ export async function setup(notify = console.log, providers: Provider[] = ['groq
     }
     const router = await readyRouter(options.signal);
     options.signal?.throwIfAborted();
-    const result = await setupProviders(squire, router, { providers, notify, dataSharingApproved: approved });
+    for (const provider of providers) if (providerURL(provider)) await setupURL(squire as BrowserSquire, router, provider, notify);
+    const result = await setupProviders(squire, router, { providers: providers.filter(provider => !providerURL(provider)) as Provider[], notify, dataSharingApproved: approved });
     const dropped = new Set(result.dropped);
     if (dropped.size) throw new Error(`Provider setup incomplete: ${[...dropped].join(', ')}`);
     await router.configureChain([...dropped], approved);
