@@ -22,21 +22,23 @@ The installer verifies that the server timezone is America/New_York and retains
 a private crontab backup. Reinstalling replaces that block, not other jobs.
 
 Runs do not overlap. Each has a 45-minute deadline; smoke research is limited to
-15 minutes. The standalone worker (`--no-daemon`) uses a workspace sandbox with network access, existing
-Squire grants and its own checkout/worktrees. Its subprocess environment excludes
-inherited API keys. Raw tool transcripts and upstream error payloads are not
+15 minutes. The standalone worker (`--no-daemon`) uses a workspace sandbox with
+network access, existing Squire grants and its own checkout/worktrees. Its
+subprocess environment excludes inherited API keys. Raw tool transcripts and upstream error payloads are not
 retained. The workspace is writable; the supervisor's configuration, installed
 policy and ledger are outside the worker's writable roots. An expired login,
-missing web search, malformed output or timeout is
-reported as a failed run rather than a successful empty search.
+missing web search, malformed output or timeout is reported as a failed run
+rather than a successful empty search.
 
 `~/.local/state/usegrunt-scout/ledger.json` deduplicates offers by provider domain
 and model. Reports live under `reports/`; `last-run.json` and `cron.log` record
 execution status. State and reports are private to the operator. These are local
 reports, not email or chat notifications. Inspect status here or from the CLI.
+Saved reports and summaries use the supervisor's validated candidate statuses,
+including candidates downgraded when required evidence is missing.
 
-The policy carries the approved model-quality, >=200K context, recurring-free,
-signup-friction and data-sharing requirements. Qualified signups reuse Squire;
+The [scouting policy](POLICY.md) carries the approved model-quality, >=200K
+context, recurring-free, signup-friction and data-sharing requirements. Qualified signups reuse Squire;
 human verification is retained as pending work. Isolated integration must prove
 an exact-source Grunt reply, native tool call and free-access guards before a
 candidate can be marked ready for review. A documented context size is distinct
