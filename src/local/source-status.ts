@@ -52,6 +52,15 @@ export class SourceStatus {
   }
   guard(id: string): ObservationGuard { return { revision: this.entry(id).revision }; }
   changed(id: string, guard: ObservationGuard) { return this.entry(id).revision !== (guard.acceptedRevision ?? guard.revision); }
+  metadata(id: string, guard: ObservationGuard) {
+    const entry = this.entry(id);
+    if (this.changed(id, guard) || entry.failure) return;
+    // Read-only catalog/local access is weaker than a generated reply. It must
+    // not recover failures or turn an old successful response into fresh proof.
+    entry.revision++;
+    entry.state = 'available';
+    guard.acceptedRevision = entry.revision;
+  }
   healthy(id: string) {
     const entry = this.entry(id);
     entry.revision++;

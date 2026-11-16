@@ -91,6 +91,19 @@ export class Sources {
     };
     const signal = AbortSignal.any([caller, AbortSignal.timeout(MAINTENANCE_CHECK_TIMEOUT)]);
     try {
+      if (id === 'clixad') {
+        // Clixad's explicit ask path invokes wallet operations which can claim
+        // a daily streak reward. Idle maintenance is restricted to its bounded
+        // read-only installation/receipt/public-model projection instead.
+        guard = this.observation.guard(id);
+        const available = await source.available();
+        signal.throwIfAborted();
+        const newer = newerEvidence();
+        if (newer) return newer;
+        if (!available) throw new SourceError('not_installed', 'Clixad read-only metadata is unavailable');
+        this.observation.metadata(id, guard);
+        return { outcome: 'passed', evidence: 'metadata' };
+      }
       cwd = await mkdtemp(join(tmpdir(), 'grunt-maintenance-'));
       signal.throwIfAborted();
       // A request or foreground setup may have started during directory IO.
@@ -121,7 +134,7 @@ export class Sources {
       const retryAfter = failure.code === 'quota' ? (typeof failure.retryAfter === 'number' && Number.isFinite(failure.retryAfter) && failure.retryAfter >= 0 ? failure.retryAfter : 3600) : undefined;
       this.observation.failed(id, failure.code, retryAfter);
       const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
-      return { outcome: 'failed', code: failure.code, ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
+      return { outcome: 'failed', code: failure.code, ...(id === 'clixad' ? { evidence: 'metadata' } : {}), ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
     } finally {
       this.checking.delete(id);
       if (cwd) await rm(cwd, { recursive: true, force: true });
