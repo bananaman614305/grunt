@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Operator-only, twice-daily provider research and qualification queue."""
+"""Operator-only, twice-daily discovery, qualification and guarded release."""
 import argparse
-import collections
-import contextlib
 import datetime as dt
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import shlex
 import shutil
 import signal
@@ -17,13 +14,18 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from urllib.parse import urlsplit
+
+from worker import WorkerError, run_agent
 
 BEGIN = '# BEGIN usegrunt-provider-scout'
 END = '# END usegrunt-provider-scout'
 UTC = dt.timezone.utc
+
+
+class ScoutCancelled(BaseException):
+    """Cancellation must cross controller exception-to-blocked handlers."""
 
 
 def now():
@@ -113,7 +115,7 @@ def qualify(candidate, workspace, smoke=False):
     if candidate['status'] == 'ready_for_review':
         if candidate['setup_status'] not in ('anonymous', 'reused', 'signed_up'):
             return 'needs_approval' if candidate['setup_status'] == 'approval_needed' else 'integration_pending'
-        return 'ready_for_review' if ready_evidence(candidate, workspace) else 'integration_pending'
+        return 'ready_for_review' if isinstance(candidate.get('release_request'), dict) and ready_evidence(candidate, workspace) else 'integration_pending'
     return candidate['status']
 
 
@@ -123,13 +125,17 @@ def ingest(report, ledger, workspace, smoke=False):
     candidates = report.get('candidates')
     if not isinstance(candidates, list) or len(candidates) > (3 if smoke else 20):
         raise ValueError('Candidate budget exceeded')
+    requests = [item for item in candidates if item.get('release_request') is not None]
+    if len(requests) > (0 if smoke else 1):
+        raise ValueError('Integration budget exceeded')
     updated = json.loads(json.dumps(ledger))
     stamp = now()
     for candidate in candidates:
         status = qualify(candidate, workspace, smoke)
         key = candidate_id(candidate)
         old = updated['candidates'].get(key, {})
-        updated['candidates'][key] = {**candidate, 'status': status, 'first_seen': old.get('first_seen', stamp),
+        lifecycle = {name: value for name, value in old.items() if name.startswith('pipeline_')}
+        updated['candidates'][key] = {**candidate, **lifecycle, 'status': status, 'first_seen': old.get('first_seen', stamp),
                                       'last_seen': stamp, 'sightings': old.get('sightings', 0) + 1}
     return updated
 
@@ -163,7 +169,9 @@ def install(root, source_repo):
     private_directory(root)
     target = Path.home() / '.local/lib/usegrunt-scout'
     private_directory(target)
-    for name in ('scout.py', 'POLICY.md', 'report.schema.json'):
+    modules = [path.name for path in Path(__file__).parent.iterdir()
+               if path.suffix in ('.py', '.mjs') and not path.name.startswith('test_')]
+    for name in [*modules, 'POLICY.md', 'report.schema.json']:
         if (target / name).is_symlink():
             raise ValueError('Unsafe installed scout file')
         if (Path(__file__).parent / name).resolve() != (target / name).resolve():
@@ -182,12 +190,21 @@ def install(root, source_repo):
     checkout = workspace / 'repo'
     if not checkout.exists():
         subprocess.run(['git', 'clone', '--depth=1', remote, str(checkout)], check=True, capture_output=True, timeout=120)
-    atomic(root / 'config.json', {'version': 1, 'codex': codex, 'source_repo': str(source_repo.resolve()),
-                                 'workspace': str(workspace), 'timeout_seconds': 2700, 'timezone': zone})
+    config = load(root / 'config.json', {})
+    config.update(version=2, codex=codex, source_repo=str(source_repo.resolve()),
+                  workspace=str(workspace), timezone=zone)
+    config.setdefault('timeout_seconds', 2700)
+    config.setdefault('release_enabled', False)
+    config['squire_proxy'] = str(target / 'squire_proxy.py')
+    config['provision_helper'] = str(target / 'provision.mjs')
+    atomic(root / 'config.json', config)
     if not (root / 'ledger.json').exists():
         atomic(root / 'ledger.json', {'version': 1, 'candidates': {}})
     (root / 'cron.log').touch(mode=0o600, exist_ok=True)
     wrapper = Path.home() / '.local/bin/usegrunt-scout'
+    wrapper.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if wrapper.is_symlink():
+        raise ValueError('Unsafe installed scout wrapper')
     wrapper.write_text('#!/bin/sh\nexec ' + shlex.join([sys.executable, str(target / 'scout.py'), '--state', str(root)]) + ' "$@"\n')
     wrapper.chmod(0o700)
     read = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
@@ -208,20 +225,24 @@ def install(root, source_repo):
     print(json.dumps({'installed': True, 'schedule': '09:00 and 21:00 America/New_York', 'command': str(wrapper)}))
 
 
-def stop_worker(worker):
-    if worker.poll() is not None:
-        return
-    try:
-        os.killpg(worker.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        worker.wait()
-        return
-    try:
-        worker.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(worker.pid, signal.SIGKILL)
-        worker.wait()
+def record_pipeline_result(ledger, result, candidate=None):
+    """Only trusted controller results may set these durable lifecycle fields."""
+    if not isinstance(result, dict):
+        raise ValueError('Invalid pipeline result')
+    key = candidate_id(candidate) if candidate is not None else result.get('candidate_id')
+    source = result.get('source_id')
+    head = result.get('head_sha')
+    keys = [key] if key in ledger['candidates'] else [
+        item_key for item_key, item in ledger['candidates'].items()
+        if source and (item.get('release_request') or {}).get('source_id') == source
+        and (not head or (item.get('release_request') or {}).get('head_sha') == head)]
+    for item_key in keys:
+        request = ledger['candidates'][item_key].get('release_request') or {}
+        if (source and request.get('source_id') != source) or (head and request.get('head_sha') != head):
+            raise ValueError('Pipeline result does not match candidate')
+        ledger['candidates'][item_key].update(pipeline_status=result['status'],
+                                              pipeline_reason=result.get('reason', ''),
+                                              pipeline_updated_at=now())
 
 
 def run(root, smoke=False):
@@ -234,6 +255,7 @@ def run(root, smoke=False):
             print(json.dumps({'status': 'skipped', 'reason': 'scout already running'}))
             return 0
         config = load(root / 'config.json')
+        deadline = time.monotonic() + config['timeout_seconds']
         workspace = Path(config['workspace'])
         private_directory(workspace)
         stamp = dt.datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
@@ -242,104 +264,83 @@ def run(root, smoke=False):
         state = {'id': stamp, 'started_at': now(), 'status': 'running', 'pid': os.getpid(), 'smoke': smoke}
         atomic(root / 'last-run.json', state)
         ledger = load(root / 'ledger.json', {'version': 1, 'candidates': {}})
-        registry = load(Path(config['source_repo']) / 'registry/adapters.json')
-        context = {'date_utc': now(), 'smoke': smoke, 'source_repo': config['source_repo'],
-                   'workspace': str(workspace), 'curated_registry': registry,
-                   'previous_candidates': list(ledger['candidates'].values())[-200:],
-                   'max_candidates': 3 if smoke else 20, 'max_signups': 0 if smoke else 2}
-        policy = (Path(__file__).parent / 'POLICY.md').read_text()
-        prompt = policy + '\n\n## This run\n' + json.dumps(context, indent=2)
+        pipeline = None
         output = directory / 'result.json'
-        duration = min(config['timeout_seconds'], 900) if smoke else config['timeout_seconds']
-        args = [shutil.which('timeout') or '/usr/bin/timeout', '--signal=TERM', '--kill-after=10s', str(duration),
-                config['codex'], '--no-daemon', '--search', '-a', 'never', '-c', 'sandbox_workspace_write.network_access=true',
-                '-c', 'sandbox_workspace_write.writable_roots=[]',
-                '-c', 'mcp_servers.squire.tools.list_credentials.approval_mode="approve"',
-                'exec', '--sandbox', 'workspace-write', '--ephemeral', '--skip-git-repo-check', '--trust',
-                '-C', str(workspace), '--json',
-                '--output-schema', str(Path(__file__).parent / 'report.schema.json'),
-                '--output-last-message', str(output), '-']
-        # Keep inherited secrets out of the agent's subprocess environment.
-        allowed = {'HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_HOME'}
-        env = {key: value for key, value in os.environ.items() if key in allowed}
-        env['PATH'] = str(Path.home() / '.local/bin') + ':/usr/local/bin:/usr/bin:/bin'
-        counts = collections.Counter()
-        worker = None
-        reader = None
         previous_handlers = {}
+        def cancel(*_):
+            raise ScoutCancelled()
+        for number in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[number] = signal.signal(number, cancel)
         try:
-            worker = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                      text=True, env=env, start_new_session=True, pass_fds=(lock.fileno(),))
-            state['worker_pid'] = worker.pid
-            atomic(root / 'last-run.json', state)
+            if not smoke and config.get('release_enabled') is True:
+                from pipeline import Pipeline
+                pipeline = Pipeline({**config, '_deadline_monotonic': deadline, '_lock_fd': lock.fileno()}, root)
+                state['pipeline_results'] = pipeline.resume_pending()
+                for result in state['pipeline_results']:
+                    record_pipeline_result(ledger, result)
+                atomic(root / 'ledger.json', ledger)
+            registry = load(Path(config['source_repo']) / 'registry/adapters.json')
+            context = {'date_utc': now(), 'smoke': smoke, 'source_repo': config['source_repo'],
+                       'workspace': str(workspace), 'curated_registry': registry,
+                       'previous_candidates': list(ledger['candidates'].values())[-200:],
+                       'max_candidates': 3 if smoke else 20, 'max_signups': 0 if smoke else 2,
+                       'max_integrations': 0 if smoke or state.get('pipeline_results') else 1,
+                       'release_enabled': bool(pipeline)}
+            policy = (Path(__file__).parent / 'POLICY.md').read_text()
+            prompt = policy + '\n\n## This run\n' + json.dumps(context, indent=2)
+            duration = min(900 if smoke else 1200, deadline - time.monotonic())
+            if duration <= 0:
+                raise WorkerError('worker_timeout')
 
-            def consume():
-                for line in iter(lambda: worker.stdout.readline(1024 * 1024 + 1), ''):
-                    if len(line) > 1024 * 1024:
-                        continue
-                    try:
-                        event = json.loads(line)
-                        kind = event.get('item', {}).get('type', '')
-                        if event.get('type') == 'item.completed' and re.fullmatch('[a-z_]{1,64}', kind):
-                            counts[kind] += 1
-                    except (ValueError, TypeError, AttributeError):
-                        pass
+            def progress(value):
+                state.update(heartbeat_at=now(), tool_counts=value.get('tool_counts', {}),
+                             approval_rejections=value.get('approval_rejections', 0))
+                if 'worker_pid' in value:
+                    state['worker_pid'] = value['worker_pid']
+                atomic(root / 'last-run.json', state)
 
-            reader = threading.Thread(target=consume, daemon=True)
-            reader.start()
-            def cancel(*_):
-                raise InterruptedError()
-
-            for number in (signal.SIGTERM, signal.SIGINT):
-                previous_handlers[number] = signal.signal(number, cancel)
-            worker.stdin.write(prompt)
-            worker.stdin.close()
-            deadline = time.monotonic() + duration
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(args, duration)
-                try:
-                    code = worker.wait(timeout=min(10, remaining))
-                    break
-                except subprocess.TimeoutExpired:
-                    state.update(heartbeat_at=now(), tool_counts=dict(counts))
-                    atomic(root / 'last-run.json', state)
-            reader.join(timeout=5)
-            if code in (124, 137):
-                raise subprocess.TimeoutExpired(args, duration)
-            if code != 0:
-                raise ValueError('Codex worker failed; check its login and tool availability')
-            if not any(counts[key] for key in ('web_search', 'web_search_call')):
-                raise ValueError('No completed live web search was observed')
-            report = load(output)
+            result = run_agent({'role': 'implementer', 'prompt': prompt,
+                                'schema': load(Path(__file__).parent / 'report.schema.json'),
+                                'cwd': str(workspace), 'output_path': str(output),
+                                'timeout_seconds': duration, 'lock_fd': lock.fileno(),
+                                'smoke': smoke, 'web_search': True, 'require_web_search': True},
+                               config, progress)
+            report = result['result']
             updated = ingest(report, ledger, workspace, smoke)
+            if pipeline is not None and not state.get('pipeline_results'):
+                eligible = [item for item in updated['candidates'].values()
+                            if item['status'] == 'ready_for_review' and item.get('release_request')
+                            and item.get('pipeline_status') not in ('released', 'publication_pending')]
+                if eligible:
+                    item = eligible[0]
+                    outcome = pipeline.process(item)
+                    record_pipeline_result(updated, outcome, item)
+                    state.setdefault('pipeline_results', []).append(outcome)
             report = normalized_report(report, updated)
             atomic(root / 'ledger.json', updated)
             state.update(status='completed', summary=report['summary'], candidates_seen=len(report['candidates']),
                          ready_for_review=sum(value['status'] == 'ready_for_review' for value in updated['candidates'].values()),
-                         blockers=report['blockers'], tool_counts=dict(counts), report=str(root / 'reports' / (stamp + '.json')))
+                         blockers=report['blockers'], tool_counts=result['tool_counts'],
+                         approval_rejections=result.get('approval_rejections', 0),
+                         report=str(root / 'reports' / (stamp + '.json')))
             atomic(root / 'reports' / (stamp + '.json'), {**report, 'operator_status': state})
-        except subprocess.TimeoutExpired:
-            state.update(status='failed', reason='worker timeout')
-        except InterruptedError:
+        except ScoutCancelled:
+            for number in previous_handlers:
+                signal.signal(number, signal.SIG_IGN)
             state.update(status='cancelled', reason='operator or service signal')
-        except (ValueError, OSError, KeyError, TypeError):
-            state.update(status='failed', reason='worker, output or evidence validation failed', tool_counts=dict(counts))
+        except WorkerError as error:
+            state.update(status='cancelled' if error.reason == 'worker_cancelled' else 'failed',
+                         reason='worker timeout' if error.reason == 'worker_timeout' else error.reason,
+                         tool_counts=error.tool_counts)
+        except (ValueError, OSError, KeyError, TypeError, ImportError):
+            state.update(status='failed', reason='worker, output or pipeline validation failed')
         finally:
-            if worker is not None:
-                stop_worker(worker)
-                if reader is not None:
-                    reader.join(timeout=5)
-                worker.stdout.close()
-                with contextlib.suppress(BrokenPipeError):
-                    worker.stdin.close()
-            for number, handler in previous_handlers.items():
-                signal.signal(number, handler)
-            state['finished_at'] = now()
-            atomic(root / 'last-run.json', state)
-            if output.exists():
-                output.chmod(0o600)
+            try:
+                state['finished_at'] = now()
+                atomic(root / 'last-run.json', state)
+            finally:
+                for number, handler in previous_handlers.items():
+                    signal.signal(number, handler)
         print(json.dumps(state))
         return 0 if state['status'] == 'completed' else 1
 

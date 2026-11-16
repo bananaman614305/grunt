@@ -145,6 +145,62 @@
               "string",
               "null"
             ]
+          },
+          "release_request": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "checkout": {
+                "type": "string",
+                "minLength": 1
+              },
+              "head_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "base_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "source_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._-]*$"
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence_file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pr_number": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              },
+              "config_dir": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "checkout",
+              "head_sha",
+              "base_sha",
+              "source_id",
+              "model",
+              "evidence_file",
+              "pr_number",
+              "config_dir"
+            ]
           }
         },
         "required": [
@@ -161,9 +217,11 @@
           "data_policy",
           "setup_status",
           "probe",
-          "proposal_url"
+          "proposal_url",
+          "release_request"
         ]
-      }
+      },
+      "maxItems": 20
     },
     "blockers": {
       "type": "array",

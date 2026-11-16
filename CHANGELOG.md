@@ -4,10 +4,12 @@
 
 ### Added
 
+- Complete the operator's twice-daily provider scout with guarded Squire signup, isolated checks and live routing probes, two independent reviews, and resumable PR merge/npm publication. Qualified providers reach new installations only after the published package and its default registry are verified.
 - Recover sources automatically: when no source can answer a request, the daemon adds vetted providers in the background (saved Squire access first, then signup) for providers whose data-sharing approval is already recorded. One run at a time; the next request finds the new source.
 
 ### Fixed
 
+- Keep the bundled provider registry as the minimum revision, so an older remote registry or cache cannot hide providers included in a newer release.
 - Send automatic requests that carry function tools only to sources that return tool calls to the harness. OpenCode runs its own tools and returns final text, so it now receives tool-bearing requests only when the caller names `opencode`. A task bound to OpenCode hands off to a tool-capable source once tools appear. When none is usable, grunt returns a clear error instead of a text-only reply. This restores the filter from #45 that #47 removed while only FreeLLMAPI and Gateway supported tools.
 
 ## [0.6.10] - 2026-11-15
