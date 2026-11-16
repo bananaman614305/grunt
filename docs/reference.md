@@ -166,7 +166,7 @@ including SSE. Choose model `grunt` for automatic source selection, or a source
 id such as `kilo`. This process is separate from the Fly server and Docker
 entry point. Keep this endpoint on your own machine.
 
-Automatic selection (`grunt` or `grunt`) sends requests containing function tools
+Automatic selection (`grunt`) sends requests containing function tools
 only to sources that return tool calls to the caller's harness. Native API
 sources forward function definitions; validated JSON bridges return correlated
 calls for the caller's harness to execute. OpenCode runs its own delegate tools
