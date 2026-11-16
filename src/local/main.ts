@@ -32,6 +32,7 @@ import type { Registry } from '../registry.js';
 import { RegistrySync } from './registry.js';
 import { configDir } from './wizard.js';
 import { DailyMaintenance } from './maintenance.js';
+import { SourceRecovery } from './recovery.js';
 import { readSetupSession } from './setup-session.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry) {
@@ -112,8 +113,20 @@ export function start(env = process.env) {
     }
   });
   sources.setMaintenance(() => maintenance.snapshot());
+  // With no usable source, add providers by themselves (vault access, then signup).
+  const recovery = new SourceRecovery({ directory,
+    candidates: async () => {
+      const ids: string[] = [];
+      for (const source of sources.sources) {
+        if (!knownAdapters.has(source.id) || disabledAdapters.has(source.id) || sources.pending.has(source.id)) continue;
+        if (!await source.available().catch(() => false)) ids.push(source.id);
+      }
+      return ids;
+    }, notify: console.error });
+  sources.setRecovery(() => recovery.trigger());
   // Registry downloads and access maintenance are independent. No daemon
-  // maintenance path provisions accounts or starts an interactive browser.
+  // maintenance path provisions accounts or starts an interactive browser; only the
+  // recovery below does, and only when no source can answer.
   const ready = sync.load().then(refreshSession);
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
@@ -122,7 +135,7 @@ export function start(env = process.env) {
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; await refreshSession(); return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;
-  const close = async () => { if (closing) return; closing = true; await Promise.all([maintenance.close(), sync.close()]); await sources.close(); server.close(); };
+  const close = async () => { if (closing) return; closing = true; await Promise.all([maintenance.close(), sync.close(), recovery.close()]); await sources.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, close };
 }

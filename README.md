@@ -56,7 +56,7 @@ bounded hello directly to that provider, with normal consent and free-access
 guards. Idle Clixad checks use read-only metadata to avoid automatic wallet or
 streak claims; they are recorded as metadata evidence rather than a fresh reply.
 The queue defers checks during user requests, setup and cooldowns. Maintenance
-does not install tools, create accounts or open sign-in flows. The dashboard's
+does not install tools, create accounts or open sign-in flows. When a request finds no source that can answer, the daemon separately starts one background recovery that adds vetted providers whose data-sharing approval is already recorded (saved Squire access first, then signup); it never runs without that approval. The dashboard's
 source details show the last check, its outcome and the next due time. Registry
 downloads still refresh independently, and first-time onboarding stays parallel.
 
