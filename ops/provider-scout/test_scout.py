@@ -50,6 +50,14 @@ class ScoutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scout.cron_text(scout.BEGIN, '/safe/scout')
 
+    def test_crash_leftovers_do_not_block_atomic_state_updates(self):
+        leftover = self.workspace / 'last-run.json.tmp'
+        leftover.write_text('interrupted earlier write')
+        scout.atomic(self.workspace / 'last-run.json', {'status': 'completed'})
+        self.assertEqual(scout.load(self.workspace / 'last-run.json'), {'status': 'completed'})
+        self.assertEqual(leftover.read_text(), 'interrupted earlier write')
+        self.assertEqual(list(self.workspace.glob('last-run.json.*.tmp')), [])
+
     def test_pending_evidence_cannot_be_promoted(self):
         self.assertEqual(scout.qualify(candidate(), self.workspace), 'integration_pending')
         self.proof()
@@ -100,6 +108,15 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual(first['candidates'][key]['first_seen'], second['candidates'][key]['first_seen'])
         self.assertEqual(empty['candidates'], {})
 
+    def test_report_and_summary_use_operator_validated_statuses(self):
+        report = {'summary': 'Synthetic provider ready for review', 'web_search_used': True,
+                  'search_queries': ['one', 'two'], 'candidates': [candidate()], 'blockers': []}
+        updated = scout.ingest(report, {'version': 1, 'candidates': {}}, self.workspace)
+        normalized = scout.normalized_report(report, updated)
+        self.assertEqual(normalized['candidates'][0]['status'], 'integration_pending')
+        self.assertIn('0 ready for review', normalized['summary'])
+        self.assertEqual(report['candidates'][0]['status'], 'ready_for_review')
+
     def test_overlapping_run_never_starts_a_worker(self):
         with open(self.workspace / 'run.lock', 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -146,6 +163,9 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual(state['status'], 'completed')
         self.assertEqual(state['tool_counts']['web_search'], 1)
         self.assertEqual(len(scout.load(self.workspace / 'ledger.json')['candidates']), 1)
+        saved = scout.load(Path(state['report']))
+        self.assertEqual(saved['candidates'][0]['status'], 'researched')
+        self.assertIn('0 ready for review', state['summary'])
 
     def test_model_claiming_search_without_a_search_event_fails(self):
         self.worker_fixture(web_event=False)

@@ -16,6 +16,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from urllib.parse import urlsplit
@@ -37,8 +38,8 @@ def private_directory(path):
 
 
 def atomic(path, value):
-    temporary = path.with_name(path.name + '.tmp')
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    temporary = Path(name)
     try:
         with os.fdopen(descriptor, 'w') as file:
             json.dump(value, file, indent=2)
@@ -131,6 +132,16 @@ def ingest(report, ledger, workspace, smoke=False):
         updated['candidates'][key] = {**candidate, 'status': status, 'first_seen': old.get('first_seen', stamp),
                                       'last_seen': stamp, 'sightings': old.get('sightings', 0) + 1}
     return updated
+
+
+def normalized_report(report, ledger):
+    candidates = [{**item, 'status': ledger['candidates'][candidate_id(item)]['status']} for item in report['candidates']]
+    changed = sum(old['status'] != new['status'] for old, new in zip(report['candidates'], candidates))
+    summary = report['summary']
+    if changed:
+        ready = sum(item['status'] == 'ready_for_review' for item in candidates)
+        summary = f'Operator validation adjusted {changed} candidate statuses; {len(candidates)} reviewed, {ready} ready for review.'
+    return {**report, 'summary': summary, 'candidates': candidates}
 
 
 def cron_text(existing, command):
@@ -302,6 +313,7 @@ def run(root, smoke=False):
                 raise ValueError('No completed live web search was observed')
             report = load(output)
             updated = ingest(report, ledger, workspace, smoke)
+            report = normalized_report(report, updated)
             atomic(root / 'ledger.json', updated)
             state.update(status='completed', summary=report['summary'], candidates_seen=len(report['candidates']),
                          ready_for_review=sum(value['status'] == 'ready_for_review' for value in updated['candidates'].values()),
