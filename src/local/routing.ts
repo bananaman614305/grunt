@@ -10,7 +10,7 @@ import { knownAdapters } from '../registry.js';
 import type { SourceStatus } from './source-status.js';
 
 const exec = promisify(execFile);
-export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; observation?: SourceStatus }
+export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion> }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
@@ -96,7 +96,7 @@ export class StickyRouter {
         }
         try {
           const input = task.switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
-          const result = await (this.options.observation ? this.options.observation.complete(selected.source, input, signal) : selected.source.complete(input, signal));
+          const result = await (this.options.attempt ? this.options.attempt(selected.source, input, signal) : this.options.observation ? this.options.observation.complete(selected.source, input, signal) : selected.source.complete(input, signal));
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
           return result;
