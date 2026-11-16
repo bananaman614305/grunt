@@ -229,6 +229,13 @@ apply. A different provider cannot answer that probe through failover. Checks
 consume free inference allowance when a fresh reply is needed; the output cap
 does not cap native CLI input/context overhead.
 
+Idle Clixad checks use its existing read-only local checks and public free-model
+catalog instead of inference. Its native wallet command can claim the ordinary
+daily streak bonus and remains reserved for explicit setup and user requests.
+The maintenance result records `metadata` evidence, which does not establish a
+fresh generated reply or clear an inference cooldown. A recent successful user
+reply still satisfies its daily check as `reply` evidence.
+
 Foreground-owned sources, current user requests and routing cooldowns defer the
 check. Deferred work retries later without being counted as healthy; provider
 retry delays are honored. A source that needs sign-in is reported for foreground
@@ -236,6 +243,9 @@ setup. Maintenance does not invoke provisioning, install tools, create accounts,
 invalidate authentication receipts or launch browser repair. The setup wizard
 retains its separate parallel first-ready flow. Source details and `--json`
 expose cached maintenance timing/outcome/evidence without starting new checks.
+Each source's optional `maintenance` object contains `nextCheckAt` and, when
+known, `lastAttemptAt`, `lastCheckedAt`, `outcome`, `evidence` and a safe `code`.
+Timestamps are milliseconds since the Unix epoch.
 
 The queue starts automatically in every installed daemon running 0.6.9 or later;
 it is per user and uses that user's configured providers, consent and accounts.
