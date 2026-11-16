@@ -73,7 +73,19 @@ class Fixture:
                        'publication_poll_attempts': 1, 'publication_poll_seconds': 0, 'release_check_runner': self.check_run}
         self.calls = []
         self.pr = None
-        self.actions = False
+        self.actions = True
+        self.repository_public = True
+        self.ci_status = 'completed'
+        self.ci_conclusion = 'success'
+        self.ci_workflow = promotion.CI_WORKFLOW
+        self.ci_check_name = promotion.CI_CHECK
+        self.ci_head = head
+        self.ci_workflow_id = 7
+        self.ci_suite = 11
+        self.status_contexts = []
+        self.mergeable = True
+        self.mergeable_state = 'clean'
+        self.change_head_after_checks = False
         self.merged = False
         self.public = False
         self.immediate_publication = True
@@ -116,11 +128,30 @@ class Fixture:
         if binary in ('gh', 'gh-axi'):
             if args[1] == 'api':
                 endpoint = args[-1]
-                if '--method' in args and 'enabled=false' in args:
-                    self.actions = False
-                    return ''
+                assert '--method' not in args, 'Promotion must not change GitHub settings'
+                if endpoint == 'repos/' + promotion.REPOSITORY:
+                    return json.dumps({'full_name':promotion.REPOSITORY,'private':not self.repository_public,
+                                       'visibility':'public' if self.repository_public else 'private'})
                 if endpoint.endswith('/actions/permissions'):
                     return json.dumps({'enabled': self.actions})
+                if endpoint.endswith('/actions/workflows/ci.yml'):
+                    return json.dumps({'id':self.ci_workflow_id,'path':promotion.CI_WORKFLOW,'state':'active'})
+                if '/check-runs?' in endpoint:
+                    return json.dumps({'total_count':1,'check_runs':[{'name':self.ci_check_name,
+                        'head_sha':self.ci_head,'status':self.ci_status,'conclusion':self.ci_conclusion,
+                        'app':{'slug':'github-actions'},'check_suite':{'id':self.ci_suite}}]})
+                if '/actions/workflows/ci.yml/runs?' in endpoint:
+                    return json.dumps({'total_count':1,'workflow_runs':[{'id':17,'workflow_id':self.ci_workflow_id,
+                        'check_suite_id':self.ci_suite,'head_sha':self.ci_head,'path':self.ci_workflow,
+                        'event':'pull_request','repository':{'full_name':promotion.REPOSITORY},
+                        'status':self.ci_status,'conclusion':self.ci_conclusion}]})
+                if '/status?' in endpoint:
+                    if self.change_head_after_checks:
+                        self.pr['head']['sha'] = 'f'*40
+                    state = 'failure' if any(item['state'] in ('failure','error') for item in self.status_contexts) else (
+                        'pending' if any(item['state'] != 'success' for item in self.status_contexts) else 'success')
+                    return json.dumps({'sha':self.ci_head,'total_count':len(self.status_contexts),
+                                       'state':state,'statuses':self.status_contexts})
                 if endpoint.endswith('/git/ref/heads/main'):
                     return json.dumps({'object': {'sha': self.main_ref}})
                 if '/pulls?' in endpoint:
@@ -130,14 +161,15 @@ class Fixture:
             if args[1:3] == ['pr', 'create']:
                 self.pr = {'number': 123, 'state': 'open', 'draft': True, 'merged': False, 'merged_at': None,
                            'merge_commit_sha': None, 'head': {'sha': self.receipt['head_sha'], 'repo': {'full_name': promotion.REPOSITORY}},
-                           'base': {'ref': 'main', 'sha': self.base_sha}}
+                           'base': {'ref': 'main', 'sha': self.base_sha},
+                           'mergeable':self.mergeable,'mergeable_state':self.mergeable_state}
                 return 'created'
             if args[1:3] == ['pr', 'ready']:
                 self.pr['draft'] = False
                 return ''
             if args[1:3] == ['pr', 'merge']:
                 assert args[-2:] == ['--match-head-commit', self.receipt['head_sha']]
-                assert '--admin' not in args and not self.actions
+                assert '--admin' not in args and self.actions and self.repository_public
                 self.merged = True
                 self.pr.update(merged=True, merged_at='synthetic', merge_commit_sha=self.merge_sha)
                 return ''
@@ -187,7 +219,8 @@ class PromotionTests(unittest.TestCase):
         self.assertTrue(result['default_pool_verified'])
         self.assertEqual(fixture.uploads, 1)
         self.assertTrue(fixture.merged)
-        self.assertFalse(fixture.actions)
+        self.assertTrue(fixture.actions)
+        self.assertFalse(any('--method' in call for call in fixture.calls))
         self.assertTrue(any(call[:2] == ['npm', 'pack'] for call in fixture.calls))
         self.assertTrue(any('build' in call for call in fixture.calls))
 
@@ -252,6 +285,116 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'sandboxed_release_check_runner_required')
         self.assertFalse(self.fixture.merged)
         self.assertEqual(self.fixture.uploads, 0)
+
+    def test_private_repository_blocks_before_ci_triggering_operations(self):
+        fixture = self.fixture
+        fixture.repository_public = False
+        self.assertEqual(fixture.promote()['reason'],'public_repository_required')
+        self.assertFalse(fixture.merged)
+        self.assertIsNone(fixture.pr)
+        self.assertEqual(fixture.uploads,0)
+        self.assertFalse(any(call[:2] == ['git','push'] for call in fixture.calls))
+        self.assertFalse(any('/actions/' in str(call) for call in fixture.calls))
+
+    def test_disabled_actions_is_not_changed_by_promotion(self):
+        fixture = self.fixture
+        fixture.actions = False
+        self.assertEqual(fixture.promote()['reason'],'github_actions_not_enabled')
+        self.assertFalse(any('--method' in call for call in fixture.calls))
+        self.assertFalse(any(call[:2] == ['git','push'] for call in fixture.calls))
+        self.assertFalse(fixture.actions)
+
+    def test_pending_ci_resumes_exact_head_without_duplicate_push_or_pr(self):
+        fixture = self.fixture
+        fixture.ci_status = 'in_progress'
+        fixture.ci_conclusion = None
+        first = fixture.promote()
+        self.assertEqual(first['status'],'ci_pending',first)
+        self.assertFalse(fixture.merged)
+        self.assertEqual(fixture.uploads,0)
+        self.assertEqual(first['head_sha'],fixture.receipt['head_sha'])
+        pushed = sum(call[:2] == ['git','push'] for call in fixture.calls)
+        created = sum(call[1:3] == ['pr','create'] for call in fixture.calls)
+        fixture.ci_status = 'completed'
+        fixture.ci_conclusion = 'success'
+        self.assertEqual(fixture.promote()['status'],'released')
+        self.assertEqual(sum(call[:2] == ['git','push'] for call in fixture.calls),pushed)
+        self.assertEqual(sum(call[1:3] == ['pr','create'] for call in fixture.calls),created)
+        self.assertEqual(fixture.uploads,1)
+
+    def test_failed_ci_never_merges_or_publishes(self):
+        fixture = self.fixture
+        fixture.ci_conclusion = 'failure'
+        self.assertEqual(fixture.promote()['reason'],'exact_head_ci_failed')
+        self.assertFalse(fixture.merged)
+        self.assertEqual(fixture.uploads,0)
+
+    def test_other_workflow_cannot_satisfy_canonical_ci(self):
+        fixture = self.fixture
+        fixture.ci_workflow = '.github/workflows/unrelated.yml'
+        self.assertEqual(fixture.promote()['reason'],'ci_workflow_binding_changed')
+        self.assertFalse(fixture.merged)
+        self.assertEqual(fixture.uploads,0)
+
+    def test_canonical_workflow_path_can_include_github_revision_suffix(self):
+        fixture = self.fixture
+        fixture.ci_workflow = promotion.CI_WORKFLOW + '@refs/pull/123/merge'
+        self.assertEqual(fixture.promote()['status'],'released')
+
+    def test_missing_canonical_ci_is_pending(self):
+        fixture = self.fixture
+        fixture.ci_check_name = 'unrelated'
+        self.assertEqual(fixture.promote()['status'],'ci_pending')
+        self.assertFalse(fixture.merged)
+
+    def test_check_head_drift_or_pr_head_drift_cannot_merge(self):
+        fixture = self.fixture
+        fixture.ci_head = 'f'*40
+        self.assertEqual(fixture.promote()['reason'],'ci_head_binding_changed')
+        fixture.ci_head = fixture.receipt['head_sha']
+        fixture.change_head_after_checks = True
+        self.assertEqual(fixture.promote()['reason'],'pull_request_binding_changed')
+        self.assertFalse(fixture.merged)
+        self.assertEqual(fixture.uploads,0)
+
+    def test_branch_protection_pending_is_resumable_without_admin_bypass(self):
+        fixture = self.fixture
+        fixture.mergeable = False
+        fixture.mergeable_state = 'blocked'
+        self.assertEqual(fixture.promote()['status'],'ci_pending')
+        self.assertFalse(any(call[1:3] == ['pr','merge'] for call in fixture.calls))
+        fixture.pr.update(mergeable=True,mergeable_state='clean')
+        self.assertEqual(fixture.promote()['status'],'released')
+        self.assertFalse(any('--admin' in call for call in fixture.calls))
+
+    def test_failed_commit_status_blocks_even_after_actions_pass(self):
+        fixture = self.fixture
+        fixture.status_contexts = [{'context':'external-required','state':'failure'}]
+        self.assertEqual(fixture.promote()['reason'],'exact_head_ci_failed')
+        self.assertFalse(fixture.merged)
+
+    def test_merged_publication_resume_does_not_require_actions_enabled(self):
+        fixture = self.fixture
+        fixture.immediate_publication = False
+        self.assertEqual(fixture.promote()['status'],'publication_pending')
+        fixture.actions = False
+        fixture.public = True
+        self.assertEqual(fixture.promote()['status'],'released')
+        self.assertEqual(fixture.uploads,1)
+
+    def test_default_squire_runtime_prefers_grunt_and_allows_existing_legacy_migration(self):
+        fixture = self.fixture
+        home = Path(self.temporary.name) / 'runtime-home'
+        current = home / '.config/grunt/runtime/dist/local/setup.js'
+        legacy = home / '.config/milo/runtime/dist/local/setup.js'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('legacy runtime')
+        config = {'npm_credential_reference':fixture.config['npm_credential_reference']}
+        with patch.object(promotion.Path,'home',return_value=home):
+            self.assertEqual(promotion._publisher_request(config,{},fixture.checkout)['squire_module'],str(legacy))
+            current.parent.mkdir(parents=True)
+            current.write_text('current runtime')
+            self.assertEqual(promotion._publisher_request(config,{},fixture.checkout)['squire_module'],str(current))
 
     def test_premerge_checkpoint_survives_erased_worker_workspace(self):
         fixture = self.fixture

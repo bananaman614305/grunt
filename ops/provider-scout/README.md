@@ -5,8 +5,8 @@ The server timezone follows Eastern daylight saving changes. It searches the
 internet for additional recurring free providers, qualifies them and can release
 successful integrations through the supervised pipeline below. It is separate
 from the daemon's daily maintenance checks and is not installed on users'
-machines by `npx usegrunt`. There is no GitHub Actions workflow for scouting or
-release.
+machines by `npx usegrunt`. Scouting and npm publication run on Chad. Normal
+GitHub Actions CI runs only after the Grunt repository is public.
 
 The job uses the operator's existing Codex ChatGPT sign-in and live web search;
 subscription usage and limits still apply. Trusty Squire handles eligible free
@@ -32,6 +32,8 @@ The supervisor requires Linux, Python 3.11 or later, Node 22 or later, Git,
 the signed-in Codex CLI and bubblewrap for isolated candidate checks/probes.
 Release additionally uses the authenticated GitHub CLI and protected Squire
 publisher access. These are operator prerequisites, separate from user setup.
+The canonical repository is `bananaman614305/grunt`; installation records this
+identity in the private supervisor configuration.
 
 Installation copies the trusted runner, policy, schemas and pipeline modules to
 `~/.local/lib/usegrunt-scout`, creates a separate scout-owned checkout and adds
@@ -84,10 +86,15 @@ gate.
    reviews must approve all model, context, free-access, terms, signup, consent
    and code-scope checks. A worker's success flags cannot authorize promotion.
 7. **Merge and publish.** With release enabled, the supervisor verifies
-   publication access, opens or reuses the candidate PR and merges the exact
-   approved head through the normal GitHub path. It builds and publishes the
+   publication access and public repository visibility before pushing a candidate
+   branch or opening its PR. It requires successful normal CI for the exact
+   reviewed head and honors branch protection before merging through the normal
+   GitHub path. Pending checks remain deferred and resume on the next pass;
+   failed checks block release. The supervisor never disables Actions or bypasses
+   checks with an administrator merge. It builds and publishes the
    matching npm artifact through protected Squire-backed access, then verifies
-   the public package and bundled registry. GitHub Actions remain unused.
+   the public package and bundled registry. Private repositories cannot start
+   this CI-backed promotion path.
 
 A signup, preliminary reply or locally passing test is not a release. A source
 joins the automatic pool only after the protected release pipeline succeeds.
@@ -126,6 +133,18 @@ To stop scheduling, use `crontab -e` and remove only the block between
 `# BEGIN usegrunt-provider-scout` and `# END usegrunt-provider-scout`. A running
 job can be stopped by sending TERM to the `pid` in `last-run.json`; the runner
 cleans up its own process group. Do not kill the shared browser or Squire broker.
+
+## Compatibility with older installations
+
+New runtime configuration uses `GRUNT_CONFIG_DIR`, `GRUNT_SOURCES` and
+`~/.config/grunt`. The supervisor may reuse an existing BrowserSquire runtime
+under `~/.config/milo` when the new runtime is absent; this fallback does not
+move credentials or expose them to the worker. Both production configuration
+directories are excluded from candidate probes.
+
+Installation recognizes `https://github.com/bananaman614305/milo.git` only as an
+explicit migration origin. All new clones, fetches, candidate validation and
+release operations use `https://github.com/bananaman614305/grunt.git`.
 
 ## Local verification
 

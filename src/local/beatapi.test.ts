@@ -49,7 +49,7 @@ it('returns rate failures immediately, honors cooldown, and allows router fallba
   const source = new BeatAPI({ directory, loadGrant: async () => grant(), fetcher });
   await expect(source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 91 });
   const next = { id: 'next', available: async () => true, complete: vi.fn(async () => ({ text: 'fallback' })) };
-  expect(await new Sources([source, next]).complete({ ...request(), model: 'milo' }, new AbortController().signal)).toEqual({ text: 'fallback' }); expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(await new Sources([source, next]).complete({ ...request(), model: 'grunt' }, new AbortController().signal)).toEqual({ text: 'fallback' }); expect(fetcher).toHaveBeenCalledTimes(2);
 });
 it('preserves native function IDs and validates returned JSON against tool schemas', async () => {
   const tool = { type: 'function', function: { name: 'nonce', parameters: { type: 'object', properties: { nonce: { type: 'string', const: 'synthetic' } }, required: ['nonce'], additionalProperties: false } } };

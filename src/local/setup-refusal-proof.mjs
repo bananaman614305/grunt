@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
-const dir = await mkdtemp(join(tmpdir(), 'milo-setup-detail-'));
+const dir = await mkdtemp(join(tmpdir(), 'grunt-setup-detail-'));
 const setupUrl = pathToFileURL(join(process.cwd(), 'dist/local/setup.js')).href;
 const hook = join(dir, 'setup-proof-hook.mjs');
 const secret = 'synthetic-hidden-provider-key';
@@ -18,45 +18,45 @@ BrowserSquire.prototype.connect = async () => {};
 BrowserSquire.prototype.close = async () => {};
 BrowserSquire.prototype.humanHandoff = async () => 'https://approval.test/sms';
 BrowserSquire.prototype.call = async function(name, args) {
-  if (process.env.MILO_PROOF_CASE.startsWith('admin')) {
+  if (process.env.GRUNT_PROOF_CASE.startsWith('admin')) {
     if (name === 'list_credentials') return { credentials: [{ service: ' MILO-FREELLMAPI-ADMIN ', reference: 'admin', field_names: ['password', 'encryption_key'] }] };
     if (name === 'fetch_credential') {
-      if (process.env.MILO_PROOF_CASE === 'admin-resume') {
+      if (process.env.GRUNT_PROOF_CASE === 'admin-resume') {
         if (args.action !== 'resume' || args.approval_id !== 'admin') throw new Error('Unexpected replacement approval');
         return { status: 'credential_fetched', fields: { password: 'SyntheticAdmin!42', encryption_key: 'SyntheticEncryption!42' } };
       }
-      const id = process.env.MILO_PROOF_CASE === 'admin-expired' ? 'renewed' : 'admin';
+      const id = process.env.GRUNT_PROOF_CASE === 'admin-expired' ? 'renewed' : 'admin';
       return { approval_id: id, approval_url: 'https://approval.test/' + id };
     }
     throw new Error('Unexpected vault write: existing router credentials must be reused');
   }
-  if (name === 'list_credentials') return { credentials: process.env.MILO_PROOF_CASE === 'reuse' ? [
+  if (name === 'list_credentials') return { credentials: process.env.GRUNT_PROOF_CASE === 'reuse' ? [
     { service: 'Groq', reference: 'groq', field_names: ['value'] }
   ] : [] };
   if (name === 'store_credential') return {};
   if (name === 'fetch_credential') return args.action === 'start'
     ? { approval_id: args.reference, approval_url: 'https://approval.test/load' }
-    : { status: 'credential_fetched', fields: { api_key: process.env.MILO_PROOF_SECRET } };
-  if (process.env.MILO_PROOF_CASE === 'reuse') throw new Error('Unexpected signup: existing vault keys must be reused');
-  if (name === 'operate_drive') return process.env.MILO_PROOF_CASE === 'policy'
+    : { status: 'credential_fetched', fields: { api_key: process.env.GRUNT_PROOF_SECRET } };
+  if (process.env.GRUNT_PROOF_CASE === 'reuse') throw new Error('Unexpected signup: existing vault keys must be reused');
+  if (name === 'operate_drive') return process.env.GRUNT_PROOF_CASE === 'policy'
     ? { status: 'needs_value', session_id: 'offline', remaining: 'Review the privacy policy and enter the SMS code.' }
-    : { status: 'stuck', session_id: 'offline', reason: process.env.MILO_PROOF_REASON || 'Provider denied automated account creation.', remaining: process.env.MILO_PROOF_REASON ? '' : 'api_key=' + process.env.MILO_PROOF_SECRET };
+    : { status: 'stuck', session_id: 'offline', reason: process.env.GRUNT_PROOF_REASON || 'Provider denied automated account creation.', remaining: process.env.GRUNT_PROOF_REASON ? '' : 'api_key=' + process.env.GRUNT_PROOF_SECRET };
   throw new Error('Unexpected Squire call in offline proof');
 };
 FreeLLMAdmin.prototype.login = async () => {};
 FreeLLMAdmin.prototype.configureChain = async excluded => {
-  if (process.env.MILO_PROOF_CASE === 'admin-resume') throw new Error('Offline proof complete: saved approval resumed without a new prompt');
-  if (process.env.MILO_PROOF_CASE === 'policy' && excluded?.includes('groq')) console.log('groq: disabled in active chain');
+  if (process.env.GRUNT_PROOF_CASE === 'admin-resume') throw new Error('Offline proof complete: saved approval resumed without a new prompt');
+  if (process.env.GRUNT_PROOF_CASE === 'policy' && excluded?.includes('groq')) console.log('groq: disabled in active chain');
 };
 FreeLLMAdmin.prototype.addKey = async function(provider, key) {
-  if (key !== process.env.MILO_PROOF_SECRET) throw new Error('Wrong offline vault key');
+  if (key !== process.env.GRUNT_PROOF_SECRET) throw new Error('Wrong offline vault key');
   console.log(provider + ': existing vault key imported');
 };
 FreeLLMAdmin.prototype.key = async () => { throw new Error('Offline proof complete: existing vault keys imported'); };
 `);
 const run = async (scenario, reason = '') => {
   const child = spawn(process.execPath, ['--import', hook, 'dist/local/main.js', 'setup'], {
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, XDG_CONFIG_HOME: join(dir, scenario.startsWith('admin') ? 'admin' : scenario), MILO_PROOF_CASE: scenario, MILO_PROOF_SECRET: secret, MILO_PROOF_REASON: reason }, stdio: ['ignore', 'pipe', 'pipe']
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, XDG_CONFIG_HOME: join(dir, scenario.startsWith('admin') ? 'admin' : scenario), GRUNT_PROOF_CASE: scenario, GRUNT_PROOF_SECRET: secret, GRUNT_PROOF_REASON: reason }, stdio: ['ignore', 'pipe', 'pipe']
   });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
@@ -88,7 +88,7 @@ try {
   assert(!vaultReuse.includes('Unexpected signup'), 'existing keys prevent browser signup');
   const adminReuse = await run('admin');
   assert(adminReuse.includes('Approve local FreeLLMAPI access: https://approval.test/admin') && !adminReuse.includes('Unexpected vault write'), 'router credential lookup also ignores service case and whitespace');
-  const statePath = join(dir, 'admin', 'milo', 'approvals.json');
+  const statePath = join(dir, 'admin', 'grunt', 'approvals.json');
   const saved = await readFile(statePath, 'utf8');
   assert(saved.includes('admin') && saved.includes('createdAt'), 'approval metadata was saved before the original process stopped');
   const adminResume = await run('admin-resume');

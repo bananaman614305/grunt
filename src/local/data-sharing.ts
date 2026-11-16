@@ -1,3 +1,4 @@
+import { gruntEnv } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -122,7 +123,7 @@ export async function approveDataSharing(options: DataSharingApprovalOptions): P
   const approved = await readDataSharingConsent(options.directory, options.providers);
   const pending = policies.filter(policy => !approved.includes(policy.provider));
   if (!pending.length) return { approved, skipped: [] };
-  const interactive = options.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY && process.env.MILO_SETUP_NO_HUMAN !== '1');
+  const interactive = options.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1');
   const prompt = options.prompt ?? (async (list: readonly DataSharingPolicy[]) => withTerminal(async () => confirm({
     message: `Allow data sharing for all these free services?\n${list.map(policy => `${policy.name}: ${policy.disclosure} ${policy.url}`).join('\n')}\nDeclining skips these services; other free services continue.`,
     initialValue: false

@@ -1,5 +1,5 @@
 {
-  "model": "milo",
+  "model": "grunt",
   "stream": true,
   "input": [
     {
@@ -7,7 +7,7 @@
       "content": [
         {
           "type": "input_text",
-          "text": "<environment_context>\n<cwd>/tmp/milo-harness-cwd</cwd>\n</environment_context>"
+          "text": "<environment_context>\n<cwd>/tmp/grunt-harness-cwd</cwd>\n</environment_context>"
         }
       ]
     },
@@ -131,7 +131,7 @@
   "prompt_cache_key": "01a1c25e-374e-7920-b198-0c8359b6ed7a",
   "client_metadata": {
     "session_id": "01a1c25e-374e-7920-b198-0c8359b6ed7a",
-    "x-codex-turn-metadata": "{\"installation_id\":\"ab671cad-7ec6-4925-b728-ecc2882dac6d\",\"session_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a\",\"thread_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a\",\"agent_name\":\"/root\",\"turn_id\":\"01a1c25e-37b7-73b1-bd28-41b50361a2f4\",\"window_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a:0\",\"window_number\":0,\"context_window_id\":\"01a1c25e-3765-7212-a91e-bc8de9c41ea0\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1c25e-37b7-73b1-bd28-41b50361a2f4\",\"thread_source\":\"user\",\"turn_trigger\":\"exec\",\"sandbox\":\"seccomp\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1794262316985,\"analytics_enabled\":true,\"model\":\"milo\"}",
+    "x-codex-turn-metadata": "{\"installation_id\":\"ab671cad-7ec6-4925-b728-ecc2882dac6d\",\"session_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a\",\"thread_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a\",\"agent_name\":\"/root\",\"turn_id\":\"01a1c25e-37b7-73b1-bd28-41b50361a2f4\",\"window_id\":\"01a1c25e-374e-7920-b198-0c8359b6ed7a:0\",\"window_number\":0,\"context_window_id\":\"01a1c25e-3765-7212-a91e-bc8de9c41ea0\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1c25e-37b7-73b1-bd28-41b50361a2f4\",\"thread_source\":\"user\",\"turn_trigger\":\"exec\",\"sandbox\":\"seccomp\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1794262316985,\"analytics_enabled\":true,\"model\":\"grunt\"}",
     "root_turn_id": "01a1c25e-37b7-73b1-bd28-41b50361a2f4",
     "thread_id": "01a1c25e-374e-7920-b198-0c8359b6ed7a",
     "x-codex-window-id": "01a1c25e-374e-7920-b198-0c8359b6ed7a:0",

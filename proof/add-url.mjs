@@ -22,7 +22,7 @@ const backend = serve({ hostname: '127.0.0.1', port: 0, fetch: async request => 
     return Response.json({ models: [{ id: 'brand-new-model' }] });
   }
   if (path === '/api/keys/custom') {
-    if (body.label === `Milo ${providerLabel(base)} (Squire)`) {
+    if (body.label === `Grunt ${providerLabel(base)} (Squire)`) {
       assert.deepEqual(body.models, [{ model: 'brand-new-model', supportsTools: true }]);
       records.push({ id: ++next, platform: 'custom', label: body.label, baseUrl: body.baseUrl, models: [{ modelId: 'brand-new-model' }] });
       return Response.json({ keyId: next });
@@ -70,7 +70,7 @@ for (const name of ['docker', 'pi', 'tar', 'npm', 'systemctl']) {
   const path = join(bin, name);
   await writeFile(path, '#!/bin/sh\nif [ "$1" = inspect ]; then echo 1; fi\nif [ "$1" = run ] && [ "$2" = --rm ]; then echo empty; fi\nexit 0\n'); await chmod(path, 0o755);
 }
-const env = { ...process.env, HOME: dir, XDG_CONFIG_HOME: join(dir, 'config'), MILO_PORT: String(backend.address().port), PATH: `${bin}:${process.env.PATH}`, MILO_CONFIG_DIR: join(dir, 'state'), MILO_ROUTER_RUNTIME: 'docker', MILO_FREELLMAPI_URL: `http://127.0.0.1:${backend.address().port}`, NODE_OPTIONS: `--import=${hook}` };
+const env = { ...process.env, HOME: dir, XDG_CONFIG_HOME: join(dir, 'config'), GRUNT_PORT: String(backend.address().port), PATH: `${bin}:${process.env.PATH}`, GRUNT_CONFIG_DIR: join(dir, 'state'), GRUNT_ROUTER_RUNTIME: 'docker', GRUNT_FREELLMAPI_URL: `http://127.0.0.1:${backend.address().port}`, NODE_OPTIONS: `--import=${hook}` };
 async function run(prompted, expectedRows = 1) {
   const child = spawn('script', ['-q', '-e', '-c', `stty -echo cols 120 rows 40 && exec ${process.execPath} dist/local/main.js add${prompted ? '' : ` ${base}`}`, '/dev/null'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   let output = '', entered = false, confirmed = false, keyed = false, selected = false, consentAnswered = false;

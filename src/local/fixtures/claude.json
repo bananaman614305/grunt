@@ -1,12 +1,12 @@
 {
-  "model": "milo",
+  "model": "grunt",
   "messages": [
     {
       "role": "user",
       "content": [
         {
           "type": "text",
-          "text": "# Environment\n - Primary working directory: /tmp/milo-harness-cwd"
+          "text": "# Environment\n - Primary working directory: /tmp/grunt-harness-cwd"
         },
         {
           "type": "text",
@@ -18,7 +18,7 @@
   "system": [
     {
       "type": "text",
-      "text": "Current working directory: /tmp/milo-harness-cwd"
+      "text": "Current working directory: /tmp/grunt-harness-cwd"
     }
   ],
   "tools": [

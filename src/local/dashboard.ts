@@ -1,8 +1,8 @@
+import { gruntEnv, configRoot } from '../brand.js';
 import { Chalk } from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { PoolSnapshot, SourceSnapshot } from './source-status.js';
 import type { MaintenanceEntry } from './maintenance.js';
@@ -329,7 +329,7 @@ export function startDashboard(options: DashboardOptions): DashboardHandle {
 }
 
 async function installedPort(env: NodeJS.ProcessEnv): Promise<number> {
-  const directory = env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+  const directory = configRoot(env);
   let file;
   try { file = await open(join(directory, 'installed-port.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 8788; throw new Error('Cannot read installed Grunt port; use --port explicitly'); }
@@ -348,7 +348,7 @@ async function installedPort(env: NodeJS.ProcessEnv): Promise<number> {
 export interface StatusCommandOptions { env?: NodeJS.ProcessEnv; input?: DashboardInput; output?: DashboardOutput; fetcher?: typeof fetch; signal?: AbortSignal; interval?: number }
 export async function statusCommand(args: string[], options: StatusCommandOptions = {}) {
   const env = options.env ?? process.env, input = options.input ?? process.stdin, output = options.output ?? process.stdout;
-  let watch = false, json = false, portText = env.MILO_PORT;
+  let watch = false, json = false, portText = gruntEnv('PORT', env);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--watch') watch = true;

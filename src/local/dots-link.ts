@@ -1,20 +1,20 @@
+import { gruntEnv, configRoot } from '../brand.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { SourceError } from './source.js';
 
-export function dotsConfigDir(env = process.env) { return env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo'); }
+export function dotsConfigDir(env = process.env) { return configRoot(env); }
 export function dotsGateway(env = process.env) {
-  const url = new URL(env.MILO_DOTS_URL ?? 'https://api.grunt.run');
-  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)))) throw new SourceError('upstream', 'MILO_DOTS_URL must be an HTTPS origin or a loopback test origin');
+  const url = new URL(gruntEnv('DOTS_URL', env) ?? 'https://api.grunt.run');
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)))) throw new SourceError('upstream', 'GRUNT_DOTS_URL must be an HTTPS origin or a loopback test origin');
   return url.origin;
 }
 export async function readDotsLink(env = process.env): Promise<{ deviceSecret: string; gateway: string } | undefined> {
   try {
     const value = JSON.parse(await readFile(join(dotsConfigDir(env), 'dots.json'), 'utf8'));
     if (typeof value.deviceSecret !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.deviceSecret) || typeof value.gateway !== 'string') return;
-    const gateway = dotsGateway({ ...env, MILO_DOTS_URL: env.MILO_DOTS_URL ?? value.gateway });
+    const gateway = dotsGateway({ ...env, GRUNT_DOTS_URL: gruntEnv('DOTS_URL', env) ?? value.gateway });
     if (gateway !== value.gateway) return;
     return { deviceSecret: value.deviceSecret, gateway };
   } catch { return; }
@@ -58,7 +58,7 @@ export async function dotsLink(code: string | undefined, env = process.env, fetc
 }
 export async function pairDots(request: Request, env = process.env, fetcher: typeof fetch = fetch) {
   const reject = () => new Response('grunt refused this pairing. Return to the Allow page and try again.', { status: 403, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
-  if (!env.MILO_SOURCES?.split(',').some(id => id.trim() === 'dots')) return reject();
+  if (!gruntEnv('SOURCES', env)?.split(',').some(id => id.trim() === 'dots')) return reject();
   const gateway = dotsGateway(env), url = new URL(request.url);
   let referrer: URL;
   try { referrer = new URL(request.headers.get('referer') ?? ''); } catch { return reject(); }

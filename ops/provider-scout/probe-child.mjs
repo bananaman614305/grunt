@@ -22,7 +22,7 @@ async function boundedBody(response,signal){
 let sources;
 try{
   const options=argumentsFrom(process.argv.slice(2));
-  process.env.MILO_CONFIG_DIR=options.configDir;process.env.MILO_SOURCES=options.sourceId;process.env.GRUNT_DAEMON='1';
+  process.env.GRUNT_CONFIG_DIR=options.configDir;process.env.GRUNT_SOURCES=options.sourceId;process.env.GRUNT_DAEMON='1';
   const [main,api,registry]=await Promise.all(['local/main.js','local/api.js','registry.js'].map(file=>import(pathToFileURL(join(options.checkout,'dist',file)).href)));
   const entries=registry.bundledRegistry?.adapters?.filter(item=>item.id===options.sourceId);
   const entry=entries?.[0],models=entry?.models??(typeof entry?.model==='string'?[entry.model]:[]);

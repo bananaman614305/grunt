@@ -18,10 +18,10 @@ vi.mock('@clack/prompts', async importOriginal => ({ ...await importOriginal<typ
 
 let stateDir: string;
 beforeEach(async () => {
-  stateDir = await mkdtemp(join(tmpdir(), 'milo-approval-test-'));
+  stateDir = await mkdtemp(join(tmpdir(), 'grunt-approval-test-'));
   vi.stubEnv('XDG_CONFIG_HOME', stateDir);
-  vi.stubEnv('MILO_CONFIG_DIR', '');
-  vi.stubEnv('MILO_SQUIRE_XDG_CONFIG_HOME', '');
+  vi.stubEnv('GRUNT_CONFIG_DIR', '');
+  vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', '');
 });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(stateDir, { recursive: true, force: true }); });
 const request = { model: 'freellmapi', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false };
@@ -35,7 +35,7 @@ it('routes the daemon free API through loopback FreeLLMAPI, preserves tools and 
   expect(fetcher.mock.calls).toHaveLength(1);
   expect(fetcher.mock.calls[0]![0]).toBe('http://127.0.0.1:3001/v1/chat/completions');
   expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: 'auto', max_tokens: 4096, tools: [{ function: { name: 'read' } }] });
-  expect(configure({ MILO_GATEWAY_URL: 'https://openrouter.ai/api/v1' }).sources.map(s => s.id)).not.toContain('gateway');
+  expect(configure({ GRUNT_GATEWAY_URL: 'https://openrouter.ai/api/v1' }).sources.map(s => s.id)).not.toContain('gateway');
   for (const url of ['https://openrouter.ai/api/v1', 'http://example.com/v1', 'http://localhost:3001/v1']) {
     expect(() => new FreeLLMAPI({ url })).toThrow('loopback');
   }
@@ -196,13 +196,13 @@ it('preserves refusal details from rejected setup runs', async () => {
 
 it('recovers an interrupted router installation using the supplied local admin credentials', async () => {
   const run = vi.fn(async (args: string[]) => {
-    if (args[0] === 'inspect') throw Object.assign(new Error('missing'), { code: 1, stderr: 'Error: No such object: milo-freellmapi' });
+    if (args[0] === 'inspect') throw Object.assign(new Error('missing'), { code: 1, stderr: 'Error: No such object: grunt-freellmapi' });
     return { stdout: '' };
   });
   await ensureRouter('synthetic-password', 'synthetic-encryption', run);
-  expect(run.mock.calls.map(([args]) => args[0])).toEqual(['inspect', 'pull', 'run']);
-  expect(run.mock.calls[2]![0]).toContain('io.milo.router=1');
-  expect(run.mock.calls[2]![0]).toContain('PROVIDER_TIMEOUT_CUSTOM=600000');
+  expect(run.mock.calls.map(([args]) => args[0])).toEqual(['inspect', 'inspect', 'pull', 'run']);
+  expect(run.mock.calls[3]![0]).toContain('io.grunt.router=1');
+  expect(run.mock.calls[3]![0]).toContain('PROVIDER_TIMEOUT_CUSTOM=600000');
   expect(JSON.stringify(run.mock.calls.map(([args]) => args))).not.toContain('synthetic-');
   const unrelated = vi.fn(async () => ({ stdout: 'not-grunt' }));
   await expect(ensureRouter('synthetic-password', 'synthetic-encryption', unrelated)).rejects.toThrow('belongs to another installation');
@@ -224,11 +224,11 @@ it.each(['captcha', 'email confirmation'])('shares %s and resumes signup in the 
 
 it('registers the provider API path beneath a Squire egress root and rejects legacy bare-root entries', async () => {
   const admin = new FreeLLMAdmin();
-  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Milo groq (Squire)', baseUrl: 'https://egress.test/g_123' }]);
+  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Grunt groq (Squire)', baseUrl: 'https://egress.test/g_123' }]);
   expect(await admin.hasKey('groq')).toBe(false);
   await admin.addGrant('groq', { base_url: 'https://egress.test/g_123', token: 'synthetic-grant' });
   expect(call).toHaveBeenCalledWith('/keys/custom', expect.objectContaining({ baseUrl: 'https://egress.test/g_123/openai/v1', apiKey: 'synthetic-grant', models: [{ model: 'openai/gpt-oss-120b', supportsTools: true }] }));
-  call.mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Milo groq (Squire)', baseUrl: 'https://egress.test/g_123/openai/v1', models: [{ modelId: 'openai/gpt-oss-120b' }] }]);
+  call.mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Grunt groq (Squire)', baseUrl: 'https://egress.test/g_123/openai/v1', models: [{ modelId: 'openai/gpt-oss-120b' }] }]);
   expect(await admin.hasKey('groq')).toBe(true);
 });
 
@@ -308,7 +308,7 @@ it.each([true, false])('registers only exact Particle and refuses Auto/Nemotron 
   }
   await operation;
   expect(call).toHaveBeenCalledWith('/keys/custom', {
-    baseUrl: 'https://egress.test/kilo/api/gateway', apiKey: 'synthetic-grant', label: 'Milo kilo (Squire)',
+    baseUrl: 'https://egress.test/kilo/api/gateway', apiKey: 'synthetic-grant', label: 'Grunt kilo (Squire)',
     models: [{ model: KILO_PARTICLE, supportsTools: true }]
   });
 });
@@ -316,9 +316,9 @@ it.each([true, false])('registers only exact Particle and refuses Auto/Nemotron 
 it('enables only Particle on managed Kilo rows while preserving explicit custom routes', async () => {
   const admin = new FreeLLMAdmin();
   const call = vi.spyOn(admin, 'call').mockResolvedValue([
-    { modelDbId: 1, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Milo kilo (Squire)', priority: 0 },
-    { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Milo kilo (Squire)', priority: 0 },
-    { modelDbId: 3, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'Milo kilo (Squire)', priority: 0 },
+    { modelDbId: 1, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Grunt kilo (Squire)', priority: 0 },
+    { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Grunt kilo (Squire)', priority: 0 },
+    { modelDbId: 3, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'Grunt kilo (Squire)', priority: 0 },
     { modelDbId: 4, platform: 'custom', modelId: 'stealth/glyph-cluster', keyLabel: 'Kilo Free', priority: 0 },
     { modelDbId: 5, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'My provider', priority: 42, enabled: true }
   ]);
@@ -335,7 +335,7 @@ it('refreshes a legacy Kilo grant missing Particle and reuses complete saved pro
   let models = [{ modelId: 'kilo-auto/free' }];
   vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models')
     ? { models: [{ id: KILO_PARTICLE }, { id: 'kilo-auto/free' }] }
-    : [{ id: 1, platform: 'custom', label: 'Milo kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/gateway', models }]);
+    : [{ id: 1, platform: 'custom', label: 'Grunt kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/gateway', models }]);
   expect(await admin.hasKey('kilo')).toBe(false);
   models = [...models, { modelId: KILO_PARTICLE }];
   expect(await admin.hasKey('kilo')).toBe(true);
@@ -366,13 +366,13 @@ it('batches concurrent provider handoffs and resumes each correct browser sessio
 function legacyParticleRouter(options: { failed?: boolean; missing?: boolean; customParticle?: boolean; managedParticle?: boolean } = {}) {
   const keys = [
     { id: 11, platform: 'custom', label: 'Kilo Free', baseUrl: 'https://ai-gateway.kilo.ai/api/v1', models: [{ modelId: 'kilo-auto/free' }] },
-    { id: 12, platform: 'custom', label: 'Milo kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/gateway', models: [{ modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free' }] },
+    { id: 12, platform: 'custom', label: 'Grunt kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/gateway', models: [{ modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free' }] },
     { id: 13, platform: 'custom', label: 'My custom route', baseUrl: 'https://custom.test/v1', models: [{ modelId: 'kilo-auto/free' }] },
     { id: 14, platform: 'custom', label: 'Freebuff', baseUrl: 'http://127.0.0.1:8789/v1', models: [{ modelId: 'freebuff' }] }
   ];
   const rows = [
     { modelDbId: 1, keyId: 11, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Kilo Free', priority: 9, enabled: true },
-    { modelDbId: 2, keyId: 12, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Milo kilo (Squire)', priority: 10, enabled: true },
+    { modelDbId: 2, keyId: 12, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Grunt kilo (Squire)', priority: 10, enabled: true },
     { modelDbId: 3, keyId: 13, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'My custom route', priority: 42, enabled: true },
     { modelDbId: 4, keyId: 14, platform: 'custom', modelId: 'freebuff', keyLabel: 'Freebuff', priority: 1000000, enabled: true }
   ];

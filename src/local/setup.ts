@@ -5,7 +5,6 @@ import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -30,6 +29,7 @@ import { setupBeatAPI } from './beatapi-setup.js';
 import { setupClixad } from './clixad-setup.js';
 import { setupPerch } from './perch-setup.js';
 import { disabledAdapters } from '../registry.js';
+import { configRoot, gruntEnv } from '../brand.js';
 import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } from './data-sharing.js';
 import { readSetupSession } from './setup-session.js';
@@ -140,6 +140,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
     if (!credential || options.verifySaved?.includes(provider)) {
+      // Preserve the provisioning identity so upgrades do not repeat an existing signup.
       const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
       if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
       if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason); continue; }
@@ -177,10 +178,11 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
 export function squireEnvironment() {
+  const home = gruntEnv('SQUIRE_HOME'), xdg = gruntEnv('SQUIRE_XDG_CONFIG_HOME');
   return {
       ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
-      ...(process.env.MILO_SQUIRE_HOME ? { HOME: process.env.MILO_SQUIRE_HOME, XDG_CONFIG_HOME: join(process.env.MILO_SQUIRE_HOME, '.config') } : {}),
-      ...(process.env.MILO_SQUIRE_XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: process.env.MILO_SQUIRE_XDG_CONFIG_HOME } : {}),
+      ...(home ? { HOME: home, XDG_CONFIG_HOME: join(home, '.config') } : {}),
+      ...(xdg ? { XDG_CONFIG_HOME: xdg } : {}),
       TRUSTY_SQUIRE_AGENT_IDENTITY: 'grunt setup'
   };
 }
@@ -483,7 +485,7 @@ export class BrowserSquire implements SetupSquire {
       // A driver that cannot choose the next action still owns a resumable tab.
       // Share that exact browser instead of silently dropping the signup.
       const handoff = humanStep || uncertain || result.status === 'stuck';
-      if (handoff && process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
+      if (handoff && gruntEnv('SETUP_NO_HUMAN') === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
       if (handoff && this.sessions.has(provider)) {
         const handoffSession = this.sessions.get(provider)!;
         const url = await this.humanHandoff(handoffSession);
@@ -525,21 +527,24 @@ export class BrowserSquire implements SetupSquire {
   }
 }
 
+// This internal account already owns existing router databases; retain its identity.
+export const ROUTER_ADMIN_EMAIL = 'milo@localhost.local';
+const managedLabels = (provider: string) => [`Grunt ${providerLabel(provider)} (Squire)`, `Milo ${providerLabel(provider)} (Squire)`];
 const providerPath = (provider: string) => ({ groq: '/openai/v1', kilo: '/api/gateway' })[provider] ?? '/v1';
 
 export class FreeLLMAdmin {
   private token = '';
   readonly url: string;
-  constructor(url = process.env.MILO_FREELLMAPI_URL || 'http://127.0.0.1:3001') { this.url = loopback(url).origin; }
+  constructor(url = gruntEnv('FREELLMAPI_URL') || 'http://127.0.0.1:3001') { this.url = loopback(url).origin; }
   async call(path: string, body?: unknown, method = 'POST') {
     const response = await fetch(`${this.url}/api${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` }, redirect: 'error', signal: AbortSignal.timeout(10000), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (!response.ok) throw new Error(`Local FreeLLMAPI setup returned HTTP ${response.status}`);
     return await response.json();
   }
-  async login(password: string) { this.token = (await this.call('/auth/login', { email: 'milo@localhost.local', password })).token; }
+  async login(password: string) { this.token = (await this.call('/auth/login', { email: ROUTER_ADMIN_EMAIL, password })).token; }
   async hasKey(platform: string) {
     const keys = await this.call('/keys', undefined, 'GET') as { id: number; platform: string; label: string; baseUrl?: string; models?: { modelId: string }[] }[];
-    const key = keys.find(key => key.platform === 'custom' && key.label === `Milo ${providerLabel(platform)} (Squire)` && (providerURL(platform) ? !!key.baseUrl : key.baseUrl?.endsWith(providerPath(platform))));
+    const key = keys.find(key => key.platform === 'custom' && managedLabels(platform).includes(key.label) && (providerURL(platform) ? !!key.baseUrl : key.baseUrl?.endsWith(providerPath(platform))));
     if (!key || !key.models?.length) return false;
     const discovery = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
     const available = new Set(discovery.models.map(model => model.id));
@@ -554,7 +559,7 @@ export class FreeLLMAdmin {
     // Custom endpoints bind the grant URL and token to their own model rows.
     const custom = !!providerURL(platform);
     const baseUrl = custom ? grant.base_url : grant.base_url.replace(/\/$/, '') + providerPath(platform);
-    const label = `Milo ${providerLabel(platform)} (Squire)`;
+    const label = `Grunt ${providerLabel(platform)} (Squire)`;
     let discovery: { models: { id: string }[] };
     try { discovery = await this.call('/keys/custom/discover-models', { baseUrl, apiKey: grant.token }); }
     catch { throw new Error('Model discovery failed; check the base URL and API key (the provider may have rejected it)'); }
@@ -569,7 +574,7 @@ export class FreeLLMAdmin {
       label, models: models.map(model => ({ model, supportsTools: true })) });
     if (custom && !Number.isInteger(registered?.keyId)) throw new Error('The router did not confirm the provider registration');
     for (const key of previous) {
-      if (Number.isInteger(key.id) && key.platform === 'custom' && key.label === label && (custom ? key.id !== registered.keyId : key.baseUrl !== baseUrl)) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
+      if (Number.isInteger(key.id) && key.platform === 'custom' && managedLabels(platform).includes(key.label) && (custom ? key.id !== registered.keyId : key.baseUrl !== baseUrl)) await this.call(`/keys/${key.id}`, undefined, 'DELETE');
     }
   }
   async migrateKiloModels(approved: readonly string[], savedChain?: FallbackRow[]) {
@@ -585,7 +590,7 @@ export class FreeLLMAdmin {
     const keys = await this.call('/keys', undefined, 'GET') as { id?: number; platform: string; label: string; baseUrl?: string; models?: { modelId: string }[] }[];
     const complete = new Set(keys.filter(key => key.platform === 'custom' && key.models?.some(model => model.modelId === KILO_PARTICLE)).map(key => key.baseUrl));
     for (const key of keys) {
-      if (key.platform !== 'custom' || !['Kilo Free', 'Milo kilo (Squire)'].includes(key.label) || !Number.isInteger(key.id) || !key.id || key.id < 1
+      if (key.platform !== 'custom' || !['Kilo Free', ...managedLabels('kilo')].includes(key.label) || !Number.isInteger(key.id) || !key.id || key.id < 1
         || !key.baseUrl || complete.has(key.baseUrl) || !Array.isArray(key.models)) continue;
       const catalog = await this.call('/keys/custom/discover-models', { keyId: key.id }) as { models: { id: string }[] };
       if (!catalog.models.some(model => model.id === KILO_PARTICLE)) continue;
@@ -625,7 +630,7 @@ export class FreeLLMAdmin {
     const approved = dataSharingApproved ?? await readDataSharingConsent(dirname(localAdminPath()), DATA_SHARING_POLICIES.map(policy => policy.provider));
     const chain = await this.call('/fallback', undefined, 'GET') as { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean }[];
     const rows = chain.map(row => {
-      const provider = row.keyLabel?.match(/^Milo (.+) \(Squire\)$/)?.[1];
+      const provider = row.keyLabel?.match(/^(?:Grunt|Milo) (.+) \(Squire\)$/)?.[1];
       const owned = managedSharingProvider(row);
       const fallback = !provider && owned !== undefined;
       const retired = retiredManagedAdapter(row);
@@ -654,41 +659,55 @@ if (!fs.existsSync(path)) {
 } else {
   const Database = require('better-sqlite3');
   const db = new Database(path, { readonly: true, fileMustExist: true });
-  const keys = db.prepare("SELECT EXISTS(SELECT 1 FROM api_keys WHERE label = 'Milo' OR platform != 'custom' OR label NOT IN ('Kilo Free', 'Freebuff')) AS present").get();
+  const keys = db.prepare("SELECT EXISTS(SELECT 1 FROM api_keys WHERE platform != 'custom' OR label NOT IN ('Kilo Free', 'Freebuff')) AS present").get();
   console.log(keys.present ? 'keys' : 'empty');
   db.close();
 }`;
+// Resource discovery preserves existing containers and volumes; only fresh installs
+// use Grunt names. Never rename a volume containing encrypted provider credentials.
+const routerResources = [
+  { name: 'grunt-freellmapi', label: 'io.grunt.router' },
+  { name: 'milo-freellmapi', label: 'io.milo.router' }
+];
 export async function ensureRouter(password: string, encryption: string, run: DockerRun = argsWithEnv, recreate = false) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt FreeLLMAPI requires Docker on Linux or macOS');
+  let resource = routerResources[0]!;
   let owner: string | undefined;
-  try { owner = (await run(['inspect', '--format', '{{ index .Config.Labels "io.milo.router" }}', 'milo-freellmapi'])).stdout.trim(); }
-  catch (error) {
-    if (!/No such (object|container)/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Docker is unavailable. Install and start Docker Desktop, then run npx usegrunt setup again');
+  for (const candidate of routerResources) {
+    try {
+      owner = (await run(['inspect', '--format', `{{ index .Config.Labels "${candidate.label}" }}`, candidate.name])).stdout.trim();
+      resource = candidate;
+      break;
+    } catch (error) {
+      if (!/No such (object|container)/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Docker is unavailable. Install and start Docker Desktop, then run npx usegrunt setup again');
+    }
   }
   if (owner !== undefined) {
-    if (owner !== '1') throw new Error('The milo-freellmapi container belongs to another installation; setup stopped');
-    if (!recreate) { await run(['start', 'milo-freellmapi']); return; }
+    if (owner !== '1') throw new Error(`The ${resource.name} container belongs to another installation; setup stopped`);
+    if (!recreate) { await run(['start', resource.name]); return; }
   }
   await run(['pull', FREELLMAPI_IMAGE]);
   if (recreate) {
     let volume = false;
-    try { await run(['volume', 'inspect', 'milo-freellmapi-data']); volume = true; }
-    catch (error) {
-      if (!/No such volume/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Cannot inspect the old router volume; its data was preserved');
+    for (const candidate of owner === undefined ? routerResources : [resource]) {
+      try { await run(['volume', 'inspect', candidate.name + '-data']); resource = candidate; volume = true; break; }
+      catch (error) {
+        if (!/No such volume/i.test(String((error as { stderr?: string }).stderr))) throw new Error('Cannot inspect the old router volume; its data was preserved');
+      }
     }
     if (volume) {
       let state: string;
       try {
-        state = (await run(['run', '--rm', '--network', 'none', '--mount', 'type=volume,src=milo-freellmapi-data,dst=/data,readonly', '--entrypoint', 'node', FREELLMAPI_IMAGE, '-e', inspectRouterKeys])).stdout.trim();
+        state = (await run(['run', '--rm', '--network', 'none', '--mount', `type=volume,src=${resource.name}-data,dst=/data,readonly`, '--entrypoint', 'node', FREELLMAPI_IMAGE, '-e', inspectRouterKeys])).stdout.trim();
       } catch { throw new Error('Cannot check the old router for provider keys; its data was preserved'); }
       if (state !== 'empty') throw new Error('Local router admin credentials are missing and the old router may contain provider keys; its data was preserved. Restore the local admin file before rerunning setup');
     }
-    if (owner !== undefined) await run(['rm', '-f', 'milo-freellmapi']);
-    if (volume) await run(['volume', 'rm', 'milo-freellmapi-data']);
+    if (owner !== undefined) await run(['rm', '-f', resource.name]);
+    if (volume) await run(['volume', 'rm', resource.name + '-data']);
   }
   // Docker copies named variables from env, keeping secrets out of argv.
-  await run(['run', '-d', '--name', 'milo-freellmapi', '--label', 'io.milo.router=1', ...(process.platform === 'linux' ? ['--network', 'host'] : ['-p', '127.0.0.1:3001:3001']), '--restart', 'unless-stopped', '-v', 'milo-freellmapi-data:/app/server/data', '-e', process.platform === 'linux' ? 'HOST=127.0.0.1' : 'HOST=0.0.0.0', '-e', 'PORT=3001', '-e', 'PROVIDER_TIMEOUT_CUSTOM=600000', '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
-    ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: 'milo@localhost.local', password }, ...freeConfig() })
+  await run(['run', '-d', '--name', resource.name, '--label', resource.label + '=1', ...(process.platform === 'linux' ? ['--network', 'host'] : ['-p', '127.0.0.1:3001:3001']), '--restart', 'unless-stopped', '-v', resource.name + '-data:/app/server/data', '-e', process.platform === 'linux' ? 'HOST=127.0.0.1' : 'HOST=0.0.0.0', '-e', 'PORT=3001', '-e', 'PROVIDER_TIMEOUT_CUSTOM=600000', '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
+    ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: ROUTER_ADMIN_EMAIL, password }, ...freeConfig() })
   });
 }
 async function argsWithEnv(args: string[], env?: NodeJS.ProcessEnv) {
@@ -696,7 +715,7 @@ async function argsWithEnv(args: string[], env?: NodeJS.ProcessEnv) {
 }
 type LocalAdmin = { password: string; encryption: string };
 function localAdminPath() {
-  return join(process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo'), 'router-admin.json');
+  return join(configRoot(), 'router-admin.json');
 }
 async function readLocalAdmin(path = localAdminPath()): Promise<LocalAdmin | undefined> {
   let handle;
@@ -727,9 +746,9 @@ async function saveLocalAdmin(admin: LocalAdmin) {
 type FallbackRow = { modelDbId: number; platform: string; modelId: string; priority: number; keyLabel: string | null; enabled?: boolean };
 function managedSharingProvider(row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>): string | undefined {
   if (row.platform !== 'custom') return;
-  if (row.keyLabel === 'Milo kilo (Squire)' || row.keyLabel === 'Kilo Free') return 'kilo';
+  if (managedLabels('kilo').includes(row.keyLabel ?? '') || row.keyLabel === 'Kilo Free') return 'kilo';
   if (row.keyLabel === 'Freebuff' && row.modelId === 'freebuff') return 'freebuff';
-  for (const provider of disabledAdapters) if (row.keyLabel === `Milo ${provider} (Squire)`) return provider;
+  for (const provider of disabledAdapters) if (managedLabels(provider).includes(row.keyLabel ?? '')) return provider;
   return;
 }
 const obsoleteManagedKilo = (row: Pick<FallbackRow, 'platform' | 'modelId' | 'keyLabel'>) => managedSharingProvider(row) === 'kilo' && row.modelId !== KILO_PARTICLE;
@@ -775,14 +794,14 @@ const routerStarts = new Map<string, Promise<FreeLLMAdmin>>();
 // Provider signups overlap, but they must share one local router initialization.
 // Otherwise two fresh jobs can generate different encryption keys for one DB.
 function readyRouter(signal?: AbortSignal): Promise<FreeLLMAdmin> {
-  const key = JSON.stringify([localAdminPath(), process.env.MILO_FREELLMAPI_URL, process.env.MILO_ROUTER_RUNTIME]);
+  const key = JSON.stringify([localAdminPath(), gruntEnv('FREELLMAPI_URL'), gruntEnv('ROUTER_RUNTIME')]);
   const existing = routerStarts.get(key);
   if (existing) return existing;
   const starting = (async () => {
     const router = new FreeLLMAdmin();
     signal?.throwIfAborted();
     const saved = await readLocalAdmin();
-    if (!saved && process.env.MILO_ROUTER_RUNTIME !== 'docker') {
+    if (!saved && gruntEnv('ROUTER_RUNTIME') !== 'docker') {
       const database = join(dirname(localAdminPath()), 'freellmapi', 'router.db');
       let exists = false;
       try { await lstat(database); exists = true; }
@@ -792,7 +811,7 @@ function readyRouter(signal?: AbortSignal): Promise<FreeLLMAdmin> {
       if (exists) throw new Error('Existing router database has no local encryption key. Restore its original private router login before rerunning setup');
     }
     const admin = saved ?? { password: randomBytes(32).toString('hex'), encryption: randomBytes(32).toString('hex') };
-    if (process.env.MILO_ROUTER_RUNTIME === 'docker') {
+    if (gruntEnv('ROUTER_RUNTIME') === 'docker') {
       await ensureRouter(admin.password, admin.encryption, argsWithEnv, !saved);
       if (!saved) await saveLocalAdmin(admin);
     } else {
@@ -819,7 +838,7 @@ function readyRouter(signal?: AbortSignal): Promise<FreeLLMAdmin> {
 export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[] } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
-  const location = options.directory ?? process.env.MILO_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+  const location = options.directory ?? configRoot();
   const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(location, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   const unapproved = dataSharingPolicies(providers).filter(policy => !approved.includes(policy.provider));
   if (unapproved.length) throw new Error(`${unapproved.map(policy => policy.name).join(', ')} data sharing requires the grouped setup approval`);

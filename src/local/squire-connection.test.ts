@@ -13,9 +13,9 @@ const moduleUrl = (name: string) => pathToFileURL(require.resolve(name).replace(
 let dir: string;
 const instruction = 'Connect Trusty Squire separately, then rerun usegrunt setup';
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'milo-squire-connection-'));
-  vi.stubEnv('MILO_SQUIRE_HOME', '');
-  vi.stubEnv('MILO_SQUIRE_XDG_CONFIG_HOME', '');
+  dir = await mkdtemp(join(tmpdir(), 'grunt-squire-connection-'));
+  vi.stubEnv('GRUNT_SQUIRE_HOME', '');
+  vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', '');
 });
 afterEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllEnvs();
@@ -51,8 +51,8 @@ it.each(['derived', 'explicit'])('points only the Squire child at its own home (
   const parentHome = homedir(), parentConfig = process.env.XDG_CONFIG_HOME;
   const squireHome = join(dir, 'own-squire');
   const configHome = config === 'explicit' ? join(dir, 'explicit-config') : join(squireHome, '.config');
-  vi.stubEnv('MILO_SQUIRE_HOME', squireHome);
-  if (config === 'explicit') vi.stubEnv('MILO_SQUIRE_XDG_CONFIG_HOME', configHome);
+  vi.stubEnv('GRUNT_SQUIRE_HOME', squireHome);
+  if (config === 'explicit') vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', configHome);
   const record = join(dir, 'spawn.json');
   await stubChild(`
     import { writeFileSync } from 'node:fs';

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Make Grunt the current project, repository, configuration and interface name, with explicit compatibility for existing installations. Restore public-only GitHub Actions CI on standard Ubuntu runners. See the [compatibility guide](docs/reference.md#compatibility-with-existing-installations).
+
 - Run the operator's twice-daily provider scout with guarded Squire signup, isolated checks and live routing probes, two independent reviews, and resumable PR merge/npm publication. Qualified providers reach new installations only after the published package and its default registry are verified. See the [operator guide](ops/provider-scout/README.md).
 - Recover sources automatically: when no source can answer a request, the daemon adds vetted providers in the background (saved Squire access first, then signup) for providers whose data-sharing approval is already recorded. One run at a time; the next request finds the new source.
 
@@ -101,7 +103,7 @@
 - Clixad's production source passed all four proofs at 210,321 input tokens, with native free/zero-charge metadata and zero wallet balance before and after. Perch's production source passed all four at 226,316 input tokens and 101 output tokens; 153 focused source/helper tests and independent review passed. After the Perch probes, Starter showed 19,726 of 20,000 PT remaining, with the Data Program and both memory switches off.
 - The packaged Clixad setup helper installed the pinned private CLI, reused native authentication, passed the background probe and returned a production hello with 252 input and 63 output tokens. A separate blank-machine onboarding run is not claimed.
 - Perch's initial native Google pairing required operator assistance. After verified Starter eligibility, matching identity and memory-off checks, the production helper reused that login, passed its background check and returned a Grunt hello with 16,245 input and 38 output tokens. Conflicting quota views are recorded conservatively; no larger recurring allowance is promised.
-- All 954 tests across 51 files passed, along with lint, TypeScript checks and a clean build. Independent final integration review passed, including retired-only upgrades, the manual-attestation boundary and noninteractive restart coverage. GitHub Actions remains disabled.
+- All 954 tests across 51 files passed, along with lint, TypeScript checks and a clean build. Independent final integration review passed, including retired-only upgrades, the manual-attestation boundary and noninteractive restart coverage. Checks used the previous local-only CI policy.
 - The final installed package returned real, correctly attributed replies through all eleven providers on Chad at port 8792. Freebuff and APInex requests were rejected. A second restart kept all eleven available, preserved receipt bytes and modification times, and opened no verification handoffs. The gateway's eleven-source registry, ETag behavior and health checks were verified.
 
 ## [0.6.5] - 2026-11-15
@@ -133,7 +135,7 @@
 
 - Expand the bundled automatic pool from five to eight sources. Keep the stable tier at 80%; Token Harbor, Runcrate, APInex and Mistral Vibe Free share the experimental 20% equally.
 - Extend the existing grouped data-sharing approval to the three new sources. Setup still runs up to three service jobs concurrently and preserves previously connected routes.
-- Keep Cloudflare Qwen outside the pool by the owner's choice. Continue manual npm and gateway registry publication with GitHub Actions disabled; update the two existing gateway file overlays on the current image. A future matching image deployment must remove those overlays.
+- Keep Cloudflare Qwen outside the pool by the owner's choice. This release used manual npm and gateway registry publication under the former CI policy. It updated two existing gateway file overlays; a later full image deployment must remove those overlays.
 
 ### Validation
 

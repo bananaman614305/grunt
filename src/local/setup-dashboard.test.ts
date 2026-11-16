@@ -16,7 +16,7 @@ afterEach(() => {
 function tty() {
   Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
   Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
-  vi.stubEnv('TERM', 'xterm'); vi.stubEnv('MILO_SETUP_NO_HUMAN', '0');
+  vi.stubEnv('TERM', 'xterm'); vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '0');
 }
 
 it('suspends the passive dashboard before a queued confirmation owns the terminal and resumes after failure', async () => {

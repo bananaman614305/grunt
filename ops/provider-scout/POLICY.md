@@ -89,12 +89,15 @@ instead of creating duplicate accounts or repeatedly requesting human approval.
    existing branches and other agents' edits. Never reset or stash others' work.
 6. Integrate the provider in an isolated candidate branch using the existing
    adapter, free-access guards, Squire grant, consent and registry patterns.
-   Use an owned mode-0700 private MILO_CONFIG_DIR under this workspace for candidate state; never
+   Use an owned mode-0700 private GRUNT_CONFIG_DIR under this workspace for candidate state; never
    write the production configuration. Keep npm/pnpm caches inside the workspace
    when sandbox restrictions prevent using a global cache or installation.
    Validate documented context, model identity, ongoing free access and hard
-   spending prevention. Run the project's lint/tests/build locally. Never enable
-   or dispatch GitHub Actions. Unknown free eligibility means no inference test.
+   spending prevention. Run the project's lint/tests/build locally. Do not edit
+   workflows or dispatch GitHub Actions yourself. The trusted supervisor may
+   allow the repository's ordinary CI only after verifying that Grunt is public;
+   exact-head successful CI is required before merging. Unknown free eligibility
+   means no inference test.
 7. Once guarded, send a bounded synthetic hello through an isolated Grunt
    instance with an exact provider selector; require HTTP 200, a nonempty reply
    and exact source attribution. Also verify native function calls with an inert
@@ -128,9 +131,10 @@ instead of creating duplicate accounts or repeatedly requesting human approval.
    must name its isolated independent candidate clone under workspace/candidates;
    evidence_file and config_dir must also be workspace-relative. config_dir
    identifies its private candidate auth/config directory; use null only when
-   none is needed. pr_number may be null when no PR has been opened. A draft PR
-   may describe the evidence, free limits, consent changes and local validation;
-   use gh-axi when available and body files. Use release_request=null for every
+   none is needed. pr_number must be null unless an existing exact-head PR is
+   being reused. Do not push candidate branches or open PRs yourself: the trusted
+   supervisor verifies public visibility before those operations can start CI.
+   Use release_request=null for every
    incomplete candidate. Never write supervisor state or manufacture review or
    release receipts.
 10. Do not merge, publish npm, deploy, modify the installed pool/production config

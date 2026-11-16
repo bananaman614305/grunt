@@ -54,8 +54,9 @@ async function inspect(options){
   if(!SHA.test(options.head??'')||!HASH.test(options.registrySha??'')||!ID.test(options.sourceId??'')||!MODEL.test(options.model??''))fail('invalid_candidate');
   const workspace=await canonicalDirectory(options.workspace,true),checkout=await canonicalDirectory(options.checkout),configDir=await canonicalDirectory(options.configDir,true);
   if(!checkout.startsWith(join(workspace,'candidates')+'/')||!configDir.startsWith(workspace+'/'))fail('workspace_scope');
-  const production=resolve(homedir(),'.config/milo');
-  if(configDir===production||configDir.startsWith(production+'/'))fail('production_config_forbidden');
+  // Legacy directory is an explicit compatibility exclusion, never probe state.
+  const productionConfigs=['.config/grunt','.config/milo'].map(path=>resolve(homedir(),path));
+  if(productionConfigs.some(production=>configDir===production||configDir.startsWith(production+'/')))fail('production_config_forbidden');
   const output=resolve(options.output),outputParent=await canonicalDirectory(dirname(output),true);
   if(output===workspace||output.startsWith(workspace+'/'))fail('protected_output_required');
   const reviewPath=resolve(options.reviewReceipt);
@@ -174,7 +175,7 @@ export function verifyTool(message,nonce){
 }
 function safeEnv(directory,sourceId,base=process.env){
   const keep=['HOME','PATH','USER','LOGNAME','SHELL','LANG','LC_ALL','TERM','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'];
-  return{...Object.fromEntries(keep.filter(key=>typeof base[key]==='string').map(key=>[key,base[key]])),MILO_CONFIG_DIR:directory,MILO_SOURCES:sourceId,GRUNT_DAEMON:'1'};
+  return{...Object.fromEntries(keep.filter(key=>typeof base[key]==='string').map(key=>[key,base[key]])),GRUNT_CONFIG_DIR:directory,GRUNT_SOURCES:sourceId,GRUNT_DAEMON:'1'};
 }
 async function writeProof(output,proof){
   const temporary=output+'.'+randomUUID()+'.tmp';

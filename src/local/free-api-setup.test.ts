@@ -11,7 +11,7 @@ import * as mistralSetup from './mistral-vibe-setup.js';
 let directory: string;
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'grunt-free-api-setup-'));
-  vi.stubEnv('MILO_CONFIG_DIR', directory);
+  vi.stubEnv('GRUNT_CONFIG_DIR', directory);
 });
 afterEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllEnvs();

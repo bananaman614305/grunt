@@ -5,7 +5,7 @@ export const hash = (value: string) => createHash('sha256').update(value).digest
 export const secret = () => randomBytes(32).toString('base64url');
 export function equal(a: string, b: string) { return timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b))); }
 export type Pair = { id: string; linked: number };
-export type Subscription = { id: string; pair: string; url: string; secret: string; previous: string | null; rotation_until: number; expires: number; verified_until: number };
+export type Subscription = { id: string; pair: string; url: string; secret: string; previous: string | null; rotation_until: number; expires: number; verified_until: number; event_name: string };
 export type Pending = { id: string; pair: string; messages: string | null; reply: string | null; error: string | null; expires: number };
 export class DotsStore {
   constructor(readonly db: Client) {}
@@ -21,6 +21,9 @@ export class DotsStore {
       CREATE INDEX IF NOT EXISTS dots_request_pair ON dots_requests(pair, expires);
       CREATE TABLE IF NOT EXISTS dots_deliveries(request TEXT NOT NULL, subscription TEXT NOT NULL, event_id TEXT NOT NULL, occurred INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL, PRIMARY KEY(request,subscription));
     `);
+    // Existing subscriptions retain their original event identity after upgrade.
+    const columns = await this.rows<{ name: string }>('PRAGMA table_info(dots_subscriptions)');
+    if (!columns.some(column => column.name === 'event_name')) await this.db.execute("ALTER TABLE dots_subscriptions ADD COLUMN event_name TEXT NOT NULL DEFAULT 'milo.request'");
   }
   async rows<T>(sql: string, args: InValue[] = []) { return (await this.db.execute({ sql, args })).rows as unknown as T[]; }
   async clean() {

@@ -22,22 +22,22 @@ const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const json = (body: unknown, token?: string) => ({ method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
 const form = (body: Record<string, string>, headers: Record<string, string> = {}) => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body).toString() });
-const request = { model: 'milo', messages: [{ role: 'user', content: 'Hello exactly!' }], tools: [], cwd: '/tmp', stream: false };
-async function fixture() {
+const request = { model: 'grunt', messages: [{ role: 'user', content: 'Hello exactly!' }], tools: [], cwd: '/tmp', stream: false };
+async function fixture(options: { legacy?: boolean } = {}) {
   const db = createClient({ url: 'file::memory:' });
   cleanup.push(async () => db.close());
   const store = new DotsStore(db); await store.init();
-  const config = await mkdtemp(join(tmpdir(), 'milo-mcp-')); cleanup.push(() => rm(config, { recursive: true, force: true }));
+  const config = await mkdtemp(join(tmpdir(), 'grunt-mcp-')); cleanup.push(() => rm(config, { recursive: true, force: true }));
   let receiver: Sender = async (_url, raw) => ({ status: 200, body: JSON.stringify({ challenge: JSON.parse(raw).challenge }) });
   const server = serve({ fetch: req => relay.app.fetch(req), hostname: '127.0.0.1', port: 0 });
   await new Promise<void>(resolve => server.listening ? resolve() : server.once('listening', () => resolve()));
   cleanup.push(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const relay = dotsRelay(store, { origin, sender: (...args) => receiver(...args), poll: 5 });
-  const env = { MILO_CONFIG_DIR: config, MILO_DOTS_URL: origin, MILO_SOURCES: 'dots' };
+  const env = { GRUNT_CONFIG_DIR: config, GRUNT_DOTS_URL: origin, GRUNT_SOURCES: 'dots' };
   const client = await (await relay.app.request('/oauth/register', json({ redirect_uris: ['https://chatgpt.com/connector/callback'], client_name: 'ChatGPT dot', token_endpoint_auth_method: 'none' }))).json();
   const verifier = randomBytes(32).toString('base64url');
-  const query = { response_type: 'code', client_id: client.client_id, redirect_uri: 'https://chatgpt.com/connector/callback', state: 'state123', code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), resource: origin + '/join', scope: 'milo:dots' };
+  const query = { response_type: 'code', client_id: client.client_id, redirect_uri: 'https://chatgpt.com/connector/callback', state: 'state123', code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), resource: origin + '/join', scope: options.legacy ? 'milo:dots' : 'grunt:dots' };
   async function allow(decision = 'allow') {
     const consent = await relay.app.request('/oauth/authorize?' + new URLSearchParams(query));
     const html = await consent.text();
@@ -72,24 +72,24 @@ async function fixture() {
   const rpc = async (method: string, params: unknown = {}, token = tokens.access_token, path = '/join') => (await (await relay.app.request(path, json({ jsonrpc: '2.0', id: 1, method, params }, token))).json());
   const tool = async (name: string, args: unknown = {}, token?: string) => { const response = await rpc('tools/call', { name, arguments: args }, token); return { ...response.result, value: response.result?.content?.[0]?.text ? JSON.parse(response.result.content[0].text.startsWith('{') ? response.result.content[0].text : '{}') : undefined }; };
   const signingKey = 'whsec_' + randomBytes(32).toString('base64');
-  const subscription = { name: 'milo.request', arguments: {}, delivery: { mode: 'webhook', url: 'https://receiver.example/events', secret: signingKey } };
+  const subscription = { name: 'grunt.request', arguments: {}, delivery: { mode: 'webhook', url: 'https://receiver.example/events', secret: signingKey } };
   const link = (await readDotsLink(env))!;
   return { db, store, relay, env, device: { Authorization: `Bearer ${link.deviceSecret}` }, link, client, tokens, tokenBody, authorize, allow, rpc, tool, subscription, signingKey, set receiver(fn: Sender) { receiver = fn; } };
 }
 it('stays off by default and makes no gateway call without explicit opt-in or setup', async () => {
   const fetcher = vi.fn();
-  const source = new Dots({ env: { MILO_DOTS_URL: 'https://api.grunt.run' }, fetcher });
+  const source = new Dots({ env: { GRUNT_DOTS_URL: 'https://api.grunt.run' }, fetcher });
   expect(await source.available()).toBe(false);
   await expect(source.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'not_installed' });
   const sources = configure({}); expect(sources.sources.map(s => s.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
   const app = createLocalApp(new Sources([source]));
-  expect((await (await app.request('http://127.0.0.1:8788/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['milo']);
+  expect((await (await app.request('http://127.0.0.1:8788/v1/models')).json()).data.map((m: { id: string }) => m.id)).toEqual(['grunt']);
   expect(fetcher).not.toHaveBeenCalled();
   await sources.close();
 });
 it('supports metadata, PKCE, single-use pairing and codes, refresh rotation and explicit consent', async () => {
   const f = await fixture();
-  expect(await (await f.relay.app.request('/.well-known/oauth-protected-resource')).json()).toMatchObject({ resource: f.env.MILO_DOTS_URL + '/join' });
+  expect(await (await f.relay.app.request('/.well-known/oauth-protected-resource')).json()).toMatchObject({ resource: f.env.GRUNT_DOTS_URL + '/join' });
   expect(await (await f.relay.app.request('/.well-known/oauth-authorization-server')).json()).toMatchObject({ code_challenge_methods_supported: ['S256'], grant_types_supported: ['authorization_code', 'refresh_token'] });
   expect((await f.relay.app.request('/mcp')).headers.get('content-type')).toContain('text/html');
   expect((await f.relay.app.request('/mcp', json({}))).status).toBe(401);
@@ -99,7 +99,7 @@ it('supports metadata, PKCE, single-use pairing and codes, refresh rotation and 
   const refresh = { grant_type: 'refresh_token', client_id: f.client.client_id, refresh_token: f.tokens.refresh_token };
   expect((await f.relay.app.request('/oauth/token', form(refresh))).status).toBe(200);
   expect((await f.relay.app.request('/oauth/token', form(refresh))).status).toBe(400);
-  const disk = await stat(join(f.env.MILO_CONFIG_DIR, 'dots.json')); expect(disk.mode & 0o777).toBe(0o600);
+  const disk = await stat(join(f.env.GRUNT_CONFIG_DIR, 'dots.json')); expect(disk.mode & 0o777).toBe(0o600);
   const rows = await f.store.rows<{ device_hash: string }>('SELECT device_hash FROM dots_pairs'); expect(rows[0]!.device_hash).not.toBe(f.link.deviceSecret);
 });
 it('verifies signed callbacks, persists idempotent subscriptions, rotates keys and unsubscribes', async () => {
@@ -138,15 +138,15 @@ it('carries a local API request through a signed event and scoped MCP tools back
   f.receiver = async (_url, raw, headers) => {
     const event = new Webhook(f.signingKey).verify(raw, headers) as { type?: string; challenge?: string; name?: string; data?: { requestId: string } };
     if (event.type === 'verification') return { status: 200, body: JSON.stringify({ challenge: event.challenge }) };
-    expect(event.name).toBe('milo.request'); expect(raw).not.toContain(request.messages[0]!.content);
-    const item = (await f.tool('milo_get_request', { requestId: event.data!.requestId })).value; fetched.push(item);
-    expect(await f.tool('milo_submit_reply', { requestId: item.requestId, text: 'These chats do not count toward your weekly usage limit.' })).toMatchObject({ value: { accepted: true } });
+    expect(event.name).toBe('grunt.request'); expect(raw).not.toContain(request.messages[0]!.content);
+    const item = (await f.tool('grunt_get_request', { requestId: event.data!.requestId })).value; fetched.push(item);
+    expect(await f.tool('grunt_submit_reply', { requestId: item.requestId, text: 'These chats do not count toward your weekly usage limit.' })).toMatchObject({ value: { accepted: true } });
     return { status: 200, body: '{}' };
   };
   const initialized = (await f.rpc('initialize', { protocolVersion: '2025-03-26' })).result;
   expect(initialized.capabilities).toHaveProperty('events');
-  for (const term of ['Immediately subscribe', 'milo.request', 'milo_get_request', 'milo_submit_reply', 'milo_fail_request', 'without starting Codex or Work tasks']) expect(initialized.instructions).toContain(term);
-  expect((await f.rpc('events/list')).result.events[0].name).toBe('milo.request');
+  for (const term of ['Immediately subscribe', 'grunt.request', 'grunt_get_request', 'grunt_submit_reply', 'grunt_fail_request', 'without starting Codex or Work tasks']) expect(initialized.instructions).toContain(term);
+  expect((await f.rpc('events/list')).result.events[0].name).toBe('grunt.request');
   await f.rpc('events/subscribe', f.subscription);
   const source = new Dots({ env: f.env, timeout: 2000 });
   expect(await source.available()).toBe(true);
@@ -165,8 +165,8 @@ it('isolates both daemon and MCP credentials between pairings and deletes prompt
   const f = await fixture(); await f.rpc('events/subscribe', f.subscription);
   const pair = (await f.store.device(f.link.deviceSecret))!;
   const id = (await f.store.enqueue(pair.id, request.messages, 10000))!;
-  const otherConfig = await mkdtemp(join(tmpdir(), 'milo-other-')); cleanup.push(() => rm(otherConfig, { recursive: true, force: true }));
-  const otherEnv = { ...f.env, MILO_CONFIG_DIR: otherConfig };
+  const otherConfig = await mkdtemp(join(tmpdir(), 'grunt-other-')); cleanup.push(() => rm(otherConfig, { recursive: true, force: true }));
+  const otherEnv = { ...f.env, GRUNT_CONFIG_DIR: otherConfig };
   const wrong = await f.authorize(otherEnv); expect(wrong.response.status).toBe(303);
   const otherDevice = (await readDotsLink(otherEnv))!.deviceSecret;
   const code = new URL(wrong.response.headers.get('location')!).searchParams.get('code')!;
@@ -174,12 +174,12 @@ it('isolates both daemon and MCP credentials between pairings and deletes prompt
   expect((await f.relay.app.request('/dots/requests/' + id, { headers: { Authorization: `Bearer ${otherDevice}` } })).status).toBe(410);
   await f.relay.app.request('/dots/requests/' + id, { method: 'DELETE', headers: { Authorization: `Bearer ${otherDevice}` } });
   expect(await f.store.pending(pair.id, id)).toBeDefined();
-  expect((await f.tool('milo_get_request', { requestId: id }, token.access_token)).value).toEqual({ request: null });
-  expect((await f.tool('milo_submit_reply', { requestId: id, text: 'stolen' }, token.access_token)).isError).toBe(true);
+  expect((await f.tool('grunt_get_request', { requestId: id }, token.access_token)).value).toEqual({ request: null });
+  expect((await f.tool('grunt_submit_reply', { requestId: id, text: 'stolen' }, token.access_token)).isError).toBe(true);
   expect((await f.relay.app.request('/dots/requests/' + id, { headers: { Authorization: `Bearer ${token.access_token}` } })).status).toBe(401);
-  await f.tool('milo_submit_reply', { requestId: id, text: 'First answer' });
+  await f.tool('grunt_submit_reply', { requestId: id, text: 'First answer' });
   expect((await f.store.pending(pair.id, id))!.messages).toBeNull();
-  await f.tool('milo_submit_reply', { requestId: id, text: 'Second answer' });
+  await f.tool('grunt_submit_reply', { requestId: id, text: 'Second answer' });
   expect((await f.store.pending(pair.id, id))!.reply).toBe('First answer');
 });
 it.each(['timeout', 'quota', 'no_subscription', 'logged_out'])('falls back on %s while explicit dots stays exclusive', async mode => {
@@ -187,7 +187,7 @@ it.each(['timeout', 'quota', 'no_subscription', 'logged_out'])('falls back on %s
   const fallback = { id: 'fallback', available: async () => true, complete: vi.fn(async () => ({ text: 'fallback' })) };
   if (mode !== 'no_subscription') await f.rpc('events/subscribe', f.subscription);
   if (mode === 'logged_out') await f.db.execute('DELETE FROM dots_pairs');
-  if (mode === 'quota') f.receiver = async (_url, raw) => { const event = JSON.parse(raw); await f.tool('milo_fail_request', { requestId: event.data.requestId, reason: 'quota' }); return { status: 200, body: '{}' }; };
+  if (mode === 'quota') f.receiver = async (_url, raw) => { const event = JSON.parse(raw); await f.tool('grunt_fail_request', { requestId: event.data.requestId, reason: 'quota' }); return { status: 200, body: '{}' }; };
   const driver = new Dots({ env: f.env, timeout: 120 });
   const sources = new Sources([driver, fallback]);
   expect(await sources.complete(request, new AbortController().signal)).toEqual({ text: 'fallback' });
@@ -216,9 +216,29 @@ it('preserves event IDs on retry, stops on 410/413, expires prompt text, and rev
 it('works with the standard MCP Streamable HTTP client', async () => {
   const f = await fixture();
   const client = new Client({ name: 'fixture-dot', version: '1.0.0' });
-  const transport = new StreamableHTTPClientTransport(new URL(f.env.MILO_DOTS_URL + '/mcp'), { requestInit: { headers: { Authorization: `Bearer ${f.tokens.access_token}` } } });
-  try { await client.connect(transport); expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['milo_get_request', 'milo_submit_reply', 'milo_fail_request']); }
+  const transport = new StreamableHTTPClientTransport(new URL(f.env.GRUNT_DOTS_URL + '/mcp'), { requestInit: { headers: { Authorization: `Bearer ${f.tokens.access_token}` } } });
+  try { await client.connect(transport); expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['grunt_get_request', 'grunt_submit_reply', 'grunt_fail_request']); }
   finally { await client.close(); }
+});
+
+it('keeps legacy OAuth scopes, event subscriptions, tools and environment settings usable', async () => {
+  const f = await fixture({ legacy: true });
+  await f.rpc('events/subscribe', { ...f.subscription, name: 'milo.request' });
+  let events = 0;
+  f.receiver = async (_url, raw) => {
+    const event = JSON.parse(raw);
+    if (event.type === 'verification') return { status: 200, body: JSON.stringify({ challenge: event.challenge }) };
+    expect(event.name).toBe('milo.request'); events++;
+    const item = (await f.tool('milo_get_request', { requestId: event.data.requestId })).value;
+    expect(await f.tool('milo_submit_reply', { requestId: item.requestId, text: 'Legacy pairing still works.' })).toMatchObject({ value: { accepted: true } });
+    return { status: 200, body: '{}' };
+  };
+  const source = new Dots({ env: { MILO_CONFIG_DIR: f.env.GRUNT_CONFIG_DIR, MILO_DOTS_URL: f.env.GRUNT_DOTS_URL, MILO_SOURCES: 'dots' }, timeout: 2000 });
+  try {
+    expect(await source.available()).toBe(true);
+    expect(await source.complete({ ...request, model: 'milo' }, new AbortController().signal)).toEqual({ text: 'Legacy pairing still works.' });
+    expect(events).toBe(1);
+  } finally { await source.close(); }
 });
 
 it('caller cancellation stops the chain and removes the queued request', async () => {
@@ -232,7 +252,7 @@ it('caller cancellation stops the chain and removes the queued request', async (
 });
 it('retains subscriptions across a SQLite reopen', async () => {
   const f = await fixture(); await f.rpc('events/subscribe', f.subscription);
-  const directory = await mkdtemp(join(tmpdir(), 'milo-subscription-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-subscription-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const url = 'file:' + join(directory, 'relay.db');
   const db = createClient({ url }); const store = new DotsStore(db); await store.init();
   const sub = (await f.store.rows<{ id: string; pair: string; url: string; secret: string; expires: number; verified_until: number }>('SELECT * FROM dots_subscriptions'))[0]!;
@@ -245,7 +265,7 @@ it('retains subscriptions across a SQLite reopen', async () => {
 it('pairs after Allow without typing, refuses reused/expired/unconfirmed tickets, and keeps the device secret', async () => {
   const f = await fixture();
   const local = createLocalApp(new Sources([{ id: 'fixture', available: async () => false, complete: async () => ({ text: '' }) }]), { dotsEnv: f.env });
-  const headers = { Referer: f.env.MILO_DOTS_URL + '/', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' };
+  const headers = { Referer: f.env.GRUNT_DOTS_URL + '/', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' };
   const allowed = await f.allow(); const target = allowed.response.headers.get('location')!;
   expect(target).toContain('http://127.0.0.1:8788/dots/pair?ticket=');
   expect(allowed.response.headers.get('referrer-policy')).toBe('origin');
@@ -272,13 +292,13 @@ it('redeems the fallback code only once and completes the same pending browser a
   expect((await f.relay.app.request(complete, { headers: { Cookie: allowed.cookie } })).status).toBe(303);
 });
 it('rejects hostile or disabled local pairing and unconfirmed gateway results before saving a device secret', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'milo-unpaired-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const env = { MILO_CONFIG_DIR: directory, MILO_DOTS_URL: 'https://api.grunt.run', MILO_SOURCES: 'dots' };
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-unpaired-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const env = { GRUNT_CONFIG_DIR: directory, GRUNT_DOTS_URL: 'https://api.grunt.run', GRUNT_SOURCES: 'dots' };
   const target = 'https://api.grunt.run/oauth/complete?flow=' + 'f'.repeat(43);
   const url = 'http://127.0.0.1:8788/dots/pair?' + new URLSearchParams({ ticket: 't'.repeat(43), return: target });
   const fetcher = vi.fn(async () => new Response(JSON.stringify({ paired: false, return: target })));
   const request = new Request(url, { headers: { Referer: 'https://api.grunt.run/' } });
-  expect((await pairDots(request, { ...env, MILO_SOURCES: 'kilo' }, fetcher)).status).toBe(403); expect(fetcher).not.toHaveBeenCalled();
+  expect((await pairDots(request, { ...env, GRUNT_SOURCES: 'kilo' }, fetcher)).status).toBe(403); expect(fetcher).not.toHaveBeenCalled();
   expect((await pairDots(new Request(url, { headers: { Referer: 'https://hostile.example/' } }), env, fetcher)).status).toBe(403); expect(fetcher).not.toHaveBeenCalled();
   expect((await pairDots(request, env, fetcher)).status).toBe(403);
   expect(await readDotsLink(env)).toBeUndefined();
@@ -289,7 +309,7 @@ it('rejects hostile or disabled local pairing and unconfirmed gateway results be
 it('publishes canonical join metadata and the mcp alias with matching resource challenges', async () => {
   const f = await fixture();
   for (const path of ['/join', '/mcp']) {
-    const metadata = await (await f.relay.app.request('/.well-known/oauth-protected-resource' + path)).json(); expect(metadata.resource).toBe(f.env.MILO_DOTS_URL + path);
+    const metadata = await (await f.relay.app.request('/.well-known/oauth-protected-resource' + path)).json(); expect(metadata.resource).toBe(f.env.GRUNT_DOTS_URL + path);
     const unauthenticated = await f.relay.app.request(path, json({})); expect(unauthenticated.status).toBe(401);
     expect(unauthenticated.headers.get('www-authenticate')).toContain('/.well-known/oauth-protected-resource' + path);
     expect((await f.rpc('initialize', {}, undefined, path)).result.capabilities).toHaveProperty('events');
@@ -301,7 +321,7 @@ it('publishes canonical join metadata and the mcp alias with matching resource c
 it('defaults new installs to grunt while paired devices keep their stored relay origin', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-legacy-link-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const env = { MILO_CONFIG_DIR: directory, MILO_SOURCES: 'dots' };
+  const env = { GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'dots' };
   expect(dotsGateway(env)).toBe('https://api.grunt.run');
   const link = { gateway: 'https://usemilo.dev', deviceSecret: 'a'.repeat(43) };
   await writeFile(join(directory, 'dots.json'), JSON.stringify(link));
@@ -310,6 +330,6 @@ it('defaults new installs to grunt while paired devices keep their stored relay 
   const dots = new Dots({ env, fetcher });
   expect(await dots.available()).toBe(true);
   expect(fetcher.mock.calls[0]![0]).toBe('https://usemilo.dev/dots/status');
-  expect(await readDotsLink({ ...env, MILO_DOTS_URL: 'https://api.grunt.run' })).toBeUndefined();
+  expect(await readDotsLink({ ...env, GRUNT_DOTS_URL: 'https://api.grunt.run' })).toBeUndefined();
   await dots.close();
 });

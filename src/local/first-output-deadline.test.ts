@@ -10,7 +10,7 @@ import { Freebuff } from './freebuff.js';
 // Freebuff is not in the published pool; give the router a test entry for it.
 const opencode = bundledRegistry.adapters.find(adapter => adapter.id === 'opencode')!;
 const registry = { ...bundledRegistry, adapters: [{ ...opencode, id: 'freebuff', install: 'npm:freebuff', weight: 0.5 }, { ...opencode, weight: 0.5 }] };
-const request: ModelRequest = { model: 'milo', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
+const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'Finish the task' }], cwd: '/tmp', tools: [], stream: false };
 const chain = (sources: Source[], sticky: boolean, deadline: number) =>
   new Sources(sources, sticky ? { registry: () => registry, random: () => 0 } : undefined, new Set(), deadline);
 const next = () => ({ id: 'opencode', available: async () => true, complete: vi.fn(async () => ({ text: 'next answer' })) });

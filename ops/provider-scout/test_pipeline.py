@@ -135,6 +135,18 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.calls, ['validate'])
         self.assertEqual(supervisor.resume_pending(), [])
 
+    def test_pending_public_ci_resumes_promotion_without_repeating_inference(self):
+        self.promotion_status = 'ci_pending'
+        self.assertEqual(self.make().process(self.candidate)['status'], 'ci_pending')
+        before = pipeline._read(self.checkpoint())
+        self.assertEqual(before['phase'], 'promotion')
+        self.calls.clear()
+        self.promotion_status = 'released'
+        resumed = self.make().resume_pending()
+        self.assertEqual(resumed[0]['status'], 'released')
+        self.assertEqual(self.calls, ['promote'])
+        self.assertEqual(pipeline._read(self.checkpoint())['receipt'], before['receipt'])
+
     def test_disabled_never_calls_any_stage_or_resumes(self):
         self.config['release_enabled'] = False
         supervisor = self.make()

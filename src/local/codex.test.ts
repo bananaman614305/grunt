@@ -19,7 +19,7 @@ vi.mock('node:fs', async importOriginal => {
 });
 let dir: string;
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'milo-codex-'));
+  dir = await mkdtemp(join(tmpdir(), 'grunt-codex-'));
   await copyFile(new URL('./fixtures/fake-codex.cjs', import.meta.url), join(dir, 'codex'));
   await chmod(join(dir, 'codex'), 0o755);
   vi.stubEnv('PATH', `${dir}:${process.env.PATH}`);
@@ -51,7 +51,7 @@ it('passes exact text and cwd, parses only the final agent text, and resumes thr
   const app = createLocalApp(new Sources([source]));
   const req = request();
   const send = async () => {
-    const res = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-milo-cwd': dir }, body: JSON.stringify(req) });
+    const res = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-grunt-cwd': dir }, body: JSON.stringify(req) });
     expect(res.status).toBe(200);
     return (await res.json()).choices[0].message.content;
   };
@@ -65,12 +65,12 @@ it('passes exact text and cwd, parses only the final agent text, and resumes thr
   ]);
   expect(invocations.every(c => c.cwd === dir)).toBe(true);
 });
-it('maps usage limits to quota and falls through only for milo', async () => {
+it('maps usage limits to quota and falls through only for grunt', async () => {
   vi.stubEnv('FAKE_CODEX_MODE', 'quota');
   const source = new Codex(), free = vi.fn(async () => ({ text: 'free answer' }));
   await expect(source.complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota' });
   const sources = new Sources([source, { id: 'free', available: async () => true, complete: free }]);
-  expect(await sources.complete({ ...request(), model: 'milo' }, AbortSignal.timeout(5000))).toEqual({ text: 'free answer' });
+  expect(await sources.complete({ ...request(), model: 'grunt' }, AbortSignal.timeout(5000))).toEqual({ text: 'free answer' });
   await expect(sources.complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota' });
   expect(free).toHaveBeenCalledTimes(1);
 });
@@ -98,10 +98,10 @@ it('never launches Codex for default-config API requests', async () => {
   const fetcher = vi.fn(async () => Response.json({ choices: [{ message: { content: 'free answer' } }] }));
   vi.stubGlobal('fetch', fetcher);
   try {
-    const sources = configure({ MILO_FREELLMAPI_KEY: 'test' });
+    const sources = configure({ GRUNT_FREELLMAPI_KEY: 'test' });
     for (const source of sources.sources) { vi.spyOn(source, 'available').mockResolvedValue(true); vi.spyOn(source, 'complete').mockResolvedValue({ text: 'free answer' }); }
     const app = createLocalApp(sources);
-    for (const model of ['milo', 'codex']) {
+    for (const model of ['grunt', 'codex']) {
       const res = await app.request('http://localhost:8788/v1/chat/completions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Say hello' }] })
@@ -111,6 +111,6 @@ it('never launches Codex for default-config API requests', async () => {
     }
     expect(sources.sources.map(s => s.id)).toEqual(['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch']);
     expect(fs.existsSync(join(dir, 'calls'))).toBe(false);
-    expect(configure({ MILO_SOURCES: 'opencode,codex,freellmapi' }).sources.map(s => s.id)).toEqual(['opencode', 'codex', 'freellmapi']);
+    expect(configure({ GRUNT_SOURCES: 'opencode,codex,freellmapi' }).sources.map(s => s.id)).toEqual(['opencode', 'codex', 'freellmapi']);
   } finally { vi.unstubAllGlobals(); }
 });

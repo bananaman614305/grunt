@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: deploy-milo-gateway
+  group: deploy-grunt-gateway
   cancel-in-progress: false
 jobs:
   deploy:
@@ -22,8 +22,8 @@ jobs:
         run: docker build -t "$IMAGE" .
       - name: Prove image starts and serves the chat page
         run: |
-          docker run -d --name milo-smoke -p 127.0.0.1:8787:8787 "$IMAGE"
-          trap 'docker logs milo-smoke; docker rm -f milo-smoke' EXIT
+          docker run -d --name grunt-smoke -p 127.0.0.1:8787:8787 "$IMAGE"
+          trap 'docker logs grunt-smoke; docker rm -f grunt-smoke' EXIT
           curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:8787/health
           curl --fail http://127.0.0.1:8787/chat > /dev/null
       - name: Push tested image

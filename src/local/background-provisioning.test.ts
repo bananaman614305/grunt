@@ -54,7 +54,7 @@ it('restarts registry downloads independently from serial checks without provisi
   daemon.serve.mockReturnValue({ close: daemon.serverClose });
   const signals = ['SIGINT', 'SIGTERM'] as const;
   const previousListeners = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-  const running = start({ MILO_SOURCES: providers.join(','), MILO_CONFIG_DIR: directory, MILO_PORT: '18792' });
+  const running = start({ GRUNT_SOURCES: providers.join(','), GRUNT_CONFIG_DIR: directory, GRUNT_PORT: '18792' });
   try {
     await vi.waitFor(() => expect(daemon.finished).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(check).toHaveBeenCalledOnce());

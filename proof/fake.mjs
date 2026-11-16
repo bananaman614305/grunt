@@ -1,5 +1,5 @@
 // Offline proof adapter for the built CLI. Never use it for a deployment.
-// Run with: MILO_DB=file:/tmp/milo-proof.db PORT=8788 node --import ./proof/fake.mjs dist/server.js
+// Run with: GRUNT_DB=file:/tmp/grunt-proof.db PORT=8788 node --import ./proof/fake.mjs dist/server.js
 import { createServer } from 'node:http';
 const realFetch = globalThis.fetch;
 const jobs = [];
@@ -11,7 +11,7 @@ globalThis.fetch = async (input, init) => {
   if (!url.startsWith('https://openrouter.ai/api/v1/chat/completions')) return realFetch(input, init);
   const body = JSON.parse(init.body);
   const first = body.messages[0].content;
-  if (first.startsWith('Complete Milo')) {
+  if (first.startsWith('Complete Grunt')) {
     workerCalls++;
     return new Promise((resolve, reject) => {
       const job = { resolve, reject }; jobs.push(job);
@@ -23,7 +23,7 @@ globalThis.fetch = async (input, init) => {
   if (/remember|keep answers short/i.test(text)) return answer('Got it.', [tool('remember', { fact: 'I write TypeScript. Keep answers short.' })]);
   if (/plan|compare/i.test(text)) return answer('I’ll put that together while we keep chatting.', [tool('dispatch', { title: 'A launch plan for your TypeScript app', brief: 'Write a concise one-page launch plan for a TypeScript app. Focus on a prototype, customer validation and a small public launch.', kind: 'writing' })]);
   if (/capital/i.test(text)) return answer('Paris. Your launch plan is still running — you can keep asking questions.');
-  return answer('Hi, I’m Milo. Ask me a question or give me a bigger job to work on.');
+  return answer('Hi, I’m Grunt. Ask me a question or give me a bigger job to work on.');
 };
 const control = createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/release') {

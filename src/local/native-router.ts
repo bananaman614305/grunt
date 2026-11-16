@@ -2,6 +2,8 @@ import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { command, configDir, installBackgroundService } from './wizard.js';
 import { loopback } from './freellmapi.js';
+import { gruntEnv } from '../brand.js';
+import { ROUTER_ADMIN_EMAIL } from './setup.js';
 
 // Published FreeLLMAPI v0.16.24 source, pinned independently of grunt releases.
 export const FREELLMAPI_REVISION = '4c8c2f834b587b6acc3f00698ad8f6468bea1aa2';
@@ -33,18 +35,18 @@ export async function ensureNativeRouter(signal?: AbortSignal) {
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 process.umask(0o077);
-const path = join(process.env.MILO_CONFIG_DIR, 'router-admin.json');
+const path = join(process.env.GRUNT_CONFIG_DIR ?? process.env.MILO_CONFIG_DIR, 'router-admin.json');
 const metadata = await stat(path);
 if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600 || metadata.uid !== process.getuid()) throw new Error('Invalid private router login permissions');
 const admin = JSON.parse(await readFile(path, 'utf8'));
 process.env.ENCRYPTION_KEY = admin.encryption;
-process.env.FREEAPI_CONFIG_JSON = JSON.stringify({ admin: { email: 'milo@localhost.local', password: admin.password } });
-await import(pathToFileURL(process.env.MILO_ROUTER_ENTRY).href);
+process.env.FREEAPI_CONFIG_JSON = JSON.stringify({ admin: { email: ${JSON.stringify(ROUTER_ADMIN_EMAIL)}, password: admin.password } });
+await import(pathToFileURL((process.env.GRUNT_ROUTER_ENTRY ?? process.env.MILO_ROUTER_ENTRY)).href);
 `, { mode: 0o600 });
-  const url = loopback(process.env.MILO_FREELLMAPI_URL || 'http://127.0.0.1:3001/v1');
+  const url = loopback(gruntEnv('FREELLMAPI_URL') || 'http://127.0.0.1:3001/v1');
   await mkdir(dirname(join(directory, 'router.db')), { recursive: true, mode: 0o700 });
-  await installBackgroundService('milo-router', runner, {
-    MILO_CONFIG_DIR: configDir(), MILO_ROUTER_ENTRY: entry,
+  await installBackgroundService('grunt-router', runner, {
+    GRUNT_CONFIG_DIR: configDir(), GRUNT_ROUTER_ENTRY: entry,
     HOST: '127.0.0.1', PORT: url.port || '80', NODE_ENV: 'production',
     FREEAPI_DB_PATH: join(directory, 'router.db'),
     PROVIDER_TIMEOUT_CUSTOM: '600000',

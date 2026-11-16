@@ -42,6 +42,7 @@
   },
   "bin": {
     "usegrunt": "dist/local/main.js",
+    "grunt-local": "dist/local/main.js",
     "milo": "dist/local/main.js",
     "milo-local": "dist/local/main.js"
   },
@@ -49,5 +50,13 @@
   "files": [
     "dist",
     "README.md"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bananaman614305/grunt.git"
+  },
+  "homepage": "https://grunt.run",
+  "bugs": {
+    "url": "https://github.com/bananaman614305/grunt/issues"
+  }
 }

@@ -62,7 +62,7 @@ export function decode(body: Obj, api: string, fallback?: string): ModelRequest 
   if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
   const imageInput = /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
-  return { model: String(body.model ?? 'milo'), messages, userMessages, tools, cwd, cwdSource, stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  return { model: String(body.model ?? 'grunt'), messages, userMessages, tools, cwd, cwdSource, stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
@@ -128,7 +128,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
   });
   app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
   app.get('/v1/status', c => { c.header('Cache-Control', 'no-store'); return c.json(sources.status()); });
-  app.get('/v1/models', async c => c.json({ object: 'list', data: (await sources.models()).map(id => ({ id, object: 'model', created: 0, owned_by: 'milo' })) }));
+  app.get('/v1/models', async c => c.json({ object: 'list', data: (await sources.models()).map(id => ({ id, object: 'model', created: 0, owned_by: 'grunt' })) }));
   for (const [path, api] of [['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const) {
     app.post(`/v1/${path}`, async c => {
       let request: ReturnType<typeof decode>;

@@ -25,8 +25,10 @@ import type { Harness, runHarness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
 import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
 import type { SetupDashboard } from './setup-dashboard.js';
+import { configRoot, gruntEnv } from '../brand.js';
+import { serviceEnvironment } from './service-environment.js';
 
-export const configDir = (env = process.env) => env.MILO_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+export const configDir = (env = process.env) => configRoot(env);
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal, env?: NodeJS.ProcessEnv) {
   signal?.throwIfAborted();
   const run = () => new Promise<void>((resolve, reject) => {
@@ -104,7 +106,7 @@ export async function connectSquire(options: { hasBroker?: () => Promise<boolean
       throw new Error(`Existing trusty-squire-broker failed its connection probe: ${error instanceof Error ? error.message : String(error)}. Repair the broker, then rerun usegrunt setup.`, { cause: error });
     }
   }
-  if (process.env.MILO_SETUP_NO_HUMAN === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
+  if (gruntEnv('SETUP_NO_HUMAN') === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
   // Only a machine without a broker may enter the installer.
   const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
   const env = await squireBootstrapEnvironment(options.signal);
@@ -122,7 +124,7 @@ export async function preflight(run = command) {
   ] as const) {
     try { await run(binary, [...args]); } catch { throw new Error(fix + ' Then run npx usegrunt setup.'); }
   }
-  if (process.env.MILO_ROUTER_RUNTIME === 'docker') {
+  if (gruntEnv('ROUTER_RUNTIME') === 'docker') {
     try { await run('docker', ['info']); } catch { throw new Error('Install and start Docker Desktop, then run npx usegrunt setup.'); }
   }
   try {
@@ -162,21 +164,22 @@ export async function installService(adapters?: string[], options: { signal?: Ab
   await stage(() => mkdir(runtime, { recursive: true, mode: 0o700 }));
   await stage(() => cp(join(root, 'dist'), join(runtime, 'dist'), { recursive: true }));
   const pkg = JSON.parse(await stage(() => readFile(join(root, 'package.json'), 'utf8')));
-  await stage(() => writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', private: true, type: 'module', dependencies: pkg.dependencies }), { mode: 0o600 }));
+  await stage(() => writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'grunt-runtime', private: true, type: 'module', dependencies: pkg.dependencies }), { mode: 0o600 }));
   await stage(() => command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], false, options.signal));
   const entry = join(runtime, 'dist', 'local', 'main.js');
-  const port = process.env.MILO_PORT || '8788';
+  const port = gruntEnv('PORT') || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
-  const env: Record<string, string> = { GRUNT_DAEMON: '1', MILO_CONFIG_DIR: directory, MILO_PORT: port, MILO_SOURCES: selected.join(','), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
-  if (process.env.MILO_FREELLMAPI_URL) env.MILO_FREELLMAPI_URL = process.env.MILO_FREELLMAPI_URL;
+  const env: Record<string, string> = { GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: port, GRUNT_SOURCES: selected.join(','), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  const routerURL = gruntEnv('FREELLMAPI_URL');
+  if (routerURL) env.GRUNT_FREELLMAPI_URL = routerURL;
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await stage(() => readFile(opencodeConfig)); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  await stage(() => installBackgroundService('milo', entry, env, options));
+  const effectivePort = await stage(() => installBackgroundService('grunt', entry, env, options)) ?? port;
   await stage(() => writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 }));
   const portStage = join(directory, `.installed-port-${randomUUID()}`);
   try {
-    await stage(() => writeFile(portStage, JSON.stringify(Number(port)), { flag: 'wx', mode: 0o600 }));
+    await stage(() => writeFile(portStage, JSON.stringify(Number(effectivePort)), { flag: 'wx', mode: 0o600 }));
     await stage(() => rename(portStage, join(directory, 'installed-port.json')));
   } finally { await rm(portStage, { force: true }); }
 }
@@ -190,6 +193,51 @@ export async function installBackgroundService(name: string, entry: string, env:
   const run = (binary: string, args: string[]) => stage(() => command(binary, args, false, options.signal));
   options.signal?.throwIfAborted();
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid service name');
+  // Existing service files can contain custom ports, endpoints and drop-ins.
+  // Keep either installed identity and its configuration intact on reruns.
+  const legacy = name === 'grunt' ? 'milo' : name === 'grunt-router' ? 'milo-router' : undefined;
+  if (legacy) {
+    const existing: { identity: string; file: string; contents: string }[] = [];
+    for (const identity of [name, legacy]) {
+      const file = process.platform === 'linux'
+        ? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', `${identity}.service`)
+        : join(homedir(), 'Library', 'LaunchAgents', `ai.${identity}.service.plist`);
+      try {
+        const info = await stage(() => lstat(file));
+        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o022) || info.size > 262144) throw new Error('The existing Grunt service file is unsafe');
+        existing.push({ identity, file, contents: await stage(() => readFile(file, 'utf8')) });
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    if (existing.length > 1) throw new Error('Multiple Grunt service identities are installed; resolve the duplicate before setup');
+    const installedService = existing[0];
+    if (installedService) {
+      const { identity, file, contents } = installedService;
+      if (!contents.includes(process.platform === 'linux' ? systemdQuote(entry) : xml(entry))) throw new Error('The existing Grunt service uses a different runtime; its configuration was not changed');
+      let port: string | undefined;
+      if (name === 'grunt') {
+        if (process.platform === 'linux') {
+          const result = await stage(() => promisify(execFile)('systemctl', ['--user', 'show', `${identity}.service`, '-p', 'Environment', '--value'], { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) }));
+          const installed = serviceEnvironment(result.stdout);
+          if (gruntEnv('CONFIG_DIR', installed) !== env.GRUNT_CONFIG_DIR) throw new Error('The existing Grunt service uses a different configuration directory; its configuration was not changed');
+          port = gruntEnv('PORT', installed);
+        } else {
+          const value = async (setting: string) => stage(() => promisify(execFile)('plutil', ['-extract', `EnvironmentVariables.${setting}`, 'raw', '-o', '-', file], { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) })).then(result => result.stdout.replace(/\r?\n$/, ''));
+          const directory = await value('GRUNT_CONFIG_DIR').catch(() => value('MILO_CONFIG_DIR'));
+          if (directory !== env.GRUNT_CONFIG_DIR) throw new Error('The existing Grunt service uses a different configuration directory; its configuration was not changed');
+          port = await value('GRUNT_PORT').catch(() => value('MILO_PORT'));
+        }
+        if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
+      }
+      if (process.platform === 'linux') await run('systemctl', ['--user', 'restart', `${identity}.service`]);
+      else {
+        const domain = `gui/${process.getuid!()}`;
+        await run('launchctl', ['bootout', `${domain}/ai.${identity}.service`]).catch(() => {});
+        options.signal?.throwIfAborted();
+        await run('launchctl', ['bootstrap', domain, file]);
+      }
+      return port;
+    }
+  }
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
     await stage(() => mkdir(units, { recursive: true }));
@@ -205,6 +253,7 @@ export async function installBackgroundService(name: string, entry: string, env:
     await run('launchctl', ['bootout', `${domain}/ai.${name}.service`]).catch(() => {});
     await run('launchctl', ['bootstrap', domain, plist]);
   }
+  return env.GRUNT_PORT;
 }
 // /v1/models asks every source whether it is available. Bound the combined probe
 // so a hung native CLI cannot leave the installer waiting forever.
@@ -219,20 +268,32 @@ export async function checkService(port = 8788, totalMs = 90000) {
 }
 type Systemctl = (args: string[]) => Promise<string>;
 const systemctl: Systemctl = async args => (await promisify(execFile)('systemctl', ['--user', ...args], { timeout: 10000 })).stdout;
-// Read MILO_SOURCES as systemd applies it, including drop-ins, and name the file that set it.
-export async function serviceSources(run: Systemctl = systemctl, name = 'milo') {
+// Read the effective primary or compatibility source setting and its origin.
+export async function serviceSources(run: Systemctl = systemctl, name?: string): Promise<{ sources: string[]; origin: string; variable: string } | undefined> {
   if (run === systemctl && process.platform !== 'linux') return;
+  if (!name) {
+    for (const identity of ['grunt', 'milo']) { const unit = await serviceSources(run, identity); if (unit) return unit; }
+    return;
+  }
   let environment: string, dropIns: string;
   try { [environment, dropIns] = await Promise.all(['Environment', 'DropInPaths'].map(property => run(['show', `${name}.service`, '-p', property, '--value']))) as [string, string]; }
   catch { return; }
-  const value = environment.match(/(?:^|\s)"?MILO_SOURCES=([^\s"]*)/)?.[1];
+  const effective = serviceEnvironment(environment), variable = effective.GRUNT_SOURCES !== undefined ? 'GRUNT_SOURCES' : 'MILO_SOURCES';
+  const value = effective[variable];
   if (value === undefined) return;
   let origin = `${name}.service`;
   for (const path of dropIns.trim().split(/\s+/).filter(Boolean)) {
-    try { if (/^\s*Environment=.*MILO_SOURCES=/m.test(await readFile(path, 'utf8'))) origin = path; }
+    try { if (new RegExp(`^\\s*Environment=.*${variable}=`,'m').test(await readFile(path, 'utf8'))) origin = path; }
     catch { /* An unreadable drop-in cannot be named. */ }
   }
-  return { sources: value.split(',').map(id => id.trim()), origin };
+  return { sources: value.split(',').map(id => id.trim()), origin, variable };
+}
+async function setupPort() {
+  try {
+    const saved: unknown = JSON.parse(await readFile(join(configDir(), 'installed-port.json'), 'utf8'));
+    if (typeof saved === 'number' && Number.isInteger(saved) && saved >= 1 && saved <= 65535) return saved;
+  } catch { /* A new installation uses its requested port until service admission. */ }
+  return Number(gruntEnv('PORT') || '8788');
 }
 export async function checkServiceSources(unavailable: string[], notify = console.log, adapters = ['freebuff', 'opencode'], read = serviceSources) {
   const unit = await read();
@@ -240,11 +301,11 @@ export async function checkServiceSources(unavailable: string[], notify = consol
   for (const id of adapters) {
     if (unit.sources.includes(id)) continue;
     if (!unavailable.includes(id)) unavailable.push(id);
-    notify(`${id}: FAIL — ${unit.origin} sets MILO_SOURCES=${unit.sources.join(',')}, which lacks ${id}. Setup does not edit it; add ${id} there or remove that setting.`);
+    notify(`${id}: FAIL — ${unit.origin} sets ${unit.variable}=${unit.sources.join(',')}, which lacks ${id}. Setup does not edit it; add ${id} there or remove that setting.`);
   }
 }
 export async function checkFallbackServices(unavailable: string[], port = 8788, notify = console.log, adapters = ['opencode'], wait: { limit: number; interval: number; signal?: AbortSignal; retryPreparing?: boolean } = { limit: 180000, interval: 2000 }) {
-  const directory = await mkdtemp(join(tmpdir(), 'milo-free-check-'));
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-free-check-'));
   try {
     for (const source of adapters) {
       wait.signal?.throwIfAborted();
@@ -343,7 +404,7 @@ export async function prepareHarnesses(port: number, options: HarnessOptions = {
     return Object.assign(async () => [] as Harness[], { discoverLater: true as const });
   }
   queueUi(() => log.info(`Found: ${found.map(h => h.name).join(', ')}. grunt is added as an extra, named option; your default model and provider stay as they are.`));
-  const interactive = process.stdin.isTTY && process.stdout.isTTY && process.env.MILO_SETUP_NO_HUMAN !== '1';
+  const interactive = process.stdin.isTTY && process.stdout.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1';
   const choose = options.choose ?? (async (list: Harness[]) => {
     if (!interactive) return list.filter(h => h.id === 'pi');
     const picked = await multiselect({ message: 'Connect grunt to which tools? (space toggles, enter confirms)', required: false,
@@ -434,7 +495,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         // A declined addition still needs to replace a previously installed
         // runtime that predates consent enforcement. Keep only prior choices.
         await step('Updating the grunt background service', () => actions.installService(previous));
-        await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
+        await step('Waiting for grunt to answer', async () => actions.checkService(await setupPort()));
         outro(`${add} skipped; data sharing was not approved`);
         return;
       }
@@ -446,7 +507,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const approved = new Set(consent.approved);
       const enabled = sources.filter(id => !requiresDataSharing(id) || approved.has(id));
       await step('Starting the grunt background service', () => actions.installService(enabled));
-      await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
+      await step('Waiting for grunt to answer', async () => actions.checkService(await setupPort()));
       outro(`${add} connected`); return;
     }
     const pulled = actions.loadRegistry ? await step('Pulling the free service list from the registry', () => actions.loadRegistry!()) : { registry: bundledRegistry, origin: 'bundled' as RegistryOrigin };
@@ -471,12 +532,12 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       // Honor registry removals, while retaining a user's custom API routing.
       const retained = previous.filter(id => id === 'freellmapi' || requested.includes(id));
       await step('Updating the grunt background service', () => actions.installService(retained.length ? retained : requested));
-      await step('Waiting for grunt to answer', () => actions.checkService(Number(process.env.MILO_PORT || '8788')));
+      await step('Waiting for grunt to answer', async () => actions.checkService(await setupPort()));
       outro('No approved free services are available; the background service now enforces your data-sharing choices');
       return;
     }
 
-    const port = Number(process.env.MILO_PORT || '8788');
+    const port = await setupPort();
     const harnessPlan = actions.prepareHarnesses ? await actions.prepareHarnesses(port) : undefined;
     if (harnessPlan?.discoverLater) log.info('Setup will check again for coding tools after provider installations finish.');
     const applyHarnesses = harnessPlan ?? (async () => {

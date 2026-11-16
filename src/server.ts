@@ -1,5 +1,6 @@
+import { gruntEnv } from './brand.js';
 import { serve } from "@hono/node-server";
-import { MiloAgent } from "./agent.js";
+import { GruntAgent, defaultAgentDb } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { agentRoutes } from "./index.js";
 import { DotsStore } from "./dots-store.js";
@@ -8,10 +9,10 @@ import { registryRoutes } from './registry-routes.js';
 
 const port = Number(process.env.PORT ?? 8787);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer between 1 and 65535.");
-const agent = await MiloAgent.open({ ...loadConfig(process.env.MILO_CONFIG), dbUrl: process.env.MILO_DB ?? "file:/data/milo.db" });
+const agent = await GruntAgent.open({ ...loadConfig(gruntEnv('CONFIG')), dbUrl: gruntEnv('DB') ?? defaultAgentDb() });
 const dotsStore = new DotsStore(agent.store.db);
 await dotsStore.init();
-const relay = dotsRelay(dotsStore, { origin: process.env.MILO_PUBLIC_URL ?? 'https://api.grunt.run' });
+const relay = dotsRelay(dotsStore, { origin: gruntEnv('PUBLIC_URL') ?? 'https://api.grunt.run' });
 const stopRelay = relay.start();
 const app = relay.app.route('/', registryRoutes()).route('/', agentRoutes(agent));
 const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`grunt is listening on port ${port}. Open /chat.`));

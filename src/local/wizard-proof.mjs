@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, readFile, chmod, mkdir, rm } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
-const root = process.cwd(), dir = await mkdtemp(join(tmpdir(), 'milo-wizard-proof-'));
+const root = process.cwd(), dir = await mkdtemp(join(tmpdir(), 'grunt-wizard-proof-'));
 const events = [], daemons = [];
 let routed = 0, login = 0;
 const backend = serve({ hostname: '127.0.0.1', port: 0, fetch: async request => {
@@ -36,7 +36,7 @@ const probe = serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response(
 await new Promise(resolve => probe.on('listening', resolve));
 const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
-const bin = join(dir, 'bin'), state = join(dir, 'milo'), pi = join(dir, 'pi');
+const bin = join(dir, 'bin'), state = join(dir, 'grunt'), pi = join(dir, 'pi');
 await mkdir(bin); await mkdir(state);
 const broker = join(dir, 'broker.mjs'), hook = join(dir, 'hook.mjs'), marker = join(dir, 'restart');
 await writeFile(broker, `
@@ -76,7 +76,7 @@ for (const [name, content] of Object.entries({
   npm: `#!/bin/sh\nif [ \"$1\" = --version ]; then echo 10; exit 0; fi\nln -s ${JSON.stringify(join(root, 'node_modules'))} "$3/node_modules"\n`,
   systemctl: `#!/bin/sh\nif [ "$2" = restart ]; then touch ${JSON.stringify(marker)}; fi\nexit 0\n`
 })) { await writeFile(join(bin, name), content); await chmod(join(bin, name), 0o755); }
-const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, MILO_CONFIG_DIR: state, MILO_ROUTER_RUNTIME: 'docker', XDG_CONFIG_HOME: join(dir, 'config'), PI_CODING_AGENT_DIR: pi, MILO_FREELLMAPI_URL: routerUrl, MILO_PORT: String(port), MILO_SOURCES: 'freellmapi', MILO_FREEBUFF_BRIDGE: '0', NODE_OPTIONS: `--import=${hook}` };
+const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GRUNT_CONFIG_DIR: state, GRUNT_ROUTER_RUNTIME: 'docker', XDG_CONFIG_HOME: join(dir, 'config'), PI_CODING_AGENT_DIR: pi, GRUNT_FREELLMAPI_URL: routerUrl, GRUNT_PORT: String(port), GRUNT_SOURCES: 'freellmapi', GRUNT_FREEBUFF_BRIDGE: '0', NODE_OPTIONS: `--import=${hook}` };
 let logs = '';
 async function startDaemon() {
   const child = spawn(process.execPath, [join(state, 'runtime/dist/local/main.js')], { env: { ...env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -110,7 +110,7 @@ try {
   assert(!output.includes('synthetic-grant') && !output.includes('synthetic-router'));
   assert(events.includes('/api/keys/custom'));
   const models = JSON.parse(await readFile(join(pi, 'models.json'), 'utf8'));
-  assert.equal(models.providers.milo.baseUrl, `http://127.0.0.1:${port}/v1`);
+  assert.equal(models.providers.grunt.baseUrl, `http://127.0.0.1:${port}/v1`);
   const addChild = spawn(process.execPath, ['dist/local/main.js', 'add', 'groq'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let addOutput = ''; addChild.stdout.on('data', chunk => { addOutput += chunk; }); addChild.stderr.on('data', chunk => { addOutput += chunk; });
   const addCode = await new Promise(resolve => addChild.on('exit', resolve));
@@ -119,15 +119,15 @@ try {
 
   const first = daemons.at(-1); first.kill('SIGTERM'); await new Promise(resolve => first.on('exit', resolve));
   await startDaemon();
-  const piChild = spawn('pi', ['--provider', 'milo', '--model', 'milo', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '-p', 'Say grunt is ready.'], { env: { ...env, PATH: process.env.PATH, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const piChild = spawn('pi', ['--provider', 'grunt', '--model', 'grunt', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '-p', 'Say grunt is ready.'], { env: { ...env, PATH: process.env.PATH, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let piOutput = ''; piChild.stdout.on('data', chunk => { piOutput += chunk; }); piChild.stderr.on('data', chunk => { piOutput += chunk; });
   const piTimer = setTimeout(() => piChild.kill('SIGKILL'), 20000);
   const piCode = await new Promise(resolve => piChild.once('exit', resolve)); clearTimeout(piTimer);
   assert.equal(piCode, 0, piOutput); assert(piOutput.includes('grunt is ready'), piOutput);
   assert(routed >= 2); assert(login >= 3); assert(logs.includes('grunt source: freellmapi answered'));
   const proof = `Feature proof (not a defect report): built setup CLI exited; existing vault entry minted a grant; custom provider received only synthetic grant; Pi config written; separate daemon live request passed; daemon restarted; real Pi CLI answered through offline router.\n\n${output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')}\nPi after restart:\n${piOutput}\nSource logs:\n${logs}`;
-  await writeFile('/tmp/milo-wizard-proof.txt', proof);
-  await writeFile('/tmp/milo-wizard-rail.cast', [JSON.stringify({ version: 2, width: 100, height: 40, timestamp: Math.floor(started / 1000), title: 'Milo setup — isolated offline proof' }), ...frames.map(frame => JSON.stringify(frame))].join('\n') + '\n');
+  await writeFile('/tmp/grunt-wizard-proof.txt', proof);
+  await writeFile('/tmp/grunt-wizard-rail.cast', [JSON.stringify({ version: 2, width: 100, height: 40, timestamp: Math.floor(started / 1000), title: 'Grunt setup — isolated offline proof' }), ...frames.map(frame => JSON.stringify(frame))].join('\n') + '\n');
   console.log(proof);
 } finally {
   clearInterval(monitor);

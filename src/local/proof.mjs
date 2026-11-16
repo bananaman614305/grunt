@@ -6,26 +6,26 @@ import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 const root = process.cwd();
 const port = randomInt(20000, 50000);
-const dir = await mkdtemp(join(tmpdir(), 'milo-built-proof-'));
+const dir = await mkdtemp(join(tmpdir(), 'grunt-built-proof-'));
 const project = join(dir, basename(dir));
 await mkdir(project);
 await copyFile('src/local/fixtures/fake-freebuff.cjs', join(dir, 'freebuff'));
 await chmod(join(dir, 'freebuff'), 0o755);
-const child = spawn(process.execPath, [join(root, 'dist/local/main.js')], {cwd:project,env:{...process.env,PATH:`${dir}:${process.env.PATH}`,MILO_PORT:String(port),MILO_SOURCES:'freebuff',MILO_TEST_HOME:homedir(),MILO_APP_TIMEOUT_MS:'20000'},stdio:['ignore','pipe','pipe']});
+const child = spawn(process.execPath, [join(root, 'dist/local/main.js')], {cwd:project,env:{...process.env,PATH:`${dir}:${process.env.PATH}`,GRUNT_PORT:String(port),GRUNT_SOURCES:'freebuff',GRUNT_TEST_HOME:homedir(),GRUNT_APP_TIMEOUT_MS:'20000'},stdio:['ignore','pipe','pipe']});
 let logs=''; child.stderr.on('data', b=>{logs+=b;});
 try {
  for(let i=0;i<50;i++){try{const r=await fetch(`http://127.0.0.1:${port}/v1/models`);if(r.ok)break;}catch{}await delay(100);}
  for(const [path,body] of [['chat/completions',{messages:[{role:'user',content:'bridge works 42'}]}],['messages',{messages:[{role:'user',content:'bridge works 42'}],max_tokens:128}],['responses',{input:'bridge works 42'}]]) {
   for(const stream of [false,true]) {
    const started=Date.now();
-   const response=await fetch(`http://127.0.0.1:${port}/v1/${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,model:'milo',stream})});
+   const response=await fetch(`http://127.0.0.1:${port}/v1/${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,model:'grunt',stream})});
    const text=await response.text();
    if(!response.ok || !text.includes('bridge works 42'))throw new Error(text);
    console.log(`${path} stream=${stream}: bridge works 42 (${Date.now()-started}ms)`);
   }
  }
  const send = async (path, body) => {
-  const response = await fetch(`http://127.0.0.1:${port}/v1/${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,model:'milo',stream:false})});
+  const response = await fetch(`http://127.0.0.1:${port}/v1/${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,model:'grunt',stream:false})});
   return {status:response.status, body:await response.json()};
  };
  const chats = join(homedir(),'.config/manicode/projects',basename(project),'chats');

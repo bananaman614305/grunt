@@ -22,10 +22,10 @@ function validRedirect(value: unknown): value is string {
 export function oauthRoutes(store: DotsStore, origin: string) {
   const app = new Hono();
   const resources = [origin + '/join', origin + '/mcp'];
-  const metadata = (resource: string) => ({ resource, authorization_servers: [origin], scopes_supported: ['milo:dots'], bearer_methods_supported: ['header'] });
+  const metadata = (resource: string) => ({ resource, authorization_servers: [origin], scopes_supported: ['grunt:dots'], bearer_methods_supported: ['header'] });
   app.get('/.well-known/oauth-protected-resource', c => c.json(metadata(resources[0]!)));
   for (const name of ['join', 'mcp']) app.get('/.well-known/oauth-protected-resource/' + name, c => c.json(metadata(origin + '/' + name)));
-  app.get('/.well-known/oauth-authorization-server', c => c.json({ issuer: origin, authorization_endpoint: origin + '/oauth/authorize', token_endpoint: origin + '/oauth/token', registration_endpoint: origin + '/oauth/register', revocation_endpoint: origin + '/oauth/revoke', response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], scopes_supported: ['milo:dots'] }));
+  app.get('/.well-known/oauth-authorization-server', c => c.json({ issuer: origin, authorization_endpoint: origin + '/oauth/authorize', token_endpoint: origin + '/oauth/token', registration_endpoint: origin + '/oauth/register', revocation_endpoint: origin + '/oauth/revoke', response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], scopes_supported: ['grunt:dots'] }));
   app.post('/oauth/register', async c => {
     const body = await c.req.json();
     if (!Array.isArray(body.redirect_uris) || !body.redirect_uris.length || body.redirect_uris.length > 5 || !body.redirect_uris.every(validRedirect) || (body.token_endpoint_auth_method && body.token_endpoint_auth_method !== 'none')) return c.json({ error: 'invalid_client_metadata' }, 400);
@@ -36,12 +36,12 @@ export function oauthRoutes(store: DotsStore, origin: string) {
   app.get('/oauth/authorize', async c => {
     const q = c.req.query();
     const client = (await store.rows<{ redirects: string; name: string }>('SELECT redirects,name FROM dots_clients WHERE id=?', [q.client_id ?? '']))[0];
-    if (!client || !JSON.parse(client.redirects).includes(q.redirect_uri) || q.response_type !== 'code' || q.code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(q.code_challenge ?? '') || (q.resource !== undefined && !resources.includes(q.resource)) || (q.scope !== undefined && q.scope !== 'milo:dots') || (q.state?.length ?? 0) > 2048) return c.json({ error: 'invalid_request' }, 400);
-    const port = Number(q.milo_port ?? 8788);
+    if (!client || !JSON.parse(client.redirects).includes(q.redirect_uri) || q.response_type !== 'code' || q.code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(q.code_challenge ?? '') || (q.resource !== undefined && !resources.includes(q.resource)) || (q.scope !== undefined && !['grunt:dots', 'milo:dots'].includes(q.scope)) || (q.state?.length ?? 0) > 2048) return c.json({ error: 'invalid_request' }, 400);
+    const port = Number(q.grunt_port ?? q.milo_port ?? 8788);
     if (!Number.isSafeInteger(port) || port < 1 || port > 65535) return c.json({ error: 'invalid_request' }, 400);
     const id = secret(), browser = secret(), csrf = secret();
     await store.db.execute({ sql: 'INSERT INTO dots_flows(id,client,redirect,state,challenge,browser_hash,csrf_hash,expires,resource,port) VALUES(?,?,?,?,?,?,?,?,?,?)', args: [id, q.client_id!, q.redirect_uri!, q.state ?? '', q.code_challenge!, hash(browser), hash(csrf), Date.now() + 600000, q.resource ?? resources[0]!, port] });
-    setCookie(c, 'milo_oauth', browser, { httpOnly: true, secure: origin.startsWith('https:'), sameSite: 'Lax', path: '/oauth', maxAge: 600 });
+    setCookie(c, 'grunt_oauth', browser, { httpOnly: true, secure: origin.startsWith('https:'), sameSite: 'Lax', path: '/oauth', maxAge: 600 });
     // Preserve a same-origin form POST Origin; no-referrer makes browsers send null.
     c.header('Referrer-Policy', 'same-origin');
     return c.html(consent(id, csrf, client.name));
@@ -49,7 +49,7 @@ export function oauthRoutes(store: DotsStore, origin: string) {
   app.post('/oauth/authorize', async c => {
     const body = await c.req.parseBody();
     const flow = (await store.rows<Flow>('SELECT * FROM dots_flows WHERE id=? AND expires>? AND attempts<5', [String(body.flow ?? ''), Date.now()]))[0];
-    if (!flow || !equal(flow.browser_hash, hash(getCookie(c, 'milo_oauth') ?? '')) || !equal(flow.csrf_hash, hash(String(body.csrf ?? ''))) || (c.req.header('origin') && c.req.header('origin') !== origin)) return c.html(page('Authorization expired', '<p>Restart the connector setup to try again.</p>'), 400);
+    if (!flow || !equal(flow.browser_hash, hash(getCookie(c, 'grunt_oauth') ?? getCookie(c, 'milo_oauth') ?? '')) || !equal(flow.csrf_hash, hash(String(body.csrf ?? ''))) || (c.req.header('origin') && c.req.header('origin') !== origin)) return c.html(page('Authorization expired', '<p>Restart the connector setup to try again.</p>'), 400);
     const target = new URL(flow.redirect); target.searchParams.set('state', flow.state);
     if (body.decision === 'deny') {
       await store.db.execute({ sql: 'DELETE FROM dots_flows WHERE id=?', args: [flow.id] });
@@ -88,7 +88,7 @@ export function oauthRoutes(store: DotsStore, origin: string) {
     const tx = await store.db.transaction('write');
     try {
       const flow = (await tx.execute({ sql: 'SELECT * FROM dots_flows WHERE id=? AND approved=1 AND pair IS NOT NULL AND expires>?', args: [c.req.query('flow') ?? '', Date.now()] })).rows[0];
-      if (!flow || !equal(String(flow.browser_hash), hash(getCookie(c, 'milo_oauth') ?? ''))) {
+      if (!flow || !equal(String(flow.browser_hash), hash(getCookie(c, 'grunt_oauth') ?? getCookie(c, 'milo_oauth') ?? ''))) {
         await tx.rollback(); return c.html(page('Pairing is not complete', '<p>Return to the Allow page and connect grunt on this computer, or use its fallback command.</p>'), 400);
       }
       const code = secret();
@@ -102,7 +102,7 @@ export function oauthRoutes(store: DotsStore, origin: string) {
   app.post('/oauth/token', async c => {
     const body = await c.req.parseBody();
     const client = String(body.client_id ?? ''), grant = String(body.grant_type ?? '');
-    if ((body.resource !== undefined && !resources.includes(String(body.resource))) || (body.scope !== undefined && body.scope !== 'milo:dots')) return c.json({ error: 'invalid_target' }, 400);
+    if ((body.resource !== undefined && !resources.includes(String(body.resource))) || (body.scope !== undefined && !['grunt:dots', 'milo:dots'].includes(String(body.scope)))) return c.json({ error: 'invalid_target' }, 400);
     const tx = await store.db.transaction('write');
     try {
       let pair: string | undefined, resource: string | undefined;
@@ -120,7 +120,7 @@ export function oauthRoutes(store: DotsStore, origin: string) {
       await tx.execute({ sql: 'INSERT INTO dots_tokens VALUES(?,?,?,?,?,?)', args: [hash(access), pair, client, 'access', Date.now() + 3600000, resource] });
       await tx.execute({ sql: 'INSERT INTO dots_tokens VALUES(?,?,?,?,?,?)', args: [hash(refresh), pair, client, 'refresh', Date.now() + 30 * 86400000, resource] });
       await tx.commit();
-      return c.json({ access_token: access, refresh_token: refresh, token_type: 'Bearer', expires_in: 3600, scope: 'milo:dots' });
+      return c.json({ access_token: access, refresh_token: refresh, token_type: 'Bearer', expires_in: 3600, scope: body.scope === 'milo:dots' ? 'milo:dots' : 'grunt:dots' });
     } finally { tx.close(); }
   });
   app.post('/oauth/revoke', async c => {

@@ -20,7 +20,7 @@ export interface Multiplexer {
 }
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 export class Tmux implements Multiplexer {
-  private socket = `milo-local-${process.pid}-${randomUUID()}`;
+  private socket = `grunt-local-${process.pid}-${randomUUID()}`;
   private closed = false;
   private launches = new Set<Promise<unknown>>();
   private async run(args: string[], input?: string) {

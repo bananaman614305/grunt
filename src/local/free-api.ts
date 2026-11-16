@@ -1,6 +1,6 @@
+import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
@@ -25,7 +25,7 @@ const deepSeekV41Aliases = new Set(['deepseek-flash', 'deepseek-v4.1-flash', 'de
 export function isDeepSeekV41Model(value: unknown): boolean {
   return typeof value === 'string' && deepSeekV41Aliases.has(value.toLowerCase().replace(/^deepseek(?:-ai)?\//, ''));
 }
-const directory = () => process.env.MILO_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'milo');
+const directory = () => configRoot();
 function providerName(value: string): FreeApiProvider {
   if (!Object.hasOwn(FREE_API_PROVIDERS, value)) throw new Error('Unsupported free API provider');
   return value as FreeApiProvider;
@@ -65,7 +65,7 @@ export class FreeApi implements Source {
   async available() { try { await this.grant(); return true; } catch { return false; } }
   async complete(request: ModelRequest, caller: AbortSignal) {
     caller.throwIfAborted();
-    if (![this.id, 'milo'].includes(request.model)) throw new SourceError('upstream', 'Free API probe requires an explicit provider');
+    if (![this.id, 'grunt', 'milo'].includes(request.model)) throw new SourceError('upstream', 'Free API probe requires an explicit provider');
     if (request.tools.some(tool => tool.type !== 'function')) throw new SourceError('upstream', 'Free API probe requires function tools');
     let grant: FreeApiGrant;
     try { grant = await this.grant(); }

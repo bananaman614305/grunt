@@ -24,6 +24,10 @@ from worker import WorkerError, run_agent
 BEGIN = '# BEGIN usegrunt-provider-scout'
 END = '# END usegrunt-provider-scout'
 UTC = dt.timezone.utc
+REPOSITORY = 'bananaman614305/grunt'
+ORIGIN = 'https://github.com/' + REPOSITORY + '.git'
+# Explicit installation-only migration allowlist. New fetches/clones use Grunt.
+LEGACY_ORIGINS = frozenset({'https://github.com/bananaman614305/milo.git'})
 
 
 class ScoutCancelled(BaseException):
@@ -187,14 +191,14 @@ def install(root, source_repo):
     private_directory(root / 'runs')
     private_directory(root / 'reports')
     remote = subprocess.check_output(['git', '-C', str(source_repo), 'remote', 'get-url', 'origin'], text=True).strip()
-    if remote != 'https://github.com/bananaman614305/milo.git':
+    if remote != ORIGIN and remote not in LEGACY_ORIGINS:
         raise ValueError('Unexpected source repository; no schedule was installed')
     checkout = workspace / 'repo'
     if not checkout.exists():
-        subprocess.run(['git', 'clone', '--depth=1', remote, str(checkout)], check=True, capture_output=True, timeout=120)
+        subprocess.run(['git', 'clone', '--depth=1', ORIGIN, str(checkout)], check=True, capture_output=True, timeout=120)
     config = load(root / 'config.json', {})
     config.update(version=2, codex=codex, source_repo=str(source_repo.resolve()),
-                  workspace=str(workspace), timezone=zone)
+                  workspace=str(workspace), timezone=zone, repository=REPOSITORY)
     config.setdefault('timeout_seconds', 2700)
     config.setdefault('release_enabled', False)
     config['squire_proxy'] = str(target / 'squire_proxy.py')
@@ -265,7 +269,7 @@ def refresh_source_main(source_repo, timeout=60):
             '-c', 'maintenance.auto=false', '-c', 'gc.auto=0',
             '-C', str(source_repo), 'fetch', '--no-tags', '--no-recurse-submodules',
             '--no-auto-maintenance', '--no-write-fetch-head',
-            'https://github.com/bananaman614305/milo.git',
+            ORIGIN,
             '+refs/heads/main:refs/remotes/origin/main']
     env = {key: value for key, value in os.environ.items()
            if key in ('HOME', 'PATH', 'LANG', 'LC_ALL')}
@@ -383,6 +387,7 @@ def run(root, smoke=False):
                 atomic(root / 'ledger.json', ledger)
             registry = snapshot['registry'] if snapshot else load(Path(config['source_repo']) / 'registry/adapters.json')
             context = {'date_utc': now(), 'smoke': smoke, 'source_repo': config['source_repo'],
+                       'repository': REPOSITORY,
                        'workspace': str(workspace), 'curated_registry': registry,
                        'base_sha': snapshot['base_sha'] if snapshot else None,
                        'previous_candidates': list(ledger['candidates'].values())[-200:],

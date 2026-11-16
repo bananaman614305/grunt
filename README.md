@@ -19,7 +19,7 @@ Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs n
 Daemon restarts reuse saved connections. Background verification preserves them on
 temporary failures and asks for foreground setup when human verification is needed.
 
-`npx usegrunt add [provider-or-base-URL]` adds a provider; omit the argument to paste a URL. https://grunt.run. `milo` and `milo-local` remain aliases.
+`npx usegrunt add [provider-or-base-URL]` adds a provider; omit the argument to paste a URL. https://grunt.run. `grunt-local` is the local-daemon entry point. Older command names remain supported for installed users; see the compatibility section in the reference.
 
 The curated pool has eleven sources: OpenCode, Kilo, Zro, Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch. Pi is optional.
 
@@ -47,7 +47,7 @@ labels describe registry configuration, not an attestation of the latest reply.
 Unobserved sources and unreported credit balances are shown honestly. Narrow
 terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
-`--port` overrides `MILO_PORT`, the saved port, and the default 8788.
+`--port` overrides `GRUNT_PORT`, the saved port, and the default 8788.
 
 Daily upkeep uses a separate persistent queue. It checks one configured curated
 source at a time, then waits 60–90 seconds after that check finishes. A recent
@@ -78,9 +78,9 @@ Installing a newer CLI alone does not replace an older background runtime. The
 queue runs while the machine and daemon are running and resumes overdue work
 after downtime; users do not need to schedule a separate daily command.
 
-[Reference](https://github.com/bananaman614305/milo/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/milo/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/milo/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/milo/blob/main/CLAUDE.md).
+[Reference](https://github.com/bananaman614305/grunt/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/grunt/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/grunt/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/grunt/blob/main/CLAUDE.md).
 
-Maintainers can use the [provider scouting guide](https://github.com/bananaman614305/milo/blob/main/ops/provider-scout/README.md) for Chad's 09:00/21:00 Eastern search job. It researches recurring free offers, uses Squire for eligible signups and, when release is enabled, requires two independent reviews, sandboxed checks and trusted exact-provider hello/tool probes before merging and publishing a new npm release. Human authentication and approval blockers remain pending. New users receive released additions through `npx usegrunt`; existing installations use `npx usegrunt update`. Scouting is separate from user maintenance and is not installed on users' machines.
+Maintainers can use the [provider scouting guide](https://github.com/bananaman614305/grunt/blob/main/ops/provider-scout/README.md) for Chad's 09:00/21:00 Eastern search job. It researches recurring free offers, uses Squire for eligible signups and, when release is enabled, requires two independent reviews, sandboxed checks and trusted exact-provider hello/tool probes before merging and publishing a new npm release. Human authentication and approval blockers remain pending. New users receive released additions through `npx usegrunt`; existing installations use `npx usegrunt update`. Scouting is separate from user maintenance and is not installed on users' machines.
 
 In 0.6.6, one grouped data-sharing approval covers nine active providers. Setup reuses the person's Google or GitHub identity; each provider can still require its own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
 

@@ -1,8 +1,8 @@
-# Milo
+# Grunt
 
 One TypeScript Node app. Read README.md and docs/reference.md for setup and behavior.
 
-- `src/agent.ts`: Milo front agent, tools and in-process worker pool.
+- `src/agent.ts`: Grunt front agent, tools and in-process worker pool.
 - `src/router.ts`: one whitelist utility picker; never use a Google model.
 - `src/store.ts`: SQLite messages, tasks, notes and calls.
 - `src/openrouter.ts`: small fetch client; no automatic retries.
@@ -20,8 +20,12 @@ see its [guide](ops/provider-scout/README.md). Verify it with
 providers and local servers, not external provider accounts or publishing.
 The [harness fixture notes](src/local/fixtures/README.md) describe recorded inputs.
 
-GitHub Actions is disabled for this project at the owner's request. Run checks
-locally; do not enable or dispatch GitHub Actions workflows.
+CI runs in GitHub Actions only while this repository is public. Use the standard
+Ubuntu GitHub-hosted runner; never enable larger paid runners or artifact/cache
+uploads for this workflow. Keep the public-visibility job guard. Once the repository
+is public, require the exact-head `test` check from `.github/workflows/ci.yml`
+before merging. Run local checks while preparing the visibility transition.
+Deployment and publication workflows have separate enablement and credentials.
 
 Keys arrive in a Bearer header. Hash them for identity. Never write keys or
 upstream error payloads to the database, logs, source or test fixtures. Synthetic
@@ -31,6 +35,6 @@ Cap completion tokens. Dispatch must return before worker work completes.
 Do not restore the former gateway, billing, Jev, CLI or monorepo. Git history
 preserves them; the app now serves `/chat`, `/agent/*`, and `/health` only.
 
-The approved local daemon is the exception: `milo-local`, its `/v1/*` harness
+The approved local daemon is the exception: `grunt-local`, its `/v1/*` harness
 routes, and its configured gateway forwarder are supported. Gateway completions
 default to a cap of 4096 tokens when the harness omits its limit.

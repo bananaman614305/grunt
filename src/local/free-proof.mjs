@@ -10,11 +10,11 @@ import { tmpdir, homedir } from 'node:os';
 import { randomBytes, randomInt } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { freeConfig } from '../../dist/local/freellmapi.js';
-import { FreeLLMAdmin, FREELLMAPI_IMAGE } from '../../dist/local/setup.js';
+import { FreeLLMAdmin, FREELLMAPI_IMAGE, ROUTER_ADMIN_EMAIL } from '../../dist/local/setup.js';
 
 const exec = promisify(execFile);
 const port = randomInt(20000, 30000), routerPort = randomInt(30001, 40000);
-const dir = await mkdtemp(join(tmpdir(), 'milo-free-proof-'));
+const dir = await mkdtemp(join(tmpdir(), 'grunt-free-proof-'));
 const project = join(dir, basename(dir)); await mkdir(project);
 const routes = [], prompts = [];
 let sessionCount = 0, child;
@@ -40,10 +40,10 @@ config.customProviders.unshift({ baseUrl: `${providerUrl}/first/v1`, apiKey: 'no
 config.fallback[0].endpoint = `${providerUrl}/kilo/v1`;
 config.fallback.unshift({ platform: 'custom', modelId: 'exhausted-proof', endpoint: `${providerUrl}/first/v1`, priority: 1 });
 const password = randomBytes(32).toString('hex'), encryption = randomBytes(32).toString('hex');
-const name = `milo-free-proof-${process.pid}`;
+const name = `grunt-free-proof-${process.pid}`;
 try {
   await exec('docker', ['run', '-d', '--name', name, '--network', 'host', '--tmpfs', '/app/server/data:rw', '-e', 'HOST=127.0.0.1', '-e', `PORT=${routerPort}`, '-e', 'ENCRYPTION_KEY', '-e', 'FREEAPI_CONFIG_JSON', FREELLMAPI_IMAGE], {
-    timeout: 60000, env: { ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: 'milo@localhost.local', password }, ...config }) }
+    timeout: 60000, env: { ...process.env, ENCRYPTION_KEY: encryption, FREEAPI_CONFIG_JSON: JSON.stringify({ admin: { email: ROUTER_ADMIN_EMAIL, password }, ...config }) }
   });
   const admin = new FreeLLMAdmin(`http://127.0.0.1:${routerPort}`);
   let ready = false;
@@ -63,7 +63,7 @@ try {
   await copyFile('src/local/fixtures/fake-freebuff.cjs', join(dir, 'freebuff')); await chmod(join(dir, 'freebuff'), 0o755);
   const key = await admin.key();
   child = spawn(process.execPath, [join(process.cwd(), 'dist/local/main.js')], { cwd: project, env: {
-    ...process.env, PATH: `${dir}:${process.env.PATH}`, MILO_PORT: String(port), MILO_FREELLMAPI_URL: `${admin.url}/v1`, MILO_FREELLMAPI_KEY: key, MILO_OPENCODE_URL: providerUrl, MILO_TEST_HOME: homedir(), MILO_APP_TIMEOUT_MS: '20000'
+    ...process.env, PATH: `${dir}:${process.env.PATH}`, GRUNT_PORT: String(port), GRUNT_FREELLMAPI_URL: `${admin.url}/v1`, GRUNT_FREELLMAPI_KEY: key, GRUNT_OPENCODE_URL: providerUrl, GRUNT_TEST_HOME: homedir(), GRUNT_APP_TIMEOUT_MS: '20000'
   }, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = ''; child.stderr.on('data', chunk => { logs += chunk; });
   for (let attempt = 0; attempt < 60; attempt++) {

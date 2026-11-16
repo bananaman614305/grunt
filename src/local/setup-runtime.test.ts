@@ -47,7 +47,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-setup-runtime-')); directories.push(path); return path; }
-const request = (cwd: string, model = 'milo'): ModelRequest => ({ model, cwd, messages: [{ role: 'user', content: 'Hello while setup continues' }], tools: [], stream: false });
+const request = (cwd: string, model = 'grunt'): ModelRequest => ({ model, cwd, messages: [{ role: 'user', content: 'Hello while setup continues' }], tools: [], stream: false });
 
 it('defers maintenance during an updater lease while allowing existing routes to answer', async () => {
   const path = await directory();
@@ -58,7 +58,7 @@ it('defers maintenance during an updater lease while allowing existing routes to
   daemon.serve.mockImplementation((options: { fetch: typeof handler }) => { handler = options.fetch; return { close: daemon.close }; });
   const signals = ['SIGINT', 'SIGTERM'] as const;
   const previous = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-  const running = start({ MILO_SOURCES: 'freellmapi,kilo', MILO_CONFIG_DIR: path, MILO_PORT: '18792' });
+  const running = start({ GRUNT_SOURCES: 'freellmapi,kilo', GRUNT_CONFIG_DIR: path, GRUNT_PORT: '18792' });
   try {
     await handler(new Request('http://localhost:18792/v1/status'));
     expect(await daemon.maintenance!.check('kilo', new AbortController().signal)).toEqual({ outcome: 'deferred', code: 'foreground' });
@@ -181,7 +181,7 @@ it('serves the first ready source while another signup remains pending, then adm
   daemon.serve.mockImplementation((options: { fetch: typeof handler }) => { handler = options.fetch; return { close: daemon.close }; });
   const signals = ['SIGINT', 'SIGTERM'] as const;
   const previous = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-  const running = start({ MILO_SOURCES: 'kilo,perch', MILO_CONFIG_DIR: path, MILO_PORT: '18792' });
+  const running = start({ GRUNT_SOURCES: 'kilo,perch', GRUNT_CONFIG_DIR: path, GRUNT_PORT: '18792' });
   const complete = (model: string) => handler(new Request('http://localhost:18792/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request(path, model), messages: [{ role: 'user', content: `Hello from ${model}` }], max_tokens: 32 }) }));
   try {
     await vi.waitFor(() => expect(daemon.finished).toHaveBeenCalledOnce());
@@ -228,7 +228,7 @@ it('maintains only currently approved curated sources using exact replies and ne
   daemon.serve.mockImplementation((options: { fetch: typeof handler }) => { handler = options.fetch; return { close: daemon.close }; });
   const signals = ['SIGINT', 'SIGTERM'] as const;
   const previous = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-  const running = start({ MILO_SOURCES: 'freellmapi,kilo,perch', MILO_CONFIG_DIR: path, MILO_PORT: '18792' });
+  const running = start({ GRUNT_SOURCES: 'freellmapi,kilo,perch', GRUNT_CONFIG_DIR: path, GRUNT_PORT: '18792' });
   try {
     await handler(new Request('http://localhost:18792/v1/status'));
     expect(daemon.maintenance?.providers()).toEqual(['kilo', 'perch']);

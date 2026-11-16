@@ -7,6 +7,7 @@ import type { Adapter, Registry } from '../registry.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 
 export const REGISTRY_INTERVAL = 24 * 60 * 60 * 1000;
+// Existing Fly application is retained as a registry mirror until infrastructure is renamed.
 const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);

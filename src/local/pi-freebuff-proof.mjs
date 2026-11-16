@@ -22,8 +22,8 @@ if (synthetic) {
   await copyFile('src/local/fixtures/fake-freebuff.cjs', join(dir, 'freebuff'));
   await chmod(join(dir, 'freebuff'), 0o755);
   process.env.PATH = `${dir}:${process.env.PATH}`;
-  process.env.MILO_TEST_HOME = dir;
-  process.env.MILO_TEST_JSON_BRIDGE = '1';
+  process.env.GRUNT_TEST_HOME = dir;
+  process.env.GRUNT_TEST_JSON_BRIDGE = '1';
 }
 const source = new Freebuff({ toolBridge: bridged, ...(synthetic ? { home: dir, startup: 100, poll: 20 } : {}), timeout: 30000 });
 const sources = new Sources([source]);

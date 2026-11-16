@@ -98,7 +98,7 @@ can be proved independently of a live Freebuff login or model behavior.
 
 Before the change, `pnpm build` followed by
 `node src/local/tool-routing-proof.mjs --before` returned HTTP 503 for both
-`freebuff` and `milo`, with sticky routing enabled and disabled. Freebuff was
+`freebuff` and `grunt`, with sticky routing enabled and disabled. Freebuff was
 never invoked. The updated routing regression also failed in both modes with
 `Tool-capable sources are unavailable`.
 

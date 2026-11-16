@@ -30,7 +30,7 @@ const run = async (binary, args) => {
   if (binary === 'npm' && args[0] === 'install') { installed.add(args.at(-1) === 'opencode-ai' ? 'opencode' : args.at(-1)); events.push(`installed ${args.at(-1)}`); }
 };
 try {
-  process.env.MILO_CONFIG_DIR = directory; process.env.PI_CODING_AGENT_DIR = join(directory, 'pi');
+  process.env.GRUNT_CONFIG_DIR = directory; process.env.PI_CODING_AGENT_DIR = join(directory, 'pi');
   await wizard(undefined, {
     preflight: () => preflight(run),
     connectSquire: async () => { googleSignins++; events.push('local broker installed; one Google session connected (stand-in)'); },
@@ -45,14 +45,14 @@ try {
       let local; const app = new Hono(); app.all('*', c => local.fetch(c.req.raw));
       service = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 });
       await new Promise(resolve => service.once('listening', resolve));
-      process.env.MILO_PORT = String(service.address().port); local = createLocalApp(sources, { port: service.address().port });
+      process.env.GRUNT_PORT = String(service.address().port); local = createLocalApp(sources, { port: service.address().port });
       events.push(calls);
     },
     configurePi, checkService, checkFallbackServices
   });
   assert.deepEqual(events.find(Array.isArray), ['freebuff', 'opencode'], 'each adapter gets its own task and verification');
   const pi = JSON.parse(await readFile(join(directory, 'pi/models.json'), 'utf8'));
-  assert.equal(pi.providers.grunt.baseUrl, `http://127.0.0.1:${process.env.MILO_PORT}/v1`);
+  assert.equal(pi.providers.grunt.baseUrl, `http://127.0.0.1:${process.env.GRUNT_PORT}/v1`);
   assert.equal(googleSignins, 1);
   assert(events.includes('same browser session resumed'));
   console.log(JSON.stringify({ proof: 'grunt-installer-v1', mode: 'clean-config stand-in with fake Squire and OS service', googleSignins, pi: 'grunt provider written; unrelated providers not provisioned', adapters: 'both verified through built HTTP service', humanHandoff: 'shown and resumed before daemon start', events }, null, 2));

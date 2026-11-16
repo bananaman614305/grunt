@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { gruntEnv } from '../brand.js';
 import { disabledAdapters, knownAdapters } from '../registry.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -36,8 +37,8 @@ import { SourceRecovery } from './recovery.js';
 import { readSetupSession } from './setup-session.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry) {
-  const url = env.MILO_FREELLMAPI_URL ?? 'http://127.0.0.1:3001/v1';
-  let key = env.MILO_FREELLMAPI_KEY ?? '';
+  const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
+  let key = gruntEnv('FREELLMAPI_KEY', env) ?? '';
   let pending: Promise<string> | undefined;
   const loadKey = async () => {
     if (key) return key;
@@ -48,16 +49,18 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     return pending;
   };
   const connection = { url, loadKey };
-  const dots = new Dots({ env, timeout: positive(env.MILO_DOTS_TIMEOUT_MS, 300000) });
+  const dots = new Dots({ env, timeout: positive(gruntEnv('DOTS_TIMEOUT_MS', env), 300000) });
   const opencodeModels = () => {
-    if (env.MILO_OPENCODE_MODEL) return [env.MILO_OPENCODE_MODEL];
+    const override = gruntEnv('OPENCODE_MODEL', env);
+    if (override) return [override];
     const adapter = registry().adapters.find(a => a.id === 'opencode');
     // Older published registries pinned the original default. Upgrade that
     // default while retaining explicit environment and custom-model overrides.
     return adapter?.models ?? (adapter?.model && adapter.model !== 'big-pickle' ? [adapter.model] : DEFAULT_OPENCODE_MODELS);
   };
-  const registered: Source[] = [dots, new Codex(env.MILO_CODEX_MODEL ? { model: env.MILO_CODEX_MODEL } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env) }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(env.MILO_OPENCODE_URL ? { url: env.MILO_OPENCODE_URL } : {}) })];
-  const ids = (env.MILO_SOURCES?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id)).filter(id => id && !disabledAdapters.has(id));
+  const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env) }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const ids = (gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id)).filter(id => id && !disabledAdapters.has(id));
   const routing = ids.every(id => knownAdapters.has(id)) ? { registry } : undefined;
   return new Sources(ids.map(id => {
     const source = registered.find(source => source.id === id);
@@ -130,8 +133,8 @@ export function start(env = process.env) {
   const ready = sync.load().then(refreshSession);
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
-  const port = positive(env.MILO_PORT, 8788);
-  if (port > 65535) throw new Error('MILO_PORT must be at most 65535');
+  const port = positive(gruntEnv('PORT', env), 8788);
+  if (port > 65535) throw new Error('GRUNT_PORT must be at most 65535');
   const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; await refreshSession(); return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;

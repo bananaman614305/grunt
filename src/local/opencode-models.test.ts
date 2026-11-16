@@ -165,8 +165,8 @@ it('upgrades a cached Big Pickle default to the pool and retains an explicit dae
   delete adapter.models; adapter.model = 'big-pickle';
   const directory = await mkdtemp(join(tmpdir(), 'grunt-opencode-consent-'));
   await recordDataSharingConsent(directory, ['opencode']);
-  const env = { MILO_CONFIG_DIR: directory, MILO_SOURCES: 'opencode', MILO_OPENCODE_URL: 'http://127.0.0.1:4096' };
-  const pool = configure(env, () => registry), explicit = configure({ ...env, MILO_OPENCODE_MODEL: 'big-pickle' }, () => registry);
+  const env = { GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'opencode', GRUNT_OPENCODE_URL: 'http://127.0.0.1:4096' };
+  const pool = configure(env, () => registry), explicit = configure({ ...env, GRUNT_OPENCODE_MODEL: 'big-pickle' }, () => registry);
   try {
     await pool.sources[0]!.complete(request('pool'), signal());
     await explicit.sources[0]!.complete(request('explicit'), signal());

@@ -19,7 +19,7 @@ if (process.argv.includes('--connect-child')) {
   const db = new Database(':memory:');
   const sqlite = db.prepare('select sqlite_version() as version').get().version;
   db.close();
-  const dir = await mkdtemp(join(tmpdir(), 'milo-squire-install-'));
+  const dir = await mkdtemp(join(tmpdir(), 'grunt-squire-install-'));
   const registry = createServer((_req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ version: '1.1.39' })); });
   await new Promise(resolve => registry.listen(0, '127.0.0.1', resolve));
   try {
