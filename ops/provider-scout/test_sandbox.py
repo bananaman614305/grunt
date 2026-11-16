@@ -24,7 +24,13 @@ class SandboxTests(unittest.TestCase):
         self.checkout = self.workspace / 'candidates' / 'source'
         self.checkout.mkdir(parents=True)
         self.node = Path(shutil.which('node')).resolve()
-        self.config = {'workspace': str(self.workspace), 'node_binary': str(self.node)}
+        self.bootstrap_npm = self.root / 'bootstrap-npm'
+        (self.bootstrap_npm / 'bin').mkdir(parents=True)
+        (self.bootstrap_npm / 'package.json').write_text(json.dumps({'name': 'npm', 'version': '10.9.8'}))
+        (self.bootstrap_npm / 'bin/npm-cli.js').write_text('process.exit(0);')
+        (self.bootstrap_npm / 'bin/npx-cli.js').write_text('process.exit(0);')
+        self.config = {'workspace': str(self.workspace), 'node_binary': str(self.node),
+                       'npm_binary': str(self.bootstrap_npm / 'bin/npm-cli.js')}
 
     def fixture_toolchain(self, program='process.exit(0);'):
         root = self.state / 'toolchain'
@@ -33,6 +39,8 @@ class SandboxTests(unittest.TestCase):
         (package / 'bin').mkdir(parents=True)
         (package / 'package.json').write_text(json.dumps({'name': 'pnpm', 'version': sandbox.PNPM_VERSION}))
         (package / 'bin' / 'pnpm.cjs').write_text(program)
+        shutil.copytree(self.bootstrap_npm, root / 'npm')
+        (root / 'npm/bin/npm-cli.js').write_text(program)
         receipt = root / 'receipt.json'
         receipt.write_text(json.dumps(sandbox._descriptor(root, self.node)))
         receipt.chmod(0o600)
@@ -104,7 +112,7 @@ class SandboxTests(unittest.TestCase):
         runner = self.runner()
         args = ['npm', 'pack', '--ignore-scripts', '--json', '--pack-destination', str(self.checkout)]
         command = runner.command(args, cwd=self.checkout)
-        self.assertEqual(command[-6:], ['--config.ignore-scripts=true', '--config.ignore-pnpmfile=true', 'pack', '--json',
+        self.assertEqual(command[-6:], [sandbox.TOOLS + '/npm/bin/npm-cli.js', 'pack', '--ignore-scripts', '--json',
                                       '--pack-destination', str(self.checkout)])
         with self.assertRaises(sandbox.SandboxError):
             runner.command(args, cwd=self.checkout, network=True)
@@ -114,12 +122,12 @@ class SandboxTests(unittest.TestCase):
     def test_pack_stdout_is_projected_to_verified_filename_only(self):
         runner = self.runner()
         args = ['npm', 'pack', '--ignore-scripts', '--json', '--pack-destination', str(self.checkout)]
-        output = json.dumps({'filename': 'usegrunt-0.6.11.tgz', 'files': [{'arbitrary': 'private synthetic field'}]})
+        output = json.dumps([{'filename': 'usegrunt-0.6.11.tgz', 'files': [{'arbitrary': 'private synthetic field'}]}])
         with patch.object(sandbox, '_wait', return_value=subprocess.CompletedProcess([], 0, stdout=output)) as wait:
             result = runner(args, cwd=self.checkout, timeout=1, env={}, network=False)
             self.assertTrue(wait.call_args.kwargs['capture_stdout'])
             self.assertEqual(json.loads(result.stdout), [{'filename': 'usegrunt-0.6.11.tgz'}])
-        for output in ('not json', '{"filename":"../private.tgz"}', '[{"filename":"usegrunt-0.6.11.tgz"}]'):
+        for output in ('not json', '[{"filename":"../private.tgz"}]', '{"filename":"usegrunt-0.6.11.tgz"}'):
             with self.subTest(output=output):
                 with patch.object(sandbox, '_wait', return_value=subprocess.CompletedProcess([], 0, stdout=output)):
                     with self.assertRaises(sandbox.SandboxError):
@@ -241,8 +249,7 @@ setTimeout(() => { child.kill('SIGKILL'); process.exit(6); }, 10000).unref();
         self.assertEqual(json.loads(result.stdout), {'protocol': 'fd3'})
 
     def test_prepare_toolchain_installs_only_pinned_public_package_without_credentials(self):
-        npm = Path('/usr/bin/true')
-        self.config['npm_binary'] = str(npm)
+        npm = self.bootstrap_npm / 'bin/npm-cli.js'
 
         def fake_install(argv, *, cwd, timeout, env):
             self.assertEqual(argv[:3], [str(self.node), str(npm.resolve()), 'install'])
@@ -268,6 +275,35 @@ setTimeout(() => { child.kill('SIGKILL'); process.exit(6); }, 10000).unref();
             self.assertEqual(sandbox.prepare_toolchain(self.state, self.config), descriptor)
             self.assertEqual(install.call_count, 1)
         self.assertEqual(stat.S_IMODE((self.state / 'toolchain' / 'receipt.json').stat().st_mode), 0o600)
+
+    def test_prepare_upgrades_legacy_receipt_without_network_or_pnpm_reinstall(self):
+        root = self.fixture_toolchain()
+        shutil.rmtree(root / 'npm')
+        old = sandbox._descriptor(root, self.node, include_npm=False)
+        (root / 'receipt.json').write_text(json.dumps(old))
+        with self.assertRaises(sandbox.SandboxError):
+            sandbox.SandboxRunner(self.state, self.config)
+        with patch.object(sandbox, '_wait') as install:
+            upgraded = sandbox.prepare_toolchain(self.state, self.config)
+            install.assert_not_called()
+        self.assertEqual(upgraded['version'], 2)
+        self.assertEqual(upgraded['npm_version'], '10.9.8')
+        self.assertEqual(upgraded['pnpm_sha256'], old['pnpm_sha256'])
+        self.assertEqual(sandbox._toolchain(self.state), upgraded)
+
+    @unittest.skipUnless(shutil.which('bwrap') and shutil.which('npm'), 'bubblewrap/npm are not installed')
+    def test_real_trusted_npm_binary_is_on_path_and_reports_its_version(self):
+        root = self.fixture_toolchain()
+        source = Path(shutil.which('npm')).resolve().parent.parent
+        shutil.rmtree(root / 'npm')
+        shutil.copytree(source, root / 'npm')
+        (root / 'receipt.json').write_text(json.dumps(sandbox._descriptor(root, self.node)))
+        runner = sandbox.SandboxRunner(self.state, self.config)
+        command = runner.command(['npm', '--version'], cwd=self.checkout)
+        self.assertIn(sandbox.TOOLS + '/bin/npm', command)
+        result = runner(['npm', '--version'], cwd=self.checkout, timeout=15, env={}, network=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), json.loads((source / 'package.json').read_text())['version'])
 
     @unittest.skipUnless(shutil.which('bwrap'), 'bubblewrap is not installed')
     def test_real_sandbox_hides_home_and_supervisor_and_preserves_checkout_writes(self):

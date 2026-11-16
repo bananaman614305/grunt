@@ -227,6 +227,12 @@ class Pipeline:
                 checkpoint = _read(path)
                 if checkpoint.get('result', {}).get('status') == 'released':
                     return checkpoint['result']
+                # A corrected, explicitly resubmitted candidate needs fresh
+                # reviews of its current facts. Never reset release authority
+                # after promotion has begun: that state owns merge/npm retries.
+                if checkpoint.get('phase') != 'promotion' and checkpoint.get('result', {}).get('status') in ('blocked', 'needs_approval'):
+                    checkpoint = {'version': 1, 'candidate': candidate, 'receipt': receipt, 'phase': 'validated', 'directory': str(directory)}
+                    _write(path, checkpoint)
             else:
                 checkpoint = {'version': 1, 'candidate': candidate, 'receipt': receipt, 'phase': 'validated', 'directory': str(directory)}
                 _write(path, checkpoint)

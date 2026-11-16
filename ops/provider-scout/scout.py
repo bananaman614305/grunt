@@ -308,7 +308,8 @@ def run(root, smoke=False):
             report = result['result']
             updated = ingest(report, ledger, workspace, smoke)
             if pipeline is not None and not state.get('pipeline_results'):
-                eligible = [item for item in updated['candidates'].values()
+                submitted = [updated['candidates'][candidate_id(item)] for item in report['candidates']]
+                eligible = [item for item in submitted
                             if item['status'] == 'ready_for_review' and item.get('release_request')
                             and item.get('pipeline_status') not in ('released', 'publication_pending')]
                 if eligible:

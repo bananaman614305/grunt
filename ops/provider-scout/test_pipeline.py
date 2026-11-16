@@ -243,6 +243,76 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.make().resume_pending()[0]['status'], 'released')
         self.assertEqual(self.calls, ['promote'])
 
+    def test_corrected_facts_resubmission_restarts_reviews_checks_and_probe(self):
+        for phase, verdict in [('pre', 'reject'), ('pre', 'needs_approval'),
+                               ('post', 'reject'), ('post', 'needs_approval')]:
+            with self.subTest(phase=phase, verdict=verdict):
+                with tempfile.TemporaryDirectory(dir=self.base) as root:
+                    self.root = Path(root)
+                    self.calls.clear()
+                    old_facts = {'primary_sources': ['https://synthetic.example/unclear'],
+                                 'data_policy': 'Unclear eligibility and data policy.'}
+                    new_facts = {'primary_sources': ['https://synthetic.example/docs/recurring'],
+                                 'data_policy': 'Recurring free inference with explicit user data-sharing consent.'}
+                    self.candidate.update(copy.deepcopy(old_facts))
+                    self.receipt['facts'] = copy.deepcopy(old_facts)
+                    self.receipt['evidence_sha256'] = 'd' * 64
+                    self.pre_verdict = verdict if phase == 'pre' else 'approve'
+                    self.post_verdict = verdict if phase == 'post' else 'approve'
+                    first = self.make().process(self.candidate)
+                    self.assertEqual(first['status'], 'needs_approval' if verdict == 'needs_approval' else 'blocked')
+                    rejected = pipeline._read(self.checkpoint())
+                    old_review_ids = {item['review_id'] for item in rejected['receipt']['reviews']}
+
+                    self.candidate.update(copy.deepcopy(new_facts))
+                    self.receipt['facts'] = copy.deepcopy(new_facts)
+                    self.receipt['evidence_sha256'] = 'e' * 64
+                    self.pre_verdict = self.post_verdict = 'approve'
+                    self.calls.clear()
+                    observed_reviews = []
+                    def review(receipt, directory, agent):
+                        observed_reviews.append(copy.deepcopy(receipt))
+                        return self.review(receipt, directory, agent)
+                    result = self.make(review=review).process(self.candidate)
+                    self.assertEqual(result['status'], 'released')
+                    self.assertEqual(self.calls, ['validate', 'validate', 'pre-review', 'checks', 'probe', 'post-review', 'promote'])
+                    self.assertEqual(len(observed_reviews), 2)
+                    self.assertEqual(observed_reviews[0]['reviews'], [])
+                    self.assertFalse(observed_reviews[0]['checks']['passed'])
+                    self.assertNotIn('probe_verified_by_supervisor', observed_reviews[0])
+                    for reviewed in observed_reviews:
+                        self.assertEqual(reviewed['facts'], new_facts)
+                        self.assertEqual(reviewed['evidence_sha256'], 'e' * 64)
+                    released = pipeline._read(self.checkpoint())
+                    self.assertEqual(released['candidate'], self.candidate)
+                    self.assertEqual(released['receipt']['facts'], new_facts)
+                    fresh_ids = {item['review_id'] for item in released['receipt']['reviews']}
+                    self.assertEqual(len(fresh_ids), 2)
+                    self.assertTrue(fresh_ids.isdisjoint(old_review_ids))
+
+    def test_explicit_resubmission_preserves_blocked_promotion_authority(self):
+        self.receipt['facts'] = {'primary_sources': ['https://synthetic.example/original']}
+        self.promotion_status = 'blocked'
+        self.assertEqual(self.make().process(self.candidate)['status'], 'blocked')
+        before = pipeline._read(self.checkpoint())
+        self.assertEqual(before['phase'], 'promotion')
+        self.candidate['primary_sources'] = ['https://synthetic.example/corrected']
+        self.receipt['facts'] = {'primary_sources': ['https://synthetic.example/corrected']}
+        self.receipt['evidence_sha256'] = 'e' * 64
+        self.promotion_status = 'released'
+        self.calls.clear()
+        promoted = []
+        def promote(receipt, config, directory):
+            promoted.append(copy.deepcopy(receipt))
+            return self.promote(receipt, config, directory)
+        result = self.make(promote=promote).process(self.candidate)
+        self.assertEqual(result['status'], 'released')
+        self.assertEqual(self.calls, ['validate', 'promote'])
+        self.assertEqual(promoted, [before['receipt']])
+        after = pipeline._read(self.checkpoint())
+        self.assertEqual(after['candidate'], before['candidate'])
+        self.assertEqual(after['receipt'], before['receipt'])
+
     def test_changed_candidate_cannot_reuse_reviews_on_resume(self):
         self.probe_outcome = 'deferred'
         self.make().process(self.candidate)

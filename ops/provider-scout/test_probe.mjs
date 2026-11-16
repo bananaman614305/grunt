@@ -52,6 +52,10 @@ export function configure(env){
     await mkdir(join(pnpm,'bin'),{recursive:true,mode:0o700});
     await writeFile(join(pnpm,'package.json'),json({name:'pnpm',version:'10.34.5'}));
     await writeFile(join(pnpm,'bin/pnpm.cjs'),'process.exit(0);');
+    const npm=join(tools,'npm');
+    await mkdir(join(npm,'bin'),{recursive:true,mode:0o700});
+    await writeFile(join(npm,'package.json'),json({name:'npm',version:'10.9.8'}));
+    for(const entry of ['npm-cli.js','npx-cli.js'])await writeFile(join(npm,'bin',entry),'process.exit(0);');
     const script="import sys,json,pathlib;sys.path.insert(0,sys.argv[1]);import sandbox;root=pathlib.Path(sys.argv[2]);receipt=root/'receipt.json';receipt.write_text(json.dumps(sandbox._descriptor(root,pathlib.Path(sys.argv[3]).resolve())));receipt.chmod(0o600)";
     await execute('/usr/bin/python3',['-c',script,import.meta.dirname,tools,process.execPath]);
     await writeFile(join(control,'host-only.txt'),'unmodified host authority\n',{mode:0o600});

@@ -27,8 +27,10 @@ PUBLIC_REGISTRY = 'https://registry.npmjs.org/'
 TOOLS = '/opt/scout-tools'
 SAFE_ENV = {'PATH': TOOLS + '/bin:/usr/bin:/bin', 'HOME': '/tmp/scout-home',
             'TMPDIR': '/tmp', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'CI': '1',
-            'NPM_CONFIG_USERCONFIG': '/dev/null', 'npm_config_userconfig': '/dev/null',
-            'NPM_CONFIG_GLOBALCONFIG': '/dev/null', 'npm_config_globalconfig': '/dev/null',
+            'NPM_CONFIG_USERCONFIG': '/tmp/scout-home/user.npmrc',
+            'npm_config_userconfig': '/tmp/scout-home/user.npmrc',
+            'NPM_CONFIG_GLOBALCONFIG': '/tmp/scout-home/global.npmrc',
+            'npm_config_globalconfig': '/tmp/scout-home/global.npmrc',
             'npm_config_registry': PUBLIC_REGISTRY, 'GIT_CONFIG_NOSYSTEM': '1',
             'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
             'COREPACK_ENABLE_PROJECT_SPEC': '0', 'PNPM_PACKAGE_MANAGER_STRICT': 'false'}
@@ -82,19 +84,28 @@ def _tree_digest(root):
     return digest.hexdigest()
 
 
-def _descriptor(root, node):
+def _descriptor(root, node, *, include_npm=True):
     package = root / 'node_modules' / 'pnpm'
     manifest = json.loads((package / 'package.json').read_text())
     _require(manifest.get('name') == 'pnpm' and manifest.get('version') == PNPM_VERSION,
              'Pinned package manager is unavailable')
     entry = package / 'bin' / 'pnpm.cjs'
     _require(entry.is_file(), 'Pinned package manager entry point is unavailable')
-    return {'version': 1, 'pnpm_version': PNPM_VERSION, 'node_binary': str(node),
+    data = {'version': 1, 'pnpm_version': PNPM_VERSION, 'node_binary': str(node),
             'node_sha256': _digest(node), 'pnpm_directory': str(package),
             'pnpm_sha256': _tree_digest(package)}
+    if include_npm:
+        npm = root / 'npm'
+        npm_manifest = json.loads((npm / 'package.json').read_text())
+        _require(npm_manifest.get('name') == 'npm' and isinstance(npm_manifest.get('version'), str)
+                 and re.fullmatch(r'\d+\.\d+\.\d+', npm_manifest['version'])
+                 and (npm / 'bin/npm-cli.js').is_file(), 'Trusted npm is unavailable')
+        data.update(version=2, npm_directory=str(npm), npm_version=npm_manifest['version'],
+                    npm_sha256=_tree_digest(npm))
+    return data
 
 
-def _toolchain(state_dir):
+def _toolchain(state_dir, *, allow_legacy=False):
     root = _private_directory(Path(state_dir) / 'toolchain')
     receipt = root / 'receipt.json'
     try:
@@ -103,10 +114,44 @@ def _toolchain(state_dir):
         data = json.loads(receipt.read_text())
         node = _plain_path(data['node_binary'])
         _require(node.is_file() and os.access(node, os.X_OK), 'Trusted Node executable is unavailable')
-        _require(data == _descriptor(root, node), 'Trusted toolchain integrity check failed')
+        legacy = data.get('version') == 1 and allow_legacy
+        _require(data == _descriptor(root, node, include_npm=not legacy),
+                 'Trusted toolchain integrity check failed')
     except (KeyError, ValueError, TypeError, FileNotFoundError):
         raise SandboxError('Prepare the trusted toolchain before candidate checks') from None
     return data
+
+
+def _retain_npm(root, config):
+    setting = config.get('npm_binary') or shutil.which('npm')
+    _require(setting, 'Trusted npm path is required')
+    cli = _plain_path(Path(setting).resolve(strict=True))
+    source = cli.parent.parent
+    _require(cli.name == 'npm-cli.js' and cli.parent.name == 'bin', 'A trusted npm CLI module is required')
+    manifest = json.loads((source / 'package.json').read_text())
+    _require(manifest.get('name') == 'npm', 'Trusted npm module is unavailable')
+    source_digest = _tree_digest(source)
+    destination = root / 'npm'
+    if destination.exists():
+        _require(_tree_digest(destination) == source_digest, 'Incomplete npm upgrade requires operator review')
+        return
+    with tempfile.TemporaryDirectory(prefix='npm-bootstrap-', dir=root) as temporary:
+        stage = Path(temporary) / 'npm'
+        shutil.copytree(source, stage)
+        _require(_tree_digest(stage) == source_digest, 'Trusted npm copy changed')
+        os.rename(stage, destination)
+
+
+def _write_receipt(root, data):
+    fd, temporary = tempfile.mkstemp(prefix='receipt-', dir=root)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(data, stream, sort_keys=True)
+            stream.write('\n')
+        os.replace(temporary, root / 'receipt.json')
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _wait(argv, *, cwd, timeout, env, capture_stdout=False):
@@ -185,7 +230,12 @@ def prepare_toolchain(state_dir: Path, config: dict) -> dict:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         if (root / 'receipt.json').exists():
-            return _toolchain(state_dir)
+            data = _toolchain(state_dir, allow_legacy=True)
+            if data['version'] == 1:
+                _retain_npm(root, config)
+                data = _descriptor(root, Path(data['node_binary']))
+                _write_receipt(root, data)
+            return data
         node_setting = config.get('node_binary') or shutil.which('node')
         npm_setting = config.get('npm_binary') or shutil.which('npm')
         _require(node_setting and npm_setting, 'Trusted Node and npm paths are required')
@@ -218,11 +268,9 @@ def prepare_toolchain(state_dir: Path, config: dict) -> dict:
             # Only the package tree is retained; npm-created .bin links are not.
             package_dir = _private_directory(destination)
             shutil.move(str(stage / 'node_modules' / 'pnpm'), str(package_dir / 'pnpm'))
+        _retain_npm(root, config)
         data = _descriptor(root, node)
-        receipt_fd = os.open(root / 'receipt.json', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(receipt_fd, 'w') as stream:
-            json.dump(data, stream, sort_keys=True)
-            stream.write('\n')
+        _write_receipt(root, data)
         return data
     finally:
         os.close(fd)
@@ -254,18 +302,16 @@ class SandboxRunner:
         _require(isinstance(network, bool), 'Network access must be explicit')
         _require(isinstance(argv, (list, tuple)), 'A fixed check command is required')
         pack = list(argv) == ['npm', 'pack', '--ignore-scripts', '--json', '--pack-destination', str(checkout)]
-        if pack:
+        npm_version = list(argv) == ['npm', '--version']
+        if pack or npm_version:
             _require(not network, 'Packing cannot use the network')
-            # pnpm packs the same package and supports the same JSON filename.
-            # Keeping only one pinned package manager reduces the trusted tree.
-            action = ['--config.ignore-scripts=true', '--config.ignore-pnpmfile=true', 'pack',
-                      '--json', '--pack-destination', str(checkout)]
+            action = list(argv[1:])
         else:
             _require(len(argv) >= 4 and list(argv[:3]) == ['npx', '--yes', 'pnpm@' + PNPM_VERSION],
                      'Only the pinned package manager is allowed')
             action = list(argv[3:])
         install = ['install', '--frozen-lockfile', '--ignore-scripts']
-        _require((action == install if network else action in (['lint'], ['test'], ['build'])) or pack,
+        _require((action == install if network else action in (['lint'], ['test'], ['build'])) or pack or npm_version,
                  'Check command or network access is outside the fixed validation plan')
         if network:
             action += ['--ignore-pnpmfile', '--registry=' + PUBLIC_REGISTRY,
@@ -273,9 +319,13 @@ class SandboxRunner:
         command = _base_command(self.bwrap, network=network)
         command += ['--ro-bind', self.tools['node_binary'], TOOLS + '/bin/node',
                     '--ro-bind', self.tools['pnpm_directory'], TOOLS + '/pnpm',
+                    '--ro-bind', self.tools['npm_directory'], TOOLS + '/npm',
+                    '--symlink', '../npm/bin/npm-cli.js', TOOLS + '/bin/npm',
+                    '--symlink', '../npm/bin/npx-cli.js', TOOLS + '/bin/npx',
                     '--bind', str(checkout), str(checkout), '--chdir', str(checkout)]
         _environment(command)
-        command += ['--remount-ro', '/', '--', TOOLS + '/bin/node', TOOLS + '/pnpm/bin/pnpm.cjs', *action]
+        entry = TOOLS + ('/npm/bin/npm-cli.js' if pack or npm_version else '/pnpm/bin/pnpm.cjs')
+        command += ['--remount-ro', '/', '--', TOOLS + '/bin/node', entry, *action]
         return command
 
     def __call__(self, argv, *, cwd: Path, timeout: int, env: dict, network: bool):
@@ -286,18 +336,23 @@ class SandboxRunner:
         _require(_toolchain(self.state_dir) == self.tools, 'Trusted toolchain changed')
         command = self.command(argv, cwd=cwd, network=network)
         pack = list(argv[:2]) == ['npm', 'pack']
-        result = _wait(command, cwd='/', timeout=timeout, env={'PATH': '/usr/bin:/bin'}, capture_stdout=pack)
+        npm_version = list(argv) == ['npm', '--version']
+        result = _wait(command, cwd='/', timeout=timeout, env={'PATH': '/usr/bin:/bin'}, capture_stdout=pack or npm_version)
         if pack and result.returncode == 0:
             try:
                 packed = json.loads(result.stdout)
-                _require(isinstance(packed, dict) and isinstance(packed.get('filename'), str)
-                         and re.fullmatch(r'usegrunt-\d+\.\d+\.\d+\.tgz', packed['filename']),
+                _require(isinstance(packed, list) and len(packed) == 1 and isinstance(packed[0], dict)
+                         and isinstance(packed[0].get('filename'), str)
+                         and re.fullmatch(r'usegrunt-\d+\.\d+\.\d+\.tgz', packed[0]['filename']),
                          'Unexpected package output')
             except (ValueError, TypeError):
                 raise SandboxError('Unexpected package output') from None
             # Project only the expected package filename, never arbitrary files
             # or script output. Promotion independently verifies archive bytes.
-            result.stdout = json.dumps([{'filename': packed['filename']}])
+            result.stdout = json.dumps([{'filename': packed[0]['filename']}])
+        if npm_version and result.returncode == 0:
+            _require(result.stdout.strip() == self.tools['npm_version'], 'Trusted npm version changed')
+            result.stdout = self.tools['npm_version'] + '\n'
         return result
 
 
@@ -334,6 +389,9 @@ def build_probe_command(state_dir: Path, config: dict, *, checkout: Path, config
              'Invalid probe child arguments')
     command = _base_command(runner.bwrap, network=True)
     command += ['--ro-bind', runner.tools['node_binary'], TOOLS + '/bin/node',
+                '--ro-bind', runner.tools['npm_directory'], TOOLS + '/npm',
+                '--symlink', '../npm/bin/npm-cli.js', TOOLS + '/bin/npm',
+                '--symlink', '../npm/bin/npx-cli.js', TOOLS + '/bin/npx',
                 '--ro-bind', str(child_script), TOOLS + '/probe-child.mjs',
                 '--ro-bind', str(checkout), str(checkout),
                 '--bind', str(config_dir), str(config_dir), '--chdir', str(checkout)]

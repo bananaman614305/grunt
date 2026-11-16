@@ -308,6 +308,24 @@ class ScoutTests(unittest.TestCase):
         context = json.loads(prompt.split('## This run\n',1)[1])
         self.assertEqual(context['max_integrations'],0)
 
+    def test_old_blocked_candidate_does_not_starve_fresh_report_candidate(self):
+        _, fresh, result = self.enabled_pipeline_fixture()
+        stale = candidate(provider='Old', homepage='https://old.synthetic.example',
+                          release_request={**fresh['release_request'],'source_id':'old','head_sha':'c'*40})
+        stale.update(pipeline_status='blocked',pipeline_reason='previous attempt failed')
+        scout.atomic(self.workspace / 'ledger.json', {'version':1,'candidates':{scout.candidate_id(stale):stale}})
+        pipeline = Mock()
+        pipeline.resume_pending.return_value = []
+        pipeline.process.return_value = {'status':'released','source_id':'synthetic','head_sha':'a'*40,'reason':'verified'}
+        with patch.dict('sys.modules',{'pipeline':types.SimpleNamespace(Pipeline=Mock(return_value=pipeline))}), \
+                patch.object(scout,'run_agent',return_value=result), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(self.workspace),0)
+        pipeline.process.assert_called_once()
+        self.assertEqual(pipeline.process.call_args.args[0]['provider'],'Synthetic')
+        ledger = scout.load(self.workspace / 'ledger.json')['candidates']
+        self.assertEqual(ledger[scout.candidate_id(stale)]['pipeline_status'],'blocked')
+        self.assertEqual(ledger[scout.candidate_id(fresh)]['pipeline_status'],'released')
+
     def test_pipeline_cancellation_records_status_and_restores_handlers(self):
         _, _, result = self.enabled_pipeline_fixture()
         pipeline = Mock()
