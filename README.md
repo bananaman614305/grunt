@@ -96,6 +96,17 @@ after downtime; users do not need to schedule a separate daily command.
 
 [Reference](https://github.com/bananaman614305/grunt/blob/main/docs/reference.md) · [Vision](https://github.com/bananaman614305/grunt/blob/main/VISION.md) · [Changelog](https://github.com/bananaman614305/grunt/blob/main/CHANGELOG.md) · [Project instructions](https://github.com/bananaman614305/grunt/blob/main/CLAUDE.md).
 
+To cut a manual npm release, merge the version bump and changelog, then open
+[publish usegrunt](https://github.com/bananaman614305/grunt/actions/workflows/publish.yml),
+select **Run workflow** on `main` and enter the version from `package.json`.
+The workflow tests, builds, publishes and verifies the package. Repository
+collaborators with write access can run it. **Verify only** checks GitHub's npm
+authentication and previews the package without publishing it.
+
+In the npm package settings, the trusted publisher must allow `npm publish`
+for `bananaman614305/grunt` and `publish.yml`. npm expires new configurations
+that have yet to complete a successful publish after two days.
+
 Maintainers can use the [provider scouting guide](https://github.com/bananaman614305/grunt/blob/main/ops/provider-scout/README.md) for Chad's 09:00/21:00 Eastern search job. It researches recurring free offers, uses Squire for eligible signups and, when release is enabled, requires two independent reviews, sandboxed checks and trusted exact-provider hello/tool probes before merging and publishing a new npm release. Human authentication and approval blockers remain pending. New users receive released additions through `npx usegrunt`; existing installations use `npx usegrunt update`. Scouting is separate from user maintenance and is not installed on users' machines.
 
 Setup enables free sources without a data-sharing question. Setup reuses the person's Google or GitHub identity; each provider can still require its own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
