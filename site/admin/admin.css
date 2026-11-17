@@ -80,3 +80,17 @@
 @media (max-width: 680px) {
   .home-project-context { grid-template-columns: minmax(0, 1fr); gap: 19px; }
 }
+
+.home-uptime { max-width: 1050px; margin-top: 24px; }
+.home-uptime .section-heading { flex-wrap: wrap; }
+.home-uptime-table { border-top: 1px solid var(--line); table-layout: fixed; }
+.home-uptime-table tbody th { color: var(--ink); font-size: 13px; font-weight: 600; }
+.home-uptime-table td { vertical-align: top; }
+.home-uptime-value strong { font-weight: 600; }
+.home-uptime-value .secondary { line-height: 1.4; }
+.home-uptime > .section-note { margin-top: 9px; }
+@media (max-width: 580px) {
+  .home-uptime-table td, .home-uptime-table th { padding-inline: 5px; font-size: 11px; }
+  .home-uptime-table tbody th { font-size: 11px; }
+  .home-uptime-value .secondary { font-size: 10px; }
+}

@@ -8,6 +8,15 @@ type Provider = { source: string; model?: string };
 type Event = { at: number; kind: 'progress'; text: string }
   | { at: number; kind: 'tool'; tool: typeof toolNames[number]; failed: boolean };
 const milestoneStates = ['draft', 'review', 'merged', 'closed'] as const;
+const workStates = ['working', 'provider_wait', 'between_cycles', 'starting', 'paused', 'offline', 'stalled', 'unknown'] as const;
+const dayMs = 86400000;
+type WorkWindow = { workingMs: number; downtimeMs: number; providerWaitMs: number };
+interface WorkActivity {
+  at: number;
+  state: typeof workStates[number];
+  day: WorkWindow;
+  week: WorkWindow;
+}
 interface ProjectActivity {
   checkpoint?: { at: number; summary?: string; next: string[] };
   milestones: { at: number; number: number; title: string; status: typeof milestoneStates[number] }[];
@@ -22,6 +31,7 @@ export interface AgentActivity {
   issues: (Provider & { error: typeof errors[number] })[];
   events: Event[];
   project?: ProjectActivity;
+  work?: WorkActivity;
 }
 
 const unsafeText = /[<>\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]|https?:\/\/|vault:|\/(?:home|tmp|worker|root|proc|etc)\/|file:|\b(?:bearer|password|secret|credential|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|cookie|private[ _-]?key|authorization)\b|\b(?:sk-|gh[pousr]_|AKIA|GOCSPX-|AIza)[\w-]+|[\w.+-]+@[\w.-]+\.[a-z]{2,}|[A-Za-z0-9_+/=-]{32,}/i;
@@ -74,6 +84,18 @@ function projectTimeline(value: unknown, observedAt: number): ProjectActivity {
   return { milestones, ...(summary || next.length ? { checkpoint: { at, ...(summary ? { summary } : {}), next } } : {}) };
 }
 
+function projectWork(value: unknown, observedAt: number): WorkActivity {
+  const data = record(value);
+  const window = (value: unknown, duration: number): WorkWindow => {
+    const row = record(value);
+    const workingMs = time(row.workingMs, 0, duration);
+    const downtimeMs = time(row.downtimeMs, 0, duration - workingMs);
+    return { workingMs, downtimeMs, providerWaitMs: time(row.providerWaitMs, 0, downtimeMs) };
+  };
+  return { at: time(data.at, observedAt - 15000, observedAt + 5000), state: oneOf(data.state, workStates),
+    day: window(data.day, dayMs), week: window(data.week, 7 * dayMs) };
+}
+
 export function projectAgentActivity(value: unknown, now: number): AgentActivity {
   const data = record(value);
   if (data.version !== 1) return invalid();
@@ -99,7 +121,8 @@ export function projectAgentActivity(value: unknown, now: number): AgentActivity
       return { ...provider(issue), error: oneOf(issue.error, errors) };
     }),
     events: events.filter((event): event is Event => event !== null).sort((a, b) => a.at - b.at),
-    ...(data.project === undefined ? {} : { project: projectTimeline(data.project, observedAt) })
+    ...(data.project === undefined ? {} : { project: projectTimeline(data.project, observedAt) }),
+    ...(data.work === undefined ? {} : { work: projectWork(data.work, observedAt) })
   };
 }
 

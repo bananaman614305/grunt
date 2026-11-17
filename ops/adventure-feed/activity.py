@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import ssl
 import stat
+import threading
 import time
 import urllib.request
 
@@ -305,10 +306,16 @@ def upload():
     instance = os.environ['GRUNT_ADMIN_INSTANCE_ID']
     if not re.fullmatch(r'[A-Za-z0-9_-]{32,128}', key) or not PROVIDER.fullmatch(instance):
         raise ValueError('Invalid activity upload configuration')
+    from uptime import WorkMeter, WorkProbe
+    meter = WorkMeter(WorkProbe(STATE, private_tail, lambda: ask(POOL, timeout=2)), STATE / 'uptime' / 'work.sqlite3')
+    threading.Thread(target=meter.run, name='grunt-work-meter', daemon=True).start()
     delay = 0
     while True:
         try:
+            work = meter.latest
             data = snapshot(include_project=True)
+            if work and 0 <= data['observedAt'] - work['at'] <= 15000:
+                data['work'] = work
             answer = ask(RECEIVER, method='POST', headers={'Authorization': 'Bearer ' + key,
                          'Content-Type': 'application/json'},
                          data=json.dumps({'instanceId': instance, 'activity': data}).encode())

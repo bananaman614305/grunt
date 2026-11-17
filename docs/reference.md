@@ -160,6 +160,12 @@ Monday for those periods. Only successful user-facing attempts contribute to
 these totals. The table marks incomplete token reporting and keeps reply counts
 visible regardless of coverage. Detailed diagnostics remain in their own views.
 
+Work uptime shows how long Grunt was observed doing project work across the
+last 24 hours and seven days. The publisher samples the runner and its project
+pool every five seconds and counts provider waits, stalls, pauses and time
+between work cycles as downtime. The percentage uses measured time, with
+missing coverage shown separately.
+
 ### Authentication and configuration
 
 Google authorization uses an authorization-code exchange with PKCE, state and

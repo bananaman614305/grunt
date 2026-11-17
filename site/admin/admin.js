@@ -97,6 +97,22 @@ const HOME_STATUS = {
 const freshActivity = (entry, now) => number(entry.receivedAt) !== null && now - entry.receivedAt <= 20000;
 const PHASE_LABELS = { starting: 'Starting', working: 'Working', checkpoint: 'Between work cycles',
   waiting_for_free_pool: 'Waiting for a free source', stopped: 'Stopped', offline: 'Offline' };
+const WORK_STATUS = {
+  working: ['running', 'Working'], provider_wait: ['limited', 'Waiting for a provider'],
+  stalled: ['error', 'No recent progress'], offline: ['offline', 'Runner offline'],
+  between_cycles: ['unknown', 'Between work cycles'], starting: ['connecting', 'Starting'],
+  paused: ['unknown', 'Paused'], unknown: ['unknown', 'Work status unknown']
+};
+
+function workDuration(ms) {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
 
 export function homeSources(overview, activity, usage, now = Date.now()) {
   const instances = new Map(array(overview?.instances).map(row => [row.id, row]));
@@ -256,6 +272,7 @@ export class AdminConsole {
     this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null; this.activity = null; this.sourceUsage = null;
     this.el['activity-list'].replaceChildren(loading('Loading recent activity…'));
     this.el['home-work'].replaceChildren(); this.el['home-source-list'].replaceChildren();
+    this.renderWorkUptime(undefined);
     this.renderProjectContext(undefined);
     this.el['trace-content'].replaceChildren();
   }
@@ -369,15 +386,18 @@ export class AdminConsole {
     const now = Date.now();
     const latest = [...array(this.activity?.instances)].sort((a, b) => b.receivedAt - a.receivedAt)[0];
     const work = this.el['home-work'];
+    const measurement = latest?.activity?.work;
     if (latest) {
       const data = object(latest.activity), fresh = freshActivity(latest, now);
       const title = element('div', 'home-project');
-      title.append(element('h3', '', 'Amazing Adventure'),
-        badge(fresh && data.phase === 'working' ? 'running' : 'unknown', fresh ? PHASE_LABELS[data.phase] ?? 'Unknown' : 'Last known update'));
+      let workStatus = ['unknown', 'Last known update'];
+      if (fresh && measurement && now - measurement.at <= 25000 && own(WORK_STATUS, measurement.state)) workStatus = WORK_STATUS[measurement.state];
+      else if (fresh && !measurement) workStatus = [data.phase === 'working' ? 'running' : 'unknown', PHASE_LABELS[data.phase] ?? 'Unknown'];
+      title.append(element('h3', '', 'Amazing Adventure'), badge(...workStatus));
       const progress = [...array(data.events)].reverse().find(event => event.kind === 'progress');
       const checkpoint = data.project?.checkpoint;
       const current = fresh ? array(data.active).map(row => text(row.source)).join(', ') : '';
-      const route = current ? `Answering now: ${current}`
+      const route = current ? `${measurement?.state === 'stalled' ? 'Waiting on' : 'Answering now'}: ${current}`
         : data.lastReply?.source ? `Last reply: ${text(data.lastReply.source)}` : 'Waiting for a source reply';
       const note = element('p', 'home-progress', text(progress?.text ?? checkpoint?.summary, 'Waiting for a progress message.', 400));
       const meta = element('p', 'home-work-meta');
@@ -390,6 +410,7 @@ export class AdminConsole {
         element('p', 'section-note', 'Updates appear here when the Amazing Adventure runner is connected.'));
     }
 
+    this.renderWorkUptime(measurement, now);
     this.renderProjectContext(latest?.activity?.project);
 
     const windows = usageWindows(new Date(now));
@@ -424,6 +445,34 @@ export class AdminConsole {
       cell(row, status);
       cell(row, amount(source.today), 'number'); cell(row, amount(source.week), 'number');
       body.append(row);
+    }
+    target.replaceChildren(result);
+  }
+  renderWorkUptime(measurement, now = Date.now()) {
+    const root = this.el['home-uptime'], target = this.el['home-uptime-totals'];
+    root.hidden = !measurement;
+    if (!measurement) { target.replaceChildren(); return; }
+    const stale = now - measurement.at > 25000;
+    this.el['home-uptime-freshness'].textContent = stale ? 'Last measured ' + relativeTime(measurement.at, now) : 'Updates every few seconds';
+    const { result, body } = table(['Window', 'Uptime', 'Downtime', 'Measured'], 'home-uptime-table');
+    for (const [label, value, cap] of [['Last 24h', measurement.day, 86400000], ['Last 7d', measurement.week, 604800000]]) {
+      const row = element('tr'), period = element('th', 'home-source-name', label);
+      period.scope = 'row'; row.append(period);
+      const { workingMs = 0, downtimeMs = 0, providerWaitMs = 0 } = object(value);
+      const measured = workingMs + downtimeMs;
+      const uptime = element('div', 'home-uptime-value'), downtime = element('div', 'home-uptime-value');
+      if (measured > 0) {
+        const percentage = workingMs / measured * 100;
+        const display = percentage > 99.95 && downtimeMs > 0 ? '>99.9%' : percentage.toFixed(percentage === 0 || percentage === 100 ? 0 : 1) + '%';
+        uptime.append(element('strong', '', display), element('span', 'secondary', workDuration(workingMs) + ' working'));
+        downtime.append(element('strong', '', workDuration(downtimeMs)));
+        if (providerWaitMs) downtime.append(element('span', 'secondary', workDuration(providerWaitMs) + ' provider wait'));
+      } else { uptime.textContent = '—'; downtime.textContent = '—'; }
+      cell(row, uptime); cell(row, downtime);
+      const coverage = element('div', 'home-uptime-value');
+      coverage.append(element('strong', '', workDuration(measured)));
+      if (measured < cap) coverage.append(element('span', 'secondary', workDuration(cap - measured) + ' unmeasured'));
+      cell(row, coverage); body.append(row);
     }
     target.replaceChildren(result);
   }
