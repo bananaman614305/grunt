@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-17
+
+### Added
+
+- Show recent project milestones and Grunt's checkpoint plan beside live work on the owner overview. Timeline entries link to the corresponding pull request and show its review or merge state.
+
 ## [0.7.3] - 2026-11-17
 
 ### Added

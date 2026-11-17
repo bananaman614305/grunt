@@ -266,3 +266,28 @@ it('protects source usage and requires bounded windows in chronological order', 
   expect(await (await f.request('/api/source-usage' + window, { headers })).json())
     .toEqual({ today: now, week: now - 86400000, sources: [] });
 });
+
+it('projects bounded project context through the private activity feed', async () => {
+  const f = await fixture(), { cookie } = await f.login();
+  const project = {
+    checkpoint: { at: now, summary: 'The courtyard quests are playable.', next: ['Connect the market.', 'Authorization Bearer private'], rawFile: 'unsafe' },
+    milestones: [
+      { at: now - 1000, number: 2, title: 'Round 2', status: 'review', url: 'https://attacker.example' },
+      { at: now - 2000, number: 1, title: 'Project scope', status: 'merged' }
+    ]
+  };
+  const upload = await f.request('/ingest/activity', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + env.GRUNT_ADMIN_INGEST_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instanceId: 'chad', activity: { version: 1, observedAt: now, phase: 'working', active: [], lastReply: null, issues: [], events: [], project } })
+  });
+  expect(upload.status).toBe(200);
+  const feed = await (await f.request('/api/activity', { headers: { Cookie: cookie } })).json();
+  expect(feed.instances[0].activity.project).toEqual({
+    checkpoint: { at: now, summary: 'The courtyard quests are playable.', next: ['Connect the market.'] },
+    milestones: [
+      { at: now - 1000, number: 2, title: 'Round 2', status: 'review' },
+      { at: now - 2000, number: 1, title: 'Project scope', status: 'merged' }
+    ]
+  });
+  expect(await (await f.request('/api/export', { headers: { Cookie: cookie } })).text()).not.toContain('Connect the market.');
+});

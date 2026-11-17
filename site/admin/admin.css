@@ -56,3 +56,27 @@
   .home-view .topbar h1 { font-size: 22px; }
   .home-view .header-actions .button { padding-inline: 9px; }
 }
+
+.home-project-context {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 30px;
+  margin-top: 25px;
+  max-width: 1050px;
+}
+.home-project-context .section-heading { min-height: 34px; margin-bottom: 8px; }
+.home-milestones { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.home-milestones li { padding: 9px 0 10px; border-bottom: 1px solid var(--line); }
+.milestone-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+.milestone-meta time { color: var(--dim); font-size: 11px; }
+.home-milestones a { display: block; width: fit-content; color: var(--ink); font-size: 13px; line-height: 1.5; text-decoration: none; overflow-wrap: anywhere; margin-top: 4px; }
+.home-milestones a:hover { color: var(--gold); text-decoration: underline; text-underline-offset: 3px; }
+.home-plan-text, .home-next-steps { font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.home-next-steps { padding-left: 19px; margin: 0; }
+.home-next-steps li + li { margin-top: 5px; }
+.home-plan-date { margin-top: 7px; }
+.home-checkpoint summary { width: fit-content; cursor: pointer; color: var(--gold); font-size: 12px; min-height: 44px; padding: 13px 0; }
+.home-checkpoint[open] p { padding-bottom: 6px; }
+@media (max-width: 680px) {
+  .home-project-context { grid-template-columns: minmax(0, 1fr); gap: 19px; }
+}

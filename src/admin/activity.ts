@@ -7,6 +7,11 @@ const toolNames = ['read', 'write', 'edit', 'bash'] as const;
 type Provider = { source: string; model?: string };
 type Event = { at: number; kind: 'progress'; text: string }
   | { at: number; kind: 'tool'; tool: typeof toolNames[number]; failed: boolean };
+const milestoneStates = ['draft', 'review', 'merged', 'closed'] as const;
+interface ProjectActivity {
+  checkpoint?: { at: number; summary?: string; next: string[] };
+  milestones: { at: number; number: number; title: string; status: typeof milestoneStates[number] }[];
+}
 
 export interface AgentActivity {
   version: 1;
@@ -16,6 +21,7 @@ export interface AgentActivity {
   lastReply: (Provider & { at: number }) | null;
   issues: (Provider & { error: typeof errors[number] })[];
   events: Event[];
+  project?: ProjectActivity;
 }
 
 const unsafeText = /[<>\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]|https?:\/\/|vault:|\/(?:home|tmp|worker|root|proc|etc)\/|file:|\b(?:bearer|password|secret|credential|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|cookie|private[ _-]?key|authorization)\b|\b(?:sk-|gh[pousr]_|AKIA|GOCSPX-|AIza)[\w-]+|[\w.+-]+@[\w.-]+\.[a-z]{2,}|[A-Za-z0-9_+/=-]{32,}/i;
@@ -46,6 +52,28 @@ function provider(value: unknown): Provider {
   return { source: row.source, model };
 }
 
+function projectedProse(value: unknown, limit: number): string | null {
+  if (typeof value !== 'string' || value.length > limit) return invalid();
+  const text = value.trim();
+  return text && !unsafeText.test(text) && !text.includes(String.fromCharCode(96)) ? text : null;
+}
+
+function projectTimeline(value: unknown, observedAt: number): ProjectActivity {
+  const data = record(value);
+  const milestones = list<ProjectActivity['milestones'][number] | null>(data.milestones, 4, value => {
+    const row = record(value), title = projectedProse(row.title, 160);
+    if (!title) return null;
+    return { title, number: time(row.number, 1, 1000000), at: time(row.at, 1, observedAt + 5000),
+      status: oneOf(row.status, milestoneStates) };
+  }).filter((row): row is ProjectActivity['milestones'][number] => row !== null).sort((a, b) => b.at - a.at);
+  if (data.checkpoint === undefined) return { milestones };
+  const checkpoint = record(data.checkpoint);
+  const summary = checkpoint.summary === undefined ? null : projectedProse(checkpoint.summary, 400);
+  const next = list(checkpoint.next, 3, step => projectedProse(step, 400)).filter((step): step is string => step !== null);
+  const at = time(checkpoint.at, observedAt - 30 * 86400000, observedAt + 5000);
+  return { milestones, ...(summary || next.length ? { checkpoint: { at, ...(summary ? { summary } : {}), next } } : {}) };
+}
+
 export function projectAgentActivity(value: unknown, now: number): AgentActivity {
   const data = record(value);
   if (data.version !== 1) return invalid();
@@ -59,9 +87,8 @@ export function projectAgentActivity(value: unknown, now: number): AgentActivity
       return { at, kind: 'tool', tool: oneOf(event.tool, toolNames), failed: event.failed };
     }
     if (event.kind !== 'progress' || typeof event.text !== 'string' || event.text.length > 400) return invalid();
-    const text = event.text.trim();
-    if (!text || unsafeText.test(text) || text.includes(String.fromCharCode(96))) return null;
-    return { at, kind: 'progress', text };
+    const text = projectedProse(event.text, 400);
+    return text ? { at, kind: 'progress', text } : null;
   });
   return {
     version: 1, observedAt, phase: oneOf(data.phase, phases),
@@ -71,7 +98,8 @@ export function projectAgentActivity(value: unknown, now: number): AgentActivity
       const issue = record(value);
       return { ...provider(issue), error: oneOf(issue.error, errors) };
     }),
-    events: events.filter((event): event is Event => event !== null).sort((a, b) => a.at - b.at)
+    events: events.filter((event): event is Event => event !== null).sort((a, b) => a.at - b.at),
+    ...(data.project === undefined ? {} : { project: projectTimeline(data.project, observedAt) })
   };
 }
 

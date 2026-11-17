@@ -11,6 +11,13 @@ last successful provider, provider issues and the latest 40 progress or tool
 entries. Model labels come from the configured route. The web view refreshes
 about every five seconds while visible.
 
+The publisher reads the `Current task` and `Next steps` sections of Grunt's
+`GRUNT_STATUS.md` checkpoint. The overview labels the checkpoint with its update
+time. It also shows recent milestones from public Amazing Adventure pull request
+metadata, cached for four minutes. The dashboard displays the actual draft,
+review, merged or closed state and builds links from pull request numbers. The
+checkpoint and timeline travel with the private activity snapshot.
+
 Chad can run `activity.py upload` as a separate user service. It uses the
 existing private collector environment file for the ingestion credential
 and approved instance ID. It sends the projected snapshot only to the existing

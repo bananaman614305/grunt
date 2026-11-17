@@ -13,6 +13,11 @@ import urllib.request
 STATE = Path.home() / '.local/state/usegrunt-adventure'
 POOL = 'http://127.0.0.1:8793/v1/status'
 RECEIVER = 'https://milo-gateway.fly.dev/admin/ingest/activity'
+PROJECT = Path.home() / 'projects/amazing-adventure'
+PULL_REQUESTS = 'https://api.github.com/repos/bananaman614305/amazing-adventure/pulls?state=all&sort=updated&direction=desc&per_page=6'
+MILESTONE_REFRESH = 240
+MILESTONE_STALE = 3600
+_milestone_cache = {'poll_at': float('-inf'), 'received_at': float('-inf'), 'rows': []}
 TOOLS = {'read', 'write', 'edit', 'bash'}
 PHASES = {'starting', 'working', 'checkpoint', 'waiting_for_free_pool', 'stopped'}
 ERRORS = {'not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'}
@@ -49,7 +54,7 @@ def progress_text(content):
     return ' '.join(parts)[:400].strip()
 
 
-def private_tail(path, limit):
+def private_tail(path, limit, *, checkpoint=False):
     # Open each component by descriptor so a worker cannot redirect a
     # concurrent read through a replaced directory or a symbolic link.
     directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
@@ -66,9 +71,12 @@ def private_tail(path, limit):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('Expected a private runner file')
         if info.st_size > limit:
+            if checkpoint:
+                raise ValueError('Checkpoint exceeds its size limit')
             stream.seek(-limit, os.SEEK_END)
             stream.readline(limit)
-        return stream.read(limit)
+        data = stream.read(limit)
+        return (data, info.st_mtime_ns // 1000000) if checkpoint else data
 
 
 def events(state, now):
@@ -110,12 +118,113 @@ HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}), Direct(),
                                    urllib.request.HTTPSHandler(context=ssl.create_default_context()))
 
 
-def ask(url, **kwargs):
-    with HTTP.open(urllib.request.Request(url, **kwargs), timeout=8) as response:
-        return json.loads(response.read(131073))
+def ask(url, *, limit=131072, timeout=8, **kwargs):
+    with HTTP.open(urllib.request.Request(url, **kwargs), timeout=timeout) as response:
+        data = response.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('Response exceeds its size limit')
+        return json.loads(data)
 
 
-def snapshot(state=STATE):
+def clean_summary(value):
+    return progress_text([{'type': 'text', 'text': value}])
+
+
+def project_checkpoint(raw, at):
+    # Match Grunt's standing checkpoint format. Other sections are omitted.
+    sections = {}
+    heading = None
+    fenced = None
+    for line in raw.splitlines():
+        fence = re.match(r'^\s*(\x60{3,}|~{3,})', line)
+        if fence:
+            marker = fence.group(1)[0]
+            fenced = marker if fenced is None else None if marker == fenced else fenced
+            continue
+        if fenced:
+            continue
+        name = re.match(r'^#{1,6}\s+(.+?)\s*$', line)
+        if name:
+            heading = name.group(1).strip().lower()
+            sections.setdefault(heading, [])
+        elif heading is not None:
+            sections[heading].append(line)
+    current = next((clean_summary('\n'.join(lines)) for name, lines in sections.items()
+                    if re.match(r'^current (task|work)\b', name)), '')
+    next_lines = next((lines for name, lines in sections.items()
+                       if re.match(r'^next (tasks?|steps?|up)\b', name)), [])
+    # Group indented continuation lines with their list item.
+    groups = []
+    for line in next_lines:
+        item = re.match(r'^\s*(?:[-*+]|\d+[.\)])\s+(.+)$', line)
+        if item:
+            groups.append([item.group(1)])
+        elif line.strip():
+            if not groups:
+                groups.append([])
+            groups[-1].append(line)
+    steps = [clean_summary('\n'.join(group)) for group in groups]
+    result = {'at': at, 'next': [step for step in steps if step][:3]}
+    if current:
+        result['summary'] = current
+    return result if current or result['next'] else None
+
+
+def checkpoint(path, now):
+    try:
+        raw, at = private_tail(path, 32768, checkpoint=True)
+        if now - 30 * 86400000 <= at <= now + 5000:
+            return project_checkpoint(raw.decode('utf-8'), at)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def project_pulls(value):
+    if not isinstance(value, list):
+        raise ValueError('Expected pull requests')
+    rows = []
+    for raw in value[:6]:
+        if not isinstance(raw, dict):
+            continue
+        number = raw.get('number')
+        title = clean_summary(raw.get('title'))[:160].strip()
+        if type(number) is not int or not 0 < number <= 1000000 or not title:
+            continue
+        if raw.get('merged_at'):
+            status, date = 'merged', raw.get('merged_at')
+        elif raw.get('state') == 'closed':
+            status, date = 'closed', raw.get('closed_at')
+        elif raw.get('state') == 'open':
+            status, date = ('draft' if raw.get('draft') is True else 'review'), raw.get('created_at')
+        else:
+            continue
+        try:
+            timestamp = datetime.datetime.fromisoformat(date)
+            if not timestamp.tzinfo:
+                continue
+            at = int(timestamp.timestamp() * 1000)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        rows.append({'number': number, 'title': title, 'status': status, 'at': at})
+    return sorted(rows, key=lambda row: row['at'], reverse=True)[:4]
+
+
+def milestones():
+    now = time.monotonic()
+    if now - _milestone_cache['poll_at'] >= MILESTONE_REFRESH:
+        _milestone_cache['poll_at'] = now
+        try:
+            rows = project_pulls(ask(PULL_REQUESTS, limit=262144, timeout=3,
+                                 headers={'Accept': 'application/vnd.github+json',
+                                          'User-Agent': 'grunt-project-status'}))
+            _milestone_cache.update(received_at=now, rows=rows)
+        except (OSError, ValueError):
+            pass
+    return _milestone_cache['rows'] if now - _milestone_cache['received_at'] <= MILESTONE_STALE else []
+
+
+def snapshot(state=STATE, *, include_project=False):
     now = int(time.time() * 1000)
     try:
         history = events(state, now)
@@ -151,6 +260,13 @@ def snapshot(state=STATE):
                 result['lastReply'] = {**provider, 'at': at}
         if row.get('errorCode') in ERRORS:
             result['issues'].append({**provider, 'error': row['errorCode']})
+    if include_project:
+        recent_milestones = [row for row in milestones() if 0 < row['at'] <= now + 5000]
+        project = {'milestones': recent_milestones}
+        report = checkpoint(PROJECT / 'GRUNT_STATUS.md', now)
+        if report:
+            project['checkpoint'] = report
+        result['project'] = project
     return result
 
 
@@ -192,7 +308,7 @@ def upload():
     delay = 0
     while True:
         try:
-            data = snapshot()
+            data = snapshot(include_project=True)
             answer = ask(RECEIVER, method='POST', headers={'Authorization': 'Bearer ' + key,
                          'Content-Type': 'application/json'},
                          data=json.dumps({'instanceId': instance, 'activity': data}).encode())
