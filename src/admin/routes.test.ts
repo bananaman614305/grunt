@@ -253,3 +253,16 @@ it('shares short-lived live activity only with signed-in owners and excludes it 
   f.clock.at += 121000;
   expect(await (await f.request('/api/activity', owner)).json()).toEqual({ instances: [] });
 });
+
+it('protects source usage and requires bounded windows in chronological order', async () => {
+  const f = await fixture();
+  const window = '?today=' + now + '&week=' + (now - 86400000);
+  expect((await f.request('/api/source-usage' + window)).status).toBe(401);
+  const { cookie } = await f.login();
+  const headers = { Cookie: cookie };
+  for (const query of ['', '?today=1&week=2', '?today=' + now + '&week=1', window + '&instanceId=other']) {
+    expect((await f.request('/api/source-usage' + query, { headers })).status).toBe(400);
+  }
+  expect(await (await f.request('/api/source-usage' + window, { headers })).json())
+    .toEqual({ today: now, week: now - 86400000, sources: [] });
+});

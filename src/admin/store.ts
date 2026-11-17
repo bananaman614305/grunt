@@ -120,6 +120,36 @@ export class AdminStore {
     }
     return result;
   }
+  async sourceUsage(today: number, week: number, instanceId?: string) {
+    const now = this.now();
+    const rows = await this.rows<{
+      source: string; today_replies: number; week_replies: number; last_reply_at: number;
+      today_tokens: number | null; week_tokens: number | null;
+      today_complete: number; week_complete: number;
+    }>(`WITH replies AS (
+      SELECT source, at, json_extract(payload, '$.inputTokens') AS input,
+        json_extract(payload, '$.outputTokens') AS output
+      FROM admin_events
+      WHERE at BETWEEN ? AND ? AND source IS NOT NULL AND type='attempt.finish'
+        AND json_extract(payload, '$.kind')='user' AND json_extract(payload, '$.outcome')='passed'
+        ${instanceId ? 'AND instance_id=?' : ''}
+    ), measured AS (
+      SELECT source, at, input IS NOT NULL AND output IS NOT NULL AS complete,
+        CASE WHEN input IS NOT NULL OR output IS NOT NULL THEN CAST(COALESCE(input, 0) AS REAL) + COALESCE(output, 0) END AS tokens
+      FROM replies
+    )
+    SELECT source, COUNT(*) FILTER (WHERE at>=?) AS today_replies, COUNT(*) AS week_replies,
+      SUM(tokens) FILTER (WHERE at>=?) AS today_tokens, SUM(tokens) AS week_tokens,
+      COALESCE(SUM(complete) FILTER (WHERE at>=?), 0) AS today_complete, SUM(complete) AS week_complete,
+      MAX(at) AS last_reply_at
+    FROM measured GROUP BY source ORDER BY source`, [week, now, ...(instanceId ? [instanceId] : []), today, today, today]);
+    const range = (replies: number, tokens: number | null, completeReports: number) => ({
+      replies, tokens: tokens !== null && Number.isSafeInteger(tokens) ? tokens : null, completeReports
+    });
+    return { today, week, sources: rows.map(row => ({ source: row.source, lastReplyAt: row.last_reply_at,
+      today: range(row.today_replies, row.today_tokens, row.today_complete),
+      week: range(row.week_replies, row.week_tokens, row.week_complete) })) };
+  }
   async providers(instanceId?: string) {
     const instances = await this.instances(instanceId);
     return { providers: instances.flatMap(instance => (instance.snapshot?.sources ?? []).map(source => ({ ...source, instanceId: instance.id, lastObservedAt: instance.snapshotObservedAt ?? instance.observedAt }))) };

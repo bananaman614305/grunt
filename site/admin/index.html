@@ -35,8 +35,9 @@
     <aside class="sidebar" aria-label="Admin navigation">
       <a class="brand" href="/" aria-label="Grunt home"><img src="../grunt.svg" alt="" width="32" height="32"><span>grunt</span></a>
       <nav class="navigation" aria-label="Diagnostics">
-        <a href="#overview" data-view="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>Overview</a>
+        <a href="#home" data-view="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-7 9 7v11H3zM9 21v-7h6v7"/></svg>Overview</a>
         <a href="#activity" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-6 4 12 3-6h4"/></svg>Live activity</a>
+        <a href="#overview" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>Diagnostics</a>
         <a href="#requests" data-view="requests"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h10M4 19h16M18 9l3 3-3 3"/></svg>Requests</a>
         <a href="#providers" data-view="providers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 14h6v6h-6zM14 7h6M17 4v6M4 17h6M7 14v6M10 7h2v10h2"/></svg>Providers</a>
         <a href="#usage" data-view="usage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V4M4 20h17M9 16v-5M14 16V7M19 16v-9"/></svg>Usage</a>
@@ -48,15 +49,27 @@
 
     <div class="workspace">
       <header class="topbar">
-        <div class="page-heading"><h1 id="page-title">Overview</h1><p id="page-description">Follow requests, provider availability and background work.</p></div>
+        <div class="page-heading"><h1 id="page-title">Grunt overview</h1><p id="page-description" hidden></p></div>
         <div class="header-actions"><button class="button compact" type="button" id="refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5"/></svg><span>Refresh</span></button><button class="button compact" type="button" id="export"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 16v5h16v-5"/></svg><span>Export diagnostics</span></button></div>
       </header>
-      <div class="context-bar"><label for="instance-select">Installation <select id="instance-select"><option value="">All installations</option></select></label><p class="freshness" id="freshness">Waiting for a snapshot</p></div>
+      <div class="context-bar"><label for="instance-select" id="installation-label">Installation <select id="instance-select"><option value="">All installations</option></select></label><p class="freshness" id="freshness">Waiting for a snapshot</p></div>
       <div class="notice connection-notice" id="connection-notice" role="status" aria-live="polite" hidden></div>
       <p class="sr-only" id="announcement" role="status" aria-live="polite"></p>
 
       <main id="main-content" tabindex="-1">
-        <section class="view" id="view-overview" aria-labelledby="overview-heading">
+        <section class="view" id="view-home" aria-labelledby="home-work-title">
+          <section class="home-work" aria-labelledby="home-work-title">
+            <div class="section-heading"><h2 id="home-work-title">Current work</h2><a href="#activity">Live activity</a></div>
+            <div id="home-work"><p class="section-note">Connecting to Grunt…</p></div>
+          </section>
+          <section class="data-section home-sources" aria-labelledby="home-sources-title">
+            <div class="section-heading"><h2 id="home-sources-title">Sources</h2><a href="#providers">Source details</a></div>
+            <div id="home-source-list"><p class="section-note">Loading source usage…</p></div>
+            <p class="section-note home-usage-note" id="home-usage-note" hidden>Usage shows successful replies and reported input plus output tokens. Today starts at local midnight. This week starts on Monday.</p>
+          </section>
+        </section>
+
+        <section class="view" id="view-overview" aria-labelledby="overview-heading" hidden>
           <h2 class="sr-only" id="overview-heading">Overview</h2>
           <div id="overview-status" class="pool-status loading"><span class="status-light" aria-hidden="true"></span><div><h2>Waiting for diagnostic data</h2><p>The console will show actual installation and provider observations here.</p></div></div>
           <dl class="summary-strip" id="summary-strip"></dl>

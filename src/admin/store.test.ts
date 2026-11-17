@@ -222,3 +222,29 @@ it('stores only hashed session IDs and enforces session expiry/revocation and bo
   expect(JSON.stringify(await store.exportData())).not.toContain(session.email.toLowerCase());
   await expect(store.putSession('c'.repeat(64), { ...session, expiresAt: NaN })).rejects.toMatchObject({ code: 'invalid_admin_session' });
 });
+
+it('reports source usage by calendar period with incomplete token reporting and only successful user attempts', async () => {
+  const { store } = await fixture();
+  const day = 86400000, today = initial - day / 2, week = today - day;
+  const success = { source: 'zro', outcome: 'passed' as const };
+  await store.ingest(batch([
+    event('attempt.finish', { ...success, at: week - 1, inputTokens: 100 }),
+    event('attempt.finish', { ...success, at: week, inputTokens: 12, outputTokens: 6 }),
+    event('attempt.finish', { ...success, at: today }),
+    event('attempt.finish', { ...success, inputTokens: 9 }),
+    event('attempt.finish', { ...success, inputTokens: 0, outputTokens: 0, source: 'kilo' }),
+    event('attempt.finish', { ...success, source: 'beatapi' }),
+    event('attempt.finish', { ...success, outcome: 'failed', outputTokens: 3000 }),
+    event('attempt.finish', { ...success, kind: 'maintenance', outputTokens: 3000 }),
+    event('request.finish', { ...success, outputTokens: 9000 }),
+    event('transport.finish', { ...success, outputTokens: 9000 })
+  ]));
+  await store.ingest(batch([event('attempt.finish', { ...success, outputTokens: 20 })], { instanceId: 'other' }));
+  const report = await store.sourceUsage(today, week, 'chad');
+  expect(report.sources).toEqual([
+    { source: 'beatapi', lastReplyAt: initial, today: { replies: 1, tokens: null, completeReports: 0 }, week: { replies: 1, tokens: null, completeReports: 0 } },
+    { source: 'kilo', lastReplyAt: initial, today: { replies: 1, tokens: 0, completeReports: 1 }, week: { replies: 1, tokens: 0, completeReports: 1 } },
+    { source: 'zro', lastReplyAt: initial, today: { replies: 2, tokens: 9, completeReports: 0 }, week: { replies: 3, tokens: 27, completeReports: 1 } }
+  ]);
+  expect((await store.sourceUsage(today, week)).sources.at(-1)?.today).toEqual({ replies: 3, tokens: 29, completeReports: 0 });
+});

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-17
+
+### Added
+
+- Open the owner console on Grunt's current work and source status. Show successful replies and reported tokens per source for today and this week, with detailed diagnostics in separate views.
+
 ## [0.7.2] - 2026-11-17
 
 ### Added

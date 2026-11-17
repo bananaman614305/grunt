@@ -170,6 +170,19 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
   };
   app.get('/admin/api/overview', async c => c.json(await store.overview(instance(c))));
   app.get('/admin/api/providers', async c => c.json(await store.providers(instance(c))));
+  app.get('/admin/api/source-usage', async c => {
+    const day = 86400000, timestamp = now();
+    const todayParam = c.req.query('today'), weekParam = c.req.query('week');
+    if (!todayParam || !weekParam || !/^\d{1,16}$/.test(todayParam) || !/^\d{1,16}$/.test(weekParam)) {
+      return failure(c, 'invalid_usage_window', 400);
+    }
+    const today = Number(todayParam), week = Number(weekParam);
+    if (!Number.isSafeInteger(today) || !Number.isSafeInteger(week)
+      || week > today || week < timestamp - 8 * day || today < timestamp - 26 * 3600000 || today > timestamp + 300000) {
+      return failure(c, 'invalid_usage_window', 400);
+    }
+    return c.json(await store.sourceUsage(today, week, instance(c)));
+  });
   app.get('/admin/api/activity', c => {
     if (c.get('principal').kind !== 'owner') return failure(c, 'browser_session_required', 403);
     return c.json(activity.read(instance(c)));
