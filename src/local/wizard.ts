@@ -1,4 +1,3 @@
-import { text } from '@clack/prompts';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
@@ -8,24 +7,21 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { intro, outro, spinner, log, note, multiselect, isCancel } from '@clack/prompts';
-import chalk from 'chalk';
 import { setupFallbacks } from './fallback-setup.js';
-import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
-import { withTerminal, terminalBusy } from './terminal.js';
+import { parallelMap } from './parallel.js';
+import { withTerminal } from './terminal.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
-import type { Adapter } from '../registry.js';
 import { banner } from './banner.js';
-import { approveDataSharing, requiresDataSharing } from './data-sharing.js';
+import { approveDataSharing } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses } from './harnesses.js';
 import type { Harness, runHarness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
 import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
-import type { SetupDashboard } from './setup-dashboard.js';
 import { configRoot, gruntEnv } from '../brand.js';
+import { SetupTable } from './setup-table.js';
 import { serviceEnvironment } from './service-environment.js';
 
 export const configDir = (env = process.env) => configRoot(env);
@@ -38,11 +34,6 @@ export async function command(binary: string, args: string[], interactive = fals
     child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${binary} failed; inspect its service status before retrying`)));
   });
   await (interactive ? withTerminal(run) : run());
-}
-async function step<T>(label: string, task: () => Promise<T>, done: (result: T) => string = () => label): Promise<T> {
-  const progress = spinner(); progress.start(label);
-  try { const result = await task(); progress.stop(done(result)); return result; }
-  catch (error) { progress.error(`${label} failed`); throw error; }
 }
 export async function squireBrokerExists() {
   const service = process.platform === 'darwin'
@@ -111,7 +102,7 @@ export async function connectSquire(options: { hasBroker?: () => Promise<boolean
   const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
   const env = await squireBootstrapEnvironment(options.signal);
   options.signal?.throwIfAborted();
-  await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], true, options.signal, env);
+  await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], false, options.signal, env);
   await probe();
 }
 export async function preflight(run = command) {
@@ -353,83 +344,24 @@ export async function loadRegistry(options: { url?: string; fetcher?: typeof fet
     return { registry: registry.current, origin: (offline ? cached ? 'cache' : 'bundled' : 'remote') as RegistryOrigin };
   } finally { await registry.close(); }
 }
-const PREAMBLE = [
-  'usegrunt installs grunt, a small daemon that runs on this machine.',
-  'It pools the free AI inference quota offered by many services and serves',
-  'it as one agent at a local address. Your coding tools talk to grunt; grunt',
-  'sends each request to a free service that can answer it.',
-  '',
-  'Setup will:',
-  '  1. Pull the free service list and ask for grouped sharing approval',
-  '  2. Start grunt and connect your coding tools when a source answers',
-  '  3. Connect Trusty Squire when an account-based source needs it',
-  '  4. Continue remaining signups and browser confirmations alongside use'
-].join('\n');
-const SQUIRE_NOTICE = [
-  'Some free services only work with an account. Trusty Squire is a local',
-  'browser helper that signs up for them using their supported sign-in.',
-  'Most use Google; Runcrate’s card-free access needs GitHub sign-in.',
-  '',
-  'Account-based setup may open a browser for Google sign-in. An existing',
-  'Squire connection is reused. Anonymous sources can start first. A captcha',
-  'or email check pauses only its source while other setup jobs continue.'
-].join('\n');
-type Status = 'pass' | 'fail' | 'skip';
-const mark = (status: Status | undefined) => status === 'pass' ? chalk.green('✔') : status === 'fail' ? chalk.red('✘') : chalk.dim('–');
-const describe = (adapter: Adapter) => [adapter.kind === 'agent' ? 'coding agent' : 'model API', adapter.model ? `free model ${adapter.model}` : undefined,
-  adapter.signup ? `account at ${new URL(adapter.signup).host}` : 'no account needed until it asks'].filter(Boolean).join(' · ');
-// Service lines name their result, so show PASS and FAIL as success and error.
-const report = (shown = new Set<string>()) => (line: string) => {
-  if (shown.has(line)) return; shown.add(line);
-  if (/: PASS\b/.test(line)) log.success(line); else if (/: FAIL\b/.test(line)) log.error(line); else log.info(line);
-};
-// Only short UI writes enter this queue. Provider probes and coding-tool
-// configuration keep running while a browser confirmation owns stdin.
-const pendingUi = new Set<Promise<void>>();
-function queueUi(write: () => void) {
-  const task = withTerminal(async () => { write(); }).catch(() => {});
-  pendingUi.add(task);
-  void task.then(() => { pendingUi.delete(task); });
-}
-async function drainUi() {
-  while (pendingUi.size) await Promise.all([...pendingUi]);
-}
-type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness };
+type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness; table?: SetupTable };
 type HarnessPlan = (() => Promise<Harness[]>) & { discoverLater?: true };
 export async function prepareHarnesses(port: number, options: HarnessOptions = {}): Promise<HarnessPlan> {
-  queueUi(() => log.step('Connect grunt to your coding tools'));
   const found = await detectHarnesses(options.harnesses);
-  if (!found.length) {
-    queueUi(() => log.info('No supported coding tool is currently installed. Grunt will become usable through its local API.'));
-    return Object.assign(async () => [] as Harness[], { discoverLater: true as const });
-  }
-  queueUi(() => log.info(`Found: ${found.map(h => h.name).join(', ')}. grunt is added as an extra, named option; your default model and provider stay as they are.`));
-  const interactive = process.stdin.isTTY && process.stdout.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1';
-  const choose = options.choose ?? (async (list: Harness[]) => {
-    if (!interactive) return list.filter(h => h.id === 'pi');
-    const picked = await multiselect({ message: 'Connect grunt to which tools? (space toggles, enter confirms)', required: false,
-      options: list.map(h => ({ value: h.id, label: h.name, hint: h.launch(port) })), initialValues: list.filter(h => h.id === 'pi').map(h => h.id) });
-    return isCancel(picked) ? [] : list.filter(h => picked.includes(h.id));
-  });
-  // Choose once before provider jobs can request browser confirmations. Applying
-  // the saved choices later never reads stdin or waits for a Squire prompt.
-  const selected = await withTerminal(() => choose(found));
+  if (!found.length) return Object.assign(async () => [] as Harness[], { discoverLater: true as const });
+  const table = options.table ?? new SetupTable();
+  for (const harness of found) table.set('tool', harness.name, 'connecting');
   return async () => {
     const connected: Harness[] = [];
-    for (const harness of selected) {
-      queueUi(() => log.step(`${harness.name}: adding grunt and sending a test request through it`));
+    for (const harness of found) {
       try {
-        const { change } = await connectHarness(harness, port, options.run);
-        queueUi(() => {
-          log.success(`${harness.name}: PASS — answered through grunt`);
-          if (change?.backup) log.info(`${harness.name}: previous config saved as ${change.backup}`);
-        });
+        await connectHarness(harness, port, options.run);
+        table.set('tool', harness.name, '✓ connected');
         connected.push(harness);
-      } catch (error) {
-        queueUi(() => log.error(`${harness.name}: FAIL — ${error instanceof Error ? error.message : String(error)}`));
+      } catch {
+        table.set('tool', harness.name, '✗ connection failed');
       }
     }
-    if (connected.length) queueUi(() => note(connected.map(h => `${chalk.bold(h.name)}\n  ${h.launch(port)}`).join('\n'), 'Start coding with grunt'));
     return connected;
   };
 }
@@ -439,228 +371,112 @@ export async function connectHarnesses(port: number, options: HarnessOptions = {
 const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing, startDashboard: startSetupDashboard, watchDashboard: watchSetupDashboard };
 type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing' | 'startDashboard' | 'watchDashboard';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
-  if (add === '') {
-    const answer = await text({ message: 'Provider name or base URL' });
-    if (isCancel(answer)) throw new Error('Provider setup cancelled');
-    add = answer.trim();
-    if (!add) throw new Error('Enter a provider name or base URL');
-  }
+  if (add === '') throw new Error('Specify a provider name or base URL');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
   if (add && !providerURL(add) && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}, or paste an OpenAI-compatible base URL`);
+  const table = new SetupTable();
   const squire = actions.createSquire?.();
   let session: Awaited<ReturnType<typeof beginSetupSession>> | undefined;
   let connection: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
-  let abortSetup: (() => void) | undefined;
-  let dashboard: SetupDashboard | undefined;
-  let watchPort: number | undefined;
-  let stopVerificationStatus: (() => void) | undefined;
-  let verificationStatus: Promise<unknown> = Promise.resolve();
-  const queuedReports: string[] = [];
-  const showReport = report();
-  const notify = (line: string) => {
-    // Redraws and background progress must never overwrite a foreground
-    // confirmation. Preserve routine messages for the final normal screen.
-    if (dashboard || terminalBusy()) { if (queuedReports.length < 512) queuedReports.push(line); }
-    else showReport(line);
-  };
-  const stopDashboard = async () => {
-    const display = dashboard; dashboard = undefined;
-    await display?.stop().catch(() => {});
-    const lines = queuedReports.splice(0);
-    if (lines.length) queueUi(() => { for (const line of lines) showReport(line); });
-  };
   const closeSquire = () => closing ??= (async () => { await squire?.close(); })();
-  const connect = () => connection ??= (async () => {
-    // A long-running spinner would compete with the live source dashboard.
-    notify('Connecting Trusty Squire');
-    await actions.connectSquire({ ...(squire ? { squire } : {}), ...(session ? { signal: session.signal } : {}) });
-  })();
+  const abortSetup = () => { void closeSquire().catch(() => {}); };
+  const connect = () => connection ??= actions.connectSquire({ ...(squire ? { squire } : {}), ...(session ? { signal: session.signal } : {}) });
+  // Provider details belong in diagnostics, never in the setup terminal.
+  const notify = (_line: string) => {};
   try {
     await actions.banner?.();
-    intro(chalk.hex('#f4b41a').bold('grunt') + chalk.dim(' — npx usegrunt setup'));
-    note(PREAMBLE, 'What grunt does');
-    await step('Checking prerequisites', () => actions.preflight());
-    note(SQUIRE_NOTICE, 'Google sign-in for Trusty Squire');
-    // Capture legacy API routing before default Kilo setup creates its admin file.
+    await actions.preflight();
     const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
+    const { registry } = !add && actions.loadRegistry ? await actions.loadRegistry() : { registry: bundledRegistry };
+    const ids = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
+    const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
+    const sources = add ? knownAdapters.has(add) || add === 'nvidia'
+      ? [...new Set([...(previous.length ? previous : defaults), add])]
+      : [...new Set(['freellmapi', ...previous, ...defaults])] : ids;
+    const consent = await approveDataSharing({ directory: configDir(), providers: sources });
+    squire?.approveDataSharing?.(consent.approved);
+    for (const id of ids) table.set('source', id, 'connecting');
+    const port = await setupPort();
     if (add) {
       await connect();
-      const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
-      const sources = ['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'].includes(add)
-        ? [...new Set([...(previous.length ? previous : defaults), add])]
-        : [...new Set(['freellmapi', ...previous, ...defaults])];
-      const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });
-      if (consent.skipped.includes(add)) {
-        // A declined addition still needs to replace a previously installed
-        // runtime that predates consent enforcement. Keep only prior choices.
-        await step('Updating the grunt background service', () => actions.installService(previous));
-        await step('Waiting for grunt to answer', async () => actions.checkService(await setupPort()));
-        outro(`${add} skipped; data sharing was not approved`);
-        return;
-      }
-      squire?.approveDataSharing?.(consent.approved);
-      const consentOptions = consent.approved.length ? { dataSharingApproved: consent.approved } : {};
-      await step('Connecting free provider access', () => actions.setup(line => log.info(line), [add], { ...(squire ? { squire } : {}), ...consentOptions }));
-      // Explicit additions must survive the saved source list from an older
-      // install. Keep its routing choices rather than enabling every adapter.
-      const approved = new Set(consent.approved);
-      const enabled = sources.filter(id => !requiresDataSharing(id) || approved.has(id));
-      await step('Starting the grunt background service', () => actions.installService(enabled));
-      await step('Waiting for grunt to answer', async () => actions.checkService(await setupPort()));
-      outro(`${add} connected`); return;
-    }
-    const pulled = actions.loadRegistry ? await step('Pulling the free service list from the registry', () => actions.loadRegistry!()) : { registry: bundledRegistry, origin: 'bundled' as RegistryOrigin };
-    const { registry } = pulled;
-    const published = registry.published.slice(0, 10);
-    if (pulled.origin === 'remote') log.info(`Registry: ${registry.adapters.length} free services, published ${published}`);
-    else log.warn(`Registry unreachable; using the ${pulled.origin === 'cache' ? 'list saved by an earlier setup' : 'list bundled with this version'} (published ${published})`);
-    const adapters = registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id));
-    log.message(registry.adapters.map(adapter => knownAdapters.has(adapter.id)
-      ? `${chalk.bold(adapter.id.padEnd(10))} ${chalk.dim(disabledAdapters.has(adapter.id) ? 'disabled pending integration review' : describe(adapter))}`
-      : `${chalk.dim(adapter.id.padEnd(10))} ${chalk.dim('skipped: needs a newer usegrunt')}`).join('\n'));
-    const requested = adapters.map(adapter => adapter.id);
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: requested });
-    squire?.approveDataSharing?.(consent.approved);
-    const ids = requested.filter(id => !consent.skipped.includes(id));
-    const results = new Map<string, { signup?: Status; daemon?: Status; check?: Status }>(requested.map(id => [id, consent.skipped.includes(id) ? { signup: 'skip', daemon: 'skip', check: 'skip' } : {}]));
-    const unavailable: string[] = [];
-    if (consent.skipped.length) log.info(`Skipped data-sharing services: ${consent.skipped.join(', ')}. Other free services continue.`);
-    if (!ids.length) {
-      // Upgrade older runtimes even after a declined batch: otherwise their
-      // existing provider sessions could keep routing without consent guards.
-      // Honor registry removals, while retaining a user's custom API routing.
-      const retained = previous.filter(id => id === 'freellmapi' || requested.includes(id));
-      await step('Updating the grunt background service', () => actions.installService(retained.length ? retained : requested));
-      await step('Waiting for grunt to answer', async () => actions.checkService(await setupPort()));
-      outro('No approved free services are available; the background service now enforces your data-sharing choices');
+      try {
+        await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved });
+        await actions.installService(sources);
+        await actions.checkService(port);
+        const unavailable: string[] = [];
+        await actions.checkFallbackServices(unavailable, port, notify, [add]);
+        table.set('source', add, unavailable.includes(add) ? 'skipped (key test failed)' : '✓ ready');
+      } catch (error) { table.set('source', add, 'skipped (setup failed)'); throw error; }
+      console.log('Ready');
       return;
     }
-
-    const port = await setupPort();
-    const harnessPlan = actions.prepareHarnesses ? await actions.prepareHarnesses(port) : undefined;
-    if (harnessPlan?.discoverLater) log.info('Setup will check again for coding tools after provider installations finish.');
-    const applyHarnesses = harnessPlan ?? (async () => {
-      if (actions.connectHarnesses) await actions.connectHarnesses(port);
-      else if (actions.configurePi) {
-        queueUi(() => log.step('Pi provider'));
-        await actions.configurePi(port);
-        queueUi(() => log.success('Pi provider configured'));
-      }
+    const plan = await actions.prepareHarnesses?.(port, { table });
+    const applyHarnesses = plan ?? (async () => {
+      if (actions.connectHarnesses) await actions.connectHarnesses(port, { table });
+      else await actions.configurePi?.(port);
     });
     session = await beginSetupSession(configDir(), ids);
-    const activeSession = session;
-    stopVerificationStatus = squire?.onVerificationChange?.(services => {
-      const selected = services.filter(id => ids.includes(id));
-      verificationStatus = verificationStatus.then(() => activeSession.setApprovals?.(selected)).catch(() => {
-        // Lease writes enforce ownership independently; never echo exception
-        // payloads or interfere with the human's confirmation terminal.
-      });
-    });
-    abortSetup = () => { void closeSquire().catch(() => {}); };
     session.signal.addEventListener('abort', abortSetup, { once: true });
     session.signal.throwIfAborted();
-    await step('Starting the grunt background service', () => actions.installService([...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])], { signal: session!.signal }));
-    await step(`Waiting for grunt to answer at http://127.0.0.1:${port}`, () => actions.checkService(port));
-
-    // Keep at most three real verification requests in flight without holding a
-    // provider-install worker. A queued check receives the released slot directly.
+    await actions.installService([...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])], { signal: session.signal });
+    await actions.checkService(port);
+    const unavailable: string[] = [];
     let activeChecks = 0;
     const queuedChecks: (() => void)[] = [];
-    const check = async <T>(task: () => Promise<T>) => {
+    const check = async (task: () => Promise<void>) => {
       if (activeChecks < 3) activeChecks++;
       else await new Promise<void>(resolve => queuedChecks.push(resolve));
-      try { return await task(); }
+      try { await task(); }
       finally { const next = queuedChecks.shift(); if (next) next(); else activeChecks--; }
     };
     const settled = new Map<string, Promise<void>>();
-    let firstReady: Promise<void> | undefined;
+    let firstReady: Promise<unknown> | undefined;
     let readyCount = 0;
-    const firstAnswer = () => firstReady ??= (async () => {
-      queueUi(() => {
-        log.success(`grunt is ready at http://127.0.0.1:${port}; a free provider answered`);
-        log.info('Start using grunt now. Keep this setup terminal open for remaining signups and browser confirmations; working requests do not wait for them.');
-      });
-      try { await applyHarnesses(); }
-      catch { queueUi(() => log.warn('grunt is ready; coding-tool configuration needs attention. Rerun setup to finish connecting your tool.')); }
-      queueUi(() => log.info(`Source dashboard: npx usegrunt status --watch --port ${port}`));
-      try {
-        dashboard = actions.startDashboard?.({ port, signal: session!.signal, approvals: () => squire?.pendingVerificationServices() ?? [] });
-      } catch { queueUi(() => log.info('Live source view unavailable; setup continues. Reopen it with the status command above.')); }
-    })();
     const onSettled = (id: string, available: boolean): Promise<void> => {
       if (!ids.includes(id)) return Promise.reject(new Error('Unexpected provider setup result'));
-      const previousResult = settled.get(id);
-      if (previousResult) return previousResult;
+      const existing = settled.get(id);
+      if (existing) return existing;
       const task = (async () => {
-        const result = results.get(id)!;
-        result.signup = available ? 'pass' : 'fail';
-        if (!available) {
-          if (!unavailable.includes(id)) unavailable.push(id);
-          result.daemon = result.check = 'skip';
-          notify(`${id}: FAIL — setup incomplete`);
-          return;
-        }
-        const passed = await check(async () => {
+        let passed = false;
+        if (available) {
           try {
-            session!.signal.throwIfAborted();
-            await session!.verify(id);
-            if (actions.checkServiceSources) await actions.checkServiceSources(unavailable, notify, [id]);
-            result.daemon = unavailable.includes(id) ? 'fail' : 'pass';
-            if (result.daemon === 'fail') { result.check = 'skip'; await session!.hold(id); return false; }
-            await actions.checkFallbackServices(unavailable, port, notify, [id], { limit: 180000, interval: 2000, signal: session!.signal, retryPreparing: false });
-            session!.signal.throwIfAborted();
-            result.check = unavailable.includes(id) ? 'fail' : 'pass';
-            if (result.check === 'pass') await session!.release(id);
-            else await session!.hold(id);
-            session!.signal.throwIfAborted();
-            return result.check === 'pass';
-          } catch {
-            await session!.hold(id).catch(() => {});
-            if (!unavailable.includes(id)) unavailable.push(id);
-            result.check = 'fail';
-            result.daemon ??= 'fail';
-            notify(`${id}: FAIL — verification incomplete; other ready sources continue`);
-            return false;
-          }
-        });
-        if (passed) { readyCount++; await firstAnswer(); }
+            await check(async () => {
+              session!.signal.throwIfAborted();
+              await session!.verify(id);
+              await actions.checkServiceSources?.(unavailable, notify, [id]);
+              if (!unavailable.includes(id)) await actions.checkFallbackServices(unavailable, port, notify, [id], { limit: 180000, interval: 2000, signal: session!.signal, retryPreparing: false });
+              session!.signal.throwIfAborted();
+              passed = !unavailable.includes(id);
+            });
+          } catch { passed = false; }
+        }
+        if (passed) {
+          await session!.release(id);
+          readyCount++;
+          table.set('source', id, '✓ ready');
+          firstReady ??= applyHarnesses();
+          await firstReady;
+        } else {
+          if (!unavailable.includes(id)) unavailable.push(id);
+          await session!.hold(id);
+          table.set('source', id, available ? 'skipped (key test failed)' : 'skipped (setup failed)');
+        }
       })();
       settled.set(id, task);
       return task;
     };
-    log.step(`Installing and connecting ${ids.length} vetted free services (up to ${SETUP_CONCURRENCY} at once)`);
-    log.info('Trusty Squire reuses existing accounts and grants. Only free access is requested. Sources become usable independently; verification prompts are queued.');
     const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify, onSettled, connect,
-      signal: session.signal, ...(consent.approved.length ? { dataSharingApproved: consent.approved } : {}), ...(squire ? { squire } : {}) });
-    // Compatibility for injected setup implementations that return only a final
-    // result. Production emits settlement events as soon as each source finishes.
+      signal: session.signal, dataSharingApproved: consent.approved, ...(squire ? { squire } : {}) });
     await parallelMap(ids, id => onSettled(id, !outcome.unavailable.includes(id)));
     await Promise.all(settled.values());
     session.signal.throwIfAborted();
-    await stopDashboard();
-    await drainUi();
-    await withTerminal(async () => note([`${'service'.padEnd(10)}  sign-in  daemon  test`, ...requested.map(id => {
-      const r = results.get(id)!;
-      return `${id.padEnd(10)}  ${mark(r.signup)}        ${mark(r.daemon)}       ${mark(r.check)}`;
-    })].join('\n'), 'Free services'));
-
     if (!readyCount) throw new Error('No adapters passed verification. Run usegrunt setup to resume.');
-    // OpenCode may have been installed by its provider job. Only rediscover
-    // when no tool existed initially, never after the user selected none.
-    if (harnessPlan?.discoverLater && actions.connectHarnesses) await actions.connectHarnesses(port);
-    await drainUi();
-    await withTerminal(async () => outro(unavailable.length ? `grunt is ready; incomplete fallbacks: ${unavailable.join(', ')}. Rerun setup to finish them.` : 'grunt is ready'));
-    watchPort = port;
+    if (plan?.discoverLater && actions.connectHarnesses) await actions.connectHarnesses(port, { table });
+    console.log('Ready');
   } finally {
-    await stopDashboard();
-    stopVerificationStatus?.();
-    await verificationStatus;
-    if (session && abortSetup) session.signal.removeEventListener('abort', abortSetup);
+    session?.signal.removeEventListener('abort', abortSetup);
     try { await closeSquire(); }
-    finally { await session?.close(); await stopDashboard(); await drainUi(); }
+    finally { await session?.close(); }
   }
-  // Only the standalone view reads keys, after all signups, browser clients,
-  // and the setup lease have been released. Noninteractive setup still exits.
-  if (watchPort !== undefined) await actions.watchDashboard?.(watchPort);
 }

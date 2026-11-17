@@ -274,14 +274,12 @@ it.each(['https://example.test/api/v1', 'http://localhost:1234/v1', 'http://127.
 it.each(['http://example.test/v1', 'https://user:pass@example.test', 'https://example.test/v1?token=secret', 'https://example.test/#x'])('rejects unsafe URL %s', value => {
   expect(() => providerURL(value)).toThrow();
 });
-it.each(['https://example.test/api/v1', 'https://my-company-production-resource.openai.azure.com/openai/v1', 'http://[::1]:1234/v1'])('vaults and replaces the same URL: %s', async base => {
+it.each(['https://example.test/api/v1', 'https://my-company-production-resource.openai.azure.com/openai/v1', 'http://[::1]:1234/v1'])('reuses saved access and replaces the same URL without prompts: %s', async base => {
   const records: { id: number; platform: string; label: string; baseUrl: string; models: { modelId: string }[] }[] = [];
   let next = 0;
   const squire = new BrowserSquire();
-  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
-    if (name === 'store_credential') { credentialLabelSchema.parse(args.label); return { reference: 'vault://example' }; }
-    return { base_url: 'https://egress.test/grant', token: 'synthetic-grant' };
-  });
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([{ service: new URL(base).host, reference: 'vault://example', field_names: ['api_key'] }]);
+  const call = vi.spyOn(squire, 'call').mockResolvedValue({ base_url: 'https://egress.test/grant', token: 'synthetic-grant' });
   const router = new FreeLLMAdmin();
   const admin = vi.spyOn(router, 'call').mockImplementation(async (path, body, method) => {
     if (path.endsWith('discover-models')) return { models: [{ id: 'unlisted-model' }] };
@@ -295,16 +293,19 @@ it.each(['https://example.test/api/v1', 'https://my-company-production-resource.
   await setupURL(squire, router, base, () => {});
   expect(records).toHaveLength(1);
   expect(records[0]).toMatchObject({ baseUrl: 'https://egress.test/grant' + new URL(base).pathname, label: `Grunt ${providerLabel(base)} (Squire)`, models: [{ modelId: 'unlisted-model' }] });
-  expect(call).toHaveBeenCalledWith('store_credential', { service: new URL(base).host, label: providerLabel(base), value: 'synthetic-provider-key', auth_shape: 'bearer', api_hosts: [new URL(base).host] });
+  expect(call).not.toHaveBeenCalledWith('store_credential', expect.anything());
   expect(await router.hasKey(base)).toBe(true);
   await router.configureChain();
   expect(admin).toHaveBeenCalledWith('/fallback', [{ modelDbId: 2, enabled: true, priority: 0 }], 'PUT');
 });
-it('cancels before reading or sending a key when the host is not confirmed', async () => {
+it('skips a URL without saved access instead of asking for a key or confirmation', async () => {
   const { confirm, password } = await import('@clack/prompts');
-  vi.mocked(confirm).mockResolvedValueOnce(false);
+  vi.mocked(confirm).mockClear();
   vi.mocked(password).mockClear();
-  await expect(setupURL(new BrowserSquire(), new FreeLLMAdmin(), 'https://example.test/v1', () => {})).rejects.toThrow('cancelled');
+  const squire = new BrowserSquire();
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  await expect(setupURL(squire, new FreeLLMAdmin(), 'https://example.test/v1', () => {})).rejects.toThrow('No saved API access');
+  expect(confirm).not.toHaveBeenCalled();
   expect(password).not.toHaveBeenCalled();
   expect(squireCall).not.toHaveBeenCalled();
 });

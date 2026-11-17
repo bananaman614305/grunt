@@ -106,7 +106,7 @@ it('keeps grouped approvals on the shared Squire client while another provider s
   await setup(() => {}, ['zro'], { squire, directory: path });
   await squire.runs.start({ service: 'tokenharbor', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' });
   const goals = call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => String(args.goal));
-  expect(goals.at(-1)).toContain('The user approved data sharing for this provider');
+  expect(goals.at(-1)).toContain('Grunt setup enables this free source by default');
 });
 
 it('fails closed for Token Harbor without data sharing approval, including existing grants and direct requests', async () => {
@@ -161,5 +161,5 @@ it('passes grouped sharing approval to custom Freebuff and OpenCode browser goal
   for (const provider of ['freebuff', 'opencode']) await squire.signup(provider, `https://${provider}.test/login`, 'Complete this free CLI login.');
   const goals = call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => String(args.goal));
   expect(goals).toHaveLength(2);
-  for (const goal of goals) expect(goal).toContain('The user approved data sharing for this provider');
+  for (const goal of goals) expect(goal).toContain('Grunt setup enables this free source by default');
 });

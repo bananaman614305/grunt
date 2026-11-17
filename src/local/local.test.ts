@@ -387,7 +387,7 @@ it('starts setup from the usegrunt bin without arguments', async () => {
       execFile(process.execPath, ['--import', 'tsx', bin], { env: { ...process.env, PATH: directory, GRUNT_DAEMON: '' }, timeout: 5000 }, (error, stdout, stderr) => resolve({ output: stdout + stderr, code: error?.code }));
     });
     expect(result.code).toBe(1);
-    expect(result.output).toContain('pools the free AI inference quota');
+    expect(result.output).toContain('grunt — free AI inference, pooled on your machine');
     expect(result.output).toContain('Install tar using your system package manager.');
     expect(result.output).not.toContain('grunt model API:');
   } finally { await rm(directory, { recursive: true, force: true }); }
