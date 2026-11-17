@@ -30,5 +30,7 @@ jobs:
         run: |
           flyctl auth docker
           docker push "$IMAGE"
+      - name: Sync the latest app secrets
+        run: flyctl secrets sync --app milo-gateway --stage
       - name: Deploy the tested image
         run: flyctl deploy --app milo-gateway --ha=false --image "$IMAGE"

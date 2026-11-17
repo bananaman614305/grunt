@@ -150,10 +150,10 @@ and the private metadata API run on the existing Fly backend, normally at
 `https://api.grunt.run`. This is an operator feature for explicitly enrolled
 installations, initially Chad, rather than telemetry enabled by ordinary setup.
 
-Public deployment and live Google-login verification are pending. Initial
-discovery found `api.grunt.run` unconfigured in DNS and the available Cloudflare
-credential expired. The dedicated Google client and confirmed complete owner
-addresses must be provisioned before access is enabled. Offline and mocked
+As of 2026-11-17, the website and backend are deployed and the Chad collector is
+active. The custom API DNS record and first real Google sign-in remain pending.
+Only explicitly confirmed owner addresses are enabled; additional owners remain
+disabled until their complete addresses are confirmed. Offline and mocked
 authentication tests do not establish a working production sign-in. Follow the
 [deployment runbook](admin-deployment.md) for prerequisites and acceptance checks.
 
