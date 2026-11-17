@@ -209,19 +209,6 @@ it('recovers an interrupted router installation using the supplied local admin c
   expect(unrelated).toHaveBeenCalledTimes(1);
 });
 
-it.each(['captcha', 'email confirmation'])('shares %s and resumes signup in the same browser session', async field => {
-  const squire = new BrowserSquire();
-  const call = vi.spyOn(squire, 'call').mockResolvedValueOnce({ status: 'needs_value', field, session_id: 'signup', remaining: `Complete ${field}` })
-    .mockResolvedValue({ status: 'complete', session_id: 'signup' });
-  const handoff = vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.example.test');
-  const output = vi.spyOn(console, 'log').mockImplementation(() => {});
-  expect(await squire.runs.start({ service: 'groq', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' })).toMatchObject({ run: { state: 'running' } });
-  expect(handoff).toHaveBeenCalledWith('signup');
-  expect(await squire.runs.get('groq')).toMatchObject({ state: 'completed' });
-  expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'signup' }));
-  expect(output).toHaveBeenCalledWith(expect.stringContaining('https://handoff.example.test'));
-});
-
 it('registers the provider API path beneath a Squire egress root and rejects legacy bare-root entries', async () => {
   const admin = new FreeLLMAdmin();
   const call = vi.spyOn(admin, 'call').mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Grunt groq (Squire)', baseUrl: 'https://egress.test/g_123' }]);
@@ -230,21 +217,6 @@ it('registers the provider API path beneath a Squire egress root and rejects leg
   expect(call).toHaveBeenCalledWith('/keys/custom', expect.objectContaining({ baseUrl: 'https://egress.test/g_123/openai/v1', apiKey: 'synthetic-grant', models: [{ model: 'openai/gpt-oss-120b', supportsTools: true }] }));
   call.mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Grunt groq (Squire)', baseUrl: 'https://egress.test/g_123/openai/v1', models: [{ modelId: 'openai/gpt-oss-120b' }] }]);
   expect(await admin.hasKey('groq')).toBe(true);
-});
-
-it.each(['freebuff', 'opencode'])('shares %s human verification and resumes the same signup session', async service => {
-  const squire = new BrowserSquire();
-  const handoff = vi.spyOn(squire, 'humanHandoff').mockResolvedValue('https://handoff.test/verify');
-  const call = vi.spyOn(squire, 'call')
-    .mockResolvedValueOnce({ status: 'needs_value', session_id: 'signup-session', field: 'verification_code', remaining: 'Email verification needs a human' })
-    .mockResolvedValueOnce({ status: 'complete', session_id: 'signup-session' })
-    .mockResolvedValue({});
-  await squire.signup(service, `https://${service}.test/login`, 'Sign in to the free plan');
-  expect(handoff).toHaveBeenCalledWith('signup-session');
-  expect(call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => args)).toEqual([
-    expect.objectContaining({ url: `https://${service}.test/login` }),
-    expect.objectContaining({ session_id: 'signup-session' })
-  ]);
 });
 
 
@@ -343,24 +315,6 @@ it('refreshes a legacy Kilo grant missing Particle and reuses complete saved pro
   await setupProviders(squire, { addGrant, hasKey: async () => true }, { providers: [], notify: vi.fn(), dataSharingApproved: ['kilo'] });
   expect(addGrant).not.toHaveBeenCalled();
   expect(squire.credentials.grant).not.toHaveBeenCalled();
-});
-
-it('batches concurrent provider handoffs and resumes each correct browser session', async () => {
-  const { confirm } = await import('@clack/prompts');
-  vi.mocked(confirm).mockClear();
-  const squire = new BrowserSquire();
-  vi.spyOn(squire, 'humanHandoff').mockImplementation(async session => `https://handoff.test/${session}`);
-  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
-    if (name === 'operate_finish') return {};
-    if (name !== 'operate_drive') throw new Error('unexpected');
-    if (args.url) return { status: 'needs_value', session_id: new URL(String(args.url)).hostname, field: 'verification_code', remaining: 'Email verification needs a human' };
-    return { status: 'complete', session_id: args.session_id };
-  });
-  await Promise.all(['kilo', 'opencode'].map(service => squire.signup(service, `https://${service}.test/login`, 'Sign in to the free plan')));
-  expect(confirm).toHaveBeenCalledOnce();
-  const resumed = call.mock.calls.filter(([name, args]) => name === 'operate_drive' && args.session_id).map(([, args]) => args.session_id);
-  expect(resumed.sort()).toEqual(['kilo.test', 'opencode.test']);
-  expect(call.mock.calls.filter(([name]) => name === 'operate_finish').map(([, args]) => args.session_id).sort()).toEqual(['kilo.test', 'opencode.test']);
 });
 
 function legacyParticleRouter(options: { failed?: boolean; missing?: boolean; customParticle?: boolean; managedParticle?: boolean } = {}) {

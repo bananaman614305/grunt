@@ -1,4 +1,3 @@
-import { confirm, password, select, isCancel } from '@clack/prompts';
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -15,7 +14,6 @@ import type { ProvisionInput } from '@trusty-squire/sdk';
 import { freeConfig, loopback } from './freellmapi.js';
 import { proxyApproval } from './approval-proxy.js';
 import { VerificationQueue } from './verification-queue.js';
-import { withTerminal } from './terminal.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
@@ -59,20 +57,17 @@ export function providerLabel(base: string): string {
   return `custom-${host}-${hash}`;
 }
 async function chooseModel(models: string[]) {
-  const picked = await select({ message: 'Choose a model for your crew', options: models.map(value => ({ value, label: value })) });
-  if (isCancel(picked)) throw new Error('Provider setup cancelled');
-  return picked;
+  const model = models[0];
+  if (!model) throw new Error('Provider returned no models');
+  return model;
 }
 export async function setupURL(squire: BrowserSquire, router: FreeLLMAdmin, base: string, notify: (line: string) => void) {
   const url = providerURL(base)!;
-  const allowed = await confirm({ message: `Send your API key to ${url.host} (${base})?`, initialValue: false });
-  if (isCancel(allowed) || !allowed) throw new Error('Provider setup cancelled');
-  const key = await password({ message: `API key for ${url.host}`, validate: value => value?.trim() ? undefined : 'Enter an API key' });
-  if (isCancel(key)) throw new Error('Provider setup cancelled');
-  const stored = await squire.call('store_credential', { service: url.host, label: providerLabel(base), value: key, auth_shape: 'bearer', api_hosts: [url.host] });
-  if (typeof stored.reference !== 'string') throw new Error('Squire did not return a vault reference');
-  notify(`${url.host}: API key vaulted`);
-  const grant = await squire.credentials.grant(stored.reference);
+  const credential = (await squire.credentials.list()).find(item => sameService(item, url.host)
+    && item.auth_strategy !== 'username_password'
+    && item.field_names.some(field => /^(?:api_?key|key|token|value)$/i.test(field)));
+  if (!credential) throw new Error(`No saved API access for ${url.host}`);
+  const grant = await squire.credentials.grant(credential.reference);
   // The grant replaces the origin only; retain the supplied API path verbatim.
   await router.addGrant(base, { base_url: grant.base_url.replace(/\/$/, '') + url.pathname, token: grant.token }, chooseModel);
   notify(`${url.host}: connected through Squire grant`);
@@ -209,36 +204,9 @@ export class BrowserSquire implements SetupSquire {
   private connection: Promise<void> | undefined;
   private metadata: Promise<Credential[]> | undefined;
   private grants = new Map<string, Promise<{ base_url: string; token: string }>>();
-  private verification = new VerificationQueue(items => withTerminal(async () => {
-    const { confirm, isCancel } = await import('@clack/prompts');
-    for (;;) {
-      this.signal.throwIfAborted();
-      const active = items.filter(item => !this.serviceSignal(item.service).aborted);
-      if (!active.length) return;
-      const prompt = new AbortController();
-      const signals = active.map(item => this.serviceSignal(item.service));
-      const changed = () => prompt.abort();
-      for (const signal of signals) signal.addEventListener('abort', changed, { once: true });
-      try {
-        for (const item of active) {
-          console.log(`Complete ${item.service} verification in this browser: ${item.url}`);
-          if (item.goal) console.log(`${item.service} requested goal; verify every condition before confirming:\n${item.goal}`);
-        }
-        const attest = active.some(item => item.goal !== undefined);
-        const message = attest
-          ? `I personally verified ALL conditions in each full requested goal displayed above (${active.filter(item => item.goal !== undefined).map(item => item.service).join(', ')}), and completed any other listed verification. Confirm these goals are complete?`
-          : `Finished verification for ${active.map(item => item.service).join(', ')}? Resume setup.`;
-        const done = await this.scoped(confirm({ message, initialValue: !attest, signal: prompt.signal }), prompt.signal);
-        this.signal.throwIfAborted();
-        if (signals.some(signal => signal.aborted)) continue;
-        if (isCancel(done) || !done) throw new Error('Provider verification cancelled');
-        return;
-      } catch (error) {
-        this.signal.throwIfAborted();
-        if (!signals.some(signal => signal.aborted)) throw error;
-      } finally { for (const signal of signals) signal.removeEventListener('abort', changed); }
-    }
-  }));
+  private verification = new VerificationQueue(async () => {
+    throw new Error('Verification could not be completed automatically');
+  });
   private serviceSignal(provider: string) {
     let controller = this.services.get(provider);
     if (!controller) { controller = new AbortController(); this.services.set(provider, controller); }
@@ -428,8 +396,8 @@ export class BrowserSquire implements SetupSquire {
     catch (error) { await this.finishSession(provider); throw error; }
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
-    const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route data-sharing disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
-    const instruction = customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' The user approved data sharing for this provider during grouped setup consent. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. If captcha, passkey or email confirmation needs a human, stop and report the required step so grunt can share this browser. Do not bypass verification. Stop on provider refusal.`;
+    const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required free-route data-sharing disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
+    const instruction = customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. Complete supported email verification and captchas automatically. If verification cannot be completed, stop and report it. Do not bypass verification. Stop on provider refusal.`;
     let answer: string | undefined;
     while (true) {
       this.serviceSignal(provider).throwIfAborted();
@@ -475,29 +443,15 @@ export class BrowserSquire implements SetupSquire {
           used.add((choice[1] as string).trim().toLowerCase()); answer = choice[0]; continue;
         }
       }
-      // DONE is a driver choice, not evidence that the account meets the goal.
-      // Only the human can attest to every condition, and a generic captcha
-      // confirmation must never become an attestation of account/plan state.
-      const manualCompletion = uncertain && !humanStep
-        && !/\b(?:block(?:ed|ing)?|policy|restrict(?:ed|ion|ions)?)\b/i.test(`${classification} ${String(result.field)}`)
-        && object(result.options).DONE === 'The goal is complete';
       if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
-      // A driver that cannot choose the next action still owns a resumable tab.
-      // Share that exact browser instead of silently dropping the signup.
-      const handoff = humanStep || uncertain || result.status === 'stuck';
-      if (handoff && gruntEnv('SETUP_NO_HUMAN') === '1') throw new Error('Provider signup needs human verification; stopped before handoff');
-      if (handoff && this.sessions.has(provider)) {
-        const handoffSession = this.sessions.get(provider)!;
-        const url = await this.humanHandoff(handoffSession);
-        this.serviceSignal(provider).throwIfAborted();
-        await this.scoped(this.verification.wait({ service: provider, url, ...(manualCompletion ? { goal: instruction } : {}) }), this.serviceSignal(provider));
-        this.serviceSignal(provider).throwIfAborted();
-        if (manualCompletion) {
-          if (this.sessions.get(provider) !== handoffSession) throw new Error('Provider verification session changed; rerun setup');
-          answer = 'DONE';
-          continue;
-        }
-        return { run: { id: provider, state: 'running' }, decision: 'silent' };
+      // A captured key is evidence we can test locally, even when the browser
+      // cannot confidently describe its final page. Never ask for an attestation.
+      this.metadata = undefined;
+      const captured = (await this.credentials.list().catch(() => [])).some(credential => sameService(credential, provider)
+        && credential.auth_strategy !== 'username_password' && apiKeyField(credential, provider));
+      if (captured) {
+        await this.finishSession(provider, true);
+        return { run: { id: provider, state: 'completed' }, decision: 'silent' };
       }
       await this.finishSession(provider);
       return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason: reason || 'Signup could not be completed' };

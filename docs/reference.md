@@ -318,17 +318,10 @@ Port selection is `--port`, then `GRUNT_PORT`, then the private numeric
 on a custom port can pass `--port` until setup records it. For example, Chad uses
 `usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
 
-After its first successful route and coding-tool configuration, interactive
-setup displays a passive live dashboard. The terminal ownership queue suspends
-it around interactive installers and Squire confirmations, which retain their
-normal full verification instructions. Only provider IDs are shared with the
-status view: browser capability links, requested goals, credentials, prompts,
-responses and working directories are excluded from status metadata. Approvals
-remain per provider, with existing grouped confirmations unchanged. Once all
-jobs settle, setup prints the normal summary, then releases its Squire client
-and setup lease before opening the keyboard-driven watch view. Noninteractive
-setup exits normally. Closing setup before completion pauses unfinished signups; closing
-the final watch view only closes the view.
+Setup shows one live table of tools and sources, then `Ready`, and exits.
+It asks no questions and does not open the status dashboard. Run
+`usegrunt status --watch` separately to open that view. Closing setup before
+completion pauses unfinished signups; verified daemon routes remain usable.
 
 `/v1/status` uses the same loopback Host/Origin restrictions as inference and
 `Cache-Control: no-store`. Its version-1 JSON contains the snapshot timestamp,
@@ -432,28 +425,24 @@ soon as the first provider is verified, while remaining signups continue.
 interactive terminal it opens with a short animation (any key skips it; CI,
 pipes and narrow terminals get a one-line title). After checking prerequisites,
 setup pulls the free service list from the grunt registry, falling back to the
-saved or bundled list and saying so. The bundled
+saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch
 in the experimental tier.
-Provider approval and free-account eligibility still apply.
+Free-account eligibility still applies.
 
-The wizard gathers the grouped sharing approval and coding-tool choices before
-starting provider jobs, so the tool picker does not compete with browser
-approvals for terminal input. It installs the persistent daemon once for the
-setup session, before connecting providers. Providers still being prepared are
-excluded from normal routing and bulk availability probes.
+The wizard enables free sources by default and connects every supported coding
+tool it detects. It installs the persistent daemon once before provider jobs.
+Providers still being prepared are excluded from normal routing and bulk
+availability probes.
 
 Up to six provider jobs run concurrently. When a setup job reports a provider
 available, setup checks that exact provider with a real request through the
 installed daemon; up to three reply checks run at once. A correctly attributed
 reply is required to verify a route. While that check runs,
 the provider stays out of automatic routing; an explicit request for its source
-ID can run the verification probe. The first verified reply announces that grunt
-is ready and applies the preselected coding-tool
-configuration. Other provider jobs and checks continue, and later routes join
-the same daemon without a restart. Each provider still gets its own PASS/FAIL
-line and final summary row.
+ID can run the verification probe. The first verified reply starts coding-tool configuration. Other provider jobs and checks continue, and later routes join
+the same daemon without a restart. Each tool and source gets one status row in the setup table.
 
 Squire bootstrap is lazy and shared: account-dependent jobs reuse one connection
 and one pending sign-in, while eligible anonymous Kilo or OpenCode access can
@@ -502,14 +491,22 @@ only after it answers one real request through grunt.
 
 OpenCode first tries its free model without an account and requests sign-in only
 if that model requires it. Kilo verifies its anonymous Particle 1 free route
-after the required sharing approval; it needs no account, API key or signup.
-Captcha, passkey and email verification for other providers show a browser
-handoff and wait for the user to resume. Existing accounts are reused; no extra
+without a sharing question; it needs no account, API key or signup.
+Squire handles supported verification automatically. An uncertain result with a
+captured key proceeds to a local test request; missing or failing access is
+skipped without a browser handoff or confirmation question. Existing accounts are reused; no extra
 Google accounts are created.
 
 Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
 
-The foreground wizard groups the nine active disclosures for OpenCode (including Big Pickle), Kilo, Token Harbor, Runcrate, Mistral Vibe Free, Pollinations, BeatAPI, Clixad and Perch into one approval. A private local receipt records approved policy versions. Retired Freebuff and APInex records do not authorize routing. Declining or cancelling skips the active sharing providers while eligible Zro and LiveKit setup continues. LiveKit documents zero retention and no training for inference, so it adds no policy to this group. Changed or new policies require another grouped approval. Background setup never prompts; signup and routing require current approval where applicable. Daily maintenance is staggered and does not provision accounts; unresolved verification leaves that source needing foreground setup while other services continue.
+Setup enables the free sources by default, including sources that may retain,
+review or train on prompts. It records current provider policies in a private
+receipt for the existing runtime guards, without printing disclosures or asking
+for approval. Retired Freebuff and APInex records do not authorize routing.
+Daily maintenance does not provision accounts; rerun setup to retry a skipped
+source. Provider-specific data policies remain documented below and in
+`src/local/data-sharing.ts`.
+
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
 
@@ -527,8 +524,8 @@ rate-limited zero-cost access rather than a one-time credit balance.
 The catalog permits training on Particle prompts. Retention and staff-review
 guarantees are unestablished. The Kilo consent policy is now
 `2026-11-15-particle`; an earlier Auto Free approval does not authorize this
-route. Setup asks for the changed disclosure in the existing grouped approval,
-and background routing leaves Kilo unavailable until the current policy is approved.
+route. Setup records the current policy without asking, and existing runtime
+guards continue checking the receipt.
 
 The additional experimental routes have these requirements:
 
@@ -648,7 +645,7 @@ context and a validated JSON tool bridge; native actions are denied. Owned
 PTY/process cleanup runs on completion, cancellation and timeout. Clixad and Perch
 are backend sources: Pi, Codex, OpenCode and Claude Code remain the frontend choices.
 Existing installations can run `usegrunt add clixad` or `usegrunt add perch` to
-perform the same signup, current sharing approval and native eligibility checks.
+perform the same signup and native eligibility checks.
 
 Both native backends validate returned output and reported usage against a local
 budget of at most 4,096 tokens, with bounded output bytes and a process lifetime
@@ -656,7 +653,7 @@ of at most 175 seconds. Neither CLI offers a hard upstream output-token cap:
 generation and free-allowance use can exceed that local acceptance budget before
 grunt rejects a completion.
 
-The grouped disclosure includes each provider's data policy. Token Harbor permits
+Provider data policies: Token Harbor permits
 retention, staff review and upstream training. Runcrate's upstream retention and
 training guarantees are unestablished. Free Mistral Vibe prompts and code may be used
 for improvement, with no established zero-retention guarantee.
@@ -665,16 +662,14 @@ operations and processed upstream. It states private content is not used for
 training without separate notice and consent where required; upstream guarantees
 remain unestablished. [Pollinations](https://pollinations.ai/privacy) sends context
 through its OSAII community operator and Poe/Together processing, whose retention,
-staff review and training guarantees are unestablished. Both require the current
-grouped approval before signup or runtime routing.
+staff review and training guarantees are unestablished. Setup enables both by default and records the current policies.
 [Clixad](https://clixad.io/privacy.html) sends prompts, code and tool results through
 Clixad, OpenRouter and model providers. It records usage metadata and says content
 is stored when an answer is rated. It excludes training/public-dataset endpoints
 but does not require zero upstream retention. [Perch](https://www.perchai.app/privacy#starter-data-program)
 processes task and tool context for service delivery, security, debugging and
 metering even with the optional Data Program off. Retention, review limits and
-zero-retention coverage have not been independently verified. Both require the
-current grouped sharing approval.
+zero-retention coverage have not been independently verified. Setup enables both by default and records their current policies.
 
 NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain. Cloudflare Qwen is excluded from the pool by the owner's choice.
 

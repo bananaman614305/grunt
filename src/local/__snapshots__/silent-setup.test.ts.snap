@@ -1,0 +1,31 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`runs the whole setup with zero prompts and enabled sharing sources (TTY: false, key works: false) 1`] = `
+"grunt — free AI inference, pooled on your machine
+type    name                  status
+source  opencode              ✓ ready
+tool    Pi                    ✓ connected
+tool    Claude Code           ✓ connected
+tool    OpenCode              ✓ connected
+source  kilo                  ✓ ready
+source  tokenharbor           ✓ ready
+source  perch                 skipped (setup failed)
+source  zro                   skipped (key test failed)
+Ready
+"
+`;
+
+exports[`runs the whole setup with zero prompts and enabled sharing sources (TTY: false, key works: true) 1`] = `
+"grunt — free AI inference, pooled on your machine
+type    name                  status
+source  opencode              ✓ ready
+tool    Pi                    ✓ connected
+tool    Claude Code           ✓ connected
+tool    OpenCode              ✓ connected
+source  kilo                  ✓ ready
+source  tokenharbor           ✓ ready
+source  perch                 skipped (setup failed)
+source  zro                   ✓ ready
+Ready
+"
+`;

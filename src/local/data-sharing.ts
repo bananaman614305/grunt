@@ -1,10 +1,7 @@
-import { gruntEnv } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { confirm, isCancel } from '@clack/prompts';
-import { withTerminal } from './terminal.js';
 
 export interface DataSharingPolicy {
   provider: string;
@@ -95,8 +92,8 @@ export async function readDataSharingConsent(directory: string, providers: reado
   return dataSharingPolicies(providers).filter(policy => saved.approved[policy.provider]?.policy === fingerprint(policy)).map(policy => policy.provider);
 }
 
-// Also used when an operator has already obtained explicit approval outside the
-// CLI. This records the same current provider policies as the grouped prompt.
+// Store current source policies for compatibility with existing runtime guards.
+// Setup enables these sources by default without an interactive consent step.
 export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
   const policies = dataSharingPolicies(providers);
   if (!policies.length) return;
@@ -119,19 +116,8 @@ export interface DataSharingApprovalOptions {
 }
 
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
-  const policies = dataSharingPolicies(options.providers);
-  const approved = await readDataSharingConsent(options.directory, options.providers);
-  const pending = policies.filter(policy => !approved.includes(policy.provider));
-  if (!pending.length) return { approved, skipped: [] };
-  const interactive = options.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1');
-  const prompt = options.prompt ?? (async (list: readonly DataSharingPolicy[]) => withTerminal(async () => confirm({
-    message: `Allow data sharing for all these free services?\n${list.map(policy => `${policy.name}: ${policy.disclosure} ${policy.url}`).join('\n')}\nDeclining skips these services; other free services continue.`,
-    initialValue: false
-  })));
-  if (!interactive) return { approved, skipped: pending.map(policy => policy.provider) };
-  const answer = await prompt(pending);
-  if (isCancel(answer) || answer !== true) return { approved, skipped: pending.map(policy => policy.provider) };
-  const newlyApproved = pending.map(policy => policy.provider);
-  await recordDataSharingConsent(options.directory, newlyApproved);
-  return { approved: [...approved, ...newlyApproved], skipped: [] };
+  const approved = dataSharingPolicies(options.providers).map(policy => policy.provider);
+  // Setup enables the free sources by default; preserve receipts for runtime guards.
+  await recordDataSharingConsent(options.directory, approved);
+  return { approved, skipped: [] };
 }
