@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-17
+
+### Fixed
+
+- Sync Fly's latest staged app secrets in the deployment runner before deploying, so Google login and collector credentials staged elsewhere are activated with the image.
+
 ## [0.7.0] - 2026-11-17
 
 ### Added

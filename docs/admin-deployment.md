@@ -14,8 +14,9 @@ inbound port or forward inference traffic.
 
 Before enabling live access, verify all of the following:
 
-- The two owners have confirmed their complete Google account email addresses.
-  Bare account names are not accepted and no addresses are inferred.
+- Every owner enabled at rollout has a confirmed complete Google account email
+  address. Additional owners can remain disabled until their addresses are
+  confirmed. Bare account names are not accepted and no addresses are inferred.
 - A dedicated Grunt Google OAuth web client exists. Unrelated applications'
   clients, secrets and redirect registrations must not be reused or changed.
 - An authorized operator can update the existing Cloudflare Pages project and
@@ -25,10 +26,22 @@ Before enabling live access, verify all of the following:
 - The admin changes have passed their tests, independent review and the
   canonical exact-head GitHub CI check before landing.
 
-Only the public CI workflow is enabled. Site, deployment, publication and
-registry workflows remain separately disabled; this rollout does not require
-enabling them. Use standard Ubuntu runners for CI, without paid runners or
-artifact/cache uploads.
+The public CI and existing Fly `deploy` workflow are enabled. Backend pushes to
+`main` deploy through GitHub Actions; `workflow_dispatch` also supports an explicit
+run. Site, npm publication and registry workflows remain separately disabled.
+Use standard Ubuntu runners for CI, without paid runners or artifact/cache uploads.
+
+The deployment job runs `flyctl secrets sync --app milo-gateway --stage` before
+deploying. Flyctl tracks the minimum secrets version locally, so a fresh runner
+must synchronize settings staged by another machine or through the Machines API.
+The sync step stages only; the following deployment activates the settings with
+the tested image. See [Fly's secrets sync command](https://docs.fly.io/flyctl/cmd/fly_secrets_sync).
+
+As of 2026-11-17, the production Pages site and Fly backend are deployed, the
+verified first owner's login settings are active, and the Chad collector sends
+sanitized diagnostics. Custom API DNS and the first real Google sign-in remain
+pending. The second owner can be added later; their address does not block the
+first owner's access.
 
 ## Hosting and DNS
 

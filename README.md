@@ -54,8 +54,9 @@ designed for `https://grunt.run/admin/`. It shows retained request and fallback
 traces, safe HTTP/CLI failure details, reported token usage, maintenance and scout
 progress, and installation freshness. Google login permits only explicitly
 configured, verified owner email addresses. Viewing it sends no test prompts.
-Public deployment and live Google-login verification are still pending; see the
-[deployment prerequisites](docs/admin-deployment.md).
+The website and backend are deployed, with the owner collector active on Chad.
+The custom API DNS record and live Google-login verification are still pending;
+see the [deployment prerequisites](docs/admin-deployment.md).
 
 Regular installations keep diagnostics local. An operator can explicitly enable
 the [outbound owner collector](docs/admin-collector.md) with private configuration
