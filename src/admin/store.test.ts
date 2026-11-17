@@ -115,6 +115,50 @@ it('correlates fallback attempts and counts reported attempt usage once while pr
   expect(usage).toMatchObject({ inputTokens: 10, outputTokens: 3, knownInputEvents: 1, unknownInputEvents: 1, knownOutputEvents: 1, unknownOutputEvents: 1, requests: 1, attempts: 2, failures: 1 });
 });
 
+it('lists only actual attempt sources while retaining skipped providers and availability probes in the timeline', async () => {
+  const { store } = await fixture(), requestId = randomUUID(), attemptId = randomUUID();
+  const events = [
+    event('request.start', { requestId, at: initial, model: 'grunt' }),
+    event('transport.finish', { requestId, at: initial + 1, source: 'kilo', outcome: 'passed', endpointLabel: 'models', httpStatus: 200 }),
+    event('route.skip', { requestId, at: initial + 2, source: 'kilo', outcome: 'skipped', reason: 'unavailable' }),
+    event('attempt.start', { requestId, attemptId, at: initial + 3, source: 'zro' }),
+    event('attempt.finish', { requestId, attemptId, at: initial + 4, source: 'zro', outcome: 'passed', inputTokens: 20, outputTokens: 4 }),
+    event('request.finish', { requestId, at: initial + 5, source: 'zro', outcome: 'passed' })
+  ];
+  await store.ingest(batch(events));
+  const listed = (await store.requests()).requests;
+  expect(listed).toHaveLength(1);
+  expect(listed[0]).toMatchObject({ sources: ['zro'], source: 'zro', attemptCount: 1 });
+  expect((await store.requests({ source: 'kilo' })).requests).toEqual([]);
+  expect((await store.requests({ source: 'zro' })).requests).toHaveLength(1);
+  const trace = await store.request(requestId);
+  expect(trace!.request.sources).toEqual(['zro']);
+  expect(trace!.events).toHaveLength(6);
+  expect(trace!.events.filter(row => row.source === 'kilo').map(row => row.type)).toEqual(['transport.finish', 'route.skip']);
+});
+
+it('keeps transport-only maintenance out of logical requests and usage while retaining maintenance and export evidence', async () => {
+  const { store } = await fixture(), requestId = randomUUID();
+  const probe = event('transport.finish', { requestId, kind: 'maintenance', source: 'clixad', outcome: 'passed', httpStatus: 200, endpointLabel: 'models' });
+  const maintenance = { version: 1 as const, entries: { clixad: { nextCheckAt: initial + 86400000, lastCheckedAt: initial, outcome: 'passed' as const, evidence: 'metadata' as const } } };
+  await store.ingest(batch([probe], { maintenance }));
+  expect((await store.requests()).requests).toEqual([]);
+  expect(await store.request(requestId)).toBeNull();
+  expect((await store.overview()).usage).toMatchObject({ requests: 0, attempts: 0, failures: 0, inputTokens: null, outputTokens: null, unknownInputEvents: 0 });
+  expect((await store.runs()).maintenance).toMatchObject([{ instanceId: 'chad', source: 'clixad', outcome: 'passed', evidence: 'metadata' }]);
+  expect((await store.exportData()).events).toMatchObject([{ requestId, source: 'clixad', type: 'transport.finish' }]);
+});
+
+it('uses request-finish attribution only for legacy traces without attempt lifecycles', async () => {
+  const { store } = await fixture(), requestId = randomUUID();
+  await store.ingest(batch([
+    event('transport.finish', { requestId, source: 'kilo', at: initial, outcome: 'passed', endpointLabel: 'models' }),
+    event('request.finish', { requestId, source: 'zro', at: initial + 1, outcome: 'passed' })
+  ]));
+  const trace = await store.request(requestId);
+  expect(trace!.request).toMatchObject({ source: 'zro', sources: ['zro'], attemptCount: 0, startedAt: initial + 1 });
+});
+
 it('keeps all-unknown counts null, recognizes reported zero, and closes standalone maintenance attempt traces', async () => {
   const { store } = await fixture(); const first = event('attempt.finish', { kind: 'maintenance', outcome: 'passed', source: 'kilo' });
   await store.ingest(batch([first]));

@@ -12,10 +12,12 @@ const parse = <T>(value: string | null): T | undefined => value === null ? undef
 const validHash = (value: string) => /^[a-f0-9]{64}$/.test(value);
 const authString = (value: string) => /^[A-Za-z0-9_-]{32,128}$/.test(value);
 const validIdentity = (email: string, subject: string) => email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && /^[A-Za-z0-9_-]{1,255}$/.test(subject);
+const requestLifecycle = (event: AdminDiagnosticEvent) => ['request.start', 'request.finish', 'attempt.start', 'attempt.finish'].includes(event.type);
 
 function summarize(instanceId: string, events: AdminDiagnosticEvent[]): AdminRequestSummary {
   const ordered = [...events].sort((a, b) => a.at - b.at || (a.seq ?? 0) - (b.seq ?? 0));
-  const first = ordered[0]!, requestStart = ordered.find(e => e.type === 'request.start'), start = requestStart ?? first;
+  const first = ordered.find(requestLifecycle)!, requestStart = ordered.find(e => e.type === 'request.start'), start = requestStart ?? first;
+  const attemptEvents = ordered.filter(e => e.type === 'attempt.start' || e.type === 'attempt.finish');
   const attempts = ordered.filter(e => e.type === 'attempt.finish');
   const finish = ordered.filter(e => e.type === 'request.finish').at(-1)
     ?? (!requestStart && attempts.length >= ordered.filter(e => e.type === 'attempt.start').length ? attempts.at(-1) : undefined);
@@ -24,7 +26,7 @@ function summarize(instanceId: string, events: AdminDiagnosticEvent[]): AdminReq
   const result: AdminRequestSummary = {
     id: first.requestId, instanceId, startedAt: start.at, kind: start.kind,
     outcome: outcome === 'passed' || outcome === 'failed' || outcome === 'cancelled' ? outcome : finish ? 'failed' : 'pending',
-    sources: [...new Set(ordered.flatMap(e => e.source ? [e.source] : []))],
+    sources: [...new Set(attemptEvents.length ? attemptEvents.flatMap(e => e.source ? [e.source] : []) : finish?.source ? [finish.source] : [])],
     attemptCount: new Set(ordered.filter(e => e.type === 'attempt.start' || e.type === 'attempt.finish').flatMap(e => e.attemptId ? [e.attemptId] : [])).size
       + Math.max(ordered.filter(e => e.type === 'attempt.start' && !e.attemptId).length, ordered.filter(e => e.type === 'attempt.finish' && !e.attemptId).length)
   };
@@ -32,7 +34,7 @@ function summarize(instanceId: string, events: AdminDiagnosticEvent[]): AdminReq
   if (model !== undefined) result.model = model;
   if (finish) { result.finishedAt = finish.at; result.durationMs = finish.durationMs ?? Math.max(0, finish.at - start.at); }
   if (passed?.source) result.source = passed.source;
-  else if (finish?.source) result.source = finish.source;
+  else if (!attemptEvents.length && finish?.source) result.source = finish.source;
   if (finish?.httpStatus !== undefined) result.httpStatus = finish.httpStatus;
   if (finish?.errorCode !== undefined) result.errorCode = finish.errorCode;
   for (const key of ['inputTokens', 'outputTokens'] as const) {
@@ -108,7 +110,7 @@ export class AdminStore {
     const since = this.now() - day, rows = await this.eventRows(instanceId, since);
     const events = rows.map(row => ({ instanceId: row.instance_id, event: JSON.parse(row.payload) as AdminDiagnosticEvent }));
     const allAttempts = events.filter(row => row.event.type === 'attempt.finish');
-    const requestIds = new Set(events.map(row => `${row.instanceId}:${row.event.requestId}`));
+    const requestIds = new Set(events.filter(row => requestLifecycle(row.event)).map(row => `${row.instanceId}:${row.event.requestId}`));
     const withAttempts = new Set(allAttempts.map(row => `${row.instanceId}:${row.event.requestId}`));
     const usageEvents = [...allAttempts, ...events.filter(row => row.event.type === 'request.finish' && !withAttempts.has(`${row.instanceId}:${row.event.requestId}`))];
     const result: AdminUsage = { since, inputTokens: null, outputTokens: null, knownInputEvents: 0, unknownInputEvents: 0, knownOutputEvents: 0, unknownOutputEvents: 0, requests: requestIds.size, attempts: allAttempts.length, failures: allAttempts.filter(row => row.event.outcome === 'failed').length };
@@ -146,7 +148,7 @@ export class AdminStore {
       } catch { throw new AdminDataError('invalid_admin_filter'); }
     }
     const sort = (a: AdminRequestSummary, b: AdminRequestSummary) => b.startedAt - a.startedAt || b.instanceId.localeCompare(a.instanceId) || b.id.localeCompare(a.id);
-    const results = [...grouped.values()].map(group => summarize(group.instanceId, group.events))
+    const results = [...grouped.values()].filter(group => group.events.some(requestLifecycle)).map(group => summarize(group.instanceId, group.events))
       .filter(row => (!filters.source || row.sources.includes(filters.source)) && (!filters.outcome || row.outcome === filters.outcome)
         && (!before || sort(row, { startedAt: before.at, id: before.id, instanceId: before.instanceId } as AdminRequestSummary) > 0)).sort(sort);
     const requests = results.slice(0, limit), last = requests.at(-1);
@@ -155,11 +157,17 @@ export class AdminStore {
   async request(id: string, instanceId?: string) {
     const rows = await this.rows<EventRow>(`SELECT instance_id,payload FROM admin_events WHERE request_id=?${instanceId ? ' AND instance_id=?' : ''} AND at>=? ORDER BY at ASC,rowid ASC LIMIT 2001`, [id, ...(instanceId ? [instanceId] : []), this.now() - this.retentionMs]);
     if (!rows.length) return null;
-    // An unscoped UUID collision must not silently merge two installation traces.
-    const instanceIds = [...new Set(rows.map(row => row.instance_id))];
-    if (instanceIds.length !== 1) throw new AdminDataError('ambiguous_admin_request');
-    const events = rows.slice(0, 2000).map(row => JSON.parse(row.payload) as AdminDiagnosticEvent);
-    return { request: summarize(instanceIds[0]!, events), events, truncated: rows.length > 2000 };
+    const grouped = new Map<string, AdminDiagnosticEvent[]>();
+    for (const row of rows) {
+      const events = grouped.get(row.instance_id) ?? [];
+      events.push(JSON.parse(row.payload) as AdminDiagnosticEvent); grouped.set(row.instance_id, events);
+    }
+    const lifecycleGroups = [...grouped.entries()].filter(([, events]) => events.some(requestLifecycle));
+    if (!lifecycleGroups.length) return null;
+    // An unscoped UUID collision must not silently merge two logical traces.
+    if (lifecycleGroups.length !== 1) throw new AdminDataError('ambiguous_admin_request');
+    const [selectedInstance, allEvents] = lifecycleGroups[0]!, events = allEvents.slice(0, 2000);
+    return { request: summarize(selectedInstance, allEvents), events, truncated: allEvents.length > 2000 };
   }
   async runs(instanceId?: string) {
     const instances = await this.instances(instanceId);
