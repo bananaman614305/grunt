@@ -152,8 +152,10 @@ installations, initially Chad, rather than telemetry enabled by ordinary setup.
 
 The [same-origin Fly preview](https://milo-gateway.fly.dev/admin/) supports Google
 owner sign-in and receives updates from Chad while custom API DNS is pending.
-The overview shows current work, active and unavailable sources, and reported
-usage for today and this week. The browser uses local midnight and the start of
+The overview shows current work, project milestones and Grunt's checkpoint plan,
+along with active and unavailable sources and reported usage for today and this
+week. Milestones link to the project's pull requests and show their review or
+merge state. The browser uses local midnight and the start of
 Monday for those periods. Only successful user-facing attempts contribute to
 these totals. The table marks incomplete token reporting and keeps reply counts
 visible regardless of coverage. Detailed diagnostics remain in their own views.

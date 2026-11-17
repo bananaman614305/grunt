@@ -256,6 +256,7 @@ export class AdminConsole {
     this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null; this.activity = null; this.sourceUsage = null;
     this.el['activity-list'].replaceChildren(loading('Loading recent activity…'));
     this.el['home-work'].replaceChildren(); this.el['home-source-list'].replaceChildren();
+    this.renderProjectContext(undefined);
     this.el['trace-content'].replaceChildren();
   }
   async signInState() {
@@ -374,18 +375,22 @@ export class AdminConsole {
       title.append(element('h3', '', 'Amazing Adventure'),
         badge(fresh && data.phase === 'working' ? 'running' : 'unknown', fresh ? PHASE_LABELS[data.phase] ?? 'Unknown' : 'Last known update'));
       const progress = [...array(data.events)].reverse().find(event => event.kind === 'progress');
+      const checkpoint = data.project?.checkpoint;
       const current = fresh ? array(data.active).map(row => text(row.source)).join(', ') : '';
       const route = current ? `Answering now: ${current}`
         : data.lastReply?.source ? `Last reply: ${text(data.lastReply.source)}` : 'Waiting for a source reply';
-      const note = element('p', 'home-progress', progress ? text(progress.text, 'Waiting for a progress message.', 400) : 'Waiting for a progress message.');
+      const note = element('p', 'home-progress', text(progress?.text ?? checkpoint?.summary, 'Waiting for a progress message.', 400));
       const meta = element('p', 'home-work-meta');
       meta.append(element('span', '', route));
-      if (progress?.at) meta.append(timestamp(progress.at));
+      const updateAt = progress?.at ?? (checkpoint?.summary ? checkpoint.at : null);
+      if (updateAt) meta.append(timestamp(updateAt));
       work.replaceChildren(title, note, meta);
     } else {
       work.replaceChildren(element('p', 'home-progress', 'No work status reported.'),
         element('p', 'section-note', 'Updates appear here when the Amazing Adventure runner is connected.'));
     }
+
+    this.renderProjectContext(latest?.activity?.project);
 
     const windows = usageWindows(new Date(now));
     const received = this.sourceUsage?.today === windows.today && this.sourceUsage?.week === windows.week;
@@ -421,6 +426,50 @@ export class AdminConsole {
       body.append(row);
     }
     target.replaceChildren(result);
+  }
+  renderProjectContext(value) {
+    const root = this.el['home-project-context'];
+    root.hidden = !value;
+    const project = object(value), key = JSON.stringify(project);
+    if (root.dataset.renderKey === key) return;
+    root.dataset.renderKey = key;
+    const milestones = element('ol', 'home-milestones');
+    const labels = { review: ['running', 'In review'], draft: ['unknown', 'Draft'], merged: ['passed', 'Merged'], closed: ['unknown', 'Closed'] };
+    const calendar = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+    for (const row of array(project.milestones)) {
+      if (!Number.isSafeInteger(row.number) || row.number < 1 || !own(labels, row.status)) continue;
+      const item = element('li'), meta = element('div', 'milestone-meta');
+      const [tone, label] = labels[row.status];
+      if (date(row.at)) {
+        const time = timestamp(row.at);
+        time.textContent = calendar.format(row.at);
+        meta.append(time);
+      }
+      meta.append(badge(tone, label));
+      const link = element('a', '', text(row.title));
+      link.href = `https://github.com/bananaman614305/amazing-adventure/pull/${row.number}`;
+      item.append(meta, link); milestones.append(item);
+    }
+    this.el['home-milestones'].replaceChildren(milestones.children.length ? milestones
+      : element('p', 'section-note', 'No project milestones available right now.'));
+
+    const checkpoint = object(project.checkpoint), steps = array(checkpoint.next);
+    const next = this.el['home-next'];
+    if (steps.length > 1) {
+      const plan = element('ol', 'home-next-steps');
+      for (const step of steps) plan.append(element('li', '', text(step, '', 400)));
+      next.replaceChildren(plan);
+    } else next.replaceChildren(element('p', 'home-plan-text', text(steps[0], 'Grunt hasn’t posted its next steps yet.', 400)));
+    if (date(checkpoint.at)) {
+      const attribution = element('p', 'section-note home-plan-date');
+      attribution.append(document.createTextNode('Grunt’s checkpoint · '), timestamp(checkpoint.at));
+      next.append(attribution);
+    }
+    if (checkpoint.summary) {
+      const details = element('details', 'home-checkpoint');
+      details.append(element('summary', '', 'Checkpoint summary'), element('p', 'home-plan-text', text(checkpoint.summary, '', 400)));
+      next.append(details);
+    }
   }
   renderActivity() {
     const target = this.el['activity-list'];

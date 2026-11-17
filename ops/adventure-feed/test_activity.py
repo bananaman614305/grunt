@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from activity import events, private_tail, progress_text
+from activity import events, private_tail, progress_text, project_checkpoint, project_pulls
 
 
 class ActivityTest(unittest.TestCase):
@@ -46,6 +46,46 @@ class ActivityTest(unittest.TestCase):
         raw = f'Finished save and load.\n{fence}js\ncode()\n{fence}\nSecret = hidden\nNext I will check reload.'
         self.assertEqual(progress_text([{'type': 'text', 'text': raw}]),
                          'Finished save and load. Next I will check reload.')
+
+    def test_checkpoint_uses_grunts_current_work_and_plan_sections_only(self):
+        content = '''# Grunt status
+
+## Current task
+The courtyard quests are playable.
+
+## Completed checks
+Raw test output is outside the brief.
+
+## Next task (Round 3)
+1. Connect the plaza and the market.
+   Check that players can travel in both directions.
+2. Add faction reputation.
+3. API key should be left out.
+4. Let players overhear conversations.
+5. This is past the three-step limit.
+
+## Private notes
+These must not be included.
+'''
+        result = project_checkpoint(content, 123)
+        self.assertEqual(result, {
+            'at': 123, 'summary': 'The courtyard quests are playable.',
+            'next': ['Connect the plaza and the market. Check that players can travel in both directions.',
+                     'Add faction reputation.', 'Let players overhear conversations.']
+        })
+
+    def test_project_timeline_keeps_actual_pr_states_and_ignores_untrusted_links(self):
+        day = '2026-11-17T19:00:00Z'
+        newer = '2026-11-17T21:00:00Z'
+        rows = project_pulls([
+            {'number': 1, 'state': 'closed', 'merged_at': day, 'title': 'Project plan'},
+            {'number': 2, 'state': 'open', 'created_at': newer, 'title': 'Round 1'},
+            {'number': 3, 'state': 'open', 'created_at': newer, 'title': 'https://example.test/private'},
+            {'number': 4, 'state': 'closed', 'closed_at': day, 'title': 'Abandoned draft',
+             'html_url': 'https://example.test/fake'}
+        ])
+        self.assertEqual([(row['number'], row['status']) for row in rows], [(2, 'review'), (1, 'merged'), (4, 'closed')])
+        self.assertNotIn('html_url', rows[-1])
 
 
 if __name__ == '__main__':
