@@ -6,6 +6,8 @@ RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
 COPY registry ./registry
+COPY site/admin ./site/admin
+COPY site/grunt.svg site/favicon.svg ./site/
 RUN pnpm build
 RUN pnpm prune --prod
 

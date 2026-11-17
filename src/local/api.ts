@@ -8,6 +8,8 @@ import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
 import { SourceError, answeredBy } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
+import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
+import type { DiagnosticContext } from './diagnostics.js';
 type Obj = Record<string, unknown>;
 const object = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
 const array = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
@@ -123,11 +125,49 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     const port = options.port ?? 8788;
     const host = c.req.header('host') ?? new URL(c.req.url).host;
     if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || (c.req.raw.headers.has('origin') && c.req.path !== '/dots/pair')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
-    if (c.req.method === 'POST' && c.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') return c.json({ error: { message: 'Content-Type must be application/json' } }, 415);
-    await next();
+    const tracked = c.req.method === 'POST' && ['/v1/chat/completions', '/v1/messages', '/v1/responses'].includes(c.req.path);
+    const store = sources.diagnosticStore(), requestId = randomUUID(), started = Date.now(), startedMono = performance.now();
+    const context: DiagnosticContext = { requestId, kind: 'user', requestRecorded: true, ...(store ? { sink: store } : {}) };
+    if (tracked) { c.header('X-Grunt-Request-Id', requestId); store?.record({ version: 1, id: randomUUID(), at: started, requestId, kind: 'user', type: 'request.start' }); }
+    let status: number | undefined;
+    const run = async () => {
+      try {
+        if (c.req.method === 'POST' && c.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') { status = 415; return c.json({ error: { message: 'Content-Type must be application/json' } }, 415); }
+        await next();
+      } catch (error) { status = 500; throw error; }
+      finally {
+        if (tracked) {
+          const httpStatus = status ?? c.res.status, source = c.res.headers.get('X-Grunt-Source');
+          store?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId, kind: context.kind, type: 'request.finish', httpStatus,
+            durationMs: Math.max(0, performance.now() - startedMono), outcome: c.req.raw.signal.aborted ? 'cancelled' : httpStatus >= 400 ? 'failed' : 'passed',
+            ...(source ? { source } : {}), ...(context.local ? { reason: 'local' } : {}), ...(context.errorCode ? { errorCode: context.errorCode } : {}) });
+        }
+      }
+    };
+    return tracked ? withDiagnosticContext(context, run) : run();
   });
   app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
   app.get('/v1/status', c => { c.header('Cache-Control', 'no-store'); return c.json(sources.status()); });
+  app.get('/v1/diagnostics/events', async c => {
+    c.header('Cache-Control', 'no-store'); const store = sources.diagnosticStore();
+    if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);
+    try {
+      const after = c.req.query('after'), source = c.req.query('source'), requestId = c.req.query('requestId'), limit = c.req.query('limit');
+      return c.json(await store.list({ ...(after === undefined ? {} : { after }), ...(source === undefined ? {} : { source }), ...(requestId === undefined ? {} : { requestId }), ...(limit === undefined ? {} : { limit: Number(limit) }) }));
+    } catch { return c.json({ error: 'Invalid diagnostic filter' }, 400); }
+  });
+  app.get('/v1/diagnostics/summary', async c => {
+    c.header('Cache-Control', 'no-store'); const store = sources.diagnosticStore();
+    if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);
+    try { const since = c.req.query('since'); return c.json(await store.summary(since === undefined ? {} : { since: Number(since) })); }
+    catch { return c.json({ error: 'Invalid diagnostic time' }, 400); }
+  });
+  app.get('/v1/diagnostics/traces/:id', async c => {
+    c.header('Cache-Control', 'no-store'); const store = sources.diagnosticStore();
+    if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);
+    try { return c.json(await store.trace(c.req.param('id'))); }
+    catch { return c.json({ error: 'Invalid diagnostic identifier' }, 400); }
+  });
   app.get('/v1/models', async c => c.json({ object: 'list', data: (await sources.models()).map(id => ({ id, object: 'model', created: 0, owned_by: 'grunt' })) }));
   for (const [path, api] of [['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const) {
     app.post(`/v1/${path}`, async c => {
@@ -135,6 +175,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       try { request = decode(object(await c.req.json()), api, options.cwd); }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }
       const local = housekeeping(request);
+      if (local !== undefined) { const context = currentDiagnosticContext(); if (context) context.local = true; }
       options.log?.(`${request.cwd}; cwd=${request.cwdSource}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
       const complete = (signal: AbortSignal): Promise<Completion> => local === undefined ? sources.complete(request, signal) : Promise.resolve({ text: local });
       const controller = new AbortController();

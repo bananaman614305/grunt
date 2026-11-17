@@ -1,0 +1,74 @@
+import { afterEach, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient } from '@libsql/client';
+import { Sources, SourceError } from '../local/source.js';
+import { DiagnosticsStore } from '../local/diagnostics.js';
+import { createLocalApp } from '../local/api.js';
+import { AdminStore } from './store.js';
+import { adminRoutes } from './routes.js';
+
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+
+it('delivers a redacted fallback trace from a local request through authenticated remote ingestion and read-only diagnosis', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-admin-flow-'));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const journal = await DiagnosticsStore.open({ directory });
+  cleanups.push(() => journal.close());
+  const sources = new Sources([
+    { id: 'kilo', supportsFunctionTools: true, available: async () => true, close: async () => {}, complete: async () => {
+      throw new SourceError('quota', 'SECRET_UPSTREAM_MESSAGE', 60, 'SECRET_UPSTREAM_OUTPUT', { httpStatus: 429, transport: 'http', endpointLabel: 'chat.completions' });
+    } },
+    { id: 'zro', supportsFunctionTools: true, available: async () => true, close: async () => {}, complete: async () => ({ text: 'SECRET_GENERATED_CONTENT', inputTokens: 150, outputTokens: 12 }) }
+  ]);
+  sources.setDiagnostics(journal);
+  cleanups.push(() => sources.close());
+  const local = createLocalApp(sources, { port: 8792 });
+  const response = await local.request('http://127.0.0.1:8792/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'grunt', cwd: directory, messages: [{ role: 'user', content: 'SECRET_USER_PROMPT' }], max_tokens: 256 })
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get('X-Grunt-Source')).toBe('zro');
+  const requestId = response.headers.get('X-Grunt-Request-Id');
+  expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+  const eventsResponse = await local.request('http://127.0.0.1:8792/v1/diagnostics/events');
+  const { events } = await eventsResponse.json();
+  expect(events.filter((event: { type: string }) => event.type === 'attempt.finish')).toHaveLength(2);
+
+  const client = createClient({ url: 'file::memory:' });
+  cleanups.push(async () => { client.close(); });
+  const store = new AdminStore(client); await store.init();
+  const env = {
+    GRUNT_ADMIN_GOOGLE_CLIENT_ID: 'synthetic-admin.apps.googleusercontent.com',
+    GRUNT_ADMIN_GOOGLE_CLIENT_SECRET: 'synthetic-client-secret',
+    GRUNT_ADMIN_SESSION_SECRET: 'synthetic-session-secret-with-at-least-32-bytes',
+    GRUNT_ADMIN_OWNERS: 'owner@example.test', GRUNT_ADMIN_INSTANCES: 'chad',
+    GRUNT_ADMIN_INGEST_KEY: 'synthetic-machine-ingest-key-with-32-characters',
+    GRUNT_ADMIN_READ_TOKEN: 'synthetic-agent-read-key-with-at-least-32-characters'
+  };
+  const remote = adminRoutes(store, { env });
+  const batch = { version: 1, instanceId: 'chad', observedAt: Date.now(), snapshot: sources.status(), events };
+  const upload = await remote.request('https://api.grunt.run/admin/ingest', {
+    method: 'POST', headers: { Authorization: `Bearer ${env.GRUNT_ADMIN_INGEST_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(batch)
+  });
+  expect(upload.status).toBe(200);
+  expect((await remote.request(`https://api.grunt.run/admin/api/requests/${requestId}`)).status).toBe(401);
+  const headers = { Authorization: `Bearer ${env.GRUNT_ADMIN_READ_TOKEN}` };
+  const detail = await remote.request(`https://api.grunt.run/admin/api/requests/${requestId}?instanceId=chad`, { headers });
+  expect(detail.status).toBe(200);
+  const trace = await detail.json();
+  expect(trace.request).toMatchObject({ id: requestId, outcome: 'passed', source: 'zro', attemptCount: 2 });
+  expect(trace.events).toContainEqual(expect.objectContaining({ source: 'kilo', type: 'attempt.finish', outcome: 'failed', httpStatus: 429 }));
+  expect(trace.events).toContainEqual(expect.objectContaining({ source: 'zro', type: 'attempt.finish', outcome: 'passed', inputTokens: 150, outputTokens: 12 }));
+  expect(JSON.stringify(trace)).not.toMatch(/SECRET_|Bearer|vault:|\/tmp\//);
+  const replay = await remote.request('https://api.grunt.run/admin/ingest', {
+    method: 'POST', headers: { Authorization: `Bearer ${env.GRUNT_ADMIN_INGEST_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(batch)
+  });
+  expect(replay.status).toBe(200);
+  const replayed = await (await remote.request(`https://api.grunt.run/admin/api/requests/${requestId}?instanceId=chad`, { headers })).json();
+  expect(replayed.events).toHaveLength(trace.events.length);
+  expect((await remote.request('https://api.grunt.run/admin/auth/logout', { method: 'POST', headers })).status).toBe(403);
+});

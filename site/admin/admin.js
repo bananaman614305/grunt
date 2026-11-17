@@ -1,0 +1,612 @@
+const VIEWS = {
+  overview: ['Overview', 'Follow requests, provider availability and background work.'],
+  requests: ['Requests', 'Inspect each request, provider attempt and fallback.'],
+  providers: ['Providers', 'See what is ready, limited or waiting for setup.'],
+  usage: ['Usage', 'Measure delivered work and reporting coverage.'],
+  runs: ['Maintenance & scout', 'Follow provider checks, discovery and release progress.'],
+  system: ['System', 'Check installation connectivity and runtime versions.']
+};
+const LABELS = {
+  unknown: 'Not observed', available: 'Configured', ready: 'Reply verified', answering: 'Answering',
+  connecting: 'Connecting', verifying: 'Verifying', approval: 'Approval needed', limited: 'Rate limited',
+  error: 'Error', disabled: 'Disabled', unavailable: 'Unavailable', passed: 'Succeeded', failed: 'Failed',
+  cancelled: 'Cancelled', pending: 'In progress', skipped: 'Skipped', healthy: 'Connected', degraded: 'Degraded',
+  offline: 'Offline', running: 'Running', completed: 'Completed', rejected: 'Rejected', deferred: 'Deferred',
+  blocked: 'Blocked', integration_pending: 'Integration pending', needs_approval: 'Approval needed',
+  setup_blocked: 'Setup blocked', ready_for_review: 'Ready for review', researched: 'Researched',
+  released: 'Published', ci_pending: 'CI pending', publication_pending: 'Publication pending',
+  superseded: 'Superseded', reviewed: 'Reviewed', no_data: 'Awaiting collector'
+};
+const ERROR_LABELS = {
+  not_installed: 'Not installed', logged_out: 'Authentication unavailable', quota: 'Quota or capacity limit',
+  timeout: 'Timed out', upstream: 'Upstream failure', refused: 'Request refused', cancelled: 'Cancelled',
+  busy: 'Busy', foreground: 'Foreground work active', consent: 'Consent needed'
+};
+const EVENT_LABELS = {
+  'request.start': 'Request received', 'request.finish': 'Request finished', 'attempt.start': 'Provider attempt started',
+  'attempt.finish': 'Provider attempt finished', 'route.selection': 'Provider selected',
+  'route.skip': 'Provider skipped', 'transport.finish': 'Transport finished'
+};
+const REASONS = {
+  not_listed: 'Outside the enabled provider list', pending_setup: 'Provider setup is pending',
+  cooldown: 'Routing cooldown is active', tools_unsupported: 'Function tools are unsupported',
+  input_unsupported: 'Input type is unsupported', unavailable: 'Provider is unavailable',
+  sticky: 'Existing request route', weighted: 'Selected from the weighted pool',
+  explicit: 'Explicit provider selection', fallback: 'Fallback after an earlier attempt', local: 'Local handling'
+};
+const PIPELINE_REASONS = {
+  upstream_capacity: 'Reported blocker: upstream capacity', review_rejected: 'Review did not approve',
+  ci_pending: 'Waiting for CI', validation_failed: 'Validation did not pass', publication_pending: 'Publication pending',
+  approval_required: 'Human approval required', quota: 'Allowance or rate limit', setup_required: 'Setup required',
+  pipeline_failed: 'Pipeline stage failed'
+};
+const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+const array = value => Array.isArray(value) ? value : [];
+const text = (value, fallback = 'Not reported') => typeof value === 'string' && value.trim() ? value.slice(0, 256) : fallback;
+const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+const date = value => number(value) !== null && value > 0 ? new Date(value) : null;
+export const formatCount = value => count(value) === null ? 'Not reported' : new Intl.NumberFormat('en-US').format(value);
+export const isRequestId = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+export const stateLabel = value => own(LABELS, value) ? LABELS[value] : 'Unknown';
+export const errorLabel = value => own(ERROR_LABELS, value) ? ERROR_LABELS[value] : 'Not reported';
+export function formatDuration(value) {
+  if (number(value) === null) return 'Not reported';
+  if (value < 1000) return `${Math.round(value)} ms`;
+  if (value < 60000) return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`;
+  return `${Math.floor(value / 60000)}m ${Math.floor(value % 60000 / 1000)}s`;
+}
+export function relativeTime(value, now = Date.now()) {
+  if (!date(value)) return 'Not reported';
+  const seconds = Math.round((now - value) / 1000);
+  if (seconds <= -86400) return `in ${Math.ceil(-seconds / 86400)}d`;
+  if (seconds <= -3600) return `in ${Math.ceil(-seconds / 3600)}h`;
+  if (seconds <= -60) return `in ${Math.ceil(-seconds / 60)} min`;
+  if (seconds < 0) return `in ${-seconds}s`;
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+export function usageCoverage(usage) {
+  const value = object(usage), knownInput = count(value.knownInputEvents), unknownInput = count(value.unknownInputEvents),
+    knownOutput = count(value.knownOutputEvents), unknownOutput = count(value.unknownOutputEvents);
+  if ([knownInput, unknownInput, knownOutput, unknownOutput].some(item => item === null)) return 'Token-reporting coverage has not been reported.';
+  return `Input reported for ${formatCount(knownInput)} attempt events; ${formatCount(unknownInput)} unknown. Output reported for ${formatCount(knownOutput)} attempt events; ${formatCount(unknownOutput)} unknown.`;
+}
+export function resolveApiBase(configured, origin) {
+  const value = new URL(configured, origin);
+  const local = new URL(origin);
+  const allowedSameOrigin = value.origin === local.origin && (local.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(local.hostname));
+  if (value.username || value.password || value.search || value.hash || value.pathname.replace(/\/$/, '') !== '/admin'
+    || !(value.origin === 'https://api.grunt.run' || value.origin === 'https://grunt.run' || allowedSameOrigin)) {
+    throw new Error('invalid_admin_endpoint');
+  }
+  return value.href.replace(/\/$/, '');
+}
+function element(tag, className, content) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (content !== undefined) node.textContent = String(content);
+  return node;
+}
+function badge(value, label) {
+  return element('span', `badge ${own(LABELS, value) ? value : 'unknown'}`, label ?? stateLabel(value));
+}
+function empty(title, description) {
+  const node = element('div', 'empty-state');
+  node.append(element('h3', '', title), element('p', '', description));
+  return node;
+}
+function loading(description = 'Loading diagnostic observations…') { return element('div', 'skeleton', description); }
+function timestamp(value, exact = false) {
+  const node = element('time', '', exact && date(value) ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(value) : relativeTime(value));
+  if (date(value)) { node.dateTime = new Date(value).toISOString(); node.title = new Date(value).toLocaleString(); }
+  return node;
+}
+function fields(items, className = '') {
+  const list = element('dl', `field-list ${className}`);
+  for (const [label, value, mono] of items) {
+    const group = element('div');
+    const description = element('dd', mono ? 'mono' : '');
+    description.append(value instanceof Node ? value : document.createTextNode(String(value)));
+    group.append(element('dt', '', label), description);
+    list.append(group);
+  }
+  return list;
+}
+function table(headers, className = '') {
+  const result = element('table', `data-table ${className}`), head = element('thead'), row = element('tr');
+  for (const item of headers) {
+    const [label, cls] = Array.isArray(item) ? item : [item, ''];
+    const cell = element('th', cls, label); cell.scope = 'col'; row.append(cell);
+  }
+  head.append(row); const body = element('tbody'); result.append(head, body);
+  return { result, body };
+}
+function cell(row, value, className = '') {
+  const node = element('td', className);
+  node.append(value instanceof Node ? value : document.createTextNode(String(value)));
+  row.append(node); return node;
+}
+class HttpError extends Error { constructor(status) { super('admin_request_failed'); this.status = status; } }
+
+export class AdminConsole {
+  constructor(options = {}) {
+    this.fetcher = options.fetcher ?? window.fetch.bind(window);
+    this.base = options.apiBase ?? resolveApiBase(document.querySelector('meta[name="grunt-admin-api"]')?.content ?? 'https://api.grunt.run/admin', window.location.origin);
+    this.session = null; this.view = 'overview'; this.instanceId = ''; this.overview = null;
+    this.requests = []; this.providers = []; this.runs = null; this.nextCursor = null; this.pagesLoaded = false;
+    this.sourceFilter = ''; this.outcomeFilter = ''; this.instanceOptions = [];
+    this.lastFetchedAt = null; this.refreshing = false; this.abort = null; this.traceAbort = null;
+    this.traceRequest = null; this.traceBusy = false; this.lastFocused = null; this.timer = null; this.detailSequence = 0; this.refreshSequence = 0;
+    this.el = Object.fromEntries([...document.querySelectorAll('[id]')].map(node => [node.id, node]));
+  }
+  async api(path, options = {}) {
+    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 12000);
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    try {
+      const response = await this.fetcher(`${this.base}${path}`, { ...options, credentials: 'include', redirect: 'error', signal,
+        headers: { Accept: 'application/json', ...(options.headers ?? {}) } });
+      if (!response.ok) throw new HttpError(response.status);
+      return options.download ? response : response.status === 204 ? null : await response.json();
+    } finally { clearTimeout(timeout); }
+  }
+  query(params = {}) {
+    const query = new URLSearchParams();
+    if (this.instanceId) query.set('instanceId', this.instanceId);
+    for (const [key, value] of Object.entries(params)) if (value !== '' && value !== undefined && value !== null) query.set(key, String(value));
+    const value = query.toString(); return value ? `?${value}` : '';
+  }
+  async start() {
+    this.el['auth-retry'].addEventListener('click', () => this.signInState());
+    this.el.refresh.addEventListener('click', () => this.refresh(true));
+    this.el.export.addEventListener('click', () => this.exportData());
+    this.el['sign-out'].addEventListener('click', () => this.signOut());
+    this.el['instance-select'].addEventListener('change', () => {
+      this.instanceId = this.el['instance-select'].value; this.resetRequests(); this.closeTrace();
+      this.overview = null; this.providers = []; this.runs = null;
+      this.refresh(true);
+    });
+    this.el['request-filters'].addEventListener('submit', event => { event.preventDefault(); this.sourceFilter = this.el['source-filter'].value; this.outcomeFilter = this.el['outcome-filter'].value; this.resetRequests(); this.refresh(true); });
+    this.el['request-search'].addEventListener('input', () => { this.renderRequests(); this.el['open-request-id'].disabled = !isRequestId(this.el['request-search'].value.trim()); });
+    this.el['open-request-id'].addEventListener('click', () => { const id = this.el['request-search'].value.trim(); if (isRequestId(id)) this.openTrace({ id, ...(this.instanceId ? { instanceId: this.instanceId } : {}) }); });
+    this.el['load-more'].addEventListener('click', () => this.loadEarlier());
+    this.el['close-trace'].addEventListener('click', () => this.closeTrace());
+    this.el['trace-dialog'].addEventListener('close', () => { this.traceAbort?.abort(); this.traceRequest = null; this.lastFocused?.focus(); });
+    window.addEventListener('hashchange', () => this.navigate());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { clearTimeout(this.timer); this.abort?.abort(); this.traceAbort?.abort(); this.el['polling-note'].textContent = 'Automatic refresh paused while this tab is hidden'; }
+      else { this.el['polling-note'].textContent = 'Refreshes every 10 seconds while this tab is visible'; if (this.session) this.refresh(); }
+    });
+    this.el['google-login'].href = `${this.base}/auth/google`;
+    this.el['overview-providers'].replaceChildren(loading()); this.el['overview-requests'].replaceChildren(loading());
+    this.navigate(false); await this.signInState();
+  }
+  authState(message, options = {}) {
+    this.session = null; this.abort?.abort(); this.traceAbort?.abort(); clearTimeout(this.timer); this.refreshSequence++;
+    this.el.console.hidden = true; this.el['auth-screen'].hidden = false;
+    this.el['auth-description'].textContent = options.description ?? 'Use an authorized Google account to view your Grunt installations and diagnostics.';
+    this.el['auth-message'].textContent = message;
+    this.el['google-login'].hidden = options.login !== true;
+    this.el['auth-retry'].hidden = options.retry !== true;
+    this.el['owner-email'].textContent = '';
+    this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null;
+    this.el['trace-content'].replaceChildren();
+  }
+  async signInState() {
+    this.el['auth-retry'].disabled = true;
+    this.el['auth-message'].textContent = '';
+    this.el['auth-description'].textContent = 'Connecting to the admin service…';
+    try {
+      const result = object(await this.api('/api/session'));
+      if (typeof object(result.user).email !== 'string') throw new Error('invalid_session');
+      this.session = result; this.el['owner-email'].textContent = result.user.email;
+      this.el['auth-screen'].hidden = true; this.el.console.hidden = false;
+      await this.refresh(true);
+    } catch (error) {
+      if (error.status === 401) {
+        const reason = new URL(window.location.href).searchParams.get('auth');
+        const message = reason === 'owner_denied' ? 'This Google account does not have owner access. Sign in with an authorized account.'
+          : reason === 'signin_failed' ? 'Google sign-in did not finish. Please try again.' : '';
+        this.authState(message, { login: true });
+        if (['owner_denied', 'signin_failed'].includes(reason)) { const url = new URL(window.location.href); url.searchParams.delete('auth'); window.history.replaceState(null, '', url); }
+      } else if (error.status === 403) this.authState('This account does not have owner access.', { login: true });
+      else if (error.status === 503) this.authState('Google owner sign-in is not configured on the admin service yet. Complete the backend configuration, then reconnect.', { retry: true });
+      else this.authState('The admin service could not be reached. Reconnect when the service is available.', { retry: true });
+    } finally { this.el['auth-retry'].disabled = false; }
+  }
+  navigate(refresh = true) {
+    const name = window.location.hash.slice(1).split('/')[0]; this.view = own(VIEWS, name) ? name : 'overview';
+    document.querySelectorAll('[data-view]').forEach(node => { if (node.dataset.view === this.view) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current'); });
+    for (const name of Object.keys(VIEWS)) this.el[`view-${name}`].hidden = name !== this.view;
+    [this.el['page-title'].textContent, this.el['page-description'].textContent] = VIEWS[this.view];
+    document.title = `${VIEWS[this.view][0]} · Grunt admin`;
+    if (refresh) { this.el['main-content'].focus({ preventScroll: true }); window.scrollTo(0, 0); }
+    if (refresh && this.session) this.refresh(true);
+  }
+  resetRequests() { this.requests = []; this.nextCursor = null; this.pagesLoaded = false; }
+  requestParams(limit = 50) { return { limit, source: this.sourceFilter, outcome: this.outcomeFilter }; }
+  async refresh(manual = false) {
+    if (!this.session || document.hidden) return;
+    clearTimeout(this.timer); this.abort?.abort(); this.abort = new AbortController();
+    const signal = this.abort.signal, sequence = ++this.refreshSequence;
+    this.refreshing = true; this.el.refresh.disabled = true; this.el.refresh.querySelector('span').textContent = 'Refreshing…';
+    this.el[`view-${this.view}`].setAttribute('aria-busy', 'true');
+    const tasks = [['overview', '/api/overview' + this.query()]];
+    if (this.view === 'overview') tasks.push(['requests', '/api/requests' + this.query({ limit: 8 })]);
+    if (this.view === 'requests') tasks.push(['requests', '/api/requests' + this.query(this.requestParams())]);
+    if (this.view === 'providers') tasks.push(['providers', '/api/providers' + this.query()]);
+    if (this.view === 'runs') tasks.push(['runs', '/api/runs' + this.query()]);
+    try {
+      const responses = await Promise.allSettled(tasks.map(async ([key, path]) => [key, await this.api(path, { signal })]));
+      if (signal.aborted || sequence !== this.refreshSequence) return;
+      const denied = responses.find(response => response.status === 'rejected' && [401, 403].includes(response.reason?.status));
+      if (denied) { this.authState(denied.reason.status === 403 ? 'Owner access is no longer available for this account.' : 'Your owner session expired. Sign in again.', { login: true }); return; }
+      let successful = 0;
+      for (const response of responses) {
+        if (response.status !== 'fulfilled') continue;
+        const [key, payload] = response.value, value = object(payload); successful++;
+        if (key === 'overview') this.overview = value;
+        else if (key === 'requests') {
+          const incoming = array(value.requests);
+          if (this.view === 'requests' && this.pagesLoaded) {
+            const seen = new Set(incoming.map(row => `${object(row).instanceId}:${object(row).id}`));
+            this.requests = [...incoming, ...this.requests.filter(row => !seen.has(`${object(row).instanceId}:${object(row).id}`))].slice(0, 1000);
+          } else { this.requests = incoming; this.nextCursor = typeof value.nextCursor === 'string' ? value.nextCursor : null; }
+        }
+        else if (key === 'providers') this.providers = array(value.providers);
+        else if (key === 'runs') this.runs = value;
+      }
+      if (successful) this.lastFetchedAt = Date.now();
+      this.connectionNotice(successful === tasks.length ? null : successful ? 'Some diagnostic data could not be refreshed. Previously collected observations remain visible.' : 'The admin service is unreachable. Showing the last collected observations.', successful === 0);
+      this.render();
+      if (this.el['trace-dialog'].open && this.traceRequest) void this.updateTrace();
+      if (manual && successful === tasks.length) this.el.announcement.textContent = 'Diagnostic observations refreshed.';
+    } finally {
+      if (sequence === this.refreshSequence) {
+        this.refreshing = false; this.el.refresh.disabled = false; this.el.refresh.querySelector('span').textContent = 'Refresh';
+        document.querySelectorAll('.view[aria-busy]').forEach(node => node.removeAttribute('aria-busy'));
+        if (this.session && !document.hidden) this.timer = setTimeout(() => this.refresh(), 10000);
+      }
+    }
+  }
+  connectionNotice(message, error = false) {
+    this.el['connection-notice'].hidden = !message;
+    this.el['connection-notice'].classList.toggle('error', error);
+    this.el['connection-notice'].textContent = message ?? '';
+  }
+  render() {
+    this.renderContext();
+    if (this.view === 'overview') this.renderOverview();
+    else if (this.view === 'requests') this.renderRequests();
+    else if (this.view === 'providers') this.el['provider-list'].replaceChildren(this.providerTable(this.providers));
+    else if (this.view === 'usage') this.renderUsage();
+    else if (this.view === 'runs') this.renderRuns();
+    else if (this.view === 'system') this.renderSystem();
+  }
+  renderContext() {
+    const overview = object(this.overview), instances = array(overview.instances);
+    const selector = this.el['instance-select'];
+    const incomingIds = instances.map(row => text(object(row).id, ''));
+    this.instanceOptions = this.instanceId ? [...new Set([...this.instanceOptions, ...incomingIds])] : incomingIds;
+    const ids = this.instanceOptions;
+    if (JSON.stringify([...selector.options].slice(1).map(option => option.value)) !== JSON.stringify(ids)) {
+      const selected = this.instanceId;
+      selector.replaceChildren(new Option('All installations', ''), ...ids.filter(Boolean).map(id => new Option(id, id)));
+      if (selected && !ids.includes(selected)) selector.append(new Option(selected, selected));
+      selector.value = selected;
+    }
+    const newest = number(overview.lastUpdated);
+    this.el.freshness.textContent = this.lastFetchedAt ? `Fetched ${relativeTime(this.lastFetchedAt)} · ${newest ? `collector data ${relativeTime(newest)}` : 'no collector data yet'}` : 'Waiting for a snapshot';
+    const sourceIds = [...new Set([...array(overview.providers), ...this.providers].map(row => text(object(row).id, '')).filter(Boolean))].sort();
+    const source = this.el['source-filter'], selected = source.value;
+    if (JSON.stringify([...source.options].slice(1).map(option => option.value)) !== JSON.stringify(sourceIds)) {
+      source.replaceChildren(new Option('All providers', ''), ...sourceIds.map(id => new Option(id, id)));
+      if (selected && !sourceIds.includes(selected)) source.append(new Option(selected, selected)); source.value = selected;
+    }
+  }
+  renderOverview() {
+    const overview = object(this.overview), health = object(overview.health), usage = object(overview.usage), status = this.el['overview-status'];
+    const name = ['healthy', 'degraded', 'offline', 'no_data'].includes(health.status) ? health.status : 'no_data';
+    const titles = { healthy: 'Installation data is current', degraded: 'Some sources need attention', offline: 'Installations are disconnected', no_data: 'Waiting for the first collector' };
+    const descriptions = {
+      healthy: 'Inspect individual provider observations below. Connected does not guarantee every request will succeed.',
+      degraded: 'Review limited providers, errors and recent request attempts to find the next step.',
+      offline: 'No installation is reporting fresh data. The last observations remain available for diagnosis.',
+      no_data: 'Connect the private collector on your Grunt installation to start collecting request history.'
+    };
+    status.className = `pool-status ${name}`;
+    status.querySelector('h2').textContent = titles[name]; status.querySelector('p').textContent = descriptions[name];
+    const active = array(overview.instances).map(object).filter(row => row.connected === true && object(row.system).daemonReachable !== false)
+      .map(row => object(row.snapshot).activeRequests).filter(value => count(value) !== null);
+    const items = [['Connected installations', count(health.connectedInstances) === null ? 'Not reported' : `${formatCount(health.connectedInstances)} / ${formatCount(health.totalInstances)}`],
+      ['Active source calls', active.length ? formatCount(active.reduce((sum, value) => sum + value, 0)) : 'Not reported'],
+      ['Verified providers', formatCount(health.readyProviders)], ['Failed provider attempts', formatCount(usage.failures)]];
+    this.el['summary-strip'].replaceChildren(...items.map(([label, value]) => { const group = element('div'); group.append(element('dt', '', label), element('dd', '', value)); return group; }));
+    this.el['overview-providers'].replaceChildren(this.providerTable(array(overview.providers), true));
+    this.el['overview-requests'].replaceChildren(this.requestTable(this.requests, true));
+  }
+  providerTable(values, compact = false) {
+    const providers = values.map(object);
+    if (!providers.length) return empty('No provider observations yet', 'Provider rows appear after a connected collector reads the local daemon. This view never sends test prompts.');
+    const headers = compact ? ['Provider', 'State', ['Last reply', 'number'], ['Active', 'number']]
+      : ['Provider / configured model', 'State', ['Last reply', 'number'], ['Retry / failure', 'hide-mobile'], ['Observed', 'hide-mobile']];
+    const { result, body } = table(headers, 'provider-table');
+    for (const provider of providers) {
+      const row = element('tr'), identity = element('div'), providerButton = element('button', 'row-button', text(provider.id));
+      providerButton.type = 'button'; providerButton.title = `Inspect ${text(provider.id)} on ${text(provider.instanceId)}`;
+      providerButton.addEventListener('click', () => this.openProvider(provider)); identity.append(providerButton);
+      identity.append(element('span', 'secondary', text(provider.instanceId, 'Installation not reported')));
+      if (!compact) identity.append(element('code', 'secondary', text(provider.model, 'Model not reported')));
+      const installation = array(object(this.overview).instances).map(object).find(item => item.id === provider.instanceId);
+      const stale = !installation || installation.connected !== true || object(installation.system).daemonReachable === false
+        || !date(provider.lastObservedAt) || Date.now() - provider.lastObservedAt > 90000;
+      cell(row, identity, 'model-cell');
+      const status = element('div');
+      status.append(stale ? badge('offline', 'Stale observation') : badge(provider.state));
+      if (stale) status.append(element('span', 'secondary', `Last state: ${stateLabel(provider.state)}`));
+      cell(row, status);
+      const reply = element('div'); reply.append(document.createTextNode(formatDuration(provider.lastReplyMs)), element('span', 'secondary', provider.lastSuccessAt ? relativeTime(provider.lastSuccessAt) : 'No observed reply'));
+      cell(row, reply, 'number');
+      if (compact) cell(row, stale ? '—' : formatCount(provider.active), 'number');
+      else {
+        const failure = element('div', '', provider.errorCode ? errorLabel(provider.errorCode) : 'None reported');
+        if (number(provider.retryAt) !== null && provider.retryAt > Date.now()) failure.append(element('span', 'secondary', `Retry ${relativeTime(provider.retryAt)}`));
+        cell(row, failure, 'hide-mobile'); cell(row, timestamp(provider.lastObservedAt), 'hide-mobile');
+      }
+      body.append(row);
+    }
+    return result;
+  }
+  requestTable(values, compact = false) {
+    const requests = values.map(object);
+    if (!requests.length) return empty('No requests in this view', 'Normal coding requests will appear after collection starts. Try another provider or outcome filter if history is already available.');
+    const { result, body } = table(compact ? ['Request / route', 'Outcome', ['Duration', 'number'], ['Started', 'hide-mobile']]
+      : ['Request / route', 'Outcome', ['Attempts', 'number hide-mobile'], ['HTTP', 'number'], ['Duration', 'number'], ['Started', 'hide-mobile']], 'request-table');
+    for (const request of requests) {
+      const row = element('tr'), identity = element('div'), button = element('button', 'row-button', text(request.id).slice(0, 8));
+      button.type = 'button'; button.title = `Open request ${text(request.id)}`;
+      button.addEventListener('click', () => this.openTrace(request));
+      identity.append(button, element('span', 'secondary mono', text(request.source, array(request.sources).map(source => text(source, '')).filter(Boolean).join(' → ') || 'No provider reported')),
+        element('span', 'secondary', `${text(request.instanceId)} · ${text(request.kind, 'Kind not reported')}`));
+      cell(row, identity, 'request-model'); cell(row, badge(request.outcome));
+      if (!compact) { cell(row, formatCount(request.attemptCount), 'number hide-mobile'); cell(row, count(request.httpStatus) === null ? '—' : String(request.httpStatus), 'number'); }
+      cell(row, formatDuration(request.durationMs), 'number'); cell(row, timestamp(request.startedAt), 'hide-mobile'); body.append(row);
+    }
+    return result;
+  }
+  renderRequests() {
+    const search = this.el['request-search'].value.trim().toLowerCase();
+    const requests = search ? this.requests.filter(row => text(object(row).id, '').toLowerCase().includes(search)) : this.requests;
+    this.el['request-list'].replaceChildren(this.requestTable(requests));
+    this.el['request-count'].textContent = `${formatCount(requests.length)} loaded requests${search ? ' matching this ID' : ''}`;
+    this.el['load-more'].hidden = !this.nextCursor;
+  }
+  async loadEarlier() {
+    if (!this.nextCursor || !this.session) return;
+    const button = this.el['load-more']; button.disabled = true;
+    const instance = this.instanceId, before = this.nextCursor, filter = JSON.stringify(this.requestParams());
+    try {
+      const result = object(await this.api('/api/requests' + this.query({ ...this.requestParams(), before })));
+      if (instance !== this.instanceId || filter !== JSON.stringify(this.requestParams())) return;
+      const known = new Set(this.requests.map(row => `${object(row).instanceId}:${object(row).id}`));
+      this.requests.push(...array(result.requests).filter(row => !known.has(`${object(row).instanceId}:${object(row).id}`)));
+      this.pagesLoaded = true;
+      this.nextCursor = typeof result.nextCursor === 'string' ? result.nextCursor : null; this.renderRequests();
+    } catch (error) {
+      if ([401, 403].includes(error.status)) this.authState('Your owner session is no longer available. Sign in again.', { login: true });
+      else this.connectionNotice('Earlier requests could not be loaded. Try again; the current rows are still available.');
+    } finally { button.disabled = false; }
+  }
+  renderUsage() {
+    const usage = object(object(this.overview).usage);
+    const items = [['Input tokens reported', formatCount(usage.inputTokens), 'Repeated context is included when reported.'],
+      ['Output tokens reported', formatCount(usage.outputTokens), 'Generated output reported by providers.'],
+      ['Logical requests', formatCount(usage.requests), 'Collected requests in this reporting window.'],
+      ['Provider attempts', formatCount(usage.attempts), 'Includes retries and fallback attempts.']];
+    this.el['usage-summary'].replaceChildren(...items.map(([label, value, description]) => { const group = element('div'); group.append(element('dt', '', label), element('dd', '', value), element('dd', 'usage-description', description)); return group; }));
+    this.el['usage-coverage'].textContent = `${usageCoverage(usage)}${date(usage.since) ? ` Reporting window starts ${new Date(usage.since).toLocaleString()}.` : ''}`;
+  }
+  renderRuns() {
+    const runs = object(this.runs), maintenance = array(runs.maintenance).map(object), scouts = array(runs.scout).map(object);
+    if (!maintenance.length) this.el['maintenance-list'].replaceChildren(empty('No maintenance observations yet', 'The collector will report each source’s last check, evidence type and next scheduled check.'));
+    else {
+      const { result, body } = table(['Provider / installation', 'Outcome', 'Evidence', ['Last check', 'hide-mobile'], 'Next check']);
+      for (const item of maintenance) {
+        const row = element('tr'), identity = element('div', 'mono', text(item.source)); identity.append(element('span', 'secondary', text(item.instanceId)));
+        const outcome = element('div'); outcome.append(badge(item.outcome));
+        if (item.code) outcome.append(element('span', 'secondary', errorLabel(item.code)));
+        cell(row, identity); cell(row, outcome); cell(row, text(item.evidence)); cell(row, timestamp(item.lastCheckedAt ?? item.lastAttemptAt), 'hide-mobile'); cell(row, timestamp(item.nextCheckAt));
+        body.append(row);
+      }
+      this.el['maintenance-list'].replaceChildren(element('div', 'table-area')); this.el['maintenance-list'].firstChild.append(result);
+    }
+    if (!scouts.length) this.el['scout-list'].replaceChildren(empty('No scout observations yet', 'Connect the Chad collector to see discovery and release progress. Research, successful probes and publication are distinct stages.'));
+    else {
+      const list = element('div', 'run-list');
+      for (const scout of scouts) {
+        const item = element('article', 'run-item'), heading = element('div', 'item-heading');
+        heading.append(element('h3', '', text(scout.instanceId)), badge(scout.status)); item.append(heading,
+          fields([['Run', text(scout.runId), true], ['Started', timestamp(scout.startedAt)], ['Finished', timestamp(scout.finishedAt)], ['Last progress', timestamp(scout.heartbeatAt)], ['Candidates observed', formatCount(array(scout.candidates).length)]]));
+        const candidates = array(scout.candidates).map(object);
+        if (candidates.length) {
+          const details = element('details', 'run-candidates'); details.append(element('summary', '', 'Inspect candidate stages'));
+          const { result, body } = table(['Model', 'Qualification', 'Release']);
+          for (const candidate of candidates) {
+            const row = element('tr'), model = element('div'), release = element('div');
+            model.append(element('code', '', text(candidate.model, text(candidate.id))));
+            if (own(PIPELINE_REASONS, candidate.reasonCode)) model.append(element('span', 'secondary', PIPELINE_REASONS[candidate.reasonCode]));
+            cell(row, model); cell(row, badge(candidate.status));
+            release.append(candidate.pipelineStatus ? badge(candidate.pipelineStatus, candidate.pipelineStatus === 'ready' ? 'Ready for release' : undefined) : document.createTextNode('Not submitted'));
+            if (typeof candidate.phase === 'string') release.append(element('span', 'secondary', `Phase: ${text(candidate.phase)}`));
+            const proof = value => value === true ? 'passed' : value === false ? 'not passed' : 'unknown';
+            release.append(element('span', 'secondary', `Checks ${proof(candidate.checksPassed)} · live probe ${proof(candidate.supervisorProbePassed)}`));
+            if (count(candidate.approvedReviewCount) !== null) release.append(element('span', 'secondary', `${candidate.approvedReviewCount}/2 independent reviews approved`));
+            cell(row, release); body.append(row);
+          }
+          const scroll = element('div', 'table-area'); scroll.append(result); details.append(scroll); item.append(details);
+        }
+        list.append(item);
+      }
+      this.el['scout-list'].replaceChildren(list);
+    }
+  }
+  renderSystem() {
+    const instances = array(object(this.overview).instances).map(object);
+    if (!instances.length) { this.el['system-list'].replaceChildren(empty('No installation has connected', 'Configure and run the private collector on your installation. The inference daemon can remain bound to loopback.')); return; }
+    const list = element('div', 'system-list');
+    for (const instance of instances) {
+      const system = object(instance.system), item = element('article', 'system-item'), heading = element('div', 'item-heading');
+      heading.append(element('h3', '', text(instance.id)), badge(instance.connected === true ? 'healthy' : 'offline', instance.connected === true ? 'Collector connected' : 'Collector offline')); item.append(heading);
+      const bytes = value => number(value) === null ? 'Not reported' : `${(value / 1024 ** 3).toFixed(2)} GiB`;
+      const uptime = value => number(value) === null ? 'Not reported' : formatDuration(value * 1000);
+      item.append(fields([['Last collector contact', timestamp(instance.lastSeenAt)], ['Observation collected', timestamp(instance.observedAt)],
+        ['Runtime version', text(system.version), true], ['Node version', text(system.nodeVersion), true], ['Platform', text(system.platform)], ['CPU count', formatCount(system.cpuCount)],
+        ['Load average · 1 / 5 / 15 min', array(system.loadAverage).length === 3 && system.loadAverage.every(value => number(value) !== null) ? system.loadAverage.map(value => value.toFixed(2)).join(' / ') : 'Not reported'],
+        ['System uptime', uptime(system.systemUptimeSeconds)], ['Collector uptime', uptime(system.collectorUptimeSeconds)],
+        ['Memory free / total', `${bytes(system.memoryFreeBytes)} / ${bytes(system.memoryTotalBytes)}`],
+        ['Daemon connection', typeof system.daemonReachable === 'boolean' ? system.daemonReachable ? 'Reachable' : 'Unreachable' : 'Not reported'],
+        ['Request diagnostics', typeof system.diagnosticsAvailable === 'boolean' ? system.diagnosticsAvailable ? 'Available' : 'Unavailable' : 'Not reported'],
+        ['Collector observations', array(system.collectorErrors).length ? array(system.collectorErrors).map(value => text(value).replaceAll('_', ' ')).join('; ') : 'No errors reported']]));
+      list.append(item);
+    }
+    this.el['system-list'].replaceChildren(list);
+  }
+  async openTrace(request) {
+    if (typeof request.id !== 'string') return;
+    this.traceAbort?.abort(); this.traceAbort = new AbortController();
+    const signal = this.traceAbort.signal, sequence = ++this.detailSequence; this.traceBusy = true;
+    this.lastFocused = document.activeElement; this.traceRequest = request;
+    this.el['trace-title'].textContent = 'Request details'; this.el['trace-id'].textContent = request.id;
+    this.el['trace-content'].replaceChildren(loading('Loading this request’s timeline…'));
+    if (!this.el['trace-dialog'].open) this.el['trace-dialog'].showModal();
+    try {
+      const query = new URLSearchParams(); if (request.instanceId) query.set('instanceId', request.instanceId);
+      const value = object(await this.api(`/api/requests/${encodeURIComponent(request.id)}${query.size ? `?${query}` : ''}`, { signal }));
+      if (signal.aborted || sequence !== this.detailSequence) return;
+      this.renderTrace(object(value.request), array(value.events));
+    } catch (error) {
+      if (signal.aborted) return;
+      if ([401, 403].includes(error.status)) { this.authState('Your owner session is no longer available. Sign in again.', { login: true }); return; }
+      const wrapper = element('div'); wrapper.append(empty(error.status === 404 ? 'Request history is no longer available' : 'Timeline could not be loaded', error.status === 404 ? 'The request may have expired from the retention window. Return to request history for current observations.' : 'The admin service could not return this request. Try loading it again.'));
+      if (error.status !== 404) { const retry = element('button', 'button', 'Load timeline again'); retry.type = 'button'; retry.addEventListener('click', () => this.openTrace(request)); wrapper.append(retry); }
+      this.el['trace-content'].replaceChildren(wrapper);
+    } finally { if (sequence === this.detailSequence) this.traceBusy = false; }
+  }
+  openProvider(provider) {
+    this.traceAbort?.abort(); this.detailSequence++; this.traceBusy = false; this.traceRequest = null;
+    this.lastFocused = document.activeElement;
+    const installation = array(object(this.overview).instances).map(object).find(item => item.id === provider.instanceId);
+    const stale = !installation || installation.connected !== true || object(installation.system).daemonReachable === false
+      || !date(provider.lastObservedAt) || Date.now() - provider.lastObservedAt > 90000;
+    this.el['trace-title'].textContent = text(provider.id);
+    this.el['trace-id'].textContent = `${text(provider.instanceId)} · provider observation`;
+    const summary = element('section', 'trace-summary');
+    summary.append(fields([['Current observation', stale ? badge('offline', 'Stale observation') : badge(provider.state)],
+      ['Last reported state', stateLabel(provider.state)], ['Configured model', text(provider.model), true],
+      ['Active calls', stale ? 'Unknown while disconnected' : formatCount(provider.active)],
+      ['Last verified reply', timestamp(provider.lastSuccessAt, true)], ['Last reply duration', formatDuration(provider.lastReplyMs)],
+      ['Last reported failure', provider.errorCode ? errorLabel(provider.errorCode) : 'None reported'],
+      ['Retry time', timestamp(provider.retryAt, true)], ['Observed', timestamp(provider.lastObservedAt, true)]]));
+    const history = element('button', 'button', 'View this provider’s requests'); history.type = 'button';
+    history.addEventListener('click', () => {
+      this.instanceId = text(provider.instanceId, ''); this.sourceFilter = text(provider.id, ''); this.outcomeFilter = '';
+      this.el['source-filter'].value = this.sourceFilter; this.el['outcome-filter'].value = '';
+      this.el['request-search'].value = ''; this.el['open-request-id'].disabled = true;
+      this.resetRequests(); this.lastFocused = null; this.closeTrace();
+      if (window.location.hash === '#requests') this.navigate(); else window.location.hash = '#requests';
+    });
+    const note = element('p', 'section-note', 'A configured model label describes the requested route. It does not independently identify the physical model. Quota and capacity failures need the request timeline for more evidence.');
+    this.el['trace-content'].replaceChildren(summary, history, note);
+    if (!this.el['trace-dialog'].open) this.el['trace-dialog'].showModal();
+  }
+  async updateTrace() {
+    if (this.traceBusy || !this.traceRequest || !this.el['trace-dialog'].open) return;
+    const request = this.traceRequest; this.traceAbort = new AbortController();
+    const signal = this.traceAbort.signal, sequence = ++this.detailSequence; this.traceBusy = true;
+    try {
+      const query = new URLSearchParams(); if (request.instanceId) query.set('instanceId', request.instanceId);
+      const value = object(await this.api(`/api/requests/${encodeURIComponent(request.id)}${query.size ? `?${query}` : ''}`, { signal }));
+      if (signal.aborted || sequence !== this.detailSequence) return;
+      const scroll = this.el['trace-dialog'].scrollTop;
+      this.renderTrace(object(value.request), array(value.events)); this.el['trace-dialog'].scrollTop = scroll;
+    } catch (error) {
+      if (signal.aborted) return;
+      if ([401, 403].includes(error.status)) { this.authState('Your owner session is no longer available. Sign in again.', { login: true }); return; }
+      if (!this.el['trace-content'].querySelector('.trace-error')) this.el['trace-content'].prepend(element('div', 'notice trace-error', 'This timeline could not be refreshed. The last loaded snapshot remains visible.'));
+    } finally { if (sequence === this.detailSequence) this.traceBusy = false; }
+  }
+  closeTrace() { this.traceAbort?.abort(); if (this.el['trace-dialog'].open) this.el['trace-dialog'].close(); }
+  renderTrace(request, values) {
+    const content = this.el['trace-content'], summary = element('section', 'trace-summary');
+    const sourceChain = array(request.sources).map(value => text(value, '')).filter(Boolean).join(' → ');
+    summary.append(fields([['Outcome', badge(request.outcome)], ['Installation', text(request.instanceId)], ['Started', timestamp(request.startedAt, true)], ['Duration', formatDuration(request.durationMs)],
+      ['Provider route', sourceChain || text(request.source)], ['Attempt count', formatCount(request.attemptCount)], ['Input tokens', formatCount(request.inputTokens)], ['Output tokens', formatCount(request.outputTokens)],
+      ['HTTP outcome', count(request.httpStatus) === null ? 'Not reported' : String(request.httpStatus)], ['Failure class', request.errorCode ? errorLabel(request.errorCode) : 'None reported']]));
+    const copy = element('button', 'button copy-id', 'Copy request ID'); copy.type = 'button';
+    copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(text(request.id, '')); copy.textContent = 'Request ID copied'; } catch { copy.textContent = 'Select the request ID above to copy'; } }); summary.append(copy);
+    const title = element('h2', 'trace-title', 'Routing timeline'), list = element('ol', 'timeline');
+    for (const event of values.map(object).sort((left, right) => (number(left.at) ?? 0) - (number(right.at) ?? 0))) {
+      const item = element('li', own(LABELS, event.outcome) ? event.outcome : ''), header = element('div', 'event-heading'), identity = element('div');
+      identity.append(element('h3', '', own(EVENT_LABELS, event.type) ? EVENT_LABELS[event.type] : 'Diagnostic observation'));
+      const source = [typeof event.source === 'string' ? event.source : null, typeof event.model === 'string' ? event.model : null].filter(Boolean).join(' · ');
+      if (source) identity.append(element('p', 'event-source mono', source));
+      header.append(identity, timestamp(event.at, true)); item.append(header);
+      const details = [];
+      if (own(LABELS, event.outcome)) details.push(['Outcome', badge(event.outcome)]);
+      if (number(event.durationMs) !== null) details.push(['Duration', formatDuration(event.durationMs)]);
+      if (count(event.httpStatus) !== null) details.push(['HTTP status', String(event.httpStatus)]);
+      if (event.httpMethod) details.push(['Method', text(event.httpMethod), true]);
+      if (event.endpointLabel) details.push(['Endpoint', text(event.endpointLabel), true]);
+      if (event.transport) details.push(['Transport', text(event.transport)]);
+      if (event.errorCode) details.push(['Failure class', errorLabel(event.errorCode)]);
+      if (event.networkCode) details.push(['Network code', text(event.networkCode), true]);
+      if (Number.isInteger(event.exitCode)) details.push(['CLI exit code', String(event.exitCode)]);
+      if (number(event.retryAfterSeconds) !== null) details.push(['Reported retry delay', `${event.retryAfterSeconds} s`]);
+      if (own(REASONS, event.reason)) details.push(['Routing reason', REASONS[event.reason]]);
+      if (event.type === 'attempt.finish' || event.type === 'request.finish') details.push(['Input / output tokens', `${formatCount(event.inputTokens)} / ${formatCount(event.outputTokens)}`]);
+      if (details.length) item.append(fields(details, 'event-fields'));
+      list.append(item);
+    }
+    content.replaceChildren(summary, title, values.length ? list : empty('No attempt events retained', 'The request summary is available, but its detailed events were not reported or have expired.'));
+    const note = element('p', 'section-note'); note.textContent = 'HTTP 429 identifies a limit response; it does not alone confirm daily quota exhaustion. Only observed diagnostic fields are shown. Request content and raw upstream payloads are excluded.'; content.append(note);
+  }
+  async signOut() {
+    this.el['sign-out'].disabled = true;
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (typeof this.session?.csrfToken === 'string') headers['X-CSRF-Token'] = this.session.csrfToken;
+      await this.api('/auth/logout', { method: 'POST', headers, body: '{}' }); this.authState('You have signed out.', { login: true });
+    } catch (error) {
+      if ([401, 403].includes(error.status)) this.authState('Your owner session is no longer available.', { login: true });
+      else this.connectionNotice('Sign-out could not be confirmed. Try again before leaving this device.');
+    } finally { this.el['sign-out'].disabled = false; }
+  }
+  async exportData() {
+    const button = this.el.export; button.disabled = true;
+    try {
+      const response = await this.api('/api/export' + this.query(), { download: true });
+      if (!response.headers.get('content-type')?.toLowerCase().startsWith('application/json') || Number(response.headers.get('content-length')) > 16 * 1024 * 1024) throw new Error('invalid_export');
+      const blob = await response.blob();
+      if (blob.size > 16 * 1024 * 1024) throw new Error('export_too_large');
+      const url = URL.createObjectURL(blob), link = element('a');
+      link.href = url; link.download = `grunt-diagnostics-${new Date().toISOString().slice(0, 10)}.json`; link.hidden = true;
+      document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+      this.el.announcement.textContent = 'Redacted diagnostic export downloaded.';
+    } catch (error) {
+      if ([401, 403].includes(error.status)) this.authState('Your owner session is no longer available. Sign in again.', { login: true });
+      else this.connectionNotice('The diagnostic export could not be downloaded. Try again after checking the admin connection.');
+    } finally { button.disabled = false; }
+  }
+}
+
+if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+  try { const console = new AdminConsole(); void console.start(); }
+  catch {
+    const message = document.getElementById('auth-message');
+    if (message) message.textContent = 'The admin endpoint configuration is invalid. Check the deployment configuration.';
+  }
+}

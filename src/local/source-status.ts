@@ -1,5 +1,8 @@
 import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
 import type { MaintenanceEntry } from './maintenance.js';
+import { randomUUID } from 'node:crypto';
+import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
+import type { DiagnosticsStore } from './diagnostics.js';
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
 export interface SourceSnapshot {
@@ -42,6 +45,8 @@ const detail: Record<SourceState, string> = {
 // snapshot never calls a provider, reads credentials, or stores request content.
 export class SourceStatus {
   private observations = new Map<string, Observation>();
+  private diagnostics: DiagnosticsStore | undefined;
+  setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
   constructor(ids: readonly string[], private now: () => number = Date.now) {
     for (const id of ids) this.observations.set(id, { state: 'unknown', active: 0, revision: 0 });
   }
@@ -94,6 +99,29 @@ export class SourceStatus {
     }
   }
   async complete(source: Source, request: ModelRequest, signal: AbortSignal, guard?: ObservationGuard): Promise<Completion> {
+    if (!this.diagnostics) return this.observedComplete(source, request, signal, guard);
+    const parent = currentDiagnosticContext() ?? { requestId: randomUUID(), kind: 'diagnostic' as const };
+    const attemptId = randomUUID(), started = this.now(), startedMono = performance.now();
+    const base = { version: 1 as const, requestId: parent.requestId, kind: parent.kind, attemptId, source: source.id };
+    this.diagnostics.record({ ...base, id: randomUUID(), at: started, type: 'attempt.start' });
+    return withDiagnosticContext({ ...parent, attemptId, sink: this.diagnostics! }, async () => {
+      try {
+        const result = await this.observedComplete(source, request, signal, guard);
+        this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
+          outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
+          ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
+          ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });
+        return result;
+      } catch (error) {
+        const value = error && typeof error === 'object' ? error as { diagnostics?: object; retryAfter?: unknown } : {};
+        this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(value.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
+          outcome: signal.aborted ? 'cancelled' : 'failed', errorCode: signal.aborted ? 'cancelled' : failureCode(error),
+          durationMs: Math.max(0, performance.now() - startedMono), ...(typeof value.retryAfter === 'number' ? { retryAfterSeconds: value.retryAfter } : {}) });
+        throw error;
+      }
+    });
+  }
+  private async observedComplete(source: Source, request: ModelRequest, signal: AbortSignal, guard?: ObservationGuard): Promise<Completion> {
     const entry = this.entry(source.id), started = this.now();
     entry.active++;
     try {

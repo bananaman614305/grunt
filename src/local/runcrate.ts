@@ -1,3 +1,4 @@
+import { diagnosticFetch } from './diagnostics.js';
 import { FreeApi } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
@@ -39,7 +40,7 @@ export class Runcrate implements Source {
     if (!await this.approved()) return false;
     try {
       const grant = await this.grant();
-      const response = await (this.options.fetcher ?? fetch)(`${grant.base_url}/v1/models`, {
+      const response = await diagnosticFetch(this.options.fetcher ?? fetch, 'runcrate', 'models')(`${grant.base_url}/v1/models`, {
         headers: { Authorization: `Bearer ${grant.token}` }, redirect: 'error', signal: AbortSignal.timeout(5000)
       });
       if (!response.ok) { await response.body?.cancel(); return false; }

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https://api.grunt.run; object-src 'none'; base-uri 'none'; form-action 'self' https://api.grunt.run">
+  <meta name="grunt-admin-api" content="https://api.grunt.run/admin">
+  <meta name="theme-color" content="#0d121c">
+  <title>Grunt admin</title>
+  <link rel="icon" href="../favicon.svg">
+  <link rel="stylesheet" href="./admin.css">
+  <script src="./admin.js" type="module"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to diagnostics</a>
+  <section class="auth-screen" id="auth-screen" aria-labelledby="auth-title">
+    <a class="brand auth-brand" href="/" aria-label="Grunt home"><img src="../grunt.svg" alt="" width="38" height="38"><span>grunt</span></a>
+    <div class="auth-content">
+      <h1 id="auth-title">Grunt admin</h1>
+      <p id="auth-description">Connecting to the admin service…</p>
+      <p class="auth-message" id="auth-message" role="status" aria-live="polite"></p>
+      <a class="button primary google-button" id="google-login" href="https://api.grunt.run/admin/auth/google" aria-describedby="auth-description" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.6 12.2c0-.7-.1-1.4-.2-2.1H12v4h5.4a4.6 4.6 0 0 1-2 3v2.5h3.3c1.9-1.8 2.9-4.3 2.9-7.4ZM12 22c2.7 0 5-.9 6.7-2.4l-3.3-2.5c-.9.6-2.1 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3v2.6A10 10 0 0 0 12 22ZM6.4 14a6 6 0 0 1 0-4V7.4H3a10 10 0 0 0 0 9.2L6.4 14ZM12 5.9c1.5 0 2.8.5 3.8 1.5l2.8-2.9A9.6 9.6 0 0 0 12 2a10 10 0 0 0-9 5.4L6.4 10c.8-2.4 3-4.1 5.6-4.1Z"/></svg>
+        Continue with Google
+      </a>
+      <button class="button" id="auth-retry" type="button" hidden>Try connecting again</button>
+      <p class="auth-note">Owner access only. Request content and provider credentials are excluded from diagnostics.</p>
+    </div>
+    <noscript><p class="notice">Enable JavaScript to view the diagnostic console.</p></noscript>
+  </section>
+
+  <div class="console" id="console" hidden>
+    <aside class="sidebar" aria-label="Admin navigation">
+      <a class="brand" href="/" aria-label="Grunt home"><img src="../grunt.svg" alt="" width="32" height="32"><span>grunt</span></a>
+      <nav class="navigation" aria-label="Diagnostics">
+        <a href="#overview" data-view="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>Overview</a>
+        <a href="#requests" data-view="requests"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h10M4 19h16M18 9l3 3-3 3"/></svg>Requests</a>
+        <a href="#providers" data-view="providers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 14h6v6h-6zM14 7h6M17 4v6M4 17h6M7 14v6M10 7h2v10h2"/></svg>Providers</a>
+        <a href="#usage" data-view="usage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V4M4 20h17M9 16v-5M14 16V7M19 16v-9"/></svg>Usage</a>
+        <a href="#runs" data-view="runs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5M12 7v5l3 2"/></svg>Maintenance &amp; scout</a>
+        <a href="#system" data-view="system"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg>System</a>
+      </nav>
+      <div class="sidebar-footer"><span class="owner-email" id="owner-email"></span><button type="button" class="text-button" id="sign-out">Sign out</button></div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="page-heading"><h1 id="page-title">Overview</h1><p id="page-description">Follow requests, provider availability and background work.</p></div>
+        <div class="header-actions"><button class="button compact" type="button" id="refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5"/></svg><span>Refresh</span></button><button class="button compact" type="button" id="export"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 16v5h16v-5"/></svg><span>Export diagnostics</span></button></div>
+      </header>
+      <div class="context-bar"><label for="instance-select">Installation <select id="instance-select"><option value="">All installations</option></select></label><p class="freshness" id="freshness">Waiting for a snapshot</p></div>
+      <div class="notice connection-notice" id="connection-notice" role="status" aria-live="polite" hidden></div>
+      <p class="sr-only" id="announcement" role="status" aria-live="polite"></p>
+
+      <main id="main-content" tabindex="-1">
+        <section class="view" id="view-overview" aria-labelledby="overview-heading">
+          <h2 class="sr-only" id="overview-heading">Overview</h2>
+          <div id="overview-status" class="pool-status loading"><span class="status-light" aria-hidden="true"></span><div><h2>Waiting for diagnostic data</h2><p>The console will show actual installation and provider observations here.</p></div></div>
+          <dl class="summary-strip" id="summary-strip"></dl>
+          <section class="data-section"><div class="section-heading"><h2>Provider availability</h2><a href="#providers">View providers</a></div><div id="overview-providers" class="table-area"></div></section>
+          <section class="data-section"><div class="section-heading"><h2>Recent requests</h2><a href="#requests">View request history</a></div><div id="overview-requests" class="table-area"></div></section>
+        </section>
+
+        <section class="view" id="view-requests" aria-labelledby="requests-heading" hidden>
+          <h2 class="sr-only" id="requests-heading">Request history</h2>
+          <form class="filters" id="request-filters"><label>Provider <select id="source-filter"><option value="">All providers</option></select></label><label>Outcome <select id="outcome-filter"><option value="">All outcomes</option><option value="passed">Succeeded</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option><option value="pending">In progress</option></select></label><label>Request ID <input id="request-search" type="search" placeholder="Paste ID or filter loaded requests" autocomplete="off" maxlength="128"></label><button class="button" id="open-request-id" type="button" disabled title="Open a complete request ID, including older requests outside the loaded page">Open ID</button><button class="button" type="submit">Apply filters</button></form>
+          <p class="section-note">Open a request to inspect its provider attempts and fallback timeline.</p>
+          <div id="request-list" class="table-area"></div>
+          <div class="pagination"><span id="request-count"></span><button class="button" id="load-more" type="button" hidden>Load earlier requests</button></div>
+        </section>
+
+        <section class="view" id="view-providers" aria-labelledby="providers-heading" hidden>
+          <h2 class="sr-only" id="providers-heading">Providers</h2><p class="section-note">Provider state comes from the latest collected observation. A configured model label is not physical-model attestation.</p><div id="provider-list" class="table-area"></div>
+        </section>
+
+        <section class="view" id="view-usage" aria-labelledby="usage-heading" hidden>
+          <h2 id="usage-heading">Observed usage</h2><p class="section-note">Input and output are reported separately. Missing token reports remain unknown; provider credits and billing units are not counted as model tokens.</p><dl id="usage-summary" class="usage-summary"></dl><div id="usage-coverage" class="notice"></div><section class="data-section"><h2>What these figures establish</h2><div class="reading-text"><p>These are observations from collected requests, not a guaranteed daily allowance. Repeated conversation context counts as input again when a provider reports it.</p><p>Account quotas, monthly budgets and theoretical rate limits need separate verification. No sustainable-capacity estimate is shown until enough measured evidence is available.</p></div></section>
+        </section>
+
+        <section class="view" id="view-runs" aria-labelledby="runs-heading" hidden>
+          <h2 class="sr-only" id="runs-heading">Maintenance and scouting</h2><section class="data-section first"><div class="section-heading"><h2>Daily maintenance</h2><span class="section-note">Provider checks</span></div><div id="maintenance-list"></div></section><section class="data-section"><div class="section-heading"><h2>Provider scout</h2><span class="section-note">Discovery through release</span></div><div id="scout-list"></div></section>
+        </section>
+
+        <section class="view" id="view-system" aria-labelledby="system-heading" hidden>
+          <h2 class="sr-only" id="system-heading">Installation health</h2><p class="section-note">The collector reports safe runtime metadata. Offline installations retain their last observation and its timestamp.</p><div id="system-list"></div>
+        </section>
+      </main>
+      <footer class="console-footer"><span>Read-only diagnostics</span><span id="polling-note">Refreshes every 10 seconds while this tab is visible</span></footer>
+    </div>
+  </div>
+
+  <dialog id="trace-dialog" aria-labelledby="trace-title">
+    <header class="trace-heading"><div><h2 id="trace-title">Request details</h2><p class="mono" id="trace-id"></p></div><button class="icon-button" id="close-trace" type="button" aria-label="Close request details"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+    <div class="trace-content" id="trace-content"></div>
+  </dialog>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import { diagnosticFetch } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
@@ -106,7 +107,7 @@ function status(response: Response) {
   const seconds = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
   void response.body?.cancel().catch(() => {});
   throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-    `Pollinations returned HTTP ${response.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined);
+    `Pollinations returned HTTP ${response.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined, undefined, { httpStatus: response.status, transport: 'http' });
 }
 // Nonbillable metadata only. The authoritative server's zero-budget rule
 // rejects every non-free model even when account funds exist. Quest-only keys
@@ -118,7 +119,7 @@ export async function verifyPollinationsAccess(grant: AccessGrant, options: { fe
   try {
     const get = async (path: string) => {
       combined.throwIfAborted();
-      const response = await (options.fetcher ?? fetch)(`${access.base_url}${path}`, {
+      const response = await diagnosticFetch(options.fetcher ?? fetch, 'pollinations', path.startsWith('/v1/models/') ? 'models' : 'account')(`${access.base_url}${path}`, {
         headers: { Authorization: `Bearer ${access.token}` }, redirect: 'error', signal: combined
       });
       status(response);
@@ -216,7 +217,7 @@ export class Pollinations implements Source {
         signal.throwIfAborted();
         const grant = await this.grant();
         await verifyPollinationsAccess(grant, { fetcher: this.options.fetcher ?? fetch, signal });
-        const response = await (this.options.fetcher ?? fetch)(`${grant.base_url}/v1/chat/completions`, {
+        const response = await diagnosticFetch(this.options.fetcher ?? fetch, 'pollinations', 'chat.completions')(`${grant.base_url}/v1/chat/completions`, {
           method: 'POST', redirect: 'error', signal,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
           body: JSON.stringify({ model: POLLINATIONS_WIRE_MODEL, messages: [{ role: 'user', content: bridge.prompt(attempt > 0) }],

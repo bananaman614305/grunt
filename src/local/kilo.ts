@@ -4,6 +4,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { SourceError } from './source.js';
+import { diagnosticFetch } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const KILO_PARTICLE = 'particle-ai/particle-1:free';
@@ -34,14 +35,15 @@ function status(response: Response) {
   const raw = response.headers.get('retry-after'), seconds = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
   void response.body?.cancel().catch(() => {});
   throw new SourceError(response.status === 429 ? 'quota' : [401, 402, 403].includes(response.status) ? 'refused' : 'upstream',
-    `Kilo returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(seconds) ? Math.ceil(seconds) : 60) : undefined);
+    `Kilo returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(seconds) ? Math.ceil(seconds) : 60) : undefined, undefined,
+    { httpStatus: response.status, transport: 'http' });
 }
 /** Nonbillable public metadata only. No account, API key, or paid fallback is used. */
 export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal?: AbortSignal } = {}): Promise<void> {
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(5000)]);
   try {
     signal.throwIfAborted();
-    const response = await abortable((options.fetcher ?? fetch)(`${KILO_ORIGIN}/models`, { redirect: 'error', signal }), signal); status(response);
+    const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'kilo', 'models')(`${KILO_ORIGIN}/models`, { redirect: 'error', signal }), signal); status(response);
     const body = await json(response, signal, 4 * 1024 * 1024), rows = Array.isArray(body.data) ? body.data.filter(row => object(row).id === KILO_PARTICLE) : [];
     const model = object(rows.length === 1 ? rows[0] : undefined), pricing = object(model.pricing), parameters = model.supported_parameters;
     const zero = (key: string) => (typeof pricing[key] === 'string' || typeof pricing[key] === 'number') && String(pricing[key]).trim() !== '' && Number(pricing[key]) === 0;
@@ -103,7 +105,7 @@ export class Kilo implements Source {
       if (Buffer.byteLength(body) > 2 * 1024 * 1024) throw new SourceError('refused', 'Kilo prompt exceeds the supported input size');
       await verifyKiloAccess({ ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal });
       signal.throwIfAborted();
-      const response = await abortable((this.options.fetcher ?? fetch)(`${KILO_ORIGIN}/chat/completions`, { method: 'POST', redirect: 'error', signal,
+      const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'kilo', 'chat.completions')(`${KILO_ORIGIN}/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json' }, body }), signal); status(response);
       const result = await json(response, signal, 2 * 1024 * 1024), usage = object(result.usage), details = object(usage.cost_details);
       if (result.model !== KILO_PARTICLE) throw new SourceError('refused', 'Kilo returned an unverified Particle model');

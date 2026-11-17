@@ -4,6 +4,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
+import { diagnosticFetch } from './diagnostics.js';
 
 // Low-level pinned clients. Production wrappers add provider-specific access
 // receipts, quota checks and data-sharing consent before enabling a route.
@@ -47,7 +48,7 @@ export async function readFreeApiGrant(provider: FreeApiProvider, location = dir
     return validateGrant(JSON.parse(await file.readFile('utf8')));
   } finally { await file.close(); }
 }
-const tokens = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+const tokens = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 const validCalls = (value: unknown): value is ToolCall[] => Array.isArray(value) && value.every(call => call && typeof call.id === 'string'
   && call.type === 'function' && typeof call.function?.name === 'string' && typeof call.function?.arguments === 'string');
 
@@ -73,7 +74,7 @@ export class FreeApi implements Source {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     let response: Response;
     try {
-      response = await (this.options.fetcher ?? fetch)(`${grant.base_url}${this.spec.prefix}/chat/completions`, {
+      response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}${this.spec.prefix}/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
         body: JSON.stringify({ model: this.spec.model, messages: request.messages,
@@ -90,7 +91,8 @@ export class FreeApi implements Source {
       const retry = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
       await response.body?.cancel();
       throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-        `${this.id} returned HTTP ${response.status}`, Number.isFinite(retry) ? Math.max(1, retry) : undefined);
+        `${this.id} returned HTTP ${response.status}`, Number.isFinite(retry) ? Math.max(1, retry) : undefined, undefined,
+        { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
     }
     try {
       const body = await response.json() as { choices?: { message?: { content?: unknown; tool_calls?: unknown; refusal?: unknown } }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
@@ -99,8 +101,9 @@ export class FreeApi implements Source {
       if (message?.refusal) throw new SourceError('refused', `${this.id} refused the request`);
       const calls = message?.tool_calls;
       if (!message || (typeof message.content !== 'string' && !(validCalls(calls) && calls.length)) || (calls !== undefined && !validCalls(calls))) throw new SourceError('upstream', `${this.id} returned an invalid completion`);
+      const inputTokens = tokens(body.usage?.prompt_tokens), outputTokens = tokens(body.usage?.completion_tokens);
       return { text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),
-        inputTokens: tokens(body.usage?.prompt_tokens), outputTokens: tokens(body.usage?.completion_tokens) };
+        ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
     } catch (error) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Free API probe closed');

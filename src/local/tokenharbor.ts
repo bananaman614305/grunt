@@ -1,3 +1,4 @@
+import { diagnosticFetch } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -36,7 +37,7 @@ export class TokenHarbor implements Source {
     if (!await this.approved()) return false;
     try {
       const grant = await this.grant();
-      const response = await (this.options.fetcher ?? fetch)(`${grant.base_url}/api/cli/free-tier`, {
+      const response = await diagnosticFetch(this.options.fetcher ?? fetch, 'tokenharbor', 'account')(`${grant.base_url}/api/cli/free-tier`, {
         headers: { Authorization: `Bearer ${grant.token}` }, redirect: 'error', signal: AbortSignal.timeout(5000)
       });
       if (!response.ok) { await response.body?.cancel(); return false; }

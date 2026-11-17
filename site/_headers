@@ -1,0 +1,20 @@
+/admin
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https://api.grunt.run; object-src 'none'; base-uri 'none'; form-action 'self' https://api.grunt.run; frame-ancestors 'none'
+
+/admin/*
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https://api.grunt.run; object-src 'none'; base-uri 'none'; form-action 'self' https://api.grunt.run; frame-ancestors 'none'
+
+/Admin*
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https://api.grunt.run; object-src 'none'; base-uri 'none'; form-action 'self' https://api.grunt.run; frame-ancestors 'none'

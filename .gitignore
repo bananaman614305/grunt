@@ -11,3 +11,4 @@ proof/transcript.json
 proof/manifest.txt
 .local-proof/
 proof/validation.txt
+.cgstack/

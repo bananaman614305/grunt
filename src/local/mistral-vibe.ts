@@ -1,3 +1,4 @@
+import { recordTransport } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
@@ -65,6 +66,7 @@ export async function runMistralVibeProcess(binary: string, args: string[], opti
   cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal; maxOutputBytes?: number; onStdout?: (chunk: string) => void;
 }): Promise<MistralVibeProcessResult> {
   options.signal.throwIfAborted();
+  const started = performance.now();
   return await new Promise((resolveResult, reject) => {
     const child = spawn(binary, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     let stdout = '', bytes = 0, oversized = false, failed = false;
@@ -89,6 +91,9 @@ export async function runMistralVibeProcess(binary: string, args: string[], opti
       options.signal.removeEventListener('abort', abort); if (force) clearTimeout(force);
       // A wrapper may exit before its child. Reap only the group we launched.
       if (options.signal.aborted) kill('SIGKILL');
+      recordTransport({ source: 'mistral-vibe', transport: 'cli', endpointLabel: 'cli', durationMs: Math.max(0, performance.now() - started),
+        outcome: options.signal.aborted ? 'cancelled' : failed || oversized || code !== 0 ? 'failed' : 'passed',
+        ...(Number.isInteger(code) ? { exitCode: code! } : {}) });
       if (options.signal.aborted) reject(options.signal.reason);
       else if (failed) reject(new SourceError('not_installed', 'Mistral Vibe CLI could not start; rerun usegrunt setup'));
       else if (oversized) reject(new SourceError('upstream', 'Mistral Vibe output exceeded the supported size'));
@@ -98,12 +103,13 @@ export async function runMistralVibeProcess(binary: string, args: string[], opti
 }
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
-function nativeFailure(value: ObjectValue) {
+function nativeFailure(value: ObjectValue, exitCode?: number | null) {
   const error = object(value.error), hint = `${typeof error.code === 'string' ? error.code : ''} ${typeof error.message === 'string' ? error.message : ''}`;
   const code = /quota|rate.?limit|budget|credits?.*(?:exhaust|insufficient)|payment.required|429|402/i.test(hint) ? 'quota'
     : /unauthori|authenticat|sign.?in|logged.?out|invalid.?key|401/i.test(hint) ? 'logged_out'
       : value.outcome === 'deadline' ? 'timeout' : value.outcome === 'refusal' ? 'refused' : 'upstream';
-  return new SourceError(code, `Mistral Vibe request failed (${code}); check the native Free plan or rerun usegrunt setup`);
+  return new SourceError(code, `Mistral Vibe request failed (${code}); check the native Free plan or rerun usegrunt setup`, undefined, undefined,
+    { transport: 'cli', endpointLabel: 'cli', ...(Number.isInteger(exitCode) ? { exitCode: exitCode! } : Number.isInteger(value.exit_code) ? { exitCode: value.exit_code as number } : {}) });
 }
 export function parseMistralVibeCompletion(stdout: string, exported: unknown): Completion {
   const run = object(exported), config = object(run.config), models = object(config.models), selected = object(models[MISTRAL_VIBE_MODEL]);
@@ -215,7 +221,7 @@ export class MistralVibe implements Source {
         try { if ((await file.stat()).size > 1024 * 1024) throw new Error('Oversized export'); exported = JSON.parse(await file.readFile('utf8')); }
         finally { await file.close(); }
       } catch { throw new SourceError('upstream', 'Mistral Vibe produced no readable completion export'); }
-      if (result.code !== 0) throw nativeFailure(object(exported));
+      if (result.code !== 0) throw nativeFailure(object(exported), result.code);
       return parseMistralVibeCompletion(result.stdout, exported);
     } catch (error) {
       caller.throwIfAborted();
