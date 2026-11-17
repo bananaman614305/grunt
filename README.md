@@ -49,6 +49,20 @@ terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
 `--port` overrides `GRUNT_PORT`, the saved port, and the default 8788.
 
+The separate [private owner console](docs/reference.md#private-owner-admin) is
+designed for `https://grunt.run/admin/`. It shows retained request and fallback
+traces, safe HTTP/CLI failure details, reported token usage, maintenance and scout
+progress, and installation freshness. Google login permits only explicitly
+configured, verified owner email addresses. Viewing it sends no test prompts.
+Public deployment and live Google-login verification are still pending; see the
+[deployment prerequisites](docs/admin-deployment.md).
+
+Regular installations keep diagnostics local. An operator can explicitly enable
+the [outbound owner collector](docs/admin-collector.md) with private configuration
+and `node dist/admin/collector.js`. It uploads allowlisted metadata, never prompts,
+replies, code, credentials or raw provider errors. Normal `npx usegrunt` onboarding
+does not enroll a user's machine in the owner console.
+
 Daily upkeep uses a separate persistent queue. It checks one configured curated
 source at a time, then waits 60–90 seconds after that check finishes. A recent
 successful reply counts toward the daily check. Otherwise the queue sends one

@@ -1,3 +1,4 @@
+import { diagnosticFetch } from './diagnostics.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
 import { KILO_PARTICLE } from './kilo.js';
@@ -36,7 +37,7 @@ export class FreeLLMAPI implements Source {
     try {
       const key = this.options.key || await this.options.loadKey?.();
       if (!key) return false;
-      return (await this.fetcher(`${this.url}/models`, { headers: { Authorization: `Bearer ${key}` }, redirect: 'error', signal: AbortSignal.timeout(2000) })).ok;
+      return (await diagnosticFetch(this.fetcher, this.id, 'models')(`${this.url}/models`, { headers: { Authorization: `Bearer ${key}` }, redirect: 'error', signal: AbortSignal.timeout(2000) })).ok;
     } catch { return false; }
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
@@ -47,13 +48,13 @@ export class FreeLLMAPI implements Source {
     const signal = AbortSignal.any([caller, AbortSignal.timeout(600000)]);
     let response: Response;
     try {
-      response = await this.fetcher(`${this.url}/chat/completions`, {
+      response = await diagnosticFetch(this.fetcher, this.id, 'chat.completions')(`${this.url}/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify({ model: this.options.model ?? 'auto', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
       });
     } catch { throw new SourceError(signal.aborted ? 'timeout' : 'upstream', 'Local FreeLLMAPI is unavailable'); }
-    if (!response.ok) throw new SourceError(response.status === 403 ? 'refused' : response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `FreeLLMAPI returned HTTP ${response.status}`);
+    if (!response.ok) throw new SourceError(response.status === 403 ? 'refused' : response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `FreeLLMAPI returned HTTP ${response.status}`, undefined, undefined, { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
     // FreeLLMAPI treats a pinned model as a preference and can fall back to
     // another provider. Never attribute that provider's answer to Kilo.
     if (this.id === 'kilo' && response.headers.get('x-routed-via') !== `custom/${this.options.model}`) {
@@ -64,6 +65,6 @@ export class FreeLLMAPI implements Source {
     const message = result.choices?.[0]?.message;
     if (message?.refusal) throw new SourceError('refused', 'FreeLLMAPI provider refused the request');
     if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'FreeLLMAPI returned an invalid completion');
-    return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), inputTokens: result.usage?.prompt_tokens ?? 0, outputTokens: result.usage?.completion_tokens ?? 0 };
+    return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), ...(typeof result.usage?.prompt_tokens === 'number' && Number.isSafeInteger(result.usage.prompt_tokens) && result.usage.prompt_tokens >= 0 ? { inputTokens: result.usage.prompt_tokens } : {}), ...(typeof result.usage?.completion_tokens === 'number' && Number.isSafeInteger(result.usage.completion_tokens) && result.usage.completion_tokens >= 0 ? { outputTokens: result.usage.completion_tokens } : {}) };
   }
 }

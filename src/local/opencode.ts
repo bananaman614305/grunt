@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { diagnosticFetch } from './diagnostics.js';
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -34,7 +35,7 @@ export class OpenCode implements Source {
   constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); models?: readonly string[] | (() => readonly string[]); timeout?: number; configFile?: string } = {}) {
     if (options.url) loopback(options.url);
   }
-  private get fetcher() { return this.options.fetcher ?? fetch; }
+  private get fetcher() { return diagnosticFetch(this.options.fetcher ?? fetch, 'opencode', 'local.opencode'); }
   async available() { if (this.options.url) return true; try { await executable('opencode'); return true; } catch { return false; } }
   async healthCheck() {
     // Executable discovery cannot prove that the upstream login has recovered.
@@ -113,7 +114,7 @@ export class OpenCode implements Source {
         }
       }
       const retryAfter = Math.max(1, Math.ceil((Math.min(...models.map(model => this.modelCooldowns.get(model) ?? Date.now())) - Date.now()) / 1000));
-      throw new SourceError('quota', 'OpenCode free models are temporarily exhausted or unavailable', retryAfter, last?.output);
+      throw new SourceError('quota', 'OpenCode free models are temporarily exhausted or unavailable', retryAfter, last?.output, last?.diagnostics);
     } finally { if (attempt.session) this.busy.delete(attempt.session); }
   }
   private async completeModel(request: ModelRequest, caller: AbortSignal, modelID: string, signal: AbortSignal, attempt: PromptAttempt) {
@@ -139,7 +140,8 @@ export class OpenCode implements Source {
       if (!res.ok) {
         const header = res.headers.get('Retry-After');
         const seconds = header === null ? NaN : /^\d+(?:\.\d+)?$/.test(header) ? Number(header) : (Date.parse(header) - Date.now()) / 1000;
-        throw new SourceError(res.status === 403 ? 'refused' : res.status === 401 ? 'logged_out' : res.status === 429 ? 'quota' : 'upstream', `OpenCode returned HTTP ${res.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined);
+        throw new SourceError(res.status === 403 ? 'refused' : res.status === 401 ? 'logged_out' : res.status === 429 ? 'quota' : 'upstream', `OpenCode returned HTTP ${res.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined, undefined,
+          { httpStatus: res.status, transport: 'http', endpointLabel: 'local.opencode' });
       }
     };
     const call = async (path: string, body: unknown) => {

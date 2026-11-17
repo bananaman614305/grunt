@@ -18,8 +18,9 @@ Chat with grunt. Hand it a bigger job, keep talking while it works, and get the
 result back in the same conversation.
 
 One Node process, one SQLite file, a front agent, and a small background pool.
-There are no accounts: paste your OpenRouter key at `/chat`. Jobs spend your
-OpenRouter credits. The key is saved in your browser; use a trusted device.
+The `/chat` interface needs no Grunt account: paste your OpenRouter key there.
+Jobs spend your OpenRouter credits. The key is saved in your browser; use a
+trusted device. The separate private owner console uses Google login.
 
 ## Run
 
@@ -119,7 +120,7 @@ summary and attaches the full plan. This adapter never calls OpenRouter.
 
 ## Deploy
 
-The Docker image contains only the compiled app, page and production dependencies.
+The Docker image contains the compiled app, chat and admin assets, and production dependencies.
 The public repository runs CI on standard GitHub-hosted Ubuntu runners. The
 workflow runs lint, tests, build and the operator's offline verification suites.
 It refuses to run while the repository is private and does not upload artifacts
@@ -140,6 +141,106 @@ the on-volume registry separately after validating the deployed code.
 
 This replaces the former OpenAI-compatible gateway. The old `/v1/*` routes are
 removed. There is no Jev, billing, roster service, worker tooling or monorepo.
+
+## Private owner admin
+
+The owner console is designed for `https://grunt.run/admin/`; `/Admin` redirects
+to `/admin/`. Its public static shell contains no diagnostic data. Google login
+and the private metadata API run on the existing Fly backend, normally at
+`https://api.grunt.run`. This is an operator feature for explicitly enrolled
+installations, initially Chad, rather than telemetry enabled by ordinary setup.
+
+Public deployment and live Google-login verification are pending. Initial
+discovery found `api.grunt.run` unconfigured in DNS and the available Cloudflare
+credential expired. The dedicated Google client and confirmed complete owner
+addresses must be provisioned before access is enabled. Offline and mocked
+authentication tests do not establish a working production sign-in. Follow the
+[deployment runbook](admin-deployment.md) for prerequisites and acceptance checks.
+
+### Authentication and configuration
+
+Google authorization uses an authorization-code exchange with PKCE, state and
+nonce checks, verified Google identity tokens and an exact email allowlist.
+`GRUNT_ADMIN_OWNERS` accepts complete verified email addresses, normalized to
+lowercase; no default owners or email domains are inferred from account handles.
+Missing or malformed authentication configuration returns `503`. The opaque
+owner session lasts twelve hours in a Secure, HttpOnly, host-only, SameSite=Lax
+cookie scoped to `/admin`. Removing an owner also denies that owner's existing
+session.
+
+| Variable | Purpose |
+| --- | --- |
+| `GRUNT_ADMIN_OWNERS` | Required comma-separated, confirmed full owner email addresses. |
+| `GRUNT_ADMIN_GOOGLE_CLIENT_ID` | Dedicated Grunt Google OAuth web client ID. |
+| `GRUNT_ADMIN_GOOGLE_CLIENT_SECRET` | Matching backend-only client secret. |
+| `GRUNT_ADMIN_SESSION_SECRET` | Independent session secret of at least 32 bytes. |
+| `GRUNT_ADMIN_PUBLIC_URL` | Exact HTTPS API origin; defaults to `https://api.grunt.run`. |
+| `GRUNT_ADMIN_UI_ORIGIN` | Exact HTTPS browser UI origin; defaults to `https://grunt.run`. |
+| `GRUNT_ADMIN_READ_TOKEN` | Optional separate bearer token for diagnostic-agent reads. |
+| `GRUNT_ADMIN_INGEST_KEY` | Separate machine credential for collector uploads. |
+| `GRUNT_ADMIN_INSTANCES` | Explicit comma-separated installation IDs accepted by ingestion. |
+
+Keep secret values in protected backend or service configuration, never public
+HTML, command arguments or source control. Browser reads require the exact UI
+origin when UI and API origins differ. For a same-origin Fly preview, explicitly
+set both origins to `https://milo-gateway.fly.dev` and register that origin's
+`/admin/auth/callback` on the dedicated Google client. An unrelated Pages preview
+does not inherit a working cross-site cookie flow. Production uses the exact
+`https://api.grunt.run/admin/auth/callback` registration.
+
+### Owner and collector API
+
+| Method | Route | Access and result |
+| --- | --- | --- |
+| GET | `/admin/auth/google` | Begin Google owner sign-in. |
+| GET | `/admin/auth/callback` | Validate sign-in and create an allowed owner's session. |
+| POST | `/admin/auth/logout` | Owner session, exact Origin, JSON and CSRF token required. |
+| GET | `/admin/api/session` | Browser owner session and logout CSRF token; machine read token cannot use it. |
+| GET | `/admin/api/overview` | Installation freshness, request and usage summaries. |
+| GET | `/admin/api/providers` | Cached source observations and reported usage. |
+| GET | `/admin/api/requests` | Retained logical requests; supports `limit` (1–100), `source`, `outcome`, `before` and `instanceId`. |
+| GET | `/admin/api/requests/:id` | Request, attempts, routing and safe transport events; select `instanceId` if ambiguous. |
+| GET | `/admin/api/runs` | Projected maintenance and scout progress. |
+| GET | `/admin/api/export` | Download the same sanitized diagnostics as JSON. |
+| POST | `/admin/ingest` | Machine ingestion key and approved installation ID; bounded, validated upload and acknowledgement. |
+
+Private diagnostic reads require an owner session or the optional bearer read
+token. That token permits only GET diagnostic API reads, excluding the
+browser-session endpoint; it grants no ingestion, logout or mutation rights.
+The ingestion key grants uploads only, never reads or browser login. Equal read
+and ingestion credentials are rejected. Ingestion requires an explicit allowed
+installation ID; these operator credentials are not a per-customer delegation
+scheme.
+
+The console is read-only apart from session logout. Refresh and export read
+cached observations; neither triggers inference, provider signup, credential
+repair, remote shell commands or arbitrary daemon forwarding. Unknown token
+counts and absent provider balances remain unknown. Usage totals describe only
+reported counts and identify attempts with missing usage; they are not a daily
+allowance estimate or billing guarantee.
+
+### Opt-in outbound collection
+
+After building, an operator can run `node dist/admin/collector.js` with the private
+configuration in the [collector runbook](admin-collector.md). Collection is
+separate from `npx usegrunt` setup and opens no listener. It preserves the daemon's
+existing loopback port, Host and Origin protections. Chad remains on `8792`.
+
+The collector normally sends a batch every 25 seconds plus up to five seconds of
+jitter, with bounded retries and backoff. It reads cached source status,
+persistent diagnostic events, safe maintenance/scout projections and numeric
+system information. It accepts only the exact HTTPS ingestion path on the owned
+API or existing Fly hostname. Private cursor state advances after acknowledgement;
+replayed events are deduplicated. Backend receipt time, rather than a client clock,
+determines whether an installation is stale or offline.
+
+The projection excludes prompts, replies, code, working directories, raw errors,
+provider response bodies, native stdout/stderr, cookies, credentials, account
+metadata, vault references and signed browser links. Model/source labels describe
+observed or configured identifiers, not independent physical-model attestation.
+Scout evidence is restricted to safe status codes and the current candidate
+commit's validated checkpoints; absent or stale proof cannot report a successful
+release. No other user's installation is enrolled automatically.
 
 ## Use grunt as your harness's model
 
@@ -234,6 +335,39 @@ the final watch view only closes the view.
 active call count and per-source observations, including safe failure codes,
 last success/timing and finite retry timestamps when known. Observations reset
 when the daemon restarts, then rebuild from normal runtime activity.
+
+### Persistent local diagnostics
+
+The installed daemon separately retains safe diagnostic events across restarts
+in `diagnostics.db` under its private configuration directory. The directory must
+be owned and mode `0700`; the database must be owned and mode `0600`. Default
+retention is thirty days, bounded to 50,000 events. Storage failure must not block
+inference: diagnostic health exposes unavailable storage, queued writes and
+dropped events instead of presenting incomplete history as complete.
+
+| Method | Loopback route | Result |
+| --- | --- | --- |
+| GET | `/v1/diagnostics/events` | Oldest-first events; supports `after` cursor, `source`, `requestId` and `limit` (1–500). |
+| GET | `/v1/diagnostics/summary` | Request/attempt and reported-usage totals, unknown-usage counts, storage health and stream identity; optional `since` timestamp in milliseconds. |
+| GET | `/v1/diagnostics/traces/:id` | Retained events correlated to one request ID. |
+
+These endpoints retain the daemon's loopback Host/Origin checks and return
+`Cache-Control: no-store`. A collector can bind an acknowledged cursor to the
+durable stream identity; replacing the database creates a new identity. These
+routes are separate from `/admin/api/*` and do not accept owner or ingestion
+credentials as a way to bypass loopback protections.
+
+Local inference responses include `X-Grunt-Request-Id`, including rejected JSON
+and content-type requests, so failures can be found in the journal. Logical
+requests, individual provider attempts and transports have distinct events.
+Trace metadata can show chosen source/model IDs, explicit source pinning,
+fallbacks/skips, durations, actual observed HTTP status, bounded retry timing,
+safe network error codes and available native exit status. It records no prompt,
+reply, code, request body, raw provider error, header value or native output.
+Source/model labels do not establish a physical-model attestation. Unknown token
+usage stays absent and is counted separately from known zero usage.
+
+### Daily maintenance
 
 Daily maintenance is independent of registry downloads and onboarding. A private,
 atomic `maintenance.json` retains each configured provider's last attempt,

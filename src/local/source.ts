@@ -1,12 +1,15 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
+import { randomUUID } from 'node:crypto';
+import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
+import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext } from './diagnostics.js';
 export class SourceError extends Error {
-  constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string) { super(message); }
+  constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string, public diagnostics?: SafeDiagnosticMetadata) { super(message); }
 }
 export interface Message { role: string; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
 export interface ModelRequest { model: string; messages: Message[]; userMessages?: string[]; tools: Tool[]; cwd: string; stream: boolean; maxTokens?: number; imageInput?: boolean; handoffPrompt?: string }
-export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number }
+export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
 export interface Source {
@@ -36,6 +39,7 @@ export class Sources {
   private observation: SourceStatus;
   private checking = new Set<string>();
   private maintenance: (() => Record<string, MaintenanceEntry>) | undefined;
+  private diagnostics: DiagnosticsStore | undefined;
   // Adapters whose background setup has not finished yet.
   readonly preparing = new Set<string>();
   // Foreground signups must not probe or dispatch incomplete sources. Routine
@@ -48,7 +52,12 @@ export class Sources {
   constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs = FIRST_OUTPUT_MS) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
     this.observation = new SourceStatus(sources.map(source => source.id), routing?.now);
-    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending, observation: this.observation, attempt: this.attempt });
+    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending, observation: this.observation, attempt: this.attempt,
+      observe: (source, reason, skipped) => {
+        const context = currentDiagnosticContext();
+        if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
+          type: skipped ? 'route.skip' : 'route.selection', source, reason, ...(skipped ? { outcome: 'skipped' } : {}) });
+      } });
   }
   // One routed call to one source, with the first-output deadline. A failure
   // (not a cancellation) is logged and reported to the source.
@@ -58,7 +67,7 @@ export class Sources {
     catch (error) {
       if (!signal.aborted && error instanceof SourceError && error.code !== 'cancelled') {
         // The fixed chain below logs its own failures.
-        if (this.router) console.error(`grunt source: ${source.id} failed (${error.code}) for model ${request.model}: ${error.message}`);
+        if (this.router) console.error(`grunt source: ${source.id} failed (${error.code}) for model ${this.safeModel(request.model)}`);
         try { source.failed?.(error); } catch { /* Diagnostics must never affect routing. */ }
       }
       throw error;
@@ -80,7 +89,10 @@ export class Sources {
     work.catch(() => {});
     return Promise.race([work, cutoff]).finally(() => clearTimeout(timer));
   }
+  private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.router?.healthy(id); this.observation.healthy(id); }
+  setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; this.observation.setDiagnostics(store); }
+  diagnosticStore() { return this.diagnostics; }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
   status(): PoolSnapshot {
     const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
@@ -104,6 +116,9 @@ export class Sources {
   // Maintenance uses the configured source directly. It cannot silently pass
   // because a different provider answered, nor start provisioning or repair.
   async check(id: string, caller: AbortSignal): Promise<MaintenanceResult> {
+    return withDiagnosticContext({ requestId: randomUUID(), kind: 'maintenance', ...(this.diagnostics ? { sink: this.diagnostics } : {}) }, () => this.checkSource(id, caller));
+  }
+  private async checkSource(id: string, caller: AbortSignal): Promise<MaintenanceResult> {
     caller.throwIfAborted();
     const now = () => (this.routing?.now ?? Date.now)();
     const source = this.sources.find(source => source.id === id);
@@ -196,11 +211,25 @@ export class Sources {
   setRecovery(recover: () => void) { this.recover = recover; }
   private recover: (() => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
-    try { return await this.route(request, signal); }
-    catch (error) {
-      if (error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
-      throw error;
-    }
+    const parent = currentDiagnosticContext();
+    const context: DiagnosticContext = { requestId: parent?.requestId ?? randomUUID(), kind: this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
+    return withDiagnosticContext(context, async () => {
+      const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
+      if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
+      try {
+        const result = await this.route(request, signal);
+        if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
+          ...(answeredBy.get(result) ? { source: answeredBy.get(result)! } : {}),
+          ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }), ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });
+        return result;
+      } catch (error) {
+        if (parent?.requestRecorded) parent.errorCode = signal.aborted ? 'cancelled' : error instanceof SourceError ? error.code : 'upstream';
+        if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', outcome: signal.aborted ? 'cancelled' : 'failed', durationMs: Math.max(0, performance.now() - startedMono),
+          errorCode: signal.aborted ? 'cancelled' : error instanceof SourceError ? error.code : 'upstream' });
+        if (error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
+        throw error;
+      }
+    });
   }
   private async route(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal.throwIfAborted();
@@ -208,7 +237,7 @@ export class Sources {
     if (this.pending.has(request.model)) {
       if (!this.verifying.has(request.model)) throw new SourceError('not_installed', `${request.model} setup is still in progress`);
       const source = this.sources.find(source => source.id === request.model);
-      if (!source) throw new SourceError('not_installed', `No source for model ${request.model}`);
+      if (!source) throw new SourceError('not_installed', `No source for model ${this.safeModel(request.model)}`);
       if (this.router && !this.router.listed(source.id)) throw new SourceError('not_installed', `${request.model} is not in the current provider registry`);
       if (this.router && !this.router.supportsInput(source.id, request.imageInput)) throw new SourceError('refused', `${request.model} does not support this input modality`);
       // A setup probe is one exact-source call, never sticky failover or a
@@ -223,28 +252,33 @@ export class Sources {
     const known = this.sources.some(s => s.id === request.model);
     // Older harness configurations may still request the former model name.
     const automatic = request.model === 'grunt' || request.model === 'milo' || !known;
-    if (automatic && !['grunt', 'milo'].includes(request.model)) console.error(`grunt model mapping: ${request.model} -> grunt`);
+    if (automatic && !['grunt', 'milo'].includes(request.model)) console.error('grunt model mapping: unrecognized model -> grunt');
     const toolsRequired = automatic && needsFunctionTools(request);
     const candidates = automatic ? this.sources.filter(s => !toolsRequired || toolCapable(s)) : this.sources.filter(s => s.id === request.model);
-    let last = toolsRequired ? new SourceError('not_installed', NO_TOOL_SOURCE) : new SourceError('not_installed', `No source for model ${request.model}`);
+    let last = toolsRequired ? new SourceError('not_installed', NO_TOOL_SOURCE) : new SourceError('not_installed', `No source for model ${this.safeModel(request.model)}`);
+    let attempted = false;
     for (const source of candidates) {
       signal.throwIfAborted();
       if (this.pending.has(source.id)) continue;
+      const context = currentDiagnosticContext();
+      if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.selection', source: source.id,
+        ...(!automatic ? { reason: 'explicit' as const } : attempted ? { reason: 'fallback' as const } : {}) });
+      attempted = true;
       let completion: Completion;
       try { completion = await this.attempt(source, request, signal); }
       catch (error) {
         if (signal.aborted || (error instanceof SourceError && error.code === 'cancelled')) {
-          console.error(`grunt source: ${source.id} cancelled for model ${request.model}`);
+          console.error(`grunt source: ${source.id} cancelled for model ${this.safeModel(request.model)}`);
           signal.throwIfAborted();
           throw error;
         }
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
-        console.error(`grunt source: ${source.id} failed (${last.code}) for model ${request.model}`);
+        console.error(`grunt source: ${source.id} failed (${last.code}) for model ${this.safeModel(request.model)}`);
         // Only dots and OpenCode deadlines and first-output deadlines fall through; caller cancellation stops above.
         if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode' && !cutoffs.has(last)) throw last;
         continue;
       }
-      console.error(`grunt source: ${source.id} answered model ${request.model}`);
+      console.error(`grunt source: ${source.id} answered model ${this.safeModel(request.model)}`);
       answeredBy.set(completion, source.id);
       return completion;
     }
@@ -276,7 +310,8 @@ export class Gateway implements Source {
     const body = await response.json() as { choices?: { message?: { content?: string | null; tool_calls?: ToolCall[] } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const message = body.choices?.[0]?.message;
     if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'grunt gateway returned an invalid completion');
-    return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), inputTokens: body.usage?.prompt_tokens ?? 0, outputTokens: body.usage?.completion_tokens ?? 0 };
+    return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}),
+      ...(body.usage?.prompt_tokens === undefined ? {} : { inputTokens: body.usage.prompt_tokens }), ...(body.usage?.completion_tokens === undefined ? {} : { outputTokens: body.usage.completion_tokens }) };
   }
 }
 import { StickyRouter } from './routing.js';

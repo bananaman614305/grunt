@@ -1,3 +1,4 @@
+import { recordTransport } from './diagnostics.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
@@ -38,6 +39,7 @@ function unsupported() {
 /** program and args are executed exactly as supplied, without a shell. Login may use 600s; inference uses 175s. */
 export async function runPerchCommand(program: string, args: string[], options: PerchProcessOptions): Promise<PerchCommandResult> {
   unsupported(); options.signal.throwIfAborted();
+  const started = performance.now();
   return await new Promise((resolveResult, reject) => {
     const child = spawn(program, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     let stdout = '', bytes = 0, failure: unknown;
@@ -70,6 +72,9 @@ export async function runPerchCommand(program: string, args: string[], options: 
           try { if (last.trim()) options.onLine(last, stream); } catch (error) { failure = error; }
         }
       }
+      recordTransport({ source: 'perch', transport: 'cli', endpointLabel: 'cli', durationMs: Math.max(0, performance.now() - started),
+        outcome: options.signal.aborted ? 'cancelled' : failure || code !== 0 ? 'failed' : 'passed',
+        ...(Number.isInteger(code) ? { exitCode: code! } : {}) });
       if (options.signal.aborted) reject(options.signal.reason);
       else if (failure) reject(failure);
       else resolveResult({ stdout, code });
@@ -81,6 +86,7 @@ export async function runPerchCommand(program: string, args: string[], options: 
 /** Supported native plain-terminal settings; fixed slashcommands never invoke a model. */
 export async function runPerchMemorySettings(binary: string, options: PerchProcessOptions, configure = false): Promise<{ email: string }> {
   unsupported(); options.signal.throwIfAborted();
+  const started = performance.now();
   const native = [process.execPath, binary, '--no-local-tools', '--mode', 'ask', '--permission', 'plan', '--cwd', options.cwd];
   // Linux script invokes a shell. Every argument is fixed or an owned path, and
   // receives POSIX quoting; caller prompts never enter this command or stdin.
@@ -149,6 +155,9 @@ export async function runPerchMemorySettings(binary: string, options: PerchProce
     child.once('error', () => fail(new SourceError('not_installed', 'Perch requires the native script terminal utility for isolated settings')));
     child.once('close', code => {
       clearTimeout(timer); clearTimeout(cleanupTimer); options.signal.removeEventListener('abort', abort); stop();
+      recordTransport({ source: 'perch', transport: 'cli', endpointLabel: 'cli', durationMs: Math.max(0, performance.now() - started),
+        outcome: options.signal.aborted ? 'cancelled' : failure || code !== 0 ? 'failed' : 'passed',
+        ...(Number.isInteger(code) ? { exitCode: code! } : {}) });
       if (options.signal.aborted) reject(options.signal.reason);
       else if (failure) reject(failure);
       else if (code !== 0 || !identity || !verified || stage !== commands.length) reject(new SourceError('refused', 'Perch memory settings could not be verified'));
@@ -161,10 +170,11 @@ export async function runPerchMemorySettings(binary: string, options: PerchProce
 /** The official CLI implements newline-delimited ACP. Never expose its stderr or raw protocol errors. */
 export async function openPerchACP(binary: string, options: PerchACPOptions): Promise<PerchACP> {
   unsupported(); options.signal.throwIfAborted();
+  const started = performance.now();
   const child = spawn(process.execPath, [binary, 'acp'], { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   const notifications: Json[] = [], pending = new Map<number, { resolve(value: unknown): void; reject(error: unknown): void }>();
   const decoder = new StringDecoder('utf8');
-  let nextId = 1, bytes = 0, partial = '', closed = false, failure: unknown;
+  let nextId = 1, bytes = 0, partial = '', closed = false, expectedClose = false, failure: unknown;
   let exit!: () => void;
   const exited = new Promise<void>(resolveExit => { exit = resolveExit; });
   const fail = (error: unknown) => {
@@ -229,7 +239,10 @@ export async function openPerchACP(binary: string, options: PerchACPOptions): Pr
     if (bytes > (options.maxOutputBytes ?? 2 * 1024 * 1024)) fail(new SourceError('upstream', 'Perch output exceeded the supported size'));
   });
   child.once('error', () => fail(new SourceError('not_installed', 'Perch CLI could not start; rerun usegrunt setup')));
-  child.once('close', () => {
+  child.once('close', code => {
+    recordTransport({ source: 'perch', transport: 'cli', endpointLabel: 'cli', durationMs: Math.max(0, performance.now() - started),
+      ...(options.signal.aborted ? { outcome: 'cancelled' as const } : failure || !expectedClose ? { outcome: 'failed' as const } : code === 0 ? { outcome: 'passed' as const } : {}),
+      ...(Number.isInteger(code) ? { exitCode: code! } : {}) });
     closed = true; clearTimeout(timer); options.signal.removeEventListener('abort', abort);
     fail(failure ?? new SourceError('upstream', 'Perch ACP closed before completing the request')); exit();
   });
@@ -246,7 +259,7 @@ export async function openPerchACP(binary: string, options: PerchACPOptions): Pr
         catch (error) { pending.delete(id); reject(error); }
       });
     },
-    close: async () => { if (!closed) { child.stdin.end(); kill(child); } await exited; }
+    close: async () => { if (!closed) { expectedClose = true; child.stdin.end(); kill(child); } await exited; }
   };
 }
 

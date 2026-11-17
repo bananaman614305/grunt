@@ -1,3 +1,4 @@
+import { diagnosticFetch, recordTransport } from './diagnostics.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
@@ -101,6 +102,7 @@ export type ClixadRunner = (entry: string, mode: 'model' | 'wallet' | 'ask', opt
 export const runClixadProcess: ClixadRunner = async (entry, mode, options) => {
   options.signal.throwIfAborted();
   if (!['linux', 'darwin'].includes(process.platform) || !isAbsolute(entry)) throw missing();
+  const started = performance.now();
   const nonce = randomBytes(16).toString('hex'), preload = fileURLToPath(new URL('./clixad-preload.js', import.meta.url));
   return new Promise((resolveResult, reject) => {
     const child = spawn(process.execPath, ['--import', preload, entry, mode], { cwd: options.cwd,
@@ -129,6 +131,9 @@ export const runClixadProcess: ClixadRunner = async (entry, mode, options) => {
     child.once('close', code => {
       clearTimeout(deadline); options.signal.removeEventListener('abort', abort); stop();
       stdout += decoder.end();
+      recordTransport({ source: 'clixad', transport: 'cli', endpointLabel: 'cli', durationMs: Math.max(0, performance.now() - started),
+        outcome: options.signal.aborted ? 'cancelled' : failure || code !== 0 ? 'failed' : 'passed',
+        ...(Number.isInteger(code) ? { exitCode: code! } : {}) });
       if (options.signal.aborted) reject(options.signal.reason); else if (failure) reject(failure); else resolveResult({ code, stdout, events });
     });
   });
@@ -148,7 +153,7 @@ export async function verifyClixadPublicModel(options: { fetcher?: typeof fetch;
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(5000)]);
   try {
     signal.throwIfAborted();
-    const response = await abortable((options.fetcher ?? fetch)(`${CLIXAD_GATEWAY}/v1/models`, { redirect: 'error', signal }), signal);
+    const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'clixad', 'models')(`${CLIXAD_GATEWAY}/v1/models`, { redirect: 'error', signal }), signal);
     if (!response.ok) { void response.body?.cancel().catch(() => {}); throw new Error(); }
     const body = await boundedJSON(response, signal), rows = Array.isArray(body.data) ? body.data.filter(row => object(row).id === CLIXAD_MODEL) : [];
     const model = object(rows.length === 1 ? rows[0] : undefined);
@@ -161,10 +166,16 @@ export async function verifyClixadPublicModel(options: { fetcher?: typeof fetch;
   }
 }
 function nativeErrors(result: ClixadRunResult) {
+  for (const event of result.events) if (event.event === 'http' && Number.isInteger(event.status) && Number(event.status) >= 100 && Number(event.status) <= 599) {
+    recordTransport({ source: 'clixad', transport: 'http', endpointLabel: 'cli', httpStatus: Number(event.status),
+      outcome: Number(event.status) >= 200 && Number(event.status) < 300 ? 'passed' : 'failed' });
+  }
   if (result.events.some(event => event.event === 'guard')) throw new SourceError('refused', 'Clixad attempted an unsupported native action or response');
   const failed = result.events.find(event => event.event === 'http' && (typeof event.status !== 'number' || event.status < 200 || event.status >= 300));
-  if (failed) throw new SourceError(failed.status === 401 ? 'logged_out' : [402, 429].includes(Number(failed.status)) ? 'quota' : failed.status === 403 ? 'refused' : 'upstream', 'Clixad native access is unavailable', failed.status === 429 ? 60 : undefined);
-  if (result.code !== 0) throw new SourceError('upstream', 'Clixad native command did not complete');
+  if (failed) throw new SourceError(failed.status === 401 ? 'logged_out' : [402, 429].includes(Number(failed.status)) ? 'quota' : failed.status === 403 ? 'refused' : 'upstream', 'Clixad native access is unavailable', failed.status === 429 ? 60 : undefined, undefined, { transport: 'cli', endpointLabel: 'cli',
+      ...(Number.isInteger(failed.status) && Number(failed.status) >= 100 && Number(failed.status) <= 599 ? { httpStatus: Number(failed.status) } : {}),
+      ...(Number.isInteger(result.code) ? { exitCode: result.code! } : {}) });
+  if (result.code !== 0) throw new SourceError('upstream', 'Clixad native command did not complete', undefined, undefined, { transport: 'cli', endpointLabel: 'cli', ...(Number.isInteger(result.code) ? { exitCode: result.code! } : {}) });
 }
 function wallet(result: ClixadRunResult, allowExhausted = false) {
   nativeErrors(result); const rows = result.events.filter(event => event.event === 'wallet'), state = object(rows.length === 1 ? rows[0] : undefined);

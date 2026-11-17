@@ -8,9 +8,10 @@ import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
 import type { Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
 import type { SourceStatus } from './source-status.js';
+import type { DiagnosticEvent } from './diagnostics.js';
 
 const exec = promisify(execFile);
-export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion> }
+export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
@@ -81,12 +82,16 @@ export class StickyRouter {
         for (const source of this.sources) {
           const adapter = adapters.find(a => a.id === source.id);
           if (!task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
-          if (!adapter || this.options.pending?.has(source.id) || (this.bars.get(source.id) ?? 0) > this.now()) continue;
-          if (toolsRequired && !toolCapable(source)) continue;
+          if (!adapter) { this.options.observe?.(source.id, 'not_listed', true); continue; }
+          if (this.options.pending?.has(source.id)) { this.options.observe?.(source.id, 'pending_setup', true); continue; }
+          if ((this.bars.get(source.id) ?? 0) > this.now()) { this.options.observe?.(source.id, 'cooldown', true); continue; }
+          if (toolsRequired && !toolCapable(source)) { this.options.observe?.(source.id, 'tools_unsupported', true); continue; }
           if (source.id === task.source || await (this.options.observation ? this.options.observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
+          else this.options.observe?.(source.id, 'unavailable', true);
         }
         signal.throwIfAborted();
         let selected = eligible.find(candidate => candidate.source.id === task.source);
+        const bound = !!selected;
         if (!selected) {
           if (!eligible.length) throw this.exhausted(toolsRequired);
           let draw = (this.options.random ?? Math.random)() * eligible.reduce((total, a) => total + a.weight, 0);
@@ -95,6 +100,7 @@ export class StickyRouter {
           task.source = selected.source.id;
         }
         try {
+          this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
           const input = task.switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
           const result = await (this.options.attempt ? this.options.attempt(selected.source, input, signal) : this.options.observation ? this.options.observation.complete(selected.source, input, signal) : selected.source.complete(input, signal));
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;

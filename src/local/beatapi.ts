@@ -1,3 +1,4 @@
+import { diagnosticFetch } from './diagnostics.js';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -89,7 +90,7 @@ function status(response: Response): void {
   const raw = response.headers.get('retry-after'), retry = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
   void response.body?.cancel().catch(() => {});
   throw new SourceError(response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : [402, 403].includes(response.status) ? 'refused' : 'upstream',
-    `BeatAPI returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) : undefined);
+    `BeatAPI returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) : undefined, undefined, { httpStatus: response.status, transport: 'http' });
 }
 export interface BeatAPIUsage { credit_balance: number; credits_settled: 0 }
 // Public nonbillable API metadata. The published -free contract sets the price
@@ -97,7 +98,7 @@ export interface BeatAPIUsage { credit_balance: number; credits_settled: 0 }
 export async function verifyBeatAPIAccess(grant: BeatAPIAccess, options: { fetcher?: typeof fetch; signal?: AbortSignal } = {}): Promise<BeatAPIUsage> {
   const auth = access(grant), signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(5000)]);
   try {
-    const response = await abortable((options.fetcher ?? fetch)(`${auth.base_url}/v1/usage`, { headers: { Authorization: `Bearer ${auth.token}` }, redirect: 'error', signal }), signal); status(response);
+    const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'beatapi', 'account')(`${auth.base_url}/v1/usage`, { headers: { Authorization: `Bearer ${auth.token}` }, redirect: 'error', signal }), signal); status(response);
     const usage = obj((await json(response, signal, 131072)).data);
     if (usage.object !== 'usage' || typeof usage.credit_balance !== 'number' || !Number.isFinite(usage.credit_balance) || usage.credit_balance < 0 || usage.credit_balance > 2
       || usage.credits_settled !== 0 || ('lifetime_paid' in usage && usage.lifetime_paid !== 0)
@@ -158,7 +159,7 @@ export class BeatAPI implements Source {
       const { validators, messages } = tools(request); if (!await this.approved()) throw new SourceError('refused', 'BeatAPI data sharing is not approved; rerun usegrunt setup');
       const grant = await this.grant(), guards = { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal };
       const before = await verifyBeatAPIAccess(grant, guards); if (before.credit_balance !== grant.baseline_balance) throw new SourceError('refused', 'BeatAPI account balance changed; rerun usegrunt setup');
-      const response = await abortable((this.options.fetcher ?? fetch)(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
+      const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'beatapi', 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` }, body: JSON.stringify({ model: BEATAPI_MODEL, messages,
           ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: Math.min(4096, Math.max(1, Number.isFinite(request.maxTokens) ? Math.floor(request.maxTokens!) : 4096)) }) }), signal);
       status(response); this.next = this.now() + 60000;

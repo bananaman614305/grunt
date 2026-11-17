@@ -1,6 +1,6 @@
 {
   "name": "usegrunt",
-  "version": "0.6.10",
+  "version": "0.7.0",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -13,11 +13,12 @@
   },
   "scripts": {
     "dev": "tsx src/server.ts",
-    "build": "tsc && cp src/chat.html dist/chat.html && mkdir -p dist/registry && cp registry/adapters.json dist/registry/adapters.json",
+    "build": "tsc && cp src/chat.html dist/chat.html && mkdir -p dist/registry dist/admin-public && cp registry/adapters.json dist/registry/adapters.json && cp site/admin/index.html site/admin/admin.css site/admin/admin.js dist/admin-public/ && cp site/grunt.svg dist/grunt.svg && cp site/favicon.svg dist/favicon.svg",
     "start": "node dist/server.js",
     "test": "vitest run",
     "lint": "eslint src && tsc --noEmit",
-    "local": "tsx src/local/main.ts"
+    "local": "tsx src/local/main.ts",
+    "admin:collector": "tsx src/admin/collector.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.9.0",

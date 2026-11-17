@@ -322,7 +322,25 @@ it('skips unknown Responses items and serializes structured tool outputs',()=>{
 });
 it('maps unknown background model ids to the default chain and logs the mapping',async()=>{
   const log=vi.spyOn(console,'error').mockImplementation(()=>{});
-  try {expect(await new Sources([fake()]).complete(decode({input:'hi',model:'claude-haiku-new'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});expect(log).toHaveBeenCalledWith(expect.stringContaining('claude-haiku-new'));}finally{log.mockRestore();}
+  try {
+    expect(await new Sources([fake()]).complete(decode({input:'hi',model:'claude-haiku-new'},'responses','/tmp'),new AbortController().signal)).toEqual({text:'hi'});
+    expect(log).toHaveBeenCalledWith('grunt model mapping: unrecognized model -> grunt');
+    expect(log.mock.calls.flat().join('\n')).not.toContain('claude-haiku-new');
+  }finally{log.mockRestore();}
+});
+it.each(['sk-synthetic-unknown-model-credential', '/private/synthetic-project', 'https://example.invalid/private?token=synthetic'])('routes an unknown model through the default chain without logging credential or path input: %s', async model => {
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const first = vi.fn<Source['complete']>(async () => { throw new SourceError('quota', 'Synthetic quota'); });
+  const second = vi.fn<Source['complete']>(async request => ({ text: request.messages.at(-1)!.content }));
+  const request = decode({ input: 'hi', model }, 'responses', '/tmp');
+  try {
+    const sources = new Sources([{ ...fake('first-app'), complete: first }, { ...fake('second-app'), complete: second }]);
+    await expect(sources.complete(request, new AbortController().signal)).resolves.toEqual({ text: 'hi' });
+    expect(first).toHaveBeenCalledExactlyOnceWith(request, expect.any(AbortSignal));
+    expect(second).toHaveBeenCalledExactlyOnceWith(request, expect.any(AbortSignal));
+    expect(log.mock.calls.map(call => call[0])).toEqual(['grunt model mapping: unrecognized model -> grunt', 'grunt source: first-app failed (quota) for model grunt', 'grunt source: second-app answered model grunt']);
+    expect(log.mock.calls.flat().join('\n')).not.toContain(model);
+  } finally { log.mockRestore(); }
 });
 it('logs which source answered each request and which ones failed before it',async()=>{
   const log=vi.spyOn(console,'error').mockImplementation(()=>{});
