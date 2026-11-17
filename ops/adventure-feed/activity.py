@@ -312,8 +312,8 @@ def upload():
     delay = 0
     while True:
         try:
-            data = snapshot(include_project=True)
             work = meter.latest
+            data = snapshot(include_project=True)
             if work and 0 <= data['observedAt'] - work['at'] <= 15000:
                 data['work'] = work
             answer = ask(RECEIVER, method='POST', headers={'Authorization': 'Bearer ' + key,
