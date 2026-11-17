@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-11-17
+
+### Fixed
+
+- Keep the project uptime monitor from marking an active shell tool as stalled while its start event is buffered in the runner log.
+
 ## [0.7.5] - 2026-11-17
 
 ### Added

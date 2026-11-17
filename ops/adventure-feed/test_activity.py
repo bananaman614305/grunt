@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from uptime import DAY_MS, WorkLedger, classify_work, tool_running
+from uptime import DAY_MS, WorkLedger, WorkProbe, classify_work, live_shell_tool, tool_running
 
 from activity import events, private_tail, progress_text, project_checkpoint, project_pulls
 
@@ -132,6 +133,42 @@ These must not be included.
             self.assertEqual(ledger.summary(now + 15000, 'provider_wait')['day'],
                              {'workingMs': 10000, 'downtimeMs': 5000, 'providerWaitMs': 5000})
             ledger.db.close()
+
+    def test_a_quiet_live_shell_keeps_working_status_with_a_buffered_tool_start(self):
+        now = 1794948372598
+        status = {'phase': 'working', 'workerPid': 101, 'lastActivityAt': now / 1000 - 60,
+                  'lastToolStartedAt': now / 1000 - 60, 'lastLog': 'cycle-20261117T202749Z.jsonl'}
+        pool = {'activeRequests': 0, 'sources': []}
+
+        def read(path, _limit):
+            return json.dumps(status).encode() if path.name == 'status.json' else b'{"type":"turn_start"}\n'
+
+        probe = WorkProbe(Path('/test-state'), read, lambda: pool)
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.live_shell_tool', return_value=True) as shell:
+            self.assertEqual(probe.sample(now), 'working')
+            shell.assert_called_once_with(101)
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.live_shell_tool', return_value=False):
+            self.assertEqual(probe.sample(now), 'stalled')
+
+    def test_shell_detection_ignores_orphans_and_zombies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            proc = Path(temp)
+
+            def process(pid, name, mode, children):
+                p = proc / str(pid)
+                task = p / 'task' / str(pid)
+                task.mkdir(parents=True, exist_ok=True)
+                (p / 'stat').write_text(f'{pid} ({name}) {mode} 1')
+                (task / 'children').write_text(' '.join(map(str, children)))
+
+            process(101, 'bwrap', 'S', [102])
+            process(102, 'bwrap', 'S', [103, 104])
+            process(103, 'pi', 'S', [105])
+            process(104, 'bash', 'S', [])
+            process(105, 'bash', 'Z', [])
+            self.assertFalse(live_shell_tool(101, proc))
+            process(105, 'bash', 'S', [])
+            self.assertTrue(live_shell_tool(101, proc))
 
 
 if __name__ == '__main__':

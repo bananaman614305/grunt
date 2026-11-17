@@ -26,7 +26,7 @@ execution and brief handoffs count as active work. The monitor records provider
 waits, stalls, paused or offline time, and time between work cycles as downtime.
 A model-only interval can be counted as provider downtime after the pool reports
 that attempt failed. The percentage uses measured time. Older time and gaps in
-monitoring remain unmeasured.
+monitoring remain unmeasured. The monitor also checks the running Pi process for\na quiet shell tool when its start event has not reached the cycle log yet.
 
 Chad can run `activity.py upload` as a separate user service. It uses the
 existing private collector environment file for the ingestion credential
