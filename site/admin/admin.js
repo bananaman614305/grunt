@@ -1,5 +1,6 @@
 const VIEWS = {
   overview: ['Overview', 'Follow requests, provider availability and background work.'],
+  activity: ['Live activity', 'Follow Grunt’s progress and free provider activity.'],
   requests: ['Requests', 'Inspect each request, provider attempt and fallback.'],
   providers: ['Providers', 'See what is ready, limited or waiting for setup.'],
   usage: ['Usage', 'Measure delivered work and reporting coverage.'],
@@ -43,7 +44,7 @@ const PIPELINE_REASONS = {
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const array = value => Array.isArray(value) ? value : [];
-const text = (value, fallback = 'Not reported') => typeof value === 'string' && value.trim() ? value.slice(0, 256) : fallback;
+const text = (value, fallback = 'Not reported', limit = 256) => typeof value === 'string' && value.trim() ? value.slice(0, limit) : fallback;
 const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const date = value => number(value) !== null && value > 0 ? new Date(value) : null;
@@ -137,7 +138,7 @@ export class AdminConsole {
   constructor(options = {}) {
     this.fetcher = options.fetcher ?? window.fetch.bind(window);
     this.base = options.apiBase ?? resolveApiBase(document.querySelector('meta[name="grunt-admin-api"]')?.content ?? 'https://api.grunt.run/admin', window.location.origin);
-    this.session = null; this.view = 'overview'; this.instanceId = ''; this.overview = null;
+    this.activity = null; this.session = null; this.view = 'overview'; this.instanceId = ''; this.overview = null;
     this.requests = []; this.providers = []; this.runs = null; this.nextCursor = null; this.pagesLoaded = false;
     this.sourceFilter = ''; this.outcomeFilter = ''; this.instanceOptions = [];
     this.lastFetchedAt = null; this.refreshing = false; this.abort = null; this.traceAbort = null;
@@ -167,7 +168,7 @@ export class AdminConsole {
     this.el['sign-out'].addEventListener('click', () => this.signOut());
     this.el['instance-select'].addEventListener('change', () => {
       this.instanceId = this.el['instance-select'].value; this.resetRequests(); this.closeTrace();
-      this.overview = null; this.providers = []; this.runs = null;
+      this.overview = null; this.providers = []; this.runs = null; this.activity = null;
       this.refresh(true);
     });
     this.el['request-filters'].addEventListener('submit', event => { event.preventDefault(); this.sourceFilter = this.el['source-filter'].value; this.outcomeFilter = this.el['outcome-filter'].value; this.resetRequests(); this.refresh(true); });
@@ -179,7 +180,7 @@ export class AdminConsole {
     window.addEventListener('hashchange', () => this.navigate());
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) { clearTimeout(this.timer); this.abort?.abort(); this.traceAbort?.abort(); this.el['polling-note'].textContent = 'Automatic refresh paused while this tab is hidden'; }
-      else { this.el['polling-note'].textContent = 'Refreshes every 10 seconds while this tab is visible'; if (this.session) this.refresh(); }
+      else { this.updatePollingNote(); if (this.session) this.refresh(); }
     });
     this.el['google-login'].href = `${this.base}/auth/google`;
     this.el['overview-providers'].replaceChildren(loading()); this.el['overview-requests'].replaceChildren(loading());
@@ -193,7 +194,8 @@ export class AdminConsole {
     this.el['google-login'].hidden = options.login !== true;
     this.el['auth-retry'].hidden = options.retry !== true;
     this.el['owner-email'].textContent = '';
-    this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null;
+    this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null; this.activity = null;
+    this.el['activity-list'].replaceChildren(loading('Loading recent activity…'));
     this.el['trace-content'].replaceChildren();
   }
   async signInState() {
@@ -223,6 +225,7 @@ export class AdminConsole {
     document.querySelectorAll('[data-view]').forEach(node => { if (node.dataset.view === this.view) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current'); });
     for (const name of Object.keys(VIEWS)) this.el[`view-${name}`].hidden = name !== this.view;
     [this.el['page-title'].textContent, this.el['page-description'].textContent] = VIEWS[this.view];
+    this.updatePollingNote();
     document.title = `${VIEWS[this.view][0]} · Grunt admin`;
     if (refresh) { this.el['main-content'].focus({ preventScroll: true }); window.scrollTo(0, 0); }
     if (refresh && this.session) this.refresh(true);
@@ -237,6 +240,7 @@ export class AdminConsole {
     this.el[`view-${this.view}`].setAttribute('aria-busy', 'true');
     const tasks = [['overview', '/api/overview' + this.query()]];
     if (this.view === 'overview') tasks.push(['requests', '/api/requests' + this.query({ limit: 8 })]);
+    if (this.view === 'activity') tasks.push(['activity', '/api/activity' + this.query()]);
     if (this.view === 'requests') tasks.push(['requests', '/api/requests' + this.query(this.requestParams())]);
     if (this.view === 'providers') tasks.push(['providers', '/api/providers' + this.query()]);
     if (this.view === 'runs') tasks.push(['runs', '/api/runs' + this.query()]);
@@ -259,6 +263,7 @@ export class AdminConsole {
         }
         else if (key === 'providers') this.providers = array(value.providers);
         else if (key === 'runs') this.runs = value;
+        else if (key === 'activity') this.activity = value;
       }
       if (successful) this.lastFetchedAt = Date.now();
       this.connectionNotice(successful === tasks.length ? null : successful ? 'Some diagnostic data could not be refreshed. Previously collected observations remain visible.' : 'The admin service is unreachable. Showing the last collected observations.', successful === 0);
@@ -269,7 +274,7 @@ export class AdminConsole {
       if (sequence === this.refreshSequence) {
         this.refreshing = false; this.el.refresh.disabled = false; this.el.refresh.querySelector('span').textContent = 'Refresh';
         document.querySelectorAll('.view[aria-busy]').forEach(node => node.removeAttribute('aria-busy'));
-        if (this.session && !document.hidden) this.timer = setTimeout(() => this.refresh(), 10000);
+        if (this.session && !document.hidden) this.timer = setTimeout(() => this.refresh(), this.view === 'activity' ? 5000 : 10000);
       }
     }
   }
@@ -281,11 +286,70 @@ export class AdminConsole {
   render() {
     this.renderContext();
     if (this.view === 'overview') this.renderOverview();
+    else if (this.view === 'activity') this.renderActivity();
     else if (this.view === 'requests') this.renderRequests();
     else if (this.view === 'providers') this.el['provider-list'].replaceChildren(this.providerTable(this.providers));
     else if (this.view === 'usage') this.renderUsage();
     else if (this.view === 'runs') this.renderRuns();
     else if (this.view === 'system') this.renderSystem();
+  }
+  updatePollingNote() {
+    this.el['polling-note'].textContent = document.hidden ? 'Automatic refresh paused while this tab is hidden'
+      : this.view === 'activity' ? 'Refreshes every 5 seconds while this tab is visible'
+        : 'Refreshes every 10 seconds while this tab is visible';
+  }
+  renderActivity() {
+    const target = this.el['activity-list'];
+    const instances = array(object(this.activity).instances).filter(row => Date.now() - row.receivedAt < 120000);
+    if (!instances.length) {
+      const title = this.activity ? 'No live activity' : 'Activity unavailable';
+      target.replaceChildren(empty(title, 'Start the activity publisher on Chad to follow the Amazing Adventure run.'));
+      return;
+    }
+    const phaseLabels = {
+      starting: 'Starting', working: 'Working', checkpoint: 'Between work cycles',
+      waiting_for_free_pool: 'Waiting to retry', stopped: 'Stopped', offline: 'Runner offline'
+    };
+    const providerList = (rows, fallback) => {
+      if (!rows.length) return document.createTextNode(fallback);
+      const list = element('ul', 'activity-providers');
+      for (const provider of rows) {
+        const row = object(provider), item = element('li');
+        item.append(element('strong', '', text(row.source)));
+        if (row.model) item.append(element('span', 'mono', text(row.model)));
+        if (row.error) item.append(badge('failed', errorLabel(row.error)));
+        if (row.at) item.append(timestamp(row.at));
+        list.append(item);
+      }
+      return list;
+    };
+    target.replaceChildren(...instances.map(item => {
+      const entry = object(item), data = object(entry.activity);
+      const stale = !date(entry.receivedAt) || Date.now() - entry.receivedAt > 20000;
+      const section = element('section', 'activity-instance');
+      const header = element('div', 'item-heading activity-heading'), label = element('h3', '', text(entry.instanceId));
+      const phase = !stale && own(phaseLabels, data.phase) ? phaseLabels[data.phase] : 'Stale feed';
+      header.append(label, badge(stale || data.phase === 'offline' ? 'offline' : data.phase === 'working' ? 'running' : 'unknown', phase), timestamp(entry.receivedAt));
+      const grid = element('div', 'activity-grid'), routing = element('section', 'activity-routing');
+      routing.append(element('h3', '', 'Provider activity'), fields([
+        ['Answering now', providerList(stale ? [] : array(data.active), stale ? 'Waiting for a fresh update' : 'No active request')],
+        ['Last reply', providerList(data.lastReply ? [data.lastReply] : [], 'No reply observed')],
+        ['Provider issues', providerList(array(data.issues), 'None observed')]
+      ]), element('p', 'section-note', 'Model labels show the provider’s configured route.'));
+      const timeline = element('section', 'activity-timeline'), list = element('ol', 'activity-events');
+      timeline.append(element('h3', '', 'Progress and tools'));
+      for (const value of [...array(data.events)].reverse()) {
+        const event = object(value), row = element('li');
+        const isProgress = event.kind === 'progress';
+        row.append(timestamp(event.at, true));
+        row.append(isProgress ? element('p', '', text(event.text, '', 400))
+          : badge(event.failed ? 'failed' : 'passed', text(event.tool, 'Tool') + (event.failed ? ' failed' : ' finished')));
+        list.append(row);
+      }
+      timeline.append(list.children.length ? list : empty('Waiting for progress', 'New messages appear when Grunt completes a reply.'));
+      grid.append(routing, timeline); section.append(header, grid);
+      return section;
+    }));
   }
   renderContext() {
     const overview = object(this.overview), instances = array(overview.instances);

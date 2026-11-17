@@ -36,6 +36,7 @@
       <a class="brand" href="/" aria-label="Grunt home"><img src="../grunt.svg" alt="" width="32" height="32"><span>grunt</span></a>
       <nav class="navigation" aria-label="Diagnostics">
         <a href="#overview" data-view="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>Overview</a>
+        <a href="#activity" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-6 4 12 3-6h4"/></svg>Live activity</a>
         <a href="#requests" data-view="requests"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h10M4 19h16M18 9l3 3-3 3"/></svg>Requests</a>
         <a href="#providers" data-view="providers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 14h6v6h-6zM14 7h6M17 4v6M4 17h6M7 14v6M10 7h2v10h2"/></svg>Providers</a>
         <a href="#usage" data-view="usage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V4M4 20h17M9 16v-5M14 16V7M19 16v-9"/></svg>Usage</a>
@@ -61,6 +62,11 @@
           <dl class="summary-strip" id="summary-strip"></dl>
           <section class="data-section"><div class="section-heading"><h2>Provider availability</h2><a href="#providers">View providers</a></div><div id="overview-providers" class="table-area"></div></section>
           <section class="data-section"><div class="section-heading"><h2>Recent requests</h2><a href="#requests">View request history</a></div><div id="overview-requests" class="table-area"></div></section>
+        </section>
+
+        <section class="view" id="view-activity" aria-labelledby="activity-heading" hidden>
+          <h2 id="activity-heading">Amazing Adventure</h2>
+          <div id="activity-list"><p class="section-note">Loading recent activity…</p></div>
         </section>
 
         <section class="view" id="view-requests" aria-labelledby="requests-heading" hidden>

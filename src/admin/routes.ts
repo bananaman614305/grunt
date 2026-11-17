@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { getCookie, setCookie } from 'hono/cookie';
 import { AdminAuthError, GoogleOAuth, hashToken, randomToken, readAdminAuthConfig, secureEqual } from './auth.js';
 import { AdminDataError, isAdminSourceId } from './types.js';
+import { AgentActivityFeed } from './activity.js';
 import type { AdminStore } from './store.js';
 
 const sessionCookie = '__Secure-grunt_admin_session';
@@ -48,6 +49,7 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
   const instancesConfigured = allowedInstances.size > 0 && allowedInstances.size <= 32 && [...allowedInstances].every(isAdminSourceId);
   const keysConflict = credential(readToken) && credential(ingestKey) && secureEqual(readToken, ingestKey);
   const app = new Hono<AdminEnv>();
+  const activity = new AgentActivityFeed(now);
   let loginWindow = now(), loginStarts = 0;
 
   app.use('/admin/*', async (c, next) => {
@@ -73,6 +75,7 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
     if (options.ready === false && !publicAsset) return failure(c, 'admin_storage_unavailable', 503);
     await next();
   });
+  app.use('/admin/ingest/activity', bodyLimit({ maxSize: 64 * 1024, onError: c => failure(c, 'payload_too_large', 413) }));
   app.use('/admin/ingest', bodyLimit({ maxSize: 1024 * 1024, onError: c => failure(c, 'payload_too_large', 413) }));
 
   // Only these packaged public assets are served. No request path ever becomes
@@ -167,6 +170,10 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
   };
   app.get('/admin/api/overview', async c => c.json(await store.overview(instance(c))));
   app.get('/admin/api/providers', async c => c.json(await store.providers(instance(c))));
+  app.get('/admin/api/activity', c => {
+    if (c.get('principal').kind !== 'owner') return failure(c, 'browser_session_required', 403);
+    return c.json(activity.read(instance(c)));
+  });
   app.get('/admin/api/runs', async c => c.json(await store.runs(instance(c))));
   app.get('/admin/api/requests', async c => {
     const limit = c.req.query('limit'), source = c.req.query('source'), outcome = c.req.query('outcome'), before = c.req.query('before');
@@ -198,10 +205,22 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
     clearCookie(c, sessionCookie, '/admin');
     return c.json({ signedOut: true });
   });
-  app.post('/admin/ingest', async c => {
+  app.use('/admin/ingest/*', async (c, next) => {
     if (!credential(ingestKey) || !instancesConfigured || keysConflict) return failure(c, 'admin_ingest_not_configured', 503);
     const token = bearer(c.req.header('Authorization'));
     if (!token || !secureEqual(token, ingestKey)) return failure(c, 'authentication_required', 401);
+    await next();
+  });
+  app.post('/admin/ingest/activity', async c => {
+    if (c.req.header('Content-Type')?.split(';')[0]?.trim() !== 'application/json') return failure(c, 'json_required', 400);
+    let value: Record<string, unknown> | null;
+    try { value = await c.req.json(); } catch { return failure(c, 'invalid_payload', 400); }
+    const selected = value?.instanceId;
+    if (typeof selected !== 'string' || !allowedInstances.has(selected)) return failure(c, 'instance_denied', 403);
+    activity.update(selected, value?.activity);
+    return c.json({ accepted: true });
+  });
+  app.post('/admin/ingest', async c => {
     if (c.req.header('Content-Type')?.split(';')[0]?.trim() !== 'application/json') return failure(c, 'json_required', 400);
     let value: unknown;
     try { value = await c.req.json(); } catch { return failure(c, 'invalid_payload', 400); }

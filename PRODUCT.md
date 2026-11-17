@@ -39,6 +39,7 @@ making progress.
 - First release is read-only apart from refresh, sign-out and diagnostic export.
 - Diagnostic data excludes credentials, OAuth capability links, prompts,
   responses, source code and private working-directory paths.
+- The explicitly enabled Amazing Adventure feed shows visible progress messages and tool names with outcomes. Its latest projected snapshot stays separate from diagnostics and exports.
 - Viewing the console does not send inference or create accounts.
 - Existing inference network restrictions, services and other projects remain
   intact.
