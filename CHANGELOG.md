@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-17
+
+### Added
+
+- Follow Amazing Adventure from the owner console or Chad terminal. The feed shows Grunt’s visible progress updates, tool outcomes, current provider, last reply and provider errors.
+
 ## [0.7.1] - 2026-11-17
 
 ### Fixed

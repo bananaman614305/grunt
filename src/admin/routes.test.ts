@@ -179,7 +179,7 @@ it('serves only packaged public assets and rewrites only the public API meta for
   const assets = vi.fn(async (name: string) => name === 'index.html'
     ? '<!doctype html><meta name="grunt-admin-api" content="https://api.grunt.run/admin"><script src="admin.js"></script>'
     : name === 'grunt.svg' ? '<svg></svg>' : 'public-asset');
-  const preview = adminRoutes(f.store, { env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://milo-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://milo-gateway.fly.dev' }, assets });
+  const preview = adminRoutes(f.store, { now: () => f.clock.at, env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://milo-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://milo-gateway.fly.dev' }, assets });
   const html = await preview.request('https://milo-gateway.fly.dev/admin/');
   expect(html.status).toBe(200); expect(await html.text()).toContain('content="https://milo-gateway.fly.dev/admin"');
   expect(html.headers.get('Content-Security-Policy')).toContain("script-src 'self'");
@@ -214,7 +214,42 @@ it('requires the configured UI Origin for cross-origin cookie reads but permits 
   const f = await fixture(), login = await f.login();
   expect((await f.app.request(base + '/admin/api/overview', { headers: { Cookie: login.cookie } })).status).toBe(403);
   expect((await f.request('/api/overview', { headers: { Cookie: login.cookie, Origin: origin } })).status).toBe(200);
-  const preview = adminRoutes(f.store, { env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://milo-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://milo-gateway.fly.dev' } });
+  const preview = adminRoutes(f.store, { now: () => f.clock.at, env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://milo-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://milo-gateway.fly.dev' } });
   expect((await preview.request('https://milo-gateway.fly.dev/admin/api/overview', { headers: { Cookie: login.cookie } })).status).toBe(200);
   expect((await f.app.request(base + '/admin/api/overview', { headers: { Authorization: `Bearer ${env.GRUNT_ADMIN_READ_TOKEN}` } })).status).toBe(200);
+});
+
+it('shares short-lived live activity only with signed-in owners and excludes it from diagnostic exports', async () => {
+  const f = await fixture(), login = await f.login();
+  const text = 'Added the next quest checkpoint.';
+  const activity = {
+    version: 1, observedAt: now, phase: 'working', active: [{ source: 'zro', model: 'deepseek-v4.1-flash' }],
+    lastReply: null, issues: [{ source: 'kilo', error: 'timeout' }],
+    events: [
+      { at: now, kind: 'progress', text, reasoning: 'private reasoning' },
+      { at: now, kind: 'progress', text: 'Authorization Bearer synthetic-value' },
+      { at: now, kind: 'tool', tool: 'bash', failed: false, output: 'raw tool content' }
+    ]
+  };
+  const upload = (key: string, instanceId = 'chad') => f.request('/ingest/activity', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instanceId, activity })
+  });
+  expect((await upload(env.GRUNT_ADMIN_READ_TOKEN)).status).toBe(401);
+  expect((await upload(env.GRUNT_ADMIN_INGEST_KEY, 'other')).status).toBe(403);
+  expect((await upload(env.GRUNT_ADMIN_INGEST_KEY)).status).toBe(200);
+  expect((await f.request('/api/activity')).status).toBe(401);
+  expect((await f.request('/api/activity', { headers: { Authorization: 'Bearer ' + env.GRUNT_ADMIN_READ_TOKEN } })).status).toBe(403);
+  expect((await f.request('/api/activity', { headers: { Cookie: login.cookie, Origin: 'https://example.test' } })).status).toBe(403);
+  const owner = { headers: { Cookie: login.cookie } };
+  const result = await f.request('/api/activity?instanceId=chad', owner);
+  expect(result.headers.get('Cache-Control')).toBe('no-store');
+  expect(await result.json()).toEqual({ instances: [{
+    instanceId: 'chad', receivedAt: now, activity: { ...activity, events: [
+      { at: now, kind: 'progress', text }, { at: now, kind: 'tool', tool: 'bash', failed: false }
+    ] }
+  }] });
+  expect(await (await f.request('/api/export', owner)).text()).not.toContain(text);
+  f.clock.at += 121000;
+  expect(await (await f.request('/api/activity', owner)).json()).toEqual({ instances: [] });
 });

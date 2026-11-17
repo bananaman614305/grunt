@@ -2,10 +2,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 
-it("tracks only the root app, operator scout, proof adapters, static site, registry, configuration and five workflows", () => {
+it("tracks only the root app, operator tools, proof adapters, static site, registry, configuration and five workflows", () => {
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
   const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/kilo.mjs", "proof/add-url.mjs", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
   const operatorFiles = new Set([
+    "ops/adventure-feed/README.md", "ops/adventure-feed/activity.py", "ops/adventure-feed/test_activity.py",
     "ops/provider-scout/.gitignore", "ops/provider-scout/POLICY.md", "ops/provider-scout/README.md",
     "ops/provider-scout/report.schema.json", "ops/provider-scout/scout.py", "ops/provider-scout/test_scout.py",
     "ops/provider-scout/pipeline.py", "ops/provider-scout/test_pipeline.py",
