@@ -291,3 +291,20 @@ it('projects bounded project context through the private activity feed', async (
   });
   expect(await (await f.request('/api/export', { headers: { Cookie: cookie } })).text()).not.toContain('Connect the market.');
 });
+
+it('accepts measured work uptime without exposing it or accepting impossible durations', async () => {
+  const f = await fixture(), { cookie } = await f.login();
+  const window = { workingMs: 10000, downtimeMs: 5000, providerWaitMs: 5000 };
+  const work = { at: now - 1000, state: 'provider_wait', day: window, week: window };
+  const send = (value: unknown) => f.request('/ingest/activity', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + env.GRUNT_ADMIN_INGEST_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instanceId: 'chad', activity: { version: 1, observedAt: now, phase: 'working', active: [], lastReply: null, issues: [], events: [], work: value } })
+  });
+  expect((await send({ ...work, day: { ...window, providerWaitMs: 10000 } })).status).toBe(400);
+  expect((await send({ ...work, at: now - 30000 })).status).toBe(400);
+  expect((await send(work)).status).toBe(200);
+  expect((await f.request('/api/activity')).status).toBe(401);
+  const feed = await (await f.request('/api/activity', { headers: { Cookie: cookie } })).json();
+  expect(feed.instances[0].activity.work).toEqual(work);
+  expect(await (await f.request('/api/export', { headers: { Cookie: cookie } })).text()).not.toContain('providerWaitMs');
+});

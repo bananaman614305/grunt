@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-17
+
+### Added
+
+- Measure active project work and downtime in the owner overview over the last 24 hours and seven days. Label provider waits and retain measured coverage across publisher restarts.
+
 ## [0.7.4] - 2026-11-17
 
 ### Added
