@@ -150,12 +150,13 @@ and the private metadata API run on the existing Fly backend, normally at
 `https://api.grunt.run`. This is an operator feature for explicitly enrolled
 installations, initially Chad, rather than telemetry enabled by ordinary setup.
 
-As of 2026-11-17, the website and backend are deployed and the Chad collector is
-active. The custom API DNS record and first real Google sign-in remain pending.
-Only explicitly confirmed owner addresses are enabled; additional owners remain
-disabled until their complete addresses are confirmed. Offline and mocked
-authentication tests do not establish a working production sign-in. Follow the
-[deployment runbook](admin-deployment.md) for prerequisites and acceptance checks.
+The [same-origin Fly preview](https://milo-gateway.fly.dev/admin/) supports Google
+owner sign-in and receives updates from Chad while custom API DNS is pending.
+The overview shows current work, active and unavailable sources, and reported
+usage for today and this week. The browser uses local midnight and the start of
+Monday for those periods. Only successful user-facing attempts contribute to
+these totals. The table marks incomplete token reporting and keeps reply counts
+visible regardless of coverage. Detailed diagnostics remain in their own views.
 
 ### Authentication and configuration
 
@@ -197,6 +198,7 @@ does not inherit a working cross-site cookie flow. Production uses the exact
 | POST | `/admin/auth/logout` | Owner session, exact Origin, JSON and CSRF token required. |
 | GET | `/admin/api/session` | Browser owner session and logout CSRF token; machine read token cannot use it. |
 | GET | `/admin/api/overview` | Installation freshness, request and usage summaries. |
+| GET | `/admin/api/source-usage` | Successful replies and reported tokens per source. Pass `today` and `week` as the two period starts in Unix milliseconds and `instanceId` to limit the report. |
 | GET | `/admin/api/providers` | Cached source observations and reported usage. |
 | GET | `/admin/api/requests` | Retained logical requests; supports `limit` (1–100), `source`, `outcome`, `before` and `instanceId`. |
 | GET | `/admin/api/requests/:id` | Request, attempts, routing and safe transport events; select `instanceId` if ambiguous. |

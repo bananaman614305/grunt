@@ -52,14 +52,12 @@ terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
 `--port` overrides `GRUNT_PORT`, the saved port, and the default 8788.
 
-The separate [private owner console](docs/reference.md#private-owner-admin) is
-designed for `https://grunt.run/admin/`. It shows retained request and fallback
-traces, safe HTTP/CLI failure details, reported token usage, maintenance and scout
-progress, and installation freshness. Google login permits only explicitly
-configured, verified owner email addresses. Viewing it sends no test prompts.
-The website and backend are deployed, with the owner collector active on Chad.
-The custom API DNS record and live Google-login verification are still pending;
-see the [deployment prerequisites](docs/admin-deployment.md).
+The [private owner console](docs/reference.md#private-owner-admin) opens on
+Grunt's current work, source status and per-source usage for today and this week.
+Separate views show request and fallback traces, maintenance and scout progress.
+Google login permits explicitly configured, verified owner email addresses.
+The [Fly preview](https://milo-gateway.fly.dev/admin/) is available while custom
+API DNS is pending. See the [deployment runbook](docs/admin-deployment.md).
 
 Regular installations keep diagnostics local. An operator can explicitly enable
 the [outbound owner collector](docs/admin-collector.md) with private configuration

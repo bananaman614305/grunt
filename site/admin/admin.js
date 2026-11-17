@@ -1,5 +1,6 @@
 const VIEWS = {
-  overview: ['Overview', 'Follow requests, provider availability and background work.'],
+  home: ['Grunt overview', ''],
+  overview: ['Diagnostics', 'Follow requests, provider availability and background work.'],
   activity: ['Live activity', 'Follow Grunt’s progress and free provider activity.'],
   requests: ['Requests', 'Inspect each request, provider attempt and fallback.'],
   providers: ['Providers', 'See what is ready, limited or waiting for setup.'],
@@ -77,6 +78,64 @@ export function usageCoverage(usage) {
   if ([knownInput, unknownInput, knownOutput, unknownOutput].some(item => item === null)) return 'Token-reporting coverage has not been reported.';
   return `Input reported for ${formatCount(knownInput)} attempt events; ${formatCount(unknownInput)} unknown. Output reported for ${formatCount(knownOutput)} attempt events; ${formatCount(unknownOutput)} unknown.`;
 }
+export function usageWindows(now = new Date()) {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (today.getDay() + 6) % 7);
+  return { today: today.getTime(), week: monday.getTime() };
+}
+
+const HOME_STATUS = {
+  answering: ['answering', 'In use', 0], ready: ['ready', 'Ready', 1],
+  limited: ['limited', 'Rate limited', 2], error: ['error', 'Having trouble', 3],
+  unavailable: ['offline', 'Down', 3], approval: ['approval', 'Needs approval', 4],
+  connecting: ['connecting', 'Setting up', 4], verifying: ['verifying', 'Checking', 4],
+  available: ['unknown', 'Configured', 5], recent: ['unknown', 'Used recently', 5],
+  unknown: ['unknown', 'Not checked', 6], disabled: ['disabled', 'Off', 7], stale: ['unknown', 'No recent status', 8]
+};
+const freshActivity = (entry, now) => number(entry.receivedAt) !== null && now - entry.receivedAt <= 20000;
+const PHASE_LABELS = { starting: 'Starting', working: 'Working', checkpoint: 'Between work cycles',
+  waiting_for_free_pool: 'Waiting for a free source', stopped: 'Stopped', offline: 'Offline' };
+
+export function homeSources(overview, activity, usage, now = Date.now()) {
+  const instances = new Map(array(overview?.instances).map(row => [row.id, row]));
+  const perInstance = new Map();
+  const put = (id, instanceId, state, error) => {
+    if (typeof id !== 'string' || !id) return;
+    const key = `${instanceId}:${id}`;
+    perInstance.set(key, { id, state: own(HOME_STATUS, state) ? state : 'unknown', error });
+  };
+  for (const row of array(overview?.providers)) {
+    const installation = instances.get(row.instanceId);
+    const fresh = installation?.connected === true && installation.system?.daemonReachable !== false
+      && number(row.lastObservedAt) !== null && now - row.lastObservedAt <= 90000;
+    put(row.id, row.instanceId, fresh ? row.state : 'stale', fresh ? row.errorCode : undefined);
+  }
+  for (const entry of array(activity?.instances).filter(row => freshActivity(row, now))) {
+    const current = object(entry.activity);
+    if (current.phase === 'offline') continue;
+    if (current.lastReply?.source) put(current.lastReply.source, entry.instanceId, 'ready');
+    for (const issue of array(current.issues)) {
+      const state = issue.error === 'quota' ? 'limited' : ['logged_out', 'not_installed'].includes(issue.error) ? 'unavailable' : 'error';
+      put(issue.source, entry.instanceId, state, issue.error);
+    }
+    for (const call of array(current.active)) put(call.source, entry.instanceId, 'answering');
+  }
+  const grouped = new Map();
+  for (const row of perInstance.values()) {
+    const prior = grouped.get(row.id);
+    if (!prior || HOME_STATUS[row.state][2] < HOME_STATUS[prior.state][2]) grouped.set(row.id, row);
+  }
+  for (const record of array(usage?.sources)) {
+    const source = grouped.get(record.source) ?? { id: record.source, state: 'stale' };
+    if (['stale', 'unknown', 'available'].includes(source.state) && Number.isFinite(record.lastReplyAt)
+      && now - record.lastReplyAt < 86400000) source.state = 'recent';
+    grouped.set(source.id, { ...source, ...record });
+  }
+  return [...grouped.values()].sort((a, b) => HOME_STATUS[a.state][2] - HOME_STATUS[b.state][2]
+    || (b.today?.replies ?? 0) - (a.today?.replies ?? 0) || a.id.localeCompare(b.id));
+}
 export function resolveApiBase(configured, origin) {
   const value = new URL(configured, origin);
   const local = new URL(origin);
@@ -138,7 +197,7 @@ export class AdminConsole {
   constructor(options = {}) {
     this.fetcher = options.fetcher ?? window.fetch.bind(window);
     this.base = options.apiBase ?? resolveApiBase(document.querySelector('meta[name="grunt-admin-api"]')?.content ?? 'https://api.grunt.run/admin', window.location.origin);
-    this.activity = null; this.session = null; this.view = 'overview'; this.instanceId = ''; this.overview = null;
+    this.activity = null; this.sourceUsage = null; this.session = null; this.view = 'home'; this.instanceId = ''; this.overview = null;
     this.requests = []; this.providers = []; this.runs = null; this.nextCursor = null; this.pagesLoaded = false;
     this.sourceFilter = ''; this.outcomeFilter = ''; this.instanceOptions = [];
     this.lastFetchedAt = null; this.refreshing = false; this.abort = null; this.traceAbort = null;
@@ -168,7 +227,7 @@ export class AdminConsole {
     this.el['sign-out'].addEventListener('click', () => this.signOut());
     this.el['instance-select'].addEventListener('change', () => {
       this.instanceId = this.el['instance-select'].value; this.resetRequests(); this.closeTrace();
-      this.overview = null; this.providers = []; this.runs = null; this.activity = null;
+      this.overview = null; this.providers = []; this.runs = null; this.activity = null; this.sourceUsage = null;
       this.refresh(true);
     });
     this.el['request-filters'].addEventListener('submit', event => { event.preventDefault(); this.sourceFilter = this.el['source-filter'].value; this.outcomeFilter = this.el['outcome-filter'].value; this.resetRequests(); this.refresh(true); });
@@ -194,8 +253,9 @@ export class AdminConsole {
     this.el['google-login'].hidden = options.login !== true;
     this.el['auth-retry'].hidden = options.retry !== true;
     this.el['owner-email'].textContent = '';
-    this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null; this.activity = null;
+    this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null; this.activity = null; this.sourceUsage = null;
     this.el['activity-list'].replaceChildren(loading('Loading recent activity…'));
+    this.el['home-work'].replaceChildren(); this.el['home-source-list'].replaceChildren();
     this.el['trace-content'].replaceChildren();
   }
   async signInState() {
@@ -221,10 +281,13 @@ export class AdminConsole {
     } finally { this.el['auth-retry'].disabled = false; }
   }
   navigate(refresh = true) {
-    const name = window.location.hash.slice(1).split('/')[0]; this.view = own(VIEWS, name) ? name : 'overview';
+    const name = window.location.hash.slice(1).split('/')[0]; this.view = own(VIEWS, name) ? name : 'home';
     document.querySelectorAll('[data-view]').forEach(node => { if (node.dataset.view === this.view) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current'); });
     for (const name of Object.keys(VIEWS)) this.el[`view-${name}`].hidden = name !== this.view;
     [this.el['page-title'].textContent, this.el['page-description'].textContent] = VIEWS[this.view];
+    this.el['page-description'].hidden = !VIEWS[this.view][1];
+    this.el['page-title'].closest('.workspace').classList.toggle('home-view', this.view === 'home');
+    this.el.export.hidden = this.view === 'home';
     this.updatePollingNote();
     document.title = `${VIEWS[this.view][0]} · Grunt admin`;
     if (refresh) { this.el['main-content'].focus({ preventScroll: true }); window.scrollTo(0, 0); }
@@ -240,7 +303,8 @@ export class AdminConsole {
     this.el[`view-${this.view}`].setAttribute('aria-busy', 'true');
     const tasks = [['overview', '/api/overview' + this.query()]];
     if (this.view === 'overview') tasks.push(['requests', '/api/requests' + this.query({ limit: 8 })]);
-    if (this.view === 'activity') tasks.push(['activity', '/api/activity' + this.query()]);
+    if (['home', 'activity'].includes(this.view)) tasks.push(['activity', '/api/activity' + this.query()]);
+    if (this.view === 'home') tasks.push(['sourceUsage', '/api/source-usage' + this.query(usageWindows())]);
     if (this.view === 'requests') tasks.push(['requests', '/api/requests' + this.query(this.requestParams())]);
     if (this.view === 'providers') tasks.push(['providers', '/api/providers' + this.query()]);
     if (this.view === 'runs') tasks.push(['runs', '/api/runs' + this.query()]);
@@ -264,6 +328,7 @@ export class AdminConsole {
         else if (key === 'providers') this.providers = array(value.providers);
         else if (key === 'runs') this.runs = value;
         else if (key === 'activity') this.activity = value;
+        else if (key === 'sourceUsage') this.sourceUsage = value;
       }
       if (successful) this.lastFetchedAt = Date.now();
       this.connectionNotice(successful === tasks.length ? null : successful ? 'Some diagnostic data could not be refreshed. Previously collected observations remain visible.' : 'The admin service is unreachable. Showing the last collected observations.', successful === 0);
@@ -274,7 +339,7 @@ export class AdminConsole {
       if (sequence === this.refreshSequence) {
         this.refreshing = false; this.el.refresh.disabled = false; this.el.refresh.querySelector('span').textContent = 'Refresh';
         document.querySelectorAll('.view[aria-busy]').forEach(node => node.removeAttribute('aria-busy'));
-        if (this.session && !document.hidden) this.timer = setTimeout(() => this.refresh(), this.view === 'activity' ? 5000 : 10000);
+        if (this.session && !document.hidden) this.timer = setTimeout(() => this.refresh(), ['home', 'activity'].includes(this.view) ? 5000 : 10000);
       }
     }
   }
@@ -285,7 +350,8 @@ export class AdminConsole {
   }
   render() {
     this.renderContext();
-    if (this.view === 'overview') this.renderOverview();
+    if (this.view === 'home') this.renderHome();
+    else if (this.view === 'overview') this.renderOverview();
     else if (this.view === 'activity') this.renderActivity();
     else if (this.view === 'requests') this.renderRequests();
     else if (this.view === 'providers') this.el['provider-list'].replaceChildren(this.providerTable(this.providers));
@@ -295,8 +361,66 @@ export class AdminConsole {
   }
   updatePollingNote() {
     this.el['polling-note'].textContent = document.hidden ? 'Automatic refresh paused while this tab is hidden'
-      : this.view === 'activity' ? 'Refreshes every 5 seconds while this tab is visible'
+      : ['home', 'activity'].includes(this.view) ? 'Refreshes every 5 seconds while this tab is visible'
         : 'Refreshes every 10 seconds while this tab is visible';
+  }
+  renderHome() {
+    const now = Date.now();
+    const latest = [...array(this.activity?.instances)].sort((a, b) => b.receivedAt - a.receivedAt)[0];
+    const work = this.el['home-work'];
+    if (latest) {
+      const data = object(latest.activity), fresh = freshActivity(latest, now);
+      const title = element('div', 'home-project');
+      title.append(element('h3', '', 'Amazing Adventure'),
+        badge(fresh && data.phase === 'working' ? 'running' : 'unknown', fresh ? PHASE_LABELS[data.phase] ?? 'Unknown' : 'Last known update'));
+      const progress = [...array(data.events)].reverse().find(event => event.kind === 'progress');
+      const current = fresh ? array(data.active).map(row => text(row.source)).join(', ') : '';
+      const route = current ? `Answering now: ${current}`
+        : data.lastReply?.source ? `Last reply: ${text(data.lastReply.source)}` : 'Waiting for a source reply';
+      const note = element('p', 'home-progress', progress ? text(progress.text, 'Waiting for a progress message.', 400) : 'Waiting for a progress message.');
+      const meta = element('p', 'home-work-meta');
+      meta.append(element('span', '', route));
+      if (progress?.at) meta.append(timestamp(progress.at));
+      work.replaceChildren(title, note, meta);
+    } else {
+      work.replaceChildren(element('p', 'home-progress', 'No work status reported.'),
+        element('p', 'section-note', 'Updates appear here when the Amazing Adventure runner is connected.'));
+    }
+
+    const windows = usageWindows(new Date(now));
+    const received = this.sourceUsage?.today === windows.today && this.sourceUsage?.week === windows.week;
+    const rows = homeSources(this.overview, this.activity, received ? this.sourceUsage : null, now);
+    const target = this.el['home-source-list'];
+    this.el['home-usage-note'].hidden = !rows.length;
+    if (!rows.length) {
+      target.replaceChildren(empty('No sources reported yet', 'Source status and usage appear here as Grunt reports them.'));
+      return;
+    }
+    const { result, body } = table(['Source', 'Status', ['Today', 'number'], ['This week', 'number']], 'home-source-table');
+    const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+    const amount = range => {
+      const node = element('div', 'home-amount');
+      if (!received) { node.textContent = '—'; return node; }
+      const replies = count(range?.replies) ?? 0, tokens = count(range?.tokens);
+      if (tokens !== null) {
+        const total = element('strong', '', `${compact.format(tokens)} tokens`);
+        total.title = `${formatCount(tokens)} reported tokens`;
+        node.append(total);
+      }
+      const complete = count(range?.completeReports) ?? 0;
+      node.append(element('span', 'secondary', `${formatCount(replies)} ${replies === 1 ? 'reply' : 'replies'}${tokens === null && replies > 0 ? ' · tokens unknown' : complete < replies ? ' · partial' : ''}`));
+      return node;
+    };
+    for (const source of rows) {
+      const row = element('tr'), name = element('th', 'home-source-name', source.id);
+      name.scope = 'row'; row.append(name);
+      const [tone, label] = HOME_STATUS[source.state], status = badge(tone, label);
+      if (source.error) status.title = errorLabel(source.error);
+      cell(row, status);
+      cell(row, amount(source.today), 'number'); cell(row, amount(source.week), 'number');
+      body.append(row);
+    }
+    target.replaceChildren(result);
   }
   renderActivity() {
     const target = this.el['activity-list'];
@@ -306,10 +430,7 @@ export class AdminConsole {
       target.replaceChildren(empty(title, 'Start the activity publisher on Chad to follow the Amazing Adventure run.'));
       return;
     }
-    const phaseLabels = {
-      starting: 'Starting', working: 'Working', checkpoint: 'Between work cycles',
-      waiting_for_free_pool: 'Waiting to retry', stopped: 'Stopped', offline: 'Runner offline'
-    };
+
     const providerList = (rows, fallback) => {
       if (!rows.length) return document.createTextNode(fallback);
       const list = element('ul', 'activity-providers');
@@ -328,7 +449,7 @@ export class AdminConsole {
       const stale = !date(entry.receivedAt) || Date.now() - entry.receivedAt > 20000;
       const section = element('section', 'activity-instance');
       const header = element('div', 'item-heading activity-heading'), label = element('h3', '', text(entry.instanceId));
-      const phase = !stale && own(phaseLabels, data.phase) ? phaseLabels[data.phase] : 'Stale feed';
+      const phase = !stale && own(PHASE_LABELS, data.phase) ? PHASE_LABELS[data.phase] : 'Stale feed';
       header.append(label, badge(stale || data.phase === 'offline' ? 'offline' : data.phase === 'working' ? 'running' : 'unknown', phase), timestamp(entry.receivedAt));
       const grid = element('div', 'activity-grid'), routing = element('section', 'activity-routing');
       routing.append(element('h3', '', 'Provider activity'), fields([
@@ -364,7 +485,8 @@ export class AdminConsole {
       selector.value = selected;
     }
     const newest = number(overview.lastUpdated);
-    this.el.freshness.textContent = this.lastFetchedAt ? `Fetched ${relativeTime(this.lastFetchedAt)} · ${newest ? `collector data ${relativeTime(newest)}` : 'no collector data yet'}` : 'Waiting for a snapshot';
+    this.el['installation-label'].hidden = this.view === 'home' && ids.length <= 1 && !this.instanceId;
+    this.el.freshness.textContent = this.view === 'home' && this.lastFetchedAt ? `Updated ${relativeTime(this.lastFetchedAt)}` : this.lastFetchedAt ? `Fetched ${relativeTime(this.lastFetchedAt)} · ${newest ? `collector data ${relativeTime(newest)}` : 'no collector data yet'}` : 'Waiting for a snapshot';
     const sourceIds = [...new Set([...array(overview.providers), ...this.providers].map(row => text(object(row).id, '')).filter(Boolean))].sort();
     const source = this.el['source-filter'], selected = source.value;
     if (JSON.stringify([...source.options].slice(1).map(option => option.value)) !== JSON.stringify(sourceIds)) {
