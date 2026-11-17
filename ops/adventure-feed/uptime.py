@@ -2,6 +2,7 @@
 import json
 import math
 import os
+from pathlib import Path
 import re
 import sqlite3
 import stat
@@ -75,6 +76,40 @@ def worker_exists(pid):
         return False
 
 
+def live_shell_tool(worker_pid, proc=Path('/proc')):
+    """Look only for a live bash child of this runner's Pi process."""
+    if type(worker_pid) is not int or worker_pid <= 1:
+        return False
+
+    def children(pid):
+        try:
+            raw = (proc / str(pid) / 'task' / str(pid) / 'children').read_text()
+            return [int(child) for child in raw.split()[:64] if child.isascii() and child.isdecimal()]
+        except (OSError, ValueError):
+            return []
+
+    def process(pid):
+        try:
+            raw = (proc / str(pid) / 'stat').read_text()
+            before, after = raw.rsplit(')', 1)
+            state = after.split()[0]
+            return before.split('(', 1)[1] if state not in ('Z', 'X', 'x') else ''
+        except (OSError, ValueError, IndexError):
+            return ''
+
+    scoped = [worker_pid]
+    for _ in range(4):
+        nested = []
+        for pid in scoped:
+            name = process(pid)
+            if name == 'pi' and any(process(child) == 'bash' for child in children(pid)):
+                return True
+            if name == 'bwrap':
+                nested.extend(children(pid))
+        scoped = nested[:64]
+    return False
+
+
 class WorkProbe:
     def __init__(self, directory, read, pool):
         self.directory = directory
@@ -118,6 +153,13 @@ class WorkProbe:
                 unfinished = tool_running(self.read(self.directory / 'logs' / log, 262144))
             except (ValueError, OSError):
                 pass
+        # A quiet shell command can still be running while Pi's event is in
+        # the supervisor's buffered (or capped) cycle log. Require both the
+        # fresh supervisor start marker and a shell under this specific Pi.
+        started = status.get('lastToolStartedAt')
+        if not unfinished and status.get('phase') == 'working' and type(started) in (int, float) and math.isfinite(started):
+            if -5000 <= now - started * 1000 <= 300000:
+                unfinished = live_shell_tool(status.get('workerPid'))
         if unfinished or status.get('phase') != 'working':
             self.handoff_at = None
         state = classify_work(now, status, pool, worker_alive=worker_exists(status.get('workerPid')),
