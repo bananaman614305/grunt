@@ -85,6 +85,12 @@ events by installation and event ID. First connection begins with the oldest
 retained local history. A changed diagnostic database stream resets the cursor
 so a prior database's larger sequence number cannot skip the new history.
 
+The overview's lifetime usage begins with the available successful user
+replies. The backend keeps aggregate counts per installation and provider
+after detailed traces expire. A bounded set of recent usage receipts prevents
+duplicate totals on replay. Replies with missing token counts still count
+toward the reply total.
+
 An offline collector cannot upload its own outage. The dashboard must therefore
 use the backend's last-received time to mark an installation stale or offline.
 Missing diagnostics on an older daemon appear as unavailable until that runtime
