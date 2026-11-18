@@ -103,6 +103,22 @@ it('denies nonowners and never creates their session', async () => {
   expect(result.response.headers.get('Location')).toBe(origin + '/admin/?auth=owner_denied');
   expect((await f.client.execute('SELECT * FROM admin_sessions')).rows).toHaveLength(0);
 });
+it('returns the configured Pages playtest only to a signed-in owner', async () => {
+  const playtestUrl = 'https://round-5.amazing-adventure.pages.dev/';
+  const f = await fixture({ GRUNT_ADMIN_PLAYTEST_URL: playtestUrl });
+  expect((await f.request('/api/session')).status).toBe(401);
+  const { cookie } = await f.login();
+  const response = await f.request('/api/session', { headers: { Cookie: cookie, Origin: origin } });
+  expect(await response.json()).toMatchObject({ playtestUrl });
+});
+
+it.each(['https://preview.pages.dev/?secret=test', 'https://pages.dev.evil.example/', 'http://preview.pages.dev/'])
+  ('omits a playtest URL outside the configured Pages policy (%s)', async playtestUrl => {
+    const f = await fixture({ GRUNT_ADMIN_PLAYTEST_URL: playtestUrl });
+    const { cookie } = await f.login();
+    const response = await f.request('/api/session', { headers: { Cookie: cookie, Origin: origin } });
+    expect(await response.json()).not.toHaveProperty('playtestUrl');
+  });
 it('turns safe Google owner errors into fixed redirects without credential-bearing details', async () => {
   const f = await fixture(); f.auth.exchange.mockRejectedValue(new AdminAuthError('owner_required'));
   const result = await f.login(); expect(result.response.headers.get('Location')).toBe(origin + '/admin/?auth=owner_denied');

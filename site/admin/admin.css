@@ -94,3 +94,5 @@
   .home-uptime-table tbody th { font-size: 11px; }
   .home-uptime-value .secondary { font-size: 10px; }
 }
+.play-view .header-actions { width: auto; margin-left: auto; }
+.playtest-launch { margin-top: 12px; }

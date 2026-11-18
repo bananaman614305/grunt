@@ -44,6 +44,14 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
   };
   const uiOrigin = publicOrigin(env.GRUNT_ADMIN_UI_ORIGIN ?? 'https://grunt.run') ?? 'https://grunt.run';
   const publicUrl = publicOrigin(env.GRUNT_ADMIN_PUBLIC_URL ?? 'https://api.grunt.run');
+  const playtestUrl = (() => {
+    const input = env.GRUNT_ADMIN_PLAYTEST_URL;
+    if (!input || input.length > 512 || !URL.canParse(input)) return undefined;
+    const url = new URL(input);
+    if (url.protocol === 'https:' && url.hostname.endsWith('.pages.dev') &&
+        !url.username && !url.password && !url.port && !url.search && !url.hash) return url.href;
+    return undefined;
+  })();
   const readToken = env.GRUNT_ADMIN_READ_TOKEN, ingestKey = env.GRUNT_ADMIN_INGEST_KEY;
   const allowedInstances = new Set((env.GRUNT_ADMIN_INSTANCES ?? '').split(',').map(value => value.trim()).filter(Boolean));
   const instancesConfigured = allowedInstances.size > 0 && allowedInstances.size <= 32 && [...allowedInstances].every(isAdminSourceId);
@@ -161,7 +169,8 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
   app.get('/admin/api/session', c => {
     const principal = c.get('principal');
     if (principal.kind !== 'owner' || !config) return failure(c, 'browser_session_required', 403);
-    return c.json({ user: { email: principal.email, subject: principal.subject }, csrfToken: hashToken(`csrf:${principal.token}`, config.sessionSecret) });
+    return c.json({ user: { email: principal.email, subject: principal.subject },
+      csrfToken: hashToken(`csrf:${principal.token}`, config.sessionSecret), ...(playtestUrl ? { playtestUrl } : {}) });
   });
   const instance = (c: AdminContext): string | undefined => {
     const value = c.req.query('instanceId');
