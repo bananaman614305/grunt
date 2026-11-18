@@ -103,6 +103,25 @@ it('maps free rate limits to a bounded retry without trying another model or end
   const f = fixture({ infer: () => new Response('private upstream body', { status: 429, headers: { 'retry-after': '13' } }) });
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 13 }); expect(f.posts()).toHaveLength(1);
 });
+it.each([
+  ['upstream', 'response_body', () => new Response('private upstream body', { headers: { 'content-length': '999999999' } })],
+  ['upstream', 'response_json', () => new Response('private malformed JSON')],
+  ['upstream', 'response_choices', () => Response.json(result({ choices: [] }))],
+  ['upstream', 'response_content', () => Response.json(result({ choices: [{ message: { content: 42 } }] }))],
+  ['upstream', 'response_tools', () => Response.json(result({ choices: [{ message: { tool_calls: [call] } }] }))],
+  ['refused', 'completion_model', () => Response.json(result({ model: 'unverified' }))],
+  ['refused', 'completion_billing', () => Response.json(result({ usage: { ...usage(), cost: 1 } }))],
+  ['refused', 'completion_usage', () => Response.json(result({ usage: { ...usage(), completion_tokens: 5000 } }))],
+  ['refused', 'refusal', () => Response.json(result({ choices: [{ message: { refusal: 'private upstream rationale' } }] }))]
+] as const)('records bounded HTTP 200 failure metadata for %s %s', async (code, failureReason, infer) => {
+  const f = fixture({ infer });
+  const completion = f.source.complete(request(), new AbortController().signal);
+  await expect(completion).rejects.toHaveProperty('code', code);
+  await expect(completion).rejects.toHaveProperty('diagnostics', {
+    transport: 'http', endpointLabel: 'chat.completions', httpStatus: 200, failureReason
+  });
+  expect(f.posts()).toHaveLength(1);
+});
 it('bounds completion bytes and does not expose provider payloads', async () => {
   const f = fixture({ infer: () => new Response('private upstream body', { headers: { 'content-length': '999999999' } }) });
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toThrow('supported size');

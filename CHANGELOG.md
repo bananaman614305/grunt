@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Honor provider retry windows on upstream failures and quota cooldowns observed during maintenance while continuing to fall back within the current request.
+- Show safe validation and native stop details for failed Clixad, Kilo, and Mistral Vibe attempts in the owner request trace.
+
 ## [0.7.6] - 2026-11-17
 
 ### Fixed

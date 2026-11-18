@@ -11,6 +11,8 @@ import type { SourceStatus } from './source-status.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 
 const exec = promisify(execFile);
+const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
+const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
 export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
@@ -24,6 +26,10 @@ export class StickyRouter {
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); }
   cooldown(id: string) {
     const until = this.bars.get(id), code = this.barFailures.get(id);
+    const observedQuota = this.options.observation?.quotaRetryAt(id);
+    if (observedQuota !== undefined && (until === undefined || observedQuota >= until)) {
+      return { until: observedQuota, code: 'quota' as const };
+    }
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
   listed(id: string) { return knownAdapters.has(id) && this.options.registry().adapters.some(a => a.id === id); }
@@ -51,10 +57,10 @@ export class StickyRouter {
     const prompt = `Original task:\n${task.original}\n${work}\nPrevious adapter output (last 4 KB):\n${Buffer.from(task.output).subarray(-4096).toString('utf8')}\nContinue this task from the current state. Do not restart.`;
     return { ...request, messages: [...request.messages, { role: 'user', content: prompt }], handoffPrompt: prompt };
   }
-  private exhausted(toolsRequired = false) {
-    const times = [...this.bars.entries()].filter(([id, until]) => Number.isFinite(until)
-      && (!toolsRequired || this.sources.some(source => source.id === id && toolCapable(source)))).map(([, until]) => until);
-    const seconds = times.length ? Math.max(1, Math.ceil((Math.min(...times) - this.now()) / 1000)) : undefined;
+  private exhausted(toolsRequired: boolean, retryTimes: number[]) {
+    const now = this.now();
+    const next = Math.min(...retryTimes);
+    const seconds = Number.isFinite(next) && next > now ? Math.ceil((next - now) / 1000) : undefined;
     return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
@@ -74,18 +80,30 @@ export class StickyRouter {
     // A turn bound to a source without Pi tool support switches (with handoff)
     // when Pi attaches tools, unless the caller named that source explicitly.
     const toolsRequired = needsFunctionTools(request) && !this.sources.some(s => s.id === request.model);
+    const attempted = new Set<string>();
     try {
       for (;;) {
         signal.throwIfAborted();
         const adapters = this.options.registry().adapters.filter(a => knownAdapters.has(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
         const eligible: { source: Source; weight: number }[] = [];
+        const retryTimes: number[] = [];
         for (const source of this.sources) {
           const adapter = adapters.find(a => a.id === source.id);
           if (!task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
           if (!adapter) { this.options.observe?.(source.id, 'not_listed', true); continue; }
           if (this.options.pending?.has(source.id)) { this.options.observe?.(source.id, 'pending_setup', true); continue; }
-          if ((this.bars.get(source.id) ?? 0) > this.now()) { this.options.observe?.(source.id, 'cooldown', true); continue; }
           if (toolsRequired && !toolCapable(source)) { this.options.observe?.(source.id, 'tools_unsupported', true); continue; }
+          const until = this.cooldown(source.id)?.until;
+          if (until !== undefined && until > this.now()) {
+            if (Number.isFinite(until)) retryTimes.push(until);
+            this.options.observe?.(source.id, 'cooldown', true);
+            continue;
+          }
+          if (attempted.has(source.id)) {
+            // This call cannot repeat this source. The next call can try it now.
+            retryTimes.push(this.now());
+            continue;
+          }
           if (source.id === task.source || await (this.options.observation ? this.options.observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
           else this.options.observe?.(source.id, 'unavailable', true);
         }
@@ -93,15 +111,22 @@ export class StickyRouter {
         let selected = eligible.find(candidate => candidate.source.id === task.source);
         const bound = !!selected;
         if (!selected) {
-          if (!eligible.length) throw this.exhausted(toolsRequired);
+          if (!eligible.length) throw this.exhausted(toolsRequired, retryTimes);
           let draw = (this.options.random ?? Math.random)() * eligible.reduce((total, a) => total + a.weight, 0);
           selected = eligible.find(a => (draw -= a.weight) < 0) ?? eligible.at(-1)!;
-          if (task.source) task.switched = true;
-          task.source = selected.source.id;
         }
+        const switched = task.switched || (!bound && task.source !== undefined);
         try {
+          const input = switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
+          // Availability and handoff can yield while maintenance records a newer cooldown.
+          if ((this.cooldown(selected.source.id)?.until ?? 0) > this.now()) {
+            this.options.observe?.(selected.source.id, 'cooldown', true);
+            continue;
+          }
+          task.source = selected.source.id;
+          task.switched = switched;
+          attempted.add(selected.source.id);
           this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
-          const input = task.switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
           const result = await (this.options.attempt ? this.options.attempt(selected.source, input, signal) : this.options.observation ? this.options.observation.complete(selected.source, input, signal) : selected.source.complete(input, signal));
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
@@ -114,8 +139,15 @@ export class StickyRouter {
           let until: number;
           if (failure.code === 'quota') until = this.now() + (failure.retryAfter ?? 3600) * 1000;
           else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
-          // Any other failure moves this task to the next source now, so the request still gets an answer.
-          else until = this.now() + 15 * 60 * 1000;
+          else {
+            const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
+            const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
+              && Number.isInteger(status) && status >= 500 && status < 600
+              && retry !== undefined && Number.isFinite(retry) && retry >= 0;
+            const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
+              : DEFAULT_FAILURE_COOLDOWN_SECONDS;
+            until = this.now() + seconds * 1000;
+          }
           this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, failure.code); task.switched = true;
         }
       }

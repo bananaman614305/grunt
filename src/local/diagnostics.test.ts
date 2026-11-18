@@ -25,6 +25,8 @@ it('projects only allowed metadata and rejects credential-bearing model and endp
   expect(sanitizeDiagnosticEvent({ ...base, id: 'SECRET' })).toBeNull();
   expect(sanitizeDiagnosticEvent({ ...base, model: 'particle-ai/particle-1:free' })).toMatchObject({ model: 'particle-ai/particle-1:free' });
   expect(sanitizeSafeDiagnosticMetadata({ httpStatus: 429, source: 'attacker', requestId: randomUUID(), headers: { authorization: 'SECRET' }, networkCode: 'SECRET' })).toEqual({ httpStatus: 429 });
+  expect(sanitizeDiagnosticEvent({ ...base, outcome: 'failed', failureReason: 'SECRET_UPSTREAM_MESSAGE' })).toEqual({ ...base, outcome: 'failed' });
+  expect(sanitizeSafeDiagnosticMetadata({ failureReason: 'completion_usage', rawBody: 'SECRET_UPSTREAM_MESSAGE' })).toEqual({ failureReason: 'completion_usage' });
   for (const invalid of [1e20, Infinity, NaN]) expect(sanitizeDiagnosticEvent({ ...base, retryAfterSeconds: invalid, durationMs: invalid })).toEqual(base);
 });
 

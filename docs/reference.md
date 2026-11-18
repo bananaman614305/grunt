@@ -365,8 +365,10 @@ and content-type requests, so failures can be found in the journal. Logical
 requests, individual provider attempts and transports have distinct events.
 Trace metadata can show chosen source/model IDs, explicit source pinning,
 fallbacks/skips, durations, actual observed HTTP status, bounded retry timing,
-safe network error codes and available native exit status. It records no prompt,
-reply, code, request body, raw provider error, header value or native output.
+safe network error codes and available native exit status. Failed attempts can
+also include an allowlisted validation or native stop reason. The journal
+records no prompt, reply, code, request body, raw provider error, header value
+or native output.
 Source/model labels do not establish a physical-model attestation. Unknown token
 usage stays absent and is counted separately from known zero usage.
 
