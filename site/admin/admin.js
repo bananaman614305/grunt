@@ -1,5 +1,6 @@
 const VIEWS = {
   home: ['Grunt overview', ''],
+  play: ['Play', ''],
   overview: ['Diagnostics', 'Follow requests, provider availability and background work.'],
   activity: ['Live activity', 'Follow Grunt’s progress and free provider activity.'],
   requests: ['Requests', 'Inspect each request, provider attempt and fallback.'],
@@ -274,6 +275,7 @@ export class AdminConsole {
     this.el['home-work'].replaceChildren(); this.el['home-source-list'].replaceChildren();
     this.renderWorkUptime(undefined);
     this.renderProjectContext(undefined);
+    this.renderPlaytest();
     this.el['trace-content'].replaceChildren();
   }
   async signInState() {
@@ -305,7 +307,10 @@ export class AdminConsole {
     [this.el['page-title'].textContent, this.el['page-description'].textContent] = VIEWS[this.view];
     this.el['page-description'].hidden = !VIEWS[this.view][1];
     this.el['page-title'].closest('.workspace').classList.toggle('home-view', this.view === 'home');
-    this.el.export.hidden = this.view === 'home';
+    this.el['page-title'].closest('.workspace').classList.toggle('play-view', this.view === 'play');
+    this.el.export.hidden = ['home', 'play'].includes(this.view);
+    this.el['context-bar'].hidden = this.view === 'play';
+    if (this.view === 'play') this.renderPlaytest();
     this.updatePollingNote();
     document.title = `${VIEWS[this.view][0]} · Grunt admin`;
     if (refresh) { this.el['main-content'].focus({ preventScroll: true }); window.scrollTo(0, 0); }
@@ -319,7 +324,7 @@ export class AdminConsole {
     const signal = this.abort.signal, sequence = ++this.refreshSequence;
     this.refreshing = true; this.el.refresh.disabled = true; this.el.refresh.querySelector('span').textContent = 'Refreshing…';
     this.el[`view-${this.view}`].setAttribute('aria-busy', 'true');
-    const tasks = [['overview', '/api/overview' + this.query()]];
+    const tasks = this.view === 'play' ? [['session', '/api/session']] : [['overview', '/api/overview' + this.query()]];
     if (this.view === 'overview') tasks.push(['requests', '/api/requests' + this.query({ limit: 8 })]);
     if (['home', 'activity'].includes(this.view)) tasks.push(['activity', '/api/activity' + this.query()]);
     if (this.view === 'home') tasks.push(['sourceUsage', '/api/source-usage' + this.query(usageWindows())]);
@@ -335,7 +340,8 @@ export class AdminConsole {
       for (const response of responses) {
         if (response.status !== 'fulfilled') continue;
         const [key, payload] = response.value, value = object(payload); successful++;
-        if (key === 'overview') this.overview = value;
+        if (key === 'session' && typeof object(value.user).email === 'string') this.session = value;
+        else if (key === 'overview') this.overview = value;
         else if (key === 'requests') {
           const incoming = array(value.requests);
           if (this.view === 'requests' && this.pagesLoaded) {
@@ -352,7 +358,7 @@ export class AdminConsole {
       this.connectionNotice(successful === tasks.length ? null : successful ? 'Some diagnostic data could not be refreshed. Previously collected observations remain visible.' : 'The admin service is unreachable. Showing the last collected observations.', successful === 0);
       this.render();
       if (this.el['trace-dialog'].open && this.traceRequest) void this.updateTrace();
-      if (manual && successful === tasks.length) this.el.announcement.textContent = 'Diagnostic observations refreshed.';
+      if (manual && successful === tasks.length) this.el.announcement.textContent = this.view === 'play' ? 'Playtest status refreshed.' : 'Diagnostic observations refreshed.';
     } finally {
       if (sequence === this.refreshSequence) {
         this.refreshing = false; this.el.refresh.disabled = false; this.el.refresh.querySelector('span').textContent = 'Refresh';
@@ -367,6 +373,7 @@ export class AdminConsole {
     this.el['connection-notice'].textContent = message ?? '';
   }
   render() {
+    if (this.view === 'play') { this.renderPlaytest(); return; }
     this.renderContext();
     if (this.view === 'home') this.renderHome();
     else if (this.view === 'overview') this.renderOverview();
@@ -381,6 +388,20 @@ export class AdminConsole {
     this.el['polling-note'].textContent = document.hidden ? 'Automatic refresh paused while this tab is hidden'
       : ['home', 'activity'].includes(this.view) ? 'Refreshes every 5 seconds while this tab is visible'
         : 'Refreshes every 10 seconds while this tab is visible';
+  }
+  renderPlaytest() {
+    const launch = this.el['playtest-launch'];
+    const value = this.session?.playtestUrl;
+    let url;
+    if (typeof value === 'string' && URL.canParse(value)) {
+      const parsed = new URL(value);
+      if (parsed.protocol === 'https:' && parsed.hostname.endsWith('.pages.dev') &&
+          !parsed.username && !parsed.password && !parsed.port && !parsed.search && !parsed.hash) url = parsed.href;
+    }
+    if (url) launch.href = url;
+    else launch.removeAttribute('href');
+    launch.hidden = !url;
+    this.el['playtest-status'].textContent = url ? 'Opens in a new tab.' : 'No mobile playtest is available yet.';
   }
   renderHome() {
     const now = Date.now();
