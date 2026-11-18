@@ -394,7 +394,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const sources = add ? knownAdapters.has(add) || add === 'nvidia'
       ? [...new Set([...(previous.length ? previous : defaults), add])]
       : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
-    const consent = await approveDataSharing({ directory: configDir(), providers: sources });
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });
     squire?.approveDataSharing?.(consent.approved);
     const skipped = new Set(consent.skipped);
     const ids = requested.filter(id => !skipped.has(id));
@@ -403,7 +403,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     if (!ids.length) return;
     const port = await setupPort();
     if (add) {
-      await connect();
+      if (add !== 'nous') await connect();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved });
         await actions.installService(sources.filter(id => !skipped.has(id)));

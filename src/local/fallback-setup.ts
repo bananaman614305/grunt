@@ -257,6 +257,13 @@ export async function setupFallbacks(options: {
         unavailable.push('perch');
         options.notify('Perch Starter setup needs attention. Rerun usegrunt setup; other free routes continue.');
       } },
+      nous: async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['nous'], { directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch {
+        unavailable.push('nous');
+        options.notify('Nous setup needs Hermes device approval or an official Hermes installation; other free routes continue.');
+      } },
       nvidia: async () => { try {
         await connect();
         if (!squire.runs) throw new Error('Provider signup requires Squire');

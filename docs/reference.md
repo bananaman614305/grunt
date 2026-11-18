@@ -478,7 +478,7 @@ pipes and narrow terminals get a one-line title). After checking prerequisites,
 setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
-Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch
+Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad, Perch and Nous
 in the experimental tier.
 Free-account eligibility still applies.
 
@@ -589,6 +589,17 @@ The additional experimental routes have these requirements:
 | Pollinations | `community/morriszdweck/glm-5.3-flash-free` | Google login through Squire, a hard numeric zero-budget key with Quest Pollen Only enabled, usage-only account permissions, and a positive unused Quest balance. No paid funds or billing. Community availability is best effort, with no promised daily quota or fixed reset. |
 | Clixad | Native `glm-5.3-flash` | Existing or ordinary free GitHub account pairing, positive free allowance and a wallet balance of exactly zero. No deposit or paid credits. Model selection and native free/zero-charge metadata are checked. |
 | Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
+| Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
+
+For Nous, approve its data policy in the grouped setup prompt and open the
+Hermes device link on your phone or computer. Sign in or create the Free account
+yourself, and approve inference access. Grunt uses an installed official Hermes
+Agent or installs a pinned Hermes copy in its private configuration directory
+using Git and uv. Other routes can become ready while you approve Nous.
+Hermes keeps and refreshes its own OAuth credentials in a dedicated profile.
+Grunt connects to the official subscription proxy over a private local socket.
+If the account is no longer on the Free plan or the pinned model no longer
+reports zero prices, Grunt skips Nous and can use another provider.
 
 Runcrate keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
