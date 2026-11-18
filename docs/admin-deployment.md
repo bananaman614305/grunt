@@ -154,6 +154,7 @@ history or this document.
 | `GRUNT_ADMIN_INSTANCES` | Explicit comma-separated instance IDs accepted by ingestion, such as `chad`. |
 | `GRUNT_ADMIN_INGEST_KEY` | Dedicated collector authentication secret; separate from Google/session secrets. |
 | `GRUNT_ADMIN_READ_TOKEN` | Optional dedicated token for read-only diagnostic API access. |
+| `GRUNT_ADMIN_PLAYTEST_URL` | Optional HTTPS `*.pages.dev` URL for the versioned Amazing Adventure build approved for playtesting. The owner Play tab opens it in a new browser tab. |
 
 The static UI receives only the public API origin; it must never contain the
 client secret, session secret, ingestion key or machine read token. Keep the

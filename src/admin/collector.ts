@@ -8,7 +8,7 @@ import { configRoot, gruntEnv } from '../brand.js';
 import { knownAdapters } from '../registry.js';
 import { sanitizeDiagnosticEvent } from '../local/diagnostics.js';
 import type { DiagnosticEvent } from '../local/diagnostics.js';
-import { isAdminModelId, validateAdminBatch } from './types.js';
+import { isAdminModelId, projectAdminWorkers, validateAdminBatch } from './types.js';
 import type { AdminBatch } from './types.js';
 
 const MAX_BYTES = 1024 * 1024;
@@ -131,7 +131,13 @@ export function projectCollectorSnapshot(value: unknown) {
     for (const key of ['lastReplyMs', 'lastSuccessAt', 'retryAt'] as const) if (time(source[key])) item[key] = source[key];
     sources.push(item);
   }
-  return { version: 1 as const, updatedAt: raw.updatedAt, activeRequests: raw.activeRequests, sources };
+  let workers;
+  if (raw.workers !== undefined) {
+    try { workers = projectAdminWorkers(raw.workers, raw.updatedAt); }
+    catch { /* Older or invalid worker metadata must not interrupt source reporting. */ }
+  }
+  return { version: 1 as const, updatedAt: raw.updatedAt, activeRequests: raw.activeRequests, sources,
+    ...(workers ? { workers } : {}) };
 }
 
 export function projectCollectorMaintenance(value: unknown) {

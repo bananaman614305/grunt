@@ -220,8 +220,7 @@
           "proposal_url",
           "release_request"
         ]
-      },
-      "maxItems": 20
+      }
     },
     "blockers": {
       "type": "array",

@@ -1,5 +1,6 @@
 import { pairDots } from './dots-link.js';
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -10,6 +11,7 @@ import { SourceError, answeredBy } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
+import type { WorkerPool } from './worker-pool.js';
 type Obj = Record<string, unknown>;
 const object = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
 const array = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
@@ -133,7 +135,7 @@ export function events(value: Obj, api: string): { event?: string; data: string 
   }
   return out;
 }
-export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv } = {}) {
+export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; workers?: WorkerPool } = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
@@ -161,7 +163,28 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     return tracked ? withDiagnosticContext(context, run) : run();
   });
   app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
-  app.get('/v1/status', c => { c.header('Cache-Control', 'no-store'); return c.json(sources.status()); });
+  const workers = options.workers;
+  app.get('/v1/status', c => {
+    c.header('Cache-Control', 'no-store');
+    return c.json({ ...sources.status(), ...(workers ? { workers: workers.status() } : {}) });
+  });
+  if (workers) {
+    app.get('/v1/workers', c => {
+      c.header('Cache-Control', 'no-store');
+      return c.json(workers.status());
+    });
+    app.post('/v1/workers/run', bodyLimit({ maxSize: 256 * 1024, onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) }), async c => {
+      c.header('Cache-Control', 'no-store');
+      let input: unknown;
+      try { input = await c.req.json(); }
+      catch { return c.json({ ok: false, code: 'invalid_task' }, 400); }
+      const result = await workers.run(input, c.req.raw.signal);
+      if (result.ok) return c.json(result);
+      const status = { invalid_task: 400, busy: 429, cancelled: 409, timeout: 504, quota: 429, unavailable: 503 } as const;
+      if (result.retryAfter !== undefined) c.header('Retry-After', String(result.retryAfter));
+      return c.json(result, status[result.code]);
+    });
+  }
   app.get('/v1/diagnostics/events', async c => {
     c.header('Cache-Control', 'no-store'); const store = sources.diagnosticStore();
     if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);

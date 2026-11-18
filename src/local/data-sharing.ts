@@ -2,6 +2,8 @@ import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { confirm } from '@clack/prompts';
+import { gruntEnv } from '../brand.js';
 
 export interface DataSharingPolicy {
   provider: string;
@@ -9,6 +11,7 @@ export interface DataSharingPolicy {
   version: string;
   disclosure: string;
   url: string;
+  approval?: 'explicit';
 }
 
 // Keep these provider-specific. An unknown policy must not inherit consent to
@@ -57,6 +60,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   provider: 'perch', name: 'Perch Starter DeepSeek', version: '2026-11-15',
   disclosure: 'Prompts, code and tool context are processed by Perch and its inference providers. The optional Starter Data Program must remain off. Setup turns off the account settings Use memory and Learn new memories without deleting saved notes; both must remain off for routing. Operational processing for service delivery, security, debugging and metering remains; retention and review limits and zero-retention coverage have not been independently verified.',
   url: 'https://www.perchai.app/privacy#starter-data-program'
+}, {
+  provider: 'nous', name: 'Nous Portal Free Qwen4 Max', version: '2026-11-10',
+  disclosure: 'Prompts, outputs and tool context may be retained, shared with model providers and other partners, and used for training, product improvement and support. Nous offers optional Privacy Mode for some payloads. Upstream retention and training limits are unverified.',
+  url: 'https://portal.nousresearch.com/privacy',
+  approval: 'explicit'
 }];
 
 const fileName = 'data-sharing-consent.json';
@@ -70,6 +78,7 @@ export function dataSharingPolicies(providers: readonly string[]): DataSharingPo
   return DATA_SHARING_POLICIES.filter(policy => selected.has(policy.provider));
 }
 export const requiresDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider);
+export const requiresExplicitDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider && policy.approval === 'explicit');
 
 async function receipt(directory: string): Promise<Receipt> {
   try {
@@ -92,8 +101,8 @@ export async function readDataSharingConsent(directory: string, providers: reado
   return dataSharingPolicies(providers).filter(policy => saved.approved[policy.provider]?.policy === fingerprint(policy)).map(policy => policy.provider);
 }
 
-// Store current source policies for compatibility with existing runtime guards.
-// Setup enables these sources by default without an interactive consent step.
+// For default policies, interactive approval, or an explicitly authorized
+// operator's isolated qualification. Background setup only reads receipts.
 export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
   const policies = dataSharingPolicies(providers);
   if (!policies.length) return;
@@ -116,8 +125,20 @@ export interface DataSharingApprovalOptions {
 }
 
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
-  const approved = dataSharingPolicies(options.providers).map(policy => policy.provider);
-  // Setup enables the free sources by default; preserve receipts for runtime guards.
-  await recordDataSharingConsent(options.directory, approved);
-  return { approved, skipped: [] };
+  const policies = dataSharingPolicies(options.providers);
+  const saved = new Set(await readDataSharingConsent(options.directory, options.providers));
+  const pending = policies.filter(policy => policy.approval === 'explicit' && !saved.has(policy.provider));
+  const interactive = options.interactive ?? Boolean(options.prompt || (process.stdin.isTTY && process.stdout.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1'));
+  let accepted = false;
+  if (pending.length && interactive) {
+    if (options.prompt) accepted = await options.prompt(pending) === true;
+    else {
+      for (const policy of pending) console.log(`${policy.name}\n${policy.disclosure}\n${policy.url}`);
+      accepted = await confirm({ message: 'Enable these free sources under the listed data-sharing terms?', initialValue: false }) === true;
+    }
+  }
+  const skipped = new Set(accepted ? [] : pending.map(policy => policy.provider));
+  const approved = policies.map(policy => policy.provider).filter(provider => !skipped.has(provider));
+  await recordDataSharingConsent(options.directory, approved.filter(provider => !saved.has(provider)));
+  return { approved, skipped: [...skipped] };
 }

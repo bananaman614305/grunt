@@ -5,13 +5,15 @@ import { realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
-import type { Registry } from '../registry.js';
-import { knownAdapters } from '../registry.js';
+import type { Adapter, Registry } from '../registry.js';
+import { disabledAdapters, knownAdapters } from '../registry.js';
 import type { SourceStatus } from './source-status.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 
 const exec = promisify(execFile);
-export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
+const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
+const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
+export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
@@ -24,11 +26,19 @@ export class StickyRouter {
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); }
   cooldown(id: string) {
     const until = this.bars.get(id), code = this.barFailures.get(id);
+    const observedQuota = this.options.observation?.quotaRetryAt(id);
+    if (observedQuota !== undefined && (until === undefined || observedQuota >= until)) {
+      return { until: observedQuota, code: 'quota' as const };
+    }
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
   listed(id: string) { return knownAdapters.has(id) && this.options.registry().adapters.some(a => a.id === id); }
   supportsInput(id: string, imageInput = false) {
     return knownAdapters.has(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
+  }
+  private workerAdapter(adapter: Adapter) {
+    return adapter.kind === 'model' && knownAdapters.has(adapter.id)
+      && !disabledAdapters.has(adapter.id) && !this.options.disabled?.has(adapter.id);
   }
   private async git(cwd: string, args: string[]) {
     return (await exec('git', ['-C', cwd, ...args], { timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
@@ -51,57 +61,103 @@ export class StickyRouter {
     const prompt = `Original task:\n${task.original}\n${work}\nPrevious adapter output (last 4 KB):\n${Buffer.from(task.output).subarray(-4096).toString('utf8')}\nContinue this task from the current state. Do not restart.`;
     return { ...request, messages: [...request.messages, { role: 'user', content: prompt }], handoffPrompt: prompt };
   }
-  private exhausted(toolsRequired = false) {
-    const times = [...this.bars.entries()].filter(([id, until]) => Number.isFinite(until)
-      && (!toolsRequired || this.sources.some(source => source.id === id && toolCapable(source)))).map(([, until]) => until);
-    const seconds = times.length ? Math.max(1, Math.ceil((Math.min(...times) - this.now()) / 1000)) : undefined;
+  private exhausted(toolsRequired: boolean, retryTimes: number[]) {
+    const now = this.now();
+    const next = Math.min(...retryTimes);
+    const seconds = Number.isFinite(next) && next > now ? Math.ceil((next - now) / 1000) : undefined;
     return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal.throwIfAborted();
-    const cwd = await realpath(request.cwd);
-    const key = createHash('sha256').update(JSON.stringify([cwd, userTurns(request)])).digest('hex');
+    const { worker, ...adapterRequest } = request;
+    const cwd = worker ? request.cwd : await realpath(request.cwd);
+    const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, userTurns(request)])).digest('hex');
     let task = this.tasks.get(key);
     if (!task) {
       // Reserve the task before asynchronous checkpoint creation to avoid two bindings.
       task = { original: '', output: '', switched: false, busy: true };
       this.tasks.set(key, task);
-      Object.assign(task, await this.createTask({ ...request, cwd }), { busy: true });
+      if (!worker) Object.assign(task, await this.createTask({ ...adapterRequest, cwd }), { busy: true });
     } else {
       if (task.busy) throw new SourceError('upstream', 'A request for this task is already running; retry when it finishes');
       task.busy = true;
     }
     // A turn bound to a source without Pi tool support switches (with handoff)
     // when Pi attaches tools, unless the caller named that source explicitly.
-    const toolsRequired = needsFunctionTools(request) && !this.sources.some(s => s.id === request.model);
+    const toolsRequired = needsFunctionTools(request) && (!!worker || !this.sources.some(s => s.id === request.model));
+    const attempted = new Set<string>();
+    const observation = this.options.observation;
+    const reportedSkips = worker ? new Set<string>() : undefined;
+    const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => {
+      const key = `${source}:${reason}`;
+      if (reportedSkips?.has(key)) return;
+      reportedSkips?.add(key);
+      this.options.observe?.(source, reason, true);
+    };
     try {
       for (;;) {
         signal.throwIfAborted();
         const adapters = this.options.registry().adapters.filter(a => knownAdapters.has(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
         const eligible: { source: Source; weight: number }[] = [];
+        const retryTimes: number[] = [];
         for (const source of this.sources) {
+          signal.throwIfAborted();
           const adapter = adapters.find(a => a.id === source.id);
-          if (!task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
-          if (!adapter) { this.options.observe?.(source.id, 'not_listed', true); continue; }
-          if (this.options.pending?.has(source.id)) { this.options.observe?.(source.id, 'pending_setup', true); continue; }
-          if ((this.bars.get(source.id) ?? 0) > this.now()) { this.options.observe?.(source.id, 'cooldown', true); continue; }
-          if (toolsRequired && !toolCapable(source)) { this.options.observe?.(source.id, 'tools_unsupported', true); continue; }
-          if (source.id === task.source || await (this.options.observation ? this.options.observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
-          else this.options.observe?.(source.id, 'unavailable', true);
+          if (!worker && !task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
+          if (!adapter || worker && !this.workerAdapter(adapter)) {
+            skip(source.id, 'not_listed');
+            continue;
+          }
+          if (this.options.pending?.has(source.id)) { skip(source.id, 'pending_setup'); continue; }
+          if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
+          const until = this.cooldown(source.id)?.until;
+          if (until !== undefined && until > this.now()) {
+            if (Number.isFinite(until)) retryTimes.push(until);
+            skip(source.id, 'cooldown');
+            continue;
+          }
+          if (attempted.has(source.id)) {
+            // This call cannot repeat this source. The next call can try it now.
+            retryTimes.push(this.now());
+            continue;
+          }
+          if (source.id === task.source || await (observation ? observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
+          else skip(source.id, 'unavailable');
         }
         signal.throwIfAborted();
-        let selected = eligible.find(candidate => candidate.source.id === task.source);
+        if (!eligible.length) throw this.exhausted(toolsRequired, retryTimes);
+        const ready = worker && observation ? eligible.filter(candidate => !observation.isBusy(candidate.source.id)) : eligible;
+        if (worker && observation && !ready.length) {
+          try { worker.onWait?.(); } catch { /* Status callbacks cannot change routing. */ }
+          await observation.waitForIdle(eligible.map(candidate => candidate.source.id), signal);
+          continue;
+        }
+        let selected = ready.find(candidate => candidate.source.id === task.source);
         const bound = !!selected;
         if (!selected) {
-          if (!eligible.length) throw this.exhausted(toolsRequired);
-          let draw = (this.options.random ?? Math.random)() * eligible.reduce((total, a) => total + a.weight, 0);
-          selected = eligible.find(a => (draw -= a.weight) < 0) ?? eligible.at(-1)!;
-          if (task.source) task.switched = true;
-          task.source = selected.source.id;
+          let draw = (this.options.random ?? Math.random)() * ready.reduce((total, a) => total + a.weight, 0);
+          selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;
         }
+        const switched = task.switched || (!bound && task.source !== undefined);
         try {
+          // A worker receives its entire scoped prompt at dispatch. Retrying it
+          // does not need the working tree or output from the failed provider.
+          const input = switched && !worker ? await this.handoff({ ...adapterRequest, cwd }, task) : { ...adapterRequest, cwd };
+          // Availability and handoff can yield while maintenance records a newer cooldown.
+          if ((this.cooldown(selected.source.id)?.until ?? 0) > this.now()) {
+            skip(selected.source.id, 'cooldown');
+            continue;
+          }
+          signal.throwIfAborted();
+          // Keep this check and attempt dispatch synchronous so workers cannot
+          // race onto the same idle provider.
+          if (worker && (observation?.isBusy(selected.source.id) || this.options.pending?.has(selected.source.id)
+            || !this.options.registry().adapters.some(adapter => adapter.id === selected.source.id && this.workerAdapter(adapter)))) continue;
+          task.source = selected.source.id;
+          task.switched = switched;
+          attempted.add(selected.source.id);
           this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
-          const input = task.switched ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
+          try { worker?.onSource(selected.source.id); } catch { /* Status callbacks cannot change routing. */ }
           const result = await (this.options.attempt ? this.options.attempt(selected.source, input, signal) : this.options.observation ? this.options.observation.complete(selected.source, input, signal) : selected.source.complete(input, signal));
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
@@ -114,14 +170,22 @@ export class StickyRouter {
           let until: number;
           if (failure.code === 'quota') until = this.now() + (failure.retryAfter ?? 3600) * 1000;
           else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
-          // Any other failure moves this task to the next source now, so the request still gets an answer.
-          else until = this.now() + 15 * 60 * 1000;
+          else {
+            const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
+            const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
+              && Number.isInteger(status) && status >= 500 && status < 600
+              && retry !== undefined && Number.isFinite(retry) && retry >= 0;
+            const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
+              : DEFAULT_FAILURE_COOLDOWN_SECONDS;
+            until = this.now() + seconds * 1000;
+          }
           this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, failure.code); task.switched = true;
         }
       }
     } finally {
       task.busy = false;
-      if (this.tasks.size > 1024) for (const [oldKey, oldTask] of this.tasks) {
+      if (worker) this.tasks.delete(key);
+      else if (this.tasks.size > 1024) for (const [oldKey, oldTask] of this.tasks) {
         if (oldKey !== key && !oldTask.busy) { this.tasks.delete(oldKey); break; }
       }
     }

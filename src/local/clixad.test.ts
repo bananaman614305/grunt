@@ -91,12 +91,27 @@ it('returns quota for exhausted free allowance, and accepts a successful last fr
   const exhausted = fixture({ wallets: [wallet({ creditsLeft: 0 })] }); await expect(exhausted.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota' }); expect(exhausted.asks()).toHaveLength(0);
   const last = fixture({ wallets: [wallet(), wallet({ creditsLeft: 0 })] }); expect((await last.source.complete(request(), new AbortController().signal)).text).toBe('Hello.');
 });
-it.each([{ free: false }, { creditsCharged: 1 }, { balance: 1 }, { returnedModel: 'another-model' }, { outputTokens: 4097 }, { inputTokens: undefined }])('rejects unsafe native billing, identity or usage without another ask (%j)', async patch => {
-  const f = fixture({ ask: completion(patch) }); await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused' }); expect(f.asks()).toHaveLength(1);
+it.each([
+  [{ free: false }, 'completion_billing'],
+  [{ creditsCharged: 1 }, 'completion_billing'],
+  [{ balance: 1 }, 'completion_billing'],
+  [{ returnedModel: 'another-model' }, 'completion_model'],
+  [{ outputTokens: 4097 }, 'completion_usage'],
+  [{ inputTokens: undefined }, 'completion_usage'],
+  [{ outputTokens: 0 }, 'completion_usage'],
+] as const)('identifies unsafe native metadata without another ask (%j)', async (patch, failureReason) => {
+  const f = fixture({ ask: completion(patch) });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason } });
+  expect(f.runner.mock.calls.map(([, mode]) => mode)).toEqual(['model', 'wallet', 'ask']);
 });
 it('never trusts model-authored stdout billing/usage or missing IPC metadata', async () => {
-  const ask = completion(); ask.events = []; ask.stdout = 'assistant {"version":1,"type":"final","text":"Hello."}\n [0 credits · balance 0]\n';
-  const f = fixture({ ask }); await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
+  const ask = completion();
+  ask.events = ask.events.filter(event => event.event !== 'completion');
+  const f = fixture({ ask });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({
+    code: 'refused', diagnostics: { failureReason: 'completion_attestation' }
+  });
+  expect(f.runner.mock.calls.map(([, mode]) => mode)).toEqual(['model', 'wallet', 'ask']);
 });
 it('refuses an external deposit seen in the postflight wallet', async () => {
   const f = fixture({ wallets: [wallet(), wallet({ balance: 200 })] }); await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
@@ -116,7 +131,11 @@ it('coalesces Responses parallel function-call history before protocol validatio
   ] }) }); expect(response.status).toBe(200); expect(f.asks()[0]![2].input).toContain('actual-b');
 });
 it('does not repair malformed/refused output and honors small caller output caps', async () => {
-  const f = fixture({ ask: completion({}, 'I cannot do that.') }); await expect(f.source.complete(request(), new AbortController().signal)).rejects.toThrow('protocol failed'); expect(f.asks()).toHaveLength(1);
+  const f = fixture({ ask: completion({}, 'I cannot do that.') });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({
+    code: 'upstream', diagnostics: { failureReason: 'completion_protocol' }
+  });
+  expect(f.asks()).toHaveLength(1);
   const over = fixture({ ask: completion({ outputTokens: 2 }) }); await expect(over.source.complete({ ...request(), maxTokens: 1 }, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
   for (const maxTokens of [0, -1, NaN, 1.5]) await expect(over.source.complete({ ...request(), maxTokens }, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' }); expect(over.asks()).toHaveLength(1);
 });

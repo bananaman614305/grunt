@@ -5,6 +5,7 @@ import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant
 import { FreebuffTools } from './freebuff-tools.js';
 import { SourceError } from './source.js';
 import { diagnosticFetch } from './diagnostics.js';
+import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const KILO_PARTICLE = 'particle-ai/particle-1:free';
@@ -19,16 +20,26 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
     })]);
   } finally { if (abort) signal.removeEventListener('abort', abort); }
 }
-async function json(response: Response, signal: AbortSignal, limit: number) {
-  if (!response.body || Number(response.headers.get('content-length')) > limit) { void response.body?.cancel().catch(() => {}); throw new SourceError('upstream', 'Kilo response exceeded the supported size'); }
+function responseFailure(response: Response, endpointLabel: 'models' | 'chat.completions', code: 'upstream' | 'refused',
+  message: string, failureReason: NonNullable<SafeDiagnosticMetadata['failureReason']>) {
+  return new SourceError(code, message, undefined, undefined, { transport: 'http', endpointLabel, httpStatus: response.status, failureReason });
+}
+async function json(response: Response, signal: AbortSignal, limit: number, endpointLabel: 'models' | 'chat.completions') {
+  const oversized = () => responseFailure(response, endpointLabel, 'upstream', 'Kilo response exceeded the supported size', 'response_body');
+  if (!response.body || Number(response.headers.get('content-length')) > limit) { void response.body?.cancel().catch(() => {}); throw oversized(); }
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let bytes = 0;
+  const readFailure = endpointLabel === 'models' ? 'Kilo free model metadata is unavailable' : 'Kilo request failed';
   try {
     for (;;) {
       const part = await abortable(reader.read(), signal); signal.throwIfAborted(); if (part.done) break;
-      bytes += part.value.byteLength; if (bytes > limit) throw new SourceError('upstream', 'Kilo response exceeded the supported size'); chunks.push(part.value);
+      bytes += part.value.byteLength; if (bytes > limit) throw oversized(); chunks.push(part.value);
     }
-    return object(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+  } catch (error) {
+    if (error instanceof SourceError || signal.aborted) throw error;
+    throw responseFailure(response, endpointLabel, 'upstream', readFailure, 'response_body');
   } finally { void reader.cancel().catch(() => {}); }
+  try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+  catch { throw responseFailure(response, endpointLabel, 'upstream', readFailure, 'response_json'); }
 }
 function status(response: Response) {
   if (response.ok) return;
@@ -44,7 +55,7 @@ export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal
   try {
     signal.throwIfAborted();
     const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'kilo', 'models')(`${KILO_ORIGIN}/models`, { redirect: 'error', signal }), signal); status(response);
-    const body = await json(response, signal, 4 * 1024 * 1024), rows = Array.isArray(body.data) ? body.data.filter(row => object(row).id === KILO_PARTICLE) : [];
+    const body = await json(response, signal, 4 * 1024 * 1024, 'models'), rows = Array.isArray(body.data) ? body.data.filter(row => object(row).id === KILO_PARTICLE) : [];
     const model = object(rows.length === 1 ? rows[0] : undefined), pricing = object(model.pricing), parameters = model.supported_parameters;
     const zero = (key: string) => (typeof pricing[key] === 'string' || typeof pricing[key] === 'number') && String(pricing[key]).trim() !== '' && Number(pricing[key]) === 0;
     const costs = ['request', 'image', 'web_search', 'internal_reasoning', 'input_cache_read', 'input_cache_write'];
@@ -113,29 +124,35 @@ export class Kilo implements Source {
       const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
       const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'kilo', 'chat.completions')(`${origin}/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
-      const result = await json(response, signal, 2 * 1024 * 1024), usage = object(result.usage), details = object(usage.cost_details);
-      if (result.model !== KILO_PARTICLE) throw new SourceError('refused', 'Kilo returned an unverified Particle model');
+      const fail = (code: 'upstream' | 'refused', message: string, reason: NonNullable<SafeDiagnosticMetadata['failureReason']>) =>
+        responseFailure(response, 'chat.completions', code, message, reason);
+      const result = await json(response, signal, 2 * 1024 * 1024, 'chat.completions'), usage = object(result.usage), details = object(usage.cost_details);
+      if (result.model !== KILO_PARTICLE) throw fail('refused', 'Kilo returned an unverified Particle model', 'completion_model');
+      const unverifiedUsage = 'Kilo returned unverified free usage or exceeded the output budget';
       if (usage.cost !== 0 || ['total_cost', 'credits_charged'].some(key => key in usage && usage[key] !== 0)
         || ['upstream_inference_cost', 'upstream_inference_prompt_cost', 'upstream_inference_completions_cost'].some(key => details[key] !== 0)
-        || ['cost', 'total_cost', 'credits_charged'].some(key => key in result && result[key] !== 0)
-        || !Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 1 || !Number.isSafeInteger(usage.completion_tokens)
-        || Number(usage.completion_tokens) < 1 || Number(usage.completion_tokens) > limit) throw new SourceError('refused', 'Kilo returned unverified free usage or exceeded the output budget');
-      const choice = object(Array.isArray(result.choices) && result.choices.length === 1 ? result.choices[0] : undefined), message = object(choice.message);
-      if (message.refusal) throw new SourceError('refused', 'Kilo refused the request');
-      if (!(message.content === undefined || message.content === null || typeof message.content === 'string')) throw new SourceError('upstream', 'Kilo returned invalid completion content');
+        || ['cost', 'total_cost', 'credits_charged'].some(key => key in result && result[key] !== 0)) {
+        throw fail('refused', unverifiedUsage, 'completion_billing');
+      }
+      if (!Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 1 || !Number.isSafeInteger(usage.completion_tokens)
+        || Number(usage.completion_tokens) < 1 || Number(usage.completion_tokens) > limit) throw fail('refused', unverifiedUsage, 'completion_usage');
+      if (!Array.isArray(result.choices) || result.choices.length !== 1) throw fail('upstream', 'Kilo returned an empty completion', 'response_choices');
+      const choice = object(result.choices[0]), message = object(choice.message);
+      if (message.refusal) throw fail('refused', 'Kilo refused the request', 'refusal');
+      if (!(message.content === undefined || message.content === null || typeof message.content === 'string')) throw fail('upstream', 'Kilo returned invalid completion content', 'response_content');
       const calls: ToolCall[] = [], ids = new Set<string>();
       if (message.tool_calls !== undefined) {
-        if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) throw new SourceError('upstream', 'Kilo returned invalid function calls');
+        if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
         for (const value of message.tool_calls) {
           const call = object(value), fn = object(call.function); let args: unknown;
-          try { args = JSON.parse(String(fn.arguments)); } catch { throw new SourceError('upstream', 'Kilo returned invalid function arguments'); }
+          try { args = JSON.parse(String(fn.arguments)); } catch { throw fail('upstream', 'Kilo returned invalid function arguments', 'response_tools'); }
           if (call.type !== 'function' || typeof call.id !== 'string' || !call.id || call.id.length > 256 || ids.has(call.id)
             || request.messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string'
-            || !args || typeof args !== 'object' || Array.isArray(args) || !validators.get(fn.name)?.(args)) throw new SourceError('upstream', 'Kilo returned invalid function calls');
+            || !args || typeof args !== 'object' || Array.isArray(args) || !validators.get(fn.name)?.(args)) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
           ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } });
         }
       }
-      if (!message.content && !calls.length) throw new SourceError('upstream', 'Kilo returned an empty completion');
+      if (!message.content && !calls.length) throw fail('upstream', 'Kilo returned an empty completion', 'response_content');
       return { text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
     } catch (error) {
       if (caller.aborted || this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Kilo request cancelled');

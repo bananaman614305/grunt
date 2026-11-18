@@ -12,9 +12,15 @@ export const diagnosticReasons = ['not_listed', 'pending_setup', 'cooldown', 'to
 export const diagnosticErrors = ['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'] as const;
 export const diagnosticEndpoints = ['chat.completions', 'models', 'account', 'local.opencode', 'cli'] as const;
 export const diagnosticNetworks = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'] as const;
+export const diagnosticFailureReasons = [
+  'response_body', 'response_json', 'response_choices', 'response_content', 'response_tools',
+  'completion_model', 'completion_billing', 'completion_usage', 'completion_attestation', 'completion_protocol',
+  'turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'
+] as const;
 export interface SafeDiagnosticMetadata {
   httpStatus?: number; transport?: 'http' | 'cli'; httpMethod?: 'GET' | 'POST';
   endpointLabel?: typeof diagnosticEndpoints[number]; networkCode?: typeof diagnosticNetworks[number]; exitCode?: number;
+  failureReason?: typeof diagnosticFailureReasons[number];
 }
 export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   version: 1; id: string; at: number; type: typeof diagnosticTypes[number]; requestId: string;
@@ -50,12 +56,7 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (member(['passed', 'failed', 'cancelled', 'skipped'] as const, v.outcome)) result.outcome = v.outcome;
   if (member(diagnosticErrors, v.errorCode)) result.errorCode = v.errorCode;
   if (member(diagnosticReasons, v.reason)) result.reason = v.reason;
-  if (member(['http', 'cli'] as const, v.transport)) result.transport = v.transport;
-  if (member(['GET', 'POST'] as const, v.httpMethod)) result.httpMethod = v.httpMethod;
-  if (member(diagnosticEndpoints, v.endpointLabel)) result.endpointLabel = v.endpointLabel;
-  if (member(diagnosticNetworks, v.networkCode)) result.networkCode = v.networkCode;
-  if (integer(v.httpStatus) && v.httpStatus >= 100 && v.httpStatus <= 599) result.httpStatus = v.httpStatus;
-  if (Number.isInteger(v.exitCode) && Number(v.exitCode) >= -255 && Number(v.exitCode) <= 255) result.exitCode = Number(v.exitCode);
+  Object.assign(result, sanitizeSafeDiagnosticMetadata(v));
   for (const field of ['inputTokens', 'outputTokens'] as const) if (integer(v[field])) result[field] = v[field];
   for (const field of ['durationMs', 'retryAfterSeconds'] as const) if (finite(v[field])) result[field] = v[field];
   return result;
@@ -70,6 +71,7 @@ export function sanitizeSafeDiagnosticMetadata(input: unknown): SafeDiagnosticMe
   if (member(diagnosticNetworks, value.networkCode)) result.networkCode = value.networkCode;
   if (integer(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599) result.httpStatus = value.httpStatus;
   if (Number.isInteger(value.exitCode) && Number(value.exitCode) >= -255 && Number(value.exitCode) <= 255) result.exitCode = Number(value.exitCode);
+  if (member(diagnosticFailureReasons, value.failureReason)) result.failureReason = value.failureReason;
   return result;
 }
 

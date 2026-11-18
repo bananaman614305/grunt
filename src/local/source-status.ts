@@ -45,6 +45,7 @@ const detail: Record<SourceState, string> = {
 // snapshot never calls a provider, reads credentials, or stores request content.
 export class SourceStatus {
   private observations = new Map<string, Observation>();
+  private idleListeners = new Set<(source: string) => void>();
   private diagnostics: DiagnosticsStore | undefined;
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
   constructor(ids: readonly string[], private now: () => number = Date.now) {
@@ -80,6 +81,29 @@ export class SourceStatus {
     const seconds = code === 'quota' && typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined;
     const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
     if (until !== undefined && Number.isFinite(until)) entry.retryAt = until; else delete entry.retryAt;
+  }
+  quotaRetryAt(id: string) { return this.observations.get(id)?.retryAt; }
+  isBusy(id: string) { return (this.observations.get(id)?.active ?? 0) > 0; }
+  async waitForIdle(sources: readonly string[], signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (sources.some(id => !this.isBusy(id))) return;
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        this.idleListeners.delete(idle);
+        signal.removeEventListener('abort', abort);
+      };
+      const idle = (source: string) => {
+        if (!sources.includes(source)) return;
+        cleanup();
+        resolve();
+      };
+      const abort = () => {
+        cleanup();
+        reject(signal.reason);
+      };
+      this.idleListeners.add(idle);
+      signal.addEventListener('abort', abort, { once: true });
+    });
   }
   async available(source: Source, healthCheck = false): Promise<boolean> {
     const entry = this.entry(source.id), revision = entry.revision;
@@ -143,7 +167,10 @@ export class SourceStatus {
         if (guard) guard.acceptedRevision = entry.revision;
       }
       throw error;
-    } finally { entry.active--; }
+    } finally {
+      entry.active--;
+      if (!entry.active) for (const idle of this.idleListeners) idle(source.id);
+    }
   }
   snapshot(options: {
     ids: readonly string[];

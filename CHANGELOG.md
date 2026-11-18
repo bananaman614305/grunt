@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-11-18
+
+### Added
+
+- Route requests to Nous Portal's free Qwen4 Max model through the official Hermes subscription proxy. Setup groups the data-sharing approval with the other free sources, then shows one device login link. Other providers continue setting up while Nous waits for approval.
+
+### Changed
+
+- Let vetted providers require explicit data-sharing approval in one grouped setup prompt.
+- Advance multiple qualified providers through scouting and preserve unfinished candidates for later runs.
+
+### Fixed
+
+- Honor provider retry windows on upstream failures and quota cooldowns observed during maintenance while continuing to fall back within the current request.
+- Show safe validation and native stop details for failed Clixad, Kilo, and Mistral Vibe attempts in the owner request trace.
+
+## [0.7.7] - 2026-11-18
+
+### Added
+
+- Delegate up to two tasks alongside the main coding agent using the local Grunt daemon. Connect Pi, OpenCode, Codex or Claude Code, or run jobs directly from the terminal.
+- Show active, queued and recent subworkers in the owner overview, and include lifetime usage totals across sources.
+
 ## [0.7.6] - 2026-11-17
 
 ### Fixed

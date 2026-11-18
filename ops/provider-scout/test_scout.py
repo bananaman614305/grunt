@@ -123,12 +123,34 @@ class ScoutTests(unittest.TestCase):
             self.assertEqual(updated['candidates'][key]['pipeline_status'], status)
             self.assertEqual(updated['candidates'][key]['pipeline_reason'], 'trusted result')
 
-    def test_one_integration_per_run_and_none_in_smoke(self):
+    def test_merged_candidate_retains_its_pending_publication_identity(self):
+        self.proof()
+        request = {'source_id':'synthetic','head_sha':'a'*40}
+        pending = candidate(release_request=request, pipeline_status='publication_pending')
+        key = scout.candidate_id(pending)
+        newer = candidate(release_request={**request,'head_sha':'b'*40})
+        report = {'web_search_used': True, 'search_queries': ['one', 'two'], 'candidates': [newer]}
+        updated = scout.ingest(report, {'candidates':{key:pending}}, self.workspace)
+        self.assertEqual(updated['candidates'][key]['release_request'], request)
+        scout.record_pipeline_result(updated, {**request,'status':'released'})
+        self.assertEqual(updated['candidates'][key]['pipeline_status'], 'released')
+
+    def test_current_ready_resubmission_can_reopen_blocked_head(self):
+        self.proof()
+        item = candidate(release_request={'source_id':'synthetic','head_sha':'a'*40})
+        key = scout.candidate_id(item)
+        ledger = {'candidates':{key:{**item,'pipeline_status':'blocked'}}}
+        report = {'candidates':[item]}
+        self.assertEqual(scout.queue_candidates(ledger, {'candidates':[]}, report, [], []), [])
+        self.assertEqual(scout.queue_candidates(ledger, report, report, [], []), [ledger['candidates'][key]])
+        self.assertEqual(ledger['candidates'][key]['pipeline_status'], 'deferred')
+
+    def test_full_run_accepts_many_integrations_and_smoke_accepts_none(self):
         item = candidate(release_request={'source_id':'synthetic'})
         report = {'web_search_used':True,'search_queries':['one','two'],
-                  'candidates':[item, candidate(homepage='https://second.example',release_request={'source_id':'second'})]}
-        with self.assertRaisesRegex(ValueError, 'Integration budget'):
-            scout.ingest(report, {'candidates':{}}, self.workspace)
+                  'candidates':[item, *[candidate(homepage=f'https://source{index}.example',
+                                                release_request={'source_id':f'source{index}'}) for index in range(25)]]}
+        self.assertEqual(len(scout.ingest(report, {'candidates':{}}, self.workspace)['candidates']), 26)
         report['candidates'] = [item]
         with self.assertRaisesRegex(ValueError, 'Integration budget'):
             scout.ingest(report, {'candidates':{}}, self.workspace, smoke=True)
@@ -310,7 +332,8 @@ class ScoutTests(unittest.TestCase):
             def __init__(self, supplied, root):
                 self.supplied = supplied
                 calls.append(('init', supplied, root))
-            def resume_pending(self):
+            def resume_pending(self, *, reserve_seconds):
+                self.reserve_seconds = reserve_seconds
                 calls.append(('resume',))
                 return []
             def process(self, supplied):
@@ -367,18 +390,61 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual(scout.load(self.workspace / 'ledger.json')['candidates'][key]['pipeline_status'], 'released')
         pipeline.process.assert_not_called()
 
-    def test_resume_consumes_integration_budget_before_fresh_candidate(self):
+    def test_resuming_a_publication_still_allows_a_fresh_candidate(self):
         _, _, result = self.enabled_pipeline_fixture()
         pipeline = Mock()
         pipeline.resume_pending.return_value = [{'status':'publication_pending','source_id':'other','head_sha':'c'*40,'reason':'waiting'}]
+        pipeline.process.return_value = {'status':'released','source_id':'synthetic','head_sha':'a'*40}
         agent = Mock(return_value=result)
         with patch.dict('sys.modules',{'pipeline':types.SimpleNamespace(Pipeline=Mock(return_value=pipeline))}), \
                 patch.object(scout,'run_agent',agent), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(scout.run(self.workspace),0)
-        pipeline.process.assert_not_called()
+        pipeline.process.assert_called_once()
         prompt = agent.call_args.args[0]['prompt']
         context = json.loads(prompt.split('## This run\n',1)[1])
-        self.assertEqual(context['max_integrations'],0)
+        self.assertNotIn('max_integrations',context)
+
+    def test_blocked_head_does_not_prevent_another_qualified_candidate_from_releasing(self):
+        config, first, result = self.enabled_pipeline_fixture()
+        proof = scout.load(Path(config['workspace']) / 'proof.json')
+        scout.atomic(Path(config['workspace']) / 'second-proof.json', {**proof, 'source_id':'second'})
+        second = candidate(homepage='https://second.example', probe={
+            **first['probe'], 'source_id':'second','evidence_file':'second-proof.json'
+        }, release_request={
+            **first['release_request'], 'source_id':'second','head_sha':'d'*40
+        })
+        result['result']['candidates'].append(second)
+        pipeline = Mock()
+        pipeline.resume_pending.return_value = []
+        pipeline.process.side_effect = [
+            {'status':'blocked','reason':'candidate_validation_failed'},
+            {'status':'released','source_id':'second','head_sha':'d'*40}
+        ]
+        with patch.dict('sys.modules', {'pipeline':types.SimpleNamespace(Pipeline=Mock(return_value=pipeline))}), \
+                patch.object(scout,'run_agent',return_value=result), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(self.workspace),0)
+        self.assertEqual([call.args[0]['release_request']['source_id'] for call in pipeline.process.call_args_list],
+                         ['synthetic','second'])
+        ledger = scout.load(self.workspace/'ledger.json')['candidates']
+        self.assertEqual(ledger[scout.candidate_id(first)]['pipeline_status'],'blocked')
+        self.assertEqual(ledger[scout.candidate_id(second)]['pipeline_status'],'released')
+
+    def test_qualified_candidate_waiting_at_deadline_resumes_from_ledger(self):
+        _, item, result = self.enabled_pipeline_fixture()
+        pipeline = Mock()
+        pipeline.resume_pending.return_value = []
+        followup = {**result, 'result': {**result['result'], 'candidates':[]}}
+        pipeline.process.side_effect = [
+            {'status':'deferred','reason':'pipeline_budget_exhausted'},
+            {'status':'released','source_id':'synthetic','head_sha':'a'*40}
+        ]
+        with patch.dict('sys.modules', {'pipeline':types.SimpleNamespace(Pipeline=Mock(return_value=pipeline))}), \
+                patch.object(scout,'run_agent',side_effect=[result, followup]), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(self.workspace),0)
+            self.assertEqual(scout.run(self.workspace),0)
+        self.assertEqual(pipeline.process.call_count,2)
+        ledger = scout.load(self.workspace/'ledger.json')['candidates']
+        self.assertEqual(ledger[scout.candidate_id(item)]['pipeline_status'],'released')
 
     def test_old_blocked_candidate_does_not_starve_fresh_report_candidate(self):
         _, fresh, result = self.enabled_pipeline_fixture()
@@ -441,7 +507,7 @@ class ScoutTests(unittest.TestCase):
             self.assertEqual(scout.run(self.workspace),0)
         pipeline.process.assert_called_once()
         context = json.loads(agent.call_args.args[0]['prompt'].split('## This run\n',1)[1])
-        self.assertEqual(context['max_integrations'],1)
+        self.assertNotIn('max_integrations',context)
         ledger = scout.load(self.workspace / 'ledger.json')['candidates']
         self.assertEqual(ledger[scout.candidate_id(stale)]['pipeline_status'],'superseded')
         self.assertEqual(ledger[scout.candidate_id(item)]['pipeline_status'],'released')

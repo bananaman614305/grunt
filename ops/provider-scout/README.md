@@ -59,7 +59,8 @@ gate.
 1. **Discover and qualify.** Every run performs live web research, deduplicates
    provider/model offers and resumes promising pending work. Official sources
    must establish the exact model, context, recurring entitlement, limits,
-   signup requirements and data policy. Smoke runs stop at research.
+   signup requirements and data policy. Full runs can prepare any number of
+   qualifying candidates within the time budget. Smoke runs stop at research.
 2. **Reuse access or sign up.** The constrained Squire proxy permits
    service-filtered account metadata and supported browser/signup operations.
    Only metadata lookup is preapproved; other actions retain automatic approval
@@ -78,8 +79,10 @@ gate.
    the existing `recordDataSharingConsent` helper can record its fingerprint in
    the candidate's private config under the standing operator approval. Consent
    from Kilo or another source does not transfer by underlying model; an
-   OpenRouter source needs its own policy. End users still receive the grouped
-   source-specific disclosure and must approve changed policy fingerprints.
+   OpenRouter source needs its own policy. Mark a policy with
+   `approval: 'explicit'` when users must opt in. The setup wizard groups
+   pending explicit policies into a single prompt, and a change to one of
+   those policies requires a fresh approval for that source.
    The scout never prewrites their receipts or tests with confidential code.
 4. **Validate and review.** The trusted supervisor verifies the repository,
    current main base, allowed change scope, eligibility and evidence. A fresh
@@ -115,6 +118,11 @@ gate.
    matching npm artifact through protected Squire-backed access, then verifies
    the public package and bundled registry. Private repositories cannot start
    this CI-backed promotion path.
+
+   The supervisor advances qualified candidates in sequence until its deadline.
+   A blocked candidate leaves the others eligible. Work awaiting the supervisor
+   remains in the ledger. When a merge advances main, candidates built on the
+   earlier head need a rebase and fresh checks before they can proceed.
 
 A signup, preliminary reply or locally passing test is not a release. A source
 joins the automatic pool only after the protected release pipeline succeeds.

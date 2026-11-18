@@ -44,7 +44,7 @@ environment variables.
 
 Every normal cycle reads:
 
-- `/v1/status` for the cached provider snapshot;
+- `/v1/status` for the cached provider and subworker snapshot;
 - `/v1/diagnostics/summary` for the persistent stream identity;
 - `/v1/diagnostics/events` for up to 200 oldest unacknowledged events;
 - the private maintenance state and explicitly projected scout state, when present;
@@ -54,7 +54,8 @@ The collector constructs allowlisted metadata records before sending them and
 validates the resulting batch again using the backend's shared schema. The wire
 format excludes prompts, replies, code, working directories, raw errors,
 headers, native output, account data, signed browser links, vault references and
-configuration files. Missing token counts remain absent. A daemon connection
+configuration files. Subworker snapshots contain job IDs, states, source IDs, timestamps
+and optional activity labels. Missing token counts remain absent. A daemon connection
 failure produces a nullable snapshot with an explicit unavailable observation;
 it does not create a healthy provider result.
 
@@ -84,6 +85,12 @@ batch. A failed or interrupted delivery is replayed; the backend deduplicates
 events by installation and event ID. First connection begins with the oldest
 retained local history. A changed diagnostic database stream resets the cursor
 so a prior database's larger sequence number cannot skip the new history.
+
+The overview's lifetime usage begins with the available successful user
+replies. The backend keeps aggregate counts per installation and provider
+after detailed traces expire. A bounded set of recent usage receipts prevents
+duplicate totals on replay. Replies with missing token counts still count
+toward the reply total.
 
 An offline collector cannot upload its own outage. The dashboard must therefore
 use the backend's last-received time to mark an installation stale or offline.

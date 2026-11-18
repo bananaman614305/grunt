@@ -28,23 +28,32 @@
   .activity-events li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }
 
-.home-work, .home-sources { max-width: 1050px; }
+.home-work, .home-sources, .home-workers { max-width: 1050px; }
 .home-work { padding: 16px 18px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .home-work .section-heading { margin-bottom: 10px; }
 .home-project { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .home-project h3 { font-size: 15px; }
 .home-progress { font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; max-width: 72ch; margin-top: 6px; }
 .home-work-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 9px; color: var(--dim); font-size: 12px; }
+.home-workers ul { list-style: none; margin: 0; padding: 0; }
+.home-workers li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.home-workers li time { margin-left: auto; color: var(--dim); font-size: 12px; }
+.home-workers .section-heading { gap: 4px 12px; flex-wrap: wrap; }
 .home-usage-note { margin-top: 11px; }
 .home-source-table .home-source-name { color: var(--ink); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; white-space: normal; }
-.home-source-table th.number, .home-source-table td.number { width: 26%; white-space: normal; }
+.home-source-table th.number, .home-source-table td.number { width: 21%; white-space: normal; }
 .home-source-table .badge { white-space: normal; }
+.home-source-table .home-inline-status { display: none; }
+.home-source-totals { background: var(--panel); }
+.home-source-totals th, .home-source-totals td { border-top: 1px solid var(--line); vertical-align: middle; }
 .home-amount strong { font-weight: 600; }
 .home-amount .secondary { line-height: 1.4; }
 @media (max-width: 580px) {
   .home-work { padding: 12px; }
   .home-source-table td, .home-source-table th { padding-inline: 6px; font-size: 11px; }
   .home-source-table .home-source-name, .home-source-table .badge { font-size: 11px; }
+  .home-source-table .home-source-status { display: none; }
+  .home-source-table .home-inline-status { display: flex; margin-top: 3px; font-weight: 400; }
   .home-source-table .home-amount .secondary { font-size: 10px; }
 }
 
@@ -93,4 +102,17 @@
   .home-uptime-table td, .home-uptime-table th { padding-inline: 5px; font-size: 11px; }
   .home-uptime-table tbody th { font-size: 11px; }
   .home-uptime-value .secondary { font-size: 10px; }
+}
+.play-view .header-actions { width: auto; margin-left: auto; }
+.playtest-launch { margin-top: 12px; }
+.provider-usage-table th[scope=row] { white-space: normal; overflow-wrap: anywhere; }
+.provider-usage-table .home-amount > span:first-child { margin-top: 0; white-space: nowrap; }
+.provider-usage-limits > span { display: block; }
+#provider-usage-list + .section-note { margin-top: 10px; }
+@media (max-width: 580px) {
+  .provider-usage-table { table-layout: fixed; }
+  .provider-usage-table th, .provider-usage-table td { padding-inline: 6px; white-space: normal; }
+  .provider-usage-table thead th:first-child { width: 25%; }
+  .provider-usage-table th:last-child { width: 31%; }
+  .provider-usage-table th.number, .provider-usage-table td.number { white-space: normal; }
 }

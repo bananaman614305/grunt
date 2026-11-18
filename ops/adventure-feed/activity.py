@@ -22,6 +22,7 @@ _milestone_cache = {'poll_at': float('-inf'), 'received_at': float('-inf'), 'row
 TOOLS = {'read', 'write', 'edit', 'bash'}
 PHASES = {'starting', 'working', 'checkpoint', 'waiting_for_free_pool', 'stopped'}
 ERRORS = {'not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'}
+ISSUE_STATES = {'available', 'limited', 'error', 'unavailable'}
 PROVIDER = re.compile(r'[a-z][a-z0-9-]{0,63}')
 MODEL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/+ -]{0,159}')
 SENSITIVE = re.compile(
@@ -259,8 +260,8 @@ def snapshot(state=STATE, *, include_project=False):
         if type(at) is int and now - 86400000 <= at <= now + 5000:
             if result['lastReply'] is None or at > result['lastReply']['at']:
                 result['lastReply'] = {**provider, 'at': at}
-        if row.get('errorCode') in ERRORS:
-            result['issues'].append({**provider, 'error': row['errorCode']})
+        if row.get('errorCode') in ERRORS and row.get('state') in ISSUE_STATES:
+            result['issues'].append({**provider, 'error': row['errorCode'], 'state': row['state']})
     if include_project:
         recent_milestones = [row for row in milestones() if 0 < row['at'] <= now + 5000]
         project = {'milestones': recent_milestones}

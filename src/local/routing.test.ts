@@ -127,6 +127,75 @@ it.each(['upstream', 'timeout'] as const)('switches on the first %s failure and 
   clock.mockReturnValue(1000 + 15 * 60 * 1000 + 1);
   expect(await sources.complete({ ...request, userMessages: ['after recovery'] }, AbortSignal.timeout(1000))).toEqual({ text: 'restored' });
 });
+it('fails over from a RunCrate 529 and honors its four-second retry hint on later requests', async () => {
+  let now = 1000;
+  const runcrate = source('runcrate'), kilo = source('kilo');
+  vi.mocked(runcrate.complete).mockRejectedValueOnce(new SourceError('upstream', 'Unavailable', 4, undefined, { httpStatus: 529 }));
+  const sources = new Sources([runcrate, kilo], { registry: () => bundledRegistry, random: () => 0, now: () => now });
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  expect(sources.status().sources[0]).toMatchObject({ id: 'runcrate', errorCode: 'upstream', state: 'error', retryAt: 5000 });
+  now = 4999;
+  expect(await sources.complete({ ...request, userMessages: ['before retry'] }, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  expect(runcrate.complete).toHaveBeenCalledOnce();
+  now = 5000;
+  expect(await sources.complete({ ...request, userMessages: ['after retry'] }, AbortSignal.timeout(1000))).toEqual({ text: 'runcrate done' });
+});
+it('never returns to a failed source in the same request after its short cooldown expires', async () => {
+  let now = 1000;
+  const runcrate = source('runcrate'), kilo = source('kilo'), livekit = source('livekit');
+  vi.mocked(runcrate.complete).mockRejectedValueOnce(new SourceError('upstream', 'Unavailable', 4, undefined, { httpStatus: 529 }));
+  vi.mocked(kilo.complete).mockImplementationOnce(async () => {
+    now += 5000;
+    throw new SourceError('upstream', 'Fallback failed');
+  });
+  const sources = new Sources([runcrate, kilo, livekit], { registry: () => bundledRegistry, random: () => 0, now: () => now });
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'livekit done' });
+  expect(runcrate.complete).toHaveBeenCalledOnce();
+  expect(kilo.complete).toHaveBeenCalledOnce();
+  expect(await sources.complete({ ...request, userMessages: ['new task'] }, AbortSignal.timeout(1000))).toEqual({ text: 'runcrate done' });
+});
+it.each([
+  [503, 0, 1],
+  [503, 7200, 7200],
+  [503, 172800, 86400],
+  [503, Infinity, 900],
+  [503, -1, 900],
+  [undefined, 4, 900],
+  [400, 4, 900],
+])('uses a bounded upstream retry delay for HTTP %s and hint %s', async (httpStatus, hint, expectedSeconds) => {
+  const now = 1000;
+  const runcrate = source('runcrate'), kilo = source('kilo');
+  vi.mocked(runcrate.complete).mockRejectedValueOnce(new SourceError('upstream', 'Unavailable', hint, undefined, { httpStatus }));
+  const sources = new Sources([runcrate, kilo], { registry: () => bundledRegistry, random: () => 0, now: () => now });
+  await sources.complete(request, AbortSignal.timeout(1000));
+  expect(sources.status().sources[0]).toMatchObject({ id: 'runcrate', state: 'error', retryAt: now + expectedSeconds * 1000 });
+});
+it('does not report another source cooldown when an explicitly named source is unavailable', async () => {
+  const runcrate = source('runcrate'), kilo = source('kilo'), opencode = source('opencode');
+  vi.mocked(runcrate.complete).mockRejectedValueOnce(new SourceError('upstream', 'Unavailable', 4, undefined, { httpStatus: 529 }));
+  vi.mocked(opencode.available).mockResolvedValue(false);
+  const sources = new Sources([runcrate, kilo, opencode], { registry: () => bundledRegistry, random: () => 0, now: () => 1000 });
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
+  await expect(sources.complete({ ...request, model: 'opencode', userMessages: ['explicit task'] }, AbortSignal.timeout(1000)))
+    .rejects.toMatchObject({ code: 'quota', retryAfter: undefined });
+});
+it.each([[false, '4'], [true, null]] as const)('reports the actionable retry after a RunCrate 529, slow fallback=%s', async (slowFallback, retryAfter) => {
+  let now = 1000;
+  const runcrate = source('runcrate'), kilo = source('kilo');
+  vi.mocked(runcrate.complete).mockRejectedValueOnce(new SourceError('upstream', 'Unavailable', 4, undefined, { httpStatus: 529 }));
+  vi.mocked(kilo.complete).mockImplementationOnce(async () => {
+    now += 5000;
+    throw new SourceError('upstream', 'Fallback failed');
+  });
+  const sources = new Sources(slowFallback ? [runcrate, kilo] : [runcrate],
+    { registry: () => bundledRegistry, random: () => 0, now: () => now });
+  const response = await createLocalApp(sources).request('http://localhost:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request)
+  });
+  expect(response.status).toBe(429);
+  expect(response.headers.get('retry-after')).toBe(retryAfter);
+  expect(runcrate.complete).toHaveBeenCalledOnce();
+});
 it('a refusal moves the request to the next source', async () => {
   const { a, b, sources } = routed();
   vi.mocked(a.complete).mockRejectedValue(new SourceError('refused', 'policy'));

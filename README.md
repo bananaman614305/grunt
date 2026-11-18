@@ -12,7 +12,7 @@
 npx usegrunt
 ```
 
-usegrunt installs grunt on this machine. It pools free AI quota and serves one local agent.
+usegrunt installs grunt on this machine. It pools free AI quota and serves local coding agents.
 
 Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
 
@@ -52,8 +52,24 @@ terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
 `--port` overrides `GRUNT_PORT`, the saved port, and the default 8788.
 
+### Delegate to Grunt subworkers
+
+Your coding agent can give Grunt up to two independent tasks at a time.
+Subworkers return findings or proposed edits for the main agent to review and
+apply. They work from the task and context you send.
+
+```bash
+npx usegrunt workers connect pi
+npx usegrunt workers status
+```
+
+Use `opencode`, `codex`, or `claude` in place of `pi` for those interfaces,
+or run tasks from any terminal with
+[`usegrunt workers run`](docs/reference.md#subworkers). Installations with an
+older daemon need `npx usegrunt update` after a release with subworkers.
+
 The [private owner console](docs/reference.md#private-owner-admin) opens on
-Grunt's current work, source status and per-source usage for today and this week.
+Grunt's current work, subworker activity and per-source daily, weekly and lifetime usage.
 Separate views show request and fallback traces, maintenance and scout progress.
 Google login permits explicitly configured, verified owner email addresses.
 The [Fly preview](https://milo-gateway.fly.dev/admin/) is available while custom
@@ -109,7 +125,9 @@ that have yet to complete a successful publish after two days.
 
 Maintainers can use the [provider scouting guide](https://github.com/bananaman614305/grunt/blob/main/ops/provider-scout/README.md) for Chad's 09:00/21:00 Eastern search job. It researches recurring free offers, uses Squire for eligible signups and, when release is enabled, requires two independent reviews, sandboxed checks and trusted exact-provider hello/tool probes before merging and publishing a new npm release. Human authentication and approval blockers remain pending. New users receive released additions through `npx usegrunt`; existing installations use `npx usegrunt update`. Scouting is separate from user maintenance and is not installed on users' machines.
 
-Setup enables free sources without a data-sharing question. Setup reuses the person's Google or GitHub identity; each provider can still require its own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
+Setup groups any required data-sharing approvals into one prompt. Supported providers can reuse the person's Google or GitHub identity and may still require their own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
+
+Nous uses `qwen/qwen4-max:free` on the Nous Portal Free plan. After the grouped consent prompt, open the Hermes device link and approve inference. Other sources can start serving requests while you finish that step.
 
 LiveKit adds DeepSeek V4.1 Flash through its free Build plan, using one free project and the official CLI's browser login. The documented included inference allowance is $2.50 per calendar month with a hard stop and no card. Keep the account on Build. LiveKit documents [zero data retention and no training for inference](https://docs.livekit.io/agents/models/inference/), so it needs no sharing approval. The route passed short-prompt, tool-call and 210,077-token context checks through Grunt.
 
@@ -120,7 +138,7 @@ GLM 5.3 Flash Free and Big Pickle. Follow-ups keep their model, and quota errors
 try another free model. These models may share provider limits; the pool does
 not create extra credit balances or purchase credits.
 
-Zro setup confirms the Free plan, no purchased usage balance and no payment method before connecting it. Keep that account free: Zro uses the same model ID on its paid plans, so changing the account outside grunt can change billing. Token Harbor uses its explicit `:free` model ID. Runcrate requires no paid balance, no card and automatic top-ups off; Mistral Vibe keeps pay-as-you-go off. Provider-specific data-sharing disclosures remain in code and documentation. Setup records current source policies in a private receipt without printing a disclosure or requesting approval. Background setup never prompts, and both signup and routing require the current receipt where required.
+Zro setup confirms the Free plan, no purchased usage balance and no payment method before connecting it. Keep that account free: Zro uses the same model ID on its paid plans, so changing the account outside grunt can change billing. Token Harbor uses its explicit `:free` model ID. Runcrate requires no paid balance, no card and automatic top-ups off; Mistral Vibe keeps pay-as-you-go off. Setup saves current provider data policies in a private receipt. Background setup never prompts, and signup and routing require the current receipt where required.
 
 Freebuff and APInex are retired from all grunt routing in 0.6.6. Freebuff's native application is preserved; its saved source selection and legacy fallback no longer enable routing, and no port-8789 bridge starts. APInex changed its recurring daily entitlement to require a $5 top-up; grunt makes no purchase, and a one-time Telegram reward is excluded. Old sharing receipts cannot reactivate either source.
 

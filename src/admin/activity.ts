@@ -2,6 +2,7 @@ import { AdminDataError, isAdminSourceId } from './types.js';
 
 const phases = ['starting', 'working', 'checkpoint', 'waiting_for_free_pool', 'stopped', 'offline'] as const;
 const errors = ['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'] as const;
+const issueStates = ['available', 'limited', 'error', 'unavailable'] as const;
 const toolNames = ['read', 'write', 'edit', 'bash'] as const;
 
 type Provider = { source: string; model?: string };
@@ -28,7 +29,7 @@ export interface AgentActivity {
   phase: typeof phases[number];
   active: Provider[];
   lastReply: (Provider & { at: number }) | null;
-  issues: (Provider & { error: typeof errors[number] })[];
+  issues: (Provider & { error: typeof errors[number]; state?: typeof issueStates[number] })[];
   events: Event[];
   project?: ProjectActivity;
   work?: WorkActivity;
@@ -118,7 +119,8 @@ export function projectAgentActivity(value: unknown, now: number): AgentActivity
     lastReply: reply ? { ...provider(reply), at: recent(reply.at) } : null,
     issues: list(data.issues, 32, value => {
       const issue = record(value);
-      return { ...provider(issue), error: oneOf(issue.error, errors) };
+      return { ...provider(issue), error: oneOf(issue.error, errors),
+        ...(issue.state === undefined ? {} : { state: oneOf(issue.state, issueStates) }) };
     }),
     events: events.filter((event): event is Event => event !== null).sort((a, b) => a.at - b.at),
     ...(data.project === undefined ? {} : { project: projectTimeline(data.project, observedAt) }),

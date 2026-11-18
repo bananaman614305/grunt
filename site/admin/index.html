@@ -36,6 +36,7 @@
       <a class="brand" href="/" aria-label="Grunt home"><img src="../grunt.svg" alt="" width="32" height="32"><span>grunt</span></a>
       <nav class="navigation" aria-label="Diagnostics">
         <a href="#home" data-view="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-7 9 7v11H3zM9 21v-7h6v7"/></svg>Overview</a>
+        <a href="#play" data-view="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 12 7-12 7z"/></svg>Play</a>
         <a href="#activity" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-6 4 12 3-6h4"/></svg>Live activity</a>
         <a href="#overview" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>Diagnostics</a>
         <a href="#requests" data-view="requests"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h10M4 19h16M18 9l3 3-3 3"/></svg>Requests</a>
@@ -52,7 +53,7 @@
         <div class="page-heading"><h1 id="page-title">Grunt overview</h1><p id="page-description" hidden></p></div>
         <div class="header-actions"><button class="button compact" type="button" id="refresh"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5"/></svg><span>Refresh</span></button><button class="button compact" type="button" id="export"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 16v5h16v-5"/></svg><span>Export diagnostics</span></button></div>
       </header>
-      <div class="context-bar"><label for="instance-select" id="installation-label">Installation <select id="instance-select"><option value="">All installations</option></select></label><p class="freshness" id="freshness">Waiting for a snapshot</p></div>
+      <div class="context-bar" id="context-bar"><label for="instance-select" id="installation-label">Installation <select id="instance-select"><option value="">All installations</option></select></label><p class="freshness" id="freshness">Waiting for a snapshot</p></div>
       <div class="notice connection-notice" id="connection-notice" role="status" aria-live="polite" hidden></div>
       <p class="sr-only" id="announcement" role="status" aria-live="polite"></p>
 
@@ -61,6 +62,10 @@
           <section class="home-work" aria-labelledby="home-work-title">
             <div class="section-heading"><h2 id="home-work-title">Current work</h2><a href="#activity">Live activity</a></div>
             <div id="home-work"><p class="section-note">Connecting to Grunt…</p></div>
+          </section>
+          <section class="data-section home-workers" id="home-workers" aria-labelledby="home-workers-title" hidden>
+            <div class="section-heading"><h2 id="home-workers-title">Subworkers</h2><span class="section-note" id="home-worker-counts"></span></div>
+            <ul id="home-worker-list"></ul>
           </section>
           <section class="home-uptime" id="home-uptime" aria-labelledby="home-uptime-title" hidden>
             <div class="section-heading"><h2 id="home-uptime-title">Work uptime</h2><span class="section-note" id="home-uptime-freshness"></span></div>
@@ -80,8 +85,14 @@
           <section class="data-section home-sources" aria-labelledby="home-sources-title">
             <div class="section-heading"><h2 id="home-sources-title">Sources</h2><a href="#providers">Source details</a></div>
             <div id="home-source-list"><p class="section-note">Loading source usage…</p></div>
-            <p class="section-note home-usage-note" id="home-usage-note" hidden>Usage shows successful replies and reported input plus output tokens. Today starts at local midnight. This week starts on Monday.</p>
+            <p class="section-note home-usage-note" id="home-usage-note" hidden></p>
           </section>
+        </section>
+
+        <section class="view" id="view-play" aria-labelledby="playtest-title" hidden>
+          <div class="section-heading"><h2 id="playtest-title">Amazing Adventure</h2><a href="#activity">Live activity</a></div>
+          <p class="section-note" id="playtest-status">No mobile playtest is available yet.</p>
+          <a class="button primary playtest-launch" id="playtest-launch" target="_blank" rel="noopener noreferrer" hidden>Play in browser</a>
         </section>
 
         <section class="view" id="view-overview" aria-labelledby="overview-heading" hidden>
@@ -109,8 +120,20 @@
           <h2 class="sr-only" id="providers-heading">Providers</h2><p class="section-note">Provider state comes from the latest collected observation. A configured model label is not physical-model attestation.</p><div id="provider-list" class="table-area"></div>
         </section>
 
-        <section class="view" id="view-usage" aria-labelledby="usage-heading" hidden>
-          <h2 id="usage-heading">Observed usage</h2><p class="section-note">Input and output are reported separately. Missing token reports remain unknown; provider credits and billing units are not counted as model tokens.</p><dl id="usage-summary" class="usage-summary"></dl><div id="usage-coverage" class="notice"></div><section class="data-section"><h2>What these figures establish</h2><div class="reading-text"><p>These are observations from collected requests, not a guaranteed daily allowance. Repeated conversation context counts as input again when a provider reports it.</p><p>Account quotas, monthly budgets and theoretical rate limits need separate verification. No sustainable-capacity estimate is shown until enough measured evidence is available.</p></div></section>
+        <section class="view" id="view-usage" aria-labelledby="provider-usage-title" hidden>
+          <section class="data-section first" aria-labelledby="provider-usage-title">
+            <div class="section-heading">
+              <h2 id="provider-usage-title">Usage by provider</h2>
+              <select id="provider-usage-period" aria-label="Provider usage period"><option value="today">Today</option><option value="week">This week</option></select>
+            </div>
+            <div id="provider-usage-list" class="table-area"></div>
+            <p class="section-note">Token totals use successful replies with reported counts. Quota failures and HTTP 429 responses can describe the same attempt. Account allowances and reset times depend on the provider.</p>
+          </section>
+          <section class="data-section" aria-labelledby="usage-heading">
+            <div class="section-heading"><h2 id="usage-heading">Overall usage</h2></div>
+            <p class="section-note">Reported input includes repeated conversation context.</p>
+            <dl id="usage-summary" class="usage-summary"></dl><div id="usage-coverage" class="notice"></div>
+          </section>
         </section>
 
         <section class="view" id="view-runs" aria-labelledby="runs-heading" hidden>

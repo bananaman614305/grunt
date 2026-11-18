@@ -1,15 +1,17 @@
 # Amazing Adventure activity
 
 On Chad, run `grunt-adventure live` for the terminal feed. It polls the runner's
-private Pi session and the read-only status endpoint on loopback port 8793 every
-two seconds. Progress comes from completed, visible assistant text. The
-projector filters code fences, inline code, links, paths and common
+private Pi session and the read-only status endpoint of the dedicated game pool
+on loopback port 8793 every two seconds. That pool handles project requests
+without periodic provider health checks. Progress comes from completed, visible
+assistant text. The projector filters code fences, inline code, links, paths and common
 credential patterns. Tool entries contain the tool's name and outcome.
 
 The owner dashboard at `/admin/#activity` shows the answering provider, the
 last successful provider, provider issues and the latest 40 progress or tool
-entries. Model labels come from the configured route. The web view refreshes
-about every five seconds while visible.
+entries. A failed provider that the project pool can retry now carries its
+current state along with the last error. Model labels come from the configured
+route. The web view refreshes about every five seconds while visible.
 
 The publisher reads the `Current task` and `Next steps` sections of Grunt's
 `GRUNT_STATUS.md` checkpoint. The overview labels the checkpoint with its update
@@ -26,7 +28,12 @@ execution and brief handoffs count as active work. The monitor records provider
 waits, stalls, paused or offline time, and time between work cycles as downtime.
 A model-only interval can be counted as provider downtime after the pool reports
 that attempt failed. The percentage uses measured time. Older time and gaps in
-monitoring remain unmeasured. The monitor also checks the running Pi process for\na quiet shell tool when its start event has not reached the cycle log yet.
+monitoring remain unmeasured. The monitor checks the running Pi process for a
+quiet shell tool when the cycle log is buffered. For long-running tools, CPU
+progress among their descendants, a fresh nested model reply, or a nested model
+request observed within the past four minutes can show active work even when the
+main log is quiet. A shell tree containing only wait helpers and a sleeping
+process does not qualify on process presence alone.
 
 Chad can run `activity.py upload` as a separate user service. It uses the
 existing private collector environment file for the ingestion credential

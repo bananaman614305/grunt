@@ -56,6 +56,37 @@ it('distributes new conversations across exactly the vetted pool and keeps follo
   } finally { await driver.close(); }
 });
 
+it('reports OpenCode step usage once, including cached input and reasoning output', async () => {
+  const final = { input: 20, output: 3, cache: { read: 5, write: 2 }, reasoning: 7 };
+  const fake = backend(() => Response.json({
+    info: { tokens: final },
+    parts: [
+      { type: 'step-finish', tokens: { input: 100, output: 4, cache: { read: 10, write: 6 }, reasoning: 8 } },
+      { type: 'text', text: 'ok' },
+      { type: 'step-finish', tokens: final }
+    ]
+  }));
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: fake.fetcher });
+  try {
+    await expect(driver.complete(request('hello'), signal())).resolves.toEqual({ text: 'ok', inputTokens: 143, outputTokens: 22 });
+  } finally { await driver.close(); }
+});
+
+it.each([
+  [{ input: 0, output: 0 }, { inputTokens: 0, outputTokens: 0 }],
+  [{ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, {}],
+  [{ total: 0, input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, { inputTokens: 0, outputTokens: 0 }],
+  [{ input: 70, output: -1 }, { inputTokens: 70 }],
+  [{ output: 58, reasoning: 17 }, { outputTokens: 75 }],
+  [undefined, {}],
+])('uses assistant usage for older replies without step usage (%j)', async (tokens, expected) => {
+  const fake = backend(() => Response.json({ info: { tokens }, parts: [{ type: 'text', text: 'ok' }] }));
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: fake.fetcher });
+  try {
+    await expect(driver.complete(request('hello'), signal())).resolves.toEqual({ text: 'ok', ...expected });
+  } finally { await driver.close(); }
+});
+
 it('fails over an exhausted model, honors Retry-After, and preserves an existing conversation during model failover', async () => {
   let glmExhausted = false;
   const fake = backend(model => model === DEFAULT_OPENCODE_MODELS[0]

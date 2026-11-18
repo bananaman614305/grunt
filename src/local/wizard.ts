@@ -429,20 +429,24 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     if (revised) console.log(harness ? `✓ harness: ${harness.id}` : '… harness: Squire with human handoff');
     const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     const { registry } = !add && actions.loadRegistry ? await actions.loadRegistry() : { registry: bundledRegistry };
-    const ids = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
+    const requested = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
     const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
     const sources = add ? knownAdapters.has(add) || add === 'nvidia'
       ? [...new Set([...(previous.length ? previous : defaults), add])]
-      : [...new Set(['freellmapi', ...previous, ...defaults])] : ids;
-    const consent = await approveDataSharing({ directory: configDir(), providers: sources });
+      : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });
     squire?.approveDataSharing?.(consent.approved);
+    const skipped = new Set(consent.skipped);
+    const ids = requested.filter(id => !skipped.has(id));
+    for (const id of requested) if (skipped.has(id)) table.set('source', id, 'skipped (approval required)');
     for (const id of ids) table.set('source', id, 'connecting');
+    if (!ids.length) return;
     const port = await setupPort();
     if (add) {
-      await connect();
+      if (add !== 'nous') await connect();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved });
-        await actions.installService(sources);
+        await actions.installService(sources.filter(id => !skipped.has(id)));
         await actions.checkService(port);
         const unavailable: string[] = [];
         await actions.checkFallbackServices(unavailable, port, notify, [add]);

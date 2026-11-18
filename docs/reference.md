@@ -260,7 +260,8 @@ available. Squire also needs a usable browser/display path. A headless remote
 server may need display helpers such as Xvfb/noVNC or a reachable browser
 handoff. Missing prerequisites are reported for repair; provider verification
 can still require a person. Mistral Vibe separately needs `uv` or Python 3.12+.
-Setup installs the vetted adapters and connects accounts through Trusty Squire:
+Setup installs the vetted adapters. Supported account flows use Trusty Squire,
+and Nous uses Hermes's device login.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -293,6 +294,45 @@ Text and function-tool turns are translated across APIs. Native Responses tools
 require a compatible delegate; ordinary Chat Completions sources accept function
 tools. Unsupported tools and media blocks return an
 error rather than silently losing context.
+
+### Subworkers
+
+The installed daemon can run two subworker jobs at once while your main agent
+coordinates the work. Jobs use the registered free model sources and prefer
+separate idle sources. They wait when every eligible source is busy. Grunt
+continues to honor provider consent, quotas and retry windows.
+
+```bash
+npx usegrunt workers run <<'JSON'
+{"tasks":[
+  {"activity":"review","task":"Review the pagination logic for edge cases","context":"Paste the relevant code or excerpt here"},
+  {"activity":"tests","task":"Propose tests for the empty results state","context":"Paste the related test or API contract here"}
+]}
+JSON
+npx usegrunt workers status
+```
+
+The command takes one or two tasks in a batch, with at most 8 KiB of instructions
+and 32 KiB of context per task. The results are returned in submission order
+with the provider that replied. Provide relevant excerpts and the file or
+component each worker should own. Use the optional activity label `review`,
+`tests`, `implementation`, or `research` to make it easier to follow in status.
+The main agent reviews suggestions and applies edits using its existing tools
+and permissions. Subworkers have no filesystem or shell tools. Task text and context go to the configured provider under the
+same data-sharing terms as other Grunt requests.
+
+Run `npx usegrunt workers connect <pi|opencode|codex|claude>` for the matching
+tool setup. The MCP server for other compatible clients is
+`usegrunt workers mcp` over stdio. In Pi and MCP, `grunt_delegate` returns a batch ID
+immediately so the main agent can keep working. Retrieve the ordered results
+with `grunt_worker_result` or stop the jobs with `grunt_worker_cancel`.
+`grunt_worker_status` reads the daemon-wide status. Use `--port <port>` if your
+daemon uses a different port from the one saved during setup.
+
+A job has up to five minutes including queue time. If the daemon's 16 waiting
+slots are full, callers receive a busy result. Disconnecting cancels outstanding
+jobs. Worker status includes the current source and recent outcomes. Only
+explicitly enrolled collectors send worker metadata to the owner dashboard.
 
 ### Source dashboard
 
@@ -365,8 +405,10 @@ and content-type requests, so failures can be found in the journal. Logical
 requests, individual provider attempts and transports have distinct events.
 Trace metadata can show chosen source/model IDs, explicit source pinning,
 fallbacks/skips, durations, actual observed HTTP status, bounded retry timing,
-safe network error codes and available native exit status. It records no prompt,
-reply, code, request body, raw provider error, header value or native output.
+safe network error codes and available native exit status. Failed attempts can
+also include an allowlisted validation or native stop reason. The journal
+records no prompt, reply, code, request body, raw provider error, header value
+or native output.
 Source/model labels do not establish a physical-model attestation. Unknown token
 usage stays absent and is counted separately from known zero usage.
 
@@ -437,7 +479,7 @@ pipes and narrow terminals get a one-line title). After checking prerequisites,
 setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
-Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch
+Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad, Perch and Nous
 in the experimental tier.
 Free-account eligibility still applies.
 
@@ -471,7 +513,7 @@ On normal completion, failed providers are listed with repair guidance, but the
 command succeeds if at least one provider was verified. If none was verified,
 setup fails. For a foreground daemon, run `usegrunt serve`.
 
-The jobs share one Squire connection, cached credential metadata and reusable
+Jobs that use Squire share one connection, cached credential metadata and reusable
 grants. Up to three provider browser operations can run concurrently. Browser
 handoffs arriving together share a confirmation prompt; later
 handoffs queue while other jobs continue. Interactive installers and confirmations
@@ -548,6 +590,19 @@ The additional experimental routes have these requirements:
 | Pollinations | `community/morriszdweck/glm-5.3-flash-free` | Google login through Squire, a hard numeric zero-budget key with Quest Pollen Only enabled, usage-only account permissions, and a positive unused Quest balance. No paid funds or billing. Community availability is best effort, with no promised daily quota or fixed reset. |
 | Clixad | Native `glm-5.3-flash` | Existing or ordinary free GitHub account pairing, positive free allowance and a wallet balance of exactly zero. No deposit or paid credits. Model selection and native free/zero-charge metadata are checked. |
 | Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
+| Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
+
+For Nous, approve its data policy in the grouped setup prompt and open the
+Hermes device link on your phone or computer. Sign in or create the Free account
+yourself, and approve inference access. Grunt uses an installed official Hermes
+Agent or installs a pinned Hermes copy in its private configuration directory
+using Git and uv. Other routes can become ready while you approve Nous.
+Hermes keeps and refreshes its own OAuth credentials in a dedicated profile.
+Grunt connects to the official subscription proxy over a private local socket.
+Use `npx usegrunt add nous` to connect Nous separately or repeat device approval.
+`GRUNT_HERMES_ROOT` selects an existing official Hermes installation by absolute
+path. Grunt skips Nous if it cannot confirm the Free plan, zero paid balances,
+and zero prices for the pinned model.
 
 Runcrate keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
@@ -702,8 +757,8 @@ NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the 
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
 API-provider keys stay in Squire; no provider reveal approval is requested.
-Mistral Vibe, LiveKit, Clixad and Perch's native CLIs own their separate local credential
-exchanges and storage.
+Mistral Vibe, LiveKit, Clixad, Perch and Nous use native clients that own their
+local credential exchanges and storage.
 Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
 `usegrunt add https://host/api/v1` adds an OpenAI-compatible endpoint with a hidden key prompt and discovered model choice. `usegrunt add` prompts for a name or URL.

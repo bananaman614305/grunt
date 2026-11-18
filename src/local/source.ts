@@ -8,7 +8,19 @@ export class SourceError extends Error {
 export interface Message { role: string; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
-export interface ModelRequest { model: string; messages: Message[]; userMessages?: string[]; tools: Tool[]; cwd: string; stream: boolean; maxTokens?: number; imageInput?: boolean; handoffPrompt?: string }
+export interface ModelRequest {
+  model: string;
+  messages: Message[];
+  userMessages?: string[];
+  tools: Tool[];
+  cwd: string;
+  stream: boolean;
+  maxTokens?: number;
+  imageInput?: boolean;
+  handoffPrompt?: string;
+  // Local worker routing metadata is never decoded from a model API request.
+  worker?: { id: string; onSource: (source: string) => void; onWait?: () => void };
+}
 export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
@@ -36,6 +48,7 @@ export const FIRST_OUTPUT_MS = 60000;
 const cutoffs = new WeakSet<SourceError>();
 export class Sources {
   private router: StickyRouter | undefined;
+  private workerRouter: StickyRouter | undefined;
   private observation: SourceStatus;
   private checking = new Set<string>();
   private maintenance: (() => Record<string, MaintenanceEntry>) | undefined;
@@ -52,7 +65,16 @@ export class Sources {
   constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs = FIRST_OUTPUT_MS) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
     this.observation = new SourceStatus(sources.map(source => source.id), routing?.now);
-    if (routing) this.router = new StickyRouter(sources, { ...routing, pending: this.pending, observation: this.observation, attempt: this.attempt,
+    if (routing) this.router = this.createRouter(routing);
+  }
+  setWorkerRegistry(registry: RoutingOptions['registry']) {
+    // Mixed source configurations preserve their normal fixed route chain.
+    // Only subworkers use this secondary router over the same observations.
+    if (!this.router) this.workerRouter = this.createRouter({ registry });
+  }
+  private get registeredRouter() { return this.router ?? this.workerRouter; }
+  private createRouter(routing: RoutingOptions) {
+    return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
       observe: (source, reason, skipped) => {
         const context = currentDiagnosticContext();
         if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
@@ -90,7 +112,7 @@ export class Sources {
     return Promise.race([work, cutoff]).finally(() => clearTimeout(timer));
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
-  healthy(id: string) { this.router?.healthy(id); this.observation.healthy(id); }
+  healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; this.observation.setDiagnostics(store); }
   diagnosticStore() { return this.diagnostics; }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
@@ -181,7 +203,7 @@ export class Sources {
       signal.throwIfAborted();
       const newer = newerEvidence();
       if (newer) return newer;
-      this.router?.verified(id);
+      this.registeredRouter?.verified(id);
       return { outcome: 'passed', evidence: 'reply', lastSuccessAt: now() };
     } catch (error) {
       caller.throwIfAborted();
@@ -202,7 +224,7 @@ export class Sources {
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
       if (this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
-      if (this.router?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
+      if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
       return s.id;
     }));
     return ['grunt', ...available.filter((id): id is string => id !== null)];
@@ -212,7 +234,7 @@ export class Sources {
   private recover: (() => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const parent = currentDiagnosticContext();
-    const context: DiagnosticContext = { requestId: parent?.requestId ?? randomUUID(), kind: this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
+    const context: DiagnosticContext = { requestId: parent?.requestId ?? randomUUID(), kind: !request.worker && this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
     return withDiagnosticContext(context, async () => {
       const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
       if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
@@ -226,13 +248,18 @@ export class Sources {
         if (parent?.requestRecorded) parent.errorCode = signal.aborted ? 'cancelled' : error instanceof SourceError ? error.code : 'upstream';
         if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', outcome: signal.aborted ? 'cancelled' : 'failed', durationMs: Math.max(0, performance.now() - startedMono),
           errorCode: signal.aborted ? 'cancelled' : error instanceof SourceError ? error.code : 'upstream' });
-        if (error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
+        if (!request.worker && error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
         throw error;
       }
     });
   }
   private async route(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal.throwIfAborted();
+    if (request.worker) {
+      const router = this.registeredRouter;
+      if (!router) throw new SourceError('not_installed', 'Subworkers need the registered free model pool');
+      return router.complete({ ...request, model: 'grunt' }, signal);
+    }
     if (this.disabledModels.has(request.model)) throw new SourceError('refused', `${request.model} routing is disabled`);
     if (this.pending.has(request.model)) {
       if (!this.verifying.has(request.model)) throw new SourceError('not_installed', `${request.model} setup is still in progress`);
@@ -244,7 +271,7 @@ export class Sources {
       // retry of a provider refusal. The source retains every normal guard.
       const completion = await this.observation.complete(source, request, signal);
       signal.throwIfAborted();
-      this.router?.verified(source.id);
+      this.registeredRouter?.verified(source.id);
       answeredBy.set(completion, source.id);
       return completion;
     }

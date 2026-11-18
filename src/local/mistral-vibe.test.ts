@@ -8,11 +8,12 @@ const directories: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 const receipt = () => ({ version: 1 as const, plan: 'Free' as const, payAsYouGo: false as const, paymentMethodPresent: false as const, purchasedCredits: 0 as const, checkedAt: new Date().toISOString() });
 const request = (text = 'hello'): ModelRequest => ({ model: 'mistral-vibe', messages: [{ role: 'user', content: text }], tools: [], cwd: tmpdir(), stream: false });
-async function fixture(mode = 'answer') {
+async function fixture(mode = 'answer', nativeStop = '') {
   const directory = await mkdtemp(join(tmpdir(), 'mistral-vibe-test-')); directories.push(directory);
   const paths = mistralVibePaths(directory); await mkdir(join(paths.home, 'bin'), { recursive: true, mode: 0o700 }); await chmod(paths.home, 0o700);
   await writeFile(join(paths.home, '.env'), 'MISTRAL_API_KEY=synthetic-private-vibe-key\n', { mode: 0o600 }); await writeMistralVibeFreePlanReceipt(directory, receipt());
   const snapshot = join(directory, 'snapshot.json'); vi.stubEnv('MISTRAL_TEST_SNAPSHOT', snapshot); vi.stubEnv('MISTRAL_TEST_MODE', mode);
+  vi.stubEnv('MISTRAL_TEST_NATIVE_STOP', nativeStop);
   await writeFile(paths.binary, `#!${process.execPath}\n${String.raw`
 const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
 const args=process.argv.slice(2),arg=n=>args[args.indexOf(n)+1],prompt=fs.readFileSync(arg('--prompt-file'),'utf8'),mode=process.env.MISTRAL_TEST_MODE;
@@ -26,9 +27,11 @@ const history=[{type:'message',role:'user',generationStatus:'completed',content:
 if(mode==='native-tool')history.splice(1,0,{type:'effect',detail:{toolName:'bash'}});
 const config={active_model:alias,models:{[alias]:{name:mode==='wrong-model'?'mistral-medium-latest':wire,provider:'mistral',max_context_length:262144,auto_compact_threshold:202144}},providers:[{name:'mistral',api_base:mode==='wrong-host'?'https://example.com/v1':'https://api.mistral.ai/v1'}]};
 config.compaction_model={name:mode==='paid-compactor'?'mistral-medium-latest':wire,provider:'mistral'};
-const exported={exit_code:mode==='quota'?2:0,outcome:mode==='quota'?'infrastructure_failure':'finished',config,usage:{input_tokens:200843,output_tokens:26},error:mode==='quota'?{code:'quota_exhausted',message:'private-secret-upstream-error'}:null};
+const nativeStop=process.env.MISTRAL_TEST_NATIVE_STOP;
+const exitCode=nativeStop?3:mode==='quota'?2:0;
+const exported={exit_code:exitCode,outcome:nativeStop||(mode==='quota'?'infrastructure_failure':'finished'),config,usage:{input_tokens:200843,output_tokens:26},error:mode==='quota'?{code:'quota_exhausted',message:'private-secret-upstream-error'}:null};
 fs.mkdirSync(arg('--output-dir'),{recursive:true,mode:448});fs.writeFileSync(path.join(arg('--output-dir'),'export.json'),JSON.stringify(exported),{mode:384});
-process.stdout.write(mode==='malformed'?'not json':JSON.stringify(history),()=>process.exit(mode==='quota'?2:0));
+process.stdout.write(mode==='malformed'?'not json':JSON.stringify(history),()=>process.exit(exitCode));
 `}`, { mode: 0o700 });
   return { directory, paths, snapshot, source: new MistralVibe({ directory, timeout: 5000 }) };
 }
@@ -79,6 +82,21 @@ it.each(['wrong-model', 'wrong-host', 'paid-compactor', 'malformed', 'native-too
     const error = await f.source.complete({ ...request(), tools }, AbortSignal.timeout(5000)).catch(error => error);
     expect(error).toBeInstanceOf(Error); expect(error.message).not.toContain('private-secret-upstream-error');
     expect(error.code).toBe(mode === 'quota' ? 'quota' : mode === 'native-tool' ? 'refused' : 'upstream');
+  } finally { await f.source.close(); }
+});
+it.each([
+  ['answer', 'length', 'upstream', 'length'],
+  ['quota', 'turn_limit', 'quota', 'turn_limit'],
+  ['answer', 'refusal', 'refused', 'refusal'],
+  ['answer', 'private-secret-upstream-error', 'upstream', undefined],
+])('records only known exit-3 outcomes for %s / %s', async (mode, stop, code, failureReason) => {
+  const f = await fixture(mode, stop);
+  try {
+    const error = await f.source.complete(request(), AbortSignal.timeout(5000)).catch(error => error);
+    expect(error.code).toBe(code);
+    expect(error.diagnostics).toEqual({ transport: 'cli', endpointLabel: 'cli', exitCode: 3,
+      ...(failureReason ? { failureReason } : {}) });
+    expect(error.message).not.toContain('private-secret-upstream-error');
   } finally { await f.source.close(); }
 });
 it('requires a fresh Free/no-overage/no-payment receipt and private native authentication', async () => {

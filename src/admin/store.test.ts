@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@libsql/client';
 import type { Client } from '@libsql/client';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { AdminStore } from './store.js';
 import { validateAdminBatch } from './types.js';
 import type { AdminBatch, AdminDiagnosticEvent } from './types.js';
@@ -241,10 +241,92 @@ it('reports source usage by calendar period with incomplete token reporting and 
   ]));
   await store.ingest(batch([event('attempt.finish', { ...success, outputTokens: 20 })], { instanceId: 'other' }));
   const report = await store.sourceUsage(today, week, 'chad');
-  expect(report.sources).toEqual([
-    { source: 'beatapi', lastReplyAt: initial, today: { replies: 1, tokens: null, completeReports: 0 }, week: { replies: 1, tokens: null, completeReports: 0 } },
-    { source: 'kilo', lastReplyAt: initial, today: { replies: 1, tokens: 0, completeReports: 1 }, week: { replies: 1, tokens: 0, completeReports: 1 } },
-    { source: 'zro', lastReplyAt: initial, today: { replies: 2, tokens: 9, completeReports: 0 }, week: { replies: 3, tokens: 27, completeReports: 1 } }
+  expect(report.sources).toMatchObject([
+    { source: 'beatapi', lastReplyAt: initial, today: { replies: 1, tokens: null, completeReports: 0, inputTokens: null, outputTokens: null, inputReports: 0, outputReports: 0 }, week: { replies: 1, tokens: null, completeReports: 0 } },
+    { source: 'kilo', lastReplyAt: initial, today: { replies: 1, tokens: 0, completeReports: 1, inputTokens: 0, outputTokens: 0, inputReports: 1, outputReports: 1 }, week: { replies: 1, tokens: 0, completeReports: 1 } },
+    { source: 'zro', lastReplyAt: initial, today: { replies: 2, tokens: 9, completeReports: 0, inputTokens: 9, outputTokens: null, inputReports: 1, outputReports: 0 },
+      week: { replies: 3, tokens: 27, completeReports: 1, inputTokens: 21, outputTokens: 6, inputReports: 2, outputReports: 1 } }
   ]);
-  expect((await store.sourceUsage(today, week)).sources.at(-1)?.today).toEqual({ replies: 3, tokens: 29, completeReports: 0 });
+  expect((await store.sourceUsage(today, week)).sources.at(-1)?.today).toMatchObject({ replies: 3, tokens: 29, completeReports: 0, inputTokens: 9, outputTokens: 20 });
+  expect(report).toMatchObject({ lifetimeSince: week - 1, totals: {
+    today: { replies: 4, tokens: 9, completeReports: 1 },
+    week: { replies: 5, tokens: 27, completeReports: 2 },
+    lifetime: { replies: 6, tokens: 127, completeReports: 2 }
+  } });
+  expect((await store.sourceUsage(today, week)).totals.lifetime).toMatchObject({ replies: 7, tokens: 147, completeReports: 2 });
+});
+
+it('seeds lifetime from retained traces once and survives retention and trace replays', async () => {
+  const day = 86400000;
+  let now = initial;
+  const client = createClient({ url: 'file::memory:' }); clients.push(client);
+  await client.execute(`CREATE TABLE admin_events(instance_id TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,
+    request_id TEXT NOT NULL,source TEXT,type TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(instance_id,id))`);
+  const historical = event('attempt.finish', { source: 'opencode', outcome: 'passed', at: initial - 8 * day });
+  await client.execute({ sql: 'INSERT INTO admin_events VALUES(?,?,?,?,?,?,?)',
+    args: ['chad', historical.id, historical.at, historical.requestId, 'opencode', historical.type, JSON.stringify(historical)] });
+  const store = new AdminStore(client, { now: () => now });
+  await store.init();
+  await store.init();
+  expect((await store.sourceUsage(initial, initial)).totals.lifetime).toMatchObject({ replies: 1, tokens: null });
+  // A retained event can be evicted by the trace row cap before its deduplication window ends.
+  await client.execute({ sql: 'DELETE FROM admin_events WHERE id=?', args: [historical.id] });
+  await store.ingest(batch([historical]));
+  const fresh = event('attempt.finish', { source: 'kilo', outcome: 'passed', inputTokens: 5, outputTokens: 7 });
+  await store.ingest(batch([fresh]));
+  now += 31 * day;
+  await store.init();
+  const report = await store.sourceUsage(now, now - day, 'chad');
+  expect(report).toMatchObject({
+    lifetimeSince: historical.at,
+    sources: [
+      { source: 'kilo', lifetime: { replies: 1, tokens: 12, completeReports: 1 } },
+      { source: 'opencode', lifetime: { replies: 1, tokens: null, completeReports: 0 } }
+    ],
+    totals: { today: { replies: 0 }, week: { replies: 0 }, lifetime: { replies: 2, tokens: 12, completeReports: 1 } }
+  });
+  expect((await client.execute('SELECT COUNT(*) n FROM admin_usage_observations')).rows[0]?.n).toBe(0);
+});
+
+it('rejects a replay that expires while waiting for the write lock', async () => {
+  const { store, client, time } = await fixture();
+  const reply = event('attempt.finish', { source: 'kilo', outcome: 'passed', inputTokens: 5, outputTokens: 7 });
+  await store.ingest(batch([reply]));
+  const cutoff = initial + 30 * 86400000;
+  time(cutoff);
+  const transaction = client.transaction.bind(client);
+  const spy = vi.spyOn(client, 'transaction').mockImplementationOnce(async mode => {
+    time(cutoff + 1);
+    await store.init();
+    return transaction(mode);
+  });
+  try {
+    await expect(store.ingest(batch([reply], { observedAt: cutoff, snapshot: null })))
+      .rejects.toMatchObject({ code: 'invalid_admin_batch' });
+    expect((await store.sourceUsage(cutoff, cutoff)).totals.lifetime).toMatchObject({ replies: 1, tokens: 12 });
+  } finally { spy.mockRestore(); }
+});
+
+it('separates quota failures from HTTP 429 evidence and applies the period and installation filters to both', async () => {
+  const { store } = await fixture();
+  const today = initial - 3600000, week = initial - 86400000;
+  const quota = { source: 'kilo', outcome: 'failed' as const, errorCode: 'quota' as const, httpStatus: 429, retryAfterSeconds: 45 };
+  await store.ingest(batch([
+    event('attempt.finish', quota),
+    event('transport.finish', quota),
+    event('transport.finish', { ...quota, at: week, retryAfterSeconds: 60 }),
+    event('transport.finish', { ...quota, at: week - 1, retryAfterSeconds: 500 }),
+    event('transport.finish', { ...quota, kind: 'maintenance', retryAfterSeconds: 500 }),
+    event('transport.finish', { ...quota, source: 'zro', retryAfterSeconds: undefined }),
+    event('attempt.finish', { ...quota, source: 'perch', at: week })
+  ]));
+  await store.ingest(batch([event('transport.finish', { ...quota, retryAfterSeconds: 120 })], { instanceId: 'other' }));
+  expect((await store.sourceUsage(today, week, 'chad')).sources).toMatchObject([
+    { source: 'kilo', lastReplyAt: null, today: { replies: 0, quotaAttempts: 1, http429s: 1, maxRetryAfterSeconds: 45 },
+      week: { replies: 0, quotaAttempts: 1, http429s: 2, maxRetryAfterSeconds: 60 } },
+    { source: 'perch', lastReplyAt: null, today: { quotaAttempts: 0, http429s: 0, maxRetryAfterSeconds: null },
+      week: { quotaAttempts: 1, http429s: 0, maxRetryAfterSeconds: null } },
+    { source: 'zro', lastReplyAt: null, today: { quotaAttempts: 0, http429s: 1, maxRetryAfterSeconds: null } }
+  ]);
+  expect((await store.sourceUsage(today, week)).sources[0]?.today).toMatchObject({ quotaAttempts: 1, http429s: 2, maxRetryAfterSeconds: 120 });
 });

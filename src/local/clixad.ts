@@ -250,17 +250,27 @@ export class Clixad implements Source {
       temporary = await mkdtemp(join(paths.work, 'request-')); await chmod(temporary, 0o700);
       const native = await abortable(this.runner(paths.entry, 'ask', { cwd: temporary, env: clixadEnvironment(), signal, input: prompt }), signal); nativeErrors(native);
       const dispatch = native.events.filter(event => event.event === 'dispatch'), metadata = native.events.filter(event => event.event === 'completion');
-      const observed = object(metadata.length === 1 ? metadata[0] : undefined);
       if (native.events.filter(event => event.event === 'http' && event.operation === 'chat').length !== 1
         || native.events.some(event => !['dispatch', 'http', 'completion'].includes(event.event) || event.event === 'http' && event.operation !== 'chat')
-        || dispatch.length !== 1 || dispatch[0]!.model !== CLIXAD_MODEL || observed.free !== true || observed.creditsCharged !== 0 || observed.balance !== 0
-        || !Number.isSafeInteger(observed.inputTokens) || Number(observed.inputTokens) < 1 || !Number.isSafeInteger(observed.outputTokens) || Number(observed.outputTokens) < 1
-        || Number(observed.outputTokens) > limit || (observed.returnedModel !== undefined && observed.returnedModel !== CLIXAD_MODEL)) throw new SourceError('refused', 'Clixad returned missing, nonfree, mismatched or over-budget native metadata');
+        || dispatch.length !== 1 || metadata.length !== 1) {
+        throw new SourceError('refused', 'Clixad returned incomplete native dispatch or completion metadata', undefined, undefined, { failureReason: 'completion_attestation' });
+      }
+      const observed = metadata[0]!;
+      if (dispatch[0]!.model !== CLIXAD_MODEL || (observed.returnedModel !== undefined && observed.returnedModel !== CLIXAD_MODEL)) {
+        throw new SourceError('refused', 'Clixad reported an unexpected model', undefined, undefined, { failureReason: 'completion_model' });
+      }
+      if (observed.free !== true || observed.creditsCharged !== 0 || observed.balance !== 0) {
+        throw new SourceError('refused', 'Clixad could not verify a free completion with zero charge and balance', undefined, undefined, { failureReason: 'completion_billing' });
+      }
+      if (!Number.isSafeInteger(observed.inputTokens) || Number(observed.inputTokens) < 1 || !Number.isSafeInteger(observed.outputTokens)
+        || Number(observed.outputTokens) < 1 || Number(observed.outputTokens) > limit) {
+        throw new SourceError('refused', 'Clixad reported invalid or over-budget completion usage', undefined, undefined, { failureReason: 'completion_usage' });
+      }
       wallet(await abortable(this.runner(paths.entry, 'wallet', { cwd: paths.work, env: clixadEnvironment(), signal }), signal), true);
       const match = native.stdout.match(/^assistant ([\s\S]*?)\n\s*\[0 credits · balance 0\]\s*$/);
-      if (!match || Buffer.byteLength(match[1]!) > 65536) throw new SourceError('upstream', 'Clixad returned invalid native answer framing');
+      if (!match || Buffer.byteLength(match[1]!) > 65536) throw new SourceError('upstream', 'Clixad returned invalid native answer framing', undefined, undefined, { failureReason: 'completion_protocol' });
       try { return { ...bridge.parse(match[1]!), inputTokens: observed.inputTokens as number, outputTokens: observed.outputTokens as number }; }
-      catch { throw new SourceError('upstream', 'Clixad JSON function protocol failed validation'); }
+      catch { throw new SourceError('upstream', 'Clixad JSON function protocol failed validation', undefined, undefined, { failureReason: 'completion_protocol' }); }
     } catch (error) {
       if (caller.aborted || this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Clixad request cancelled');
       if (signal.aborted) throw new SourceError('timeout', 'Clixad request timed out');
