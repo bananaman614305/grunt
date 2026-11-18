@@ -413,3 +413,20 @@ it.each([
     expect(mux.send).not.toHaveBeenCalled();
   } finally { await source.close(); await rm(home, { recursive: true, force: true }); }
 });
+
+it('translates Codex MCP namespaces through the completion and tool-result turns', async () => {
+  const name = 'mcp__squire__operate_drive';
+  const tool = { type: 'function', name: 'operate_drive', parameters: { type: 'object' } };
+  const body = { input: 'Resume signup', tools: [{ type: 'namespace', name: 'mcp__squire', tools: [tool] }] };
+  const source: Source = { ...fake(), complete: async request => {
+    expect(request.tools).toEqual([{ type: 'function', function: { name, parameters: tool.parameters } }]);
+    return { text: '', calls: [{ id: 'browser', type: 'function', function: { name, arguments: '{}' } }] };
+  } };
+  const response = await createLocalApp(new Sources([source])).request('http://localhost:8788/v1/responses', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  const result = await response.json();
+  expect(result.output).toMatchObject([{ type: 'function_call', namespace: 'mcp__squire', name: tool.name, call_id: 'browser' }]);
+  expect(decode({ ...body, input: [...result.output, { type: 'function_call_output', call_id: 'browser', output: 'needs_value' }] }, 'responses').messages)
+    .toMatchObject([{ tool_calls: [{ function: { name } }] }, { role: 'tool', tool_call_id: 'browser', content: 'needs_value' }]);
+});

@@ -1,7 +1,7 @@
 import { Ajv } from 'ajv';
 import type { AnySchema, ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
-import { providerGrantDirectory } from './provider-grant.js';
+import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { SourceError } from './source.js';
 import { diagnosticFetch } from './diagnostics.js';
@@ -80,8 +80,12 @@ function conversation(request: ModelRequest) {
 export class Kilo implements Source {
   readonly id = 'kilo'; readonly supportsFunctionTools = true;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>();
-  constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number } = {}) {}
+  constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; anonymous?: () => boolean } = {}) {}
   private async approved() { return (await readDataSharingConsent(this.options.directory ?? providerGrantDirectory(), [this.id])).includes(this.id); }
+  private async grant() {
+    try { return validateProviderGrant(await readPrivateProviderGrant('kilo', this.options.directory ?? providerGrantDirectory())); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new SourceError('refused', 'Kilo vault grant is invalid'); }
+  }
   private async track<T>(task: Promise<T>) { this.pending.add(task); try { return await task; } finally { this.pending.delete(task); } }
   async available() {
     return this.track((async () => { try {
@@ -105,8 +109,10 @@ export class Kilo implements Source {
       if (Buffer.byteLength(body) > 2 * 1024 * 1024) throw new SourceError('refused', 'Kilo prompt exceeds the supported input size');
       await verifyKiloAccess({ ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal });
       signal.throwIfAborted();
-      const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'kilo', 'chat.completions')(`${KILO_ORIGIN}/chat/completions`, { method: 'POST', redirect: 'error', signal,
-        headers: { 'Content-Type': 'application/json' }, body }), signal); status(response);
+      const grant = this.options.anonymous?.() ? undefined : await this.grant();
+      const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
+      const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'kilo', 'chat.completions')(`${origin}/chat/completions`, { method: 'POST', redirect: 'error', signal,
+        headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
       const result = await json(response, signal, 2 * 1024 * 1024), usage = object(result.usage), details = object(usage.cost_details);
       if (result.model !== KILO_PARTICLE) throw new SourceError('refused', 'Kilo returned an unverified Particle model');
       if (usage.cost !== 0 || ['total_cost', 'credits_charged'].some(key => key in usage && usage[key] !== 0)

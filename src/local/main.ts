@@ -37,7 +37,7 @@ import { SourceRecovery } from './recovery.js';
 import { readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 export const HOST = '127.0.0.1';
-export function configure(env = process.env, registry: () => Registry = () => bundledRegistry) {
+export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
   const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
   let key = gruntEnv('FREELLMAPI_KEY', env) ?? '';
   let pending: Promise<string> | undefined;
@@ -60,7 +60,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     return adapter?.models ?? (adapter?.model && adapter.model !== 'big-pickle' ? [adapter.model] : DEFAULT_OPENCODE_MODELS);
   };
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env) }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const ids = (gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id)).filter(id => id && !disabledAdapters.has(id));
   const routing = ids.every(id => knownAdapters.has(id)) ? { registry } : undefined;
   return new Sources(ids.map(id => {
@@ -72,7 +72,8 @@ export function configure(env = process.env, registry: () => Registry = () => bu
 }
 export function start(env = process.env) {
   let registry = structuredClone(bundledRegistry);
-  const sources = configure(env, () => registry);
+  let anonymousKilo = false;
+  const sources = configure(env, () => registry, () => anonymousKilo);
   const directory = configDir(env);
   let diagnostics: DiagnosticsStore | undefined;
   const diagnosticReady = DiagnosticsStore.open({ directory }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
@@ -87,6 +88,7 @@ export function start(env = process.env) {
   const refreshSession = () => {
     const result = sessionRead.then(async () => {
       const session = await readSetupSession(directory);
+      anonymousKilo = session?.anonymousKilo === true;
       sources.pending.clear();
       for (const id of session?.pending ?? []) if (sources.sources.some(source => source.id === id)) sources.pending.add(id);
       sources.verifying.clear();

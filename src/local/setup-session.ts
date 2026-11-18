@@ -10,14 +10,15 @@ const heartbeat = 15000;
 const claimName = /^\.setup-session-(\d+)-([a-f0-9-]{36})$/;
 const sourceId = /^[a-z][a-z0-9-]{0,63}$/;
 interface Claim { path: string; id: string; pid: number }
-interface State { version: 1; id: string; pid: number; expires: number; owned: string[]; pending: string[]; verifying: string[]; approvals?: string[] }
-export interface SetupSessionState { owned: ReadonlySet<string>; pending: ReadonlySet<string>; verifying: ReadonlySet<string>; approvals?: ReadonlySet<string> }
+interface State { version: 1; id: string; pid: number; expires: number; owned: string[]; pending: string[]; verifying: string[]; approvals?: string[]; anonymousKilo?: true }
+export interface SetupSessionState { owned: ReadonlySet<string>; pending: ReadonlySet<string>; verifying: ReadonlySet<string>; approvals?: ReadonlySet<string>; anonymousKilo?: true }
 export interface SetupSession {
   readonly signal: AbortSignal;
   verify(id: string): Promise<void>;
   hold(id: string): Promise<void>;
   release(id: string): Promise<void>;
   setApprovals(ids: readonly string[]): Promise<void>;
+  useKiloAccount(): Promise<void>;
   close(): Promise<void>;
 }
 const unavailable = () => new Error('Cannot coordinate provider setup safely; finish the existing setup or rerun usegrunt setup');
@@ -86,13 +87,14 @@ export async function readSetupSession(directory: string): Promise<SetupSessionS
       ? state.approvals.filter(id => typeof id === 'string' && state.pending.includes(id) && !state.verifying.includes(id)) : []));
     return {
       owned: new Set(valid.flatMap(state => state.owned)), pending: new Set(valid.flatMap(state => state.pending)),
-      verifying: new Set(valid.flatMap(state => state.verifying)), ...(approvals.size ? { approvals } : {})
+      verifying: new Set(valid.flatMap(state => state.verifying)), ...(approvals.size ? { approvals } : {}),
+      ...(valid.some(state => state.anonymousKilo === true && state.owned.includes('kilo')) ? { anonymousKilo: true as const } : {})
     };
   } catch { return; }
 }
 
 /** Claim before starting the daemon. Keep this owner alive while later approvals run. */
-export async function beginSetupSession(directory: string, ids: readonly string[]): Promise<SetupSession> {
+export async function beginSetupSession(directory: string, ids: readonly string[], options: { anonymousKilo?: boolean } = {}): Promise<SetupSession> {
   if (ids.length > 100 || ids.some(id => !sourceId.test(id)) || new Set(ids).size !== ids.length) throw unavailable();
   await mkdir(directory, { recursive: true, mode: 0o700 });
   if (!await privateDirectory(directory)) throw unavailable();
@@ -104,6 +106,7 @@ export async function beginSetupSession(directory: string, ids: readonly string[
     for (const peer of await claims(directory)) if (peer.id !== id && await blockingClaim(peer)) throw unavailable();
   } catch (error) { await rm(path, { recursive: true, force: true }); throw error; }
   const pending = new Set(ids), verifying = new Set<string>(), approvals = new Set<string>(), controller = new AbortController();
+  let anonymousKilo = options.anonymousKilo === true && ids.includes('kilo');
   let closed = false, initialized = false, failure: Error | undefined, tail: Promise<void> = Promise.resolve();
   let expires = Date.now() + ttl;
   let timer: ReturnType<typeof setInterval> | undefined, expiryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -136,7 +139,8 @@ export async function beginSetupSession(directory: string, ids: readonly string[
       await assertOwner();
       const temporary = join(path, `state.${randomUUID()}.tmp`), nextExpiry = Date.now() + ttl;
       try {
-        const state: State = { version: 1, id, pid, expires: nextExpiry, owned: [...ids], pending: [...pending], verifying: [...verifying], ...(approvals.size ? { approvals: [...approvals] } : {}) };
+        const state: State = { version: 1, id, pid, expires: nextExpiry, owned: [...ids], pending: [...pending], verifying: [...verifying],
+          ...(approvals.size ? { approvals: [...approvals] } : {}), ...(anonymousKilo ? { anonymousKilo: true } : {}) };
         await writeFile(temporary, JSON.stringify(state), { flag: 'wx', mode: 0o600 });
         // Slow IO must not resurrect a lease after its TTL or watchdog abort.
         await assertOwner();
@@ -162,6 +166,9 @@ export async function beginSetupSession(directory: string, ids: readonly string[
     verify: source => update(source, 'verify'),
     hold: source => update(source, 'hold'),
     release: source => update(source, 'release'),
+    async useKiloAccount() {
+      if (anonymousKilo) { anonymousKilo = false; await persist(); }
+    },
     async setApprovals(selected) {
       if (closed || controller.signal.aborted || selected.some(source => !ids.includes(source))) throw unavailable();
       approvals.clear();

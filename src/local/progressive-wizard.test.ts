@@ -207,7 +207,7 @@ it('does not announce readiness after losing its setup ownership during an exact
   const { BrowserSquire } = await import('./setup.js');
   const controller = new AbortController();
   const fakeSession = { verify: vi.fn(async () => {}), release: vi.fn(async () => {}), hold: vi.fn(async () => {}),
-    close: vi.fn(async () => {}), signal: controller.signal };
+    setApprovals: vi.fn(async () => {}), useKiloAccount: vi.fn(async () => {}), close: vi.fn(async () => {}), signal: controller.signal };
   vi.spyOn(sessions, 'beginSetupSession').mockResolvedValue(fakeSession);
   const squire = new BrowserSquire(), close = vi.spyOn(squire, 'close').mockResolvedValue();
   const stub = actions(), entered = deferred();
@@ -296,4 +296,92 @@ it('refuses a symlinked private Squire bootstrap client file before launching th
   await expect(connectSquire({ hasBroker: async () => false, run, installer: '/synthetic/installer.js' })).rejects.toThrow();
   expect(run).not.toHaveBeenCalled();
   expect(await readFile(protectedFile, 'utf8')).toBe('{"preserved":true}');
+});
+
+it.each([true, false])('checks anonymous access before Squire and signups (harness available: %s)', async available => {
+  const order: string[] = [];
+  const stub = actions(['kilo', 'zro']);
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const selected = HARNESSES[0]!;
+  const chooseHarness = vi.fn(async () => { order.push('harness'); return available ? selected : undefined; });
+  const connectHarness = vi.fn(async () => { order.push('completion'); return { change: undefined, answer: 'ready' }; });
+  const signupHarness = vi.fn(() => async () => {});
+  const probeOperator = vi.fn(async () => true);
+  stub.checkFallbackServices.mockImplementation(async (_failed, _port, _notify, ids) => { order.push(ids![0]!); });
+  stub.connectSquire.mockImplementation(async () => { order.push('squire'); });
+  stub.setupFallbacks.mockImplementation(async options => {
+    order.push('signup');
+    expect(options.adapters).toEqual(['zro']);
+    await options.onSettled?.('zro', false, 'needs human verification');
+    return { unavailable: ['zro'] };
+  });
+  await wizard(undefined, { ...stub, chooseHarness, connectHarness, signupHarness, probeOperator, createSquire: () => squire });
+  expect(order).toEqual(['harness', 'kilo', ...(available ? ['completion'] : []), 'squire', 'signup']);
+  expect(signupHarness).toHaveBeenCalledTimes(Number(available));
+  expect(log.mock.calls.map(call => call[0])).toEqual([
+    available ? '✓ harness: pi' : '… harness: Squire with human handoff',
+    ...(available ? ['✓ model: grunt (kilo anonymous)'] : []),
+    '✓ squire: signed in', 'Ready'
+  ]);
+});
+
+it('prints the Zro terms handoff once and continues to the next provider', async () => {
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? {
+    status: 'budget', session_id: 'zro-tab', observation: { dom: 'Please read and accept the terms to continue' }
+  } : {});
+  const handoff = vi.spyOn(squire, 'humanHandoff');
+  const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+  const stub = actions(['zro', 'tokenharbor']);
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    if (id === 'zro') {
+      await expect(squire.signup(id, 'https://zro.moonmath.ai/sign-up', 'Verify free access')).rejects.toThrow('needs Terms of Service acceptance');
+      await options.onSettled?.(id, false, squire.signupFailure(id));
+      return { unavailable: [id] };
+    }
+    expect(output.mock.calls.map(([chunk]) => String(chunk)).join('')).toMatch(/zro\s+needs you \(review the Terms of Service in the browser\)/);
+    await options.onSettled?.(id, true);
+    return { unavailable: [] };
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => undefined, createSquire: () => squire });
+  expect(stub.setupFallbacks).toHaveBeenCalledTimes(2);
+  expect(handoff).not.toHaveBeenCalled();
+  expect(output.mock.calls.map(([chunk]) => String(chunk)).join('').match(/zro\s+needs you/g)).toHaveLength(1);
+});
+
+it('bootstraps with Jev, switches to a verified operator and re-bootstraps when its quota runs out', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_ANONYMOUS', '1');
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  let driver: Parameters<BrowserSquire['useSignupAgent']>[0];
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(agent => { driver = agent; });
+  const events: string[] = [];
+  let instances = 0;
+  const stub = actions(['kilo', 'pollinations', 'beatapi', 'zro', 'tokenharbor']);
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    events.push(`${id}:${driver ? 'harness' : 'jev'}`);
+    if (id === 'kilo') expect(options.kiloAccount).toBe(true);
+    if (id === 'beatapi' && !events.includes('tokenharbor:harness')) {
+      await expect(driver!({ service: id, url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) })).rejects.toThrow('quota');
+      await options.onSettled?.(id, false, 'quota exhausted');
+      return { unavailable: [id] };
+    }
+    await options.onSettled?.(id, id !== 'kilo', id === 'kilo' ? 'provider refused' : undefined);
+    return { unavailable: id === 'kilo' ? [id] : [] };
+  });
+  const probeOperator = vi.fn(async (_port, id: string) => { events.push(`tool:${id}`); return true; });
+  const connectHarness = vi.fn(async () => ({ change: undefined, answer: 'ready' }));
+  await wizard(undefined, {
+    ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, probeOperator, connectHarness,
+    signupHarness: () => { const instance = ++instances; return async () => { if (instance === 1) throw new Error('quota exhausted'); }; }
+  });
+  expect(events).toEqual(['kilo:jev', 'pollinations:jev', 'tool:pollinations', 'beatapi:harness', 'zro:jev', 'tool:zro', 'tokenharbor:harness', 'beatapi:harness']);
+  expect(connectHarness).toHaveBeenCalledTimes(2);
 });

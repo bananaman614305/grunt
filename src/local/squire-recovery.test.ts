@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { guardedSignupChoice } from './signup-mcp.js';
 import { BrowserSquire } from './setup.js';
 import type * as Prompts from '@clack/prompts';
 import { BROWSER_CONCURRENCY, parallelMap, SETUP_CONCURRENCY } from './parallel.js';
@@ -261,4 +262,91 @@ it('prevents a cancelled service from starting later without affecting a differe
   await expect(squire.signup('other', 'https://other.test', 'Sign in')).resolves.toBeUndefined();
   expect(call).toHaveBeenCalledWith('operate_finish', expect.objectContaining({ session_id: 'other-tab', outcome: 'result' }));
   await squire.close();
+});
+
+it.each([true, false])('Reproduction zro: lets a harness recover Jev and requires a vaulted key (key captured: %s)', async captured => {
+  const { setupProviders } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { listTools(): Promise<unknown> } }).client;
+  vi.spyOn(client, 'listTools').mockResolvedValue({ tools: [
+    { name: 'operate_drive', inputSchema: { type: 'object' } },
+    { name: 'operate_observe', inputSchema: { type: 'object' } },
+    { name: 'fetch_credential', inputSchema: { type: 'object' } }
+  ] });
+  let done = false;
+  const calls = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name !== 'operate_drive') return {};
+    if (args.answer === 'github') { done = true; return { status: 'complete', session_id: 'zro-tab' }; }
+    return { status: 'low_confidence', session_id: 'zro-tab', options: { billing: 'Enable billing', mixed: 'Accept Terms of Service and upgrade to a paid plan', github: 'I agree to the Terms of Service' } };
+  });
+  const agent = vi.fn(async (input: Parameters<Parameters<BrowserSquire['useSignupAgent']>[0]>[0]) => {
+    expect(input.tools.map(tool => tool.name)).not.toContain('fetch_credential');
+    expect(await input.call('operate_drive', {})).toMatchObject({ status: 'low_confidence' });
+    expect(await input.call('operate_drive', { answer: 'billing' })).toMatchObject({ status: 'invalid_answer' });
+    expect(await input.call('operate_drive', { answer: 'mixed' })).toMatchObject({ status: 'invalid_answer' });
+    expect(await input.call('operate_drive', { answer: 'github' })).toMatchObject({ status: 'complete' });
+  });
+  squire.useSignupAgent(agent);
+  vi.spyOn(squire.credentials, 'list').mockImplementation(async () => done && captured
+    ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
+  const grant = vi.spyOn(squire.credentials, 'grant').mockResolvedValue({ base_url: 'https://squire.test', token: 'synthetic' });
+  const addGrant = vi.fn(async () => {});
+  const result = await setupProviders(squire, { addGrant }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  expect(agent).toHaveBeenCalledOnce();
+  expect(result.dropped).toEqual(captured ? [] : ['zro']);
+  expect(grant).toHaveBeenCalledTimes(Number(captured));
+  expect(addGrant).toHaveBeenCalledTimes(Number(captured));
+  expect(calls).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'zro-tab', answer: 'github' }));
+  await squire.close();
+});
+
+it('resumes the same session when the Squire OAuth action was not dispatched', async () => {
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => name !== 'operate_drive' ? {}
+    : args.answer === 'WAIT' ? { status: 'complete', session_id: 'oauth-tab' }
+      : { status: 'not_attempted', session_id: 'oauth-tab', reason: 'Retry oauth_login' });
+  await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'completed' } });
+  expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'oauth-tab', answer: 'WAIT' }));
+  await squire.close();
+});
+
+it.each([false, true])('uses the observed Zro Google button and reports required terms (terms required: %s)', async termsRequired => {
+  const squire = new BrowserSquire();
+  squire.useBatchSignup();
+  let clicked = false;
+  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'operate_click') { clicked = true; expect(args.ref).toBe('google'); return {}; }
+    if (name !== 'operate_drive') return {};
+    if (clicked) return termsRequired
+      ? { status: 'budget', session_id: 'zro-tab', observation: { dom: 'Please read and accept the terms to continue' } }
+      : { status: 'complete', session_id: 'zro-tab' };
+    expect(args.url).toBe('https://zro.moonmath.ai/sign-up');
+    return { status: 'needs_value', session_id: 'zro-tab', field: 'Email address', options: {}, observation: {
+      url: 'https://zro.moonmath.ai/sign-up', safe_table: [
+        ['git', 'b', '@sign-in-with-git|a=submit'],
+        ['google-footer-link', 'l', '@google|u=https://google.com'],
+        ['google', 'b', '@google|a=login|q=2/2'],
+        ['email', 'b', '@continue-with-email|f=email|a=submit']
+      ]
+    } };
+  });
+  await expect(squire.runs.start({ ...input, service: 'zro' })).resolves.toMatchObject(termsRequired
+    ? { run: { state: 'dropped' }, reason: 'needs Terms of Service acceptance' }
+    : { run: { state: 'completed' } });
+  expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'zro-tab' }));
+  await squire.close();
+});
+
+it.each([
+  ['Accept Terms of Service', true],
+  ['I agree to the Terms and Conditions', true],
+  ['Accept Terms of Service and upgrade to a paid plan', false],
+  ['Accept Terms of Service and enable billing', false],
+  ['Accept Terms of Service and switch account', false],
+  ['Accept Terms of Service and marketing consent', false],
+  ['Accept optional Terms of Service', false],
+  ['Agree to data sharing', false],
+  ['Accept all cookies', false]
+])('allows only required free signup terms: %s', (label, allowed) => {
+  expect(guardedSignupChoice('terms', label)).toBe(allowed);
 });
