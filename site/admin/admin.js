@@ -241,10 +241,12 @@ export class AdminConsole {
     this.el['auth-retry'].addEventListener('click', () => this.signInState());
     this.el.refresh.addEventListener('click', () => this.refresh(true));
     this.el.export.addEventListener('click', () => this.exportData());
+    this.el['provider-usage-period'].addEventListener('change', () => this.renderProviderUsage());
     this.el['sign-out'].addEventListener('click', () => this.signOut());
     this.el['instance-select'].addEventListener('change', () => {
       this.instanceId = this.el['instance-select'].value; this.resetRequests(); this.closeTrace();
       this.overview = null; this.providers = []; this.runs = null; this.activity = null; this.sourceUsage = null;
+      if (this.view === 'usage') this.renderProviderUsage();
       this.refresh(true);
     });
     this.el['request-filters'].addEventListener('submit', event => { event.preventDefault(); this.sourceFilter = this.el['source-filter'].value; this.outcomeFilter = this.el['outcome-filter'].value; this.resetRequests(); this.refresh(true); });
@@ -273,6 +275,7 @@ export class AdminConsole {
     this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null; this.activity = null; this.sourceUsage = null;
     this.el['activity-list'].replaceChildren(loading('Loading recent activity…'));
     this.el['home-work'].replaceChildren(); this.el['home-source-list'].replaceChildren();
+    this.el['provider-usage-list'].replaceChildren();
     this.renderWorkUptime(undefined);
     this.renderProjectContext(undefined);
     this.renderPlaytest();
@@ -327,7 +330,7 @@ export class AdminConsole {
     const tasks = this.view === 'play' ? [['session', '/api/session']] : [['overview', '/api/overview' + this.query()]];
     if (this.view === 'overview') tasks.push(['requests', '/api/requests' + this.query({ limit: 8 })]);
     if (['home', 'activity'].includes(this.view)) tasks.push(['activity', '/api/activity' + this.query()]);
-    if (this.view === 'home') tasks.push(['sourceUsage', '/api/source-usage' + this.query(usageWindows())]);
+    if (['home', 'usage'].includes(this.view)) tasks.push(['sourceUsage', '/api/source-usage' + this.query(usageWindows())]);
     if (this.view === 'requests') tasks.push(['requests', '/api/requests' + this.query(this.requestParams())]);
     if (this.view === 'providers') tasks.push(['providers', '/api/providers' + this.query()]);
     if (this.view === 'runs') tasks.push(['runs', '/api/runs' + this.query()]);
@@ -714,6 +717,53 @@ export class AdminConsole {
       ['Provider attempts', formatCount(usage.attempts), 'Includes retries and fallback attempts.']];
     this.el['usage-summary'].replaceChildren(...items.map(([label, value, description]) => { const group = element('div'); group.append(element('dt', '', label), element('dd', '', value), element('dd', 'usage-description', description)); return group; }));
     this.el['usage-coverage'].textContent = `${usageCoverage(usage)}${date(usage.since) ? ` Reporting window starts ${new Date(usage.since).toLocaleString()}.` : ''}`;
+    this.renderProviderUsage();
+  }
+  renderProviderUsage() {
+    const period = this.el['provider-usage-period'].value === 'week' ? 'week' : 'today';
+    const target = this.el['provider-usage-list'];
+    const windows = usageWindows();
+    if (this.sourceUsage?.today !== windows.today || this.sourceUsage?.week !== windows.week) {
+      target.replaceChildren(loading('Waiting for provider usage…'));
+      return;
+    }
+    const rows = array(this.sourceUsage.sources).filter(record => {
+      const range = object(record[period]);
+      return range.replies > 0 || range.quotaAttempts > 0 || range.http429s > 0;
+    }).sort((a, b) => b[period].replies - a[period].replies);
+    if (!rows.length) {
+      target.replaceChildren(empty('No usage recorded', 'Provider replies and limit events will appear here.'));
+      return;
+    }
+    const { result, body } = table(['Provider', ['Input tokens', 'number'], ['Output tokens', 'number'], 'Observed limits'], 'provider-usage-table');
+    const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+    const tokens = (value, reports, replies) => {
+      const total = count(value), reported = count(reports);
+      const node = element('div', 'home-amount');
+      node.append(element('span', total === null ? 'secondary' : '', total === null ? (replies ? 'Unknown' : '—') : compact.format(total)));
+      if (total !== null) node.firstChild.title = `${formatCount(total)} tokens`;
+      if (total !== null && reported !== null && reported < replies) {
+        node.append(element('span', 'secondary', `${formatCount(reported)} of ${formatCount(replies)} replies`));
+      }
+      return node;
+    };
+    for (const row of rows) {
+      const range = object(row[period]), replies = count(range.replies) ?? 0;
+      const tr = element('tr'), name = element('th', '', text(row.source));
+      name.scope = 'row'; tr.append(name);
+      cell(tr, tokens(range.inputTokens, range.inputReports, replies), 'number');
+      cell(tr, tokens(range.outputTokens, range.outputReports, replies), 'number');
+      const limits = element('div', 'provider-usage-limits');
+      const quota = count(range.quotaAttempts) ?? 0, http429s = count(range.http429s) ?? 0;
+      if (quota) limits.append(element('span', '', `${formatCount(quota)} quota ${quota === 1 ? 'failure' : 'failures'}`));
+      if (http429s) limits.append(element('span', '', `${formatCount(http429s)} HTTP 429`));
+      if (number(range.maxRetryAfterSeconds) !== null) {
+        limits.append(element('span', 'secondary', `Retry-After up to ${formatDuration(range.maxRetryAfterSeconds * 1000)}`));
+      }
+      if (!limits.children.length) limits.append(element('span', 'secondary', 'None observed'));
+      cell(tr, limits); body.append(tr);
+    }
+    target.replaceChildren(result);
   }
   renderRuns() {
     const runs = object(this.runs), maintenance = array(runs.maintenance).map(object), scouts = array(runs.scout).map(object);

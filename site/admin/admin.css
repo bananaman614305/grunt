@@ -96,3 +96,14 @@
 }
 .play-view .header-actions { width: auto; margin-left: auto; }
 .playtest-launch { margin-top: 12px; }
+.provider-usage-table th[scope=row] { white-space: normal; overflow-wrap: anywhere; }
+.provider-usage-table .home-amount > span:first-child { margin-top: 0; white-space: nowrap; }
+.provider-usage-limits > span { display: block; }
+#provider-usage-list + .section-note { margin-top: 10px; }
+@media (max-width: 580px) {
+  .provider-usage-table { table-layout: fixed; }
+  .provider-usage-table th, .provider-usage-table td { padding-inline: 6px; white-space: normal; }
+  .provider-usage-table thead th:first-child { width: 25%; }
+  .provider-usage-table th:last-child { width: 31%; }
+  .provider-usage-table th.number, .provider-usage-table td.number { white-space: normal; }
+}
