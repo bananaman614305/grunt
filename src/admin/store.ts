@@ -7,6 +7,14 @@ export interface AdminSession { email: string; subject: string; createdAt: numbe
 interface EventRow { instance_id: string; payload: string }
 interface InstanceRow { id: string; observed_at: number; received_at: number; snapshot_at: number | null; snapshot: string | null; system: string | null; maintenance: string | null; scout: string | null }
 const day = 86400000;
+const usageRetention = 30 * day;
+const usageValues = `instance_id,id,at,source,json_extract(payload, '$.inputTokens'),json_extract(payload, '$.outputTokens')`;
+const isReply = `type='attempt.finish' AND source IS NOT NULL AND json_extract(payload, '$.kind')='user' AND json_extract(payload, '$.outcome')='passed'`;
+const emptySourceUsage = () => ({ replies: 0, tokens: null as number | null, completeReports: 0,
+  inputTokens: null as number | null, outputTokens: null as number | null, inputReports: 0, outputReports: 0,
+  quotaAttempts: 0, http429s: 0, maxRetryAfterSeconds: null as number | null });
+type SourceUsage = ReturnType<typeof emptySourceUsage>;
+const safeTotal = (value: number | null) => Number.isSafeInteger(value) ? value : null;
 const boundedLimit = (value: number | undefined, fallback = 50, max = 200) => value === undefined ? fallback : Number.isSafeInteger(value) && value > 0 && value <= max ? value : (() => { throw new AdminDataError('invalid_admin_filter'); })();
 const parse = <T>(value: string | null): T | undefined => value === null ? undefined : JSON.parse(value) as T;
 const validHash = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -57,11 +65,34 @@ export class AdminStore {
       CREATE TABLE IF NOT EXISTS admin_events(instance_id TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,request_id TEXT NOT NULL,source TEXT,type TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(instance_id,id));
       CREATE INDEX IF NOT EXISTS admin_event_time ON admin_events(at);
       CREATE INDEX IF NOT EXISTS admin_event_request ON admin_events(instance_id,request_id,at);
+      CREATE TABLE IF NOT EXISTS admin_usage_observations(instance_id TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,source TEXT NOT NULL,input_tokens INTEGER,output_tokens INTEGER,PRIMARY KEY(instance_id,id));
+      CREATE INDEX IF NOT EXISTS admin_usage_time ON admin_usage_observations(at);
+      CREATE TABLE IF NOT EXISTS admin_lifetime_usage(instance_id TEXT NOT NULL,source TEXT NOT NULL,first_at INTEGER NOT NULL,last_at INTEGER NOT NULL,
+        replies INTEGER NOT NULL,input_tokens REAL NOT NULL,output_tokens REAL NOT NULL,input_reports INTEGER NOT NULL,output_reports INTEGER NOT NULL,
+        complete_reports INTEGER NOT NULL, PRIMARY KEY(instance_id,source));
+      CREATE TRIGGER IF NOT EXISTS admin_count_usage AFTER INSERT ON admin_usage_observations BEGIN
+        INSERT INTO admin_lifetime_usage(instance_id,source,first_at,last_at,replies,input_tokens,output_tokens,input_reports,output_reports,complete_reports)
+        VALUES(NEW.instance_id,NEW.source,NEW.at,NEW.at,1,COALESCE(NEW.input_tokens,0),COALESCE(NEW.output_tokens,0),
+          NEW.input_tokens IS NOT NULL,NEW.output_tokens IS NOT NULL,NEW.input_tokens IS NOT NULL AND NEW.output_tokens IS NOT NULL)
+        ON CONFLICT(instance_id,source) DO UPDATE SET
+          first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at),replies=replies+1,
+          input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens,
+          input_reports=input_reports+excluded.input_reports,output_reports=output_reports+excluded.output_reports,
+          complete_reports=complete_reports+excluded.complete_reports;
+      END;
+      CREATE TRIGGER IF NOT EXISTS admin_capture_usage AFTER INSERT ON admin_events BEGIN
+        INSERT OR IGNORE INTO admin_usage_observations
+        SELECT ${usageValues} FROM admin_events WHERE instance_id=NEW.instance_id AND id=NEW.id AND ${isReply};
+      END;
       CREATE TABLE IF NOT EXISTS admin_login_states(hash TEXT PRIMARY KEY,nonce TEXT NOT NULL,verifier TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS admin_sessions(hash TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
     `);
     const columns = await this.rows<{ name: string }>('PRAGMA table_info(admin_instances)');
     if (!columns.some(column => column.name === 'received_at')) await this.db.execute('ALTER TABLE admin_instances ADD COLUMN received_at INTEGER NOT NULL DEFAULT 0');
+    // Old traces can seed lifetime usage once. Receipt IDs are retained for
+    // the entire upload acceptance window, even when the trace row cap hits.
+    await this.db.execute({ sql: `INSERT OR IGNORE INTO admin_usage_observations SELECT ${usageValues}
+      FROM admin_events WHERE at>=? AND ${isReply}`, args: [this.now() - usageRetention] });
     await this.clean();
   }
   private async rows<T>(sql: string, args: InValue[] = []): Promise<T[]> {
@@ -71,6 +102,7 @@ export class AdminStore {
     const now = this.now();
     await this.db.batch([
       { sql: 'DELETE FROM admin_events WHERE at<?', args: [now - this.retentionMs] },
+      { sql: 'DELETE FROM admin_usage_observations WHERE at<?', args: [now - usageRetention] },
       { sql: 'DELETE FROM admin_instances WHERE observed_at<? OR received_at<?', args: [now - this.retentionMs, now - this.retentionMs] },
       { sql: 'DELETE FROM admin_login_states WHERE expires_at<=?', args: [now] },
       { sql: 'DELETE FROM admin_sessions WHERE expires_at<=?', args: [now] },
@@ -82,17 +114,25 @@ export class AdminStore {
     const tx = await this.db.transaction('write');
     let acceptedEvents = 0;
     try {
+      const receivedAt = this.now();
+      // A replay can pass validation just before concurrent cleanup expires
+      // its deduplication receipt. Recheck the cutoff under the write lock.
+      if (batch.events.some(event => event.at < receivedAt - usageRetention)) throw new AdminDataError();
       await tx.execute({ sql: `INSERT INTO admin_instances(id,observed_at,received_at,snapshot_at,snapshot,system,maintenance,scout) VALUES(?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at,received_at=excluded.received_at,
         snapshot_at=COALESCE(excluded.snapshot_at,admin_instances.snapshot_at),snapshot=COALESCE(excluded.snapshot,admin_instances.snapshot),
         system=excluded.system,maintenance=COALESCE(excluded.maintenance,admin_instances.maintenance),scout=COALESCE(excluded.scout,admin_instances.scout)
-        WHERE excluded.observed_at>=admin_instances.observed_at`, args: [batch.instanceId, batch.observedAt, this.now(), batch.snapshot ? batch.observedAt : null, batch.snapshot ? JSON.stringify(batch.snapshot) : null, batch.system ? JSON.stringify(batch.system) : null, batch.maintenance ? JSON.stringify(batch.maintenance) : null, batch.scout ? JSON.stringify(batch.scout) : null] });
+        WHERE excluded.observed_at>=admin_instances.observed_at`, args: [batch.instanceId, batch.observedAt, receivedAt, batch.snapshot ? batch.observedAt : null, batch.snapshot ? JSON.stringify(batch.snapshot) : null, batch.system ? JSON.stringify(batch.system) : null, batch.maintenance ? JSON.stringify(batch.maintenance) : null, batch.scout ? JSON.stringify(batch.scout) : null] });
       for (const event of batch.events) {
         const result = await tx.execute({ sql: 'INSERT OR IGNORE INTO admin_events(instance_id,id,at,request_id,source,type,payload) VALUES(?,?,?,?,?,?,?)', args: [batch.instanceId, event.id, event.at, event.requestId, event.source ?? null, event.type, JSON.stringify(event)] });
         acceptedEvents += result.rowsAffected;
       }
       await tx.commit();
-    } catch { await tx.rollback(); throw new AdminDataError('admin_storage_unavailable'); }
+    } catch (error) {
+      await tx.rollback();
+      if (error instanceof AdminDataError) throw error;
+      throw new AdminDataError('admin_storage_unavailable');
+    }
     finally { tx.close(); }
     await this.clean();
     return { accepted: true, acceptedEvents, ...(batch.events.length ? { lastEventId: batch.events.at(-1)!.id } : {}) };
@@ -123,28 +163,22 @@ export class AdminStore {
   async sourceUsage(today: number, week: number, instanceId?: string) {
     const now = this.now();
     const rows = await this.rows<{
-      source: string; period: 'today' | 'week'; replies: number; last_reply_at: number | null;
+      source: string; period: 'today' | 'week' | 'lifetime'; replies: number; last_reply_at: number | null;
       tokens: number | null; input_tokens: number | null; output_tokens: number | null;
       input_reports: number; output_reports: number; complete_reports: number;
-      quota_attempts: number; http_429s: number; max_retry_after_seconds: number | null;
+      quota_attempts: number; http_429s: number; max_retry_after_seconds: number | null; first_reply_at: number | null;
     }>(`WITH periods(period, starts_at) AS (VALUES ('today', ?), ('week', ?)),
-    observations AS (
-      SELECT source, at, type,
-        json_extract(payload, '$.outcome') AS outcome,
-        json_extract(payload, '$.errorCode') AS error,
-        json_extract(payload, '$.httpStatus') AS http_status,
-        json_extract(payload, '$.retryAfterSeconds') AS retry,
-        json_extract(payload, '$.inputTokens') AS input,
-        json_extract(payload, '$.outputTokens') AS output
+    measured AS (
+      SELECT source,at,input_tokens AS input,output_tokens AS output,NULL AS retry,1 AS replied,0 AS quota,0 AS throttled
+      FROM admin_usage_observations
+      WHERE at BETWEEN ? AND ? ${instanceId ? 'AND instance_id=?' : ''}
+      UNION ALL
+      SELECT source,at,NULL,NULL,json_extract(payload, '$.retryAfterSeconds'),0,
+        type='attempt.finish' AND json_extract(payload, '$.outcome')='failed' AND json_extract(payload, '$.errorCode')='quota',
+        type='transport.finish' AND json_extract(payload, '$.httpStatus')=429
       FROM admin_events
       WHERE at BETWEEN ? AND ? AND source IS NOT NULL AND type IN ('attempt.finish', 'transport.finish')
         AND json_extract(payload, '$.kind')='user' ${instanceId ? 'AND instance_id=?' : ''}
-    ), measured AS (
-      SELECT source, at, input, output, retry,
-        type='attempt.finish' AND outcome='passed' AS replied,
-        type='attempt.finish' AND outcome='failed' AND error='quota' AS quota,
-        type='transport.finish' AND http_status=429 AS throttled
-      FROM observations
     )
     SELECT source, period,
       COUNT(*) FILTER (WHERE replied) AS replies,
@@ -158,25 +192,43 @@ export class AdminStore {
       COUNT(*) FILTER (WHERE replied AND input IS NOT NULL AND output IS NOT NULL) AS complete_reports,
       COUNT(*) FILTER (WHERE quota) AS quota_attempts,
       COUNT(*) FILTER (WHERE throttled) AS http_429s,
-      MAX(retry) FILTER (WHERE throttled) AS max_retry_after_seconds
+      MAX(retry) FILTER (WHERE throttled) AS max_retry_after_seconds,
+      NULL AS first_reply_at
     FROM measured JOIN periods ON at>=starts_at
     WHERE replied OR quota OR throttled
-    GROUP BY source, period ORDER BY source, period`, [today, week, week, now, ...(instanceId ? [instanceId] : [])]);
-    const safeTotal = (value: number | null) => Number.isSafeInteger(value) ? value : null;
-    const empty = () => ({ replies: 0, tokens: null as number | null, completeReports: 0,
-      inputTokens: null as number | null, outputTokens: null as number | null, inputReports: 0, outputReports: 0,
-      quotaAttempts: 0, http429s: 0, maxRetryAfterSeconds: null as number | null });
-    const sources = new Map<string, { source: string; lastReplyAt: number | null; today: ReturnType<typeof empty>; week: ReturnType<typeof empty> }>();
+    GROUP BY source, period
+    UNION ALL
+    SELECT source,'lifetime',SUM(replies),MAX(last_at),
+      CASE WHEN SUM(input_reports)>0 THEN SUM(input_tokens) END,
+      CASE WHEN SUM(output_reports)>0 THEN SUM(output_tokens) END,
+      CASE WHEN SUM(input_reports+output_reports)>0 THEN SUM(input_tokens+output_tokens) END,
+      SUM(input_reports),SUM(output_reports),SUM(complete_reports),0,0,NULL,MIN(first_at)
+    FROM admin_lifetime_usage ${instanceId ? 'WHERE instance_id=?' : ''}
+    GROUP BY source ORDER BY source, period`, [today, week, week, now, ...(instanceId ? [instanceId] : []),
+      week, now, ...(instanceId ? [instanceId, instanceId] : [])]);
+    const sources = new Map<string, { source: string; lastReplyAt: number | null; today: SourceUsage; week: SourceUsage; lifetime: SourceUsage }>();
+    const totals = { today: emptySourceUsage(), week: emptySourceUsage(), lifetime: emptySourceUsage() };
+    let lifetimeSince: number | null = null;
     for (const row of rows) {
-      const record = sources.get(row.source) ?? { source: row.source, lastReplyAt: null, today: empty(), week: empty() };
-      if (row.period === 'week') record.lastReplyAt = row.last_reply_at;
+      const record = sources.get(row.source) ?? { source: row.source, lastReplyAt: null, today: emptySourceUsage(), week: emptySourceUsage(), lifetime: emptySourceUsage() };
+      if (row.period === 'lifetime') record.lastReplyAt = row.last_reply_at;
+      if (row.first_reply_at !== null) lifetimeSince = Math.min(lifetimeSince ?? row.first_reply_at, row.first_reply_at);
       record[row.period] = { replies: row.replies, tokens: safeTotal(row.tokens), completeReports: row.complete_reports,
         inputTokens: safeTotal(row.input_tokens), outputTokens: safeTotal(row.output_tokens),
         inputReports: row.input_reports, outputReports: row.output_reports,
         quotaAttempts: row.quota_attempts, http429s: row.http_429s, maxRetryAfterSeconds: row.max_retry_after_seconds };
       sources.set(row.source, record);
+      const total = totals[row.period], usage = record[row.period];
+      for (const field of ['replies', 'completeReports', 'inputReports', 'outputReports', 'quotaAttempts', 'http429s'] as const) total[field] += usage[field];
+      for (const [field, column] of [['tokens', 'tokens'], ['inputTokens', 'input_tokens'], ['outputTokens', 'output_tokens']] as const) {
+        if (row[column] !== null) total[field] = (total[field] ?? 0) + row[column];
+      }
+      if (usage.maxRetryAfterSeconds !== null) total.maxRetryAfterSeconds = Math.max(total.maxRetryAfterSeconds ?? 0, usage.maxRetryAfterSeconds);
     }
-    return { today, week, sources: [...sources.values()] };
+    for (const total of Object.values(totals)) {
+      for (const field of ['tokens', 'inputTokens', 'outputTokens'] as const) total[field] = safeTotal(total[field]);
+    }
+    return { today, week, lifetimeSince, sources: [...sources.values()], totals };
   }
   async providers(instanceId?: string) {
     const instances = await this.instances(instanceId);

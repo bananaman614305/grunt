@@ -457,16 +457,22 @@ export class AdminConsole {
     const received = this.sourceUsage?.today === windows.today && this.sourceUsage?.week === windows.week;
     const rows = homeSources(this.overview, this.activity, received ? this.sourceUsage : null, now);
     const target = this.el['home-source-list'];
-    this.el['home-usage-note'].hidden = !rows.length;
+    const note = this.el['home-usage-note'];
+    note.hidden = !rows.length;
     if (!rows.length) {
       target.replaceChildren(empty('No sources reported yet', 'Source status and usage appear here as Grunt reports them.'));
       return;
     }
-    const { result, body } = table(['Source', 'Status', ['Today', 'number'], ['This week', 'number']], 'home-source-table');
+    const periods = [['today', 'Today'], ['week', 'This week'], ['lifetime', 'Lifetime']];
+    const { result, body } = table(['Source', ['Status', 'home-source-status'], ...periods.map(([, label]) => [label, 'number'])], 'home-source-table');
+    const usage = received ? this.sourceUsage : null;
+    const since = date(usage?.lifetimeSince);
+    const lifetimeStart = since ? ` Lifetime uses available history from ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(since)}.` : '';
+    note.textContent = 'Counts successful replies and reported tokens. Today starts at local midnight. This week starts Monday.' + lifetimeStart;
     const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
-    const amount = range => {
+    const amount = (range, available) => {
       const node = element('div', 'home-amount');
-      if (!received) { node.textContent = '—'; return node; }
+      if (!available) { node.textContent = '—'; return node; }
       const replies = count(range?.replies) ?? 0, tokens = count(range?.tokens);
       if (tokens !== null) {
         const total = element('strong', '', `${compact.format(tokens)} tokens`);
@@ -482,10 +488,17 @@ export class AdminConsole {
       name.scope = 'row'; row.append(name);
       const [tone, label] = HOME_STATUS[source.state], status = badge(tone, label);
       if (source.error) status.title = (source.state === 'retryable' ? 'Last error: ' : '') + errorLabel(source.error);
-      cell(row, status);
-      cell(row, amount(source.today), 'number'); cell(row, amount(source.week), 'number');
+      const inlineStatus = status.cloneNode(true); inlineStatus.classList.add('home-inline-status'); name.append(inlineStatus);
+      cell(row, status, 'home-source-status');
+      for (const [period] of periods) cell(row, amount(source[period], received && (period !== 'lifetime' || !!usage?.totals?.lifetime)), 'number');
       body.append(row);
     }
+    const totalRow = element('tr'), totalLabel = element('th', 'home-source-name', 'All providers');
+    totalLabel.scope = 'row'; totalRow.append(totalLabel);
+    cell(totalRow, '', 'home-source-status');
+    for (const [period] of periods) cell(totalRow, amount(usage?.totals?.[period], !!usage?.totals?.[period]), 'number');
+    const footer = element('tfoot', 'home-source-totals');
+    footer.append(totalRow); result.append(footer);
     target.replaceChildren(result);
   }
   renderWorkUptime(measurement, now = Date.now()) {

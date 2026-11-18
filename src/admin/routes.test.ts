@@ -280,7 +280,8 @@ it('protects source usage and requires bounded windows in chronological order', 
     expect((await f.request('/api/source-usage' + query, { headers })).status).toBe(400);
   }
   expect(await (await f.request('/api/source-usage' + window, { headers })).json())
-    .toEqual({ today: now, week: now - 86400000, sources: [] });
+    .toMatchObject({ today: now, week: now - 86400000, lifetimeSince: null, sources: [],
+      totals: { today: { replies: 0, tokens: null }, week: { replies: 0, tokens: null }, lifetime: { replies: 0, tokens: null } } });
 });
 
 it('projects bounded project context through the private activity feed', async () => {
