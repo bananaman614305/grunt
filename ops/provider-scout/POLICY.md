@@ -91,8 +91,7 @@ instead of creating duplicate accounts or repeatedly requesting human approval.
 2. Reject or retain as research when those gates are missing. Never reinterpret
    unclear pricing as free or ordinary privacy uncertainty as a failed gate.
    Keep a missing consent entry as integration_pending while implementing it.
-   Limit candidate count and signup attempts to the run
-   context. Keep lower-confidence discoveries in the report, outside the pool.
+   Keep lower-confidence discoveries in the report, outside the pool.
 3. For eligible offers, inspect existing Trusty Squire receipts first. Query
    list_credentials with the candidate's service name and fields="summary";
    never retrieve the entire vault inventory. This metadata-only lookup is
@@ -204,7 +203,9 @@ choose a canonical public source if its link requires an unsupported selector.
 If this is a smoke run, do research only: no signup, implementation, PR, inference,
 browser mutation or account changes. Investigate at most three new offers.
 Every smoke-run release_request must be null.
-For a full run investigate at most twenty offers, attempt at most two eligible
-signups, and deeply integrate at most one new provider. Finish within 40 minutes.
+For a full run, advance every eligible candidate you can within the run deadline.
+Continue to the next lead when a candidate needs external confirmation or
+maintainer review. Record unfinished work and exact blockers for the next run.
+Keep every candidate independent, with its own consent, access and evidence.
 Use your existing configured Codex model/sign-in. Do not switch to paid APIs.
 If search/auth/tools are unavailable, report that blocker instead of success.

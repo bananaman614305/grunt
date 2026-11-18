@@ -60,10 +60,10 @@ def atomic(path, value):
         temporary.unlink(missing_ok=True)
 
 
-def load(path, default=None):
+def load(path, default=None, *, max_bytes=2 * 1024 * 1024):
     if not path.exists():
         return default
-    if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
+    if path.is_symlink() or (max_bytes is not None and path.stat().st_size > max_bytes):
         raise ValueError('Unsafe scout state file')
     return json.loads(path.read_text())
 
@@ -135,10 +135,9 @@ def ingest(report, ledger, workspace, smoke=False, diagnostics=None):
             or any(not isinstance(query, str) or not query.strip() for query in queries)):
         raise ValueError('Scout must complete actual web research')
     candidates = report.get('candidates')
-    if not isinstance(candidates, list) or len(candidates) > (3 if smoke else 20):
+    if not isinstance(candidates, list) or (smoke and len(candidates) > 3):
         raise ValueError('Candidate budget exceeded')
-    requests = [item for item in candidates if isinstance(item, dict) and item.get('release_request') is not None]
-    if len(requests) > (0 if smoke else 1):
+    if smoke and any(isinstance(item, dict) and item.get('release_request') is not None for item in candidates):
         raise ValueError('Integration budget exceeded')
     updated = json.loads(json.dumps(ledger))
     stamp = now()
@@ -160,9 +159,19 @@ def ingest(report, ledger, workspace, smoke=False, diagnostics=None):
             errors.append({'row': index, 'code': 'duplicate_candidate_id'})
             continue
         old = updated['candidates'].get(key, {})
-        lifecycle = {name: value for name, value in old.items() if name.startswith('pipeline_')}
-        updated['candidates'][key] = {**candidate, **lifecycle, 'status': status, 'first_seen': old.get('first_seen', stamp),
-                                      'last_seen': stamp, 'sightings': old.get('sightings', 0) + 1}
+        old_request = old.get('release_request')
+        request = candidate.get('release_request')
+        old_head = old_request.get('head_sha') if isinstance(old_request, dict) else None
+        new_head = request.get('head_sha') if isinstance(request, dict) else None
+        # A protected merge awaiting publication (or already released) keeps
+        # its original identity until the supervisor records the final result.
+        published_head = old.get('pipeline_status') in ('publication_pending', 'released')
+        stored_request = old_request if published_head and old_request else request
+        lifecycle = {name: value for name, value in old.items() if name.startswith('pipeline_')
+                     and (not new_head or new_head == old_head or published_head)}
+        updated['candidates'][key] = {**candidate, **lifecycle, 'release_request': stored_request, 'status': status,
+                                      'first_seen': old.get('first_seen', stamp), 'last_seen': stamp,
+                                      'sightings': old.get('sightings', 0) + 1}
     if diagnostics is not None:
         diagnostics.extend(sorted(errors, key=lambda item: item['row']))
     return updated
@@ -286,6 +295,25 @@ def record_pipeline_result(ledger, result, candidate=None):
                                               pipeline_updated_at=now())
 
 
+def queue_candidates(ledger, report, raw_report, diagnostics, resumed):
+    for row in report['candidates']:
+        item = ledger['candidates'][candidate_id(row)]
+        if (item['status'] == 'ready_for_review' and item.get('release_request')
+                and item.get('pipeline_status') in (None, 'blocked', 'needs_approval')):
+            item.update(pipeline_status='deferred', pipeline_reason='awaiting_supervisor')
+    barred = set()
+    for error in diagnostics:
+        try:
+            barred.add(candidate_id(raw_report['candidates'][error['row']]))
+        except (TypeError, ValueError, KeyError, AttributeError):
+            pass
+    resumed_heads = {row.get('head_sha') for row in resumed if row.get('head_sha')}
+    return [item for key, item in ledger['candidates'].items()
+            if key not in barred and item['status'] == 'ready_for_review'
+            and item.get('pipeline_status') == 'deferred' and item.get('release_request')
+            and item['release_request'].get('head_sha') not in resumed_heads]
+
+
 def refresh_source_main(source_repo, timeout=60):
     """Refresh the canonical tracking ref without changing the source tree."""
     if timeout <= 0:
@@ -398,9 +426,9 @@ def run(root, smoke=False):
         private_directory(directory)
         state = {'id': stamp, 'started_at': now(), 'status': 'running', 'pid': os.getpid(), 'smoke': smoke}
         atomic(root / 'last-run.json', state)
-        ledger = load(root / 'ledger.json', {'version': 1, 'candidates': {}})
+        # The trusted ledger aggregates multiple already bounded worker reports.
+        ledger = load(root / 'ledger.json', {'version': 1, 'candidates': {}}, max_bytes=None)
         pipeline = None
-        resume_consumed = False
         snapshot = None
         output = directory / 'result.json'
         report_validated = False
@@ -411,24 +439,23 @@ def run(root, smoke=False):
             previous_handlers[number] = signal.signal(number, cancel)
         try:
             if not smoke and config.get('release_enabled') is True:
-                refresh_source_main(config['source_repo'], deadline - time.monotonic())
-                snapshot = read_source_snapshot(config['source_repo'], deadline - time.monotonic())
-                state['source_main_refreshed_at'] = now()
                 from pipeline import Pipeline
                 pipeline = Pipeline({**config, '_deadline_monotonic': deadline, '_lock_fd': lock.fileno()}, root)
-                state['pipeline_results'] = pipeline.resume_pending()
+                refresh_source_main(config['source_repo'], deadline - time.monotonic())
+                state['pipeline_results'] = pipeline.resume_pending(reserve_seconds=1200)
                 for result in state['pipeline_results']:
                     record_pipeline_result(ledger, result)
-                resume_consumed = any(result.get('status') != 'superseded' for result in state['pipeline_results'])
                 atomic(root / 'ledger.json', ledger)
+                if any(result.get('status') == 'released' or result.get('merge_sha') for result in state['pipeline_results']):
+                    refresh_source_main(config['source_repo'], deadline - time.monotonic())
+                snapshot = read_source_snapshot(config['source_repo'], deadline - time.monotonic())
+                state['source_main_refreshed_at'] = now()
             registry = snapshot['registry'] if snapshot else load(Path(config['source_repo']) / 'registry/adapters.json')
             context = {'date_utc': now(), 'smoke': smoke, 'source_repo': config['source_repo'],
                        'repository': REPOSITORY,
                        'workspace': str(workspace), 'curated_registry': registry,
                        'base_sha': snapshot['base_sha'] if snapshot else None,
                        'previous_candidates': list(ledger['candidates'].values())[-200:],
-                       'max_candidates': 3 if smoke else 20, 'max_signups': 0 if smoke else 2,
-                       'max_integrations': 0 if smoke or resume_consumed else 1,
                        'release_enabled': bool(pipeline)}
             policy = (Path(__file__).parent / 'POLICY.md').read_text()
             prompt = policy + '\n\n## This run\n' + json.dumps(context, indent=2)
@@ -449,24 +476,32 @@ def run(root, smoke=False):
                                 'timeout_seconds': duration, 'lock_fd': lock.fileno(),
                                 'smoke': smoke, 'web_search': True, 'require_web_search': True},
                                config, progress)
-            report = result['result']
+            raw_report = result['result']
             diagnostics = []
-            updated = ingest(report, ledger, workspace, smoke, diagnostics)
-            report = normalized_report(report, updated, diagnostics)
+            updated = ingest(raw_report, ledger, workspace, smoke, diagnostics)
+            report = normalized_report(raw_report, updated, diagnostics)
             # Replace the transient worker output before any downstream stage:
             # quarantined URLs/prose must not remain in the persisted raw result.
             atomic(output, report)
             report_validated = True
-            if pipeline is not None and not resume_consumed:
-                submitted = [updated['candidates'][candidate_id(item)] for item in report['candidates']]
-                eligible = [item for item in submitted
-                            if item['status'] == 'ready_for_review' and item.get('release_request')
-                            and item.get('pipeline_status') not in ('released', 'publication_pending')]
-                if eligible:
-                    item = eligible[0]
-                    outcome = pipeline.process(item)
+            if pipeline is not None:
+                queue = queue_candidates(updated, report, raw_report, diagnostics, state['pipeline_results'])
+                atomic(root / 'ledger.json', updated)
+                for index, item in enumerate(queue):
+                    if time.monotonic() >= deadline:
+                        break
+                    if item['release_request'].get('base_sha') != snapshot['base_sha']:
+                        outcome = {'status': 'superseded', 'reason': 'main_changed_requires_fresh_review'}
+                    else:
+                        outcome = pipeline.process(item)
                     record_pipeline_result(updated, outcome, item)
-                    state.setdefault('pipeline_results', []).append(outcome)
+                    state['pipeline_results'].append({**outcome, 'candidate_id': candidate_id(item)})
+                    atomic(root / 'ledger.json', updated)
+                    if outcome.get('reason') == 'pipeline_budget_exhausted' or time.monotonic() >= deadline:
+                        break
+                    if index + 1 < len(queue) and (outcome.get('status') == 'released' or outcome.get('merge_sha')):
+                        refresh_source_main(config['source_repo'], deadline - time.monotonic())
+                        snapshot = read_source_snapshot(config['source_repo'], deadline - time.monotonic())
             atomic(root / 'ledger.json', updated)
             state.update(status='completed', summary=report['summary'], candidates_seen=len(report['candidates']),
                          ready_for_review=sum(value['status'] == 'ready_for_review' for value in updated['candidates'].values()),
@@ -515,7 +550,7 @@ def main():
         return 0
     if options.command == 'status':
         print(json.dumps({'schedule': '09:00 and 21:00 America/New_York', 'last_run': load(options.state / 'last-run.json'),
-                          'candidates': len(load(options.state / 'ledger.json', {'candidates': {}})['candidates'])}, indent=2))
+                          'candidates': len(load(options.state / 'ledger.json', {'candidates': {}}, max_bytes=None)['candidates'])}, indent=2))
         return 0
     try:
         return run(options.state, options.smoke)

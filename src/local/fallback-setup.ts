@@ -9,7 +9,7 @@ import { disabledAdapters } from '../registry.js';
 import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
-import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
+import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
 import { ClixadNativeLoginRequired } from './clixad-setup.js';
 import type { Source } from './source.js';
 
@@ -80,7 +80,8 @@ export async function setupFallbacks(options: {
   const execution = [...anonymous.filter(id => requested.includes(id)), ...requested.filter(id => !anonymous.includes(id))];
   const unavailable = requested.filter(id => disabledAdapters.has(id));
   for (const id of unavailable) options.notify(`${id}: routing is disabled; other free services continue`);
-  const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
+  const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id)),
+    ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   if (squire instanceof BrowserSquire) squire.approveDataSharing(approved);
   // Reuse a grant created by an earlier setup before probing the free model.
   const savedConfig = join(options.directory, 'opencode-free.json');

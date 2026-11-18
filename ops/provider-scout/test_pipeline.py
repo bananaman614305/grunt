@@ -428,12 +428,25 @@ class PipelineTests(unittest.TestCase):
     def test_resume_promotion_respects_expired_deadline(self):
         self.promotion_status = 'pending_publication'
         self.make().process(self.candidate)
+        saved = pipeline._read(self.checkpoint())
         self.calls.clear()
         self.config['_deadline_monotonic'] = time.monotonic() - 1
-        result = self.make().resume_pending()[0]
-        self.assertEqual(result['status'], 'deferred')
-        self.assertEqual(result['reason'], 'pipeline_budget_exhausted')
+        self.assertEqual(self.make().resume_pending(), [])
+        self.assertEqual(pipeline._read(self.checkpoint()), saved)
         self.assertEqual(self.calls, [])
+
+    def test_resume_continues_past_an_invalid_checkpoint(self):
+        self.promotion_status = 'ci_pending'
+        supervisor = self.make()
+        supervisor.process(self.candidate)
+        broken = pipeline._private(supervisor.releases / ('pipeline-' + '0'*40)) / 'checkpoint.json'
+        pipeline._write(broken, {})
+        broken.chmod(0o644)
+        self.calls.clear()
+        self.promotion_status = 'released'
+        results = supervisor.resume_pending()
+        self.assertEqual([row['status'] for row in results], ['blocked', 'released'])
+        self.assertEqual(self.calls, ['promote'])
 
     def test_failed_check_receipt_cannot_run_live_probe_or_promote(self):
         def failed_checks(receipt, *, run):

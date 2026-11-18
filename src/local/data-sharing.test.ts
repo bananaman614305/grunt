@@ -80,6 +80,37 @@ it('enables a noninteractive setup batch without asking', async () => {
   expect(prompt).not.toHaveBeenCalled();
 });
 
+it('prompts once for explicit sources and asks again only for a changed explicit policy', async () => {
+  const path = await directory();
+  const add = (provider: string) => (DATA_SHARING_POLICIES as DataSharingPolicy[]).push({
+    provider, name: provider, version: '1', disclosure: 'Synthetic data terms.', url: 'https://example.test/privacy', approval: 'explicit'
+  });
+  add('explicit-one'); add('explicit-two');
+  const providers = ['tokenharbor', 'explicit-one', 'explicit-two'];
+  const prompt = vi.fn(async (_policies: readonly DataSharingPolicy[]) => true);
+  expect(await approveDataSharing({ directory: path, providers, prompt })).toEqual({ approved: providers, skipped: [] });
+  expect(prompt.mock.calls[0]?.[0].map(policy => policy.provider)).toEqual(['explicit-one', 'explicit-two']);
+  expect(await approveDataSharing({ directory: path, providers, prompt })).toEqual({ approved: providers, skipped: [] });
+  expect(prompt).toHaveBeenCalledOnce();
+  DATA_SHARING_POLICIES.find(policy => policy.provider === 'explicit-two')!.version = '2';
+  await approveDataSharing({ directory: path, providers, prompt });
+  expect(prompt.mock.calls[1]?.[0].map(policy => policy.provider)).toEqual(['explicit-two']);
+});
+
+it.each([false, Symbol('cancel'), undefined])('keeps explicit sources off without approval (%s)', async answer => {
+  const path = await directory();
+  (DATA_SHARING_POLICIES as DataSharingPolicy[]).push({
+    provider: 'explicit-source', name: 'Explicit source', version: '1', disclosure: 'Synthetic data terms.',
+    url: 'https://example.test/privacy', approval: 'explicit'
+  });
+  const prompt = vi.fn(async () => answer ?? true);
+  const providers = ['tokenharbor', 'explicit-source'];
+  expect(await approveDataSharing({ directory: path, providers, prompt, interactive: answer !== undefined }))
+    .toEqual({ approved: ['tokenharbor'], skipped: ['explicit-source'] });
+  expect(await readDataSharingConsent(path, providers)).toEqual(['tokenharbor']);
+  expect(prompt).toHaveBeenCalledTimes(answer === undefined ? 0 : 1);
+});
+
 it('does not trust an unsafe, linked, or malformed consent receipt', async () => {
   const path = await directory(), other = await directory();
   await recordDataSharingConsent(path, ['tokenharbor']);

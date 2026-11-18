@@ -252,20 +252,26 @@ class Pipeline:
         except Exception:
             return {'status': 'blocked', 'reason': 'candidate_validation_failed'}
 
-    def resume_pending(self):
+    def resume_pending(self, *, reserve_seconds=0):
         if self.config.get('release_enabled') is not True:
             return []
-        # A single promotion per pass keeps inference and publication bounded.
-        for path in sorted(self.releases.glob('pipeline-*/checkpoint.json')):
-            try:
-                checkpoint = _read(path)
-                if checkpoint.get('phase') == 'superseded':
-                    continue
-                if checkpoint.get('result', {}).get('status') == 'released':
-                    continue
-                if checkpoint.get('phase') != 'promotion' and checkpoint.get('result', {}).get('status') in ('blocked', 'needs_approval'):
-                    continue  # A fresh worker correction must resubmit this head.
-                return [self._continue(checkpoint)]
-            except (OSError, ValueError, KeyError, TypeError):
-                return [{'status': 'blocked', 'reason': 'invalid_pipeline_checkpoint'}]
-        return []
+        deadline = self.deadline
+        self.deadline -= reserve_seconds
+        results = []
+        try:
+            for path in sorted(self.releases.glob('pipeline-*/checkpoint.json')):
+                if time.monotonic() >= self.deadline:
+                    break
+                try:
+                    checkpoint = _read(path)
+                    if checkpoint.get('phase') == 'superseded':
+                        continue
+                    status = checkpoint.get('result', {}).get('status')
+                    if status == 'released' or (checkpoint.get('phase') != 'promotion' and status in ('blocked', 'needs_approval')):
+                        continue  # A fresh worker correction must resubmit this head.
+                    results.append(self._continue(checkpoint))
+                except (OSError, ValueError, KeyError, TypeError):
+                    results.append({'status': 'blocked', 'reason': 'invalid_pipeline_checkpoint'})
+            return results
+        finally:
+            self.deadline = deadline

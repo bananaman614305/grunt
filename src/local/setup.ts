@@ -29,7 +29,7 @@ import { setupPerch } from './perch-setup.js';
 import { disabledAdapters } from '../registry.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
-import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent } from './data-sharing.js';
+import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, requiresExplicitDataSharing } from './data-sharing.js';
 import { readSetupSession } from './setup-session.js';
 
 const exec = promisify(execFile);
@@ -793,7 +793,8 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
-  const approved = [...new Set([...(options.dataSharingApproved ?? []), ...await readDataSharingConsent(location, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
+  const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id)),
+    ...await readDataSharingConsent(location, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
   const unapproved = dataSharingPolicies(providers).filter(policy => !approved.includes(policy.provider));
   if (unapproved.length) throw new Error(`${unapproved.map(policy => policy.name).join(', ')} data sharing requires the grouped setup approval`);
   const owned = options.squire ? undefined : new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), dataSharingApproved: approved });
