@@ -25,6 +25,17 @@ const ERROR_LABELS = {
   timeout: 'Timed out', upstream: 'Upstream failure', refused: 'Request refused', cancelled: 'Cancelled',
   busy: 'Busy', foreground: 'Foreground work active', consent: 'Consent needed'
 };
+const FAILURE_REASONS = {
+  response_body: 'Reply body could not be read', response_json: 'Invalid JSON reply',
+  response_choices: 'Reply has no usable choices', response_content: 'Invalid reply content',
+  response_tools: 'Invalid tool call', completion_model: 'Returned model did not match',
+  completion_billing: 'Free billing could not be verified', completion_usage: 'Usage was missing, invalid, or over budget',
+  completion_attestation: 'Completion metadata could not be verified',
+  completion_protocol: 'Reply did not match the expected protocol',
+  turn_limit: 'Native turn limit reached', token_limit: 'Native token limit reached',
+  price_limit: 'Native price limit reached', deadline: 'Native deadline reached',
+  terminated: 'Native run terminated', length: 'Model stopped at its length limit', refusal: 'Model refused the request'
+};
 const EVENT_LABELS = {
   'request.start': 'Request received', 'request.finish': 'Request finished', 'attempt.start': 'Provider attempt started',
   'attempt.finish': 'Provider attempt finished', 'route.selection': 'Provider selected',
@@ -926,6 +937,7 @@ export class AdminConsole {
       if (event.endpointLabel) details.push(['Endpoint', text(event.endpointLabel), true]);
       if (event.transport) details.push(['Transport', text(event.transport)]);
       if (event.errorCode) details.push(['Failure class', errorLabel(event.errorCode)]);
+      if (own(FAILURE_REASONS, event.failureReason)) details.push(['Failure detail', FAILURE_REASONS[event.failureReason]]);
       if (event.networkCode) details.push(['Network code', text(event.networkCode), true]);
       if (Number.isInteger(event.exitCode)) details.push(['CLI exit code', String(event.exitCode)]);
       if (number(event.retryAfterSeconds) !== null) details.push(['Reported retry delay', `${event.retryAfterSeconds} s`]);

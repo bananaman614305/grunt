@@ -1,5 +1,7 @@
 // Only these metadata fields may cross the collector boundary. Payloads,
 // credentials, paths and arbitrary upstream messages are intentionally absent.
+import { diagnosticFailureReasons } from '../local/diagnostics.js';
+
 export type DiagnosticKind = 'user' | 'setup' | 'maintenance' | 'diagnostic';
 export type DiagnosticEventType = 'request.start' | 'request.finish' | 'attempt.start' | 'attempt.finish' | 'route.selection' | 'route.skip' | 'transport.finish';
 export type DiagnosticOutcome = 'passed' | 'failed' | 'cancelled' | 'skipped';
@@ -11,6 +13,7 @@ export interface AdminDiagnosticEvent {
   inputTokens?: number; outputTokens?: number; transport?: 'http' | 'cli'; httpMethod?: 'GET' | 'POST';
   endpointLabel?: 'chat.completions' | 'models' | 'account' | 'local.opencode' | 'cli'; networkCode?: string;
   exitCode?: number; reason?: string;
+  failureReason?: typeof diagnosticFailureReasons[number];
 }
 export type AdminSourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
 export interface AdminSourceSnapshot {
@@ -86,6 +89,7 @@ export function validateAdminEvent(value: unknown, now = Date.now()): AdminDiagn
   optional(raw, 'endpointLabel', v => member(v, ['chat.completions', 'models', 'account', 'local.opencode', 'cli']), event);
   optional(raw, 'networkCode', v => member(v, ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']), event);
   optional(raw, 'exitCode', v => integer(v, -255, 255), event);
+  optional(raw, 'failureReason', v => member(v, diagnosticFailureReasons), event);
   optional(raw, 'reason', v => member(v, ['not_listed', 'pending_setup', 'cooldown', 'tools_unsupported', 'input_unsupported', 'unavailable', 'sticky', 'weighted', 'explicit', 'fallback', 'local']), event);
   return event;
 }

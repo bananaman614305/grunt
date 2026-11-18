@@ -21,7 +21,8 @@ it('delivers a redacted fallback trace from a local request through authenticate
   cleanups.push(() => journal.close());
   const sources = new Sources([
     { id: 'kilo', supportsFunctionTools: true, available: async () => true, close: async () => {}, complete: async () => {
-      throw new SourceError('quota', 'SECRET_UPSTREAM_MESSAGE', 60, 'SECRET_UPSTREAM_OUTPUT', { httpStatus: 429, transport: 'http', endpointLabel: 'chat.completions' });
+      throw new SourceError('upstream', 'SECRET_UPSTREAM_MESSAGE', undefined, 'SECRET_UPSTREAM_OUTPUT',
+        { httpStatus: 200, transport: 'http', endpointLabel: 'chat.completions', failureReason: 'response_choices' });
     } },
     new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async input => {
       const path = new URL(String(input)).pathname;
@@ -72,7 +73,9 @@ it('delivers a redacted fallback trace from a local request through authenticate
   expect(detail.status).toBe(200);
   const trace = await detail.json();
   expect(trace.request).toMatchObject({ id: requestId, outcome: 'passed', source: 'opencode', attemptCount: 2 });
-  expect(trace.events).toContainEqual(expect.objectContaining({ source: 'kilo', type: 'attempt.finish', outcome: 'failed', httpStatus: 429 }));
+  expect(trace.events).toContainEqual(expect.objectContaining({
+    source: 'kilo', type: 'attempt.finish', outcome: 'failed', httpStatus: 200, failureReason: 'response_choices'
+  }));
   expect(trace.events).toContainEqual(expect.objectContaining({ source: 'opencode', type: 'attempt.finish', outcome: 'passed', inputTokens: 175, outputTokens: 16 }));
   const windowStart = Date.now() - 60000;
   const usage = await remote.request(`https://api.grunt.run/admin/api/source-usage?today=${windowStart}&week=${windowStart}&instanceId=chad`, { headers });

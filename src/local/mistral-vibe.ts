@@ -103,13 +103,21 @@ export async function runMistralVibeProcess(binary: string, args: string[], opti
 }
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
+// These outcomes map to exit 3 in the pinned Vibe export. Provider messages
+// can inform routing but must never become diagnostic metadata.
+const nativeStopOutcomes = ['turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'] as const;
 function nativeFailure(value: ObjectValue, exitCode?: number | null) {
   const error = object(value.error), hint = `${typeof error.code === 'string' ? error.code : ''} ${typeof error.message === 'string' ? error.message : ''}`;
   const code = /quota|rate.?limit|budget|credits?.*(?:exhaust|insufficient)|payment.required|429|402/i.test(hint) ? 'quota'
     : /unauthori|authenticat|sign.?in|logged.?out|invalid.?key|401/i.test(hint) ? 'logged_out'
       : value.outcome === 'deadline' ? 'timeout' : value.outcome === 'refusal' ? 'refused' : 'upstream';
+  const reportedExitCode = exitCode ?? value.exit_code;
+  const failureReason = reportedExitCode === 3 && value.exit_code === 3
+    ? nativeStopOutcomes.find(outcome => outcome === value.outcome) : undefined;
   return new SourceError(code, `Mistral Vibe request failed (${code}); check the native Free plan or rerun usegrunt setup`, undefined, undefined,
-    { transport: 'cli', endpointLabel: 'cli', ...(Number.isInteger(exitCode) ? { exitCode: exitCode! } : Number.isInteger(value.exit_code) ? { exitCode: value.exit_code as number } : {}) });
+    { transport: 'cli', endpointLabel: 'cli',
+      ...(typeof reportedExitCode === 'number' && Number.isInteger(reportedExitCode) ? { exitCode: reportedExitCode } : {}),
+      ...(failureReason ? { failureReason } : {}) });
 }
 export function parseMistralVibeCompletion(stdout: string, exported: unknown): Completion {
   const run = object(exported), config = object(run.config), models = object(config.models), selected = object(models[MISTRAL_VIBE_MODEL]);
