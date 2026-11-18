@@ -106,11 +106,12 @@ export async function signupMcp(input: Parameters<SignupAgent>[0]) {
 
 export function guardedSignupChoice(key: string, label: unknown) {
   if (typeof label !== 'string' || !label.trim()) return false;
-  const choice = `${key} ${label}`.replace(/[_-]/g, ' ');
+  const text = label.replace(/[_|-]/g, ' ');
+  const choice = `${key} ${text}`.replace(/[_-]/g, ' ');
   if (/\b(?:billing|payment|credit card|upgrade|premium|subscription|paid|purchase|buy|top up|switch (?:an? )?account|another account|password|passcode|secret|sms|phone|captcha|passkey|revoke|rotate|reset|delete|done|blocked)\b/i.test(choice)) return false;
-  if (/\b(?:reject|decline) (?:all|optional)(?: cookies)?\b/i.test(label)) return true;
-  const requiredTerms = /\b(?:accept|agree)\b/i.test(label)
-    && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(label)
+  if (/\b(?:reject|decline) (?:all|optional)(?: cookies)?\b/i.test(text)) return true;
+  const requiredTerms = /\b(?:accept|agree)\b/i.test(text)
+    && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(text)
     && !/\b(?:optional|marketing|newsletter|training|retention|sharing|consent|authorize|permission)\b/i.test(choice);
   return requiredTerms || !/\b(?:consent|accept|agree|authorize|permission)\b/i.test(choice);
 }

@@ -475,6 +475,18 @@ export class BrowserSquire implements SetupSquire {
       const handoff = `${classification} ${observedField ?? ''} ${String(needsUser.wall ?? '')} ${String(needsUser.message ?? '')}`.replace(/[_-]/g, ' ');
       const needsTerms = provider === 'zro' && /please read and accept the terms to continue/i.test(String(object(result.observation).dom ?? ''));
       const offeredTerms = Object.entries(object(result.options)).find(([key, label]) => typeof label === 'string' && /\b(?:accept|agree)\b/i.test(label) && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(label) && guardedSignupChoice(key, label));
+      const usedTerms = this.recoveryChoices.get(provider) ?? new Set<string>();
+      this.recoveryChoices.set(provider, usedTerms);
+      const termsButton = !this.options.agent && !this.options.background && active && (Array.isArray(object(result.observation).safe_table) ? object(result.observation).safe_table as unknown[] : []).find(row =>
+        Array.isArray(row) && typeof row[0] === 'string' && ['b', 'c'].includes(String(row[1]))
+        && /\b(?:accept|agree)\b/i.test(String(row[2]))
+        && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(String(row[2]).replace(/[_|-]/g, ' '))
+        && guardedSignupChoice(row[0], String(row[2]).replace(/[_|-]/g, ' ')) && !usedTerms.has(row[0]));
+      if (Array.isArray(termsButton)) {
+        usedTerms.add(termsButton[0]);
+        await this.serviceCall(provider, 'operate_click', { session_id: active, ref: termsButton[0] });
+        continue;
+      }
       const humanStep = (needsTerms && !offeredTerms && !this.options.agent) || /\b(?:sms|phone|captcha|passkey|2fa|two factor|email verification|verification (?:code|link)|human (?:verification|assistance))\b/i.test(handoff);
       if (/\b(?:sms|phone)\b/i.test(handoff)) return dropped('needs SMS verification');
       if (humanStep && !this.batchSignup && !this.options.background && active && process.stdin.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1') {

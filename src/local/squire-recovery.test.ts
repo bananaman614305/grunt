@@ -320,7 +320,7 @@ it.each([false, true])('uses the observed Zro Google button and reports required
     if (clicked) return termsRequired
       ? { status: 'budget', session_id: 'zro-tab', observation: { dom: 'Please read and accept the terms to continue' } }
       : { status: 'complete', session_id: 'zro-tab' };
-    expect(args.url).toBe('https://zro.moonmath.ai/sign-up');
+    expect(args.url).toBe('https://zro.moonmath.ai/overview');
     return { status: 'needs_value', session_id: 'zro-tab', field: 'Email address', options: {}, observation: {
       url: 'https://zro.moonmath.ai/sign-up', safe_table: [
         ['git', 'b', '@sign-in-with-git|a=submit'],
@@ -349,4 +349,51 @@ it.each([
   ['Accept all cookies', false]
 ])('allows only required free signup terms: %s', (label, allowed) => {
   expect(guardedSignupChoice('terms', label)).toBe(allowed);
+});
+
+it.each([
+  ['tokenharbor', 'click'],
+  ['tokenharbor', 'alias']
+] as const)('accepts required terms for %s by %s and does not choose payment or an upgrade', async (provider, mode) => {
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
+  const squire = new BrowserSquire();
+  const handoff = vi.spyOn(squire, 'humanHandoff');
+  let accepted = false;
+  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'operate_click') {
+      expect(args.ref).toBe('accept-terms');
+      accepted = true;
+      return {};
+    }
+    if (name !== 'operate_drive') return {};
+    if (args.answer === 'terms' || accepted) return { status: 'complete', session_id: 'terms-tab' };
+    return {
+      status: mode !== 'answer' ? 'budget' : 'low_confidence',
+      session_id: 'terms-tab',
+      options: mode !== 'answer'
+        ? { paid: 'I agree to the Terms of Service and upgrade to Pro', upgrade: 'Upgrade plan', billing: 'Add a payment method', account: 'Switch account' }
+        : { paid: 'I agree to the Terms of Service and upgrade to Pro', terms: 'I agree to the Terms of Service', upgrade: 'Upgrade plan', billing: 'Add a payment method', account: 'Switch account' },
+      observation: {
+        dom: 'Please read and accept the terms to continue',
+        safe_table: [
+          ['paid-terms', 'b', 'I agree to the Terms of Service and upgrade to Pro'],
+          ['tos-link', 'l', 'Terms of Service'],
+          ['accept-terms', 'b', mode === 'alias' ? '@i-agree-to-the-terms-of-service|a=submit' : 'I agree to the Terms of Service'],
+          ['upgrade', 'b', 'Upgrade plan'],
+          ['billing', 'b', 'Add a payment method'],
+          ['account', 'b', 'Switch account']
+        ]
+      }
+    };
+  });
+  await expect(squire.runs.start({ ...input, service: provider })).resolves.toMatchObject({ run: { state: 'completed' } });
+  expect(call.mock.calls.some(([name, args]) => name === 'operate_drive' && String(args.goal).includes("Accept required provider Terms of Service for this free signup"))).toBe(true);
+  if (mode === 'answer') expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'terms-tab', answer: 'terms' }));
+  else expect(call).toHaveBeenCalledWith('operate_click', expect.objectContaining({ session_id: 'terms-tab', ref: 'accept-terms' }));
+  expect(call.mock.calls.some(([, args]) => {
+    const value = args as { answer?: string; ref?: string };
+    return ['paid', 'upgrade', 'billing', 'account'].includes(value.answer ?? '') || ['paid-terms', 'tos-link', 'upgrade', 'billing', 'account'].includes(value.ref ?? '');
+  })).toBe(false);
+  expect(handoff).not.toHaveBeenCalled();
+  await squire.close();
 });
