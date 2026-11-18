@@ -240,7 +240,7 @@ it('shares short-lived live activity only with signed-in owners and excludes it 
   const text = 'Added the next quest checkpoint.';
   const activity = {
     version: 1, observedAt: now, phase: 'working', active: [{ source: 'zro', model: 'deepseek-v4.1-flash' }],
-    lastReply: null, issues: [{ source: 'kilo', error: 'timeout' }],
+    lastReply: null, issues: [{ source: 'kilo', error: 'timeout', state: 'available' }, { source: 'runcrate', error: 'upstream' }],
     events: [
       { at: now, kind: 'progress', text, reasoning: 'private reasoning' },
       { at: now, kind: 'progress', text: 'Authorization Bearer synthetic-value' },

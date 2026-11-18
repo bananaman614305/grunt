@@ -9,8 +9,9 @@ credential patterns. Tool entries contain the tool's name and outcome.
 
 The owner dashboard at `/admin/#activity` shows the answering provider, the
 last successful provider, provider issues and the latest 40 progress or tool
-entries. Model labels come from the configured route. The web view refreshes
-about every five seconds while visible.
+entries. A failed provider that the project pool can retry now carries its
+current state along with the last error. Model labels come from the configured
+route. The web view refreshes about every five seconds while visible.
 
 The publisher reads the `Current task` and `Next steps` sections of Grunt's
 `GRUNT_STATUS.md` checkpoint. The overview labels the checkpoint with its update
