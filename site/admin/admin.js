@@ -135,7 +135,7 @@ export function homeSources(overview, activity, usage, now = Date.now()) {
     if (current.phase === 'offline') continue;
     if (current.lastReply?.source) {
       const source = current.lastReply.source, prior = perInstance.get(`${entry.instanceId}:${source}`);
-      if (!prior || ['unknown', 'stale', 'available'].includes(prior.state)) put(source, entry.instanceId, 'ready');
+      if (!prior || ['unknown', 'stale', 'available'].includes(prior.state)) put(source, entry.instanceId, 'recent');
     }
     for (const issue of array(current.issues)) {
       const state = issue.state === 'available' ? 'retryable' : issue.state
