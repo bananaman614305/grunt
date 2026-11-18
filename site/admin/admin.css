@@ -28,13 +28,17 @@
   .activity-events li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }
 
-.home-work, .home-sources { max-width: 1050px; }
+.home-work, .home-sources, .home-workers { max-width: 1050px; }
 .home-work { padding: 16px 18px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .home-work .section-heading { margin-bottom: 10px; }
 .home-project { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .home-project h3 { font-size: 15px; }
 .home-progress { font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; max-width: 72ch; margin-top: 6px; }
 .home-work-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 9px; color: var(--dim); font-size: 12px; }
+.home-workers ul { list-style: none; margin: 0; padding: 0; }
+.home-workers li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.home-workers li time { margin-left: auto; color: var(--dim); font-size: 12px; }
+.home-workers .section-heading { gap: 4px 12px; flex-wrap: wrap; }
 .home-usage-note { margin-top: 11px; }
 .home-source-table .home-source-name { color: var(--ink); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; white-space: normal; }
 .home-source-table th.number, .home-source-table td.number { width: 21%; white-space: normal; }

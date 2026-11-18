@@ -328,7 +328,7 @@ export function startDashboard(options: DashboardOptions): DashboardHandle {
   return { done: stopped.then(() => poll), stop: async () => { close(); await poll; }, pause: () => { paused = true; leave(); }, resume: () => { paused = false; paint(); } };
 }
 
-async function installedPort(env: NodeJS.ProcessEnv): Promise<number> {
+export async function installedPort(env: NodeJS.ProcessEnv): Promise<number> {
   const directory = configRoot(env);
   let file;
   try { file = await open(join(directory, 'installed-port.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }

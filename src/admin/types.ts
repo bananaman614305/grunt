@@ -1,6 +1,8 @@
 // Only these metadata fields may cross the collector boundary. Payloads,
 // credentials, paths and arbitrary upstream messages are intentionally absent.
 import { diagnosticFailureReasons } from '../local/diagnostics.js';
+import { knownAdapters } from '../registry.js';
+import { MAX_WORKER_ACTIVE, MAX_WORKER_QUEUED, MAX_WORKER_RECENT, workerActivities } from '../local/worker-pool.js';
 
 export type DiagnosticKind = 'user' | 'setup' | 'maintenance' | 'diagnostic';
 export type DiagnosticEventType = 'request.start' | 'request.finish' | 'attempt.start' | 'attempt.finish' | 'route.selection' | 'route.skip' | 'transport.finish';
@@ -20,7 +22,12 @@ export interface AdminSourceSnapshot {
   id: string; state: AdminSourceState; active: number; model?: string; modelKind?: 'registry';
   lastReplyMs?: number; lastSuccessAt?: number; retryAt?: number; errorCode?: DiagnosticErrorCode;
 }
-export interface AdminPoolSnapshot { version: 1; updatedAt: number; activeRequests: number; sources: AdminSourceSnapshot[] }
+export interface AdminWorker {
+  id: string; state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  createdAt: number; startedAt?: number; finishedAt?: number; source?: string; activity?: typeof workerActivities[number];
+}
+export interface AdminWorkers { active: AdminWorker[]; queued: AdminWorker[]; recent: AdminWorker[] }
+export interface AdminPoolSnapshot { version: 1; updatedAt: number; activeRequests: number; sources: AdminSourceSnapshot[]; workers?: AdminWorkers }
 export interface AdminSystem {
   version?: string; nodeVersion?: string; platform?: string; systemUptimeSeconds?: number; collectorUptimeSeconds?: number;
   cpuCount?: number; loadAverage?: number[]; memoryTotalBytes?: number; memoryFreeBytes?: number;
@@ -93,6 +100,27 @@ export function validateAdminEvent(value: unknown, now = Date.now()): AdminDiagn
   optional(raw, 'reason', v => member(v, ['not_listed', 'pending_setup', 'cooldown', 'tools_unsupported', 'input_unsupported', 'unavailable', 'sticky', 'weighted', 'explicit', 'fallback', 'local']), event);
   return event;
 }
+export function projectAdminWorkers(value: unknown, now: number): AdminWorkers {
+  const raw = record(value);
+  const group = (name: keyof AdminWorkers, allowed: readonly AdminWorker['state'][], maximum: number) => {
+    const rows = raw[name];
+    if (!Array.isArray(rows) || rows.length > maximum) fail();
+    return rows.map((value: unknown) => {
+      const row = record(value);
+      const result: AdminWorker = { id: id(row.id), state: member(row.state, allowed), createdAt: timestamp(row.createdAt, now) };
+      optional(row, 'activity', v => member(v, workerActivities), result);
+      optional(row, 'startedAt', v => timestamp(v, now, result.createdAt), result);
+      optional(row, 'finishedAt', v => timestamp(v, now, result.startedAt ?? result.createdAt), result);
+      optional(row, 'source', v => isAdminSourceId(v) && knownAdapters.has(v) ? v : fail(), result);
+      return result;
+    });
+  };
+  const workers = { active: group('active', ['running'], MAX_WORKER_ACTIVE), queued: group('queued', ['queued'], MAX_WORKER_QUEUED),
+    recent: group('recent', ['completed', 'failed', 'cancelled'], MAX_WORKER_RECENT) };
+  const rows = [...workers.active, ...workers.queued, ...workers.recent];
+  if (new Set(rows.map(row => row.id)).size !== rows.length) fail();
+  return workers;
+}
 function snapshot(value: unknown, now: number): AdminPoolSnapshot | null {
   if (value === null) return null;
   const raw = record(value); if (raw.version !== 1 || !Array.isArray(raw.sources) || raw.sources.length > 64) fail();
@@ -108,7 +136,8 @@ function snapshot(value: unknown, now: number): AdminPoolSnapshot | null {
     return result;
   });
   if (new Set(sources.map(row => row.id)).size !== sources.length) fail();
-  return { version: 1, updatedAt: timestamp(raw.updatedAt, now), activeRequests: integer(raw.activeRequests, 0, 10000), sources };
+  return { version: 1, updatedAt: timestamp(raw.updatedAt, now), activeRequests: integer(raw.activeRequests, 0, 10000), sources,
+    ...(raw.workers === undefined ? {} : { workers: projectAdminWorkers(raw.workers, now) }) };
 }
 function system(value: unknown): AdminSystem {
   const raw = record(value), result: AdminSystem = {};

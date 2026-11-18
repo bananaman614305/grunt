@@ -68,6 +68,16 @@ it('projects snapshots and maintenance to known source IDs and fixed metadata fi
     custom: { nextCheckAt: now, code: 'private' } } })).toEqual({ version: 1, entries: { kilo: { nextCheckAt: now, lastAttemptAt: now - 50, outcome: 'failed', code: 'quota' } } });
 });
 
+it('projects only approved worker status fields and tolerates an older daemon', () => {
+  const active = { id: requestId, state: 'running', createdAt: now, activity: 'review', source: 'kilo', task: 'private task', context: 'private context' };
+  const observed = projectCollectorSnapshot({ ...snapshot(), workers: { active: [active], queued: [], recent: [] } });
+  expect(observed.workers).toEqual({ active: [{ id: requestId, state: 'running', createdAt: now, activity: 'review', source: 'kilo' }], queued: [], recent: [] });
+  expect(projectCollectorSnapshot(snapshot())).not.toHaveProperty('workers');
+  for (const source of ['https://secret.example', 'unknown-private-label']) {
+    expect(projectCollectorSnapshot({ ...snapshot(), workers: { active: [{ ...active, source }], queued: [], recent: [] } })).not.toHaveProperty('workers');
+  }
+});
+
 it('projects scouting progress without report prose, account metadata, URLs, paths or vault references', () => {
   const result = projectCollectorScout({ id: '20261116T140001689663Z', status: 'failed', reason: 'private account error',
     started_at: '2026-11-16T14:00:01.689897+00:00', config: { secret: 'private' } }, { candidates: {
