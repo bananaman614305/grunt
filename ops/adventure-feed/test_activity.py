@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from uptime import DAY_MS, TOOL_PROGRESS_MS, WORK_TICKS, WorkLedger, WorkProbe, classify_work, shell_activity, tool_running
+from uptime import (
+    DAY_MS, MODEL_PROGRESS_MS, TOOL_PROGRESS_MS, WORK_TICKS,
+    WorkLedger, WorkProbe, classify_work, shell_activity, tool_running,
+)
 
 from activity import events, private_tail, progress_text, project_checkpoint, project_pulls
 
@@ -179,6 +182,36 @@ These must not be included.
             status.update(lastActivityAt=now / 1000 - 60, lastToolStartedAt=now / 1000 - 60)
             shell.return_value = (True, True, {})
             self.assertEqual(probe.sample(now), 'stalled')
+
+    def test_quiet_nested_request_counts_as_work_until_its_progress_expires(self):
+        now = 1794948372598
+        start = now / 1000 - 600
+        status = {'phase': 'working', 'workerPid': 101, 'lastActivityAt': start, 'lastToolStartedAt': start}
+        source = {'id': 'kilo', 'state': 'answering', 'active': 1}
+        pool = {'activeRequests': 1, 'sources': [source]}
+        probe = WorkProbe(Path('/test-state'), lambda *_: json.dumps(status), lambda: pool)
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(True, False, {})):
+            self.assertEqual(probe.sample(now), 'working')
+            self.assertEqual(probe.sample(now + MODEL_PROGRESS_MS), 'working')
+            later = now + MODEL_PROGRESS_MS + 1
+            self.assertEqual(probe.sample(later), 'stalled')
+            source['lastSuccessAt'] = later
+            self.assertEqual(probe.sample(later), 'working')
+            self.assertEqual(probe.sample(later + TOOL_PROGRESS_MS + 1), 'working')
+            self.assertEqual(probe.sample(later + MODEL_PROGRESS_MS + 1), 'stalled')
+
+    def test_ordinary_daemon_maintenance_is_not_nested_progress(self):
+        now = 1794948372598
+        start = now / 1000 - 600
+        status = {'phase': 'working', 'workerPid': 101, 'lastActivityAt': start, 'lastToolStartedAt': start}
+        source = {'id': 'kilo', 'state': 'ready', 'active': 0, 'lastSuccessAt': now - 1000, 'maintenance': {}}
+        pool = {'activeRequests': 0, 'sources': [source]}
+        probe = WorkProbe(Path('/test-state'), lambda *_: json.dumps(status), lambda: pool)
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(True, False, {})):
+            self.assertEqual(probe.sample(now), 'stalled')
+            source.update(state='answering', active=1)
+            pool['activeRequests'] = 1
+            self.assertEqual(probe.sample(now + 5000), 'stalled')
 
     def test_shell_detection_ignores_orphans_and_zombies(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -12,6 +12,7 @@ SAMPLE_MS = 5000
 MAX_GAP_MS = 15000
 DAY_MS = 86400000
 TOOL_PROGRESS_MS = 45000
+MODEL_PROGRESS_MS = 240000
 WORK_TICKS = max(1, os.sysconf('SC_CLK_TCK') // 40) if os.name == 'posix' else 2
 STATES = {'working', 'provider_wait', 'between_cycles', 'starting', 'paused', 'offline', 'stalled', 'unknown'}
 LOG_NAME = re.compile(r'cycle-\d{8}T\d{6}Z\.jsonl')
@@ -63,7 +64,7 @@ def classify_work(now, status, pool, *, worker_alive=False, tool_active=False, t
     if pool is None:
         return 'offline'
     if pool.get('activeRequests', 0) > 0:
-        return 'working' if -5000 <= age <= 240000 else 'stalled'
+        return 'working' if -5000 <= age <= MODEL_PROGRESS_MS else 'stalled'
     if provider_handoff:
         return 'provider_wait'
     return 'working' if -5000 <= age <= 8000 else 'stalled'
@@ -155,19 +156,33 @@ class WorkProbe:
         self.tool_identity = None
         self.tool_counters = {}
         self.tool_progress_at = None
+        self.tool_requests = frozenset()
+        self.tool_request_at = None
 
     def shell_progress(self, now, status, sources):
         started = status.get('lastToolStartedAt')
         cycle_started = status.get('cycleStartedAt')
         if (status.get('phase') != 'working' or type(started) not in (int, float) or not math.isfinite(started)
                 or started * 1000 > now + 5000
-                or type(cycle_started) in (int, float) and started < cycle_started):
+                or (type(cycle_started) in (int, float) and started < cycle_started)):
             self.tool_identity = self.tool_progress_at = None
             self.tool_counters = {}
+            self.tool_requests = frozenset()
+            self.tool_request_at = None
             return False, False, False
         pid = status.get('workerPid')
         live, sleeping, counters = shell_activity(pid)
         identity = (pid, started) if live else None
+        # Use the dedicated game pool. Ordinary daemon health checks share lastSuccessAt.
+        request_sources = [row for row in sources if 'maintenance' not in row] if live and not sleeping else []
+        requests = frozenset(
+            (row['id'], row['active'], row['lastSuccessAt'] if type(row.get('lastSuccessAt')) is int else None)
+            for row in request_sources
+            if row.get('state') == 'answering' and type(row.get('active')) is int and row['active'] > 0
+        )
+        if identity != self.tool_identity or requests != self.tool_requests:
+            self.tool_request_at = now if requests else None
+        self.tool_requests = requests
         if identity != self.tool_identity:
             self.tool_progress_at = None
         elif sum(max(0, ticks - self.tool_counters.get(process, ticks)) for process, ticks in counters.items()) >= WORK_TICKS:
@@ -177,8 +192,9 @@ class WorkProbe:
         fresh_cpu = self.tool_progress_at is not None and 0 <= now - self.tool_progress_at <= TOOL_PROGRESS_MS
         fresh_reply = any(type(row.get('lastSuccessAt')) is int and
                           max(started * 1000, now - TOOL_PROGRESS_MS) <= row['lastSuccessAt'] <= now + 5000
-                          for row in sources)
-        return live, sleeping, live and (fresh_cpu or fresh_reply)
+                          for row in request_sources)
+        fresh_request = self.tool_request_at is not None and 0 <= now - self.tool_request_at <= MODEL_PROGRESS_MS
+        return live, sleeping, live and (fresh_cpu or fresh_reply or fresh_request)
 
     def sample(self, now):
         self.failed_model_since = None
@@ -204,7 +220,7 @@ class WorkProbe:
         if active:
             self.handoff_at = None
         self.active = active
-        handoff = self.handoff_at is not None and now - self.handoff_at < 240000
+        handoff = self.handoff_at is not None and now - self.handoff_at < MODEL_PROGRESS_MS
 
         unfinished = False
         log = status.get('lastLog')

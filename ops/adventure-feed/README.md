@@ -1,9 +1,10 @@
 # Amazing Adventure activity
 
 On Chad, run `grunt-adventure live` for the terminal feed. It polls the runner's
-private Pi session and the read-only status endpoint on loopback port 8793 every
-two seconds. Progress comes from completed, visible assistant text. The
-projector filters code fences, inline code, links, paths and common
+private Pi session and the read-only status endpoint of the dedicated game pool
+on loopback port 8793 every two seconds. That pool handles project requests
+without periodic provider health checks. Progress comes from completed, visible
+assistant text. The projector filters code fences, inline code, links, paths and common
 credential patterns. Tool entries contain the tool's name and outcome.
 
 The owner dashboard at `/admin/#activity` shows the answering provider, the
@@ -28,9 +29,10 @@ A model-only interval can be counted as provider downtime after the pool reports
 that attempt failed. The percentage uses measured time. Older time and gaps in
 monitoring remain unmeasured. The monitor checks the running Pi process for a
 quiet shell tool when the cycle log is buffered. For long-running tools, CPU
-progress among their descendants or a fresh nested model reply can show active
-work even when the main log is quiet. A shell tree containing only wait helpers
-and a sleeping process does not qualify on process presence alone.
+progress among their descendants, a fresh nested model reply, or a nested model
+request observed within the past four minutes can show active work even when the
+main log is quiet. A shell tree containing only wait helpers and a sleeping
+process does not qualify on process presence alone.
 
 Chad can run `activity.py upload` as a separate user service. It uses the
 existing private collector environment file for the ingestion credential
