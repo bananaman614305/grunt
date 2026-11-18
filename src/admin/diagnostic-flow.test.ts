@@ -6,6 +6,8 @@ import { createClient } from '@libsql/client';
 import { Sources, SourceError } from '../local/source.js';
 import { DiagnosticsStore } from '../local/diagnostics.js';
 import { createLocalApp } from '../local/api.js';
+import { OpenCode } from '../local/opencode.js';
+import { idleEvents } from '../local/fixtures/opencode-events.js';
 import { AdminStore } from './store.js';
 import { adminRoutes } from './routes.js';
 
@@ -21,7 +23,16 @@ it('delivers a redacted fallback trace from a local request through authenticate
     { id: 'kilo', supportsFunctionTools: true, available: async () => true, close: async () => {}, complete: async () => {
       throw new SourceError('quota', 'SECRET_UPSTREAM_MESSAGE', 60, 'SECRET_UPSTREAM_OUTPUT', { httpStatus: 429, transport: 'http', endpointLabel: 'chat.completions' });
     } },
-    { id: 'zro', supportsFunctionTools: true, available: async () => true, close: async () => {}, complete: async () => ({ text: 'SECRET_GENERATED_CONTENT', inputTokens: 150, outputTokens: 12 }) }
+    new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async input => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/event') return idleEvents();
+      if (path === '/session') return Response.json({ id: 'session_one' });
+      if (path === '/session/session_one/message') return Response.json({
+        info: { tokens: { input: 150, output: 12, cache: { read: 10, write: 15 }, reasoning: 4 } },
+        parts: [{ type: 'text', text: 'SECRET_GENERATED_CONTENT' }]
+      });
+      throw new Error('Unexpected OpenCode call');
+    } })
   ]);
   sources.setDiagnostics(journal);
   cleanups.push(() => sources.close());
@@ -31,7 +42,7 @@ it('delivers a redacted fallback trace from a local request through authenticate
     body: JSON.stringify({ model: 'grunt', cwd: directory, messages: [{ role: 'user', content: 'SECRET_USER_PROMPT' }], max_tokens: 256 })
   });
   expect(response.status).toBe(200);
-  expect(response.headers.get('X-Grunt-Source')).toBe('zro');
+  expect(response.headers.get('X-Grunt-Source')).toBe('opencode');
   const requestId = response.headers.get('X-Grunt-Request-Id');
   expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
   const eventsResponse = await local.request('http://127.0.0.1:8792/v1/diagnostics/events');
@@ -60,9 +71,15 @@ it('delivers a redacted fallback trace from a local request through authenticate
   const detail = await remote.request(`https://api.grunt.run/admin/api/requests/${requestId}?instanceId=chad`, { headers });
   expect(detail.status).toBe(200);
   const trace = await detail.json();
-  expect(trace.request).toMatchObject({ id: requestId, outcome: 'passed', source: 'zro', attemptCount: 2 });
+  expect(trace.request).toMatchObject({ id: requestId, outcome: 'passed', source: 'opencode', attemptCount: 2 });
   expect(trace.events).toContainEqual(expect.objectContaining({ source: 'kilo', type: 'attempt.finish', outcome: 'failed', httpStatus: 429 }));
-  expect(trace.events).toContainEqual(expect.objectContaining({ source: 'zro', type: 'attempt.finish', outcome: 'passed', inputTokens: 150, outputTokens: 12 }));
+  expect(trace.events).toContainEqual(expect.objectContaining({ source: 'opencode', type: 'attempt.finish', outcome: 'passed', inputTokens: 175, outputTokens: 16 }));
+  const windowStart = Date.now() - 60000;
+  const usage = await remote.request(`https://api.grunt.run/admin/api/source-usage?today=${windowStart}&week=${windowStart}&instanceId=chad`, { headers });
+  expect(usage.status).toBe(200);
+  expect((await usage.json()).sources).toContainEqual(expect.objectContaining({
+    source: 'opencode', today: expect.objectContaining({ replies: 1, inputTokens: 175, outputTokens: 16 })
+  }));
   expect(JSON.stringify(trace)).not.toMatch(/SECRET_|Bearer|vault:|\/tmp\//);
   const replay = await remote.request('https://api.grunt.run/admin/ingest', {
     method: 'POST', headers: { Authorization: `Bearer ${env.GRUNT_ADMIN_INGEST_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(batch)
