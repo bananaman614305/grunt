@@ -103,8 +103,8 @@ const HOME_STATUS = {
   limited: ['limited', 'Rate limited', 2], error: ['error', 'Having trouble', 3],
   unavailable: ['offline', 'Down', 3], approval: ['approval', 'Needs approval', 4],
   connecting: ['connecting', 'Setting up', 4], verifying: ['verifying', 'Checking', 4],
-  available: ['unknown', 'Configured', 5], recent: ['unknown', 'Used recently', 5],
-  retryable: ['unknown', 'Can retry', 5],
+  available: ['unknown', 'Configured', 5], recent: ['ready', 'Used recently', 5],
+  retryable: ['limited', 'Can retry', 5],
   unknown: ['unknown', 'Not checked', 6], disabled: ['disabled', 'Off', 7], stale: ['unknown', 'No recent status', 8]
 };
 const freshActivity = (entry, now) => number(entry.receivedAt) !== null && now - entry.receivedAt <= 20000;
