@@ -241,10 +241,35 @@ it('reports source usage by calendar period with incomplete token reporting and 
   ]));
   await store.ingest(batch([event('attempt.finish', { ...success, outputTokens: 20 })], { instanceId: 'other' }));
   const report = await store.sourceUsage(today, week, 'chad');
-  expect(report.sources).toEqual([
-    { source: 'beatapi', lastReplyAt: initial, today: { replies: 1, tokens: null, completeReports: 0 }, week: { replies: 1, tokens: null, completeReports: 0 } },
-    { source: 'kilo', lastReplyAt: initial, today: { replies: 1, tokens: 0, completeReports: 1 }, week: { replies: 1, tokens: 0, completeReports: 1 } },
-    { source: 'zro', lastReplyAt: initial, today: { replies: 2, tokens: 9, completeReports: 0 }, week: { replies: 3, tokens: 27, completeReports: 1 } }
+  expect(report.sources).toMatchObject([
+    { source: 'beatapi', lastReplyAt: initial, today: { replies: 1, tokens: null, completeReports: 0, inputTokens: null, outputTokens: null, inputReports: 0, outputReports: 0 }, week: { replies: 1, tokens: null, completeReports: 0 } },
+    { source: 'kilo', lastReplyAt: initial, today: { replies: 1, tokens: 0, completeReports: 1, inputTokens: 0, outputTokens: 0, inputReports: 1, outputReports: 1 }, week: { replies: 1, tokens: 0, completeReports: 1 } },
+    { source: 'zro', lastReplyAt: initial, today: { replies: 2, tokens: 9, completeReports: 0, inputTokens: 9, outputTokens: null, inputReports: 1, outputReports: 0 },
+      week: { replies: 3, tokens: 27, completeReports: 1, inputTokens: 21, outputTokens: 6, inputReports: 2, outputReports: 1 } }
   ]);
-  expect((await store.sourceUsage(today, week)).sources.at(-1)?.today).toEqual({ replies: 3, tokens: 29, completeReports: 0 });
+  expect((await store.sourceUsage(today, week)).sources.at(-1)?.today).toMatchObject({ replies: 3, tokens: 29, completeReports: 0, inputTokens: 9, outputTokens: 20 });
+});
+
+it('separates quota failures from HTTP 429 evidence and applies the period and installation filters to both', async () => {
+  const { store } = await fixture();
+  const today = initial - 3600000, week = initial - 86400000;
+  const quota = { source: 'kilo', outcome: 'failed' as const, errorCode: 'quota' as const, httpStatus: 429, retryAfterSeconds: 45 };
+  await store.ingest(batch([
+    event('attempt.finish', quota),
+    event('transport.finish', quota),
+    event('transport.finish', { ...quota, at: week, retryAfterSeconds: 60 }),
+    event('transport.finish', { ...quota, at: week - 1, retryAfterSeconds: 500 }),
+    event('transport.finish', { ...quota, kind: 'maintenance', retryAfterSeconds: 500 }),
+    event('transport.finish', { ...quota, source: 'zro', retryAfterSeconds: undefined }),
+    event('attempt.finish', { ...quota, source: 'perch', at: week })
+  ]));
+  await store.ingest(batch([event('transport.finish', { ...quota, retryAfterSeconds: 120 })], { instanceId: 'other' }));
+  expect((await store.sourceUsage(today, week, 'chad')).sources).toMatchObject([
+    { source: 'kilo', lastReplyAt: null, today: { replies: 0, quotaAttempts: 1, http429s: 1, maxRetryAfterSeconds: 45 },
+      week: { replies: 0, quotaAttempts: 1, http429s: 2, maxRetryAfterSeconds: 60 } },
+    { source: 'perch', lastReplyAt: null, today: { quotaAttempts: 0, http429s: 0, maxRetryAfterSeconds: null },
+      week: { quotaAttempts: 1, http429s: 0, maxRetryAfterSeconds: null } },
+    { source: 'zro', lastReplyAt: null, today: { quotaAttempts: 0, http429s: 1, maxRetryAfterSeconds: null } }
+  ]);
+  expect((await store.sourceUsage(today, week)).sources[0]?.today).toMatchObject({ quotaAttempts: 1, http429s: 2, maxRetryAfterSeconds: 120 });
 });

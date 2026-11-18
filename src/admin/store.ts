@@ -123,32 +123,60 @@ export class AdminStore {
   async sourceUsage(today: number, week: number, instanceId?: string) {
     const now = this.now();
     const rows = await this.rows<{
-      source: string; today_replies: number; week_replies: number; last_reply_at: number;
-      today_tokens: number | null; week_tokens: number | null;
-      today_complete: number; week_complete: number;
-    }>(`WITH replies AS (
-      SELECT source, at, json_extract(payload, '$.inputTokens') AS input,
+      source: string; period: 'today' | 'week'; replies: number; last_reply_at: number | null;
+      tokens: number | null; input_tokens: number | null; output_tokens: number | null;
+      input_reports: number; output_reports: number; complete_reports: number;
+      quota_attempts: number; http_429s: number; max_retry_after_seconds: number | null;
+    }>(`WITH periods(period, starts_at) AS (VALUES ('today', ?), ('week', ?)),
+    observations AS (
+      SELECT source, at, type,
+        json_extract(payload, '$.outcome') AS outcome,
+        json_extract(payload, '$.errorCode') AS error,
+        json_extract(payload, '$.httpStatus') AS http_status,
+        json_extract(payload, '$.retryAfterSeconds') AS retry,
+        json_extract(payload, '$.inputTokens') AS input,
         json_extract(payload, '$.outputTokens') AS output
       FROM admin_events
-      WHERE at BETWEEN ? AND ? AND source IS NOT NULL AND type='attempt.finish'
-        AND json_extract(payload, '$.kind')='user' AND json_extract(payload, '$.outcome')='passed'
-        ${instanceId ? 'AND instance_id=?' : ''}
+      WHERE at BETWEEN ? AND ? AND source IS NOT NULL AND type IN ('attempt.finish', 'transport.finish')
+        AND json_extract(payload, '$.kind')='user' ${instanceId ? 'AND instance_id=?' : ''}
     ), measured AS (
-      SELECT source, at, input IS NOT NULL AND output IS NOT NULL AS complete,
-        CASE WHEN input IS NOT NULL OR output IS NOT NULL THEN CAST(COALESCE(input, 0) AS REAL) + COALESCE(output, 0) END AS tokens
-      FROM replies
+      SELECT source, at, input, output, retry,
+        type='attempt.finish' AND outcome='passed' AS replied,
+        type='attempt.finish' AND outcome='failed' AND error='quota' AS quota,
+        type='transport.finish' AND http_status=429 AS throttled
+      FROM observations
     )
-    SELECT source, COUNT(*) FILTER (WHERE at>=?) AS today_replies, COUNT(*) AS week_replies,
-      SUM(tokens) FILTER (WHERE at>=?) AS today_tokens, SUM(tokens) AS week_tokens,
-      COALESCE(SUM(complete) FILTER (WHERE at>=?), 0) AS today_complete, SUM(complete) AS week_complete,
-      MAX(at) AS last_reply_at
-    FROM measured GROUP BY source ORDER BY source`, [week, now, ...(instanceId ? [instanceId] : []), today, today, today]);
-    const range = (replies: number, tokens: number | null, completeReports: number) => ({
-      replies, tokens: tokens !== null && Number.isSafeInteger(tokens) ? tokens : null, completeReports
-    });
-    return { today, week, sources: rows.map(row => ({ source: row.source, lastReplyAt: row.last_reply_at,
-      today: range(row.today_replies, row.today_tokens, row.today_complete),
-      week: range(row.week_replies, row.week_tokens, row.week_complete) })) };
+    SELECT source, period,
+      COUNT(*) FILTER (WHERE replied) AS replies,
+      MAX(at) FILTER (WHERE replied) AS last_reply_at,
+      SUM(CAST(input AS REAL)) FILTER (WHERE replied) AS input_tokens,
+      SUM(CAST(output AS REAL)) FILTER (WHERE replied) AS output_tokens,
+      SUM(CAST(COALESCE(input, 0) AS REAL) + COALESCE(output, 0))
+        FILTER (WHERE replied AND (input IS NOT NULL OR output IS NOT NULL)) AS tokens,
+      COUNT(input) FILTER (WHERE replied) AS input_reports,
+      COUNT(output) FILTER (WHERE replied) AS output_reports,
+      COUNT(*) FILTER (WHERE replied AND input IS NOT NULL AND output IS NOT NULL) AS complete_reports,
+      COUNT(*) FILTER (WHERE quota) AS quota_attempts,
+      COUNT(*) FILTER (WHERE throttled) AS http_429s,
+      MAX(retry) FILTER (WHERE throttled) AS max_retry_after_seconds
+    FROM measured JOIN periods ON at>=starts_at
+    WHERE replied OR quota OR throttled
+    GROUP BY source, period ORDER BY source, period`, [today, week, week, now, ...(instanceId ? [instanceId] : [])]);
+    const safeTotal = (value: number | null) => Number.isSafeInteger(value) ? value : null;
+    const empty = () => ({ replies: 0, tokens: null as number | null, completeReports: 0,
+      inputTokens: null as number | null, outputTokens: null as number | null, inputReports: 0, outputReports: 0,
+      quotaAttempts: 0, http429s: 0, maxRetryAfterSeconds: null as number | null });
+    const sources = new Map<string, { source: string; lastReplyAt: number | null; today: ReturnType<typeof empty>; week: ReturnType<typeof empty> }>();
+    for (const row of rows) {
+      const record = sources.get(row.source) ?? { source: row.source, lastReplyAt: null, today: empty(), week: empty() };
+      if (row.period === 'week') record.lastReplyAt = row.last_reply_at;
+      record[row.period] = { replies: row.replies, tokens: safeTotal(row.tokens), completeReports: row.complete_reports,
+        inputTokens: safeTotal(row.input_tokens), outputTokens: safeTotal(row.output_tokens),
+        inputReports: row.input_reports, outputReports: row.output_reports,
+        quotaAttempts: row.quota_attempts, http429s: row.http_429s, maxRetryAfterSeconds: row.max_retry_after_seconds };
+      sources.set(row.source, record);
+    }
+    return { today, week, sources: [...sources.values()] };
   }
   async providers(instanceId?: string) {
     const instances = await this.instances(instanceId);
