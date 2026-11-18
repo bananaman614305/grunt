@@ -12,6 +12,13 @@
 - Honor provider retry windows on upstream failures and quota cooldowns observed during maintenance while continuing to fall back within the current request.
 - Show safe validation and native stop details for failed Clixad, Kilo, and Mistral Vibe attempts in the owner request trace.
 
+## [0.7.7] - 2026-11-18
+
+### Added
+
+- Delegate up to two tasks alongside the main coding agent using the local Grunt daemon. Connect Pi, OpenCode, Codex or Claude Code, or run jobs directly from the terminal.
+- Show active, queued and recent subworkers in the owner overview, and include lifetime usage totals across sources.
+
 ## [0.7.6] - 2026-11-17
 
 ### Fixed
