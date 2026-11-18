@@ -10,10 +10,25 @@ from uptime import (
     WorkLedger, WorkProbe, classify_work, shell_activity, tool_running,
 )
 
-from activity import events, private_tail, progress_text, project_checkpoint, project_pulls
+from activity import events, private_tail, progress_text, project_checkpoint, project_pulls, snapshot
 
 
 class ActivityTest(unittest.TestCase):
+    def test_keeps_source_errors_with_their_current_retry_state(self):
+        rows = [
+            {'id': 'kilo', 'state': 'available', 'errorCode': 'upstream'},
+            {'id': 'zro', 'state': 'limited', 'errorCode': 'quota'},
+            {'id': 'clixad', 'state': 'error', 'errorCode': 'refused'},
+            {'id': 'freebuff', 'state': 'disabled', 'errorCode': 'refused'},
+        ]
+        with patch('activity.events', return_value=[]), patch('activity.private_tail', return_value='{"phase":"working"}'), \
+                patch('activity.ask', return_value={'sources': rows}):
+            self.assertEqual(snapshot()['issues'], [
+                {'source': 'kilo', 'state': 'available', 'error': 'upstream'},
+                {'source': 'zro', 'state': 'limited', 'error': 'quota'},
+                {'source': 'clixad', 'state': 'error', 'error': 'refused'},
+            ])
+
     def test_projects_only_completed_visible_messages_and_fixed_tool_metadata(self):
         now = 1794948372598
         with tempfile.TemporaryDirectory() as temp:

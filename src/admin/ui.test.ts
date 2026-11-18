@@ -18,6 +18,24 @@ it('keeps unknown token usage distinct from a reported zero', () => {
   expect(helpers('ui.usageCoverage({})')).toBe('Token-reporting coverage has not been reported.');
 });
 
+it('distinguishes earlier errors from active cooldowns in the source overview', () => {
+  expect(helpers(`ui.homeSources({}, {instances: [{instanceId: 'chad', receivedAt: 1000,
+    activity: {phase: 'working', issues: [
+      {source: 'kilo', state: 'available', error: 'upstream'},
+      {source: 'zro', state: 'limited', error: 'quota'},
+      {source: 'clixad', state: 'error', error: 'refused'},
+      {source: 'runcrate', error: 'timeout'}
+    ], active: [{source: 'opencode'}]}
+  }]}, {sources: [{source: 'kilo', lastReplyAt: 1000}]}, 1000)
+    .map(({id, state, error}) => [id, state, error])`)).toEqual([
+    ['opencode', 'answering', null],
+    ['zro', 'limited', 'quota'],
+    ['clixad', 'error', 'refused'],
+    ['runcrate', 'error', 'timeout'],
+    ['kilo', 'retryable', 'upstream']
+  ]);
+});
+
 it('accepts only the configured Grunt API or a same-origin private preview', () => {
   expect(helpers('ui.resolveApiBase("https://api.grunt.run/admin", "https://grunt.run")'))
     .toBe('https://api.grunt.run/admin');

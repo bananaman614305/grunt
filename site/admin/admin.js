@@ -93,6 +93,7 @@ const HOME_STATUS = {
   unavailable: ['offline', 'Down', 3], approval: ['approval', 'Needs approval', 4],
   connecting: ['connecting', 'Setting up', 4], verifying: ['verifying', 'Checking', 4],
   available: ['unknown', 'Configured', 5], recent: ['unknown', 'Used recently', 5],
+  retryable: ['unknown', 'Can retry', 5],
   unknown: ['unknown', 'Not checked', 6], disabled: ['disabled', 'Off', 7], stale: ['unknown', 'No recent status', 8]
 };
 const freshActivity = (entry, now) => number(entry.receivedAt) !== null && now - entry.receivedAt <= 20000;
@@ -134,7 +135,8 @@ export function homeSources(overview, activity, usage, now = Date.now()) {
     if (current.phase === 'offline') continue;
     if (current.lastReply?.source) put(current.lastReply.source, entry.instanceId, 'ready');
     for (const issue of array(current.issues)) {
-      const state = issue.error === 'quota' ? 'limited' : ['logged_out', 'not_installed'].includes(issue.error) ? 'unavailable' : 'error';
+      const state = issue.state === 'available' ? 'retryable' : issue.state
+        ?? (issue.error === 'quota' ? 'limited' : ['logged_out', 'not_installed'].includes(issue.error) ? 'unavailable' : 'error');
       put(issue.source, entry.instanceId, state, issue.error);
     }
     for (const call of array(current.active)) put(call.source, entry.instanceId, 'answering');
@@ -465,7 +467,7 @@ export class AdminConsole {
       const row = element('tr'), name = element('th', 'home-source-name', source.id);
       name.scope = 'row'; row.append(name);
       const [tone, label] = HOME_STATUS[source.state], status = badge(tone, label);
-      if (source.error) status.title = errorLabel(source.error);
+      if (source.error) status.title = (source.state === 'retryable' ? 'Last error: ' : '') + errorLabel(source.error);
       cell(row, status);
       cell(row, amount(source.today), 'number'); cell(row, amount(source.week), 'number');
       body.append(row);
@@ -560,7 +562,10 @@ export class AdminConsole {
         const row = object(provider), item = element('li');
         item.append(element('strong', '', text(row.source)));
         if (row.model) item.append(element('span', 'mono', text(row.model)));
-        if (row.error) item.append(badge('failed', errorLabel(row.error)));
+        if (row.error) {
+          const retryable = row.state === 'available';
+          item.append(badge(retryable ? 'unknown' : 'failed', (retryable ? 'Can retry · ' : '') + errorLabel(row.error)));
+        }
         if (row.at) item.append(timestamp(row.at));
         list.append(item);
       }
