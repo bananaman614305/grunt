@@ -8,7 +8,7 @@ import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
 import { loopback } from './freellmapi.js';
 import { SourceError } from './source.js';
-import type { ModelRequest, Source } from './source.js';
+import type { Completion, ModelRequest, Source } from './source.js';
 
 export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle'] as const;
 const MODEL_QUOTA_COOLDOWN_MS = 60000;
@@ -17,6 +17,32 @@ class UnavailableModel extends SourceError {
 }
 interface PromptAttempt { session?: string; messageID?: string; partID?: string; retryable: boolean }
 interface StoredMessage { info: { id: string; role: string }; parts: { id: string; type: string; text?: string }[] }
+interface TokenCounts { total?: number; input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
+interface ReplyPart { type: string; text?: string; tokens?: TokenCounts }
+
+function sumTokens(counts: readonly unknown[]): number | undefined {
+  let total = 0;
+  for (const count of counts) {
+    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return undefined;
+    total += count;
+  }
+  return Number.isSafeInteger(total) ? total : undefined;
+}
+
+function replyUsage(parts: readonly ReplyPart[], messageTokens?: TokenCounts): Pick<Completion, 'inputTokens' | 'outputTokens'> {
+  const steps = parts.filter(part => part.type === 'step-finish');
+  // OpenCode's message summary can repeat just the final step's usage.
+  const reports = steps.length ? steps.map(step => step.tokens) : [messageTokens];
+  // OpenCode fills missing usage with zeros and omits the total in that case.
+  const measured = reports.map(tokens => {
+    if (tokens?.total === undefined && tokens?.input === 0 && tokens.output === 0 &&
+        tokens.reasoning === 0 && tokens.cache?.read === 0 && tokens.cache.write === 0) return undefined;
+    return tokens;
+  });
+  const inputTokens = sumTokens(measured.map(tokens => sumTokens([tokens?.input, tokens?.cache?.read ?? 0, tokens?.cache?.write ?? 0])));
+  const outputTokens = sumTokens(measured.map(tokens => sumTokens([tokens?.output, tokens?.reasoning ?? 0])));
+  return { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
+}
 
 export class OpenCode implements Source {
   readonly id = 'opencode';
@@ -221,7 +247,7 @@ export class OpenCode implements Source {
         ...(attempt.messageID ? { messageID: attempt.messageID } : {}),
         model: { providerID: 'opencode', modelID }, parts: [{ ...(attempt.partID ? { id: attempt.partID } : {}), type: 'text', text: prompt }]
       })]);
-      const parts: { type: string; text?: string }[] = reply.parts ?? [];
+      const parts: ReplyPart[] = reply.parts ?? [];
       const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (reply.info?.error) {
         const error = reply.info.error;
@@ -234,7 +260,7 @@ export class OpenCode implements Source {
       this.sessions.set(key(turns), session);
       this.sessionModels.set(session, modelID);
       if (typeof reply.info?.parentID === 'string') this.sessionParents.set(session, reply.info.parentID);
-      return { text };
+      return { text, ...replyUsage(parts, reply.info?.tokens) };
     } catch (error) {
       if ((signal.aborted || guardFailed) && session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
       if (signal.aborted) {
