@@ -294,6 +294,45 @@ require a compatible delegate; ordinary Chat Completions sources accept function
 tools. Unsupported tools and media blocks return an
 error rather than silently losing context.
 
+### Subworkers
+
+The installed daemon can run two subworker jobs at once while your main agent
+coordinates the work. Jobs use the registered free model sources and prefer
+separate idle sources. They wait when every eligible source is busy. Grunt
+continues to honor provider consent, quotas and retry windows.
+
+```bash
+npx usegrunt workers run <<'JSON'
+{"tasks":[
+  {"activity":"review","task":"Review the pagination logic for edge cases","context":"Paste the relevant code or excerpt here"},
+  {"activity":"tests","task":"Propose tests for the empty results state","context":"Paste the related test or API contract here"}
+]}
+JSON
+npx usegrunt workers status
+```
+
+The command takes one or two tasks in a batch, with at most 8 KiB of instructions
+and 32 KiB of context per task. The results are returned in submission order
+with the provider that replied. Provide relevant excerpts and the file or
+component each worker should own. Use the optional activity label `review`,
+`tests`, `implementation`, or `research` to make it easier to follow in status.
+The main agent reviews suggestions and applies edits using its existing tools
+and permissions. Subworkers have no filesystem or shell tools. Task text and context go to the configured provider under the
+same data-sharing terms as other Grunt requests.
+
+Run `npx usegrunt workers connect <pi|opencode|codex|claude>` for the matching
+tool setup. The MCP server for other compatible clients is
+`usegrunt workers mcp` over stdio. In Pi and MCP, `grunt_delegate` returns a batch ID
+immediately so the main agent can keep working. Retrieve the ordered results
+with `grunt_worker_result` or stop the jobs with `grunt_worker_cancel`.
+`grunt_worker_status` reads the daemon-wide status. Use `--port <port>` if your
+daemon uses a different port from the one saved during setup.
+
+A job has up to five minutes including queue time. If the daemon's 16 waiting
+slots are full, callers receive a busy result. Disconnecting cancels outstanding
+jobs. Worker status includes the current source and recent outcomes. Only
+explicitly enrolled collectors send worker metadata to the owner dashboard.
+
 ### Source dashboard
 
 `usegrunt status` prints one cached pool snapshot. `usegrunt status --watch`

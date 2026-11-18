@@ -12,7 +12,7 @@
 npx usegrunt
 ```
 
-usegrunt installs grunt on this machine. It pools free AI quota and serves one local agent.
+usegrunt installs grunt on this machine. It pools free AI quota and serves local coding agents.
 
 Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
 
@@ -52,8 +52,24 @@ terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
 `--port` overrides `GRUNT_PORT`, the saved port, and the default 8788.
 
+### Delegate to Grunt subworkers
+
+Your coding agent can give Grunt up to two independent tasks at a time.
+Subworkers return findings or proposed edits for the main agent to review and
+apply. They work from the task and context you send.
+
+```bash
+npx usegrunt workers connect pi
+npx usegrunt workers status
+```
+
+Use `opencode`, `codex`, or `claude` in place of `pi` for those interfaces,
+or run tasks from any terminal with
+[`usegrunt workers run`](docs/reference.md#subworkers). Installations with an
+older daemon need `npx usegrunt update` after a release with subworkers.
+
 The [private owner console](docs/reference.md#private-owner-admin) opens on
-Grunt's current work, source status and per-source usage for today and this week.
+Grunt's current work, subworker activity and per-source daily, weekly and lifetime usage.
 Separate views show request and fallback traces, maintenance and scout progress.
 Google login permits explicitly configured, verified owner email addresses.
 The [Fly preview](https://milo-gateway.fly.dev/admin/) is available while custom

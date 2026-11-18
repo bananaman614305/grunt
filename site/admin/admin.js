@@ -117,6 +117,13 @@ const WORK_STATUS = {
   paused: ['unknown', 'Paused'], unknown: ['unknown', 'Work status unknown']
 };
 
+const WORKER_STATUS = {
+  queued: ['limited', 'Queued'], running: ['running', 'Working'], completed: ['ready', 'Finished'],
+  failed: ['error', 'Failed'], cancelled: ['unknown', 'Cancelled']
+};
+
+const WORKER_ACTIVITY = { review: 'Code review', tests: 'Tests', implementation: 'Implementation', research: 'Research' };
+
 function workDuration(ms) {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -291,6 +298,7 @@ export class AdminConsole {
     this.closeTrace(); this.overview = null; this.requests = []; this.providers = []; this.runs = null; this.activity = null; this.sourceUsage = null;
     this.el['activity-list'].replaceChildren(loading('Loading recent activity…'));
     this.el['home-work'].replaceChildren(); this.el['home-source-list'].replaceChildren();
+    this.renderHomeWorkers();
     this.el['provider-usage-list'].replaceChildren();
     this.renderWorkUptime(undefined);
     this.renderProjectContext(undefined);
@@ -450,6 +458,7 @@ export class AdminConsole {
         element('p', 'section-note', 'Updates appear here when the Amazing Adventure runner is connected.'));
     }
 
+    this.renderHomeWorkers(now);
     this.renderWorkUptime(measurement, now);
     this.renderProjectContext(latest?.activity?.project);
 
@@ -500,6 +509,44 @@ export class AdminConsole {
     const footer = element('tfoot', 'home-source-totals');
     footer.append(totalRow); result.append(footer);
     target.replaceChildren(result);
+  }
+  renderHomeWorkers(now = Date.now()) {
+    const section = this.el['home-workers'], list = this.el['home-worker-list'];
+    const installations = array(this.overview?.instances).filter(instance => instance.snapshot?.workers);
+    section.hidden = !installations.length;
+    list.replaceChildren();
+    const counts = this.el['home-worker-counts'];
+    counts.textContent = '';
+    if (!installations.length) return;
+
+    const current = [], recent = [];
+    let active = 0, queued = 0, stale = false;
+    for (const instance of installations) {
+      const workers = instance.snapshot.workers;
+      const fresh = instance.connected === true && instance.system?.daemonReachable !== false &&
+        number(instance.snapshotObservedAt) !== null && now - instance.snapshotObservedAt <= 90000;
+      if (!fresh) stale = true;
+      else { active += array(workers.active).length; queued += array(workers.queued).length; }
+      for (const worker of [...array(workers.active), ...array(workers.queued)]) current.push({ worker, instance, fresh });
+      for (const worker of array(workers.recent)) recent.push({ worker, instance, fresh });
+    }
+    counts.textContent = stale ? 'Showing last known status where updates are missing' : `${active} active · ${queued} queued`;
+    const finished = ({ worker }) => worker.finishedAt ?? worker.startedAt ?? worker.createdAt;
+    const entries = [...current, ...recent.sort((a, b) => finished(b) - finished(a)).slice(0, 3)];
+    list.hidden = !entries.length;
+    for (const { worker, instance, fresh } of entries) {
+      if (!own(WORKER_STATUS, worker.state)) continue;
+      let status = WORKER_STATUS[worker.state];
+      if (!fresh && ['running', 'queued'].includes(worker.state)) status = ['unknown', `Was ${status[1].toLowerCase()}`];
+      else if (worker.state === 'running' && !worker.source) status = ['limited', 'Waiting for a source'];
+      const item = element('li');
+      const activity = own(WORKER_ACTIVITY, worker.activity) ? WORKER_ACTIVITY[worker.activity] : '';
+      const provider = text(worker.source, ['running', 'queued'].includes(worker.state) ? 'Source pending' : 'No source');
+      const name = [activity, provider,
+        installations.length > 1 ? text(instance.id) : ''].filter(Boolean).join(' · ');
+      item.append(badge(...status), element('span', '', name), timestamp(worker.finishedAt ?? worker.startedAt ?? worker.createdAt));
+      list.append(item);
+    }
   }
   renderWorkUptime(measurement, now = Date.now()) {
     const root = this.el['home-uptime'], target = this.el['home-uptime-totals'];
