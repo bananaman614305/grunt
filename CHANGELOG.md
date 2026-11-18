@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Let vetted providers require explicit data-sharing approval in one grouped setup prompt.
+- Advance multiple qualified providers through scouting and preserve unfinished candidates for later runs.
+
 ### Fixed
 
 - Honor provider retry windows on upstream failures and quota cooldowns observed during maintenance while continuing to fall back within the current request.

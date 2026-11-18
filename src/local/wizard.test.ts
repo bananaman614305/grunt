@@ -11,7 +11,7 @@ import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
-import { approveDataSharing, dataSharingPolicies, recordDataSharingConsent } from './data-sharing.js';
+import { approveDataSharing, dataSharingPolicies, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({
   text: vi.fn(async () => 'https://example.test/v1'), multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
@@ -260,6 +260,25 @@ const stubActions = (order: string[], overrides: Record<string, unknown> = {}) =
   connectHarnesses: vi.fn(async () => { order.push('harnesses'); return []; }),
   approveDataSharing: vi.fn(approvedBatch),
   ...overrides
+});
+it('leaves an unapproved explicit source out of unattended default setup and add', async () => {
+  const policy = dataSharingPolicies(['kilo'])[0]!;
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
+  policy.approval = 'explicit';
+  try {
+    const first = stubActions([]);
+    await wizard(undefined, first);
+    const others = defaultIds().filter(id => id !== 'kilo');
+    expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
+    expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
+    expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);
+
+    const add = stubActions([]);
+    await wizard('kilo', add);
+    expect(add.connectSquire).not.toHaveBeenCalled();
+    expect(add.setup).not.toHaveBeenCalled();
+    expect(add.installService).not.toHaveBeenCalled();
+  } finally { delete policy.approval; }
 });
 it('connects Kilo and restarts the daemon before reporting success', async () => {
   const order: string[] = [];
