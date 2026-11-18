@@ -172,6 +172,36 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
+const blockedTermsLabel = /\b(?:billing|payment|credit card|upgrade|premium|subscription|top up|buy|purchase|charge|fee|paid|price|switch (?:an? )?account|another account|password|passcode|secret|sms|phone|captcha|passkey|revoke|rotate|reset|delete|marketing|newsletter|train(?:ing)?|cookie|sell|data sale|opt in)\b/i;
+
+// Required account terms only. The label has to be an acceptance of terms,
+// a privacy policy, or a user agreement. A bare terms link is not acceptance.
+// Payment, plan upgrades, account switches, and optional consent stay blocked.
+function isTermsAcceptanceLabel(label: string) {
+  const text = label.replace(/[|_-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text || blockedTermsLabel.test(text)) return false;
+  const accepts = /\b(?:i agree|i accept|accept and continue|agree and continue|accept(?: the)? terms|agree to|i have read and (?:agree|accept))\b/i.test(text);
+  const document = /\b(?:terms(?: of (?:service|use))?|privacy policy|user agreement)\b/i.test(text);
+  return accepts && document;
+}
+
+function termsAcceptanceTarget(result: { options?: unknown; observation?: unknown }, used: ReadonlySet<string>) {
+  const options = result.options && typeof result.options === 'object' && !Array.isArray(result.options) ? result.options as Record<string, unknown> : {};
+  for (const [key, label] of Object.entries(options)) {
+    if (typeof label !== 'string' || !isTermsAcceptanceLabel(label)) continue;
+    const mark = label.trim().toLowerCase();
+    if (used.has(mark)) continue;
+    return { answer: key, mark };
+  }
+  const observation = result.observation && typeof result.observation === 'object' && !Array.isArray(result.observation)
+    ? result.observation as { safe_table?: unknown } : {};
+  const controls = Array.isArray(observation.safe_table) ? observation.safe_table : [];
+  for (const row of controls) {
+    if (!Array.isArray(row) || typeof row[0] !== 'string' || !['b', 'l', 'c'].includes(String(row[1] ?? ''))) continue;
+    if (!isTermsAcceptanceLabel(String(row[2] ?? '')) || used.has(row[0])) continue;
+    return { ref: row[0], mark: row[0] };
+  }
+}
 export function squireEnvironment() {
   const home = gruntEnv('SQUIRE_HOME'), xdg = gruntEnv('SQUIRE_XDG_CONFIG_HOME');
   return {
@@ -397,7 +427,7 @@ export class BrowserSquire implements SetupSquire {
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
     const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required free-route data-sharing disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
-    const instruction = customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. Complete supported email verification and captchas automatically. If verification cannot be completed, stop and report it. Do not bypass verification. Stop on provider refusal.`;
+    const instruction = `${customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. Complete supported email verification and captchas automatically. If verification cannot be completed, stop and report it. Do not bypass verification. Stop on provider refusal.`} Accept this provider's required Terms of Service on the user's behalf. Do not accept payment, a plan upgrade, billing changes, an account switch, or optional marketing, training, or data-sale consent.`;
     let answer: string | undefined;
     while (true) {
       this.serviceSignal(provider).throwIfAborted();
@@ -431,16 +461,26 @@ export class BrowserSquire implements SetupSquire {
       const uncertain = result.status === 'low_confidence' || result.status === 'no_progress';
       const humanStep = /\b(?:sms|phone|captcha|passkey|email|e mail|verification|confirm(?:ation)?|human(?: only| input| assistance)?)\b/i.test(`${String(result.field)} ${classification}`);
       if (this.options.background && (humanStep || uncertain || result.status === 'stuck')) throw new Error('Provider signup needs verification; run usegrunt setup in the foreground to resume');
-      if (uncertain && this.sessions.has(provider)) {
+      const sessionId = this.sessions.get(provider);
+      if (sessionId) {
         const used = this.recoveryChoices.get(provider) ?? new Set<string>();
         this.recoveryChoices.set(provider, used);
-        // Only resume choices the browser actually offered. Never guess consent,
-        // payment, arbitrary Continue controls, or repeat a dispatched OAuth click.
-        const choice = Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
-          && /^(?:reject optional|reject all(?: cookies)?|only necessary(?: cookies)?|continue without accepting|more signup options)$/i.test(label.trim())
-          && !used.has(label.trim().toLowerCase()));
-        if (choice && used.size < 4) {
-          used.add((choice[1] as string).trim().toLowerCase()); answer = choice[0]; continue;
+        // Accept required terms the page offers. Dismiss an offered cookie
+        // rejection first. Never choose payment, a plan upgrade, or an account switch.
+        if (uncertain) {
+          const choice = Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
+            && /^(?:reject optional|reject all(?: cookies)?|only necessary(?: cookies)?|continue without accepting|more signup options)$/i.test(label.trim())
+            && !used.has(label.trim().toLowerCase()));
+          if (choice && used.size < 4) {
+            used.add((choice[1] as string).trim().toLowerCase()); answer = choice[0]; continue;
+          }
+        }
+        const terms = termsAcceptanceTarget(result, used);
+        if (terms) {
+          used.add(terms.mark);
+          if ('answer' in terms) { answer = terms.answer; continue; }
+          await this.serviceCall(provider, 'operate_click', { session_id: sessionId, ref: terms.ref });
+          continue;
         }
       }
       if (!humanStep && (result.status === 'budget' || result.status === 'evaluate_timeout')) return { run: { id: provider, state: 'running' }, decision: 'silent' };
