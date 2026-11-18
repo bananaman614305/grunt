@@ -85,6 +85,24 @@ it('cancels a worker waiting on capacity without dispatching an attempt', async 
   await one;
 });
 
+it('does not probe later providers after the worker is cancelled during an availability check', async () => {
+  const kilo = source('kilo'), zro = source('zro'), pool = routed([kilo, zro]);
+  const entered = pause(), hold = pause(), controller = new AbortController();
+  kilo.available.mockImplementationOnce(async () => {
+    entered.resume();
+    await hold.blocked;
+    return true;
+  });
+  const request = worker('worker-a');
+  const result = pool.complete(request, controller.signal);
+  await entered.blocked;
+  controller.abort();
+  hold.resume();
+  await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+  expect(zro.available).not.toHaveBeenCalled();
+  expect(request.worker.onSource).not.toHaveBeenCalled();
+});
+
 it('fails over with scoped input only and never attempts disabled, pending, or agent sources', async () => {
   const agent = source('opencode'), pending = source('zro'), disabled = source('pollinations');
   const kilo = source('kilo'), runcrate = source('runcrate');

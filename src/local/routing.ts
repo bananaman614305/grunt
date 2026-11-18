@@ -101,6 +101,7 @@ export class StickyRouter {
         const eligible: { source: Source; weight: number }[] = [];
         const retryTimes: number[] = [];
         for (const source of this.sources) {
+          signal.throwIfAborted();
           const adapter = adapters.find(a => a.id === source.id);
           if (!worker && !task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
           if (!adapter || worker && !this.workerAdapter(adapter)) {
