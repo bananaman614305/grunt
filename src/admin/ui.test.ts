@@ -36,6 +36,14 @@ it('distinguishes earlier errors from active cooldowns in the source overview', 
   ]);
 });
 
+it('keeps a source disabled after an earlier reply', () => {
+  expect(helpers(`ui.homeSources({instances: [{id: 'chad', connected: true}],
+    providers: [{id: 'kilo', instanceId: 'chad', state: 'disabled', lastObservedAt: 1000}]},
+    {instances: [{instanceId: 'chad', receivedAt: 1000,
+      activity: {phase: 'working', lastReply: {source: 'kilo', at: 500}}
+    }]}, null, 1000)[0].state`)).toBe('disabled');
+});
+
 it('accepts only the configured Grunt API or a same-origin private preview', () => {
   expect(helpers('ui.resolveApiBase("https://api.grunt.run/admin", "https://grunt.run")'))
     .toBe('https://api.grunt.run/admin');

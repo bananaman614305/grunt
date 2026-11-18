@@ -133,7 +133,10 @@ export function homeSources(overview, activity, usage, now = Date.now()) {
   for (const entry of array(activity?.instances).filter(row => freshActivity(row, now))) {
     const current = object(entry.activity);
     if (current.phase === 'offline') continue;
-    if (current.lastReply?.source) put(current.lastReply.source, entry.instanceId, 'ready');
+    if (current.lastReply?.source) {
+      const source = current.lastReply.source, prior = perInstance.get(`${entry.instanceId}:${source}`);
+      if (!prior || ['unknown', 'stale', 'available'].includes(prior.state)) put(source, entry.instanceId, 'ready');
+    }
     for (const issue of array(current.issues)) {
       const state = issue.state === 'available' ? 'retryable' : issue.state
         ?? (issue.error === 'quota' ? 'limited' : ['logged_out', 'not_installed'].includes(issue.error) ? 'unavailable' : 'error');
