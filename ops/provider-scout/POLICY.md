@@ -14,11 +14,11 @@ permission to release.
 
 ## Search and shortlist
 
-Use live web search every run. Search broadly: official model catalogs, provider
-pricing/docs/changelogs, new inference platforms, coding-agent free plans,
-startup launches, GitHub projects and provider announcements. Discovery sources
-may be secondary; eligibility claims must have current primary-source links.
-Rotate searches rather than repeating one list. Report no findings honestly.
+Three independent read-only discovery passes run before qualification. The
+provided run context includes their merged new or changed offers and queries,
+along with the prior candidate ledger. Verify promising offers and pending
+qualifications using current first-party links. Reuse prior observations to
+avoid repeating broad searches. Report no findings honestly.
 
 Prefer DeepSeek V4.1 Flash and GLM 5.3 Flash, or models with credible evidence of
 equal or better coding quality. Verify exact model IDs; never invent a version or
@@ -208,7 +208,7 @@ tracking or arbitrary query values. Homepages and proposal URLs stay query-free;
 choose a canonical public source if its link requires an unsupported selector.
 
 If this is a smoke run, do research only: no signup, implementation, PR, inference,
-browser mutation or account changes. Investigate at most three new offers.
+browser mutation or account changes.
 Every smoke-run release_request must be null.
 For a full run, advance every eligible candidate you can within the run deadline.
 Continue to the next lead when a candidate needs external confirmation or

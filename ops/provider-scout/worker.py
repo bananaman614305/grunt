@@ -92,7 +92,7 @@ def _disable_integrations(args, servers, plugins, role):
     plain = re.compile(r'[A-Za-z0-9_@-]+\Z')
     if all(plain.fullmatch(name) for name in servers):
         for name in servers:
-            if role == 'reviewer' or name != 'squire':
+            if role != 'implementer' or name != 'squire':
                 _override(args, 'mcp_servers.' + name + '.enabled', False)
     else:
         table = {name: {'enabled': False} for name in servers}
@@ -107,7 +107,7 @@ def _disable_integrations(args, servers, plugins, role):
 def build_command(request, config, schema_path):
     """Return argv only; configuration values never become shell code."""
     role = request.get('role')
-    if role not in ('implementer', 'reviewer'):
+    if role not in ('implementer', 'reviewer', 'discoverer'):
         raise WorkerError('invalid_worker_role')
     cwd = Path(request['cwd']).resolve()
     codex = str(config['codex'])
@@ -123,11 +123,15 @@ def build_command(request, config, schema_path):
     servers, plugins = _integration_names(config)
     _disable_integrations(args, servers, plugins, role)
     _override(args, 'shell_environment_policy.set.GIT_NO_REPLACE_OBJECTS', '1')
-    if role == 'reviewer':
+    if role in ('reviewer', 'discoverer'):
         # Preserve the user's configured model while removing every integration.
         # No --ignore-user-config/model override or broad permission profile is used.
         args.extend(['-a', 'never'])
         _override(args, 'mcp_servers.squire.enabled', False)
+        if role == 'discoverer':
+            # Shortlisting needs less reasoning than independent qualification.
+            # Preserve the configured model and authentication.
+            _override(args, 'model_reasoning_effort', 'low')
         args.extend(['exec', '--sandbox', 'read-only'])
     else:
         proxy = _protected_file(Path(config.get('squire_proxy') or Path(__file__).with_name('squire_proxy.py')), cwd)
@@ -310,12 +314,15 @@ def run_agent(request, config, progress=None):
     schema_path = Path(temporary)
     with os.fdopen(descriptor, 'w') as file:
         json.dump(schema, file)
-    worker = reader = None
+    worker = reader = writer = None
     counts = collections.Counter()
     violation = threading.Event()
     rejected = 0
     previous_handlers = {}
     try:
+        cancelled = request.get('cancel_event')
+        if cancelled is not None and cancelled.is_set():
+            raise WorkerError('worker_cancelled')
         args = build_command(request, config, schema_path)
         allowed = {'HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM',
                    'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_HOME'}
@@ -340,7 +347,7 @@ def run_agent(request, config, progress=None):
                     event = json.loads(line)
                     item = event.get('item', {})
                     kind = item.get('type', '')
-                    if kind == 'mcp_tool_call' and request['role'] == 'reviewer':
+                    if kind == 'mcp_tool_call' and request['role'] in ('reviewer', 'discoverer'):
                         violation.set()
                     if event.get('type') == 'item.completed' and re.fullmatch('[a-z_]{1,64}', kind):
                         counts[kind] += 1
@@ -358,11 +365,20 @@ def run_agent(request, config, progress=None):
         if threading.current_thread() is threading.main_thread():
             for number in (signal.SIGTERM, signal.SIGINT):
                 previous_handlers[number] = signal.signal(number, cancel)
-        worker.stdin.write(request['prompt'])
-        worker.stdin.close()
+        def send_prompt():
+            with contextlib.suppress(BrokenPipeError):
+                with worker.stdin:
+                    worker.stdin.write(request['prompt'])
+
+        # A worker may not drain its input promptly. Keep timeout and
+        # cancellation checks running even if its stdin pipe is full.
+        writer = threading.Thread(target=send_prompt, daemon=True)
+        writer.start()
         deadline = time.monotonic() + request.get('timeout_seconds', 600)
         heartbeat = 0
         while True:
+            if cancelled is not None and cancelled.is_set():
+                raise WorkerError('worker_cancelled', counts)
             if violation.is_set():
                 raise WorkerError('reviewer_integration_violation', counts)
             remaining = deadline - time.monotonic()
@@ -400,6 +416,8 @@ def run_agent(request, config, progress=None):
         try:
             if worker is not None:
                 _stop(worker)
+                if writer is not None:
+                    writer.join(timeout=5)
                 if reader is not None:
                     reader.join(timeout=5)
                 worker.stdout.close()

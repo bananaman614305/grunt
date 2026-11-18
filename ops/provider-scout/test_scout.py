@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import signal
 import tempfile
+import threading
+import time
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -246,13 +248,14 @@ class ScoutTests(unittest.TestCase):
         script = ('#!/usr/bin/python3\nimport sys,json,time,pathlib\nsys.stdin.read()\n'
                   'assert "--no-daemon" in sys.argv\n'
                   'assert "--add-dir" not in sys.argv\n'
-                  'assert "sandbox_workspace_write.writable_roots=[]" in sys.argv\n'
                   'if "--approve-for-me" in sys.argv:\n'
                   ' assert "-a" not in sys.argv and "--sandbox" not in sys.argv\n'
+                  ' assert "sandbox_workspace_write.writable_roots=[]" in sys.argv\n'
+                  ' assert \'mcp_servers.squire.tools.list_credentials.approval_mode="approve"\' in sys.argv\n'
                   'else:\n'
                   ' assert sys.argv[sys.argv.index("-a")+1] == "never"\n'
-                  ' assert sys.argv[sys.argv.index("--sandbox")+1] == "workspace-write"\n'
-                  'assert \'mcp_servers.squire.tools.list_credentials.approval_mode="approve"\' in sys.argv\n'
+                  ' assert sys.argv[sys.argv.index("--sandbox")+1] == "read-only"\n'
+                  ' assert "mcp_servers.squire.enabled=false" in sys.argv\n'
                   'assert "--dangerously-bypass-approvals-and-sandbox" not in sys.argv\n')
         if sleep:
             script += 'time.sleep(30)\n'
@@ -275,13 +278,109 @@ class ScoutTests(unittest.TestCase):
                                                     'squire_proxy': str(proxy), 'codex_home': str(codex_home),
                                                     'provision_helper':str(helper)})
 
+    def test_parallel_discovery_uses_common_history_and_deduplicates_offers(self):
+        root = self.workspace
+        prior = root / 'runs' / 'older'
+        directory = root / 'runs' / 'recent'
+        scout.private_directory(prior)
+        scout.private_directory(directory)
+        scout.atomic(prior / 'discovery.json', {'search_queries': ['An earlier hosted model query']})
+        old = candidate(homepage='https://openrouter.ai', model='known-flash')
+        ledger = {'version': 1, 'candidates': {scout.candidate_id(old): old}}
+        shared = candidate(homepage='https://new-provider.example')
+        barrier = threading.Barrier(3)
+
+        def worker(request, _config):
+            lane = Path(request['output_path']).stem
+            self.assertEqual(request['role'], 'discoverer')
+            self.assertIn('An earlier hosted model query', request['prompt'])
+            self.assertIn('known-flash', request['prompt'])
+            barrier.wait(2)
+            if lane == 'tools':
+                rows = [{**shared, 'homepage': 'https://www.new-provider.example'}]
+            elif lane == 'gateways':
+                rows = [old, candidate(homepage='https://another-gateway.example')]
+            else:
+                rows = [shared, {**old, 'homepage': 'https://docs.openrouter.ai'}]
+            result = {'web_search_used': True, 'search_queries': ['An EARLIER hosted model query', f'new {lane} query'], 'candidates': rows}
+            scout.atomic(Path(request['output_path']), result)
+            return {'result': result, 'tool_counts': {'web_search': 2}}
+
+        with patch.object(scout, 'run_agent', side_effect=worker):
+            result = scout.discover_lanes(root, directory, root, {}, ledger, {}, {}, time.monotonic()+10, 0)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['tool_counts'], {'web_search': 6})
+        self.assertEqual([row['homepage'] for row in result['candidates']], ['https://new-provider.example', 'https://another-gateway.example'])
+        self.assertEqual(result['lanes']['tools']['duplicate_offers'], 1)
+        self.assertEqual(result['lanes']['direct']['repeat_queries'], 1)
+        self.assertEqual(result['lanes']['gateways']['duplicate_offers'], 1)
+        self.assertEqual(len(result['search_queries']), 4)
+        self.assertEqual(ledger['candidates'][scout.candidate_id(old)], old)
+        self.assertEqual(set(row['status'] for row in result['candidates']), {'researched'})
+        self.assertTrue(all(not row['probe']['reply_received'] for row in result['candidates']))
+        self.assertEqual([path.name for path in directory.glob('*.json')], ['discovery.json'])
+
+    def test_discovery_persists_partial_success_before_qualification_failure(self):
+        self.worker_fixture()
+        root = self.workspace
+        fresh = candidate(homepage='https://new-sdk.example')
+        invalid = candidate(homepage='https://sensitive.example?token=secret')
+        def worker(request, _config, _progress=None):
+            lane = Path(request['output_path']).stem
+            if lane == 'direct' or request['role'] == 'implementer':
+                if request['role'] == 'implementer':
+                    self.assertIn('new-sdk.example', request['prompt'])
+                    self.assertIn(scout.candidate_id(fresh), scout.load(root / 'ledger.json')['candidates'])
+                raise scout.WorkerError('worker_timeout')
+            result = {'web_search_used': True, 'search_queries': [f'first {lane}', f'next {lane}'],
+                      'candidates': [fresh, invalid] if lane == 'tools' else []}
+            scout.atomic(Path(request['output_path']), result)
+            return {'result': result, 'tool_counts': {'web_search': 1}}
+
+        with patch.object(scout, 'run_agent', side_effect=worker), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(root), 1)
+        state = scout.load(root / 'last-run.json')
+        self.assertEqual(state['discovery']['status'], 'partial')
+        self.assertEqual(state['discovery']['lanes']['direct']['reason'], 'worker_timeout')
+        self.assertEqual(state['discovery']['lanes']['tools']['quarantined'], 1)
+        saved = root / 'runs' / state['id'] / 'discovery.json'
+        self.assertNotIn('secret', saved.read_text())
+        self.assertEqual(scout.load(saved)['candidates'][0]['homepage'], fresh['homepage'])
+
+    def test_changed_offer_survives_unchanged_overlap_and_stale_qualification(self):
+        self.worker_fixture()
+        root = self.workspace
+        old = candidate(context_tokens=210000)
+        changed = candidate(context_tokens=500000, homepage='https://www.synthetic.example')
+        key = scout.candidate_id(old)
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {key: old}})
+        supplied = []
+
+        def worker(request, _config, _progress=None):
+            lane = Path(request['output_path']).stem
+            if request['role'] == 'implementer':
+                context = json.loads(request['prompt'].split('## This run\n', 1)[1])
+                supplied.append(context['new_or_changed_offers'])
+            rows = [changed] if lane == 'tools' else [old]
+            report = {'summary': 'fixture', 'web_search_used': True, 'search_queries': [f'first {lane}', f'next {lane}'],
+                      'candidates': rows, 'blockers': []}
+            return {'result': report, 'tool_counts': {'web_search': 1}}
+
+        with patch.object(scout, 'run_agent', side_effect=worker), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(root), 0)
+            self.assertEqual(scout.run(root), 0)
+        self.assertEqual([[row['context_tokens'] for row in offers] for offers in supplied], [[500000], [500000]])
+        self.assertEqual(supplied[0][0]['homepage'], old['homepage'])
+        self.assertEqual(scout.load(root / 'ledger.json')['discovery_pending'][key]['context_tokens'], 500000)
+
     def test_full_worker_lifecycle_requires_observed_search_and_persists_results(self):
         self.worker_fixture()
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(scout.run(self.workspace, smoke=True), 0)
         state = scout.load(self.workspace / 'last-run.json')
         self.assertEqual(state['status'], 'completed')
-        self.assertEqual(state['tool_counts']['web_search'], 1)
+        self.assertEqual(state['tool_counts']['web_search'], 3)
+        self.assertEqual(set(state['discovery']['lanes']), {'direct', 'tools', 'gateways'})
         self.assertEqual(len(scout.load(self.workspace / 'ledger.json')['candidates']), 1)
         saved = scout.load(Path(state['report']))
         self.assertEqual(saved['candidates'][0]['status'], 'researched')
@@ -311,6 +410,10 @@ class ScoutTests(unittest.TestCase):
             'base_sha':'b'*40,'registry':{'version':1,'adapters':[{'id':'fresh-canonical-provider'}]}})
         self.snapshot = snapshot.start()
         self.addCleanup(snapshot.stop)
+        discovery = patch.object(scout, 'discover_lanes', return_value={
+            'status': 'completed', 'lanes': {}, 'tool_counts': {}, 'candidates': [], 'search_queries': []})
+        discovery.start()
+        self.addCleanup(discovery.stop)
         self.worker_fixture()
         config = scout.load(self.workspace / 'config.json')
         config['release_enabled'] = True

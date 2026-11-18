@@ -134,7 +134,9 @@ claim that a newly discovered real provider has passed live qualification.
 
 ## Protected state and blocked work
 
-Runs do not overlap. The worker's writable workspace is separate from the
+Whole runs do not overlap. The concurrent discovery workers have no Squire
+or other MCP integrations and use a read-only filesystem sandbox. The
+qualification worker's writable workspace is separate from the
 supervisor's installed policy, configuration, review receipts, trusted probe
 evidence and release checkpoints. State directories are private to the operator.
 Inherited API keys are excluded from worker/check environments; raw tool
@@ -144,7 +146,9 @@ access the operator's home directory or supervisor state.
 
 `~/.local/state/usegrunt-scout/ledger.json` tracks decisions by provider domain
 and model. Reports live under `reports/`; `last-run.json` and `cron.log` record
-execution status. Inspect them with `usegrunt-scout status`. These are local
+execution status. Each run's `discovery.json` records the passes, observed
+search coverage, deduplicated offers and bounded query history. Inspect the
+latest pass statuses and counts with `usegrunt-scout status`. These are local
 reports, not email or chat notifications. Missing web search, expired login,
 malformed output and timeouts are failures or explicit blockers, not successful
 empty searches.
