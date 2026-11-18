@@ -260,7 +260,8 @@ available. Squire also needs a usable browser/display path. A headless remote
 server may need display helpers such as Xvfb/noVNC or a reachable browser
 handoff. Missing prerequisites are reported for repair; provider verification
 can still require a person. Mistral Vibe separately needs `uv` or Python 3.12+.
-Setup installs the vetted adapters and connects accounts through Trusty Squire:
+Setup installs the vetted adapters. Supported account flows use Trusty Squire,
+and Nous uses Hermes's device login.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -478,7 +479,7 @@ pipes and narrow terminals get a one-line title). After checking prerequisites,
 setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
-Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch
+Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad, Perch and Nous
 in the experimental tier.
 Free-account eligibility still applies.
 
@@ -512,7 +513,7 @@ On normal completion, failed providers are listed with repair guidance, but the
 command succeeds if at least one provider was verified. If none was verified,
 setup fails. For a foreground daemon, run `usegrunt serve`.
 
-The jobs share one Squire connection, cached credential metadata and reusable
+Jobs that use Squire share one connection, cached credential metadata and reusable
 grants. Up to three provider browser operations can run concurrently. Browser
 handoffs arriving together share a confirmation prompt; later
 handoffs queue while other jobs continue. Interactive installers and confirmations
@@ -589,6 +590,19 @@ The additional experimental routes have these requirements:
 | Pollinations | `community/morriszdweck/glm-5.3-flash-free` | Google login through Squire, a hard numeric zero-budget key with Quest Pollen Only enabled, usage-only account permissions, and a positive unused Quest balance. No paid funds or billing. Community availability is best effort, with no promised daily quota or fixed reset. |
 | Clixad | Native `glm-5.3-flash` | Existing or ordinary free GitHub account pairing, positive free allowance and a wallet balance of exactly zero. No deposit or paid credits. Model selection and native free/zero-charge metadata are checked. |
 | Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
+| Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
+
+For Nous, approve its data policy in the grouped setup prompt and open the
+Hermes device link on your phone or computer. Sign in or create the Free account
+yourself, and approve inference access. Grunt uses an installed official Hermes
+Agent or installs a pinned Hermes copy in its private configuration directory
+using Git and uv. Other routes can become ready while you approve Nous.
+Hermes keeps and refreshes its own OAuth credentials in a dedicated profile.
+Grunt connects to the official subscription proxy over a private local socket.
+Use `npx usegrunt add nous` to connect Nous separately or repeat device approval.
+`GRUNT_HERMES_ROOT` selects an existing official Hermes installation by absolute
+path. Grunt skips Nous if it cannot confirm the Free plan, zero paid balances,
+and zero prices for the pinned model.
 
 Runcrate keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
@@ -743,8 +757,8 @@ NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the 
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
 API-provider keys stay in Squire; no provider reveal approval is requested.
-Mistral Vibe, LiveKit, Clixad and Perch's native CLIs own their separate local credential
-exchanges and storage.
+Mistral Vibe, LiveKit, Clixad, Perch and Nous use native clients that own their
+local credential exchanges and storage.
 Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
 `usegrunt add https://host/api/v1` adds an OpenAI-compatible endpoint with a hidden key prompt and discovered model choice. `usegrunt add` prompts for a name or URL.

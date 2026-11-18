@@ -266,14 +266,14 @@ it('leaves an unapproved explicit source out of unattended default setup and add
   vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
   policy.approval = 'explicit';
   try {
-    const first = stubActions([]);
+    const first = stubActions([], { approveDataSharing });
     await wizard(undefined, first);
-    const others = defaultIds().filter(id => id !== 'kilo');
+    const others = defaultIds().filter(id => !['kilo', 'nous'].includes(id));
     expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
     expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
     expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);
 
-    const add = stubActions([]);
+    const add = stubActions([], { approveDataSharing });
     await wizard('kilo', add);
     expect(add.connectSquire).not.toHaveBeenCalled();
     expect(add.setup).not.toHaveBeenCalled();

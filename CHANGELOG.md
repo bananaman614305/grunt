@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-11-18
+
+### Added
+
+- Route requests to Nous Portal's free Qwen4 Max model through the official Hermes subscription proxy. Setup groups the data-sharing approval with the other free sources, then shows one device login link. Other providers continue setting up while Nous waits for approval.
+
 ### Changed
 
 - Let vetted providers require explicit data-sharing approval in one grouped setup prompt.

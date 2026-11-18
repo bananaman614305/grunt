@@ -60,6 +60,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   provider: 'perch', name: 'Perch Starter DeepSeek', version: '2026-11-15',
   disclosure: 'Prompts, code and tool context are processed by Perch and its inference providers. The optional Starter Data Program must remain off. Setup turns off the account settings Use memory and Learn new memories without deleting saved notes; both must remain off for routing. Operational processing for service delivery, security, debugging and metering remains; retention and review limits and zero-retention coverage have not been independently verified.',
   url: 'https://www.perchai.app/privacy#starter-data-program'
+}, {
+  provider: 'nous', name: 'Nous Portal Free Qwen4 Max', version: '2026-11-10',
+  disclosure: 'Prompts, outputs and tool context may be retained, shared with model providers and other partners, and used for training, product improvement and support. Nous offers optional Privacy Mode for some payloads. Upstream retention and training limits are unverified.',
+  url: 'https://portal.nousresearch.com/privacy',
+  approval: 'explicit'
 }];
 
 const fileName = 'data-sharing-consent.json';
