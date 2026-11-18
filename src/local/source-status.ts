@@ -81,6 +81,7 @@ export class SourceStatus {
     const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
     if (until !== undefined && Number.isFinite(until)) entry.retryAt = until; else delete entry.retryAt;
   }
+  quotaRetryAt(id: string) { return this.observations.get(id)?.retryAt; }
   async available(source: Source, healthCheck = false): Promise<boolean> {
     const entry = this.entry(source.id), revision = entry.revision;
     try {

@@ -47,6 +47,52 @@ it('does not substitute another healthy provider when a maintenance route is lim
   expect(limited.complete).toHaveBeenCalledOnce();
 });
 
+it.each([[120, 120], [undefined, 3600]])('skips a maintenance quota until it expires (Retry-After: %s)', async (retryAfter, seconds) => {
+  let now = 1000;
+  const limited = fake('zro'), fallback = fake('livekit');
+  vi.mocked(limited.complete).mockRejectedValueOnce(new SourceError('quota', 'Synthetic quota', retryAfter));
+  vi.mocked(fallback.complete).mockResolvedValue({ text: 'fallback' });
+  const sources = new Sources([limited, fallback], { registry: () => bundledRegistry, now: () => now, random: () => 0 });
+  const retryAt = now + seconds * 1000;
+  expect(await sources.check('zro', signal())).toMatchObject({ outcome: 'failed', code: 'quota', retryAt });
+  expect(sources.status().sources[0]).toMatchObject({ state: 'limited', retryAt });
+  expect(await sources.complete(request('grunt'), signal())).toEqual({ text: 'fallback' });
+  expect(limited.complete).toHaveBeenCalledOnce();
+  expect(limited.available).not.toHaveBeenCalled();
+
+  now = retryAt;
+  expect(await sources.complete({ ...request('grunt'), userMessages: ['After retry'] }, signal())).toEqual({ text: 'hello' });
+  expect(limited.complete).toHaveBeenCalledTimes(2);
+  expect(sources.status().sources[0]).toMatchObject({ state: 'ready' });
+});
+
+it('returns the maintenance quota delay when no other route can answer', async () => {
+  const limited = fake('zro');
+  vi.mocked(limited.complete).mockRejectedValueOnce(new SourceError('quota', 'Synthetic quota', 120));
+  const sources = new Sources([limited], { registry: () => bundledRegistry, now: () => 1000 });
+  await sources.check('zro', signal());
+  await expect(sources.complete(request('grunt'), signal())).rejects.toMatchObject({ code: 'quota', retryAfter: 120 });
+  expect(limited.complete).toHaveBeenCalledOnce();
+});
+
+it('skips a source when maintenance observes quota during a pending availability check', async () => {
+  const limited = fake('zro'), fallback = fake('livekit');
+  let finishAvailability!: (available: boolean) => void;
+  vi.mocked(limited.available).mockImplementationOnce(() => new Promise(resolve => { finishAvailability = resolve; }));
+  vi.mocked(limited.complete).mockRejectedValueOnce(new SourceError('quota', 'Synthetic quota', 120));
+  vi.mocked(fallback.complete).mockResolvedValue({ text: 'fallback' });
+  const sources = new Sources([limited, fallback], { registry: () => bundledRegistry, now: () => 1000, random: () => 0 });
+  const pending = sources.complete(request('grunt'), signal());
+  await vi.waitFor(() => expect(limited.available).toHaveBeenCalledOnce());
+  try {
+    expect(await sources.check('zro', signal())).toMatchObject({ outcome: 'failed', code: 'quota', retryAt: 121000 });
+  } finally {
+    finishAvailability(true);
+  }
+  expect(await pending).toEqual({ text: 'fallback' });
+  expect(limited.complete).toHaveBeenCalledOnce();
+});
+
 it('counts a recent real user reply without generating more inference, even if another source is busy', async () => {
   let now = 100000000;
   const source = fake(), other = fake('opencode'), sources = new Sources([source, other], { registry: () => bundledRegistry, now: () => now });
