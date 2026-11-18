@@ -11,8 +11,12 @@ import time
 SAMPLE_MS = 5000
 MAX_GAP_MS = 15000
 DAY_MS = 86400000
+TOOL_PROGRESS_MS = 45000
+MODEL_PROGRESS_MS = 240000
+WORK_TICKS = max(1, os.sysconf('SC_CLK_TCK') // 40) if os.name == 'posix' else 2
 STATES = {'working', 'provider_wait', 'between_cycles', 'starting', 'paused', 'offline', 'stalled', 'unknown'}
 LOG_NAME = re.compile(r'cycle-\d{8}T\d{6}Z\.jsonl')
+TOOL_WRAPPERS = {'bash', 'sh', 'bwrap', 'timeout', 'sleep', 'tail', 'tee'}
 
 
 def tool_running(raw):
@@ -37,7 +41,7 @@ def tool_running(raw):
     return bool(pending)
 
 
-def classify_work(now, status, pool, *, worker_alive=False, tool_active=False, provider_handoff=False):
+def classify_work(now, status, pool, *, worker_alive=False, tool_active=False, tool_progress=False, provider_handoff=False):
     if not isinstance(status, dict):
         return 'unknown'
     phase = status.get('phase')
@@ -55,12 +59,12 @@ def classify_work(now, status, pool, *, worker_alive=False, tool_active=False, p
         return 'between_cycles' if pool is not None else 'offline'
     activity = status.get('lastActivityAt')
     age = now - activity * 1000 if type(activity) in (int, float) and math.isfinite(activity) else math.inf
-    if tool_active and -5000 <= age <= 300000:
+    if tool_active and (tool_progress or -5000 <= age <= 300000):
         return 'working'
     if pool is None:
         return 'offline'
     if pool.get('activeRequests', 0) > 0:
-        return 'working' if -5000 <= age <= 240000 else 'stalled'
+        return 'working' if -5000 <= age <= MODEL_PROGRESS_MS else 'stalled'
     if provider_handoff:
         return 'provider_wait'
     return 'working' if -5000 <= age <= 8000 else 'stalled'
@@ -76,10 +80,10 @@ def worker_exists(pid):
         return False
 
 
-def live_shell_tool(worker_pid, proc=Path('/proc')):
-    """Look only for a live bash child of this runner's Pi process."""
+def shell_activity(worker_pid, proc=Path('/proc')):
+    """Sample only this worker's shell descendants, using process names and CPU counters."""
     if type(worker_pid) is not int or worker_pid <= 1:
-        return False
+        return False, False, {}
 
     def children(pid):
         try:
@@ -92,22 +96,52 @@ def live_shell_tool(worker_pid, proc=Path('/proc')):
         try:
             raw = (proc / str(pid) / 'stat').read_text()
             before, after = raw.rsplit(')', 1)
-            state = after.split()[0]
-            return before.split('(', 1)[1] if state not in ('Z', 'X', 'x') else ''
+            fields = after.split()
+            if fields[0] not in ('Z', 'X', 'x'):
+                return before.split('(', 1)[1], int(fields[19]), int(fields[11]) + int(fields[12])
         except (OSError, ValueError, IndexError):
-            return ''
+            pass
+        return None
 
     scoped = [worker_pid]
+    shells = []
     for _ in range(4):
         nested = []
         for pid in scoped:
-            name = process(pid)
-            if name == 'pi' and any(process(child) == 'bash' for child in children(pid)):
-                return True
+            entry = process(pid)
+            if entry is None:
+                continue
+            name = entry[0]
+            if name == 'pi':
+                shells.extend(child for child in children(pid) if (process(child) or ('',))[0] == 'bash')
             if name == 'bwrap':
                 nested.extend(children(pid))
         scoped = nested[:64]
-    return False
+        if not scoped:
+            break
+
+    counters = {}
+    sleeping = False
+    visited = set()
+    scoped = shells[:64]
+    for _ in range(10):
+        nested = []
+        for pid in scoped:
+            if pid in visited or len(visited) >= 128:
+                continue
+            visited.add(pid)
+            entry = process(pid)
+            if entry is None:
+                continue
+            name, started, ticks = entry
+            sleeping |= name == 'sleep'
+            if name not in TOOL_WRAPPERS:
+                counters[pid, started] = ticks
+            nested.extend(children(pid))
+        scoped = nested[:128]
+        if not scoped or len(visited) >= 128:
+            break
+    return bool(shells), sleeping and not counters and not scoped, counters
 
 
 class WorkProbe:
@@ -119,6 +153,48 @@ class WorkProbe:
         self.handoff_at = None
         self.exclusive_model = None
         self.failed_model_since = None
+        self.tool_identity = None
+        self.tool_counters = {}
+        self.tool_progress_at = None
+        self.tool_requests = frozenset()
+        self.tool_request_at = None
+
+    def shell_progress(self, now, status, sources):
+        started = status.get('lastToolStartedAt')
+        cycle_started = status.get('cycleStartedAt')
+        if (status.get('phase') != 'working' or type(started) not in (int, float) or not math.isfinite(started)
+                or started * 1000 > now + 5000
+                or (type(cycle_started) in (int, float) and started < cycle_started)):
+            self.tool_identity = self.tool_progress_at = None
+            self.tool_counters = {}
+            self.tool_requests = frozenset()
+            self.tool_request_at = None
+            return False, False, False
+        pid = status.get('workerPid')
+        live, sleeping, counters = shell_activity(pid)
+        identity = (pid, started) if live else None
+        # Use the dedicated game pool. Ordinary daemon health checks share lastSuccessAt.
+        request_sources = [row for row in sources if 'maintenance' not in row] if live and not sleeping else []
+        requests = frozenset(
+            (row['id'], row['active'], row['lastSuccessAt'] if type(row.get('lastSuccessAt')) is int else None)
+            for row in request_sources
+            if row.get('state') == 'answering' and type(row.get('active')) is int and row['active'] > 0
+        )
+        if identity != self.tool_identity or requests != self.tool_requests:
+            self.tool_request_at = now if requests else None
+        self.tool_requests = requests
+        if identity != self.tool_identity:
+            self.tool_progress_at = None
+        elif sum(max(0, ticks - self.tool_counters.get(process, ticks)) for process, ticks in counters.items()) >= WORK_TICKS:
+            self.tool_progress_at = now
+        self.tool_identity = identity
+        self.tool_counters = counters
+        fresh_cpu = self.tool_progress_at is not None and 0 <= now - self.tool_progress_at <= TOOL_PROGRESS_MS
+        fresh_reply = any(type(row.get('lastSuccessAt')) is int and
+                          max(started * 1000, now - TOOL_PROGRESS_MS) <= row['lastSuccessAt'] <= now + 5000
+                          for row in request_sources)
+        fresh_request = self.tool_request_at is not None and 0 <= now - self.tool_request_at <= MODEL_PROGRESS_MS
+        return live, sleeping, live and (fresh_cpu or fresh_reply or fresh_request)
 
     def sample(self, now):
         self.failed_model_since = None
@@ -144,7 +220,7 @@ class WorkProbe:
         if active:
             self.handoff_at = None
         self.active = active
-        handoff = self.handoff_at is not None and now - self.handoff_at < 240000
+        handoff = self.handoff_at is not None and now - self.handoff_at < MODEL_PROGRESS_MS
 
         unfinished = False
         log = status.get('lastLog')
@@ -153,17 +229,14 @@ class WorkProbe:
                 unfinished = tool_running(self.read(self.directory / 'logs' / log, 262144))
             except (ValueError, OSError):
                 pass
-        # A quiet shell command can still be running while Pi's event is in
-        # the supervisor's buffered (or capped) cycle log. Require both the
-        # fresh supervisor start marker and a shell under this specific Pi.
-        started = status.get('lastToolStartedAt')
-        if not unfinished and status.get('phase') == 'working' and type(started) in (int, float) and math.isfinite(started):
-            if -5000 <= now - started * 1000 <= 300000:
-                unfinished = live_shell_tool(status.get('workerPid'))
+        # Shell work can outlast, or never reach, the buffered cycle log.
+        shell_live, sleeping, progress = self.shell_progress(now, status, sources)
+        unfinished = (unfinished or shell_live) and not sleeping
         if unfinished or status.get('phase') != 'working':
             self.handoff_at = None
         state = classify_work(now, status, pool, worker_alive=worker_exists(status.get('workerPid')),
-                              tool_active=unfinished, provider_handoff=handoff and not unfinished)
+                              tool_active=unfinished, tool_progress=progress,
+                              provider_handoff=handoff and not unfinished)
         if self.exclusive_model and any(row['id'] in failed and (row['id'], row.get('lastSuccessAt')) == self.exclusive_model[:2] for row in sources):
             self.failed_model_since = self.exclusive_model[2]
         # A sole model attempt can be reclassified when the pool reports it
