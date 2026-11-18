@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from uptime import DAY_MS, WorkLedger, WorkProbe, classify_work, live_shell_tool, tool_running
+from uptime import DAY_MS, TOOL_PROGRESS_MS, WORK_TICKS, WorkLedger, WorkProbe, classify_work, shell_activity, tool_running
 
 from activity import events, private_tail, progress_text, project_checkpoint, project_pulls
 
@@ -144,21 +144,53 @@ These must not be included.
             return json.dumps(status).encode() if path.name == 'status.json' else b'{"type":"turn_start"}\n'
 
         probe = WorkProbe(Path('/test-state'), read, lambda: pool)
-        with patch('uptime.worker_exists', return_value=True), patch('uptime.live_shell_tool', return_value=True) as shell:
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(True, False, {})) as shell:
             self.assertEqual(probe.sample(now), 'working')
             shell.assert_called_once_with(101)
-        with patch('uptime.worker_exists', return_value=True), patch('uptime.live_shell_tool', return_value=False):
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(False, False, {})):
+            self.assertEqual(probe.sample(now), 'stalled')
+
+    def test_old_tool_stays_working_while_nested_execution_advances_then_expires(self):
+        now = 1794948372598
+        start = now / 1000 - 600
+        status = {'phase': 'working', 'workerPid': 101, 'lastActivityAt': start, 'lastToolStartedAt': start}
+        probe = WorkProbe(Path('/test-state'), lambda *_: json.dumps(status), lambda: {'activeRequests': 0, 'sources': []})
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity') as shell:
+            shell.return_value = (True, False, {(104, 55): 10})
+            self.assertEqual(probe.sample(now), 'stalled')
+            shell.return_value = (True, False, {(104, 55): 10 + WORK_TICKS})
+            self.assertEqual(probe.sample(now + 5000), 'working')
+            self.assertEqual(probe.sample(now + 5000 + TOOL_PROGRESS_MS), 'working')
+            self.assertEqual(probe.sample(now + 5001 + TOOL_PROGRESS_MS), 'stalled')
+            # The same process ID with a new birth time has no comparable counter.
+            shell.return_value = (True, False, {(104, 56): 100})
+            self.assertEqual(probe.sample(now + 6000 + TOOL_PROGRESS_MS), 'stalled')
+
+    def test_nested_reply_refreshes_a_quiet_tool_but_sleeping_shell_does_not(self):
+        now = 1794948372598
+        start = now / 1000 - 600
+        status = {'phase': 'working', 'workerPid': 101, 'lastActivityAt': start, 'lastToolStartedAt': start}
+        pool = {'activeRequests': 0, 'sources': [{'id': 'kilo', 'lastSuccessAt': now - 1000}]}
+        probe = WorkProbe(Path('/test-state'), lambda *_: json.dumps(status), lambda: pool)
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity') as shell:
+            shell.return_value = (True, False, {})
+            self.assertEqual(probe.sample(now), 'working')
+            self.assertEqual(probe.sample(now + TOOL_PROGRESS_MS), 'stalled')
+            status.update(lastActivityAt=now / 1000 - 60, lastToolStartedAt=now / 1000 - 60)
+            shell.return_value = (True, True, {})
             self.assertEqual(probe.sample(now), 'stalled')
 
     def test_shell_detection_ignores_orphans_and_zombies(self):
         with tempfile.TemporaryDirectory() as temp:
             proc = Path(temp)
 
-            def process(pid, name, mode, children):
+            def process(pid, name, mode, children, ticks=0):
                 p = proc / str(pid)
                 task = p / 'task' / str(pid)
                 task.mkdir(parents=True, exist_ok=True)
-                (p / 'stat').write_text(f'{pid} ({name}) {mode} 1')
+                fields = [mode] + ['0'] * 19
+                fields[11], fields[19] = str(ticks), str(pid + 10)
+                (p / 'stat').write_text(f'{pid} ({name}) ' + ' '.join(fields))
                 (task / 'children').write_text(' '.join(map(str, children)))
 
             process(101, 'bwrap', 'S', [102])
@@ -166,9 +198,15 @@ These must not be included.
             process(103, 'pi', 'S', [105])
             process(104, 'bash', 'S', [])
             process(105, 'bash', 'Z', [])
-            self.assertFalse(live_shell_tool(101, proc))
-            process(105, 'bash', 'S', [])
-            self.assertTrue(live_shell_tool(101, proc))
+            self.assertEqual(shell_activity(101, proc), (False, False, {}))
+            process(105, 'bash', 'S', [106])
+            process(106, 'sleep', 'S', [])
+            self.assertEqual(shell_activity(101, proc), (True, True, {}))
+            process(105, 'bash', 'S', [106, 107])
+            process(107, 'timeout', 'S', [108])
+            process(108, 'pi', 'S', [109], ticks=3)
+            process(109, 'node', 'R', [], ticks=15)
+            self.assertEqual(shell_activity(101, proc), (True, False, {(108, 118): 3, (109, 119): 15}))
 
 
 if __name__ == '__main__':
