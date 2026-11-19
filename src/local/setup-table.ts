@@ -45,7 +45,7 @@ export class SetupTable {
     if (!this.live) return;
     // While a prompt owns the terminal, keep the update and draw on resume.
     if (this.output.isTTY) { if (!this.done && !this.paused) this.draw(); }
-    else if (status !== 'connecting') this.printRow(kind, name, status);
+    else if (status !== 'connecting' && !status.startsWith('waiting')) this.printRow(kind, name, status);
   }
   rowsWith(prefix: string) {
     return [...this.rows.values()].filter(row => row.status.startsWith(prefix)).map(row => row.name);
@@ -55,7 +55,7 @@ export class SetupTable {
     if (this.live) return;
     this.live = true;
     if (!this.output.isTTY) {
-      for (const row of this.rows.values()) if (row.status !== 'connecting') this.printRow(row.kind, row.name, row.status);
+      for (const row of this.rows.values()) if (row.status !== 'connecting' && !row.status.startsWith('waiting')) this.printRow(row.kind, row.name, row.status);
       return;
     }
     this.hook();

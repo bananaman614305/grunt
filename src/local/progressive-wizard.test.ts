@@ -386,3 +386,95 @@ it('bootstraps with Jev, switches to a verified operator and re-bootstraps when 
   expect(events).toEqual(['kilo:jev', 'pollinations:jev', 'tool:pollinations', 'beatapi:harness', 'zro:jev', 'tool:zro', 'tokenharbor:harness', 'beatapi:harness']);
   expect(connectHarness).toHaveBeenCalledTimes(2);
 });
+
+it('shows waiting on queued sources, connecting only on the one being set up, and marks the operator', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_ANONYMOUS', '1');
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const { SetupTable } = await import('./setup-table.js');
+  const rows = new Map<string, string>();
+  const history: string[] = [];
+  const set = SetupTable.prototype.set;
+  vi.spyOn(SetupTable.prototype, 'set').mockImplementation(function (this: InstanceType<typeof SetupTable>, kind, name, status) {
+    if (kind === 'source') { rows.set(name, status); history.push(`${name}: ${status}`); }
+    return set.call(this, kind, name, status);
+  });
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(() => {});
+  const stub = actions(['kilo', 'pollinations', 'zro']);
+  const first = deferred(), release = deferred();
+  let kiloRuns = 0;
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    options.onStarted?.(id);
+    if (id === 'kilo' && ++kiloRuns === 1) {
+      first.resolve();
+      await release.promise;
+      await options.onSettled?.(id, false, 'needs human verification');
+      return { unavailable: [id] };
+    }
+    await options.onSettled?.(id, true);
+    return { unavailable: [] };
+  });
+  const running = wizard(undefined, {
+    ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire,
+    probeOperator: vi.fn(async (_port: number, id: string) => id === 'pollinations'),
+    connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })), signupHarness: () => async () => {}
+  });
+  await first.promise;
+  try {
+    expect(Object.fromEntries(rows)).toEqual({ kilo: 'connecting', pollinations: 'waiting', zro: 'waiting' });
+  } finally { release.resolve(); await running; }
+  expect(history).toContain('kilo: waiting (retry)');
+  expect(Object.fromEntries(rows)).toEqual({ kilo: '✓ ready', pollinations: '✓ ready · operator', zro: '✓ ready' });
+  for (const id of ['kilo', 'pollinations', 'zro']) {
+    const own = history.filter(line => line.startsWith(`${id}: `));
+    expect(own[0]).toBe(`${id}: waiting`);
+    expect(own.indexOf(`${id}: connecting`)).toBeGreaterThan(0);
+  }
+});
+
+it('keeps sources queued behind the browser limit on waiting until a browser slot is granted', async () => {
+  const { BrowserSquire } = await import('./setup.js');
+  const { SetupTable } = await import('./setup-table.js');
+  const rows = new Map<string, string>();
+  const set = SetupTable.prototype.set;
+  vi.spyOn(SetupTable.prototype, 'set').mockImplementation(function (this: InstanceType<typeof SetupTable>, kind, name, status) {
+    if (kind === 'source') rows.set(name, status);
+    return set.call(this, kind, name, status);
+  });
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  const gates = new Map<string, ReturnType<typeof deferred>>();
+  const rpc = vi.spyOn(client, 'callTool').mockImplementation(async request => {
+    const { arguments: args } = request as { arguments: { service: string } };
+    const gate = deferred(); gates.set(args.service, gate);
+    await gate.promise;
+    return { content: [], structuredContent: {} };
+  });
+  vi.spyOn(client, 'close').mockResolvedValue();
+  const ids = ['kilo', 'pollinations', 'zro', 'tokenharbor'];
+  const stub = actions(ids);
+  stub.setupFallbacks.mockImplementation(async options => {
+    await Promise.all(options.adapters!.map(async id => {
+      options.onStarted?.(id);
+      await options.squire!.call('operate_drive', { service: id });
+      await options.onSettled?.(id, true);
+    }));
+    return { unavailable: [] };
+  });
+  const running = wizard(undefined, { ...stub, createSquire: () => squire });
+  try {
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(3));
+    const queued = ids.find(id => !gates.has(id))!;
+    expect(Object.fromEntries(rows)).toEqual(Object.fromEntries(ids.map(id => [id, id === queued ? 'waiting' : 'connecting'])));
+    gates.get([...gates.keys()][0]!)!.resolve();
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(4));
+    expect(rows.get(queued)).toBe('connecting');
+  } finally {
+    for (const id of ids) { await vi.waitFor(() => expect(gates.has(id)).toBe(true)); gates.get(id)!.resolve(); }
+    await running;
+  }
+  expect(Object.fromEntries(rows)).toEqual(Object.fromEntries(ids.map(id => [id, '✓ ready'])));
+});
