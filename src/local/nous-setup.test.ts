@@ -56,6 +56,7 @@ it('sends the device login to Squire and prints nothing', async () => {
   await setupNous({ directory: '/nonexistent', notify, squire: { signup }, connect, spawnLogin: () => child as never });
   expect(connect).toHaveBeenCalledOnce();
   expect(signup).toHaveBeenCalledWith('nous', link, expect.stringContaining(link));
+  expect(String(signup.mock.calls[0]![2])).not.toMatch(/Free plan/i);
   expect(written.join('')).not.toMatch(/user_code|portal\.nousresearch\.com|ABCD-1234/);
   expect(notify.mock.calls.flat().join('')).not.toMatch(/user_code|portal\.nousresearch\.com/);
 });

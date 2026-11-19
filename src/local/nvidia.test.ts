@@ -88,7 +88,7 @@ it('requests free NVIDIA signup with Google reuse and host-scoped vault capture'
   await squire.runs.start({ service: 'nvidia', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' });
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ url: 'https://build.nvidia.com/settings/api-keys', goal: expect.stringContaining('Prefer Google OAuth') }));
   const goal = String(call.mock.calls.find(([name]) => name === 'operate_drive')![1].goal);
-  expect(goal).toContain('api_hosts ["integrate.api.nvidia.com"]'); expect(goal).toContain('Never reset or rotate'); expect(goal).toContain(NVIDIA_DEEPSEEK);
+  expect(goal).toContain('api_hosts ["integrate.api.nvidia.com"]'); expect(goal).toContain('Never reset or rotate'); expect(goal).not.toMatch(/free model|free inference endpoint/);
 });
 
 it('continues other setup jobs when NVIDIA needs attention', async () => {

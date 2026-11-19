@@ -61,7 +61,7 @@ it('verifies active Starter before official native pairing and checks the exact 
     'https://app.perchai.app/api/perch-terminal/cli-auth/start?state=private-pairing-nonce',
     'https://chat.perchai.app/'
   ]);
-  expect(f.squire.signup.mock.calls[0]![2]).toContain('activate Starter only');
+  expect(f.squire.signup.mock.calls[0]![2]).not.toMatch(/Starter plan|activate Starter/);
   expect(f.squire.signup.mock.calls[0]![2]).toContain('Do not open billing to audit the plan');
   expect(f.squire.signup.mock.calls[0]![2]).toContain('turn the optional Starter Data Program OFF');
   expect(f.squire.signup.mock.calls[2]![2]).toContain('person@example.test');

@@ -139,6 +139,7 @@ it('pairs the local Freebuff CLI using its own login URL through Squire', async 
   const squire = { signup: vi.fn(async () => {}), credentials: { list: vi.fn(), grant: vi.fn() } };
   await loginFreebuff(squire);
   expect(squire.signup).toHaveBeenCalledWith('freebuff', 'https://freebuff.com/login?auth_code=synthetic&cli_flow=fixture', expect.stringContaining('local CLI'));
+  expect(String(squire.signup.mock.calls[0]![2])).not.toMatch(/free plan/i);
 });
 
 
