@@ -75,6 +75,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   url: 'https://numes.ai/docs/privacy/data-retention',
   approval: 'explicit'
 }, {
+  provider: 'numes-deepseek-flash', name: 'Numes DeepSeek V4.1 Flash Free', version: '2026-11-19',
+  disclosure: 'Numes records request, usage and routing metadata and says it does not store prompts or responses. The Amazee.ai inference endpoint receives messages and tool context. Its retention, review and training policies are unverified.',
+  url: 'https://numes.ai/docs/privacy/data-retention',
+  approval: 'explicit'
+}, {
   provider: 'antseed-vikey', name: 'Antseed Vikey DeepSeek V4.1 Flash', version: '2026-11-18',
   disclosure: 'Prompts, code, and tool context go to the pinned Vikey seller and its inference upstream. Vikey may forward data to other providers. The final model host and its retention and training practices are unverified.',
   url: 'https://vikey.ai/en/terms/',

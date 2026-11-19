@@ -23,7 +23,7 @@ import { Clixad } from './clixad.js';
 import { Perch } from './perch.js';
 import { Nous } from './nous.js';
 import { Kenari } from './kenari.js';
-import { Numes } from './numes.js';
+import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
@@ -65,11 +65,16 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     return adapter?.models ?? (adapter?.model && adapter.model !== 'big-pickle' ? [adapter.model] : DEFAULT_OPENCODE_MODELS);
   };
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const numesModel = gruntEnv('NUMES_MODEL', env);
+  const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const configured = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
     .filter(id => localOptInAdapters.some(adapter => adapter.id === id));
   const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
+  if (numesModel !== undefined && (!deepSeekFlash || ids.length !== 1 || ids[0] !== 'numes')) {
+    throw new Error('The Numes qualification model requires the exact Numes-only source');
+  }
   if (ids.includes('antseed-vikey')) {
     const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
     registered.push(new AntseedVikey(port ? { port } : {}));
@@ -79,6 +84,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const localOptIns = new Set(enabledOptIns.map(adapter => adapter.id));
   const routingRegistry = () => {
     const current = registry();
+    if (deepSeekFlash) return { ...current, adapters: current.adapters.map(adapter => adapter.id === 'numes' ? { ...adapter, model: NUMES_DEEPSEEK_FLASH_MODEL } : adapter) };
     return localOptIns.size ? { ...current, adapters: [...current.adapters.filter(adapter => !localOptIns.has(adapter.id)), ...enabledOptIns] } : current;
   };
   const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))

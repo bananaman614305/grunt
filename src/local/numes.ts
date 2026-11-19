@@ -7,12 +7,18 @@ import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 const { model, prefix } = FREE_API_PROVIDERS.numes;
+export const NUMES_DEEPSEEK_FLASH_MODEL = 'deepseek/deepseek-v4.1-flash:free';
+export const NUMES_DEEPSEEK_FLASH_CONSENT = 'numes-deepseek-flash';
 const zeroPrice = { prompt: 0, completion: 0 };
 const preferredFreeEndpoint = 'amazee-ai-5149fc8341b341f3a6ebe026ae44f7c7/token-factory-df2d2988c4514d66a143237f387d4e64';
 const chatEndpoint = `${prefix}/chat/completions`;
-const freeOffer = (entry: {
+interface Offer {
   id?: string; context_length?: number; pricing?: Record<string, unknown>; supported_parameters?: unknown;
-}) => entry.id === model && Number(entry.context_length) >= 200_000
+}
+interface Endpoint extends Offer {
+  tag?: string; billing_currency?: string; max_prompt_tokens?: number;
+}
+const freeOffer = (entry: Offer) => Number(entry.context_length) >= 200_000
   && entry.pricing?.prompt === '0' && entry.pricing.completion === '0'
   && Object.values(entry.pricing).every(rate => rate === '0')
   && Array.isArray(entry.supported_parameters) && entry.supported_parameters.includes('tools');
@@ -21,6 +27,7 @@ interface NumesOptions {
   directory?: string;
   fetcher?: typeof fetch;
   loadGrant?: () => Promise<FreeApiGrant>;
+  deepSeekFlash?: boolean;
 }
 
 export class Numes implements Source {
@@ -39,7 +46,10 @@ export class Numes implements Source {
     });
   }
 
-  private approved() { return readDataSharingConsent(this.directory, [this.id]).then(ids => ids.includes(this.id)); }
+  private approved() {
+    const policy = this.options.deepSeekFlash ? NUMES_DEEPSEEK_FLASH_CONSENT : this.id;
+    return readDataSharingConsent(this.directory, [policy]).then(ids => ids.includes(policy));
+  }
   private grant() { return this.options.loadGrant?.() ?? readFreeApiGrant(this.id, this.directory); }
 
   private async hasZeroSpendCap(base: string, headers: Headers, signal?: AbortSignal | null) {
@@ -53,6 +63,22 @@ export class Numes implements Source {
     return data?.disabled === false && data.is_management_key === false && data.limit === 0 && data.limit_remaining === 0;
   }
 
+  private async hasDeepSeekOffer(base: string, headers: Headers, signal?: AbortSignal | null) {
+    const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models/${NUMES_DEEPSEEK_FLASH_MODEL}/endpoints`, {
+      headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
+    });
+    const captured = Date.parse(response.headers.get('X-Catalogue-Supply-Captured-At') ?? '');
+    const age = Date.now() - captured;
+    if (!response.ok || response.headers.get('X-Catalogue-Stale') === 'true' || !Number.isFinite(age) || age < -5000 || age > 60000) {
+      await response.body?.cancel();
+      return false;
+    }
+    const { data } = await response.json() as { data?: { id?: string; endpoints?: Endpoint[] } };
+    return data?.id === NUMES_DEEPSEEK_FLASH_MODEL && Array.isArray(data.endpoints) && data.endpoints.some(endpoint =>
+      endpoint.tag === preferredFreeEndpoint && endpoint.billing_currency === 'USD' && Number(endpoint.max_prompt_tokens) >= 200_000
+      && freeOffer(endpoint) && Array.isArray(endpoint.supported_parameters) && endpoint.supported_parameters.includes('max_tokens'));
+  }
+
   async available() {
     if (!await this.approved()) return false;
     try {
@@ -60,12 +86,13 @@ export class Numes implements Source {
       const base = grant.base_url;
       const headers = new Headers({ Authorization: `Bearer ${grant.token}` });
       if (!await this.hasZeroSpendCap(base, headers)) return false;
+      if (this.options.deepSeekFlash) return await this.hasDeepSeekOffer(base, headers);
       const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models`, {
         headers, redirect: 'error', signal: AbortSignal.timeout(5000)
       });
       if (!response.ok) { await response.body?.cancel(); return false; }
-      const { data } = await response.json() as { data?: Parameters<typeof freeOffer>[0][] };
-      return Array.isArray(data) && data.some(freeOffer);
+      const { data } = await response.json() as { data?: Offer[] };
+      return Array.isArray(data) && data.some(entry => entry.id === model && freeOffer(entry));
     } catch { return false; }
   }
 
@@ -73,18 +100,23 @@ export class Numes implements Source {
     const url = String(input);
     if (!url.endsWith(chatEndpoint) || typeof init?.body !== 'string') return new Response(null, { status: 403 });
     const base = url.slice(0, -chatEndpoint.length);
-    if (!await this.hasZeroSpendCap(base, new Headers(init.headers), init.signal)) {
+    const headers = new Headers(init.headers);
+    if (!await this.hasZeroSpendCap(base, headers, init.signal)) {
       return new Response(null, { status: 403 });
     }
+    const deepSeekFlash = this.options.deepSeekFlash === true;
+    if (deepSeekFlash && !await this.hasDeepSeekOffer(base, headers, init.signal)) return new Response(null, { status: 503 });
     init.signal?.throwIfAborted();
     const body = JSON.parse(init.body) as Record<string, unknown>;
+    const selectedModel = deepSeekFlash ? NUMES_DEEPSEEK_FLASH_MODEL : model;
+    const routing = deepSeekFlash ? { only: [preferredFreeEndpoint], allow_fallbacks: false } : { order: [preferredFreeEndpoint] };
     const response = await this.fetcher(url, {
       ...init,
-      body: JSON.stringify({ ...body, model, provider: { max_price: zeroPrice, require_parameters: true, order: [preferredFreeEndpoint] } })
+      body: JSON.stringify({ ...body, model: selectedModel, provider: { max_price: zeroPrice, require_parameters: true, ...routing } })
     });
     if (!response.ok) return response;
     const result = await response.clone().json() as { model?: string; usage?: { cost?: number } };
-    if ((result.model !== model && result.model !== model.slice(0, -':free'.length)) || result.usage?.cost !== 0) {
+    if ((result.model !== selectedModel && result.model !== selectedModel.slice(0, -':free'.length)) || result.usage?.cost !== 0) {
       await response.body?.cancel();
       return new Response(null, { status: 502 });
     }
