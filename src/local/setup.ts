@@ -218,6 +218,10 @@ export class BrowserSquire implements SetupSquire {
   useBatchSignup() { this.batchSignup = true; }
   // Bootstrap tries other providers before handing a browser to the person.
   deferHandoff(deferred: boolean) { this.handoffDeferred = deferred; }
+  // Reports when a provider's browser work queues behind the browser limit
+  // and when it gets a slot, so setup can show waiting until it starts.
+  onBrowserQueue(observer: ((provider: string, state: 'waiting' | 'started') => void) | undefined) { this.browserObserver = observer; }
+  private browserObserver: ((provider: string, state: 'waiting' | 'started') => void) | undefined;
   private batchSignup = false;
   private handoffDeferred = false;
   private canHandOff() {
@@ -283,7 +287,7 @@ export class BrowserSquire implements SetupSquire {
     try { return await this.call(name, args); }
     finally { this.callSignals.delete(args); this.queueSignals.delete(args); }
   }
-  private async browserSlot(signal: AbortSignal): Promise<() => void> {
+  private async browserSlot(signal: AbortSignal, provider?: string): Promise<() => void> {
     signal.throwIfAborted();
     const release = () => {
       let released = false;
@@ -298,10 +302,12 @@ export class BrowserSquire implements SetupSquire {
       this.browserActive++;
       return release();
     }
+    if (provider) this.browserObserver?.(provider, 'waiting');
     return new Promise((resolve, reject) => {
       const entry = { grant: () => {
         signal.removeEventListener('abort', cancelled);
         this.browserActive++;
+        if (provider) this.browserObserver?.(provider, 'started');
         resolve(release());
       } };
       const cancelled = () => {
@@ -364,7 +370,7 @@ export class BrowserSquire implements SetupSquire {
     const provider = typeof args.service === 'string' ? args.service
       : [...this.sessions].find(([, id]) => id === args.session_id)?.[0];
     const queueSignal = this.queueSignals.get(args) ?? (provider ? this.serviceSignal(provider) : this.signal);
-    const release = name === 'operate_drive' || name === 'operate_start' ? await this.browserSlot(queueSignal) : undefined;
+    const release = name === 'operate_drive' || name === 'operate_start' ? await this.browserSlot(queueSignal, provider) : undefined;
     try {
       // A slot can be granted just before cancellation. Recheck before dispatch.
       if (release) queueSignal.throwIfAborted();
