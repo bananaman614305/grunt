@@ -470,8 +470,8 @@ downtime, with normal staggering and deferral rules.
 
 ### Free API and account setup
 
-The eleven-source pool is unchanged from 0.6.6. Version 0.6.7 starts routing as
-soon as the first provider is verified, while remaining signups continue.
+Since version 0.6.7, Grunt starts routing as soon as the first provider is
+verified, while remaining signups continue.
 
 `npx usegrunt` (or `npx usegrunt setup`) starts the terminal wizard. In a wide
 interactive terminal it opens with a short animation (any key skips it; CI,
@@ -479,7 +479,8 @@ pipes and narrow terminals get a one-line title). After checking prerequisites,
 setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
-Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad, Perch and Nous
+Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
+Clixad, Perch, Nous and Kenari
 in the experimental tier.
 Free-account eligibility still applies.
 
@@ -591,6 +592,7 @@ The additional experimental routes have these requirements:
 | Clixad | Native `glm-5.3-flash` | Existing or ordinary free GitHub account pairing, positive free allowance and a wallet balance of exactly zero. No deposit or paid credits. Model selection and native free/zero-charge metadata are checked. |
 | Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
 | Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
+| Kenari | `ernie-5-5-flash-preview:free` | Free Google sign-in through Squire. Kenari lists 50 successful free-model requests per day and five requests per minute for new accounts. Limits are per account and can change. [Kenari free-model limits](https://kenari.id/en/docs/free-models) |
 
 For Nous, approve its data policy in the grouped setup prompt and open the
 Hermes device link on your phone or computer. Sign in or create the Free account
@@ -603,6 +605,14 @@ Use `npx usegrunt add nous` to connect Nous separately or repeat device approval
 `GRUNT_HERMES_ROOT` selects an existing official Hermes installation by absolute
 path. Grunt skips Nous if it cannot confirm the Free plan, zero paid balances,
 and zero prices for the pinned model.
+
+For Kenari, approve data sharing in the grouped setup prompt and complete
+browser verification if Kenari asks. Squire reuses the dedicated Grunt Free
+key scoped to `kenari.id`, or creates one when needed. Use
+`npx usegrunt add kenari` to connect it separately or resume setup. Grunt
+checks that the exact ERNIE route is still free and supports native tool calls.
+When that route is rate-limited, automatic routing can continue on another
+free source.
 
 Runcrate keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
@@ -753,6 +763,8 @@ Zro, Token Harbor and Runcrate keep private grants in `zro.json`,
 `tokenharbor.json` and `runcrate.json` and call
 `/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to
 `zro.moonmath.ai`, `tokenharbor.ai` and `api.runcrate.ai`.
+Kenari keeps a private Squire grant in `kenari.json`. Its upstream key stays in
+Squire with `kenari.id` as its only allowed host.
 NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the grant's
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
