@@ -6,6 +6,7 @@ import { recordDataSharingConsent } from './data-sharing.js';
 import { setupNumes } from './numes-setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 const NUMES_FREE_MODEL = FREE_API_PROVIDERS.numes.model;
 
@@ -60,7 +61,8 @@ it('provisions once on the ordinary cold-start flow and grants only after scoped
   squire.call.mockResolvedValueOnce({ credentials: [] });
   await recordDataSharingConsent(directory, ['numes']);
   await setupNumes({ directory, squire, notify });
-  expect(squire.signup).toHaveBeenCalledExactlyOnceWith('numes', 'https://numes.ai/dashboard', expect.stringContaining(NUMES_FREE_MODEL));
+  expect(squire.signup).toHaveBeenCalledExactlyOnceWith('numes', 'https://numes.ai/dashboard', expect.stringContaining('numeric 0 spending limit'));
+  expect(planSteps(String((squire.signup.mock.calls[0] as unknown[])[2]))).toEqual([]);
   expect(squire.call).toHaveBeenCalledTimes(2);
   expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
 });

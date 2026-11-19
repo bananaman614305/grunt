@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { setupBeatAPI } from './beatapi-setup.js';
 import { BEATAPI_MODEL, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, writeBeatAPIGrant } from './beatapi.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-beatapi-setup-test-')); await recordDataSharingConsent(directory, ['beatapi']); });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
@@ -17,6 +18,7 @@ function fixture() {
 it('reuses fresh vault metadata after browser free-account/key verification', async () => {
   const f = fixture(); await setupBeatAPI({ directory, ...f }); expect(f.squire.call).toHaveBeenCalledTimes(2); expect(f.squire.credentials.list).not.toHaveBeenCalled(); expect(f.squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(credential.reference);
   expect(f.squire.signup).toHaveBeenCalledWith('beatapi', 'https://beatapi.io/dashboard/apikeys', expect.stringContaining('Go straight to API keys; do not open Credits & billing'));
+  expect(planSteps(String((f.squire.signup.mock.calls[0] as unknown[])[2]))).toEqual([]);
   expect((await readBeatAPIGrant(directory))).toMatchObject({ lifetime_paid: 0, baseline_balance: 2, credit_provenance: 'signup', model: 'deepseek-v4.1-flash-free' }); expect(f.fetcher).toHaveBeenCalledTimes(1);
 });
 it('stores a newly captured key when none existed', async () => {

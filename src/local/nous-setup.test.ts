@@ -3,6 +3,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
 import { NOUS_LOGIN_NEEDED, nousApprovalURL, setupNous } from './nous-setup.js';
 import { setupAttention, setupFailureReason } from './setup-failure.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 const profile = vi.hoisted(() => ({ ready: false }));
 vi.mock('./nous.js', () => ({
@@ -56,6 +57,7 @@ it('sends the device login to Squire and prints nothing', async () => {
   await setupNous({ directory: '/nonexistent', notify, squire: { signup }, connect, spawnLogin: () => child as never });
   expect(connect).toHaveBeenCalledOnce();
   expect(signup).toHaveBeenCalledWith('nous', link, expect.stringContaining(link));
+  expect(planSteps(String(signup.mock.calls[0]![2]))).toEqual([]);
   expect(written.join('')).not.toMatch(/user_code|portal\.nousresearch\.com|ABCD-1234/);
   expect(notify.mock.calls.flat().join('')).not.toMatch(/user_code|portal\.nousresearch\.com/);
 });

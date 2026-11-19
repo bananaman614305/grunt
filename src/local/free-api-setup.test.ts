@@ -37,7 +37,7 @@ it.each(['runcrate'] as const)('verifies a saved %s vault key in the browser bef
       expect(goal).not.toContain('at least 30 days old');
       expect(goal).not.toContain('automatic top-ups disabled');
       expect(goal).toContain('Do not open or change billing settings');
-      expect(goal).toContain('deepseek-ai/DeepSeek-V4.1-Flash');
+      expect(goal).not.toMatch(/free tokens|allowance|DeepSeek-V4.1-Flash/);
       expect(goal).toContain('["api.runcrate.ai"]');
       return { session_id: `${provider}-session`, status: 'complete' };
     }

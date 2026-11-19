@@ -7,6 +7,7 @@ import { livekitPaths, readLiveKitFreeBuildReceipt, writeLiveKitFreeBuildReceipt
 import * as livekitSetup from './livekit-setup.js';
 import { setup, FreeLLMAdmin } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-livekit-setup-')); });
@@ -73,6 +74,7 @@ it('uses ordinary native pairing, preserves existing profiles/defaults, and reus
   const signup = vi.fn(async (_service: string, url: string, goal: string) => {
     expect(goal).toMatch(/grunt-free project/);
     expect(goal).not.toMatch(/Verify the Build free plan/);
+    expect(planSteps(goal)).toEqual([]);
     expect(goal).not.toContain('API secret:');
     if (url.includes('/cli/confirm-auth')) await writeFile(join(directory, 'approved'), 'yes');
   });

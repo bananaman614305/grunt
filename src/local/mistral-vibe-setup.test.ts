@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { installMistralVibe, setupMistralVibe } from './mistral-vibe-setup.js';
 import { mistralVibePaths, readMistralVibeFreePlanReceipt, writeMistralVibeFreePlanReceipt } from './mistral-vibe.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-vibe-setup-test-')); });
@@ -81,6 +82,7 @@ it('verifies the Free billing state before native pairing, keeps authentication 
   expect(calls[0]?.instructions).toContain('do not open subscription or billing pages');
   expect(calls[0]?.instructions).toContain('Never enable API or Vibe Code pay-as-you-go');
   expect(calls[1]?.instructions).toContain('the CLI owns its credential exchange');
+  for (const call of calls) expect(planSteps(call.instructions)).toEqual([]);
   expect(await readMistralVibeFreePlanReceipt(directory)).toMatchObject({ ...receipt(), checkedAt: expect.any(String) });
   expect((await stat(paths.receipt)).mode & 0o777).toBe(0o600);
   expect(JSON.stringify(output)).not.toMatch(/synthetic|authenticate|MISTRAL_API_KEY/);

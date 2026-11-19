@@ -27,7 +27,7 @@ interface NousSetupOptions {
 
 // setupFailureReason maps this message to 'needs Nous login'.
 export const NOUS_LOGIN_NEEDED = 'Nous login needs you';
-const approvalGoal = (url: URL) => `Approve the Hermes device login for this exact code at ${url.href}. Sign in to Nous Portal with the user's existing account or the Google identity already connected to Squire; create one ordinary free account only if none exists. Approve only the shown device code with the inference:invoke scope on the Free plan. No paid plan, upgrade, payment method, top-up, credits purchase, extra account or account switching. Stop for human verification. Stop if the code is expired, unknown or asks for any other scope.`;
+const approvalGoal = (url: URL) => `Approve the Hermes device login for this exact code at ${url.href}. Sign in to Nous Portal with the user's existing account or the Google identity already connected to Squire; create one ordinary free account only if none exists. Approve only the shown device code with the inference:invoke scope. No paid plan, upgrade, payment method, top-up, credits purchase, extra account or account switching. Stop for human verification. Stop if the code is expired, unknown or asks for any other scope.`;
 
 export function nousApprovalURL(line: string): URL | undefined {
   const match = /^\s*1\. Open:\s*(https:\/\/\S+)\s*$/.exec(line);

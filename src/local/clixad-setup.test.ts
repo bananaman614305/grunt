@@ -9,6 +9,7 @@ import { Clixad, CLIXAD_CORE_SHA256, CLIXAD_INTEGRITY, CLIXAD_MODEL, CLIXAD_TARB
 import type * as ClixadModule from './clixad.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 const archive = Buffer.from('offline synthetic official archive fixture');
 vi.mock('./clixad.js', async importOriginal => {
@@ -86,6 +87,7 @@ it('pairs only the owned GitHub device flow, pins one new model, and verifies ze
   expect(options.squire.signup).toHaveBeenCalledTimes(2);
   expect(options.squire.signup.mock.calls[0]![0]).toBe('clixad'); expect(options.squire.signup.mock.calls[0]![1]).toBe('https://app.clixad.io');
   const pairing = options.squire.signup.mock.calls[1] as unknown as [string, string, string];
+  for (const call of options.squire.signup.mock.calls) expect(planSteps(String((call as unknown[])[2]))).toEqual([]);
   expect(pairing[0]).toBe('clixad'); expect(pairing[1]).toBe('https://github.com/login/device?user_code=ABCD-EF12');
   expect(pairing[2]).toContain('read-only identity/profile and email scopes'); expect(pairing[2]).toContain('CLI owns the token exchange');
   const login = options.command.mock.calls.find(([, args]) => args.at(-1) === 'login')!;

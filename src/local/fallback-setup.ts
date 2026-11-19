@@ -33,7 +33,7 @@ export async function loginFreebuff(squire: Signup, signal?: AbortSignal) {
     const url = output.match(/https:\/\/freebuff\.com\/login\?[^\s\x1b]+/)?.[0];
     if (started || !url) return;
     started = true;
-    browser = squire.signup('freebuff', url, "Complete this Freebuff CLI login using the user's existing account, or sign up for the free plan if none exists. This URL pairs the local CLI; finish that pairing. No paid plan, payment method, extra account or account switching. Stop on refusal; report captcha, passkey or email verification for human handoff. Do not bypass verification.");
+    browser = squire.signup('freebuff', url, "Complete this Freebuff CLI login using the user's existing account, or sign up if none exists. This URL pairs the local CLI; finish that pairing. No paid plan, payment method, extra account or account switching. Stop on refusal; report captcha, passkey or email verification for human handoff. Do not bypass verification.");
     void browser.catch(() => rejectLogin(new Error('Freebuff browser signup did not complete; rerun setup to resume')));
   };
   child.stdout.on('data', capture); child.stderr.on('data', capture);
