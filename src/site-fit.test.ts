@@ -123,9 +123,13 @@ async function measure(size: (typeof SIZES)[number]): Promise<Measure> {
 
 describe.skipIf(!CHROME)("grunt.run fits one screen per section", () => {
   beforeAll(open, 30_000);
-  afterAll(() => {
-    chrome?.kill();
-    if (profile) rmSync(profile, { recursive: true, force: true });
+  afterAll(async () => {
+    if (chrome && chrome.exitCode === null) {
+      const exited = new Promise((resolve) => chrome!.once("exit", resolve));
+      chrome.kill();
+      await exited;
+    }
+    if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
   });
 
   for (const size of SIZES) {
