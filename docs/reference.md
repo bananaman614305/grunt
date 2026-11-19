@@ -1075,11 +1075,16 @@ Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
 
-A quota error switches immediately and bars that adapter until Retry-After,
-or one hour. In registry routing, other upstream failures, timeouts and provider
-refusals switch immediately and bar the adapter for fifteen minutes. A missing
-installation or expired login bars it until a successful health check. Caller
-cancellation stops the chain.
+A quota error switches immediately and bars that adapter until its reported
+retry time, with a one-hour fallback when the adapter has no stronger evidence.
+Token Harbor's account allowance API supplies the current window start and
+reset. Grunt uses that reset when the weekly free allowance is exhausted, and
+checks the allowance again at the reset before routing. Short request limits
+still use the provider's Retry-After. Clixad retries at midnight UTC when its
+wallet confirms the daily free allowance is exhausted. In registry routing,
+other upstream failures, timeouts and provider refusals switch immediately and
+bar the adapter for fifteen minutes. A missing installation or expired login
+bars it until a successful health check. Caller cancellation stops the chain.
 When no eligible adapter remains, the API returns HTTP 429 and, when known,
 the earliest Retry-After. Agent adapters return final text, so streaming headers
 are sent after completion; quota failures retain their HTTP status.

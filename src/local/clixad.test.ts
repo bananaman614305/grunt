@@ -73,11 +73,11 @@ it.each([{ free: false }, { auto_mode: true }, { context_window: 199999 }, { id:
 it('rejects a changed native model without overwriting the CLI preference or sending an ask', async () => {
   const f = fixture({ model: 'gpt-5-nano' }); await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused' }); expect(f.runner.mock.calls.map(([, mode]) => mode)).toEqual(['model']);
 });
-it.each([[401, 'logged_out'], [403, 'refused']] as const)('sanitizes native wallet HTTP %i and never starts an ask', async (status, code) => {
+it.each([[401, 'logged_out', undefined], [403, 'refused', undefined], [429, 'quota', 60]] as const)('sanitizes native wallet HTTP %i and never starts an ask', async (status, code, retryAfter) => {
   const denied = { code: 0, stdout: 'synthetic-private-native-error', events: [{ event: 'http', operation: 'wallet', status }] };
   const f = fixture({ wallets: [denied] });
   const error = await f.source.complete(request(), new AbortController().signal).catch(value => value);
-  expect(error).toMatchObject({ code }); expect(error.message).not.toContain('synthetic-private'); expect(f.asks()).toHaveLength(0);
+  expect(error).toMatchObject({ code, retryAfter }); expect(error.message).not.toContain('synthetic-private'); expect(f.asks()).toHaveLength(0);
 });
 it('rejects oversized prompts before native wallet or any other provider request', async () => {
   const f = fixture();
@@ -87,8 +87,16 @@ it('rejects oversized prompts before native wallet or any other provider request
 it.each([{ balance: 1 }, { modelEligible: false }, { dailyCredits: 0 }, { creditsLeft: -1 }])('refuses funded or missing free access before inference (%j)', async patch => {
   const f = fixture({ wallets: [wallet(patch)] }); await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused' }); expect(f.asks()).toHaveLength(0);
 });
-it('returns quota for exhausted free allowance, and accepts a successful last free completion that leaves zero allowance', async () => {
-  const exhausted = fixture({ wallets: [wallet({ creditsLeft: 0 })] }); await expect(exhausted.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota' }); expect(exhausted.asks()).toHaveLength(0);
+it.each([
+  ['2026-11-30T23:59:59.500Z', 1],
+  ['2026-12-01T00:00:00.000Z', 86400],
+] as const)('defers an exhausted free wallet at %s until the next UTC midnight', async (time, retryAfter) => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(time));
+  const exhausted = fixture({ wallets: [wallet({ creditsLeft: 0 })] });
+  await expect(exhausted.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter });
+  expect(exhausted.asks()).toHaveLength(0);
+});
+it('accepts a successful last free completion that leaves zero allowance', async () => {
   const last = fixture({ wallets: [wallet(), wallet({ creditsLeft: 0 })] }); expect((await last.source.complete(request(), new AbortController().signal)).text).toBe('Hello.');
 });
 it.each([

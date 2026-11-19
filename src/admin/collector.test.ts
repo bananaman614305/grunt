@@ -90,6 +90,18 @@ it('projects both known opt-in sources and their worker status without admitting
   expect(observed.workers?.active).toEqual(active);
 });
 
+it('projects provider quota windows without arbitrary account metadata', () => {
+  const startedAt = now - 86400000, resetAt = startedAt + 7 * 86400000;
+  const sources = [
+    { id: 'tokenharbor', state: 'limited', active: 0, quotaWindow: { startedAt, resetAt, account: 'private' } },
+    { id: 'zro', state: 'available', active: 0, quotaWindow: { startedAt, resetAt: startedAt } }
+  ];
+  expect(projectCollectorSnapshot({ ...snapshot(), sources }).sources).toEqual([
+    { id: 'tokenharbor', state: 'limited', active: 0, quotaWindow: { startedAt, resetAt } },
+    { id: 'zro', state: 'available', active: 0 }
+  ]);
+});
+
 it('projects scouting progress without report prose, account metadata, URLs, paths or vault references', () => {
   const result = projectCollectorScout({ id: '20261116T140001689663Z', status: 'failed', reason: 'private account error',
     started_at: '2026-11-16T14:00:01.689897+00:00', config: { secret: 'private' } }, { candidates: {

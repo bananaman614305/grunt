@@ -24,6 +24,7 @@ export interface ModelRequest {
 export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
+export interface QuotaWindow { startedAt: number; resetAt: number }
 export interface Source {
   id: string;
   supportsFunctionTools?: boolean;
@@ -31,6 +32,7 @@ export interface Source {
   // first-output deadline. Other sources keep only their own timeouts.
   reportsOutput?: boolean;
   available(): Promise<boolean>;
+  quotaWindow?(): QuotaWindow | undefined;
   healthCheck?(): Promise<boolean>;
   complete(request: ModelRequest, signal: AbortSignal, output?: () => void): Promise<Completion>;
   // Called after a failed request (not a cancellation). Must not block.
@@ -129,9 +131,13 @@ export class Sources {
       }
     });
     const maintenance = this.maintenance?.();
-    if (maintenance) for (const source of snapshot.sources) {
-      const entry = maintenance[source.id];
-      if (entry) source.maintenance = { ...entry };
+    for (const row of snapshot.sources) {
+      const source = this.sources.find(candidate => candidate.id === row.id);
+      if (source) row.supportsFunctionTools = toolCapable(source);
+      const window = source?.quotaWindow?.();
+      if (window) row.quotaWindow = { ...window };
+      const entry = maintenance?.[row.id];
+      if (entry) row.maintenance = { ...entry };
     }
     return snapshot;
   }

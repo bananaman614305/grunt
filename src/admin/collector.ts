@@ -129,6 +129,11 @@ export function projectCollectorSnapshot(value: unknown) {
     if (source.modelKind === 'registry') item.modelKind = 'registry';
     if (typeof source.errorCode === 'string' && errors.has(source.errorCode)) item.errorCode = source.errorCode;
     for (const key of ['lastReplyMs', 'lastSuccessAt', 'retryAt'] as const) if (time(source[key])) item[key] = source[key];
+    const window = object(source.quotaWindow);
+    if (time(window?.startedAt) && time(window?.resetAt) && window.startedAt > 0 && window.startedAt <= raw.updatedAt + 300000
+        && window.resetAt > window.startedAt && window.resetAt - window.startedAt <= 31 * 86400000) {
+      item.quotaWindow = { startedAt: window.startedAt, resetAt: window.resetAt };
+    }
     sources.push(item);
   }
   let workers;

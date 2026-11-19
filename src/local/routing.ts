@@ -124,7 +124,12 @@ export class StickyRouter {
             continue;
           }
           if (source.id === task.source || await (observation ? observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
-          else skip(source.id, 'unavailable');
+          else {
+            // This live allowance check can discover a reset the router did not know at entry.
+            const checkedUntil = this.cooldown(source.id)?.until;
+            if (checkedUntil !== undefined && checkedUntil > this.now() && Number.isFinite(checkedUntil)) retryTimes.push(checkedUntil);
+            skip(source.id, 'unavailable');
+          }
         }
         signal.throwIfAborted();
         if (!eligible.length) throw this.exhausted(toolsRequired, retryTimes);

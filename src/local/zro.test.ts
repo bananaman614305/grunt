@@ -150,6 +150,64 @@ it('shows exhausted Token Harbor as rate limited and clears the label when free 
   } finally { await sources.close(); }
 });
 
+it('learns the Token Harbor allowance window on the first exhausted request and retries at its reset', async () => {
+  const path = await directory();
+  await recordDataSharingConsent(path, ['tokenharbor']);
+  await writeTokenHarborGrant(grant, path);
+  const resetAt = Date.parse('2026-11-22T03:04:18.030Z');
+  const startedAt = resetAt - 7 * 86400000;
+  let now = resetAt - 60000;
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (!String(url).endsWith('/free-tier')) return response(TOKENHARBOR_DEEPSEEK);
+    const cached = now < resetAt + 15000;
+    return Response.json({ models_enabled: true, exhausted: cached,
+      period_started_at: new Date(cached ? startedAt : resetAt).toISOString(),
+      reset_at: new Date(cached ? resetAt : resetAt + 7 * 86400000).toISOString() });
+  });
+  const sources = new Sources([new TokenHarbor({ directory: path, fetcher, now: () => now })], { registry: () => bundledRegistry, now: () => now });
+  const app = createLocalApp(sources);
+  const send = () => app.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  });
+  try {
+    const first = await send();
+    expect(first.status).toBe(429);
+    expect(first.headers.get('retry-after')).toBe('60');
+    expect(sources.status().sources[0]).toMatchObject({
+      id: 'tokenharbor', state: 'limited', retryAt: resetAt, supportsFunctionTools: true, quotaWindow: { startedAt, resetAt }
+    });
+    expect((await send()).status).toBe(429);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    now = resetAt;
+    const stale = await send();
+    expect(stale.status).toBe(429);
+    expect(stale.headers.get('retry-after')).toBe('15');
+    expect(sources.status().sources[0]).not.toHaveProperty('quotaWindow');
+    now += 15000;
+    const next = await send();
+    expect(next.status).toBe(200);
+    expect(next.headers.get('x-grunt-source')).toBe('tokenharbor');
+    expect(sources.status().sources[0]?.quotaWindow).toEqual({ startedAt: resetAt, resetAt: resetAt + 7 * 86400000 });
+  } finally { await sources.close(); }
+});
+
+it.each([false, true])('distinguishes a request-rate limit from an exhausted weekly allowance (%s)', async exhausted => {
+  const path = await directory();
+  await recordDataSharingConsent(path, ['tokenharbor']);
+  await writeTokenHarborGrant(grant, path);
+  const now = Date.parse('2026-11-21T03:04:18Z');
+  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/free-tier')
+    ? Response.json({ models_enabled: true, exhausted, period_started_at: '2026-11-15T03:04:18+00:00', reset_at: '2026-11-22T03:04:18+00:00' })
+    : new Response(null, { status: 429, headers: { 'Retry-After': '30' } }));
+  const source = new TokenHarbor({ directory: path, fetcher, now: () => now });
+  try {
+    await expect(source.complete({ ...payload, tools: [], cwd: path, stream: false }, AbortSignal.timeout(1000)))
+      .rejects.toMatchObject({ code: 'quota', retryAfter: exhausted ? 86400 : 30 });
+    expect(source.quotaWindow()).toEqual({ startedAt: Date.parse('2026-11-15T03:04:18Z'), resetAt: now + 86400000 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  } finally { await source.close(); }
+});
+
 it.each(['deepseek-v4-flash', 'deepseek-v3.2', undefined])('does not credit a different or unidentified model to a vetted route (%s)', async model => {
   const path = await directory(); await writeZroGrant(grant, path); await recordDataSharingConsent(path, ['tokenharbor']); await writeTokenHarborGrant(grant, path);
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ...(model === undefined ? {} : { model }), choices: [{ message: { content: 'unverified model' } }] }));
