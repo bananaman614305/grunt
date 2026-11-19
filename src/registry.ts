@@ -13,7 +13,7 @@ export interface Adapter {
   models?: string[];
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
-const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes' };
+const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes', goedel: 'builtin:goedel' };
 export const knownAdapters = new Set(Object.keys(installers));
 // These descriptors are local only and cannot be selected by registry updates.
 export const localOptInAdapters: readonly Adapter[] = [
@@ -49,8 +49,9 @@ export function validateRegistry(value: unknown): Registry {
       if (url.protocol !== 'https:' || url.username || url.password) return fail();
     }
     // Known adapters have fixed installers and capabilities; registry data never supplies code.
-    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit', 'pollinations', 'beatapi', 'nous', 'kenari', 'numes'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
+    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit', 'pollinations', 'beatapi', 'nous', 'kenari', 'numes', 'goedel'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
       || a.modalities.some(m => m !== 'text'))) return fail();
+    if (a.id === 'goedel' && a.model !== 'deepseek/deepseek-v4.1-flash') return fail();
     if (a.id === 'nous' && a.model !== 'qwen/qwen4-max:free') return fail();
     ids.add(a.id);
     weights[a.tier as Adapter['tier']] += a.weight;

@@ -203,7 +203,7 @@ export async function runProbe(options,dependencies={}){
     const request=async body=>{
       await productionIdle(fetcher,signal);signal.throwIfAborted();
       const requestSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(180000,dependencies.requestTimeoutMs??180000))]);
-      const response=await abortable(app.fetch(new Request('http://127.0.0.1:0/v1/chat/completions',{method:'POST',signal:requestSignal,headers:{'Content-Type':'application/json'},body:JSON.stringify({model:options.sourceId,cwd,stream:false,max_tokens:MAX_TOKENS,...body})})),requestSignal);
+      const response=await abortable(app.fetch(new Request('http://127.0.0.1:0/v1/chat/completions',{method:'POST',signal:requestSignal,headers:{'Content-Type':'application/json',...(options.sourceId==='goedel'?{'X-Grunt-Context':'public'}:{})},body:JSON.stringify({model:options.sourceId,cwd,stream:false,max_tokens:MAX_TOKENS,...body})})),requestSignal);
       let result;
       try{result=JSON.parse((await boundedBody(response,2*1024*1024,requestSignal)).toString());}
       catch(error){if(error instanceof ProbeError)throw error;fail(requestSignal.aborted?'timeout':'invalid_response');}

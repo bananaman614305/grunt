@@ -43,6 +43,7 @@ const EVENT_LABELS = {
 };
 const REASONS = {
   not_listed: 'Outside the enabled provider list', pending_setup: 'Provider setup is pending',
+  context_not_approved: 'Request context is outside the provider’s approved scope',
   cooldown: 'Routing cooldown is active', tools_unsupported: 'Function tools are unsupported',
   input_unsupported: 'Input type is unsupported', unavailable: 'Provider is unavailable',
   sticky: 'Existing request route', weighted: 'Selected from the weighted pool',

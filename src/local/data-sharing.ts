@@ -82,6 +82,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   url: 'https://numes.ai/docs/privacy/data-retention',
   approval: 'explicit'
 }, {
+  provider: 'goedel', name: 'Gödel Machines DeepSeek V4.1 Flash Free', version: '2026-11-19',
+  disclosure: 'The free tier stores prompts and responses in India, permits staff review and training, and retains content until deletion is requested. It forbids sending secrets, confidential business information, or other people’s personal data. Grunt requires the client to confirm the entire request is safe to share.',
+  url: 'https://inference.goedelmachines.com/legal#free-tier',
+  approval: 'explicit'
+}, {
   provider: 'antseed-vikey', name: 'Antseed Vikey DeepSeek V4.1 Flash', version: '2026-11-18',
   disclosure: 'Prompts, code, and tool context go to the pinned Vikey seller and its inference upstream. Vikey may forward data to other providers. The final model host and its retention and training practices are unverified.',
   url: 'https://vikey.ai/en/terms/',

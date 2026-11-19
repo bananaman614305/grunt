@@ -211,6 +211,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       let request: ReturnType<typeof decode>;
       try { request = decode(object(await c.req.json()), api, options.cwd); }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }
+      if (c.req.header('x-grunt-context') === 'public') request.publicContext = true;
       const local = housekeeping(request);
       if (local !== undefined) { const context = currentDiagnosticContext(); if (context) context.local = true; }
       options.log?.(`${request.cwd}; cwd=${request.cwdSource}; classification=${local === undefined ? 'user' : 'housekeeping'}`);

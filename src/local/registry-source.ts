@@ -7,8 +7,10 @@ import type { Registry } from '../registry.js';
 export class RegistrySource implements Source {
   readonly id: string;
   readonly supportsFunctionTools?: boolean;
+  readonly acceptsRequest?: NonNullable<Source['acceptsRequest']>;
   constructor(readonly source: Source, private registry: () => Registry) {
     this.id = source.id;
+    if (source.acceptsRequest) this.acceptsRequest = source.acceptsRequest.bind(source);
     if (source.supportsFunctionTools !== undefined) this.supportsFunctionTools = source.supportsFunctionTools;
   }
   private listed() { return this.registry().adapters.some(adapter => adapter.id === this.id); }
