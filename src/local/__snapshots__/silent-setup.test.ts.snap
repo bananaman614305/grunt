@@ -2,6 +2,8 @@
 
 exports[`runs the whole setup with zero prompts and enabled sharing sources (TTY: false, key works: false) 1`] = `
 "grunt — free AI inference, pooled on your machine
+✓ data sharing: on, no new sources
+✓ local service: running on port 8788
 type    name                  status
 source  opencode              ✓ ready
 tool    Pi                    ✓ connected
@@ -11,12 +13,15 @@ source  kilo                  ✓ ready
 source  tokenharbor           ✓ ready
 source  perch                 skipped (setup failed)
 source  zro                   skipped (key test failed)
+3 ready
 Ready
 "
 `;
 
 exports[`runs the whole setup with zero prompts and enabled sharing sources (TTY: false, key works: true) 1`] = `
 "grunt — free AI inference, pooled on your machine
+✓ data sharing: on, no new sources
+✓ local service: running on port 8788
 type    name                  status
 source  opencode              ✓ ready
 tool    Pi                    ✓ connected
@@ -26,6 +31,7 @@ source  kilo                  ✓ ready
 source  tokenharbor           ✓ ready
 source  perch                 skipped (setup failed)
 source  zro                   ✓ ready
+4 ready
 Ready
 "
 `;

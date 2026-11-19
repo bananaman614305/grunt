@@ -15,7 +15,7 @@ import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from 
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
 import { banner } from './banner.js';
-import { approveDataSharing } from './data-sharing.js';
+import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
@@ -90,7 +90,7 @@ export async function connectSquire(options: { hasBroker?: () => Promise<boolean
     try { await squire.connect(); options.signal?.throwIfAborted(); }
     finally { if (!options.squire) await squire.close(); }
   };
-  try { await probe(); return; }
+  try { await probe(); return 'existing' as const; }
   catch (error) {
     options.signal?.throwIfAborted();
     const exists = await (options.hasBroker || squireBrokerExists)();
@@ -106,6 +106,7 @@ export async function connectSquire(options: { hasBroker?: () => Promise<boolean
   options.signal?.throwIfAborted();
   await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], false, options.signal, env);
   await probe();
+  return 'installed' as const;
 }
 export async function preflight(run = command) {
   const major = Number(process.versions.node.split('.')[0]);
@@ -410,14 +411,17 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
   if (add === '') throw new Error('Specify a provider name or base URL');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
   if (add && !providerURL(add) && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}, or paste an OpenAI-compatible base URL`);
-  const table = new SetupTable();
+  // Preliminary steps print as plain lines. The table appears once, for the
+  // signups, and stays in place until setup ends.
+  const table = new SetupTable(process.stdout, { live: false });
   const squire = actions.createSquire?.();
   let session: Awaited<ReturnType<typeof beginSetupSession>> | undefined;
-  let connection: Promise<void> | undefined;
+  let connection: Promise<unknown> | undefined;
   let closing: Promise<void> | undefined;
   const closeSquire = () => closing ??= (async () => { await squire?.close(); })();
   const abortSetup = () => { void closeSquire().catch(() => {}); };
-  const connect = () => connection ??= actions.connectSquire({ ...(squire ? { squire } : {}), ...(session ? { signal: session.signal } : {}) });
+  const connectState = () => connection ??= actions.connectSquire({ ...(squire ? { squire } : {}), ...(session ? { signal: session.signal } : {}) });
+  const connect = async () => { await connectState(); };
   // The setup table prints only the classified outcome for each provider.
   const notify = (_line: string) => {};
   try {
@@ -434,7 +438,10 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const sources = add ? knownAdapters.has(add) || add === 'nvidia'
       ? [...new Set([...(previous.length ? previous : defaults), add])]
       : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources });
+    let sharingNotice: string | undefined;
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources, notice: line => { sharingNotice = line; } });
+    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${DATA_SHARING_OPT_OUT})`
+      : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');
     squire?.approveDataSharing?.(consent.approved);
     const skipped = new Set(consent.skipped);
     const ids = requested.filter(id => !skipped.has(id));
@@ -443,7 +450,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     if (!ids.length) return;
     const port = await setupPort();
     if (add) {
-      if (add !== 'nous') await connect();
+      if (add !== 'nous') { await connect(); console.log('✓ Trusty Squire: signed in'); }
+      table.start();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved });
         await actions.installService(sources.filter(id => !skipped.has(id)));
@@ -452,6 +460,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         await actions.checkFallbackServices(unavailable, port, notify, [add]);
         table.set('source', add, unavailable.includes(add) ? 'skipped (key test failed)' : '✓ ready');
       } catch (error) { table.set('source', add, `skipped (${squire?.signupFailure(add) ?? setupFailureReason(error)})`); throw error; }
+      table.finish();
       console.log('Ready');
       return;
     }
@@ -467,6 +476,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     session.signal.throwIfAborted();
     await actions.installService(pool, { signal: session.signal });
     await actions.checkService(port);
+    console.log(`✓ local service: running on port ${port}`);
     const unavailable: string[] = [];
     let activeChecks = 0;
     const queuedChecks: (() => void)[] = [];
@@ -523,7 +533,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         signal: session!.signal, dataSharingApproved: consent.approved, ...(squire ? { squire } : {}), ...(kiloAccount ? { kiloAccount } : {}) });
       await parallelMap(adapters, id => onSettled(id, !outcome.unavailable.includes(id)));
     };
-    if (!revised) await provision(ids);
+    if (!revised) { table.start(); await provision(ids); }
     else {
       const ordered = ['kilo', 'pollinations', 'beatapi', 'zro', 'tokenharbor', 'runcrate', ...ids];
       const remaining = [...new Set(ordered)].filter(id => ids.includes(id));
@@ -549,7 +559,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           if (!await (actions.probeOperator ?? probeSetupOperator)(port, source, session!.signal)) return false;
           await configure();
           useOperator();
-          console.log(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
+          table.step(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
           return true;
         } catch { session!.signal.throwIfAborted(); return false; }
       };
@@ -571,19 +581,23 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await runHarness('opencode', ['run', '--pure', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
           useOperator(true);
           driving = Boolean(squire);
-          console.log('✓ model: OpenCode free');
+          table.step('✓ model: OpenCode free');
         } catch { session.signal.throwIfAborted(); }
       }
-      if (!driving && harness) console.log('… operator: no working anonymous model; using Squire');
+      if (!driving && harness) console.log(skipAnonymous ? `– operator: anonymous Kilo off (GRUNT_SETUP_NO_ANONYMOUS=1); using Squire`
+        : '… operator: no working anonymous model; using Squire');
       if (remaining.length) {
-        try { await connect(); console.log('✓ squire: signed in'); }
-        catch (error) { console.log(`✗ squire: ${setupFailureReason(error)}`); }
+        try {
+          const state = await connectState();
+          console.log(state === 'installed' ? '✓ Trusty Squire: installed and signed in' : '✓ Trusty Squire: already set up and signed in, skipped');
+        } catch (error) { console.log(`✗ Trusty Squire: ${setupFailureReason(error)}`); }
       }
+      table.start();
       const checkOperator = () => {
         if (!operatorFailure) return;
         driving = false;
         squire?.useSignupAgent(undefined);
-        console.log(`… operator: ${operatorFailure}; using Squire`);
+        table.step(`… operator: ${operatorFailure}; using Squire`);
         operatorFailure = undefined;
       };
       // With a harness, a Jev-only bootstrap tries every provider before it
@@ -592,7 +606,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       if (harness) squire?.deferHandoff?.(true);
       for (const id of remaining) {
         checkOperator();
-        if (!driving && harness && id !== 'opencode') console.log(`… bootstrap: ${id} via Squire`);
+        if (!driving && harness && id !== 'opencode') table.step(`… bootstrap: ${id} via Squire`);
         await provision([id], id === 'kilo');
         if (!driving && id !== 'opencode') driving = await activate(id, true);
         if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) deferred.push(id);
@@ -612,8 +626,12 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     session.signal.throwIfAborted();
     if (!readyCount) throw new Error('No adapters passed verification. Run usegrunt setup to resume.');
     if (plan?.discoverLater && actions.connectHarnesses) await actions.connectHarnesses(port, { table });
+    table.finish();
+    const needsYou = table.rowsWith('needs you');
+    console.log(`${readyCount} ready${needsYou.length ? `; needs you: ${needsYou.join(', ')}` : ''}`);
     console.log('Ready');
   } finally {
+    table.finish();
     session?.signal.removeEventListener('abort', abortSetup);
     try { await closeSquire(); }
     finally { await session?.close(); }

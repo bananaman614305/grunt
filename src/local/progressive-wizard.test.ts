@@ -323,8 +323,9 @@ it.each([true, false])('checks anonymous access before Squire and signups (harne
   expect(signupHarness).toHaveBeenCalledTimes(Number(available));
   expect(log.mock.calls.map(call => call[0])).toEqual([
     available ? '✓ harness: pi' : '… harness: Squire with human handoff',
+    '✓ data sharing: on, no new sources', '✓ local service: running on port 8788',
     ...(available ? ['✓ model: grunt (kilo anonymous)'] : []),
-    '✓ squire: signed in', 'Ready'
+    '✓ Trusty Squire: already set up and signed in, skipped', '1 ready; needs you: zro', 'Ready'
   ]);
 });
 
