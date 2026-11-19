@@ -268,7 +268,7 @@ it('leaves an unapproved explicit source out of unattended default setup and add
   try {
     const first = stubActions([], { approveDataSharing });
     await wizard(undefined, first);
-    const others = defaultIds().filter(id => !['kilo', 'nous'].includes(id));
+    const others = defaultIds().filter(id => !['kilo', 'nous', 'kenari'].includes(id));
     expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
     expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
     expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);
@@ -279,6 +279,18 @@ it('leaves an unapproved explicit source out of unattended default setup and add
     expect(add.setup).not.toHaveBeenCalled();
     expect(add.installService).not.toHaveBeenCalled();
   } finally { delete policy.approval; }
+});
+it('groups Kenari and Nous consent before automatic setup', async () => {
+  const approve = vi.fn(async (options: Parameters<typeof approveDataSharing>[0]) => {
+    await recordDataSharingConsent(consentDir, options.providers);
+    return approvedBatch(options);
+  });
+  const actions = stubActions([], { approveDataSharing: approve });
+  await wizard(undefined, actions);
+  expect(approve).toHaveBeenCalledTimes(1);
+  expect(approve.mock.calls[0]?.[0].providers).toEqual(expect.arrayContaining(['kenari', 'nous']));
+  expect(await readDataSharingConsent(consentDir, ['kenari', 'nous'])).toEqual(expect.arrayContaining(['kenari', 'nous']));
+  expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: expect.arrayContaining(['kenari', 'nous']) }));
 });
 it('connects Kilo and restarts the daemon before reporting success', async () => {
   const order: string[] = [];
