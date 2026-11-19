@@ -9,9 +9,9 @@ const idOf = (name: string) => name.toLowerCase().replace(/\s+/g, "");
 const texts = (pattern: RegExp) => [...html.matchAll(pattern)].map((m) => m[1].trim());
 
 describe("grunt.run landing page", () => {
-  it("leads with the pooled-usage hero", () => {
+  it("leads with the too-free-to-meter hero", () => {
     const h1 = html.match(/<h1>([\s\S]*?)<\/h1>/)?.[1] ?? "";
-    expect(h1).toContain('<span class="sr">No limits exist when usage is pooled together.</span>');
+    expect(h1).toContain('<span class="sr">Intelligence too free to meter.</span>');
   });
 
   it("ends with only the CTA line, the setup command and the miner", () => {
