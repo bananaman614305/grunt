@@ -54,7 +54,17 @@ export class Kenari implements Source {
 
   async available() {
     if (!await this.approved()) return false;
-    try { return await this.hasFreeRoute(await this.grant()); } catch { return false; }
+    try {
+      const grant = await this.grant();
+      // The model catalogue is public. Use an authenticated, read-only
+      // endpoint as well so a revoked upstream key cannot look installed.
+      const response = await diagnosticFetch(this.fetcher, this.id, 'account')(`${grant.base_url}/v1/usage`, {
+        headers: { Authorization: `Bearer ${grant.token}` }, redirect: 'error',
+        signal: AbortSignal.any([AbortSignal.timeout(5000), this.shutdown.signal])
+      });
+      await response.body?.cancel();
+      return response.ok && await this.hasFreeRoute(grant);
+    } catch { return false; }
   }
 
   async complete(request: ModelRequest, caller: AbortSignal) {

@@ -1029,7 +1029,7 @@ export async function bootstrapKilo(squire: SetupSquire, directory: string, noti
   if (result.dropped.length) throw new SetupFailure('no verified Kilo credential');
 }
 
-export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[] } = {}) {
+export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void> } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
@@ -1051,8 +1051,9 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
       providers = providers.filter(provider => provider !== 'nous');
     }
     if (providers.includes('kenari')) {
-      if (!options.background) await owned?.connect();
-      await setupKenari({ directory: location, squire, notify, background: options.background ?? false, ...(options.signal ? { signal: options.signal } : {}) });
+      await setupKenari({ directory: location, squire, notify, background: options.background ?? false,
+        connect: async () => { if (options.connect) await options.connect(); else await owned?.connect(); },
+        ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'kenari');
     }
     // Idle sync only reuses verified state for these guarded sources. It never

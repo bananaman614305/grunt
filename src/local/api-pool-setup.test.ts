@@ -139,9 +139,9 @@ it.each([false, true])('preserves the foreground/background intent at the fallba
   for (const provider of providers) expect(setupProvider).toHaveBeenCalledWith(expect.any(Function), [provider], expect.objectContaining({ background, directory: location, squire }));
 });
 
-it('covers all eleven cold-start setup jobs using one reusable connection and no retired installers', async () => {
+it('covers parallel cold-start setup jobs using one reusable connection and no retired installers', async () => {
   const location = await directory(), squire = client();
-  const providers = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'];
+  const providers = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch', 'kenari'];
   await recordDataSharingConsent(location, providers);
   const signal = new AbortController().signal, notify = vi.fn(), connect = vi.fn(async () => {}), run = vi.fn(async () => {}), verify = vi.fn(async () => {});
   const setupProvider = vi.fn(async (_notify: (line: string) => void, _providers: string[], _options?: Parameters<typeof setup>[2]) => ({}));

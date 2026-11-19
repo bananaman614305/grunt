@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createLocalApp } from './api.js';
+import { bundledRegistry } from '../registry.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { Kenari, KENARI_FREE_MODEL } from './kenari.js';
 import { Sources } from './source.js';
@@ -23,6 +24,13 @@ it('does not make any request before current provider consent', async () => {
   await expect(kenari.available()).resolves.toBe(false);
   await expect(kenari.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
   expect(fetcher).not.toHaveBeenCalled();
+});
+
+it('does not treat the public catalogue as evidence that a revoked key is installed', async () => {
+  await recordDataSharingConsent(directory, ['kenari']);
+  const fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 401 }));
+  await expect(source(fetcher).available()).resolves.toBe(false);
+  expect(fetcher).toHaveBeenCalledExactlyOnceWith(`${grant.base_url}/v1/usage`, expect.objectContaining({ redirect: 'error' }));
 });
 
 it('uses only the exact free route and returns its native tools through Grunt', async () => {
@@ -62,6 +70,24 @@ it('retains the quota delay and does not retry inside the adapter', async () => 
     .mockImplementationOnce(async () => new Response(null, { status: 429, headers: { 'Retry-After': '25' } }));
   await expect(source(fetcher).complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 25 });
   expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('falls through from a registered Kenari quota error to another free source', async () => {
+  await recordDataSharingConsent(directory, ['kenari']);
+  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/v1/chat/completions')
+    ? new Response(null, { status: 429, headers: { 'Retry-After': '25' } })
+    : String(url).endsWith('/v1/usage') ? Response.json({ object: 'usage.summary' }) : catalog());
+  const fallback = { id: 'kilo', supportsFunctionTools: true,
+    available: async () => true, complete: vi.fn(async () => ({ text: 'fallback reply' })) };
+  const registry = { ...bundledRegistry, adapters: ['kenari', 'kilo'].map(id => ({
+    ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, tier: 'stable' as const, weight: 0.5
+  })) };
+  const sources = new Sources([source(fetcher), fallback], { registry: () => registry, random: () => 0 });
+  try {
+    expect(await sources.complete({ ...request, model: 'grunt' }, new AbortController().signal)).toEqual({ text: 'fallback reply' });
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/v1/chat/completions'))).toHaveLength(1);
+    expect(fallback.complete).toHaveBeenCalledOnce();
+  } finally { await sources.close(); }
 });
 
 it('rejects replies that report the paid model ID', async () => {

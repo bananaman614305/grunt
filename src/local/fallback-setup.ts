@@ -198,9 +198,8 @@ export async function setupFallbacks(options: {
         options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       kenari: async () => { try {
-        if (!options.background) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['kenari'], { squire: squire as SetupSquire, directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('kenari', error);
         options.notify('Kenari free setup is pending. Other routes remain available.');

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-11-18
+
+### Added
+
+- Add Kenari's free ERNIE 5.5 Flash to the default provider pool. Grunt uses the exact free route, checks that it still supports native tools, and honors provider quota delays when switching sources. Setup reuses a verified Squire grant or connects the account after grouped data-sharing approval.
+
 ## [0.7.9] - 2026-11-18
 
 ### Changed
