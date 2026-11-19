@@ -287,10 +287,13 @@ export async function setupFallbacks(options: {
         options.notify('Perch Starter setup needs attention. Rerun usegrunt setup; other free routes continue.');
       } },
       nous: async () => { try {
-        await (options.setupProvider ?? setup)(options.notify, ['nous'], { directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
-      } catch {
+        await (options.setupProvider ?? setup)(options.notify, ['nous'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
         unavailable.push('nous');
+        // Prefer the Nous reason over Squire's browser reason: the table shows
+        // that the person needs to finish the Nous login.
+        failures.set('nous', setupFailureReason(error));
         options.notify('Nous setup needs Hermes device approval or an official Hermes installation; other free routes continue.');
       } },
       nvidia: async () => { try {

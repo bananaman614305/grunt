@@ -261,9 +261,17 @@ const stubActions = (order: string[], overrides: Record<string, unknown> = {}) =
   approveDataSharing: vi.fn(approvedBatch),
   ...overrides
 });
-it('leaves an unapproved explicit source out of unattended default setup and add', async () => {
+it('enables explicit sources in unattended default setup without asking', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
+  const actions = stubActions([], { approveDataSharing });
+  await wizard(undefined, actions);
+  expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: expect.arrayContaining(['nous', 'kenari']) }));
+  expect(await readDataSharingConsent(consentDir, ['nous', 'kenari'])).toEqual(['nous', 'kenari']);
+});
+it('leaves explicit sources out of default setup and add with the data-sharing opt-out', async () => {
   const policy = dataSharingPolicies(['kilo'])[0]!;
   vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
+  vi.stubEnv('GRUNT_SETUP_NO_DATA_SHARING', '1');
   policy.approval = 'explicit';
   try {
     const first = stubActions([], { approveDataSharing });

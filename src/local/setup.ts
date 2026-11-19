@@ -1054,7 +1054,9 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
       providers = providers.filter(provider => provider !== 'kilo');
     }
     if (providers.includes('nous')) {
-      await setupNous({ directory: location, notify, background: options.background ?? false, ...(options.signal ? { signal: options.signal } : {}) });
+      await setupNous({ directory: location, notify, background: options.background ?? false, squire: squire as SetupSquire & Pick<BrowserSquire, 'signup'>,
+        connect: async () => { if (options.connect) await options.connect(); else if (owned) await owned.connect(); else if (squire instanceof BrowserSquire) await squire.connect(); },
+        ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'nous');
     }
     if (providers.includes('kenari')) {
