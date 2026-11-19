@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-11-18
+
+### Added
+
+- Add Numes GLM 5.3 Flash to the automatic free pool. Grunt uses a dedicated Squire key with a zero spending cap, pins the free model with zero price ceilings, and verifies the model and reported charge on each reply.
+
 ## [0.7.10] - 2026-11-18
 
 ### Added
