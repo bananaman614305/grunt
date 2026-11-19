@@ -126,7 +126,8 @@ export class SourceStatus {
       return result;
     } catch (error) {
       if (error instanceof SourceError && error.code === 'quota') {
-        if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota)) {
+        // Preserve a live completion throttle, but accept new evidence after it expires.
+        if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota || (entry.retryAt ?? 0) <= this.now())) {
           this.failed(source.id, 'quota', error.retryAfter);
           entry.availabilityQuota = true;
         }

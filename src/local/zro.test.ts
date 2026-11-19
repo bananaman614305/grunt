@@ -191,6 +191,33 @@ it('learns the Token Harbor allowance window on the first exhausted request and 
   } finally { await sources.close(); }
 });
 
+it('learns the weekly reset after an earlier short request cooldown expires', async () => {
+  const path = await directory();
+  await recordDataSharingConsent(path, ['tokenharbor']);
+  await writeTokenHarborGrant(grant, path);
+  let now = Date.parse('2026-11-21T03:04:18Z');
+  let reads = 0;
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (!String(url).endsWith('/free-tier')) return new Response(null, { status: 429, headers: { 'Retry-After': '30' } });
+    if (++reads === 2) return new Response(null, { status: 503 });
+    return Response.json({ models_enabled: true, exhausted: reads > 2,
+      period_started_at: '2026-11-15T03:04:18Z', reset_at: '2026-11-22T03:04:18Z' });
+  });
+  const sources = new Sources([new TokenHarbor({ directory: path, fetcher, now: () => now })], { registry: () => bundledRegistry, now: () => now });
+  const app = createLocalApp(sources);
+  const send = (content: string) => app.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, messages: [{ role: 'user', content }] })
+  });
+  try {
+    expect((await send('First synthetic request')).headers.get('retry-after')).toBe('30');
+    now += 30000;
+    expect((await send('Unrelated synthetic request')).headers.get('retry-after')).toBe('86370');
+    expect(sources.status().sources[0]).toMatchObject({ state: 'limited', retryAt: now + 86370000 });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  } finally { await sources.close(); }
+});
+
 it.each([false, true])('distinguishes a request-rate limit from an exhausted weekly allowance (%s)', async exhausted => {
   const path = await directory();
   await recordDataSharingConsent(path, ['tokenharbor']);

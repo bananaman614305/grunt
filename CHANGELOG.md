@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.17] - 2026-11-19
+
+### Fixed
+
+- Let Token Harbor's weekly allowance reset replace an expired short request cooldown when the allowance endpoint had been temporarily unavailable.
+
 ## [0.7.16] - 2026-11-19
 
 ### Changed
