@@ -18,6 +18,11 @@ interface Offer {
 interface Endpoint extends Offer {
   tag?: string; billing_currency?: string; max_prompt_tokens?: number;
 }
+interface Key {
+  disabled?: boolean; is_management_key?: boolean; limit?: number; limit_remaining?: number;
+  billing_currency?: string; limit_reset?: string | null;
+}
+const deepSeekKey = (key: Key) => key.billing_currency === 'USD' && key.limit_reset === null;
 const freeOffer = (entry: Offer) => Number(entry.context_length) >= 200_000
   && entry.pricing?.prompt === '0' && entry.pricing.completion === '0'
   && Object.values(entry.pricing).every(rate => rate === '0')
@@ -59,15 +64,14 @@ export class Numes implements Source {
     return this.hasDeepSeekOffer(base, headers, signal).catch(() => false);
   }
 
-  private async hasZeroSpendCap(base: string, headers: Headers, signal?: AbortSignal | null) {
+  private async zeroSpendKey(base: string, headers: Headers, signal?: AbortSignal | null) {
     const response = await diagnosticFetch(this.fetcher, this.id, 'account')(`${base}${prefix}/key`, {
       headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
     });
-    if (!response.ok) { await response.body?.cancel(); return false; }
-    const { data } = await response.json() as {
-      data?: { disabled?: boolean; is_management_key?: boolean; limit?: number; limit_remaining?: number };
-    };
-    return data?.disabled === false && data.is_management_key === false && data.limit === 0 && data.limit_remaining === 0;
+    if (!response.ok) { await response.body?.cancel(); return undefined; }
+    const { data } = await response.json() as { data?: Key };
+    if (data?.disabled === false && data.is_management_key === false && data.limit === 0 && data.limit_remaining === 0) return data;
+    return undefined;
   }
 
   private async hasDeepSeekOffer(base: string, headers: Headers, signal?: AbortSignal | null) {
@@ -92,15 +96,16 @@ export class Numes implements Source {
       const grant = await this.grant();
       const base = grant.base_url;
       const headers = new Headers({ Authorization: `Bearer ${grant.token}` });
-      if (!await this.hasZeroSpendCap(base, headers)) return false;
-      if (this.options.deepSeekFlash) return await this.hasDeepSeekOffer(base, headers);
+      const key = await this.zeroSpendKey(base, headers);
+      if (!key) return false;
+      if (this.options.deepSeekFlash) return deepSeekKey(key) && await this.hasDeepSeekOffer(base, headers);
       const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models`, {
         headers, redirect: 'error', signal: AbortSignal.timeout(5000)
       });
       if (!response.ok) { await response.body?.cancel(); return false; }
       const { data } = await response.json() as { data?: Offer[] };
       return (Array.isArray(data) && data.some(entry => entry.id === model && freeOffer(entry)))
-        || await this.deepSeekAvailable(base, headers);
+        || (deepSeekKey(key) && await this.deepSeekAvailable(base, headers));
     } catch { return false; }
   }
 
@@ -109,12 +114,11 @@ export class Numes implements Source {
     if (!url.endsWith(chatEndpoint) || typeof init?.body !== 'string') return new Response(null, { status: 403 });
     const base = url.slice(0, -chatEndpoint.length);
     const headers = new Headers(init.headers);
-    if (!await this.hasZeroSpendCap(base, headers, init.signal)) {
-      return new Response(null, { status: 403 });
-    }
-    const deepSeekFlash = this.options.deepSeekFlash
+    const key = await this.zeroSpendKey(base, headers, init.signal);
+    if (!key || (this.options.deepSeekFlash && !deepSeekKey(key))) return new Response(null, { status: 403 });
+    const deepSeekFlash = deepSeekKey(key) && (this.options.deepSeekFlash
       ? await this.hasDeepSeekOffer(base, headers, init.signal)
-      : await this.deepSeekAvailable(base, headers, init.signal);
+      : await this.deepSeekAvailable(base, headers, init.signal));
     if (this.options.deepSeekFlash && !deepSeekFlash) return new Response(null, { status: 503 });
     init.signal?.throwIfAborted();
     const body = JSON.parse(init.body) as Record<string, unknown>;

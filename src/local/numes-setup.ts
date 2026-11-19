@@ -20,7 +20,7 @@ export async function setupNumes(options: {
   if (!(await readDataSharingConsent(directory, [id])).includes(id)) throw new Error('Numes requires its current data-sharing approval');
   signal?.throwIfAborted();
   if (await new Numes({ directory }).available()) {
-    notify('Numes: verified free GLM 5.3 Flash access reused');
+    notify('Numes: verified free access reused');
     return;
   }
   if (options.background) throw new Error('Numes needs foreground setup to connect its free account');
@@ -54,7 +54,7 @@ export async function setupNumes(options: {
   if (!credential || matches.length !== 1) throw new Error('Numes needs one unambiguous free-route vault credential');
   signal?.throwIfAborted();
   const grant = validateProviderGrant(await squire.credentials.grant(credential.reference));
-  if (!await new Numes({ directory, loadGrant: async () => grant }).available()) throw new Error('Numes free GLM 5.3 Flash is unavailable');
+  if (!await new Numes({ directory, loadGrant: async () => grant }).available()) throw new Error('Numes free routes are unavailable');
   signal?.throwIfAborted();
 
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -64,5 +64,5 @@ export async function setupNumes(options: {
     signal?.throwIfAborted();
     await rename(temporary, join(directory, 'numes.json'));
   } finally { await rm(temporary, { force: true }); }
-  notify('Numes: exact free GLM 5.3 Flash route connected through Trusty Squire');
+  notify('Numes: verified free route connected through Trusty Squire');
 }

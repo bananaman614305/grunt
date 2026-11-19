@@ -12,7 +12,7 @@ const request = {
   model: 'numes', messages: [{ role: 'user', content: 'Hello' }],
   tools: [], cwd: '/', stream: false, maxTokens: 128
 };
-const zeroCap = { disabled: false, is_management_key: false, limit: 0, limit_remaining: 0 };
+const zeroCap = { disabled: false, is_management_key: false, limit: 0, limit_remaining: 0, billing_currency: 'USD', limit_reset: null };
 const offer = { id: model, context_length: 1048576, pricing: { prompt: '0', completion: '0', request: '0' }, supported_parameters: ['tools'] };
 const deepSeekEndpoint = 'amazee-ai-5149fc8341b341f3a6ebe026ae44f7c7/token-factory-df2d2988c4514d66a143237f387d4e64';
 const endpoint = { ...offer, tag: deepSeekEndpoint, billing_currency: 'USD', max_prompt_tokens: 917504, supported_parameters: ['tools', 'max_tokens'] };
@@ -175,5 +175,20 @@ it('keeps using GLM when the exact DeepSeek endpoint is missing', async () => {
     .mockResolvedValueOnce(new Response(null, { status: 404 }))
     .mockResolvedValueOnce(Response.json({ model, choices: [{ message: { content: 'hello' } }], usage: { cost: 0 } }));
   await expect(source(fetcher).complete(request, new AbortController().signal)).resolves.toMatchObject({ text: 'hello' });
+  expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)).model).toBe(model);
+});
+
+it.each([{ billing_currency: 'BTC' }, { limit_reset: 'daily' }])('blocks DeepSeek for an ineligible zero-cap key', async fields => {
+  await recordDataSharingConsent(directory, ['numes', NUMES_DEEPSEEK_FLASH_CONSENT]);
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ data: { ...zeroCap, ...fields } }))
+    .mockResolvedValueOnce(Response.json({ data: { ...zeroCap, ...fields } }))
+    .mockResolvedValueOnce(Response.json({ model, choices: [{ message: { content: 'hello' } }], usage: { cost: 0 } }));
+  const signal = new AbortController().signal;
+  await expect(source(fetcher, true).complete(request, signal)).rejects.toMatchObject({ code: 'refused' });
+  await expect(source(fetcher).complete(request, signal)).resolves.toMatchObject({ text: 'hello' });
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+    'https://api.numes.ai/api/v1/key', 'https://api.numes.ai/api/v1/key', 'https://api.numes.ai/api/v1/chat/completions'
+  ]);
   expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)).model).toBe(model);
 });
