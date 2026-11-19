@@ -6,6 +6,8 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { diagnosticFetch } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { validateProviderGrant } from './provider-grant.js';
+import { calendarQuotaDelay } from './quota-policy.js';
+import { quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { Gateway, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
@@ -84,9 +86,11 @@ export class Kenari implements Source {
       const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
       const response = await send(url, { ...init, body: JSON.stringify({ ...requestBody, model: KENARI_FREE_MODEL }) });
       if (!response.ok) {
-        const delay = response.headers.get('retry-after');
-        if (delay && /^\d+$/.test(delay)) retryAfter = Math.max(1, Number(delay));
-        await response.body?.cancel();
+        retryAfter = quotaRetryAfter(response.headers.get('Retry-After'));
+        if (response.status === 429 && retryAfter === undefined) {
+          const error = quotaObject((await readQuotaError(response)).error);
+          if (error.code === 'free_quota_daily') retryAfter = calendarQuotaDelay(this.id);
+        } else await response.body?.cancel();
         return new Response(null, { status: response.status });
       }
       const body = await response.clone().json() as { model?: string };

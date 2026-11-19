@@ -14,6 +14,7 @@ export class RegistrySource implements Source {
   private listed() { return this.registry().adapters.some(adapter => adapter.id === this.id); }
   async available() { return this.listed() && await this.source.available(); }
   quotaWindow() { return this.source.quotaWindow?.(); }
+  sellerQuota() { return this.source.sellerQuota?.(); }
   async healthCheck() { return this.listed() && await (this.source.healthCheck?.() ?? this.source.available()); }
   complete(request: ModelRequest, signal: AbortSignal) {
     signal.throwIfAborted();

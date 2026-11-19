@@ -1,3 +1,4 @@
+import { sellerQuota } from '../local/quota-policy.js';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -134,6 +135,8 @@ export function projectCollectorSnapshot(value: unknown) {
         && window.resetAt > window.startedAt && window.resetAt - window.startedAt <= 31 * 86400000) {
       item.quotaWindow = { startedAt: window.startedAt, resetAt: window.resetAt };
     }
+    const limits = source.id === 'antseed-vikey' ? sellerQuota(source.sellerQuota) : undefined;
+    if (limits) item.sellerQuota = limits;
     sources.push(item);
   }
   let workers;

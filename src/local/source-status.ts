@@ -1,5 +1,6 @@
 import type { Completion, ErrorCode, ModelRequest, QuotaWindow, Source } from './source.js';
 import { SourceError } from './source.js';
+import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
@@ -17,6 +18,9 @@ export interface SourceSnapshot {
   retryAt?: number;
   supportsFunctionTools?: boolean;
   quotaWindow?: QuotaWindow;
+  quotaPolicy?: NonNullable<ReturnType<typeof providerQuotaPolicy>>;
+  scheduledQuotaRefillAt?: number;
+  sellerQuota?: SellerQuota;
   errorCode?: ErrorCode;
   detail?: string;
   maintenance?: MaintenanceEntry;

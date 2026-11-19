@@ -90,6 +90,17 @@ it('projects both known opt-in sources and their worker status without admitting
   expect(observed.workers?.active).toEqual(active);
 });
 
+it('exports numeric Vikey base limits without seller or wallet identifiers', () => {
+  const snapshot = projectCollectorSnapshot({ version: 1, updatedAt: Date.now(), activeRequests: 0, sources: [
+    { id: 'antseed-vikey', state: 'available', active: 0, sellerQuota: { perAddress: 10, perIp: 100, windowSeconds: 86400, wallet: 'private' } },
+    { id: 'zro', state: 'available', active: 0, sellerQuota: { perAddress: 100, windowSeconds: 86400 } }
+  ] });
+  expect(snapshot.sources).toEqual([
+    { id: 'antseed-vikey', state: 'available', active: 0, sellerQuota: { perAddress: 10, perIp: 100, windowSeconds: 86400 } },
+    { id: 'zro', state: 'available', active: 0 }
+  ]);
+});
+
 it('projects provider quota windows without arbitrary account metadata', () => {
   const startedAt = now - 86400000, resetAt = startedAt + 7 * 86400000;
   const sources = [

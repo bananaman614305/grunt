@@ -1,4 +1,5 @@
 import { gruntEnv, configRoot } from '../brand.js';
+import { providerQuotaPolicy, scheduledQuotaRefill, sellerQuota } from './quota-policy.js';
 import { Chalk } from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
 import { constants } from 'node:fs';
@@ -146,7 +147,8 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
       if (maintenance.lastCheckedAt !== undefined) add(chalk.gray(fit(`Last check: ${new Date(maintenance.lastCheckedAt).toISOString()}`, columns)));
       add(chalk.gray(fit(`Next check: ${offline ? 'status stale' : maintenance.nextCheckAt > now ? `in ${countdown(maintenance.nextCheckAt, now)}` : 'due'}`, columns)));
     }
-    add(chalk.gray(fit('Credit balance: not reported', columns)));
+    const quota = selected.quotaPolicy ?? providerQuotaPolicy(selected.id);
+    add(chalk.gray(fit(quota ? `Free quota · ${quota.detail}` : 'Credit balance: not reported', columns)));
   }
   add(); add(chalk.gray('─'.repeat(columns)));
   if (!offline && (approvals.size || options.approvalCount)) {
@@ -197,6 +199,15 @@ export function parseStatus(value: unknown): PoolSnapshot {
     if (typeof source.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(source.id) || ids.has(source.id) || typeof source.state !== 'string' || !states.has(source.state) || !number(source.active)) throw new Error('Invalid local source status');
     ids.add(source.id);
     const result = { id: source.id, state: source.state, active: source.active } as SourceSnapshot;
+    const policy = providerQuotaPolicy(source.id);
+    if (policy) result.quotaPolicy = policy;
+    const refillAt = scheduledQuotaRefill(source.id, item.updatedAt as number);
+    if (refillAt !== undefined) result.scheduledQuotaRefillAt = refillAt;
+    const limits = source.id === 'antseed-vikey' ? sellerQuota(source.sellerQuota) : undefined;
+    if (limits) result.sellerQuota = limits;
+    const window = source.quotaWindow as { startedAt?: unknown; resetAt?: unknown } | null | undefined;
+    if (number(window?.startedAt) && number(window?.resetAt) && window.resetAt > window.startedAt
+      && window.resetAt - window.startedAt <= 31 * 86400000) result.quotaWindow = { startedAt: window.startedAt, resetAt: window.resetAt };
     if (source.maintenance !== undefined) result.maintenance = parseMaintenance(source.maintenance);
     if (source.modelKind !== undefined) {
       if (source.modelKind !== 'registry') throw new Error('Invalid local source status');

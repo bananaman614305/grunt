@@ -1,4 +1,6 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
+import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
+import type { SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext } from './diagnostics.js';
@@ -33,6 +35,7 @@ export interface Source {
   reportsOutput?: boolean;
   available(): Promise<boolean>;
   quotaWindow?(): QuotaWindow | undefined;
+  sellerQuota?(): SellerQuota | undefined;
   healthCheck?(): Promise<boolean>;
   complete(request: ModelRequest, signal: AbortSignal, output?: () => void): Promise<Completion>;
   // Called after a failed request (not a cancellation). Must not block.
@@ -134,8 +137,14 @@ export class Sources {
     for (const row of snapshot.sources) {
       const source = this.sources.find(candidate => candidate.id === row.id);
       if (source) row.supportsFunctionTools = toolCapable(source);
+      const policy = providerQuotaPolicy(row.id);
+      if (policy) row.quotaPolicy = policy;
+      const refillAt = scheduledQuotaRefill(row.id, snapshot.updatedAt);
+      if (refillAt !== undefined) row.scheduledQuotaRefillAt = refillAt;
       const window = source?.quotaWindow?.();
       if (window) row.quotaWindow = { ...window };
+      const advertised = source?.sellerQuota?.();
+      if (advertised) row.sellerQuota = { ...advertised };
       const entry = maintenance?.[row.id];
       if (entry) row.maintenance = { ...entry };
     }

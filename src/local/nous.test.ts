@@ -83,6 +83,20 @@ it('performs no network access when the user has not approved Nous', async () =>
   } finally { await source.close(); }
 });
 
+it('learns the longest grounded reset from the Nous quota response', async () => {
+  await recordDataSharingConsent(directory, ['nous']);
+  const { source, fetcher } = fixture();
+  fetcher.mockImplementation(async input => String(input).endsWith('/models')
+    ? Response.json({ data: [free] })
+    : Response.json({ error: { resets_in_seconds: 180, message: 'private-error' } }, {
+      status: 429, headers: { 'x-ratelimit-reset-requests-1h': '240', 'Retry-After': '60' }
+    }));
+  try {
+    await expect(source.complete({ model: 'nous', messages: [], tools: [] }, AbortSignal.timeout(1000)))
+      .rejects.toMatchObject({ code: 'quota', retryAfter: 240, message: 'nous returned HTTP 429' });
+  } finally { await source.close(); }
+});
+
 it('requires zero paid entitlement, funds and subscription charges', () => {
   const access = { allowed: false, paid_access: false, has_active_subscription: false,
     active_subscription_is_paid: false, subscription_credits_remaining: 0,
