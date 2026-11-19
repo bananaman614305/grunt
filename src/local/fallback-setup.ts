@@ -197,6 +197,14 @@ export async function setupFallbacks(options: {
         failedSetup('zro', error);
         options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
+      kenari: async () => { try {
+        if (!options.background) await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['kenari'], { squire: squire as SetupSquire, directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('kenari', error);
+        options.notify('Kenari free setup is pending. Other routes remain available.');
+      } },
       tokenharbor: async () => { try {
         await connect();
         if (!squire.runs) throw new Error('Provider signup requires Squire');

@@ -268,7 +268,7 @@ it('leaves an unapproved explicit source out of unattended default setup and add
   try {
     const first = stubActions([], { approveDataSharing });
     await wizard(undefined, first);
-    const others = defaultIds().filter(id => !['kilo', 'nous'].includes(id));
+    const others = defaultIds().filter(id => !['kilo', 'nous', 'kenari'].includes(id));
     expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
     expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
     expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);

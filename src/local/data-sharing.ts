@@ -65,6 +65,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   disclosure: 'Prompts, outputs and tool context may be retained, shared with model providers and other partners, and used for training, product improvement and support. Nous offers optional Privacy Mode for some payloads. Upstream retention and training limits are unverified.',
   url: 'https://portal.nousresearch.com/privacy',
   approval: 'explicit'
+}, {
+  provider: 'kenari', name: 'Kenari ERNIE 5.5 Flash Free', version: '2026-11-18',
+  disclosure: 'Kenari records model and usage metadata and says it does not store prompt or response content. It forwards request and tool context to the upstream model provider. Upstream retention, review and training policies are unverified.',
+  url: 'https://kenari.id/privacy',
+  approval: 'explicit'
 }];
 
 const fileName = 'data-sharing-consent.json';
