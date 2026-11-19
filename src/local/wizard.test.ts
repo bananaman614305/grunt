@@ -319,6 +319,13 @@ it('does not restart the daemon or report success when Kilo setup fails', async 
   await expect(wizard('kilo', actions)).rejects.toThrow('No Kilo access');
   expect(actions.installService).not.toHaveBeenCalled();
 });
+it('requests a BeatAPI model upgrade on explicit add', async () => {
+  const actions = stubActions([], { installedSources: async () => 'opencode,beatapi' });
+  await wizard('beatapi', actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['beatapi'],
+    expect.objectContaining({ upgradeBeatAPI: true }));
+  expect(actions.installService).toHaveBeenCalledWith(['opencode', 'beatapi']);
+});
 it.each([
   ['freebuff', 'opencode', 'kilo'],
   ['freellmapi', 'kilo', 'freebuff', 'opencode']

@@ -464,7 +464,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       if (add !== 'nous') { await connect(); console.log('✓ Trusty Squire: signed in'); }
       table.start();
       try {
-        await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved });
+        await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved,
+          ...(add === 'beatapi' ? { upgradeBeatAPI: true } : {}) });
         await actions.installService(sources.filter(id => !skipped.has(id)));
         await actions.checkService(port);
         const unavailable: string[] = [];

@@ -266,7 +266,7 @@ export async function setupFallbacks(options: {
         if (!options.background) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['beatapi'], { squire: squire as SetupSquire, directory: options.directory,
           background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
-        options.notify('BeatAPI: free DeepSeek V4.1 Flash access connected through Squire');
+        options.notify('BeatAPI: verified free access connected through Squire');
       } catch (error) {
         failedSetup('beatapi', error);
         options.notify('BeatAPI free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');

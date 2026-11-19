@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-11-18
+
+### Added
+
+- Add GLM 5.3 Flash to BeatAPI's free rotation after setup verifies both models. DeepSeek and GLM share one request cooldown and the same zero-charge account checks. Existing DeepSeek-only setups can enable both with `usegrunt add beatapi`.
+
 ## [0.7.12] - 2026-11-18
 
 ### Changed
