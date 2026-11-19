@@ -66,9 +66,9 @@ it('refreshes the default enablement receipt when a provider policy changes', as
   expect(prompt).not.toHaveBeenCalled();
 });
 
-it.each([false, Symbol('cancel')])('enables sharing providers regardless of a legacy prompt result', async answer => {
+it('enables sharing providers in an interactive terminal', async () => {
   const path = await directory();
-  expect(await approveDataSharing({ directory: path, providers: ['zro', 'livekit', ...sharingIds], interactive: true, prompt: async () => answer })).toEqual({ approved: sharingIds, skipped: [] });
+  expect(await approveDataSharing({ directory: path, providers: ['zro', 'livekit', ...sharingIds], interactive: true })).toEqual({ approved: sharingIds, skipped: [] });
   expect(await readDataSharingConsent(path, sharingIds)).toEqual(sharingIds);
   expect(JSON.parse(await readFile(join(path, 'data-sharing-consent.json'), 'utf8')).approved).toHaveProperty('kilo');
 });
@@ -80,35 +80,38 @@ it('enables a noninteractive setup batch without asking', async () => {
   expect(prompt).not.toHaveBeenCalled();
 });
 
-it('prompts once for explicit sources and asks again only for a changed explicit policy', async () => {
+it('enables Nous and Kenari in an interactive terminal without asking and prints one notice', async () => {
+  const { confirm } = await import('@clack/prompts');
   const path = await directory();
-  const add = (provider: string) => (DATA_SHARING_POLICIES as DataSharingPolicy[]).push({
-    provider, name: provider, version: '1', disclosure: 'Synthetic data terms.', url: 'https://example.test/privacy', approval: 'explicit'
-  });
-  add('explicit-one'); add('explicit-two');
-  const providers = ['tokenharbor', 'explicit-one', 'explicit-two'];
-  const prompt = vi.fn(async (_policies: readonly DataSharingPolicy[]) => true);
-  expect(await approveDataSharing({ directory: path, providers, prompt })).toEqual({ approved: providers, skipped: [] });
-  expect(prompt.mock.calls[0]?.[0].map(policy => policy.provider)).toEqual(['explicit-one', 'explicit-two']);
-  expect(await approveDataSharing({ directory: path, providers, prompt })).toEqual({ approved: providers, skipped: [] });
-  expect(prompt).toHaveBeenCalledOnce();
-  DATA_SHARING_POLICIES.find(policy => policy.provider === 'explicit-two')!.version = '2';
-  await approveDataSharing({ directory: path, providers, prompt });
-  expect(prompt.mock.calls[1]?.[0].map(policy => policy.provider)).toEqual(['explicit-two']);
+  const notice = vi.fn();
+  const providers = ['tokenharbor', 'nous', 'kenari'];
+  expect(await approveDataSharing({ directory: path, providers, interactive: true, env: {}, notice })).toEqual({ approved: providers, skipped: [] });
+  expect(confirm).not.toHaveBeenCalled();
+  expect(await readDataSharingConsent(path, providers)).toEqual(providers);
+  expect(notice).toHaveBeenCalledOnce();
+  expect(notice.mock.calls[0]![0]).toMatch(/^Data sharing on: nous, kenari\. Off: GRUNT_SETUP_NO_DATA_SHARING=1$/);
+  await approveDataSharing({ directory: path, providers, interactive: true, env: {}, notice });
+  expect(notice).toHaveBeenCalledOnce();
 });
 
-it.each([false, Symbol('cancel'), undefined])('keeps explicit sources off without approval (%s)', async answer => {
+it('re-enables only a changed explicit policy and says so again', async () => {
   const path = await directory();
-  (DATA_SHARING_POLICIES as DataSharingPolicy[]).push({
-    provider: 'explicit-source', name: 'Explicit source', version: '1', disclosure: 'Synthetic data terms.',
-    url: 'https://example.test/privacy', approval: 'explicit'
-  });
-  const prompt = vi.fn(async () => answer ?? true);
-  const providers = ['tokenharbor', 'explicit-source'];
-  expect(await approveDataSharing({ directory: path, providers, prompt, interactive: answer !== undefined }))
-    .toEqual({ approved: ['tokenharbor'], skipped: ['explicit-source'] });
-  expect(await readDataSharingConsent(path, providers)).toEqual(['tokenharbor']);
-  expect(prompt).toHaveBeenCalledTimes(answer === undefined ? 0 : 1);
+  const notice = vi.fn();
+  await approveDataSharing({ directory: path, providers: ['nous', 'kenari'], env: {}, notice });
+  DATA_SHARING_POLICIES.find(policy => policy.provider === 'kenari')!.version = 'changed';
+  expect(await readDataSharingConsent(path, ['nous', 'kenari'])).toEqual(['nous']);
+  expect(await approveDataSharing({ directory: path, providers: ['nous', 'kenari'], env: {}, notice })).toEqual({ approved: ['nous', 'kenari'], skipped: [] });
+  expect(notice.mock.calls[1]![0]).toMatch(/on: kenari\./);
+});
+
+it('keeps explicit sources off and revokes their saved consent with the opt-out', async () => {
+  const path = await directory();
+  await approveDataSharing({ directory: path, providers: ['tokenharbor', 'nous', 'kenari'], env: {}, notice: () => {} });
+  const notice = vi.fn();
+  expect(await approveDataSharing({ directory: path, providers: ['tokenharbor', 'nous', 'kenari'], interactive: true, env: { GRUNT_SETUP_NO_DATA_SHARING: '1' }, notice }))
+    .toEqual({ approved: ['tokenharbor'], skipped: ['nous', 'kenari'] });
+  expect(await readDataSharingConsent(path, ['tokenharbor', 'nous', 'kenari'])).toEqual(['tokenharbor']);
+  expect(notice).not.toHaveBeenCalled();
 });
 
 it('does not trust an unsafe, linked, or malformed consent receipt', async () => {

@@ -438,7 +438,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     squire?.approveDataSharing?.(consent.approved);
     const skipped = new Set(consent.skipped);
     const ids = requested.filter(id => !skipped.has(id));
-    for (const id of requested) if (skipped.has(id)) table.set('source', id, 'skipped (approval required)');
+    for (const id of requested) if (skipped.has(id)) table.set('source', id, 'off (data sharing opt-out)');
     for (const id of ids) table.set('source', id, 'connecting');
     if (!ids.length) return;
     const port = await setupPort();

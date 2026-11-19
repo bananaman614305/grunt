@@ -2,7 +2,6 @@ import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { confirm } from '@clack/prompts';
 import { gruntEnv } from '../brand.js';
 
 export interface DataSharingPolicy {
@@ -106,14 +105,7 @@ export async function readDataSharingConsent(directory: string, providers: reado
   return dataSharingPolicies(providers).filter(policy => saved.approved[policy.provider]?.policy === fingerprint(policy)).map(policy => policy.provider);
 }
 
-// For default policies, interactive approval, or an explicitly authorized
-// operator's isolated qualification. Background setup only reads receipts.
-export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
-  const policies = dataSharingPolicies(providers);
-  if (!policies.length) return;
-  const saved = await receipt(directory);
-  const approvedAt = new Date().toISOString();
-  for (const policy of policies) saved.approved[policy.provider] = { policy: fingerprint(policy), approvedAt };
+async function writeReceipt(directory: string, saved: Receipt) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = join(directory, `${fileName}.${randomUUID()}.tmp`);
   try {
@@ -122,28 +114,49 @@ export async function recordDataSharingConsent(directory: string, providers: rea
   } finally { await rm(temporary, { force: true }); }
 }
 
+// Setup records these by default. Background setup only reads receipts.
+export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
+  const policies = dataSharingPolicies(providers);
+  if (!policies.length) return;
+  const saved = await receipt(directory);
+  const approvedAt = new Date().toISOString();
+  for (const policy of policies) saved.approved[policy.provider] = { policy: fingerprint(policy), approvedAt };
+  await writeReceipt(directory, saved);
+}
+
+async function revokeDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
+  const saved = await receipt(directory);
+  const present = providers.filter(provider => Object.hasOwn(saved.approved, provider));
+  if (!present.length) return;
+  for (const provider of present) delete saved.approved[provider];
+  await writeReceipt(directory, saved);
+}
+
+export const DATA_SHARING_OPT_OUT = 'GRUNT_SETUP_NO_DATA_SHARING=1';
+
 export interface DataSharingApprovalOptions {
   directory: string;
   providers: readonly string[];
+  // Kept for callers that pass terminal state. Setup never asks either way.
   interactive?: boolean;
-  prompt?: (policies: readonly DataSharingPolicy[]) => Promise<boolean | symbol>;
+  env?: NodeJS.ProcessEnv;
+  notice?: (line: string) => void;
 }
 
+// Setup enables every free source under its listed terms without asking.
+// GRUNT_SETUP_NO_DATA_SHARING=1 keeps the explicit-approval sources off.
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
   const policies = dataSharingPolicies(options.providers);
   const saved = new Set(await readDataSharingConsent(options.directory, options.providers));
-  const pending = policies.filter(policy => policy.approval === 'explicit' && !saved.has(policy.provider));
-  const interactive = options.interactive ?? Boolean(options.prompt || (process.stdin.isTTY && process.stdout.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1'));
-  let accepted = false;
-  if (pending.length && interactive) {
-    if (options.prompt) accepted = await options.prompt(pending) === true;
-    else {
-      for (const policy of pending) console.log(`${policy.name}\n${policy.disclosure}\n${policy.url}`);
-      accepted = await confirm({ message: 'Enable these free sources under the listed data-sharing terms?', initialValue: false }) === true;
-    }
+  const optOut = gruntEnv('SETUP_NO_DATA_SHARING', options.env) === '1';
+  const skipped = optOut ? policies.filter(policy => policy.approval === 'explicit').map(policy => policy.provider) : [];
+  if (skipped.length) await revokeDataSharingConsent(options.directory, skipped);
+  const approved = policies.map(policy => policy.provider).filter(provider => !skipped.includes(provider));
+  const added = approved.filter(provider => !saved.has(provider));
+  await recordDataSharingConsent(options.directory, added);
+  const explicit = policies.filter(policy => policy.approval === 'explicit' && added.includes(policy.provider));
+  if (explicit.length) {
+    (options.notice ?? console.log)(`Data sharing on: ${explicit.map(policy => policy.provider).join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);
   }
-  const skipped = new Set(accepted ? [] : pending.map(policy => policy.provider));
-  const approved = policies.map(policy => policy.provider).filter(provider => !skipped.has(provider));
-  await recordDataSharingConsent(options.directory, approved.filter(provider => !saved.has(provider)));
-  return { approved, skipped: [...skipped] };
+  return { approved, skipped };
 }

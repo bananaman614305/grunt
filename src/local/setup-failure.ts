@@ -12,6 +12,7 @@ export function setupFailureReason(error: unknown): string {
   if (/no (?:eligible|tool-capable) adapter|model pool unavailable/i.test(error.message)) return 'model pool unavailable';
   if (/quota|free usage limit|\b429\b/i.test(error.message)) return 'quota exhausted';
   if (/\b(?:refused|denied)\b/i.test(error.message)) return 'provider refused';
+  if (/Nous login needs you/.test(error.message)) return 'needs Nous login';
   if (/requires? .*approval/i.test(error.message)) return 'approval required';
   if (/needs? uv or Python/i.test(error.message)) return 'requires uv or a newer Python';
   if (/\b(?:not signed in|logged out|authentication|unauthorized|sign-in required)\b/i.test(error.message)) return 'sign-in required';
@@ -39,5 +40,6 @@ export function setupAttention(reason: string) {
     case 'needs SMS verification': return 'complete SMS verification in the browser';
     case 'browser requested an approval': return 'review the browser approval';
     case 'native CLI pairing incomplete': return 'complete the native CLI pairing';
+    case 'needs Nous login': return 'Nous login';
   }
 }
