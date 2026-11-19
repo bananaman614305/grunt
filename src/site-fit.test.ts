@@ -3,7 +3,8 @@
 // Talks to Chrome over the DevTools protocol with Node's built-in WebSocket,
 // so it needs no extra packages. Skips when no Chrome binary is found.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -73,25 +74,35 @@ class Cdp {
   once(method: string): Promise<void> {
     return new Promise((resolve) => this.events.push({ method, resolve }));
   }
+  closeBrowser(): boolean {
+    if (this.ws.readyState !== WebSocket.OPEN) return false;
+    // Chrome may close the socket before replying.
+    this.ws.send(JSON.stringify({ id: ++this.id, method: "Browser.close" }));
+    return true;
+  }
 }
 
 let chrome: ChildProcess | undefined;
+let chromeClosed: Promise<void> | undefined;
 let profile = "";
 let cdp: Cdp;
 let session = "";
 
 async function open(): Promise<void> {
   profile = mkdtempSync(join(tmpdir(), "site-fit-"));
-  chrome = spawn(CHROME!, ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--hide-scrollbars",
+  const browser = spawn(CHROME!, ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--hide-scrollbars",
     `--user-data-dir=${profile}`, "--remote-debugging-port=0", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  chrome = browser;
+  chromeClosed = new Promise((resolve) => browser.once("close", () => resolve()));
   const url = await new Promise<string>((resolve, reject) => {
     let err = "";
-    chrome!.stderr!.on("data", (d) => {
+    browser.stderr.on("data", (d) => {
       err += d;
       const m = err.match(/DevTools listening on (ws:\/\/\S+)/);
       if (m) resolve(m[1]);
     });
-    chrome!.on("exit", () => reject(new Error(`Chrome exited: ${err}`)));
+    browser.once("error", reject);
+    browser.once("exit", () => reject(new Error(`Chrome exited: ${err}`)));
   });
   const ws = new WebSocket(url);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
@@ -124,13 +135,19 @@ async function measure(size: (typeof SIZES)[number]): Promise<Measure> {
 describe.skipIf(!CHROME)("grunt.run fits one screen per section", () => {
   beforeAll(open, 30_000);
   afterAll(async () => {
-    if (chrome && chrome.exitCode === null) {
-      const exited = new Promise((resolve) => chrome!.once("exit", resolve));
-      chrome.kill();
-      await exited;
+    const browser = chrome;
+    if (browser?.pid && browser.exitCode === null && browser.signalCode === null) {
+      if (!cdp?.closeBrowser()) browser.kill();
+      const forceClose = setTimeout(() => browser.kill("SIGKILL"), 5_000);
+      try {
+        await chromeClosed;
+      } finally {
+        clearTimeout(forceClose);
+      }
     }
-    if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
-  });
+    await chromeClosed;
+    if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+  }, 20_000);
 
   for (const size of SIZES) {
     it(`${size.width}x${size.height}`, async () => {
