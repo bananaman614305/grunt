@@ -13,7 +13,6 @@ import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing, req
 import { ClixadNativeLoginRequired } from './clixad-setup.js';
 import type { Source } from './source.js';
 import { setupFailureReason } from './setup-failure.js';
-import { setupNote } from './setup-table.js';
 
 const exec = promisify(execFile);
 class FreebuffCompatibilityError extends Error {}
@@ -73,6 +72,7 @@ export async function setupFallbacks(options: {
   kiloAccount?: boolean;
   dataSharingApproved?: readonly string[];
   onSettled?: (id: string, available: boolean, reason?: string) => void | Promise<void>;
+  onStarted?: (id: string) => void;
 }) {
   const squire = options.squire ?? new BrowserSquire({ background: options.background, dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
@@ -104,7 +104,7 @@ export async function setupFallbacks(options: {
     failures.set(id, reason);
     if (process.env.GRUNT_SETUP_DEBUG === '1') {
       const detail = squire instanceof BrowserSquire ? squire.signupFailureDetail(id) : undefined;
-      setupNote(`grunt setup: ${id}: ${reason}${detail ? ` (squire ${detail})` : ''}`, 'error');
+      console.error(`grunt setup: ${id}: ${reason}${detail ? ` (squire ${detail})` : ''}`);
     }
   };
   const onSettled = (id: string, available: boolean) => {
@@ -290,10 +290,13 @@ export async function setupFallbacks(options: {
         options.notify('Perch Starter setup needs attention. Rerun usegrunt setup; other free routes continue.');
       } },
       nous: async () => { try {
-        await (options.setupProvider ?? setup)(options.notify, ['nous'], { directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
-      } catch {
+        await (options.setupProvider ?? setup)(options.notify, ['nous'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
         unavailable.push('nous');
+        // Prefer the Nous reason over Squire's browser reason: the table shows
+        // that the person needs to finish the Nous login.
+        failures.set('nous', setupFailureReason(error));
         options.notify('Nous setup needs Hermes device approval or an official Hermes installation; other free routes continue.');
       } },
       nvidia: async () => { try {
@@ -312,6 +315,7 @@ export async function setupFallbacks(options: {
         let available = false;
         try {
           if (disabledAdapters.has(id)) return;
+          options.onStarted?.(id);
           if (requiresDataSharing(id) && !approved.includes(id)) {
             failures.set(id, 'approval required');
             unavailable.push(id);
