@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-11-19
+
+### Added
+
+- Add opt-in access to AntSeed Vikey DeepSeek and Reflection Beam with zero-price checks. Both can participate in automatic routing and subworker routing when explicitly enabled.
+
 ## [0.7.13] - 2026-11-18
 
 ### Added

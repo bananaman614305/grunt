@@ -33,7 +33,7 @@ import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
 import type { Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
-import type { Registry } from '../registry.js';
+import type { Adapter, Registry } from '../registry.js';
 import { RegistrySync } from './registry.js';
 import { configDir } from './wizard.js';
 import { DailyMaintenance } from './maintenance.js';
@@ -42,6 +42,11 @@ import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 import { WorkerPool } from './worker-pool.js';
 export const HOST = '127.0.0.1';
+// These descriptors are local only and cannot be selected by registry updates.
+const optInAdapters: Adapter[] = [
+  { id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:antseed-vikey' },
+  { id: 'reflection-beam', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:reflection-beam' },
+];
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
   const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
   let key = gruntEnv('FREELLMAPI_KEY', env) ?? '';
@@ -68,21 +73,28 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const configured = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
-    .filter(id => id === 'antseed-vikey' || id === 'reflection-beam');
+    .filter(id => optInAdapters.some(adapter => adapter.id === id));
   const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
   if (ids.includes('antseed-vikey')) {
     const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
     registered.push(new AntseedVikey(port ? { port } : {}));
   }
   if (ids.includes('reflection-beam')) registered.push(new Kilo({ directory: configDir(env), reflectionBeam: true }));
-  const routing = ids.every(id => knownAdapters.has(id)) ? { registry } : undefined;
+  const enabledOptIns = optInAdapters.filter(adapter => ids.includes(adapter.id));
+  const localOptIns = new Set(enabledOptIns.map(adapter => adapter.id));
+  const routingRegistry = () => {
+    const current = registry();
+    return localOptIns.size ? { ...current, adapters: [...current.adapters.filter(adapter => !localOptIns.has(adapter.id)), ...enabledOptIns] } : current;
+  };
+  const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))
+    ? { registry: routingRegistry, localOptIns } : undefined;
   const sources = new Sources(ids.map(id => {
     const source = registered.find(source => source.id === id);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
     return !routing && knownAdapters.has(id) ? new RegistrySource(consent, registry) : consent;
   }), routing, disabledAdapters);
-  sources.setWorkerRegistry(registry);
+  sources.setWorkerRegistry(routingRegistry, localOptIns);
   return sources;
 }
 export function start(env = process.env) {

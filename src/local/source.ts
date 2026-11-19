@@ -67,10 +67,10 @@ export class Sources {
     this.observation = new SourceStatus(sources.map(source => source.id), routing?.now);
     if (routing) this.router = this.createRouter(routing);
   }
-  setWorkerRegistry(registry: RoutingOptions['registry']) {
+  setWorkerRegistry(registry: RoutingOptions['registry'], localOptIns?: RoutingOptions['localOptIns']) {
     // Mixed source configurations preserve their normal fixed route chain.
     // Only subworkers use this secondary router over the same observations.
-    if (!this.router) this.workerRouter = this.createRouter({ registry });
+    if (!this.router) this.workerRouter = this.createRouter({ registry, ...(localOptIns ? { localOptIns } : {}) });
   }
   private get registeredRouter() { return this.router ?? this.workerRouter; }
   private createRouter(routing: RoutingOptions) {
