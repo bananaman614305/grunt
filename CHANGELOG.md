@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-11-18
+
+### Changed
+
+- Choose the setup harness before provider signups, and check anonymous access first. With no usable anonymous model, setup tries a browser-only signup, verifies the new source with a tool call, then switches to the harness.
+- Keep provider signups alive when the browser agent reports low confidence. Setup mounts a temporary, restricted Squire MCP server in the selected harness so it can recover the same browser session.
+- Preserve existing OpenCode JSONC configuration. Signup MCP configuration is temporary.
+- Show short reasons for Claude quota and harness timeout failures.
+
+### Fixed
+
+- Accept required free-signup terms through offered answers or visible buttons and checkboxes, including aliased labels. Paid controls, account switches and optional consent stay blocked.
+
 ## [0.7.8] - 2026-11-18
 
 ### Added
