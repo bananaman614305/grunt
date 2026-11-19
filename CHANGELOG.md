@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-11-19
+
+### Changed
+
+- Use Token Harbor's account allowance dates to schedule retries after free credits run out, and show the current window in owner diagnostics.
+- Retry Clixad at midnight UTC when its wallet confirms that the daily free allowance is exhausted.
+- Include a retry time when routing first discovers that the free pool is exhausted.
+
 ## [0.7.15] - 2026-11-19
 
 ### Fixed

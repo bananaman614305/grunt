@@ -13,6 +13,7 @@ export class ConsentSource implements Source {
   }
   private async approved() { return (await readDataSharingConsent(this.directory, [this.id])).includes(this.id); }
   async available() { return await this.approved() && await this.source.available(); }
+  quotaWindow() { return this.source.quotaWindow?.(); }
   async healthCheck() { return await this.approved() && await (this.source.healthCheck?.() ?? this.source.available()); }
   async complete(request: ModelRequest, signal: AbortSignal) {
     signal.throwIfAborted();

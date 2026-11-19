@@ -939,12 +939,15 @@ export class AdminConsole {
     this.el['trace-title'].textContent = text(provider.id);
     this.el['trace-id'].textContent = `${text(provider.instanceId)} · provider observation`;
     const summary = element('section', 'trace-summary');
+    const quota = object(provider.quotaWindow);
     summary.append(fields([['Current observation', stale ? badge('offline', 'Stale observation') : badge(provider.state)],
       ['Last reported state', stateLabel(provider.state)], ['Configured model', text(provider.model), true],
       ['Active calls', stale ? 'Unknown while disconnected' : formatCount(provider.active)],
       ['Last verified reply', timestamp(provider.lastSuccessAt, true)], ['Last reply duration', formatDuration(provider.lastReplyMs)],
       ['Last reported failure', provider.errorCode ? errorLabel(provider.errorCode) : 'None reported'],
-      ['Retry time', timestamp(provider.retryAt, true)], ['Observed', timestamp(provider.lastObservedAt, true)]]));
+      ['Retry time', timestamp(provider.retryAt, true)],
+      ...(date(quota.resetAt) ? [['Allowance window started', timestamp(quota.startedAt, true)], ['Allowance renews', timestamp(quota.resetAt, true)]] : []),
+      ['Observed', timestamp(provider.lastObservedAt, true)]]));
     const history = element('button', 'button', 'View this provider’s requests'); history.type = 'button';
     history.addEventListener('click', () => {
       this.instanceId = text(provider.instanceId, ''); this.sourceFilter = text(provider.id, ''); this.outcomeFilter = '';

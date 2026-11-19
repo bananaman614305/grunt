@@ -183,7 +183,12 @@ function wallet(result: ClixadRunResult, allowExhausted = false) {
     || result.events.some(event => !['wallet', 'http'].includes(event.event) || event.event === 'http' && !['wallet', 'streak'].includes(String(event.operation)))
     || state.balance !== 0 || state.modelEligible !== true || typeof state.dailyCredits !== 'number' || !Number.isFinite(state.dailyCredits) || state.dailyCredits <= 0
     || typeof state.creditsLeft !== 'number' || !Number.isFinite(state.creditsLeft) || state.creditsLeft < 0) throw new SourceError('refused', 'Clixad requires zero account balance and verified free GLM allowance');
-  if (!allowExhausted && state.creditsLeft <= 0) throw new SourceError('quota', 'Clixad daily free allowance is exhausted');
+  if (!allowExhausted && state.creditsLeft === 0) {
+    const now = Date.now();
+    // Clixad replenishes the daily free allowance at 00:00 UTC.
+    const reset = new Date(now).setUTCHours(24, 0, 0, 0);
+    throw new SourceError('quota', 'Clixad daily free allowance is exhausted', Math.ceil((reset - now) / 1000));
+  }
 }
 async function nativeAccess(paths: ReturnType<typeof clixadPaths>, runner: ClixadRunner, signal: AbortSignal) {
   const options = { cwd: paths.work, env: clixadEnvironment(), signal };

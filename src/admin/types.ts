@@ -21,6 +21,7 @@ export type AdminSourceState = 'unknown' | 'available' | 'ready' | 'answering' |
 export interface AdminSourceSnapshot {
   id: string; state: AdminSourceState; active: number; model?: string; modelKind?: 'registry';
   lastReplyMs?: number; lastSuccessAt?: number; retryAt?: number; errorCode?: DiagnosticErrorCode;
+  quotaWindow?: { startedAt: number; resetAt: number };
 }
 export interface AdminWorker {
   id: string; state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -132,6 +133,12 @@ function snapshot(value: unknown, now: number): AdminPoolSnapshot | null {
     optional(row, 'lastReplyMs', finite, result);
     optional(row, 'lastSuccessAt', v => timestamp(v, now, 0), result);
     optional(row, 'retryAt', v => integer(v, 0, now + 31 * 86400000), result);
+    optional(row, 'quotaWindow', v => {
+      const window = record(v);
+      const startedAt = timestamp(window.startedAt, now, 1);
+      const resetAt = integer(window.resetAt, startedAt + 1, startedAt + 31 * 86400000);
+      return { startedAt, resetAt };
+    }, result);
     optional(row, 'errorCode', v => member(v, errorCodes), result);
     return result;
   });

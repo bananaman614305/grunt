@@ -1,4 +1,4 @@
-import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
+import type { Completion, ErrorCode, ModelRequest, QuotaWindow, Source } from './source.js';
 import { SourceError } from './source.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +15,8 @@ export interface SourceSnapshot {
   lastReplyMs?: number;
   lastSuccessAt?: number;
   retryAt?: number;
+  supportsFunctionTools?: boolean;
+  quotaWindow?: QuotaWindow;
   errorCode?: ErrorCode;
   detail?: string;
   maintenance?: MaintenanceEntry;
