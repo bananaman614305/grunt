@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -120,6 +121,33 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(self.overrides(args)['mcp_servers.squire.enabled'])
         self.assertNotIn('mcp_servers.squire.command', self.overrides(args))
         self.assertEqual(self.overrides(args)['shell_environment_policy.set.GIT_NO_REPLACE_OBJECTS'], '1')
+
+    def test_discoverer_has_live_search_without_integrations(self):
+        args = self.command(role='discoverer')
+        self.assertEqual(args[args.index('--sandbox')+1], 'read-only')
+        self.assertIn('--search', args)
+        self.assertNotIn('--approve-for-me', args)
+        self.assertFalse(self.overrides(args)['mcp_servers.squire.enabled'])
+        self.behavior(mcp=True, delay=30)
+        with self.assertRaisesRegex(worker.WorkerError, 'reviewer_integration_violation'):
+            worker.run_agent(dict(self.request, role='discoverer'), self.config)
+
+    def test_threaded_worker_cancellation_stops_its_process(self):
+        self.behavior(delay=30)
+        cancel = threading.Event()
+        errors = []
+        def execute():
+            try:
+                worker.run_agent(dict(self.request, role='discoverer', cancel_event=cancel), self.config,
+                                 lambda _: cancel.set())
+            except worker.WorkerError as error:
+                errors.append(error.reason)
+
+        thread = threading.Thread(target=execute)
+        thread.start()
+        thread.join(4)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, ['worker_cancelled'])
 
     def test_cli_disable_paths_do_not_embed_literal_quote_characters(self):
         args = []
