@@ -96,7 +96,12 @@ it('keeps one table in place through a full setup run with interleaved output', 
       // Output from Squire, debug lines and child processes during signups.
       console.log(`squire chatter for ${id}`);
       process.stderr.write(`grunt setup: ${id}: debug\n`);
-      if (id === 'zro') await withTerminal(async () => { console.log('Verify zro in your browser: https://handoff.test/zro'); });
+      if (id === 'zro') await withTerminal(async () => {
+        console.log('Verify zro in your browser: https://h.test/zro');
+        // Another source finishes while the prompt is still open.
+        await options.onSettled?.('nous', false, 'needs Nous login');
+        console.log('Finished verifying zro? yes');
+      });
       await options.onSettled?.(id, id !== 'nous', id === 'nous' ? 'needs Nous login' : undefined);
     }
     return { unavailable: options.adapters.filter(id => id === 'nous') };
@@ -131,6 +136,7 @@ it('keeps one table in place through a full setup run with interleaved output', 
   ]);
   // The browser handoff printed while the table was paused, above the table.
   expect(at(/^Verify zro in your browser/)).toBeLessThan(header);
+  expect(at(/^Finished verifying zro\? yes$/)).toBe(at(/^Verify zro in your browser/) + 1);
   // Output held during signups prints above the table at a pause, or below it
   // once the table is final. Each line appears once.
   for (const id of ids.slice(1)) expect(text.filter(line => line === `grunt setup: ${id}: debug`)).toHaveLength(1);
@@ -149,4 +155,20 @@ it('holds a line written between two redraws instead of leaving a second header'
   expect(screen.text()).toEqual(['name status', 'nous needs you (Nous login)']);
   table.finish();
   expect(screen.text()).toEqual(['name status', 'nous needs you (Nous login)', '✓ squire: signed in']);
+});
+
+it('keeps row updates during a prompt and draws them once the prompt ends', async () => {
+  const screen = new Screen(50);
+  const table = new SetupTable(screen, { live: false, capture: [screen] });
+  table.set('source', 'kilo', 'connecting');
+  table.set('source', 'zro', 'connecting');
+  table.start();
+  await withTerminal(async () => {
+    screen.write('Verify zro in your browser\n');
+    table.set('source', 'kilo', '✓ ready');
+    screen.write('Finished verifying zro? yes\n');
+  });
+  table.set('source', 'zro', '✓ ready');
+  table.finish();
+  expect(screen.text()).toEqual(['Verify zro in your browser', 'Finished verifying zro? yes', 'name status', 'kilo ✓ ready', 'zro  ✓ ready']);
 });

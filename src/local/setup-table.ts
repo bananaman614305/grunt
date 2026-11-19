@@ -43,7 +43,8 @@ export class SetupTable {
   set(kind: 'tool' | 'source', name: string, status: string) {
     this.rows.set(`${kind}:${name}`, { kind, name, status });
     if (!this.live) return;
-    if (this.output.isTTY) { if (!this.done) this.draw(); }
+    // While a prompt owns the terminal, keep the update and draw on resume.
+    if (this.output.isTTY) { if (!this.done && !this.paused) this.draw(); }
     else if (status !== 'connecting') this.printRow(kind, name, status);
   }
   rowsWith(prefix: string) {
