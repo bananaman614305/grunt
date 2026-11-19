@@ -7,7 +7,7 @@ import type { Registry } from '../registry.js';
 export class RegistrySource implements Source {
   readonly id: string;
   readonly supportsFunctionTools?: boolean;
-  readonly acceptsRequest?: Source['acceptsRequest'];
+  readonly acceptsRequest?: NonNullable<Source['acceptsRequest']>;
   constructor(readonly source: Source, private registry: () => Registry) {
     this.id = source.id;
     if (source.acceptsRequest) this.acceptsRequest = source.acceptsRequest.bind(source);
