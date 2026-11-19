@@ -463,8 +463,8 @@ it('forwards an explicit Squire capture for this provider and keeps its write_id
   vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
     if (name === 'operate_extract') {
       extracts.push(args);
-      if (object(args.capture).write_id === 'w-1') { stored = true; return { status: 'stored', storage: 'stored' }; }
-      return { status: 'capture_unresolved', storage: 'unknown', write_id: 'w-1' };
+      if (object(args.capture).write_id === '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718') { stored = true; return { status: 'stored', storage: 'stored' }; }
+      return { status: 'capture_unresolved', storage: 'unknown', write_id: '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718' };
     }
     return name === 'operate_drive' ? { status: 'low_confidence', session_id: 'zro-tab', options: {} } : {};
   });
@@ -474,7 +474,7 @@ it('forwards an explicit Squire capture for this provider and keeps its write_id
     expect(await agent.call('operate_extract', { capture: { store: { service: 'groq' }, source } })).toMatchObject({ status: 'stopped' });
     expect(await agent.call('operate_extract', { capture: { store: { service: 'zro' }, source: { clipboard: true } } })).toMatchObject({ status: 'stopped' });
     const first = await agent.call('operate_extract', { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source } });
-    expect(first).toMatchObject({ write_id: 'w-1' });
+    expect(first).toMatchObject({ write_id: '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718' });
     await agent.call('operate_extract', { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source, write_id: first.write_id } });
   });
   vi.spyOn(squire.credentials, 'list').mockImplementation(async () => stored ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
@@ -482,8 +482,15 @@ it('forwards an explicit Squire capture for this provider and keeps its write_id
   await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
   expect(extracts).toEqual([
     { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source }, session_id: 'zro-tab' },
-    { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source, write_id: 'w-1' }, session_id: 'zro-tab' }
+    { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source, write_id: '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718' }, session_id: 'zro-tab' }
   ]);
   await squire.close();
 });
 const object = (value: unknown) => (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+
+it('keeps a UUID write_id visible while still hiding secret-shaped values', async () => {
+  const { signupAgentResult } = await import('./signup-mcp.js');
+  const id = '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718';
+  expect(signupAgentResult({ write_id: id, nested: { write_id: 'sk-abcdefghijklmnop' }, note: `token ${'a'.repeat(40)}` }))
+    .toEqual({ write_id: id, nested: {}, note: 'token [omitted]' });
+});

@@ -49,17 +49,22 @@ function safeBrowserText(value: string) {
   }).replace(/\b(?:sk[-_]|gh[pousr]_|gsk_|nvapi-|eyJ)[\w.-]{6,}|\b[A-Za-z0-9_+/=-]{32,}\b/g, '[omitted]');
 }
 
+export const writeId = /^[a-zA-Z0-9:_-]{1,128}$/;
+
 export function signupAgentResult(value: Result): Result {
   // write_id stays visible: the operator retries an unresolved capture with it.
   const omit = new Set(['session_id', 'operation_id', 'dom', 'delta', 'raw_attributes', 'fields', 'value', 'token',
     'approval_url', 'password', 'secret', 'credentials', 'stored_credential', 'reference', 'capture_omissions', 'trajectory']);
-  const clean = (value: unknown, depth: number): unknown => {
+  const clean = (value: unknown, depth: number, key?: string): unknown => {
     if (depth > 7) return;
+    // Squire's capture write_id is a nonsecret retry handle, often a UUID, which
+    // the long-token redaction below would hide. Keep only its documented shape.
+    if (key === 'write_id') return typeof value === 'string' && writeId.test(value) && !/^(?:sk[-_]|gh[pousr]_|gsk_|nvapi-|eyJ)/.test(value) ? value : undefined;
     if (typeof value === 'string') return safeBrowserText(value.slice(0, 1800));
     if (Array.isArray(value)) return value.slice(0, 100).map(item => clean(item, depth + 1));
     if (value && typeof value === 'object') {
       return Object.fromEntries(Object.entries(value).slice(0, 100)
-        .filter(([key]) => !omit.has(key)).map(([key, item]) => [key, clean(item, depth + 1)]));
+        .filter(([key]) => !omit.has(key)).map(([key, item]) => [key, clean(item, depth + 1, key)]));
     }
     return value;
   };

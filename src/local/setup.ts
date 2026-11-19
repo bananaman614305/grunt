@@ -33,7 +33,7 @@ import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, requiresExplicitDataSharing } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
 import { readSetupSession } from './setup-session.js';
-import { signupAgentTools, signupAgentResult, guardedSignupChoice } from './signup-mcp.js';
+import { signupAgentTools, signupAgentResult, guardedSignupChoice, writeId } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
 import { withTerminal } from './terminal.js';
@@ -191,7 +191,7 @@ function signupCapture(value: unknown, provider: string): ObjectValue | undefine
   if (value === undefined) return undefined;
   const capture = object(value), store = object(capture.store), source = object(capture.source);
   if (Object.keys(capture).some(key => !['store', 'source', 'write_id'].includes(key)) || store.service !== provider) return null;
-  if (capture.write_id !== undefined && (typeof capture.write_id !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(capture.write_id))) return null;
+  if (capture.write_id !== undefined && (typeof capture.write_id !== 'string' || !writeId.test(capture.write_id))) return null;
   const container = source.container === undefined ? undefined : object(source.container);
   if (container && (!['dialog', 'region'].includes(String(container.role)) || Object.keys(container).some(key => !['role', 'name'].includes(key)))) return null;
   const named = (keys: string[]) => Object.keys(source).every(key => keys.includes(key));
