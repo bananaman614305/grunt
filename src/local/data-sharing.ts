@@ -70,6 +70,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   disclosure: 'Kenari records model and usage metadata and says it does not store prompt or response content. It forwards request and tool context to the upstream model provider. Upstream retention, review and training policies are unverified.',
   url: 'https://kenari.id/privacy',
   approval: 'explicit'
+}, {
+  provider: 'numes', name: 'Numes GLM 5.3 Flash Free', version: '2026-11-18',
+  disclosure: 'Numes records request, usage and routing metadata and says it does not store prompts or responses. The selected inference provider receives messages, media and tool context. Its retention, review and training policies vary by endpoint.',
+  url: 'https://numes.ai/docs/privacy/data-retention',
+  approval: 'explicit'
 }];
 
 const fileName = 'data-sharing-consent.json';
