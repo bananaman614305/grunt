@@ -385,3 +385,51 @@ it('bootstraps with Jev, switches to a verified operator and re-bootstraps when 
   expect(events).toEqual(['kilo:jev', 'pollinations:jev', 'tool:pollinations', 'beatapi:harness', 'zro:jev', 'tool:zro', 'tokenharbor:harness', 'beatapi:harness']);
   expect(connectHarness).toHaveBeenCalledTimes(2);
 });
+
+it('shows waiting on queued sources, connecting only on the one being set up, and marks the operator', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_ANONYMOUS', '1');
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const { SetupTable } = await import('./setup-table.js');
+  const rows = new Map<string, string>();
+  const history: string[] = [];
+  const set = SetupTable.prototype.set;
+  vi.spyOn(SetupTable.prototype, 'set').mockImplementation(function (this: InstanceType<typeof SetupTable>, kind, name, status) {
+    if (kind === 'source') { rows.set(name, status); history.push(`${name}: ${status}`); }
+    return set.call(this, kind, name, status);
+  });
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(() => {});
+  const stub = actions(['kilo', 'pollinations', 'zro']);
+  const first = deferred(), release = deferred();
+  let kiloRuns = 0;
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    options.onStarted?.(id);
+    if (id === 'kilo' && ++kiloRuns === 1) {
+      first.resolve();
+      await release.promise;
+      await options.onSettled?.(id, false, 'needs human verification');
+      return { unavailable: [id] };
+    }
+    await options.onSettled?.(id, true);
+    return { unavailable: [] };
+  });
+  const running = wizard(undefined, {
+    ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire,
+    probeOperator: vi.fn(async (_port: number, id: string) => id === 'pollinations'),
+    connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })), signupHarness: () => async () => {}
+  });
+  await first.promise;
+  try {
+    expect(Object.fromEntries(rows)).toEqual({ kilo: 'connecting', pollinations: 'waiting', zro: 'waiting' });
+  } finally { release.resolve(); await running; }
+  expect(history).toContain('kilo: waiting (retry)');
+  expect(Object.fromEntries(rows)).toEqual({ kilo: '✓ ready', pollinations: '✓ ready · operator', zro: '✓ ready' });
+  for (const id of ['kilo', 'pollinations', 'zro']) {
+    const own = history.filter(line => line.startsWith(`${id}: `));
+    expect(own[0]).toBe(`${id}: waiting`);
+    expect(own.indexOf(`${id}: connecting`)).toBeGreaterThan(0);
+  }
+});

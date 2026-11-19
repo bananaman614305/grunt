@@ -439,10 +439,13 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const skipped = new Set(consent.skipped);
     const ids = requested.filter(id => !skipped.has(id));
     for (const id of requested) if (skipped.has(id)) table.set('source', id, 'skipped (approval required)');
-    for (const id of ids) table.set('source', id, 'connecting');
+    // Sources queue behind setup workers (one at a time with a harness), so a
+    // row says waiting until its own setup starts.
+    for (const id of ids) table.set('source', id, 'waiting');
     if (!ids.length) return;
     const port = await setupPort();
     if (add) {
+      table.set('source', add, 'connecting');
       if (add !== 'nous') await connect();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved });
@@ -520,6 +523,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     };
     const provision = async (adapters: string[], kiloAccount = false) => {
       const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters, notify, onSettled, connect,
+        onStarted: (id: string) => { if (!settled.has(id)) table.set('source', id, 'connecting'); },
         signal: session!.signal, dataSharingApproved: consent.approved, ...(squire ? { squire } : {}), ...(kiloAccount ? { kiloAccount } : {}) });
       await parallelMap(adapters, id => onSettled(id, !outcome.unavailable.includes(id)));
     };
@@ -528,6 +532,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const ordered = ['kilo', 'pollinations', 'beatapi', 'zro', 'tokenharbor', 'runcrate', ...ids];
       const remaining = [...new Set(ordered)].filter(id => ids.includes(id));
       let driving = false;
+      let operator: string | undefined;
       let operatorFailure: string | undefined;
       const deferred: string[] = [];
       const configure = () => (actions.connectHarness ?? connectHarness)(harness!, port,
@@ -550,15 +555,19 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await configure();
           useOperator();
           console.log(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
+          operator = source;
+          table.set('source', source, '✓ ready · operator');
           return true;
         } catch { session!.signal.throwIfAborted(); return false; }
       };
       if (ids.includes('kilo') && !skipAnonymous) {
+        table.set('source', 'kilo', 'connecting');
         await onSettled('kilo', true);
         driving = await activate('kilo', false);
         if (!unavailable.includes('kilo') && (driving || !harness)) remaining.shift();
         else {
           settled.delete('kilo');
+          table.set('source', 'kilo', 'waiting');
           const failed = unavailable.indexOf('kilo');
           if (failed !== -1) unavailable.splice(failed, 1);
           else readyCount--;
@@ -583,6 +592,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (!operatorFailure) return;
         driving = false;
         squire?.useSignupAgent(undefined);
+        if (operator && !unavailable.includes(operator)) table.set('source', operator, '✓ ready');
+        operator = undefined;
         console.log(`… operator: ${operatorFailure}; using Squire`);
         operatorFailure = undefined;
       };
@@ -593,9 +604,13 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       for (const id of remaining) {
         checkOperator();
         if (!driving && harness && id !== 'opencode') console.log(`… bootstrap: ${id} via Squire`);
+        table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
         if (!driving && id !== 'opencode') driving = await activate(id, true);
-        if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) deferred.push(id);
+        if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) {
+          deferred.push(id);
+          table.set('source', id, 'waiting (retry)');
+        }
       }
       squire?.deferHandoff?.(false);
       for (const id of deferred) {
@@ -604,6 +619,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         failedReasons.delete(id);
         const failed = unavailable.indexOf(id);
         if (failed !== -1) unavailable.splice(failed, 1);
+        table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
         if (!driving && id !== 'opencode') driving = await activate(id, true);
       }

@@ -72,6 +72,7 @@ export async function setupFallbacks(options: {
   kiloAccount?: boolean;
   dataSharingApproved?: readonly string[];
   onSettled?: (id: string, available: boolean, reason?: string) => void | Promise<void>;
+  onStarted?: (id: string) => void;
 }) {
   const squire = options.squire ?? new BrowserSquire({ background: options.background, dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
@@ -301,6 +302,7 @@ export async function setupFallbacks(options: {
         let available = false;
         try {
           if (disabledAdapters.has(id)) return;
+          options.onStarted?.(id);
           if (requiresDataSharing(id) && !approved.includes(id)) {
             failures.set(id, 'approval required');
             unavailable.push(id);

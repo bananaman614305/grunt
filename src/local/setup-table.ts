@@ -7,7 +7,7 @@ export class SetupTable {
   set(kind: 'tool' | 'source', name: string, status: string) {
     this.rows.set(`${kind}:${name}`, { kind, name, status });
     if (this.output.isTTY) this.draw();
-    else if (status !== 'connecting') {
+    else if (status !== 'connecting' && !status.startsWith('waiting')) {
       if (!this.started) { this.output.write('type    name                  status\n'); this.started = true; }
       this.output.write(this.line(kind, name, status) + '\n');
     }
