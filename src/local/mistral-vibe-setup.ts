@@ -194,7 +194,7 @@ async function nativeLogin(options: MistralVibeSetupOptions, mode: 'check' | 'lo
         if (url.origin !== 'https://console.mistral.ai' || url.pathname !== '/codestral/cli/authenticate' || url.username || url.password || url.hash) { protocolFailure(); return; }
         paired = true;
         pairing = options.squire.signup('mistral-vibe', url.href,
-          'Finish the Mistral Vibe CLI browser pairing started by this setup process, using the same Free account just verified. Authorize only this pairing. Do not create a general API key or enable API or Vibe Code pay-as-you-go. No paid plan, card, credits, account switching or extra account. Stop if the account is paid or signup is refused. Report human verification for browser handoff; do not bypass it. Never reveal, copy or store the native CLI key: the CLI owns its credential exchange.');
+          'Finish the Mistral Vibe CLI browser pairing started by this setup process, using the same Free account. Authorize only this pairing. Do not create a general API key or enable API or Vibe Code pay-as-you-go. No paid plan, card, credits, account switching or extra account. Stop if the account is paid or signup is refused. Report human verification for browser handoff; do not bypass it. Never reveal, copy or store the native CLI key: the CLI owns its credential exchange.');
         void pairing.catch(() => { failure = new Error('Mistral Vibe browser pairing did not complete; rerun usegrunt setup to resume'); abort(); });
       } else if (event.event === 'ready' && event.plan === 'Free' && event.hasPaidVibeEntitlement === false) ready = true;
       else { protocolFailure(); return; }
@@ -231,10 +231,10 @@ export async function setupMistralVibe(options: MistralVibeSetupOptions) {
     await rm(paths.receipt, { force: true });
     options.signal?.throwIfAborted();
   }
-  options.notify?.('Mistral Vibe: verifying the Free account and native CLI login');
+  options.notify?.('Mistral Vibe: signing in and pairing the native CLI');
   try {
-    await awaitBrowser(options.squire.signup('mistral-vibe', 'https://admin.mistral.ai/subscription',
-      "Use the user's existing Mistral account or normal Google sign-up for a Free account. Before finishing, verify Current plan Free at https://admin.mistral.ai/subscription; both API pay-as-you-go and Vibe Code pay-as-you-go must be off (the page offers Enable). Verify https://admin.mistral.ai/organization/billing has no payment method, zero purchased credits and automatic recharge disabled. The Free Vibe Code allowance renews monthly; it is not a purchased credit balance. If an existing account is paid, has a card, purchased credits or enabled pay-as-you-go, stop and report it without changing anything. Do not downgrade, remove a card, switch account, create another identity, subscribe, top up or enable billing. Optional marketing remains off. Required unrelated consent, refusal, CAPTCHA, phone, email or passkey verification needs human handoff; do not bypass it. Do not create or reveal a general API key. Finish only after these Free account checks succeed; a separate native CLI pairing will follow."), options.signal);
+    await awaitBrowser(options.squire.signup('mistral-vibe', 'https://console.mistral.ai',
+      "Sign in to the user's existing Mistral account, or use normal Google sign-up for a Free account. Finish as soon as you are signed in; do not open subscription or billing pages to audit the plan. Never enable API or Vibe Code pay-as-you-go. Do not downgrade, remove a card, switch account, create another identity, subscribe, top up or enable billing. Optional marketing remains off. Required unrelated consent, refusal, CAPTCHA, phone, email or passkey verification needs human handoff; do not bypass it. Do not create or reveal a general API key. A separate native CLI pairing will follow."), options.signal);
   } catch { options.signal?.throwIfAborted(); throw new Error('Mistral Vibe Free account verification did not complete; rerun usegrunt setup to resume'); }
   await nativeLogin(options, 'login');
   await writeMistralVibeFreePlanReceipt(options.directory, {
