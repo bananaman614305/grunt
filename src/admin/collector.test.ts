@@ -78,6 +78,18 @@ it('projects only approved worker status fields and tolerates an older daemon', 
   }
 });
 
+it('projects both known opt-in sources and their worker status without admitting arbitrary adapter IDs', () => {
+  const sources = [
+    { id: 'antseed-vikey', state: 'limited', errorCode: 'quota', active: 0 },
+    { id: 'reflection-beam', state: 'answering', active: 1 },
+    { id: 'private-custom', state: 'available', active: 0 }
+  ];
+  const active = [{ id: requestId, state: 'running', createdAt: now, source: 'reflection-beam' }];
+  const observed = projectCollectorSnapshot({ ...snapshot(), sources, workers: { active, queued: [], recent: [] } });
+  expect(observed.sources).toEqual(sources.slice(0, 2));
+  expect(observed.workers?.active).toEqual(active);
+});
+
 it('projects scouting progress without report prose, account metadata, URLs, paths or vault references', () => {
   const result = projectCollectorScout({ id: '20261116T140001689663Z', status: 'failed', reason: 'private account error',
     started_at: '2026-11-16T14:00:01.689897+00:00', config: { secret: 'private' } }, { candidates: {
