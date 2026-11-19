@@ -278,6 +278,12 @@ including SSE. Choose model `grunt` for automatic source selection, or a source
 id such as `kilo`. This process is separate from the Fly server and Docker
 entry point. Keep this endpoint on your own machine.
 
+The local chat, messages and responses endpoints accept the request header
+`X-Grunt-Context: public`. It enables Gödel Machines for that request through
+model `grunt` or source `goedel`. Set it only when the full text and tool
+payload can be retained, reviewed by staff and used for training, and contains
+no secrets, confidential business information or other people’s personal data.
+
 Automatic selection (`grunt`) sends requests containing function tools
 only to sources that return tool calls to the caller's harness. Native API
 sources forward function definitions; validated JSON bridges return correlated
@@ -480,8 +486,7 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari and Numes
-in the experimental tier.
+Clixad, Perch, Nous, Kenari, Numes and Gödel Machines in the experimental tier.
 Free-account eligibility still applies.
 
 The wizard enables free sources by default and connects every supported coding
@@ -594,6 +599,7 @@ The additional experimental routes have these requirements:
 | Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
 | Kenari | `ernie-5-5-flash-preview:free` | Free Google sign-in through Squire. Kenari lists 50 successful free-model requests per day and five requests per minute for new accounts. Limits are per account and can change. [Kenari free-model limits](https://kenari.id/en/docs/free-models) |
 | Numes | `deepseek/deepseek-v4.1-flash:free`, `z-ai/glm-5.3-flash:free` | Free Google sign-in through Squire and a dedicated inference key with a $0 spending cap. Free capacity can vary, with no guaranteed fixed allowance. [Numes free routes](https://numes.ai/docs/models#free-models) |
+| Gödel Machines | `deepseek/deepseek-v4.1-flash` | Current sharing approval and a dedicated Free Key through Squire. Grunt verifies the key's Free tier before inference. The free allowance is 600,000 uncached input tokens and 150,000 output tokens per day, renewing at midnight UTC. [Gödel free-tier terms](https://inference.goedelmachines.com/legal#free-tier) |
 
 For Nous, approve its data policy in the grouped setup prompt and open the
 Hermes device link on your phone or computer. Sign in or create the Free account
@@ -1063,8 +1069,8 @@ The bundled registry has three stable adapters in relative proportions 6:8:5:
 OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
-Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari and Numes forward
-function tool definitions and return tool calls for the harness to execute.
+Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes and
+Gödel Machines forward function tool definitions and return tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
 Pollinations, Clixad and Perch also use validated JSON tool bridges for their fixed routes. Providers
@@ -1106,7 +1112,9 @@ On handoff, the next adapter receives the original task, working-tree status,
 the diff against a task-start `git stash create` checkpoint, the previous
 adapter's last four KB of output, and an instruction to continue without
 restarting. The checkpoint creates no branch commit or stash entry. Outside a
-git repository, only task text and output are sent.
+git repository, only task text and output are sent. If the next adapter is
+Gödel Machines, it receives the approved request payload without generated
+handoff context.
 
 The owner curates `registry/adapters.json` and publishes it manually using
 authorized Fly access. Validate the registry, upload it atomically to the
