@@ -132,6 +132,24 @@ it('routes approved Token Harbor through its exact free ID and stops after conse
   await sources.close();
 });
 
+it('shows exhausted Token Harbor as rate limited and clears the label when free access returns', async () => {
+  const path = await directory();
+  await recordDataSharingConsent(path, ['tokenharbor']);
+  await writeTokenHarborGrant(grant, path);
+  let exhausted = true;
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ models_enabled: true, exhausted }));
+  const sources = new Sources([new TokenHarbor({ directory: path, fetcher })], { registry: () => bundledRegistry });
+  try {
+    expect(await sources.models()).not.toContain('tokenharbor');
+    expect(sources.status().sources[0]).toMatchObject({ id: 'tokenharbor', state: 'limited', errorCode: 'quota' });
+    exhausted = false;
+    expect(await sources.models()).toContain('tokenharbor');
+    expect(sources.status().sources[0]).toMatchObject({ id: 'tokenharbor', state: 'available' });
+    expect(sources.status().sources[0]?.errorCode).toBeUndefined();
+    expect(fetcher.mock.calls.every(([url]) => String(url).endsWith('/free-tier'))).toBe(true);
+  } finally { await sources.close(); }
+});
+
 it.each(['deepseek-v4-flash', 'deepseek-v3.2', undefined])('does not credit a different or unidentified model to a vetted route (%s)', async model => {
   const path = await directory(); await writeZroGrant(grant, path); await recordDataSharingConsent(path, ['tokenharbor']); await writeTokenHarborGrant(grant, path);
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ...(model === undefined ? {} : { model }), choices: [{ message: { content: 'unverified model' } }] }));

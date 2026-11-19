@@ -42,8 +42,14 @@ export class TokenHarbor implements Source {
       });
       if (!response.ok) { await response.body?.cancel(); return false; }
       const result = await response.json() as { models_enabled?: boolean; exhausted?: boolean };
-      return result.models_enabled === true && result.exhausted !== true;
-    } catch { return false; }
+      if (result.models_enabled === true && result.exhausted === true) {
+        throw new SourceError('quota', 'Token Harbor reports that its free allowance is exhausted');
+      }
+      return result.models_enabled === true;
+    } catch (error) {
+      if (error instanceof SourceError && error.code === 'quota') throw error;
+      return false;
+    }
   }
   async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, signal: AbortSignal) {
