@@ -20,6 +20,8 @@ export interface ModelRequest {
   maxTokens?: number;
   imageInput?: boolean;
   handoffPrompt?: string;
+  // The local client reviewed the entire request for public-only providers.
+  publicContext?: true;
   // Local worker routing metadata is never decoded from a model API request.
   worker?: { id: string; onSource: (source: string) => void; onWait?: () => void };
 }
@@ -34,6 +36,7 @@ export interface Source {
   // first-output deadline. Other sources keep only their own timeouts.
   reportsOutput?: boolean;
   available(): Promise<boolean>;
+  acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;
   sellerQuota?(): SellerQuota | undefined;
   healthCheck?(): Promise<boolean>;
@@ -302,6 +305,10 @@ export class Sources {
     for (const source of candidates) {
       signal.throwIfAborted();
       if (this.pending.has(source.id)) continue;
+      if (source.acceptsRequest && !source.acceptsRequest(request)) {
+        if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
+        continue;
+      }
       const context = currentDiagnosticContext();
       if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.selection', source: source.id,
         ...(!automatic ? { reason: 'explicit' as const } : attempted ? { reason: 'fallback' as const } : {}) });

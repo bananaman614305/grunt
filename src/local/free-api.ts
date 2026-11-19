@@ -17,6 +17,7 @@ export const FREE_API_PROVIDERS = {
   apinex: { model: 'free/deepseek-v4.1-flash', prefix: '/v1' },
   livekit: { model: 'deepseek-ai/deepseek-v4.1-flash', prefix: '/v1' },
   nous: { model: 'qwen/qwen4-max:free', prefix: '/v1' },
+  goedel: { model: 'deepseek/deepseek-v4.1-flash', prefix: '/v1' },
   numes: { model: 'z-ai/glm-5.3-flash:free', prefix: '/api/v1' }
 } as const;
 export type FreeApiProvider = keyof typeof FREE_API_PROVIDERS;
@@ -59,7 +60,7 @@ export class FreeApi implements Source {
   readonly id: FreeApiProvider;
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
-  constructor(provider: FreeApiProvider, private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<FreeApiGrant> } = {}) {
+  constructor(provider: FreeApiProvider, private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; expectedModel?: string; loadGrant?: () => Promise<FreeApiGrant> } = {}) {
     this.id = providerName(provider);
   }
   private get spec() { return FREE_API_PROVIDERS[this.id]; }
@@ -67,12 +68,15 @@ export class FreeApi implements Source {
   // Availability here means private access is configured. Only the live probe
   // establishes whether the provider will serve the requested free model.
   async available() { try { await this.grant(); return true; } catch { return false; } }
-  async complete(request: ModelRequest, caller: AbortSignal) {
+  complete(request: ModelRequest, caller: AbortSignal) {
+    return this.completeWithGrant(request, caller);
+  }
+  async completeWithGrant(request: ModelRequest, caller: AbortSignal, verifiedGrant?: FreeApiGrant) {
     caller.throwIfAborted();
     if (![this.id, 'grunt', 'milo'].includes(request.model)) throw new SourceError('upstream', 'Free API probe requires an explicit provider');
     if (request.tools.some(tool => tool.type !== 'function')) throw new SourceError('upstream', 'Free API probe requires function tools');
     let grant: FreeApiGrant;
-    try { grant = await this.grant(); }
+    try { grant = verifiedGrant ?? await this.grant(); }
     catch { throw new SourceError('logged_out', `${this.id} access is not configured`); }
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     let response: Response;
@@ -106,8 +110,11 @@ export class FreeApi implements Source {
         { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
     }
     try {
-      const body = await response.json() as { choices?: { message?: { content?: unknown; tool_calls?: unknown; refusal?: unknown } }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
+      const body = await response.json() as { model?: unknown; choices?: { message?: { content?: unknown; tool_calls?: unknown; refusal?: unknown } }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
       signal.throwIfAborted();
+      if (this.options.expectedModel !== undefined && body.model !== this.options.expectedModel) {
+        throw new SourceError('upstream', `${this.id} returned a different model`);
+      }
       const message = body.choices?.[0]?.message;
       if (message?.refusal) throw new SourceError('refused', `${this.id} refused the request`);
       const calls = message?.tool_calls;

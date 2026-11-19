@@ -8,7 +8,7 @@ import type { Client, InValue } from '@libsql/client';
 
 export const diagnosticTypes = ['request.start', 'request.finish', 'attempt.start', 'attempt.finish', 'route.selection', 'route.skip', 'transport.finish'] as const;
 export const diagnosticKinds = ['user', 'setup', 'maintenance', 'diagnostic'] as const;
-export const diagnosticReasons = ['not_listed', 'pending_setup', 'cooldown', 'tools_unsupported', 'input_unsupported', 'unavailable', 'sticky', 'weighted', 'explicit', 'fallback', 'local'] as const;
+export const diagnosticReasons = ['not_listed', 'pending_setup', 'cooldown', 'tools_unsupported', 'input_unsupported', 'context_not_approved', 'unavailable', 'sticky', 'weighted', 'explicit', 'fallback', 'local'] as const;
 export const diagnosticErrors = ['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'] as const;
 export const diagnosticEndpoints = ['chat.completions', 'models', 'account', 'local.opencode', 'cli'] as const;
 export const diagnosticNetworks = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'] as const;

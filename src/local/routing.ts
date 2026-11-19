@@ -73,7 +73,7 @@ export class StickyRouter {
     signal.throwIfAborted();
     const { worker, ...adapterRequest } = request;
     const cwd = worker ? request.cwd : await realpath(request.cwd);
-    const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, userTurns(request)])).digest('hex');
+    const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, userTurns(request), request.publicContext])).digest('hex');
     let task = this.tasks.get(key);
     if (!task) {
       // Reserve the task before asynchronous checkpoint creation to avoid two bindings.
@@ -108,6 +108,11 @@ export class StickyRouter {
           if (!worker && !task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
           if (!adapter || worker && !this.workerAdapter(adapter)) {
             skip(source.id, 'not_listed');
+            continue;
+          }
+          if (source.acceptsRequest && !source.acceptsRequest(adapterRequest)) {
+            if (!worker && source.id === request.model) throw new SourceError('refused', `${source.id} requires approved request context`);
+            skip(source.id, 'context_not_approved');
             continue;
           }
           if (this.options.pending?.has(source.id)) { skip(source.id, 'pending_setup'); continue; }
@@ -149,7 +154,9 @@ export class StickyRouter {
         try {
           // A worker receives its entire scoped prompt at dispatch. Retrying it
           // does not need the working tree or output from the failed provider.
-          const input = switched && !worker ? await this.handoff({ ...adapterRequest, cwd }, task) : { ...adapterRequest, cwd };
+          // A provider with a request scope guard may only receive the client-approved
+          // payload. Handoff would append an unchecked local diff and prior output.
+          const input = switched && !worker && !selected.source.acceptsRequest ? await this.handoff({ ...adapterRequest, cwd }, task) : { ...adapterRequest, cwd };
           // Availability and handoff can yield while maintenance records a newer cooldown.
           if ((this.cooldown(selected.source.id)?.until ?? 0) > this.now()) {
             skip(selected.source.id, 'cooldown');

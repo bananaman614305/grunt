@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.20] - 2026-11-19
+
+- Add Gödel Machines DeepSeek V4.1 Flash to automatic setup. Routing verifies the dedicated Free Key before inference and requires an explicit public-context request.
+
 ## [0.7.19] - 2026-11-19
 
 - Prefer the verified Numes DeepSeek V4.1 Flash free route when its exact endpoint is available and its data-sharing policy is approved. Use the existing free GLM 5.3 Flash route when DeepSeek is unavailable.
