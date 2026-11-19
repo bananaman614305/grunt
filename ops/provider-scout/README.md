@@ -11,7 +11,8 @@ GitHub Actions CI runs only after the Grunt repository is public.
 The job uses the operator's existing Codex ChatGPT sign-in and live web search;
 subscription usage and limits still apply. Trusty Squire handles eligible free
 account signup and vaulted access. The [policy](POLICY.md) requires current
-primary sources, recurring free access, at least 200,000 context tokens and
+primary sources, recurring free access, at least 200,000 usable input tokens
+(198,000 for the approved 100milionseek DeepSeek V4.1 Flash free route), and
 DeepSeek V4.1 Flash, GLM 5.3 Flash or verified comparable or better coding quality.
 One-time credits, restricted affiliations, mandatory payments, SMS or Discord
 onboarding do not qualify. Data sharing must be disclosed and retain Grunt's

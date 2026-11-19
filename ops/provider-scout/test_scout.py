@@ -88,6 +88,14 @@ class ScoutTests(unittest.TestCase):
         self.proof()
         self.assertEqual(scout.qualify(candidate(), self.workspace, smoke=True), 'researched')
 
+    def test_100milionseek_context_exception_is_exact(self):
+        offer = {'homepage': 'https://100milionseek.top', 'model': 'deepseek-v4.1-flash-free', 'context_tokens': 198000}
+        self.assertEqual(scout.qualify(candidate(**offer), self.workspace), 'integration_pending')
+        for change in ({'context_tokens': 197999}, {'homepage': 'https://mirror.example'},
+                       {'model': 'deepseek-v4.1-flash'}, {'free_access': 'one_time'}):
+            with self.subTest(change=change):
+                self.assertEqual(scout.qualify(candidate(**(offer | change)), self.workspace), 'rejected')
+
     def test_private_or_tokenized_urls_are_not_accepted(self):
         for url in ('http://synthetic.example', 'https://key@synthetic.example',
                     'https://synthetic.example/?token=synthetic', 'https://synthetic.example/#secret'):

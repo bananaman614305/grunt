@@ -16,6 +16,7 @@ import subprocess
 from urllib.parse import urlsplit
 import uuid
 
+from context_policy import CONTEXT_GUIDANCE, meets_context_requirement
 from url_policy import public_url as _public_url
 
 ORIGIN = 'https://github.com/bananaman614305/grunt.git'
@@ -298,9 +299,9 @@ def validate_release_request(candidate: dict, workspace: Path, source_repo: Path
     """Validate an implementation request without running its code or networking."""
     try:
         _require(candidate['free_access'] == 'recurring' and candidate['quality'] in ('target', 'above_baseline'), 'Candidate model or recurring entitlement is unqualified')
-        _require(type(candidate['context_tokens']) is int and candidate['context_tokens'] >= 200000, 'Candidate needs at least 200K verified context')
-        _require(candidate['signup_friction'] in ('low', 'human_approval') and candidate['setup_status'] in ('anonymous', 'reused', 'signed_up'), 'Signup is incomplete or outside accepted friction limits')
         _require(_public_url(candidate['homepage']) and candidate['primary_sources'] and all(_public_url(value, allow_navigation=True) for value in candidate['primary_sources']), 'Current public primary-source evidence is required')
+        _require(meets_context_requirement(candidate), 'Candidate does not meet its verified input context requirement')
+        _require(candidate['signup_friction'] in ('low', 'human_approval') and candidate['setup_status'] in ('anonymous', 'reused', 'signed_up'), 'Signup is incomplete or outside accepted friction limits')
         request = candidate['release_request']
         _require(isinstance(request, dict), 'Candidate release request is missing')
         source_id, model = request['source_id'], request['model']
@@ -440,7 +441,7 @@ def review_candidate(receipt: dict, state_dir: Path, run_agent) -> dict:
               'documented new-user signup and free-tier eligibility from official sources and the reviewed setup flow; '
               'reuse of an existing account does not require creating another account to prove those published terms. '
               'Never create accounts, change account settings or cycle accounts in a review. Require recurring '
-              'zero-cost access, >=200000 context, DeepSeek V4.1 Flash/GLM5.3 Flash-or-better coding quality, no mandatory card/SMS/Discord '
+              f'zero-cost access, {CONTEXT_GUIDANCE}, DeepSeek V4.1 Flash/GLM5.3 Flash-or-better coding quality, no mandatory card/SMS/Discord '
               'or affiliation gate, compatible automation/downstream terms, model identity and hard free spending guards. Verify the '
               'new provider has native tools, exact-source routing/evidence appropriate to this review phase, onboarding/default-registry/consent integration, and no weakening '
               'of existing guards, tests or provider choices. Provider-specific user consent must remain enforced. Ordinary provider '
