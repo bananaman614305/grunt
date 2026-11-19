@@ -939,7 +939,14 @@ export class AdminConsole {
     this.el['trace-title'].textContent = text(provider.id);
     this.el['trace-id'].textContent = `${text(provider.instanceId)} · provider observation`;
     const summary = element('section', 'trace-summary');
-    const quota = object(provider.quotaWindow);
+    const quota = object(provider.quotaWindow), policy = object(provider.quotaPolicy);
+    const seller = object(provider.sellerQuota);
+    const sellerLimits = [
+      ...(seller.perAddress ? [`${formatCount(seller.perAddress)} per buyer address`] : []),
+      ...(seller.perIp ? [`${formatCount(seller.perIp)} per IP`] : []),
+    ].join(', ');
+    const sellerWindow = seller.windowSeconds === 86400 ? '24-hour' : formatDuration(seller.windowSeconds * 1000);
+    const limits = array(policy.limits).map(limit => `${formatCount(limit.amount)} ${text(limit.unit)} per ${text(limit.period)} · ${text(limit.scope)}`).join(' / ');
     summary.append(fields([['Current observation', stale ? badge('offline', 'Stale observation') : badge(provider.state)],
       ['Last reported state', stateLabel(provider.state)], ['Configured model', text(provider.model), true],
       ['Active calls', stale ? 'Unknown while disconnected' : formatCount(provider.active)],
@@ -947,6 +954,10 @@ export class AdminConsole {
       ['Last reported failure', provider.errorCode ? errorLabel(provider.errorCode) : 'None reported'],
       ['Retry time', timestamp(provider.retryAt, true)],
       ...(date(quota.resetAt) ? [['Allowance window started', timestamp(quota.startedAt, true)], ['Allowance renews', timestamp(quota.resetAt, true)]] : []),
+      ...(date(provider.scheduledQuotaRefillAt) ? [['Scheduled allowance refill', timestamp(provider.scheduledQuotaRefillAt, true)]] : []),
+      ...(policy.detail ? [['Free allowance policy', text(policy.detail)]] : []),
+      ...(limits ? [['Published limits', limits]] : []),
+      ...(sellerLimits ? [['Seller request limits', `${sellerLimits} per ${sellerWindow} sliding window`]] : []),
       ['Observed', timestamp(provider.lastObservedAt, true)]]));
     const history = element('button', 'button', 'View this provider’s requests'); history.type = 'button';
     history.addEventListener('click', () => {
@@ -957,7 +968,10 @@ export class AdminConsole {
       if (window.location.hash === '#requests') this.navigate(); else window.location.hash = '#requests';
     });
     const note = element('p', 'section-note', 'A configured model label describes the requested route. It does not independently identify the physical model. Quota and capacity failures need the request timeline for more evidence.');
-    this.el['trace-content'].replaceChildren(summary, history, note);
+    const documentation = element('a', 'button', 'Provider quota documentation');
+    if (typeof policy.documentation === 'string' && policy.documentation.startsWith('https://')) documentation.href = policy.documentation;
+    documentation.target = '_blank'; documentation.rel = 'noopener noreferrer';
+    this.el['trace-content'].replaceChildren(summary, history, ...(documentation.hasAttribute('href') ? [documentation] : []), note);
     if (!this.el['trace-dialog'].open) this.el['trace-dialog'].showModal();
   }
   async updateTrace() {

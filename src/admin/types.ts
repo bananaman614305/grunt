@@ -1,5 +1,7 @@
 // Only these metadata fields may cross the collector boundary. Payloads,
 // credentials, paths and arbitrary upstream messages are intentionally absent.
+import { sellerQuota } from '../local/quota-policy.js';
+import type { SellerQuota } from '../local/quota-policy.js';
 import { diagnosticFailureReasons } from '../local/diagnostics.js';
 import { knownAdapters, localOptInAdapterIds } from '../registry.js';
 import { MAX_WORKER_ACTIVE, MAX_WORKER_QUEUED, MAX_WORKER_RECENT, workerActivities } from '../local/worker-pool.js';
@@ -22,6 +24,7 @@ export interface AdminSourceSnapshot {
   id: string; state: AdminSourceState; active: number; model?: string; modelKind?: 'registry';
   lastReplyMs?: number; lastSuccessAt?: number; retryAt?: number; errorCode?: DiagnosticErrorCode;
   quotaWindow?: { startedAt: number; resetAt: number };
+  sellerQuota?: SellerQuota;
 }
 export interface AdminWorker {
   id: string; state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -139,6 +142,7 @@ function snapshot(value: unknown, now: number): AdminPoolSnapshot | null {
       const resetAt = integer(window.resetAt, startedAt + 1, startedAt + 31 * 86400000);
       return { startedAt, resetAt };
     }, result);
+    if (row.id === 'antseed-vikey') optional(row, 'sellerQuota', v => sellerQuota(v) ?? fail(), result);
     optional(row, 'errorCode', v => member(v, errorCodes), result);
     return result;
   });

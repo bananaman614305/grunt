@@ -1,3 +1,4 @@
+import { providerQuotaPolicy, scheduledQuotaRefill } from '../local/quota-policy.js';
 import type { Client, InValue } from '@libsql/client';
 import { AdminDataError, validateAdminBatch } from './types.js';
 import type { AdminDiagnosticEvent, AdminMaintenance, AdminPoolSnapshot, AdminRequestFilters, AdminRequestSummary, AdminScout, AdminSystem, AdminUsage } from './types.js';
@@ -232,7 +233,10 @@ export class AdminStore {
   }
   async providers(instanceId?: string) {
     const instances = await this.instances(instanceId);
-    return { providers: instances.flatMap(instance => (instance.snapshot?.sources ?? []).map(source => ({ ...source, instanceId: instance.id, lastObservedAt: instance.snapshotObservedAt ?? instance.observedAt }))) };
+    return { providers: instances.flatMap(instance => (instance.snapshot?.sources ?? []).map(source => ({
+      ...source, quotaPolicy: providerQuotaPolicy(source.id), scheduledQuotaRefillAt: scheduledQuotaRefill(source.id),
+      instanceId: instance.id, lastObservedAt: instance.snapshotObservedAt ?? instance.observedAt
+    }))) };
   }
   async overview(instanceId?: string) {
     const instances = await this.instances(instanceId), { providers } = await this.providers(instanceId), usage = await this.usage(instanceId);

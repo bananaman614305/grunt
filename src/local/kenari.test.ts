@@ -72,6 +72,18 @@ it('retains the quota delay and does not retry inside the adapter', async () => 
   expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
+it.each([['free_quota_daily', 300], ['free_quota_rpm', undefined]])(
+  'uses the midnight reset only for verified daily exhaustion (%s)', async (code, retryAfter) => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-19T23:55:00Z'));
+    try {
+      await recordDataSharingConsent(directory, ['kenari']);
+      const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(async () => catalog())
+        .mockImplementationOnce(async () => Response.json({ error: { code } }, { status: 429 }));
+      await expect(source(fetcher).complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter });
+    } finally { vi.restoreAllMocks(); }
+  }
+);
+
 it('falls through from a registered Kenari quota error to another free source', async () => {
   await recordDataSharingConsent(directory, ['kenari']);
   const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/v1/chat/completions')

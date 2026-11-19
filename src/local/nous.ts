@@ -45,6 +45,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 
@@ -58,6 +59,29 @@ from hermes_cli.proxy.server import create_app
 ${nousFreeAccountPolicy}
 
 portal = "https://portal.nousresearch.com"
+reset_headers = ("x-ratelimit-reset-requests-1h", "x-ratelimit-reset-requests")
+reset_fields = ("resets_in_seconds", "resets_at", "reset_at", "retry_after")
+
+def quota_fields(value):
+    if not isinstance(value, dict):
+        return {}
+    def numeric_or_iso(val):
+        return type(val) in (int, float) or (isinstance(val, str) and re.fullmatch(r"[0-9.TZ:+-]{1,64}", val))
+    return {key: value[key] for key in reset_fields if key in value and numeric_or_iso(value[key])}
+
+async def read_quota(response):
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(8192):
+        body.extend(chunk)
+        if len(body) > 8192:
+            return {}
+    try:
+        value = json.loads(body)
+        if isinstance(value, dict):
+            return {**quota_fields(value), "error": quota_fields(value.get("error"))}
+    except (ValueError, UnicodeError):
+        pass
+    return {}
 
 def has_expected_portal():
     state = get_provider_auth_state("nous") or {}
@@ -100,6 +124,10 @@ async def request():
                     retry = response.headers.get("Retry-After")
                     if retry:
                         result["retryAfter"] = retry
+                    if response.status == 429:
+                        result["resets"] = {name: response.headers[name] for name in reset_headers
+                                            if re.fullmatch(r"[0-9.]{1,32}", response.headers.get(name, ""))}
+                        result["body"] = await read_quota(response)
                     if response.ok:
                         body = bytearray()
                         async for chunk in response.content.iter_chunked(65536):
@@ -156,9 +184,11 @@ async function hermesRequest(directory: string, mode: 'check' | 'complete', sign
     }, (error, stdout) => {
       if (error) { reject(new Error('Hermes subscription proxy failed')); return; }
       try {
-        const result: { status: number; body?: unknown; retryAfter?: string } = JSON.parse(stdout);
+        const result: { status: number; body?: unknown; retryAfter?: string; resets?: Record<string, string> } = JSON.parse(stdout);
         if (!Number.isInteger(result.status) || result.status < 200 || result.status > 599) throw new Error();
-        const response = { status: result.status, ...(result.retryAfter ? { headers: { 'Retry-After': result.retryAfter } } : {}) };
+        const headers = new Headers(result.resets);
+        if (result.retryAfter) headers.set('Retry-After', result.retryAfter);
+        const response = { status: result.status, headers };
         resolve(result.body === undefined ? new Response(null, response) : Response.json(result.body, response));
       } catch { reject(new Error('Hermes subscription proxy returned an invalid response')); }
     });

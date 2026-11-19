@@ -12,6 +12,7 @@ import type { AnySchema } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
+import { calendarQuotaDelay } from './quota-policy.js';
 import { SourceError } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
@@ -184,10 +185,7 @@ function wallet(result: ClixadRunResult, allowExhausted = false) {
     || state.balance !== 0 || state.modelEligible !== true || typeof state.dailyCredits !== 'number' || !Number.isFinite(state.dailyCredits) || state.dailyCredits <= 0
     || typeof state.creditsLeft !== 'number' || !Number.isFinite(state.creditsLeft) || state.creditsLeft < 0) throw new SourceError('refused', 'Clixad requires zero account balance and verified free GLM allowance');
   if (!allowExhausted && state.creditsLeft === 0) {
-    const now = Date.now();
-    // Clixad replenishes the daily free allowance at 00:00 UTC.
-    const reset = new Date(now).setUTCHours(24, 0, 0, 0);
-    throw new SourceError('quota', 'Clixad daily free allowance is exhausted', Math.ceil((reset - now) / 1000));
+    throw new SourceError('quota', 'Clixad daily free allowance is exhausted', calendarQuotaDelay('clixad'));
   }
 }
 async function nativeAccess(paths: ReturnType<typeof clixadPaths>, runner: ClixadRunner, signal: AbortSignal) {

@@ -11,7 +11,8 @@ import type { ModelRequest } from './source.js';
 
 const seller = 'e4c4129c86752a2a8d092ddb0eb1c27cc4933c7b';
 const vik = 'deepseek/deepseek-v4.1-flash-free';
-const quote = (outputUsdPerMillion = 0) => ({ data: [{ id: vik, peers: [{ peerId: seller, serviceId: vik, type: 'text', inputUsdPerMillion: 0, cachedInputUsdPerMillion: 0, outputUsdPerMillion }] }] });
+const quote = (outputUsdPerMillion = 0) => ({ data: [{ id: vik, peers: [{ peerId: seller, serviceId: vik, type: 'text', inputUsdPerMillion: 0, cachedInputUsdPerMillion: 0, outputUsdPerMillion,
+  freeTier: { base: { maxRequestsPerAddress: 10, maxRequestsPerIp: 100, windowMs: 86_400_000 } } }] }] });
 const billed = (prompt = '0') => ({ data: [{ id: KILO_BEAM, isFree: true, context_length: 1048576, pricing: { prompt, completion: '0' }, supported_parameters: ['tools', 'max_tokens'] }] });
 const priceHeaders = {
   'x-antseed-peer-id': seller, 'x-antseed-unit-priced': '0',
@@ -84,8 +85,10 @@ it('pins Vikey and declines a nonzero catalog price before inference', async () 
   const source = new AntseedVikey({ fetcher });
   await expect(source.complete(req, signal)).rejects.toMatchObject({ code: 'not_installed' });
   expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(source.sellerQuota()).toBeUndefined();
   await expect(source.complete(req, signal)).resolves.toMatchObject({ text: 'hello' });
   const [url, init] = fetcher.mock.calls[2]!;
+  expect(source.sellerQuota()).toEqual({ perAddress: 10, perIp: 100, windowSeconds: 86400 });
   expect(url).toBe('http://127.0.0.1:8381/v1/chat/completions');
   expect(JSON.parse(String(init?.body))).toMatchObject({ model: `${seller}@${vik}`, max_tokens: 32 });
 });
@@ -100,6 +103,15 @@ it('passes through Vikey quota cooldown and rejects a different seller', async (
   await expect(source.complete(req, signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 505 });
   await expect(source.complete(req, signal)).rejects.toMatchObject({ code: 'refused' });
 });
+
+it.each([[seller, 'address', 720], [seller, 'stake_required', undefined], ['other', 'address', undefined]])(
+  'accepts a free-window delay only for the selected seller and a renewable limit', async (peerId, limitedBy, retryAfter) => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(quote()))
+      .mockResolvedValueOnce(Response.json({ code: 'free_tier_exhausted', free_tier: { peerId, limitedBy, retryAfterSeconds: 720 } }, { status: 429 }));
+    await expect(new AntseedVikey({ fetcher }).complete(req, signal)).rejects.toMatchObject({ code: 'quota', retryAfter });
+  }
+);
 
 it('gates Beam on the exact live $0 offer and never uses a Kilo grant', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-beam-test-'));

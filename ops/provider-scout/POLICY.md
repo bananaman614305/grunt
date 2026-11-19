@@ -71,6 +71,13 @@ downstream use, exposing keys and bypassing CAPTCHA or other human verification
 remain hard stops.
 
 The current curated registry and candidate ledger appear in the run context.
+Record the published free allowance, rate limits, scope, refill cadence and
+exact reset signals during qualification. Include a first-party citation and
+mark unpublished values explicitly. An integration proposal must include its
+policy in `src/local/quota-policy.ts`. Keep recurring allowance exhaustion
+distinct from temporary throttling and capacity. Never infer an exact reset
+from a generic 429.
+
 Deduplicate existing provider/model offers. Revisit rejected offers only when
 their terms/models materially change; explain what changed. Prior decisions:
 Freebuff is disabled pending reliability/terms review; APInex lost its recurring

@@ -63,6 +63,16 @@ it('pins model and prices and returns native tool calls only for an exact zero-c
   expect(JSON.parse(String(init?.body))).toMatchObject({ model, tools, provider: { max_price: { prompt: 0, completion: 0 } } });
 });
 
+it.each([[undefined, 60], ['120', 120]])('honors a Numes account retry hint and backs off briefly for upstream capacity', async (header, retryAfter) => {
+  await recordDataSharingConsent(directory, ['numes']);
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(Response.json({ error: { metadata: { error_type: 'rate_limited' } } }, {
+      status: 429, ...(header === undefined ? {} : { headers: { 'Retry-After': header } })
+    }));
+  await expect(source(fetcher).complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter });
+});
+
 it('rejects model mismatch and nonzero settled cost', async () => {
   await recordDataSharingConsent(directory, ['numes']);
   const fetcher = vi.fn<typeof fetch>();

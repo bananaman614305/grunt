@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.7.18] - 2026-11-19
+
+### Added
+
+- Include documented free allowances, rate limits and refill schedules for the entire free pool in local status and the owner dashboard.
+
+### Changed
+
+- Learn quota retry timing from Nous and Vikey responses, and show Vikey's advertised seller limits.
+- Use Kenari's UTC midnight cutoff for confirmed daily exhaustion without a Retry-After hint. Give verified Numes capacity errors a short backoff.
+
 ## [0.7.17] - 2026-11-19
 
 ### Fixed

@@ -4,6 +4,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
+import { nousQuotaDelay, quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { diagnosticFetch } from './diagnostics.js';
 
 // Low-level pinned clients. Production wrappers add provider-specific access
@@ -89,11 +90,19 @@ export class FreeApi implements Source {
       throw new SourceError(signal.aborted ? 'timeout' : 'upstream', `${this.id} endpoint is unavailable`);
     }
     if (!response.ok) {
-      const raw = response.headers.get('retry-after');
-      const retry = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
-      await response.body?.cancel();
+      let retry = quotaRetryAfter(response.headers.get('Retry-After'));
+      if (response.status === 429 && (this.id === 'nous' || this.id === 'numes' && retry === undefined)) {
+        const body = await readQuotaError(response);
+        if (this.id === 'nous') retry = nousQuotaDelay(response.headers, body);
+        // Numes documents a provider-side rate limit without Retry-After.
+        // Use a brief local backoff and keep trying other free routes.
+        else {
+          const code = quotaObject(quotaObject(body.error).metadata).error_type;
+          if (code === 'rate_limited' || code === 'provider_overloaded') retry = 60;
+        }
+      } else await response.body?.cancel();
       throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-        `${this.id} returned HTTP ${response.status}`, Number.isFinite(retry) ? Math.max(1, retry) : undefined, undefined,
+        `${this.id} returned HTTP ${response.status}`, retry, undefined,
         { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
     }
     try {

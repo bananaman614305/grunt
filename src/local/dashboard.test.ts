@@ -45,7 +45,7 @@ it('uses colors and text labels, collapses model columns, and preserves source d
   const detail = renderDashboard(snapshot(), { width: 100, selected: 0, details: true, now });
   expect(detail).toContain('particle-ai/particle-1:free');
   expect(detail).toContain('Last success:');
-  expect(detail).toContain('Credit balance: not reported');
+  expect(detail).toContain('Free quota · The free gateway limit is shared by IP.');
   expect(detail).not.toContain('Freebuff');
   expect(renderDashboard(snapshot(), { width: 80, showDisabled: true, now })).toContain('Freebuff');
 });
