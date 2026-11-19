@@ -170,6 +170,14 @@ it.each([
   await sources.complete(request, AbortSignal.timeout(1000));
   expect(sources.status().sources[0]).toMatchObject({ id: 'runcrate', state: 'error', retryAt: now + expectedSeconds * 1000 });
 });
+it('benches a source only briefly when its reply held an invalid function call', async () => {
+  const now = 1000;
+  const runcrate = source('runcrate'), kilo = source('kilo');
+  vi.mocked(runcrate.complete).mockRejectedValueOnce(new SourceError('upstream', 'Invalid function calls', undefined, undefined, { httpStatus: 200, failureReason: 'response_tools' }));
+  const sources = new Sources([runcrate, kilo], { registry: () => bundledRegistry, random: () => 0, now: () => now });
+  await sources.complete(request, AbortSignal.timeout(1000));
+  expect(sources.status().sources[0]).toMatchObject({ id: 'runcrate', state: 'error', retryAt: now + 30 * 1000 });
+});
 it('does not report another source cooldown when an explicitly named source is unavailable', async () => {
   const runcrate = source('runcrate'), kilo = source('kilo'), opencode = source('opencode');
   vi.mocked(runcrate.complete).mockRejectedValueOnce(new SourceError('upstream', 'Unavailable', 4, undefined, { httpStatus: 529 }));

@@ -77,9 +77,9 @@ it('verifies the Free billing state before native pairing, keeps authentication 
   }) };
   await setupMistralVibe({ directory, squire, signal: AbortSignal.timeout(5000), notify: line => output.push(line) });
   expect(calls.map(c => c.service)).toEqual(['mistral-vibe', 'mistral-vibe']);
-  expect(calls[0]?.url).toBe('https://admin.mistral.ai/subscription');
-  expect(calls[0]?.instructions).toContain('without changing anything');
-  expect(calls[0]?.instructions).toContain('zero purchased credits');
+  expect(calls[0]?.url).toBe('https://console.mistral.ai');
+  expect(calls[0]?.instructions).toContain('do not open subscription or billing pages');
+  expect(calls[0]?.instructions).toContain('Never enable API or Vibe Code pay-as-you-go');
   expect(calls[1]?.instructions).toContain('the CLI owns its credential exchange');
   expect(await readMistralVibeFreePlanReceipt(directory)).toMatchObject({ ...receipt(), checkedAt: expect.any(String) });
   expect((await stat(paths.receipt)).mode & 0o777).toBe(0o600);

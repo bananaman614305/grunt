@@ -12,6 +12,7 @@ import type { DiagnosticEvent } from './diagnostics.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
+const BAD_SAMPLE_COOLDOWN_SECONDS = 30;
 const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
 export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
@@ -175,8 +176,11 @@ export class StickyRouter {
             const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
               && Number.isInteger(status) && status >= 500 && status < 600
               && retry !== undefined && Number.isFinite(retry) && retry >= 0;
+            // A reply that arrived but held an invalid function call is a bad
+            // sample, not an outage; bench the source only briefly.
+            const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
             const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
-              : DEFAULT_FAILURE_COOLDOWN_SECONDS;
+              : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
             until = this.now() + seconds * 1000;
           }
           this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, failure.code); task.switched = true;

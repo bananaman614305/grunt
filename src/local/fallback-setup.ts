@@ -102,7 +102,10 @@ export async function setupFallbacks(options: {
     unavailable.push(id);
     const reason = (squire instanceof BrowserSquire ? squire.signupFailure(id) : undefined) ?? setupFailureReason(error);
     failures.set(id, reason);
-    if (process.env.GRUNT_SETUP_DEBUG === '1') console.error(`grunt setup: ${id}: ${reason}`);
+    if (process.env.GRUNT_SETUP_DEBUG === '1') {
+      const detail = squire instanceof BrowserSquire ? squire.signupFailureDetail(id) : undefined;
+      console.error(`grunt setup: ${id}: ${reason}${detail ? ` (squire ${detail})` : ''}`);
+    }
   };
   const onSettled = (id: string, available: boolean) => {
     if (!options.onSettled || settled.has(id)) return;

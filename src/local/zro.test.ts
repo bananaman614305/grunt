@@ -76,7 +76,7 @@ it('requests Google signup, free billing checks, vault capture and no paid accou
   const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'complete', session_id: 'zro-session' } : {});
   await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' });
   const goal = String(call.mock.calls.find(([name]) => name === 'operate_drive')![1].goal);
-  expect(goal).toContain('Prefer Google OAuth'); expect(goal).toContain('no purchased usage-pack balance');
+  expect(goal).toContain('Prefer Google OAuth'); expect(goal).toContain('Go straight to the API keys page'); expect(goal).not.toContain('no purchased usage-pack balance');
   expect(goal).toContain('do not cancel, downgrade'); expect(goal).toContain('api_hosts ["zro.moonmath.ai"]');
 });
 

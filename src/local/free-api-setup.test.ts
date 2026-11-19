@@ -33,9 +33,10 @@ it.each(['runcrate'] as const)('verifies a saved %s vault key in the browser bef
       const goal = String(args.goal);
       expect(goal).toContain('Use GitHub OAuth for the free path');
       expect(goal).not.toContain('Prefer Google OAuth');
-      expect(goal).toContain('at least 30 days old');
-      expect(goal).toContain('automatic top-ups disabled');
-      expect(goal).toContain('no payment method');
+      // Registry providers are vetted as free, so the browser goes straight to the key.
+      expect(goal).not.toContain('at least 30 days old');
+      expect(goal).not.toContain('automatic top-ups disabled');
+      expect(goal).toContain('Do not open or change billing settings');
       expect(goal).toContain('deepseek-ai/DeepSeek-V4.1-Flash');
       expect(goal).toContain('["api.runcrate.ai"]');
       return { session_id: `${provider}-session`, status: 'complete' };

@@ -16,7 +16,7 @@ function fixture() {
 }
 it('reuses fresh vault metadata after browser free-account/key verification', async () => {
   const f = fixture(); await setupBeatAPI({ directory, ...f }); expect(f.squire.call).toHaveBeenCalledTimes(2); expect(f.squire.credentials.list).not.toHaveBeenCalled(); expect(f.squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(credential.reference);
-  expect(f.squire.signup).toHaveBeenCalledWith('beatapi', 'https://beatapi.io/dashboard/apikeys', expect.stringContaining('lifetime paid $0'));
+  expect(f.squire.signup).toHaveBeenCalledWith('beatapi', 'https://beatapi.io/dashboard/apikeys', expect.stringContaining('Go straight to API keys; do not open Credits & billing'));
   expect((await readBeatAPIGrant(directory))).toMatchObject({ lifetime_paid: 0, baseline_balance: 2, credit_provenance: 'signup', model: 'deepseek-v4.1-flash-free' }); expect(f.fetcher).toHaveBeenCalledTimes(1);
 });
 it('stores a newly captured key when none existed', async () => {

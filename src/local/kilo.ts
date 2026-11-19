@@ -106,7 +106,17 @@ export class Kilo implements Source {
     } catch { return false; } })());
   }
   async healthCheck() { return this.available(); }
-  complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> { return this.track(this.once(request, caller)); }
+  complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> { return this.track(this.retryBadCalls(request, caller)); }
+  // Particle sometimes samples one function call that fails the tool schema.
+  // Ask once more before reporting the failure, so one bad sample does not
+  // end a coding-tool turn.
+  private async retryBadCalls(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
+    try { return await this.once(request, caller); }
+    catch (error) {
+      if (!(error instanceof SourceError) || error.diagnostics?.failureReason !== 'response_tools' || caller.aborted || this.shutdown.signal.aborted) throw error;
+      return this.once(request, caller);
+    }
+  }
   private async once(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     const timeout = this.options.timeout, signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 ? Math.min(180000, Math.ceil(timeout)) : 180000)]);
     try {

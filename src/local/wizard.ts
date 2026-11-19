@@ -368,6 +368,10 @@ export async function chooseSetupHarness(): Promise<Harness | undefined> {
 }
 // A text reply can pass on a source that cannot drive an MCP tool. Require
 // an actual, correctly formed tool call from the exact newly admitted source.
+// Fixed probe outcomes. Model text and upstream bodies are never copied.
+export class OperatorProbeFailure extends Error {}
+// Resolves true when the source answers the tool-call probe itself; throws
+// with the reason otherwise, so setup can say why a source cannot drive.
 export async function probeSetupOperator(port: number, source: string, signal: AbortSignal) {
   const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -376,10 +380,14 @@ export async function probeSetupOperator(port: number, source: string, signal: A
       { role: 'user', content: `Call the setup_ready tool once with no arguments. Check ${randomUUID()}.` }
     ], tools: [{ type: 'function', function: { name: 'setup_ready', parameters: { type: 'object', properties: {}, additionalProperties: false } } }] })
   });
-  if (!response.ok || response.headers.get('x-grunt-source') !== source) return false;
+  if (response.status === 429) throw new OperatorProbeFailure('quota exhausted');
+  if (!response.ok) throw new OperatorProbeFailure(`tool-call probe returned HTTP ${response.status}`);
+  const answered = response.headers.get('x-grunt-source');
+  if (answered !== source) throw new OperatorProbeFailure(`tool-call probe was answered by ${answered && /^[a-z0-9-]{1,40}$/.test(answered) ? answered : 'another source'}`);
   const result = await response.json() as { choices?: { message?: { tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[] };
   const calls = result.choices?.[0]?.message?.tool_calls;
-  return calls?.length === 1 && calls[0]?.function?.name === 'setup_ready' && /^\{\s*\}$/.test(calls[0].function.arguments ?? '');
+  if (calls?.length === 1 && calls[0]?.function?.name === 'setup_ready' && /^\{\s*\}$/.test(calls[0].function.arguments ?? '')) return true;
+  throw new OperatorProbeFailure(calls?.length ? 'model made the wrong tool call' : 'model answered without a tool call');
 }
 type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness; table?: SetupTable };
 type HarnessPlan = (() => Promise<Harness[]>) & { discoverLater?: true };
@@ -564,14 +572,24 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const activate = async (source: string, bootstrap: boolean) => {
         if (!harness || !squire || unavailable.includes(source)) return false;
         try {
-          if (!await (actions.probeOperator ?? probeSetupOperator)(port, source, session!.signal)) return false;
+          if (!await (actions.probeOperator ?? probeSetupOperator)(port, source, session!.signal)) throw new OperatorProbeFailure('tool-call probe failed');
+        } catch (error) {
+          session!.signal.throwIfAborted();
+          console.log(`… operator: ${source} cannot drive signups (${error instanceof OperatorProbeFailure ? error.message : setupFailureReason(error)})`);
+          return false;
+        }
+        try {
           await configure();
           useOperator();
-          table.step(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
-          operator = source;
-          table.set('source', source, '✓ ready · operator');
-          return true;
-        } catch { session!.signal.throwIfAborted(); return false; }
+        } catch (error) {
+          session!.signal.throwIfAborted();
+          console.log(`… operator: ${source} cannot drive signups (${harness.id} setup failed: ${setupFailureReason(error)})`);
+          return false;
+        }
+        table.step(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
+        operator = source;
+        table.set('source', source, '✓ ready · operator');
+        return true;
       };
       if (ids.includes('kilo') && !skipAnonymous) {
         table.set('source', 'kilo', 'connecting');
