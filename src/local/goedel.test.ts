@@ -55,12 +55,16 @@ it('allows public-context automatic requests and normalizes native tool calls', 
 it.each([false, true])('skips Gödel before provider contact on unclassified traffic (mixed=%s)', async mixed => {
   const fetcher = vi.fn<typeof fetch>();
   const source = new Goedel({ directory, fetcher, loadGrant: async () => grant });
+  const complete = vi.spyOn(source, 'complete');
   const registry = () => bundledRegistry;
   const sources = new Sources([mixed ? new RegistrySource(source, registry) : source,
     { id: 'kilo', available: async () => true, complete: async () => ({ text: 'other' }) }],
   mixed ? undefined : { registry, random: () => 0 });
   try {
     await expect(sources.complete(request(), AbortSignal.timeout(5000))).resolves.toMatchObject({ text: 'other' });
+    if (!mixed) await expect(sources.complete({ ...request(), publicContext: true, worker: { id: 'synthetic-worker', onSource() {} } },
+      AbortSignal.timeout(5000))).resolves.toMatchObject({ text: 'other' });
+    expect(complete).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
   } finally { await sources.close(); }
 });

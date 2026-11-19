@@ -110,7 +110,7 @@ export class StickyRouter {
             skip(source.id, 'not_listed');
             continue;
           }
-          if (source.acceptsRequest && !source.acceptsRequest(adapterRequest)) {
+          if (source.acceptsRequest && !source.acceptsRequest(request)) {
             if (!worker && source.id === request.model) throw new SourceError('refused', `${source.id} requires approved request context`);
             skip(source.id, 'context_not_approved');
             continue;
