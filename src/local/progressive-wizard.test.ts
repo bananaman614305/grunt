@@ -433,3 +433,47 @@ it('shows waiting on queued sources, connecting only on the one being set up, an
     expect(own.indexOf(`${id}: connecting`)).toBeGreaterThan(0);
   }
 });
+
+it('keeps sources queued behind the browser limit on waiting until a browser slot is granted', async () => {
+  const { BrowserSquire } = await import('./setup.js');
+  const { SetupTable } = await import('./setup-table.js');
+  const rows = new Map<string, string>();
+  const set = SetupTable.prototype.set;
+  vi.spyOn(SetupTable.prototype, 'set').mockImplementation(function (this: InstanceType<typeof SetupTable>, kind, name, status) {
+    if (kind === 'source') rows.set(name, status);
+    return set.call(this, kind, name, status);
+  });
+  const squire = new BrowserSquire();
+  const client = (squire as unknown as { client: { callTool(...args: unknown[]): Promise<unknown>; close(): Promise<void> } }).client;
+  const gates = new Map<string, ReturnType<typeof deferred>>();
+  const rpc = vi.spyOn(client, 'callTool').mockImplementation(async request => {
+    const { arguments: args } = request as { arguments: { service: string } };
+    const gate = deferred(); gates.set(args.service, gate);
+    await gate.promise;
+    return { content: [], structuredContent: {} };
+  });
+  vi.spyOn(client, 'close').mockResolvedValue();
+  const ids = ['kilo', 'pollinations', 'zro', 'tokenharbor'];
+  const stub = actions(ids);
+  stub.setupFallbacks.mockImplementation(async options => {
+    await Promise.all(options.adapters!.map(async id => {
+      options.onStarted?.(id);
+      await options.squire!.call('operate_drive', { service: id });
+      await options.onSettled?.(id, true);
+    }));
+    return { unavailable: [] };
+  });
+  const running = wizard(undefined, { ...stub, createSquire: () => squire });
+  try {
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(3));
+    const queued = ids.find(id => !gates.has(id))!;
+    expect(Object.fromEntries(rows)).toEqual(Object.fromEntries(ids.map(id => [id, id === queued ? 'waiting' : 'connecting'])));
+    gates.get([...gates.keys()][0]!)!.resolve();
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(4));
+    expect(rows.get(queued)).toBe('connecting');
+  } finally {
+    for (const id of ids) { await vi.waitFor(() => expect(gates.has(id)).toBe(true)); gates.get(id)!.resolve(); }
+    await running;
+  }
+  expect(Object.fromEntries(rows)).toEqual(Object.fromEntries(ids.map(id => [id, '✓ ready'])));
+});

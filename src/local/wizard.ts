@@ -521,6 +521,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       settled.set(id, task);
       return task;
     };
+    squire?.onBrowserQueue?.((id, state) => {
+      if (ids.includes(id) && !settled.has(id)) table.set('source', id, state === 'waiting' ? 'waiting' : 'connecting');
+    });
     const provision = async (adapters: string[], kiloAccount = false) => {
       const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters, notify, onSettled, connect,
         onStarted: (id: string) => { if (!settled.has(id)) table.set('source', id, 'connecting'); },
