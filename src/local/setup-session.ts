@@ -67,6 +67,28 @@ async function blockingClaim(claim: Claim) {
   catch { return false; }
 }
 
+// The Kilo route that passed setup verification. It outlives the setup session
+// so routing keeps using the verified anonymous route instead of an older grant.
+const kiloRouteFile = (directory: string) => join(directory, 'kilo-route.json');
+export async function readKiloRoute(directory: string): Promise<'anonymous' | 'account'> {
+  let file;
+  try {
+    file = await open(kiloRouteFile(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size > 1024) return 'account';
+    return (JSON.parse(await file.readFile('utf8')) as { route?: unknown }).route === 'anonymous' ? 'anonymous' : 'account';
+  } catch { return 'account'; }
+  finally { await file?.close(); }
+}
+async function writeKiloRoute(directory: string, anonymous: boolean) {
+  if (!anonymous) { await rm(kiloRouteFile(directory), { force: true }); return; }
+  const temporary = join(directory, `.kilo-route.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, JSON.stringify({ route: 'anonymous' }), { flag: 'wx', mode: 0o600 });
+    await rename(temporary, kiloRouteFile(directory));
+  } finally { await rm(temporary, { force: true }); }
+}
+
 /** No credentials are stored here. Dead or expired owners never block routing. */
 export async function readSetupSession(directory: string): Promise<SetupSessionState | undefined> {
   try {
@@ -160,6 +182,8 @@ export async function beginSetupSession(directory: string, ids: readonly string[
     if (state === 'release') { pending.delete(source); verifying.delete(source); approvals.delete(source); }
     else { pending.add(source); if (state === 'verify') { verifying.add(source); approvals.delete(source); } else verifying.delete(source); }
     await persist();
+    // Kilo passed verification on the session's current route; keep that route.
+    if (state === 'release' && source === 'kilo') await writeKiloRoute(directory, anonymousKilo);
   };
   return {
     signal: controller.signal,

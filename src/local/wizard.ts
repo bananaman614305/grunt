@@ -586,13 +586,18 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         console.log(`… operator: ${operatorFailure}; using Squire`);
         operatorFailure = undefined;
       };
+      // With a harness, a Jev-only bootstrap tries every provider before it
+      // hands a browser to the person; the second pass allows that handoff.
+      const retryable = new Set(['browser could not continue', 'needs human verification', 'needs Terms of Service acceptance']);
+      if (harness) squire?.deferHandoff?.(true);
       for (const id of remaining) {
         checkOperator();
         if (!driving && harness && id !== 'opencode') console.log(`… bootstrap: ${id} via Squire`);
         await provision([id], id === 'kilo');
         if (!driving && id !== 'opencode') driving = await activate(id, true);
-        if (harness && (operatorFailure || (!driving && failedReasons.get(id) === 'browser could not continue'))) deferred.push(id);
+        if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) deferred.push(id);
       }
+      squire?.deferHandoff?.(false);
       for (const id of deferred) {
         checkOperator();
         settled.delete(id);

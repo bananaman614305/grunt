@@ -171,7 +171,7 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
       'Use only the existing Squire-connected identity. Never type secrets or select payment, an upgrade, billing changes, another account, or unrequested consent.',
       'Accept required provider Terms of Service for this free signup. Stop if a terms control also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.',
       'Stop on refusal or SMS. For verification only the person can do, call operate_share, then resume operate_drive if the person finishes.',
-      'Capture any requested key directly into the Squire vault. Never read or return a raw secret. Report only whether Squire completed.'
+      'Capture any requested key directly into the Squire vault with operate_extract store. If no value is found, pass capture {store, source: {role: "textbox" or "code", name}} for the revealed key field; if storage is unresolved, retry with the returned capture write_id. Never read or return a raw secret. Report only whether Squire completed.'
     ].join('\n');
     const write = (name: string, content: unknown) => writeFile(join(directory, name), JSON.stringify(content), { mode: 0o600 });
     let args: string[];

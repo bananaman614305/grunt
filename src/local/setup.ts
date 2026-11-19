@@ -184,6 +184,22 @@ function oauthRetry(result: Record<string, unknown>) {
     || result.outcome === 'not_attempted' || object(result.oauth).outcome === 'not_attempted';
 }
 type ObjectValue = Record<string, unknown>;
+// Squire's explicit capture stores one revealed textbox/code value, or retries
+// an unresolved write by write_id. Only this provider's vault entry is allowed.
+// Returns undefined when absent and null when it is not acceptable.
+function signupCapture(value: unknown, provider: string): ObjectValue | undefined | null {
+  if (value === undefined) return undefined;
+  const capture = object(value), store = object(capture.store), source = object(capture.source);
+  if (Object.keys(capture).some(key => !['store', 'source', 'write_id'].includes(key)) || store.service !== provider) return null;
+  if (capture.write_id !== undefined && (typeof capture.write_id !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(capture.write_id))) return null;
+  const container = source.container === undefined ? undefined : object(source.container);
+  if (container && (!['dialog', 'region'].includes(String(container.role)) || Object.keys(container).some(key => !['role', 'name'].includes(key)))) return null;
+  const named = (keys: string[]) => Object.keys(source).every(key => keys.includes(key));
+  const role = ['textbox', 'code'].includes(String(source.role)) && named(['role', 'name', 'container']) && (source.name === undefined || typeof source.name === 'string');
+  const selector = typeof source.selector === 'string' && source.selector.length > 0 && named(['selector', 'container']);
+  if (!role && !selector) return null;
+  return { store, source, ...(typeof capture.write_id === 'string' ? { write_id: capture.write_id } : {}) };
+}
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
 export function squireEnvironment() {
   const home = gruntEnv('SQUIRE_HOME'), xdg = gruntEnv('SQUIRE_XDG_CONFIG_HOME');
@@ -198,7 +214,14 @@ export class BrowserSquire implements SetupSquire {
   constructor(private options: { background?: boolean | undefined; signal?: AbortSignal; dataSharingApproved?: readonly string[]; agent?: SignupAgent } = {}) {}
   useSignupAgent(agent: SignupAgent | undefined) { if (agent) this.options.agent = agent; else delete this.options.agent; }
   useBatchSignup() { this.batchSignup = true; }
+  // Bootstrap tries other providers before handing a browser to the person.
+  deferHandoff(deferred: boolean) { this.handoffDeferred = deferred; }
   private batchSignup = false;
+  private handoffDeferred = false;
+  private canHandOff() {
+    return !this.options.background && process.stdin.isTTY === true && gruntEnv('SETUP_NO_HUMAN') !== '1'
+      && !(this.handoffDeferred && !this.options.agent);
+  }
   signupFailure(provider: string) { return this.failures.get(provider); }
   approveDataSharing(providers: readonly string[]) { this.options.dataSharingApproved = [...new Set(providers)]; }
   pendingVerificationServices(): readonly string[] { return this.verification.services(); }
@@ -489,7 +512,7 @@ export class BrowserSquire implements SetupSquire {
       }
       const humanStep = (needsTerms && !offeredTerms && !this.options.agent) || /\b(?:sms|phone|captcha|passkey|2fa|two factor|email verification|verification (?:code|link)|human (?:verification|assistance))\b/i.test(handoff);
       if (/\b(?:sms|phone)\b/i.test(handoff)) return dropped('needs SMS verification');
-      if (humanStep && !this.batchSignup && !this.options.background && active && process.stdin.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1') {
+      if (humanStep && active && this.canHandOff()) {
         await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(active) }), signal);
         continue;
       }
@@ -579,7 +602,7 @@ export class BrowserSquire implements SetupSquire {
         answer = cookie[0];
         continue;
       }
-      if (!this.batchSignup && process.stdin.isTTY && gruntEnv('SETUP_NO_HUMAN') !== '1') {
+      if (this.canHandOff()) {
         await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(active) }), signal);
         continue;
       }
@@ -625,14 +648,16 @@ export class BrowserSquire implements SetupSquire {
           }
           if (name === 'operate_share') {
             latest = { status: 'needs_human' };
-            if (this.batchSignup || !process.stdin.isTTY || gruntEnv('SETUP_NO_HUMAN') === '1') return latest;
+            if (!this.canHandOff()) return latest;
             await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(session) }), signal);
             return { status: 'human_finished', reason: 'Resume the same browser with operate_drive' };
           }
           if (name === 'operate_extract') {
-            const store = object(args.store);
-            if (store.service !== provider || args.into_slot !== undefined) return { status: 'stopped', reason: 'Capture directly into this provider’s vault entry' };
-            args = { ...(typeof args.selector === 'string' ? { selector: args.selector } : {}), store };
+            const capture = signupCapture(args.capture, provider);
+            const store = args.store === undefined ? undefined : object(args.store);
+            if (args.into_slot !== undefined || capture === null || (store && store.service !== provider) || (!store && !capture))
+              return { status: 'stopped', reason: 'Capture directly into this provider’s vault entry' };
+            args = { ...(typeof args.selector === 'string' ? { selector: args.selector } : {}), ...(store ? { store } : {}), ...(capture ? { capture } : {}) };
           }
           if (name === 'operate_type' && (!email || args.text !== email)) return { status: 'stopped', reason: 'Only the Squire-connected email can be typed' };
           if (['operate_click', 'operate_type', 'operate_select'].includes(name)) {

@@ -24,7 +24,7 @@ const browserArguments: Record<string, readonly string[]> = {
   operate_select: ['ref', 'values'],
   operate_wait: ['milliseconds'],
   operate_scroll: ['direction'],
-  operate_extract: ['store'],
+  operate_extract: ['store', 'capture'],
   operate_share: []
 };
 
@@ -50,7 +50,8 @@ function safeBrowserText(value: string) {
 }
 
 export function signupAgentResult(value: Result): Result {
-  const omit = new Set(['session_id', 'operation_id', 'write_id', 'dom', 'delta', 'raw_attributes', 'fields', 'value', 'token',
+  // write_id stays visible: the operator retries an unresolved capture with it.
+  const omit = new Set(['session_id', 'operation_id', 'dom', 'delta', 'raw_attributes', 'fields', 'value', 'token',
     'approval_url', 'password', 'secret', 'credentials', 'stored_credential', 'reference', 'capture_omissions', 'trajectory']);
   const clean = (value: unknown, depth: number): unknown => {
     if (depth > 7) return;

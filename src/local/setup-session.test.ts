@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as realDelay } from 'node:timers/promises';
 import { afterEach, expect, it, vi } from 'vitest';
-import { beginSetupSession, readSetupSession } from './setup-session.js';
+import { beginSetupSession, readKiloRoute, readSetupSession } from './setup-session.js';
 import type { SetupSession } from './setup-session.js';
 
 const directories: string[] = [], sessions: SetupSession[] = [];
@@ -183,4 +183,24 @@ it('closing an old session cannot remove a newer session', async () => {
   const next = await begin(path, ['opencode']); await old.close();
   expect((await readSetupSession(path))?.owned).toEqual(new Set(['opencode']));
   await next.close(); await expect(next.release('opencode')).rejects.toThrow('coordinate provider setup');
+});
+
+it('keeps the verified anonymous Kilo route after setup ends and drops it once an account passes', async () => {
+  const path = await directory();
+  expect(await readKiloRoute(path)).toBe('account');
+  const anonymous = await beginSetupSession(path, ['kilo'], { anonymousKilo: true });
+  await anonymous.release('kilo');
+  await anonymous.close();
+  expect(await readSetupSession(path)).toBeUndefined();
+  expect(await readKiloRoute(path)).toBe('anonymous');
+  // A held (failed) Kilo leaves the previously verified route unchanged.
+  const failed = await beginSetupSession(path, ['kilo']);
+  await failed.hold('kilo');
+  await failed.close();
+  expect(await readKiloRoute(path)).toBe('anonymous');
+  const account = await beginSetupSession(path, ['kilo'], { anonymousKilo: true });
+  await account.useKiloAccount();
+  await account.release('kilo');
+  await account.close();
+  expect(await readKiloRoute(path)).toBe('account');
 });

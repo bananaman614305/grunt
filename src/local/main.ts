@@ -35,7 +35,7 @@ import { RegistrySync } from './registry.js';
 import { configDir } from './wizard.js';
 import { DailyMaintenance } from './maintenance.js';
 import { SourceRecovery } from './recovery.js';
-import { readSetupSession } from './setup-session.js';
+import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 import { WorkerPool } from './worker-pool.js';
 export const HOST = '127.0.0.1';
@@ -92,7 +92,8 @@ export function start(env = process.env) {
   const refreshSession = () => {
     const result = sessionRead.then(async () => {
       const session = await readSetupSession(directory);
-      anonymousKilo = session?.anonymousKilo === true;
+      // Setup owns the Kilo route while it runs; afterwards keep the verified one.
+      anonymousKilo = session?.owned.has('kilo') ? session.anonymousKilo === true : await readKiloRoute(directory) === 'anonymous';
       sources.pending.clear();
       for (const id of session?.pending ?? []) if (sources.sources.some(source => source.id === id)) sources.pending.add(id);
       sources.verifying.clear();

@@ -397,3 +397,93 @@ it.each([
   expect(handoff).not.toHaveBeenCalled();
   await squire.close();
 });
+
+function harnessSquire() {
+  const squire = new BrowserSquire();
+  squire.useBatchSignup();
+  const client = (squire as unknown as { client: { listTools(): Promise<unknown> } }).client;
+  vi.spyOn(client, 'listTools').mockResolvedValue({ tools: ['operate_drive', 'operate_extract', 'operate_share'].map(name => ({ name, inputSchema: { type: 'object' } })) });
+  return squire;
+}
+function terminal(tty: boolean) {
+  const previous = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  Object.defineProperty(process.stdin, 'isTTY', { value: tty, configurable: true });
+  return () => { if (previous) Object.defineProperty(process.stdin, 'isTTY', previous); else delete (process.stdin as { isTTY?: boolean }).isTTY; };
+}
+
+it('hands a blocked batch signup to the person when the harness asks for operate_share', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '0');
+  const restore = terminal(true);
+  try {
+    const { setupProviders } = await import('./setup.js');
+    const squire = harnessSquire();
+    let shared = false;
+    vi.spyOn(squire, 'call').mockImplementation(async name => name !== 'operate_drive' ? {}
+      : shared ? { status: 'complete', session_id: 'zro-tab' } : { status: 'low_confidence', session_id: 'zro-tab', options: {} });
+    const handoff = vi.spyOn(squire, 'humanHandoff').mockImplementation(async () => { shared = true; return 'http://127.0.0.1:1/share'; });
+    squire.useSignupAgent(async agent => {
+      await agent.call('operate_drive', {});
+      expect(await agent.call('operate_share', {})).toMatchObject({ status: 'human_finished' });
+      expect(await agent.call('operate_drive', {})).toMatchObject({ status: 'complete' });
+    });
+    vi.spyOn(squire.credentials, 'list').mockImplementation(async () => shared ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
+    vi.spyOn(squire.credentials, 'grant').mockResolvedValue({ base_url: 'https://squire.test', token: 'synthetic' });
+    const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+    expect(handoff).toHaveBeenCalledWith('zro-tab');
+    expect(result.dropped).toEqual([]);
+    await squire.close();
+  } finally { restore(); }
+});
+
+it('defers a Jev-only bootstrap handoff, then hands the browser over once allowed', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '0');
+  const restore = terminal(true);
+  try {
+    const squire = new BrowserSquire();
+    squire.useBatchSignup();
+    let shared = false;
+    vi.spyOn(squire, 'call').mockImplementation(async name => name !== 'operate_drive' ? {}
+      : shared ? { status: 'complete', session_id: 'kilo-tab' } : { status: 'stuck', session_id: 'kilo-tab', needs_user: { wall: 'captcha' } });
+    const handoff = vi.spyOn(squire, 'humanHandoff').mockImplementation(async () => { shared = true; return 'http://127.0.0.1:1/share'; });
+    squire.deferHandoff(true);
+    await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'dropped' } });
+    expect(handoff).not.toHaveBeenCalled();
+    squire.deferHandoff(false);
+    await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'completed' } });
+    expect(handoff).toHaveBeenCalledOnce();
+    await squire.close();
+  } finally { restore(); }
+});
+
+it('forwards an explicit Squire capture for this provider and keeps its write_id visible', async () => {
+  const { setupProviders } = await import('./setup.js');
+  const squire = harnessSquire();
+  const extracts: Record<string, unknown>[] = [];
+  let stored = false;
+  vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'operate_extract') {
+      extracts.push(args);
+      if (object(args.capture).write_id === 'w-1') { stored = true; return { status: 'stored', storage: 'stored' }; }
+      return { status: 'capture_unresolved', storage: 'unknown', write_id: 'w-1' };
+    }
+    return name === 'operate_drive' ? { status: 'low_confidence', session_id: 'zro-tab', options: {} } : {};
+  });
+  const source = { role: 'textbox', name: 'API key' };
+  squire.useSignupAgent(async agent => {
+    await agent.call('operate_drive', {});
+    expect(await agent.call('operate_extract', { capture: { store: { service: 'groq' }, source } })).toMatchObject({ status: 'stopped' });
+    expect(await agent.call('operate_extract', { capture: { store: { service: 'zro' }, source: { clipboard: true } } })).toMatchObject({ status: 'stopped' });
+    const first = await agent.call('operate_extract', { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source } });
+    expect(first).toMatchObject({ write_id: 'w-1' });
+    await agent.call('operate_extract', { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source, write_id: first.write_id } });
+  });
+  vi.spyOn(squire.credentials, 'list').mockImplementation(async () => stored ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
+  vi.spyOn(squire.credentials, 'grant').mockResolvedValue({ base_url: 'https://squire.test', token: 'synthetic' });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  expect(extracts).toEqual([
+    { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source }, session_id: 'zro-tab' },
+    { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source, write_id: 'w-1' }, session_id: 'zro-tab' }
+  ]);
+  await squire.close();
+});
+const object = (value: unknown) => (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
