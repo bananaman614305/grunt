@@ -480,7 +480,7 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous and Kenari
+Clixad, Perch, Nous, Kenari and Numes
 in the experimental tier.
 Free-account eligibility still applies.
 
@@ -593,6 +593,7 @@ The additional experimental routes have these requirements:
 | Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
 | Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
 | Kenari | `ernie-5-5-flash-preview:free` | Free Google sign-in through Squire. Kenari lists 50 successful free-model requests per day and five requests per minute for new accounts. Limits are per account and can change. [Kenari free-model limits](https://kenari.id/en/docs/free-models) |
+| Numes | `z-ai/glm-5.3-flash:free` | Free Google sign-in through Squire and a dedicated inference key with a $0 spending cap. Free capacity can vary, with no guaranteed fixed allowance. [Numes free routes](https://numes.ai/docs/models#free-models) |
 
 For Nous, approve its data policy in the grouped setup prompt and open the
 Hermes device link on your phone or computer. Sign in or create the Free account
@@ -612,6 +613,13 @@ key scoped to `kenari.id`, or creates one when needed. Use
 `npx usegrunt add kenari` to connect it separately or resume setup. Grunt
 checks that the exact ERNIE route is still free and supports native tool calls.
 When that route is rate-limited, automatic routing can continue on another
+free source.
+
+For Numes, approve data sharing in the grouped setup prompt and let Squire
+connect your Google account. Use `npx usegrunt add numes` to connect it separately
+or resume setup. Grunt checks the key's $0 cap before each request. It accepts
+replies only when they report the pinned GLM 5.3 Flash model and a $0 charge.
+When Numes rate-limits the route, automatic routing can continue on another
 free source.
 
 Runcrate keys are captured into Squire. Setup stops if an account
@@ -1047,11 +1055,11 @@ Codex default back at grunt, which would create a routing loop.
 
 The bundled registry has three stable adapters in relative proportions 6:8:5:
 OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
-`0.21052631578947367`. Stable weights total 0.8. Eight experimental sources have
-weight 0.025 each: Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations,
-BeatAPI, Clixad and Perch. Their weights total 0.2. All eleven accept text rather than images.
-Kilo, Zro, Token Harbor, Runcrate, LiveKit and BeatAPI forward function tool definitions
-and return tool calls for the harness to execute. Mistral Vibe uses a validated
+`0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
+remaining 0.2 equally. All bundled adapters accept text input.
+Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari and Numes forward
+function tool definitions and return tool calls for the harness to execute.
+Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
 Pollinations, Clixad and Perch also use validated JSON tool bridges for their fixed routes. Providers
 with data-sharing policies require current approval before they can be selected.

@@ -15,7 +15,8 @@ export const FREE_API_PROVIDERS = {
   runcrate: { model: 'deepseek-ai/DeepSeek-V4.1-Flash', prefix: '/v1' },
   apinex: { model: 'free/deepseek-v4.1-flash', prefix: '/v1' },
   livekit: { model: 'deepseek-ai/deepseek-v4.1-flash', prefix: '/v1' },
-  nous: { model: 'qwen/qwen4-max:free', prefix: '/v1' }
+  nous: { model: 'qwen/qwen4-max:free', prefix: '/v1' },
+  numes: { model: 'z-ai/glm-5.3-flash:free', prefix: '/api/v1' }
 } as const;
 export type FreeApiProvider = keyof typeof FREE_API_PROVIDERS;
 export interface FreeApiGrant { base_url: string; token: string }

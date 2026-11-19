@@ -276,7 +276,7 @@ it('leaves explicit sources out of default setup and add with the data-sharing o
   try {
     const first = stubActions([], { approveDataSharing });
     await wizard(undefined, first);
-    const others = defaultIds().filter(id => !['kilo', 'nous', 'kenari'].includes(id));
+    const others = defaultIds().filter(id => !dataSharingPolicies([id]).some(entry => entry.approval === 'explicit'));
     expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
     expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
     expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);

@@ -197,6 +197,13 @@ export async function setupFallbacks(options: {
         failedSetup('zro', error);
         options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
+      numes: async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['numes'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('numes', error);
+        options.notify('Numes free setup is pending. Other routes remain available.');
+      } },
       kenari: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['kenari'], { squire: squire as SetupSquire, directory: options.directory,
           connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });

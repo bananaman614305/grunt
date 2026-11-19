@@ -141,7 +141,7 @@ it.each([false, true])('preserves the foreground/background intent at the fallba
 
 it('covers parallel cold-start setup jobs using one reusable connection and no retired installers', async () => {
   const location = await directory(), squire = client();
-  const providers = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch', 'kenari'];
+  const providers = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch', 'kenari', 'numes'];
   await recordDataSharingConsent(location, providers);
   const signal = new AbortController().signal, notify = vi.fn(), connect = vi.fn(async () => {}), run = vi.fn(async () => {}), verify = vi.fn(async () => {});
   const setupProvider = vi.fn(async (_notify: (line: string) => void, _providers: string[], _options?: Parameters<typeof setup>[2]) => ({}));
