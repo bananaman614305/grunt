@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-11-19
+
+### Fixed
+
+- Show Token Harbor's exhausted free allowance as rate limited and update the status when access returns.
+- Allow Mistral Vibe to finish after a second assistant history entry while keeping native tools disabled and enforcing the total output budget.
+
 ## [0.7.14] - 2026-11-19
 
 ### Added

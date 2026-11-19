@@ -27,7 +27,8 @@ const history=[{type:'message',role:'user',generationStatus:'completed',content:
 if(mode==='native-tool')history.splice(1,0,{type:'effect',detail:{toolName:'bash'}});
 const config={active_model:alias,models:{[alias]:{name:mode==='wrong-model'?'mistral-medium-latest':wire,provider:'mistral',max_context_length:262144,auto_compact_threshold:202144}},providers:[{name:'mistral',api_base:mode==='wrong-host'?'https://example.com/v1':'https://api.mistral.ai/v1'}]};
 config.compaction_model={name:mode==='paid-compactor'?'mistral-medium-latest':wire,provider:'mistral'};
-const nativeStop=process.env.MISTRAL_TEST_NATIVE_STOP;
+if(mode==='two-assistant-entries')history.splice(2,0,{type:'message',role:'assistant',generationStatus:'completed',content:[{type:'text',text:'preliminary'}]});
+const nativeStop=process.env.MISTRAL_TEST_NATIVE_STOP||(mode==='two-assistant-entries'&&Number(arg('--max-turns'))<2?'turn_limit':'');
 const exitCode=nativeStop?3:mode==='quota'?2:0;
 const exported={exit_code:exitCode,outcome:nativeStop||(mode==='quota'?'infrastructure_failure':'finished'),config,usage:{input_tokens:200843,output_tokens:26},error:mode==='quota'?{code:'quota_exhausted',message:'private-secret-upstream-error'}:null};
 fs.mkdirSync(arg('--output-dir'),{recursive:true,mode:448});fs.writeFileSync(path.join(arg('--output-dir'),'export.json'),JSON.stringify(exported),{mode:384});
@@ -50,6 +51,16 @@ it('uses only the fixed native Free model, private prompt files, and native usag
     await expect(readFile(sent.args[sent.args.indexOf('--prompt-file') + 1])).rejects.toMatchObject({ code: 'ENOENT' });
   } finally { await f.source.close(); }
 });
+it('accepts a finished native answer after a second assistant entry with native tools disabled', async () => {
+  const f = await fixture('two-assistant-entries');
+  try {
+    await expect(f.source.complete(request(), AbortSignal.timeout(5000))).resolves.toMatchObject({ text: 'hello from GLM', outputTokens: 26 });
+    const sent = JSON.parse(await readFile(f.snapshot, 'utf8'));
+    expect(sent.args[sent.args.indexOf('--max-turns') + 1]).toBe('2');
+    expect(sent.args[sent.args.indexOf('--disabled-tools') + 1]).toBe('*');
+  } finally { await f.source.close(); }
+});
+
 it('preserves the complete conversation in fresh native requests', async () => {
   const f = await fixture();
   try {

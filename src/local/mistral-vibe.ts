@@ -220,8 +220,10 @@ export class MistralVibe implements Source {
         VIBE_AGENT_MAX_OUTPUT_TOKENS: String(cap), VIBE_OUTPUT_LIMIT_RETRIES: '0', VIBE_ENABLE_UPDATE_CHECKS: 'false',
         VIBE_ENABLE_MCP: 'false', VIBE_ENABLE_CONNECTORS: 'false', VIBE_ENABLE_SUBAGENTS: 'false', VIBE_DISABLED_TOOLS: '["*"]',
         VIBE_SESSION_LOGGING: '{"enabled":false,"generate_titles":false}' };
+      // Vibe counts assistant history entries, including intermediate entries
+      // before the finished answer. Keep the run bounded and all native tools off.
       const result = await runMistralVibeProcess(this.options.binary ?? paths.binary, ['--model', MISTRAL_VIBE_MODEL, '--disabled-tools', '*', '--prompt-file', promptFile,
-        '--output', 'json', '--output-dir', output, '--max-turns', '1', '--time-limit', String(Math.max(1, Math.ceil((this.options.timeout ?? 180000) / 1000)))], { cwd: paths.work, env, signal });
+        '--output', 'json', '--output-dir', output, '--max-turns', '2', '--time-limit', String(Math.max(1, Math.ceil((this.options.timeout ?? 180000) / 1000)))], { cwd: paths.work, env, signal });
       signal.throwIfAborted();
       let exported: unknown;
       try {
@@ -230,7 +232,10 @@ export class MistralVibe implements Source {
         finally { await file.close(); }
       } catch { throw new SourceError('upstream', 'Mistral Vibe produced no readable completion export'); }
       if (result.code !== 0) throw nativeFailure(object(exported), result.code);
-      return parseMistralVibeCompletion(result.stdout, exported);
+      const completion = parseMistralVibeCompletion(result.stdout, exported);
+      if (completion.outputTokens! > cap) throw new SourceError('upstream', 'Mistral Vibe exceeded the aggregate output budget', undefined, undefined,
+        { transport: 'cli', endpointLabel: 'cli', failureReason: 'token_limit' });
+      return completion;
     } catch (error) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Mistral Vibe request cancelled during shutdown');
