@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-11-18
+
+### Changed
+
+- Turn on data sharing for Nous and Kenari by default. Setup no longer asks; it prints one line naming them and the opt-out `GRUNT_SETUP_NO_DATA_SHARING=1`, which also removes their saved consent.
+- Fit the setup status table to the terminal width. Below 80 columns it drops the type column and cuts each row to one line, so redraws no longer overwrite each other on phone terminals. Other output is held until the table is final, and setup ends with a short summary.
+- Never print the Nous device login link. Squire's browser approves it; if it cannot, the table shows "needs you (Nous login)" and Hermes stops instead of waiting for the code to expire.
+- Show waiting for setup sources queued behind a setup worker or the browser limit, waiting (retry) for sources moved to the second pass, and mark the source that drives the other signups as ready · operator.
+
 ## [0.7.11] - 2026-11-18
 
 ### Added
