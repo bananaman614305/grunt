@@ -241,6 +241,15 @@ class ReleaseGateTests(unittest.TestCase):
                 self.save_proof()
                 with self.assertRaises(gate.ValidationError): self.validate()
 
+    def test_100milionseek_context_exception_still_requires_completed_setup(self):
+        self.candidate.update(homepage='https://100milionseek.top', model='deepseek-v4.1-flash-free',
+                              context_tokens=198000, setup_status='blocked')
+        with self.assertRaisesRegex(gate.ValidationError, 'Signup is incomplete'):
+            self.validate()
+        self.candidate['context_tokens'] = 197999
+        with self.assertRaisesRegex(gate.ValidationError, 'verified input context'):
+            self.validate()
+
     def test_git_inspection_does_not_run_candidate_fsmonitor(self):
         marker = self.root / 'executed'
         self.git(self.checkout, 'config', 'core.fsmonitor', f'touch {marker}')

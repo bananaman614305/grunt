@@ -23,7 +23,10 @@ avoid repeating broad searches. Report no findings honestly.
 Prefer DeepSeek V4.1 Flash and GLM 5.3 Flash, or models with credible evidence of
 equal or better coding quality. Verify exact model IDs; never invent a version or
 infer the underlying model from a marketing name. A small hello does not prove
-model identity or coding quality. Require at least 200,000 context tokens.
+model identity or coding quality. Require at least 200,000 usable input tokens.
+Alan approved a minimum of 198,000 usable input tokens for the exact
+`deepseek-v4.1-flash-free` route at `100milionseek.top`. All other
+qualification requirements still apply to that route.
 
 Require recurring free access (daily/monthly replenishment or an ongoing free
 tier). Exclude one-time welcome credits, student/restricted affiliation programs,
@@ -159,8 +162,9 @@ when a new review covers them.
 7. Once guarded, send a bounded synthetic hello through an isolated Grunt
    instance with an exact provider selector; require HTTP 200, a nonempty reply
    and exact source attribution. Also verify native function calls with an inert
-   synthetic tool. Check the documented >=200K context; if a large-context live
-   test is performed, cap input at 212K tokens and output at 1,024. Clearly
+   synthetic tool. Verify that the route meets its usable input minimum.
+   For large-context live tests, stay within the route's input limit and cap
+   input at 212K tokens and output at 1,024. Clearly
    distinguish documented capacity from capacity actually tested. Never use
    another provider's fallback as proof for the candidate. No user code/data.
    Use OS-assigned ports and a private temporary directory; do not take 8788,
