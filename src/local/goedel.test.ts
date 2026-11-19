@@ -6,6 +6,7 @@ import { bundledRegistry } from '../registry.js';
 import { createLocalApp } from './api.js';
 import { approveDataSharing, recordDataSharingConsent } from './data-sharing.js';
 import { Goedel } from './goedel.js';
+import { RegistrySource } from './registry-source.js';
 import { SourceError, Sources, type ModelRequest } from './source.js';
 
 let directory: string;
@@ -51,11 +52,13 @@ it('allows public-context automatic requests and normalizes native tool calls', 
   } finally { await sources.close(); }
 });
 
-it('skips Gödel and falls back for unclassified requests before contacting the provider', async () => {
+it.each([false, true])('skips Gödel before provider contact on unclassified traffic (mixed=%s)', async mixed => {
   const fetcher = vi.fn<typeof fetch>();
   const source = new Goedel({ directory, fetcher, loadGrant: async () => grant });
-  const sources = new Sources([source, { id: 'kilo', available: async () => true, complete: async () => ({ text: 'other' }) }],
-    { registry: () => bundledRegistry, random: () => 0 });
+  const registry = () => bundledRegistry;
+  const sources = new Sources([mixed ? new RegistrySource(source, registry) : source,
+    { id: 'kilo', available: async () => true, complete: async () => ({ text: 'other' }) }],
+  mixed ? undefined : { registry, random: () => 0 });
   try {
     await expect(sources.complete(request(), AbortSignal.timeout(5000))).resolves.toMatchObject({ text: 'other' });
     expect(fetcher).not.toHaveBeenCalled();
@@ -85,4 +88,17 @@ it('rejects a different upstream model', async () => {
   try {
     await expect(source.complete({ ...request(), publicContext: true }, AbortSignal.timeout(5000))).rejects.toBeInstanceOf(SourceError);
   } finally { await source.close(); }
+});
+
+
+it('uses the fixed public probe for daily maintenance', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => String(url).endsWith('/v1/key') ? key()
+    : Response.json({ model, choices: [{ message: { content: 'Hello.' } }] }));
+  const source = new Goedel({ directory, fetcher, loadGrant: async () => grant });
+  const sources = new Sources([source], { registry: () => bundledRegistry });
+  try {
+    await expect(sources.check('goedel', AbortSignal.timeout(5000))).resolves.toMatchObject({ outcome: 'passed', evidence: 'reply' });
+    const [, init] = fetcher.mock.calls.at(-1)!;
+    expect(JSON.parse(String(init?.body)).messages).toEqual([{ role: 'user', content: 'Say hello in one short sentence.' }]);
+  } finally { await sources.close(); }
 });

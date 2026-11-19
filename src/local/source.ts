@@ -217,7 +217,8 @@ export class Sources {
         return reply;
       } };
       guard = this.observation.guard(id);
-      await this.observation.complete(guarded, { model: id, cwd, messages: [{ role: 'user', content: 'Say hello in one short sentence.' }], tools: [], stream: false, maxTokens: 1024 }, signal, guard);
+      // This fixed synthetic probe never contains caller or repository data.
+      await this.observation.complete(guarded, { model: id, cwd, messages: [{ role: 'user', content: 'Say hello in one short sentence.' }], tools: [], stream: false, maxTokens: 1024, publicContext: true }, signal, guard);
       signal.throwIfAborted();
       const newer = newerEvidence();
       if (newer) return newer;
