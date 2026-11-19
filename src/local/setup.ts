@@ -225,6 +225,8 @@ export class BrowserSquire implements SetupSquire {
       && !(this.handoffDeferred && !this.options.agent);
   }
   signupFailure(provider: string) { return this.failures.get(provider); }
+  /** Squire's own stop detail for the last dropped signup, for GRUNT_SETUP_DEBUG. */
+  signupFailureDetail(provider: string) { return this.failureDetails.get(provider); }
   approveDataSharing(providers: readonly string[]) { this.options.dataSharingApproved = [...new Set(providers)]; }
   pendingVerificationServices(): readonly string[] { return this.verification.services(); }
   onVerificationChange(observer: (services: readonly string[]) => void) { return this.verification.subscribe(observer); }
@@ -238,6 +240,7 @@ export class BrowserSquire implements SetupSquire {
   private initialDriveSignal = new AbortController().signal;
   private finishing = new Map<string, Promise<void>>();
   private failures = new Map<string, string>();
+  private failureDetails = new Map<string, string>();
   private recoveryChoices = new Map<string, Set<string>>();
   private retries = new Map<string, number>();
   private pending = new Set<Promise<Run>>();
@@ -439,6 +442,7 @@ export class BrowserSquire implements SetupSquire {
   private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
     if (this.closed) throw new Error('Squire setup is closed');
     this.failures.delete(provider);
+    this.failureDetails.delete(provider);
     const pending = this.driveOnce(provider, url, goal).catch(async error => {
       await this.finishSession(provider); throw error;
     });
@@ -452,8 +456,17 @@ export class BrowserSquire implements SetupSquire {
     const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required free-route data-sharing disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
     const instruction = (customGoal ?? `Use the user's existing ${provider} account or sign up for the free plan. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Complete free NVIDIA Build developer onboarding and enable its free inference endpoint. Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key. The requested free model is deepseek-ai/deepseek-v4.1-flash.' : ''}${provider === 'zro' ? ' Verify that this account is on the Free plan, has no paid subscription, no purchased usage-pack balance and no saved payment method before creating or reusing its key. If any paid balance, plan or payment method exists, stop and report it; do not cancel, downgrade, remove a payment method or create another account. Enable only its daily free DeepSeek V4.1 Flash access. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key. The requested model is deepseek-v4.1-flash.' : ''}${provider === 'tokenharbor' ? ' Enable the free model deepseek-v4.1-flash:free under the approved data-sharing policy; never select its paid sibling. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required free-route prompt/response retention, staff review and provider training disclosure to enable free access.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if free access requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. Use ordinary email verification only when supported by Squire. Stop for human CAPTCHA, passkey or other human verification. Do not bypass verification. Stop on provider refusal.`) + termsInstruction;
     const signal = this.serviceSignal(provider);
+    // The last Squire result, so a drop can report Squire's own stop reason.
+    let last: ObjectValue | undefined;
     const dropped = async (reason: string): Promise<Run> => {
       this.failures.set(provider, reason);
+      if (last) {
+        const needs = object(last.needs_user);
+        const detail = setupReason(...[['status', last.status], ['reason', last.reason], ['remaining', last.remaining], ['field', last.field],
+          ['needs', needs.wall], ['message', needs.message], ['error', last.error]]
+          .filter(([, value]) => typeof value === 'string' && value.trim()).map(([name, value]) => `${name}: ${value};`));
+        if (detail) this.failureDetails.set(provider, detail);
+      }
       await this.finishSession(provider);
       return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason };
     };
@@ -470,6 +483,7 @@ export class BrowserSquire implements SetupSquire {
         ...(answer ? { answer } : {})
       });
       if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
+      last = result;
       signal.throwIfAborted();
       answer = undefined;
       // The driver's remaining field can repeat our own goal, including refusal

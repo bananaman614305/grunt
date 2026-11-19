@@ -367,6 +367,10 @@ export async function chooseSetupHarness(): Promise<Harness | undefined> {
 }
 // A text reply can pass on a source that cannot drive an MCP tool. Require
 // an actual, correctly formed tool call from the exact newly admitted source.
+// Fixed probe outcomes. Model text and upstream bodies are never copied.
+export class OperatorProbeFailure extends Error {}
+// Resolves true when the source answers the tool-call probe itself; throws
+// with the reason otherwise, so setup can say why a source cannot drive.
 export async function probeSetupOperator(port: number, source: string, signal: AbortSignal) {
   const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -375,10 +379,14 @@ export async function probeSetupOperator(port: number, source: string, signal: A
       { role: 'user', content: `Call the setup_ready tool once with no arguments. Check ${randomUUID()}.` }
     ], tools: [{ type: 'function', function: { name: 'setup_ready', parameters: { type: 'object', properties: {}, additionalProperties: false } } }] })
   });
-  if (!response.ok || response.headers.get('x-grunt-source') !== source) return false;
+  if (response.status === 429) throw new OperatorProbeFailure('quota exhausted');
+  if (!response.ok) throw new OperatorProbeFailure(`tool-call probe returned HTTP ${response.status}`);
+  const answered = response.headers.get('x-grunt-source');
+  if (answered !== source) throw new OperatorProbeFailure(`tool-call probe was answered by ${answered && /^[a-z0-9-]{1,40}$/.test(answered) ? answered : 'another source'}`);
   const result = await response.json() as { choices?: { message?: { tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[] };
   const calls = result.choices?.[0]?.message?.tool_calls;
-  return calls?.length === 1 && calls[0]?.function?.name === 'setup_ready' && /^\{\s*\}$/.test(calls[0].function.arguments ?? '');
+  if (calls?.length === 1 && calls[0]?.function?.name === 'setup_ready' && /^\{\s*\}$/.test(calls[0].function.arguments ?? '')) return true;
+  throw new OperatorProbeFailure(calls?.length ? 'model made the wrong tool call' : 'model answered without a tool call');
 }
 type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness; table?: SetupTable };
 type HarnessPlan = (() => Promise<Harness[]>) & { discoverLater?: true };
@@ -546,12 +554,22 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const activate = async (source: string, bootstrap: boolean) => {
         if (!harness || !squire || unavailable.includes(source)) return false;
         try {
-          if (!await (actions.probeOperator ?? probeSetupOperator)(port, source, session!.signal)) return false;
+          if (!await (actions.probeOperator ?? probeSetupOperator)(port, source, session!.signal)) throw new OperatorProbeFailure('tool-call probe failed');
+        } catch (error) {
+          session!.signal.throwIfAborted();
+          table.note(`… operator: ${source} cannot drive signups (${error instanceof OperatorProbeFailure ? error.message : setupFailureReason(error)})`);
+          return false;
+        }
+        try {
           await configure();
           useOperator();
-          console.log(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
-          return true;
-        } catch { session!.signal.throwIfAborted(); return false; }
+        } catch (error) {
+          session!.signal.throwIfAborted();
+          table.note(`… operator: ${source} cannot drive signups (${harness.id} setup failed: ${setupFailureReason(error)})`);
+          return false;
+        }
+        table.note(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
+        return true;
       };
       if (ids.includes('kilo') && !skipAnonymous) {
         await onSettled('kilo', true);
@@ -571,19 +589,19 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await runHarness('opencode', ['run', '--pure', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
           useOperator(true);
           driving = Boolean(squire);
-          console.log('✓ model: OpenCode free');
+          table.note('✓ model: OpenCode free');
         } catch { session.signal.throwIfAborted(); }
       }
-      if (!driving && harness) console.log('… operator: no working anonymous model; using Squire');
+      if (!driving && harness) table.note('… operator: no working anonymous model; using Squire');
       if (remaining.length) {
-        try { await connect(); console.log('✓ squire: signed in'); }
-        catch (error) { console.log(`✗ squire: ${setupFailureReason(error)}`); }
+        try { await connect(); table.note('✓ squire: signed in'); }
+        catch (error) { table.note(`✗ squire: ${setupFailureReason(error)}`); }
       }
       const checkOperator = () => {
         if (!operatorFailure) return;
         driving = false;
         squire?.useSignupAgent(undefined);
-        console.log(`… operator: ${operatorFailure}; using Squire`);
+        table.note(`… operator: ${operatorFailure}; using Squire`);
         operatorFailure = undefined;
       };
       // With a harness, a Jev-only bootstrap tries every provider before it
@@ -592,7 +610,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       if (harness) squire?.deferHandoff?.(true);
       for (const id of remaining) {
         checkOperator();
-        if (!driving && harness && id !== 'opencode') console.log(`… bootstrap: ${id} via Squire`);
+        if (!driving && harness && id !== 'opencode') table.note(`… bootstrap: ${id} via Squire`);
         await provision([id], id === 'kilo');
         if (!driving && id !== 'opencode') driving = await activate(id, true);
         if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) deferred.push(id);

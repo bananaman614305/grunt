@@ -328,6 +328,50 @@ it.each([true, false])('checks anonymous access before Squire and signups (harne
   ]);
 });
 
+it('says why the anonymous Kilo model cannot drive signups', async () => {
+  const stub = actions(['kilo', 'zro']);
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const { OperatorProbeFailure } = await import('./wizard.js');
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const probeOperator = vi.fn(async (_port: number, id: string) => {
+    if (id === 'kilo') throw new OperatorProbeFailure('tool-call probe was answered by opencode');
+    return false;
+  });
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    await options.onSettled?.(id, true);
+    return { unavailable: [] };
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })),
+    signupHarness: vi.fn(() => async () => {}), probeOperator, createSquire: () => new BrowserSquire() });
+  const lines = log.mock.calls.map(call => String(call[0]));
+  expect(lines).toContain('… operator: kilo cannot drive signups (tool-call probe was answered by opencode)');
+  expect(lines).toContain('… operator: zro cannot drive signups (tool-call probe failed)');
+  expect(lines).not.toContain('✓ model: grunt (kilo anonymous)');
+});
+
+it('drives every later signup with a working anonymous Kilo model', async () => {
+  const stub = actions(['kilo', 'zro', 'tokenharbor', 'runcrate']);
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  const useSignupAgent = vi.spyOn(squire, 'useSignupAgent');
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const probeOperator = vi.fn(async () => true);
+  stub.setupFallbacks.mockImplementation(async options => {
+    await options.onSettled?.(options.adapters![0]!, true);
+    return { unavailable: [] };
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })),
+    signupHarness: vi.fn(() => async () => {}), probeOperator, createSquire: () => squire });
+  const lines = log.mock.calls.map(call => String(call[0]));
+  expect(lines).toContain('✓ model: grunt (kilo anonymous)');
+  expect(lines.filter(line => /bootstrap: .* via Squire/.test(line))).toEqual([]);
+  expect(probeOperator).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'kilo', expect.any(AbortSignal));
+  expect(useSignupAgent).toHaveBeenCalledWith(expect.any(Function));
+});
+
 it('prints the Zro terms handoff once and continues to the next provider', async () => {
   const { BrowserSquire } = await import('./setup.js');
   const squire = new BrowserSquire();

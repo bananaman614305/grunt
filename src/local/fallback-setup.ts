@@ -13,6 +13,7 @@ import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing, req
 import { ClixadNativeLoginRequired } from './clixad-setup.js';
 import type { Source } from './source.js';
 import { setupFailureReason } from './setup-failure.js';
+import { setupNote } from './setup-table.js';
 
 const exec = promisify(execFile);
 class FreebuffCompatibilityError extends Error {}
@@ -101,7 +102,10 @@ export async function setupFallbacks(options: {
     unavailable.push(id);
     const reason = (squire instanceof BrowserSquire ? squire.signupFailure(id) : undefined) ?? setupFailureReason(error);
     failures.set(id, reason);
-    if (process.env.GRUNT_SETUP_DEBUG === '1') console.error(`grunt setup: ${id}: ${reason}`);
+    if (process.env.GRUNT_SETUP_DEBUG === '1') {
+      const detail = squire instanceof BrowserSquire ? squire.signupFailureDetail(id) : undefined;
+      setupNote(`grunt setup: ${id}: ${reason}${detail ? ` (squire ${detail})` : ''}`, 'error');
+    }
   };
   const onSettled = (id: string, available: boolean) => {
     if (!options.onSettled || settled.has(id)) return;

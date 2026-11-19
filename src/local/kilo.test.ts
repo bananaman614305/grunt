@@ -137,7 +137,8 @@ it.each([
   await expect(completion).rejects.toHaveProperty('diagnostics', {
     transport: 'http', endpointLabel: 'chat.completions', httpStatus: 200, failureReason
   });
-  expect(f.posts()).toHaveLength(1);
+  // An invalid function call is sampled once more; every other failure is final.
+  expect(f.posts()).toHaveLength(failureReason === 'response_tools' ? 2 : 1);
 });
 it('bounds completion bytes and does not expose provider payloads', async () => {
   const f = fixture({ infer: () => new Response('private upstream body', { headers: { 'content-length': '999999999' } }) });
@@ -157,4 +158,16 @@ it('enforces shutdown and deadlines even when the fetcher ignores abort', async 
   await vi.waitFor(() => expect(fetcher).toHaveBeenCalled()); await source.close(); await rejected; expect(await source.available()).toBe(false);
   const timed = new Kilo({ directory, fetcher, timeout: 5 }); sources.push(timed);
   await expect(timed.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
+});
+it('asks once more when Particle samples an invalid function call, then reports a repeat', async () => {
+  const bad = () => Response.json(result({ choices: [{ message: { content: null, tool_calls: [{ ...call, function: { ...call.function, arguments: '{"nonce":"wrong"}' } }] } }] }));
+  const good = () => Response.json(result({ choices: [{ message: { content: null, tool_calls: [call] } }] }));
+  const replies = [bad, good];
+  const recovered = fixture({ infer: () => replies.shift()!() });
+  await expect(recovered.source.complete({ ...request(), tools: [tool] }, new AbortController().signal)).resolves.toMatchObject({ calls: [call] });
+  expect(recovered.posts()).toHaveLength(2);
+  const repeated = fixture({ infer: bad });
+  await expect(repeated.source.complete({ ...request(), tools: [tool] }, new AbortController().signal))
+    .rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_tools' } });
+  expect(repeated.posts()).toHaveLength(2);
 });
