@@ -74,6 +74,16 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   disclosure: 'Numes records request, usage and routing metadata and says it does not store prompts or responses. The selected inference provider receives messages, media and tool context. Its retention, review and training policies vary by endpoint.',
   url: 'https://numes.ai/docs/privacy/data-retention',
   approval: 'explicit'
+}, {
+  provider: 'antseed-vikey', name: 'Antseed Vikey DeepSeek V4.1 Flash', version: '2026-11-18',
+  disclosure: 'Prompts, code, and tool context go to the pinned Vikey seller and its inference upstream. Vikey may forward data to other providers. The final model host and its retention and training practices are unverified.',
+  url: 'https://vikey.ai/en/terms/',
+  approval: 'explicit'
+}, {
+  provider: 'reflection-beam', name: 'Reflection Beam through Kilo Gateway', version: '2026-11-18',
+  disclosure: 'Prompts, code, and tool results pass through Kilo Gateway and the upstream hosting Reflection Beam. Their retention, review, and training practices for this route have not been verified.',
+  url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
+  approval: 'explicit'
 }];
 
 const fileName = 'data-sharing-consent.json';

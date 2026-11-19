@@ -14,7 +14,7 @@ const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
 const BAD_SAMPLE_COOLDOWN_SECONDS = 30;
 const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
-export interface RoutingOptions { registry: () => Registry; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
+export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
@@ -33,12 +33,13 @@ export class StickyRouter {
     }
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
-  listed(id: string) { return knownAdapters.has(id) && this.options.registry().adapters.some(a => a.id === id); }
+  private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }
+  listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id); }
   supportsInput(id: string, imageInput = false) {
-    return knownAdapters.has(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
+    return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
   }
   private workerAdapter(adapter: Adapter) {
-    return adapter.kind === 'model' && knownAdapters.has(adapter.id)
+    return adapter.kind === 'model' && this.registered(adapter.id)
       && !disabledAdapters.has(adapter.id) && !this.options.disabled?.has(adapter.id);
   }
   private async git(cwd: string, args: string[]) {
@@ -98,7 +99,7 @@ export class StickyRouter {
     try {
       for (;;) {
         signal.throwIfAborted();
-        const adapters = this.options.registry().adapters.filter(a => knownAdapters.has(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
+        const adapters = this.options.registry().adapters.filter(a => this.registered(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
         const eligible: { source: Source; weight: number }[] = [];
         const retryTimes: number[] = [];
         for (const source of this.sources) {

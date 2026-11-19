@@ -1174,3 +1174,21 @@ MCP Events is experimental. The live test checks whether the dot follows the ser
 Disconnecting the connector revokes the grant and stops subscriptions when ChatGPT invokes the revocation endpoint. Otherwise subscriptions expire within a day; grunt cannot detect ChatGPT-only removal immediately.
 
 References: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [ChatGPT plugin connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
+
+## Optional local sources
+
+Add `antseed-vikey,reflection-beam` to `GRUNT_OPT_IN_SOURCES` for a local daemon
+whose provider-specific data-sharing approvals are recorded. Grunt appends
+these sources to the configured chain. Each ID can also be selected directly.
+The bundled automatic registry does not enroll these sources.
+
+- `antseed-vikey` uses a dedicated Antseed buyer listening on loopback port
+  8381 by default. Set `GRUNT_ANTSEED_VIKEY_PORT` for a different local port.
+  Run the buyer with settlement and automatic sweeps disabled, zero input
+  and output price caps, and the Vikey seller pinned. Grunt checks the seller's
+  live zero-price offer and verifies its attribution and pricing on replies.
+  Seller rolling token limits can reject long prompts despite the advertised
+  context window.
+- `reflection-beam` uses Kilo's anonymous `reflection/beam-free` route with
+  no account key. Grunt checks the exact free catalog entry before inference
+  and requires zero-cost usage on responses.
