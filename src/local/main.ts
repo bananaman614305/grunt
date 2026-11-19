@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { gruntEnv } from '../brand.js';
-import { disabledAdapters, knownAdapters } from '../registry.js';
+import { disabledAdapters, knownAdapters, localOptInAdapters } from '../registry.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { basename, join } from 'node:path';
@@ -33,7 +33,7 @@ import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
 import type { Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
-import type { Adapter, Registry } from '../registry.js';
+import type { Registry } from '../registry.js';
 import { RegistrySync } from './registry.js';
 import { configDir } from './wizard.js';
 import { DailyMaintenance } from './maintenance.js';
@@ -42,11 +42,6 @@ import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 import { WorkerPool } from './worker-pool.js';
 export const HOST = '127.0.0.1';
-// These descriptors are local only and cannot be selected by registry updates.
-const optInAdapters: Adapter[] = [
-  { id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:antseed-vikey' },
-  { id: 'reflection-beam', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:reflection-beam' },
-];
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
   const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
   let key = gruntEnv('FREELLMAPI_KEY', env) ?? '';
@@ -73,14 +68,14 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const configured = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
-    .filter(id => optInAdapters.some(adapter => adapter.id === id));
+    .filter(id => localOptInAdapters.some(adapter => adapter.id === id));
   const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
   if (ids.includes('antseed-vikey')) {
     const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
     registered.push(new AntseedVikey(port ? { port } : {}));
   }
   if (ids.includes('reflection-beam')) registered.push(new Kilo({ directory: configDir(env), reflectionBeam: true }));
-  const enabledOptIns = optInAdapters.filter(adapter => ids.includes(adapter.id));
+  const enabledOptIns = localOptInAdapters.filter(adapter => ids.includes(adapter.id));
   const localOptIns = new Set(enabledOptIns.map(adapter => adapter.id));
   const routingRegistry = () => {
     const current = registry();

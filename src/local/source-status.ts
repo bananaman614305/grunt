@@ -1,4 +1,5 @@
 import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
+import { SourceError } from './source.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
@@ -26,6 +27,7 @@ interface Observation {
   lastReplyMs?: number;
   lastSuccessAt?: number;
   failure?: ErrorCode;
+  availabilityQuota?: boolean;
   retryAt?: number;
 }
 export interface ObservationGuard { revision: number; acceptedRevision?: number }
@@ -70,13 +72,14 @@ export class SourceStatus {
   healthy(id: string) {
     const entry = this.entry(id);
     entry.revision++;
-    delete entry.failure; delete entry.retryAt;
+    delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
     if (entry.state !== 'ready') entry.state = 'available';
   }
   failed(id: string, code: ErrorCode, retryAfter?: number) {
     const entry = this.entry(id);
     entry.revision++;
     entry.failure = code;
+    delete entry.availabilityQuota;
     entry.state = code === 'quota' ? 'limited' : code === 'logged_out' || code === 'not_installed' ? 'unavailable' : 'error';
     const seconds = code === 'quota' && typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined;
     const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
@@ -112,12 +115,21 @@ export class SourceStatus {
       // A reply or explicit recovery observed after this probe started is
       // newer evidence. The caller still receives the actual probe result.
       if (entry.revision === revision) {
-        if (!result) { entry.revision++; entry.state = 'unavailable'; }
-        else if (healthCheck) this.healthy(source.id);
+        if (!result) {
+          if (entry.availabilityQuota) this.healthy(source.id);
+          entry.revision++; entry.state = 'unavailable';
+        } else if (healthCheck || entry.availabilityQuota) this.healthy(source.id);
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
       }
       return result;
     } catch (error) {
+      if (error instanceof SourceError && error.code === 'quota') {
+        if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota)) {
+          this.failed(source.id, 'quota', error.retryAfter);
+          entry.availabilityQuota = true;
+        }
+        return false;
+      }
       if (entry.revision === revision) { entry.revision++; entry.state = 'unavailable'; }
       throw error;
     }
@@ -155,7 +167,7 @@ export class SourceStatus {
       if (!signal.aborted && (!guard || entry.revision === guard.revision)) {
         entry.revision++;
         entry.state = 'ready'; entry.lastSuccessAt = this.now(); entry.lastReplyMs = Math.max(0, this.now() - started);
-        delete entry.failure; delete entry.retryAt;
+        delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
         if (guard) guard.acceptedRevision = entry.revision;
       }
       return result;

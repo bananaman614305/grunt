@@ -5,7 +5,7 @@ import { cpus, freemem, homedir, loadavg, platform, totalmem, uptime } from 'nod
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { configRoot, gruntEnv } from '../brand.js';
-import { knownAdapters } from '../registry.js';
+import { knownAdapters, localOptInAdapterIds } from '../registry.js';
 import { sanitizeDiagnosticEvent } from '../local/diagnostics.js';
 import type { DiagnosticEvent } from '../local/diagnostics.js';
 import { isAdminModelId, projectAdminWorkers, validateAdminBatch } from './types.js';
@@ -14,7 +14,7 @@ import type { AdminBatch } from './types.js';
 const MAX_BYTES = 1024 * 1024;
 const MAX_EVENTS = 200;
 const POLL_MS = 25000;
-const ids = new Set([...knownAdapters, 'freellmapi', 'codex', 'dots']);
+const ids = new Set([...knownAdapters, ...localOptInAdapterIds, 'freellmapi', 'codex', 'dots']);
 const states = new Set(['unknown', 'available', 'ready', 'answering', 'connecting', 'verifying', 'approval', 'limited', 'error', 'disabled', 'unavailable']);
 const errors = new Set(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
 const maintenanceErrors = new Set([...errors, 'busy', 'foreground', 'consent']);

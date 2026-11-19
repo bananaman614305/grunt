@@ -15,6 +15,12 @@ export interface Adapter {
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
 const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes' };
 export const knownAdapters = new Set(Object.keys(installers));
+// These descriptors are local only and cannot be selected by registry updates.
+export const localOptInAdapters: readonly Adapter[] = [
+  { id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:antseed-vikey' },
+  { id: 'reflection-beam', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:reflection-beam' },
+];
+export const localOptInAdapterIds = new Set(localOptInAdapters.map(adapter => adapter.id));
 // Retain schema compatibility with saved registries while stopping every app route.
 export const disabledAdapters = new Set(['freebuff', 'apinex']);
 export function validateRegistry(value: unknown): Registry {

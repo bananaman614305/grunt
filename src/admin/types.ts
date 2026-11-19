@@ -1,7 +1,7 @@
 // Only these metadata fields may cross the collector boundary. Payloads,
 // credentials, paths and arbitrary upstream messages are intentionally absent.
 import { diagnosticFailureReasons } from '../local/diagnostics.js';
-import { knownAdapters } from '../registry.js';
+import { knownAdapters, localOptInAdapterIds } from '../registry.js';
 import { MAX_WORKER_ACTIVE, MAX_WORKER_QUEUED, MAX_WORKER_RECENT, workerActivities } from '../local/worker-pool.js';
 
 export type DiagnosticKind = 'user' | 'setup' | 'maintenance' | 'diagnostic';
@@ -111,7 +111,7 @@ export function projectAdminWorkers(value: unknown, now: number): AdminWorkers {
       optional(row, 'activity', v => member(v, workerActivities), result);
       optional(row, 'startedAt', v => timestamp(v, now, result.createdAt), result);
       optional(row, 'finishedAt', v => timestamp(v, now, result.startedAt ?? result.createdAt), result);
-      optional(row, 'source', v => isAdminSourceId(v) && knownAdapters.has(v) ? v : fail(), result);
+      optional(row, 'source', v => isAdminSourceId(v) && (knownAdapters.has(v) || localOptInAdapterIds.has(v)) ? v : fail(), result);
       return result;
     });
   };
