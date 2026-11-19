@@ -12,14 +12,18 @@ import { SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const BEATAPI_MODEL = 'deepseek-v4.1-flash-free';
+export const BEATAPI_GLM_MODEL = 'glm-5.3-flash-free';
+export const BEATAPI_MODELS = [BEATAPI_MODEL, BEATAPI_GLM_MODEL] as const;
 export const BEATAPI_ORIGIN = 'https://api.beatapi.io';
 export const BEATAPI_RECEIPT_MAX_AGE_MS = 30 * 86400000;
+const FREE_REQUEST_COOLDOWN_MS = 60_000;
 export interface BeatAPIAccess { base_url: string; token: string }
-export interface BeatAPIGrant extends BeatAPIAccess {
-  version: 1; upstream_origin: typeof BEATAPI_ORIGIN; model: typeof BEATAPI_MODEL; verified_at: string;
+interface VerifiedBeatAPIAccess extends BeatAPIAccess {
+  upstream_origin: typeof BEATAPI_ORIGIN; model: typeof BEATAPI_MODEL; verified_at: string;
   free_account_verified: true; lifetime_paid: 0; payment_method_present: false; auto_recharge: false;
   credit_provenance: 'signup' | 'zero'; baseline_balance: number;
 }
+export type BeatAPIGrant = VerifiedBeatAPIAccess & ({ version: 1 } | { version: 2; models: typeof BEATAPI_MODELS });
 export const beatapiGrantPath = (directory = providerGrantDirectory()) => join(directory, 'beatapi.json');
 const obj = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const rejected = () => new SourceError('logged_out', 'BeatAPI private free-account verification is missing or expired; rerun usegrunt setup');
@@ -34,15 +38,19 @@ function access(value: unknown): BeatAPIAccess {
 }
 function validate(value: unknown): BeatAPIGrant {
   const grant = obj(value), auth = access(value), checked = typeof grant.verified_at === 'string' ? Date.parse(grant.verified_at) : NaN;
-  if (grant.version !== 1 || grant.upstream_origin !== BEATAPI_ORIGIN || grant.model !== BEATAPI_MODEL || grant.free_account_verified !== true
+  if ((grant.version !== 1 && grant.version !== 2) || grant.upstream_origin !== BEATAPI_ORIGIN || grant.model !== BEATAPI_MODEL || grant.free_account_verified !== true
     || grant.lifetime_paid !== 0 || grant.payment_method_present !== false || grant.auto_recharge !== false
     || !Number.isFinite(checked) || checked > Date.now() + 60000 || Date.now() - checked > BEATAPI_RECEIPT_MAX_AGE_MS
     || typeof grant.baseline_balance !== 'number' || !Number.isFinite(grant.baseline_balance) || grant.baseline_balance < 0 || grant.baseline_balance > 2
     || (grant.credit_provenance !== 'zero' && grant.credit_provenance !== 'signup')
     || (grant.credit_provenance === 'zero' ? grant.baseline_balance !== 0 : grant.baseline_balance <= 0)) throw rejected();
-  return { ...auth, version: 1, upstream_origin: BEATAPI_ORIGIN, model: BEATAPI_MODEL, verified_at: grant.verified_at as string,
+  const verified: VerifiedBeatAPIAccess = { ...auth, upstream_origin: BEATAPI_ORIGIN, model: BEATAPI_MODEL, verified_at: grant.verified_at as string,
     free_account_verified: true, lifetime_paid: 0, payment_method_present: false, auto_recharge: false,
     credit_provenance: grant.credit_provenance, baseline_balance: grant.baseline_balance };
+  if (grant.version === 1) return { ...verified, version: 1 };
+  if (!Array.isArray(grant.models) || grant.models.length !== BEATAPI_MODELS.length
+      || grant.models[0] !== BEATAPI_MODEL || grant.models[1] !== BEATAPI_GLM_MODEL) throw rejected();
+  return { ...verified, version: 2, models: BEATAPI_MODELS };
 }
 async function privateDirectory(directory: string, create = false) {
   if (create) await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -111,6 +119,29 @@ export async function verifyBeatAPIAccess(grant: BeatAPIAccess, options: { fetch
     if (error instanceof SourceError) throw error; throw new SourceError('upstream', 'BeatAPI account check failed');
   }
 }
+// True means both free models are usable. False means only DeepSeek is offered.
+export async function verifyBeatAPIModelAccess(grant: BeatAPIAccess, options: { fetcher?: typeof fetch; signal?: AbortSignal } = {}): Promise<boolean> {
+  const auth = access(grant), signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(5000)]);
+  try {
+    signal.throwIfAborted();
+    const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'beatapi', 'models')(`${auth.base_url}/v1/models`, {
+      headers: { Authorization: `Bearer ${auth.token}` }, redirect: 'error', signal
+    }), signal);
+    status(response);
+    const models = (await json(response, signal, 32768)).data;
+    if (Array.isArray(models) && models.length === 1 && obj(models[0]).id === BEATAPI_MODEL) return false;
+    if (!Array.isArray(models) || models.length !== BEATAPI_MODELS.length
+        || !BEATAPI_MODELS.every(id => models.some(model => obj(model).id === id))) {
+      throw new SourceError('refused', 'BeatAPI key must allow only the vetted free models');
+    }
+    return true;
+  } catch (error) {
+    if (options.signal?.aborted) throw new SourceError('cancelled', 'BeatAPI model access check cancelled');
+    if (signal.aborted) throw new SourceError('timeout', 'BeatAPI model access check timed out');
+    if (error instanceof SourceError) throw error;
+    throw new SourceError('upstream', 'BeatAPI model access check failed');
+  }
+}
 function tools(request: ModelRequest) {
   const validators = new Map<string, ValidateFunction>();
   try {
@@ -135,6 +166,7 @@ function tools(request: ModelRequest) {
 export class BeatAPI implements Source {
   readonly id = 'beatapi'; readonly supportsFunctionTools = true;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>(); private next = 0; private busy = false;
+  private nextModel: 0 | 1 = 0;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<BeatAPIGrant>; now?: () => number } = {}) {}
   private now() { return (this.options.now ?? Date.now)(); }
   private grant() { return (this.options.loadGrant?.() ?? readBeatAPIGrant(this.options.directory)).then(validate); }
@@ -154,18 +186,27 @@ export class BeatAPI implements Source {
   }
   private async once(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
+    let awaitingInferenceResponse = false;
     try {
       signal.throwIfAborted(); if (![this.id, 'grunt', 'milo'].includes(request.model) || request.imageInput) throw new SourceError('refused', 'BeatAPI requires its pinned text-only free route');
       const { validators, messages } = tools(request); if (!await this.approved()) throw new SourceError('refused', 'BeatAPI data sharing is not approved; rerun usegrunt setup');
       const grant = await this.grant(), guards = { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal };
       const before = await verifyBeatAPIAccess(grant, guards); if (before.credit_balance !== grant.baseline_balance) throw new SourceError('refused', 'BeatAPI account balance changed; rerun usegrunt setup');
+      const model = grant.version === 2 ? grant.models[this.nextModel] : BEATAPI_MODEL;
+      signal.throwIfAborted();
+      awaitingInferenceResponse = true;
       const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'beatapi', 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` }, body: JSON.stringify({ model: BEATAPI_MODEL, messages,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` }, body: JSON.stringify({ model, messages,
           ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: Math.min(4096, Math.max(1, Number.isFinite(request.maxTokens) ? Math.floor(request.maxTokens!) : 4096)) }) }), signal);
-      status(response); this.next = this.now() + 60000;
+      awaitingInferenceResponse = false;
+      if (response.ok || response.status >= 500) this.next = this.now() + FREE_REQUEST_COOLDOWN_MS;
+      if (grant.version === 2 && (response.status === 404 || response.status === 410)) {
+        this.nextModel = model === BEATAPI_MODEL ? 1 : 0;
+      }
+      status(response);
       const body = await json(response, signal, 2 * 1024 * 1024), after = await verifyBeatAPIAccess(grant, guards);
       if (after.credit_balance !== before.credit_balance) throw new SourceError('refused', 'BeatAPI free request changed the account balance; routing stopped');
-      if (body.model !== BEATAPI_MODEL) throw new SourceError('upstream', 'BeatAPI returned an unverified free model identity');
+      if (body.model !== model) throw new SourceError('upstream', 'BeatAPI returned an unverified free model identity');
       const choice = obj(Array.isArray(body.choices) && body.choices.length === 1 ? body.choices[0] : undefined), message = obj(choice.message), usage = obj(body.usage);
       if (message.refusal) throw new SourceError('refused', 'BeatAPI refused the request');
       if (!(message.content === undefined || message.content === null || typeof message.content === 'string') || !Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 0
@@ -181,12 +222,18 @@ export class BeatAPI implements Source {
         }
       }
       if (!message.content && !calls.length) throw new SourceError('upstream', 'BeatAPI returned an empty completion');
-      this.next = this.now() + 60000;
+      this.next = this.now() + FREE_REQUEST_COOLDOWN_MS;
+      this.nextModel = grant.version === 2 && model === BEATAPI_MODEL ? 1 : 0;
       return { text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
     } catch (error) {
+      // A transport failure can still leave an inference completing upstream.
+      if (awaitingInferenceResponse) this.next = this.now() + FREE_REQUEST_COOLDOWN_MS;
       if (caller.aborted) throw new SourceError('cancelled', 'BeatAPI request cancelled'); if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'BeatAPI request cancelled during shutdown');
       if (signal.aborted) throw new SourceError('timeout', 'BeatAPI request timed out');
-      if (error instanceof SourceError) { if (error.code === 'quota') this.next = this.now() + (error.retryAfter ?? 60) * 1000; throw error; }
+      if (error instanceof SourceError) {
+        if (error.code === 'quota') this.next = Math.max(this.next, this.now() + (error.retryAfter ?? 60) * 1000);
+        throw error;
+      }
       throw new SourceError('upstream', 'BeatAPI request failed');
     }
   }

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { chmod, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { BeatAPI, BEATAPI_MODEL, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, writeBeatAPIGrant } from './beatapi.js';
+import { BeatAPI, BEATAPI_GLM_MODEL, BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, writeBeatAPIGrant } from './beatapi.js';
 import type { BeatAPIGrant } from './beatapi.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { Sources } from './source.js';
@@ -11,7 +11,8 @@ import { createLocalApp } from './api.js';
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-beatapi-test-')); await recordDataSharingConsent(directory, ['beatapi']); });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); vi.useRealTimers(); });
-const grant = (): BeatAPIGrant => ({ version: 1, base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_abcdefghijklmnop', token: 'synthetic-private-grant', upstream_origin: BEATAPI_ORIGIN, model: BEATAPI_MODEL, verified_at: new Date().toISOString(), free_account_verified: true, lifetime_paid: 0, payment_method_present: false, auto_recharge: false, credit_provenance: 'signup', baseline_balance: 2 });
+const grant = (): Extract<BeatAPIGrant, { version: 1 }> => ({ version: 1, base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_abcdefghijklmnop', token: 'synthetic-private-grant', upstream_origin: BEATAPI_ORIGIN, model: BEATAPI_MODEL, verified_at: new Date().toISOString(), free_account_verified: true, lifetime_paid: 0, payment_method_present: false, auto_recharge: false, credit_provenance: 'signup', baseline_balance: 2 });
+const poolGrant = (): Extract<BeatAPIGrant, { version: 2 }> => ({ ...grant(), version: 2, models: BEATAPI_MODELS });
 const request = () => ({ model: 'beatapi', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false, maxTokens: 99999 });
 const usage = (balance = 2, settled = 0, extra = {}) => ({ data: { object: 'usage', credit_balance: balance, credits_settled: settled, ...extra } });
 const completion = (extra = {}) => ({ model: BEATAPI_MODEL, choices: [{ message: { content: 'hello' } }], usage: { prompt_tokens: 210081, completion_tokens: 12 }, ...extra });
@@ -21,6 +22,18 @@ function fixture(answer: unknown = completion(), balances = [usage(), usage()]) 
   const source = new BeatAPI({ directory, loadGrant: async () => grant(), fetcher });
   return { source, fetcher, calls };
 }
+function rotatingFixture(respond: (model: string) => Response | Promise<Response> = model => Response.json(completion({ model })), timeout = 5000) {
+  let now = 0;
+  const dispatched: string[] = [];
+  const fetcher = vi.fn(async (url: unknown, init?: RequestInit) => {
+    if (String(url).endsWith('/usage')) return Response.json(usage());
+    const { model } = JSON.parse(String(init?.body));
+    dispatched.push(model);
+    return respond(model);
+  });
+  const source = new BeatAPI({ directory, fetcher, now: () => now, timeout });
+  return { source, dispatched, advance: (ms: number) => { now += ms; } };
+}
 it('routes only the explicit free model through Grunt and caps output without spending signup credit', async () => {
   const f = fixture(); const app = createLocalApp(new Sources([f.source]));
   const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request()) });
@@ -28,6 +41,107 @@ it('routes only the explicit free model through Grunt and caps output without sp
   const post = f.calls.find(c => c.init?.method === 'POST')!; expect(JSON.parse(String(post.init!.body))).toMatchObject({ model: BEATAPI_MODEL, max_tokens: 4096, stream: false });
   expect(f.calls.map(c => c.url.split('/').at(-1))).toEqual(['usage', 'completions', 'usage']);
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 60 }); expect(f.calls).toHaveLength(3);
+});
+it('rotates the two vetted free models through Grunt only after one shared cooldown', async () => {
+  const saved = poolGrant();
+  await writeBeatAPIGrant(saved, directory);
+  expect(await readBeatAPIGrant(directory)).toEqual(saved);
+  const f = rotatingFixture();
+  const app = createLocalApp(new Sources([f.source]));
+  const chat = () => app.request('http://localhost:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request())
+  });
+  for (const model of [BEATAPI_MODEL, BEATAPI_GLM_MODEL, BEATAPI_MODEL]) {
+    const response = await chat();
+    expect(response.status).toBe(200);
+    expect((await response.json()).usage.prompt_tokens).toBe(210081);
+    expect(f.dispatched.at(-1)).toBe(model);
+    await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 60 });
+    f.advance(60_000);
+  }
+  expect(f.dispatched).toEqual([BEATAPI_MODEL, BEATAPI_GLM_MODEL, BEATAPI_MODEL]);
+});
+it('keeps an existing receipt pinned to DeepSeek after each successful request', async () => {
+  await writeBeatAPIGrant(grant(), directory);
+  const f = rotatingFixture();
+  const signal = new AbortController().signal;
+  await f.source.complete(request(), signal);
+  f.advance(60_000);
+  await f.source.complete(request(), signal);
+  expect(f.dispatched).toEqual([BEATAPI_MODEL, BEATAPI_MODEL]);
+});
+it('rejects unordered, duplicate, missing, and unverified models in a pool receipt', async () => {
+  for (const models of [[BEATAPI_GLM_MODEL, BEATAPI_MODEL], [BEATAPI_MODEL, BEATAPI_MODEL], [BEATAPI_MODEL], [BEATAPI_MODEL, 'glm-5.3-flash'], [...BEATAPI_MODELS, 'hy4-flash-free']]) {
+    await expect(writeBeatAPIGrant({ ...poolGrant(), models } as unknown as BeatAPIGrant, directory)).rejects.toMatchObject({ code: 'logged_out' });
+  }
+});
+it('respects a shared GLM quota response without retrying or advancing the model', async () => {
+  await writeBeatAPIGrant(poolGrant(), directory);
+  const f = rotatingFixture(model => model === BEATAPI_GLM_MODEL
+    ? new Response(null, { status: 429, headers: { 'Retry-After': '91' } }) : Response.json(completion({ model })));
+  const signal = new AbortController().signal;
+  await f.source.complete(request(), signal);
+  f.advance(60_000);
+  await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 91 });
+  f.advance(90_000);
+  await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 1 });
+  expect(f.dispatched).toEqual([BEATAPI_MODEL, BEATAPI_GLM_MODEL]);
+  f.advance(1_000);
+  await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 91 });
+  expect(f.dispatched).toEqual([BEATAPI_MODEL, BEATAPI_GLM_MODEL, BEATAPI_GLM_MODEL]);
+});
+it.each(
+  [404, 410].flatMap(status => BEATAPI_MODELS.map(model => ({ status, model })))
+)('switches on a later request when $model returned HTTP $status', async ({ status, model }) => {
+  await writeBeatAPIGrant(poolGrant(), directory);
+  const f = rotatingFixture(selectedModel => selectedModel === model
+    ? new Response(null, { status }) : Response.json(completion({ model: selectedModel })));
+  const signal = new AbortController().signal;
+  const otherModel = model === BEATAPI_MODEL ? BEATAPI_GLM_MODEL : BEATAPI_MODEL;
+  const dispatched = [];
+  if (model === BEATAPI_GLM_MODEL) {
+    await f.source.complete(request(), signal);
+    dispatched.push(otherModel);
+    f.advance(60_000);
+  }
+  await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code: 'upstream', diagnostics: { httpStatus: status } });
+  dispatched.push(model);
+  expect(f.dispatched).toEqual(dispatched);
+  await f.source.complete(request(), signal);
+  expect(f.dispatched).toEqual([...dispatched, otherModel]);
+});
+it('does not advance the model when a legacy receipt receives HTTP 404', async () => {
+  await writeBeatAPIGrant(grant(), directory);
+  const f = rotatingFixture(() => new Response(null, { status: 404 }));
+  const signal = new AbortController().signal;
+  for (const attempt of [1, 2]) {
+    await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code: 'upstream', diagnostics: { httpStatus: 404 } });
+    expect(f.dispatched).toHaveLength(attempt);
+  }
+  expect(f.dispatched).toEqual([BEATAPI_MODEL, BEATAPI_MODEL]);
+});
+it('rejects the other approved alias as a response to the selected model', async () => {
+  await writeBeatAPIGrant(poolGrant(), directory);
+  const f = rotatingFixture(() => Response.json(completion()));
+  const signal = new AbortController().signal;
+  await f.source.complete(request(), signal);
+  f.advance(60_000);
+  await expect(f.source.complete(request(), signal)).rejects.toThrow('BeatAPI returned an unverified free model identity');
+  expect(f.dispatched).toEqual([BEATAPI_MODEL, BEATAPI_GLM_MODEL]);
+});
+it.each([
+  { label: 'a stalled transport', code: 'timeout', respond: () => new Promise<Response>(() => {}) },
+  { label: 'an upstream gateway timeout', code: 'upstream', respond: () => new Response(null, { status: 504 }) }
+])('preserves the shared cooldown after $label without advancing the model', async ({ code, respond }) => {
+  await writeBeatAPIGrant(poolGrant(), directory);
+  const f = rotatingFixture(respond, 200);
+  const signal = new AbortController().signal;
+  await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code });
+  await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 60 });
+  expect(f.dispatched).toEqual([BEATAPI_MODEL]);
+  f.advance(60_000);
+  await expect(f.source.complete(request(), signal)).rejects.toMatchObject({ code });
+  expect(f.dispatched).toEqual([BEATAPI_MODEL, BEATAPI_MODEL]);
 });
 it('availability performs nonbillable checks only and zero balance is supported', async () => {
   const fetcher = vi.fn(async () => new Response(JSON.stringify(usage(0))));

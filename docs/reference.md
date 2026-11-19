@@ -655,15 +655,20 @@ credit. The $2.50 figure is the documented monthly allowance, not a measured
 remaining balance. Keep the account on Build: an external billing upgrade can
 invalidate the free-account assumptions recorded by setup.
 
-BeatAPI setup uses the person's existing Google account through Squire and
-restricts the Grunt-owned key to free models. The selected DeepSeek route sends
-native function definitions and correlated tool results. Nonbillable account
-metadata is checked before and after inference: settled credits must remain
-zero and the wallet balance must match the verified zero or signup-credit
+BeatAPI setup uses the person's existing Google or GitHub account through
+Squire and restricts the Grunt-owned key to the free DeepSeek V4.1 Flash and
+GLM 5.3 Flash routes. Both accept native function definitions and correlated
+tool results. With both routes verified, BeatAPI starts with DeepSeek and
+alternates models after successful requests. An existing DeepSeek-only
+verification still works. Run `npx usegrunt@latest add beatapi` to enable both
+when GLM is available on the account.
+Grunt checks nonbillable account metadata before and after inference. Settled
+credits must remain zero and the wallet balance must match the verified zero or signup-credit
 baseline. A changed balance stops routing for repair with `usegrunt add beatapi`.
-After each successful request, the source cools down for one minute; grunt can
-immediately use another eligible free source. Its observed 210,081-token input
-took about 121 seconds, so the long-context proof is not a speed guarantee.
+Both models share one successful request per minute. Grunt can immediately use
+another eligible source during BeatAPI's cooldown. Qualification observed
+210,081 input tokens on DeepSeek and 201,679 on GLM. A small GLM tool call
+took about 86 seconds.
 
 Pollinations setup captures a Grunt-owned key directly into Squire with a budget
 of exactly numeric `0`; blank or unlimited budgets are rejected. Quest Pollen

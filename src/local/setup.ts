@@ -1050,7 +1050,7 @@ export async function bootstrapKilo(squire: SetupSquire, directory: string, noti
   if (result.dropped.length) throw new SetupFailure('no verified Kilo credential');
 }
 
-export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void> } = {}) {
+export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
@@ -1104,7 +1104,8 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
       const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
       if (typeof browser.signup !== 'function') throw new Error(`${provider} signup requires a browser-capable Squire client`);
       await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser,
-        dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
+        dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}),
+        ...(provider === 'beatapi' && options.upgradeBeatAPI ? { upgradeExisting: true } : {}) });
       providers = providers.filter(id => id !== provider);
     }
     if (providers.includes('livekit')) {
