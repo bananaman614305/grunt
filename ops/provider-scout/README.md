@@ -144,14 +144,20 @@ transcripts, credential values and upstream error payloads are not retained.
 Reviewers are read-only and have no MCP integrations. Candidate checks cannot
 access the operator's home directory or supervisor state.
 
-`~/.local/state/usegrunt-scout/ledger.json` tracks decisions by provider domain
-and model. Reports live under `reports/`; `last-run.json` and `cron.log` record
-execution status. Each run's `discovery.json` records the passes, observed
-search coverage, deduplicated offers and bounded query history. Inspect the
-latest pass statuses and counts with `usegrunt-scout status`. These are local
-reports, not email or chat notifications. Missing web search, expired login,
-malformed output and timeouts are failures or explicit blockers, not successful
-empty searches.
+`~/.local/state/usegrunt-scout/ledger.json` is the master record of provider and
+model decisions, search queries, pending reviews, and reviewed observations.
+The scout imports retained reports into the search index and normalizes query
+case and spacing. Reports under `reports/` retain the evidence for each run.
+`usegrunt-scout status` displays the search and pending-review counts.
+Missing web search, expired login, malformed output and timeouts are recorded
+as failures.
+
+Discovery compares offers against the full master record. Known aliases share
+one lookup. Revisiting an offer requires a first-party source and specific
+before-and-after facts about allowance, usable context, quality, signup,
+permitted use, or supply. Qualification receives only new offers or documented
+changes. It records rejected and unchanged findings as reviewed, keeps
+unexamined offers queued, and skips qualification when the queue is empty.
 
 Public source evidence can include known documentation selectors, such as
 `?section=models`, `?tab=pricing` or `?view=limits`. Homepages and proposal URLs

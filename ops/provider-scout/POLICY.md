@@ -85,10 +85,17 @@ card-free entitlement; Routeway's 42K offer is too small; Gonka's SMS gate,
 Free Inference's academic eligibility, Cloudflare's previously reviewed Qwen,
 and M3.1 do not qualify. A future materially different offer can be researched.
 
-Resume promising researched offers and integration_pending branches before
-starting another implementation. A smoke-run researched record has not completed
-qualification; deduplication must not strand it. Reuse pending Squire workflows
-instead of creating duplicate accounts or repeatedly requesting human approval.
+Skip offers with a verified recurring free allowance of 1 million tokens
+(or provider-metered equivalent) per 30 days or less. DeepCodex is rejected
+on this basis. Revisit only if its published recurring free allowance
+materially increases.
+
+Qualify only offers supplied by the supervisor. Each offer includes a review
+identifier and its prior decision where available. A previously reviewed offer
+requires a documented substantive change before another qualification. Return
+the review identifier after evaluating the evidence, even when the offer is
+still blocked. Leave unexamined offers queued. Reuse pending Squire workflows
+when a new review covers them.
 
 ## Established qualification pipeline
 
