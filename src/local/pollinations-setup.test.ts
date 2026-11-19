@@ -6,6 +6,7 @@ import { setupPollinations } from './pollinations-setup.js';
 import type { PollinationsSetupSquire } from './pollinations-setup.js';
 import { POLLINATIONS_MODEL, pollinationsGrantPath, readPollinationsGrant, writePollinationsGrant } from './pollinations.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 let directory: string;
 const grant = { base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_abcdefghijklmnop', token: 'synthetic-private-grant' };
@@ -47,6 +48,7 @@ it('captures new private access after consent, verifies server guards, and reuse
   expect(browser.signup).toHaveBeenCalledOnce();
   const [provider, url, goal] = browser.signup.mock.calls[0] as unknown as [string, string, string];
   expect([provider, url]).toEqual(['pollinations', 'https://enter.pollinations.ai/keys']);
+  expect(planSteps(goal)).toEqual([]);
   expect(goal).toContain('budget must be exactly 0'); expect(goal).toContain('Quest Pollen Only must be enabled');
   expect(goal).toContain('account permissions must be usage only'); expect(goal).toContain('operate_extract');
   expect(goal).toContain('never return or display the key');

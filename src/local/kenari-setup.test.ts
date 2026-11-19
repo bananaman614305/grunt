@@ -6,6 +6,7 @@ import { recordDataSharingConsent } from './data-sharing.js';
 import { setupKenari } from './kenari-setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { KENARI_FREE_MODEL } from './kenari.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 let directory: string;
 const notify = vi.fn();
@@ -59,6 +60,7 @@ it('provisions once on the ordinary cold-start flow and grants only after scoped
   await recordDataSharingConsent(directory, ['kenari']);
   await setupKenari({ directory, squire, notify });
   expect(squire.signup).toHaveBeenCalledExactlyOnceWith('kenari', 'https://kenari.id/login', expect.stringContaining(KENARI_FREE_MODEL));
+  expect(planSteps(String((squire.signup.mock.calls[0] as unknown[])[2]))).toEqual([]);
   expect(squire.call).toHaveBeenCalledTimes(2);
   expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
 });

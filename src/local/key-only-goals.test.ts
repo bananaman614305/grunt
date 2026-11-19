@@ -1,20 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { BrowserSquire, PROVIDERS } from './setup.js';
 import { bundledRegistry } from '../registry.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 afterEach(() => { vi.restoreAllMocks(); });
 
-// Setup asks Squire only to sign in and capture one API key. Registry
-// providers are already vetted as free, so goals must not ask Squire to pick
-// a plan or tier, or to enable a free model. Prohibitions ("No paid plan",
-// "Never accept ... upgrade", "do not open billing or plan pages") are the
-// safety clause and stay.
-const planStep = /free plan|enable (only )?(its )?(daily )?free|free model|plan|tier|upgrade/i;
-const prohibition = /^(no|never|do not)\b/i;
-function planSteps(goal: string) {
-  return goal.split(/(?<=\.)\s+/).flatMap(sentence => sentence.split(/;\s+/))
-    .filter(part => planStep.test(part) && !prohibition.test(part.trim()));
-}
 const providers = [...new Set([...Object.keys(PROVIDERS), ...bundledRegistry.adapters.map(a => a.id)])];
 
 async function goals(provider: string, dataSharingApproved?: string[]) {
@@ -49,5 +39,8 @@ it('flags the old Zro and Token Harbor model-enable wording', () => {
   expect(planSteps('Enable only its daily free DeepSeek V4.1 Flash access.')).toHaveLength(1);
   expect(planSteps('Enable the free model deepseek-v4.1-flash:free; never select its paid sibling.')).toHaveLength(1);
   expect(planSteps("Use the user's existing zro account or sign up for the free plan.")).toHaveLength(1);
+  expect(planSteps('Use the normal Get your free tokens link to activate its recurring weekly allowance.')).toHaveLength(1);
+  expect(planSteps("Complete today's ordinary DAILY CHECK-IN to activate recurring free quota.")).toHaveLength(1);
+  expect(planSteps('Use only deepseek-ai/DeepSeek-V4.1-Flash at api.runcrate.ai.')).toHaveLength(1);
   expect(planSteps('No paid plan, payment method, extra account or account switching.')).toEqual([]);
 });

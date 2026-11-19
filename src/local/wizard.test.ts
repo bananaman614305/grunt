@@ -12,6 +12,7 @@ import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
 import { approveDataSharing, dataSharingPolicies, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 vi.mock('@clack/prompts', () => ({
   text: vi.fn(async () => 'https://example.test/v1'), multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
@@ -139,7 +140,7 @@ it('pairs the local Freebuff CLI using its own login URL through Squire', async 
   const squire = { signup: vi.fn(async () => {}), credentials: { list: vi.fn(), grant: vi.fn() } };
   await loginFreebuff(squire);
   expect(squire.signup).toHaveBeenCalledWith('freebuff', 'https://freebuff.com/login?auth_code=synthetic&cli_flow=fixture', expect.stringContaining('local CLI'));
-  expect(String(squire.signup.mock.calls[0]![2])).not.toMatch(/free plan/i);
+  expect(planSteps(String((squire.signup.mock.calls[0] as unknown[])[2]))).toEqual([]);
 });
 
 

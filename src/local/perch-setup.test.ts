@@ -6,6 +6,7 @@ import * as Perch from './perch.js';
 import type { PerchProcesses } from './perch-process.js';
 import { installPerch, setupPerch } from './perch-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { planSteps } from './fixtures/key-only-goal.js';
 
 // Tiny deterministic package fixtures exercise the installer's real digest and
 // core-file checks without downloading or executing the vendor's native bundle.
@@ -61,7 +62,7 @@ it('verifies active Starter before official native pairing and checks the exact 
     'https://app.perchai.app/api/perch-terminal/cli-auth/start?state=private-pairing-nonce',
     'https://chat.perchai.app/'
   ]);
-  expect(f.squire.signup.mock.calls[0]![2]).not.toMatch(/Starter plan|activate Starter/);
+  for (const [, , goal] of f.squire.signup.mock.calls) expect(planSteps(goal)).toEqual([]);
   expect(f.squire.signup.mock.calls[0]![2]).toContain('Do not open billing to audit the plan');
   expect(f.squire.signup.mock.calls[0]![2]).toContain('turn the optional Starter Data Program OFF');
   expect(f.squire.signup.mock.calls[2]![2]).toContain('person@example.test');
