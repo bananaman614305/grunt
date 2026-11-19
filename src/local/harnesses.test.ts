@@ -42,13 +42,18 @@ it('Codex: writes only its own grunt profile file and never edits config.toml', 
   expect((await configureCodex(19879)).changed).toBe(true);
   expect(await backups(dir)).toHaveLength(1);
 });
-it('OpenCode: leaves an opencode.jsonc config untouched', async () => {
+it('OpenCode: adds Grunt to JSONC and preserves comments and settings', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-opencode-test-'));
   vi.stubEnv('XDG_CONFIG_HOME', dir);
   await mkdir(join(dir, 'opencode'));
-  await writeFile(join(dir, 'opencode', 'opencode.jsonc'), '// mine\n{}');
-  await expect(configureOpenCode()).rejects.toThrow('which setup does not edit');
-  expect(await readdir(join(dir, 'opencode'))).toEqual(['opencode.jsonc']);
+  const path = join(dir, 'opencode', 'opencode.jsonc');
+  const existing = '// mine\n{ "default_agent": "build", }';
+  await writeFile(path, existing);
+  const change = await configureOpenCode(19878);
+  expect(change.changed).toBe(true);
+  expect(await readFile(path, 'utf8')).toMatch(/\/\/ mine[\s\S]*default_agent[\s\S]*19878/);
+  expect(change.changed && change.backup && await readFile(change.backup, 'utf8')).toBe(existing);
+  await expect(configureOpenCode(19878)).resolves.toEqual({ changed: false });
 });
 it('detects harnesses on PATH and checks one with a real non-interactive run', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-path-test-'));
@@ -61,5 +66,47 @@ it('detects harnesses on PATH and checks one with a real non-interactive run', a
   expect(change).toBeUndefined();
   expect(JSON.parse(answer)).toMatchObject({ args: ['-p', '--model', 'grunt', expect.any(String)], base: 'http://127.0.0.1:19878', token: 'local' });
   await writeFile(claude, `#!${process.execPath}\nconsole.error('no route'); process.exit(3);\n`);
-  await expect(runHarness('claude', [])).rejects.toThrow('claude exited with code 3: no route');
+  await expect(runHarness('claude', [])).rejects.toThrow('claude exited with code 3');
+});
+
+it('mounts Squire for a headless harness using only its temporary configuration', async () => {
+  const { signupHarness } = await import('./harnesses.js');
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+  const { Ajv } = await import('ajv');
+  const { stat } = await import('node:fs/promises');
+  const harness = HARNESSES.find(h => h.id === 'pi')!;
+  const invoke = vi.fn(async () => ({ status: 'low_confidence' }));
+  let directory = '';
+  await signupHarness(harness, 19878, async (_binary, args, env) => {
+    directory = env.PI_CODING_AGENT_DIR!;
+    expect(args).toContain('--no-builtin-tools');
+    expect(args.at(-1)).toContain('Accept required provider Terms of Service');
+    expect(args.at(-1)).toContain('terms control also selects a paid plan');
+    const config = JSON.parse(await readFile(join(directory, 'mcp.json'), 'utf8'));
+    const { url, headers } = config.mcpServers.squire;
+    expect((await stat(join(directory, 'mcp.json'))).mode & 0o777).toBe(0o600);
+    const client = new Client({ name: 'fake-harness', version: '1' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
+    try {
+      const tools = (await client.listTools()).tools;
+      expect(tools.map(tool => tool.name)).toEqual(['operate_drive', 'operate_click']);
+      // Kilo validates every schema before it sends even the first drive call.
+      const ajv = new Ajv({ strict: true });
+      const click = ajv.compile(tools[1]!.inputSchema);
+      expect(click({ ref: 'observed-control' })).toBe(true);
+      expect(click({ screenshot: { screenshot_id: 'synthetic' } })).toBe(false);
+      expect(await client.callTool({ name: 'operate_drive', arguments: {} })).toMatchObject({ content: [{ text: '{"status":"low_confidence"}' }] });
+    } finally { await client.close(); }
+    return 'untrusted harness text';
+  })({ service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal,
+    tools: [
+      { name: 'operate_drive', inputSchema: { type: 'object' } },
+      { name: 'operate_click', inputSchema: { type: 'object', properties: {
+        session_id: { type: 'string' }, ref: { type: 'string' },
+        screenshot: { type: 'object', properties: { screenshot_id: { type: 'string', format: 'uuid' } } }
+      }, required: ['session_id'] } }
+    ], call: invoke });
+  expect(invoke).toHaveBeenCalledWith('operate_drive', {});
+  await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
 });

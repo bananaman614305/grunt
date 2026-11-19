@@ -16,12 +16,14 @@ import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
 import { banner } from './banner.js';
 import { approveDataSharing } from './data-sharing.js';
-import { configurePi, connectHarness, detectHarnesses } from './harnesses.js';
-import type { Harness, runHarness } from './harnesses.js';
+import { configurePi, connectHarness, detectHarnesses, HARNESSES, signupHarness, runHarness } from './harnesses.js';
+import type { Harness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
 import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { SetupTable } from './setup-table.js';
+import { setupAttention, setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
+import { select, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
 
 export const configDir = (env = process.env) => configRoot(env);
@@ -314,8 +316,8 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
           });
           preparing = response.headers.get('x-grunt-preparing')?.split(',').includes(source) ?? false;
           const answered = response.headers.get('x-grunt-source');
-          const result = await response.json().catch(() => ({})) as { choices?: { message?: { content?: string } }[] };
-          if (!response.ok) failure = `grunt returned HTTP ${response.status}`;
+          const result = await response.json().catch(() => ({})) as { error?: { code?: string }; choices?: { message?: { content?: string } }[] };
+          if (!response.ok) failure = result.error?.code === 'quota' || response.status === 429 ? 'quota exhausted' : `grunt returned HTTP ${response.status}`;
           else if (answered !== source) failure = `${answered ?? 'an unnamed source'} answered instead of ${source}`;
           else if (!result.choices?.[0]?.message?.content?.trim()) failure = 'no text returned';
           else failure = undefined;
@@ -344,6 +346,40 @@ export async function loadRegistry(options: { url?: string; fetcher?: typeof fet
     return { registry: registry.current, origin: (offline ? cached ? 'cache' : 'bundled' : 'remote') as RegistryOrigin };
   } finally { await registry.close(); }
 }
+export async function chooseSetupHarness(): Promise<Harness | undefined> {
+  const installed = await detectHarnesses();
+  if (!process.stdin.isTTY || gruntEnv('SETUP_NO_HUMAN') === '1') return installed[0];
+  const missingPi = !installed.some(tool => tool.id === 'pi');
+  const selected = await withTerminal(() => select({
+    message: 'Choose a coding harness for setup',
+    options: [
+      ...installed.map(tool => ({ value: tool.id as string, label: tool.name })),
+      ...(missingPi ? [{ value: 'install-pi', label: 'Install Pi' }] : []),
+      { value: 'jev', label: 'Use Squire with human handoff' }
+    ]
+  }));
+  if (isCancel(selected)) throw new Error('Setup cancelled');
+  if (selected === 'install-pi') {
+    await command('npm', ['install', '--global', '@earendil-works/pi-coding-agent']);
+    return HARNESSES.find(tool => tool.id === 'pi');
+  }
+  return installed.find(tool => tool.id === selected);
+}
+// A text reply can pass on a source that cannot drive an MCP tool. Require
+// an actual, correctly formed tool call from the exact newly admitted source.
+export async function probeSetupOperator(port: number, source: string, signal: AbortSignal) {
+  const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]),
+    body: JSON.stringify({ model: source, max_tokens: 256, messages: [
+      { role: 'user', content: `Call the setup_ready tool once with no arguments. Check ${randomUUID()}.` }
+    ], tools: [{ type: 'function', function: { name: 'setup_ready', parameters: { type: 'object', properties: {}, additionalProperties: false } } }] })
+  });
+  if (!response.ok || response.headers.get('x-grunt-source') !== source) return false;
+  const result = await response.json() as { choices?: { message?: { tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[] };
+  const calls = result.choices?.[0]?.message?.tool_calls;
+  return calls?.length === 1 && calls[0]?.function?.name === 'setup_ready' && /^\{\s*\}$/.test(calls[0].function.arguments ?? '');
+}
 type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness; table?: SetupTable };
 type HarnessPlan = (() => Promise<Harness[]>) & { discoverLater?: true };
 export async function prepareHarnesses(port: number, options: HarnessOptions = {}): Promise<HarnessPlan> {
@@ -358,8 +394,8 @@ export async function prepareHarnesses(port: number, options: HarnessOptions = {
         await connectHarness(harness, port, options.run);
         table.set('tool', harness.name, '✓ connected');
         connected.push(harness);
-      } catch {
-        table.set('tool', harness.name, '✗ connection failed');
+      } catch (error) {
+        table.set('tool', harness.name, `✗ connection failed (${setupFailureReason(error)})`);
       }
     }
     return connected;
@@ -368,8 +404,8 @@ export async function prepareHarnesses(port: number, options: HarnessOptions = {
 export async function connectHarnesses(port: number, options: HarnessOptions = {}) {
   return (await prepareHarnesses(port, options))();
 }
-const wizardActions = { installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing, startDashboard: startSetupDashboard, watchDashboard: watchSetupDashboard };
-type Optional = 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing' | 'startDashboard' | 'watchDashboard';
+const wizardActions = { probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing, startDashboard: startSetupDashboard, watchDashboard: watchSetupDashboard };
+type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing' | 'startDashboard' | 'watchDashboard';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add === '') throw new Error('Specify a provider name or base URL');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
@@ -382,11 +418,15 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
   const closeSquire = () => closing ??= (async () => { await squire?.close(); })();
   const abortSetup = () => { void closeSquire().catch(() => {}); };
   const connect = () => connection ??= actions.connectSquire({ ...(squire ? { squire } : {}), ...(session ? { signal: session.signal } : {}) });
-  // Provider details belong in diagnostics, never in the setup terminal.
+  // The setup table prints only the classified outcome for each provider.
   const notify = (_line: string) => {};
   try {
     await actions.banner?.();
     await actions.preflight();
+    const revised = !add && Boolean(actions.chooseHarness);
+    if (revised) squire?.useBatchSignup();
+    const harness = revised ? await actions.chooseHarness?.() : undefined;
+    if (revised) console.log(harness ? `✓ harness: ${harness.id}` : '… harness: Squire with human handoff');
     const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     const { registry } = !add && actions.loadRegistry ? await actions.loadRegistry() : { registry: bundledRegistry };
     const requested = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
@@ -411,19 +451,21 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         const unavailable: string[] = [];
         await actions.checkFallbackServices(unavailable, port, notify, [add]);
         table.set('source', add, unavailable.includes(add) ? 'skipped (key test failed)' : '✓ ready');
-      } catch (error) { table.set('source', add, 'skipped (setup failed)'); throw error; }
+      } catch (error) { table.set('source', add, `skipped (${squire?.signupFailure(add) ?? setupFailureReason(error)})`); throw error; }
       console.log('Ready');
       return;
     }
-    const plan = await actions.prepareHarnesses?.(port, { table });
+    const plan = revised ? undefined : await actions.prepareHarnesses?.(port, { table });
     const applyHarnesses = plan ?? (async () => {
       if (actions.connectHarnesses) await actions.connectHarnesses(port, { table });
       else await actions.configurePi?.(port);
     });
-    session = await beginSetupSession(configDir(), ids);
+    const pool = [...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])];
+    const skipAnonymous = gruntEnv('SETUP_NO_ANONYMOUS') === '1';
+    session = await beginSetupSession(configDir(), revised ? pool : ids, { anonymousKilo: revised && !skipAnonymous });
     session.signal.addEventListener('abort', abortSetup, { once: true });
     session.signal.throwIfAborted();
-    await actions.installService([...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])], { signal: session.signal });
+    await actions.installService(pool, { signal: session.signal });
     await actions.checkService(port);
     const unavailable: string[] = [];
     let activeChecks = 0;
@@ -435,9 +477,10 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       finally { const next = queuedChecks.shift(); if (next) next(); else activeChecks--; }
     };
     const settled = new Map<string, Promise<void>>();
+    const failedReasons = new Map<string, string>();
     let firstReady: Promise<unknown> | undefined;
     let readyCount = 0;
-    const onSettled = (id: string, available: boolean): Promise<void> => {
+    const onSettled = (id: string, available: boolean, reason?: string): Promise<void> => {
       if (!ids.includes(id)) return Promise.reject(new Error('Unexpected provider setup result'));
       const existing = settled.get(id);
       if (existing) return existing;
@@ -449,7 +492,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
               session!.signal.throwIfAborted();
               await session!.verify(id);
               await actions.checkServiceSources?.(unavailable, notify, [id]);
-              if (!unavailable.includes(id)) await actions.checkFallbackServices(unavailable, port, notify, [id], { limit: 180000, interval: 2000, signal: session!.signal, retryPreparing: false });
+              if (!unavailable.includes(id)) await actions.checkFallbackServices(unavailable, port, line => { if (line.endsWith('FAIL — quota exhausted')) reason = 'quota exhausted'; }, [id], { limit: 180000, interval: 2000, signal: session!.signal, retryPreparing: false });
               session!.signal.throwIfAborted();
               passed = !unavailable.includes(id);
             });
@@ -459,20 +502,112 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await session!.release(id);
           readyCount++;
           table.set('source', id, '✓ ready');
-          firstReady ??= applyHarnesses();
-          await firstReady;
+          if (!revised) {
+            firstReady ??= applyHarnesses();
+            await firstReady;
+          }
         } else {
           if (!unavailable.includes(id)) unavailable.push(id);
           await session!.hold(id);
-          table.set('source', id, available ? 'skipped (key test failed)' : 'skipped (setup failed)');
+          const why = reason ?? (available ? 'key test failed' : 'setup failed');
+          failedReasons.set(id, why);
+          const attention = revised && setupAttention(why);
+          table.set('source', id, attention ? `needs you (${attention})` : `skipped (${why})`);
         }
       })();
       settled.set(id, task);
       return task;
     };
-    const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters: ids, notify, onSettled, connect,
-      signal: session.signal, dataSharingApproved: consent.approved, ...(squire ? { squire } : {}) });
-    await parallelMap(ids, id => onSettled(id, !outcome.unavailable.includes(id)));
+    const provision = async (adapters: string[], kiloAccount = false) => {
+      const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters, notify, onSettled, connect,
+        signal: session!.signal, dataSharingApproved: consent.approved, ...(squire ? { squire } : {}), ...(kiloAccount ? { kiloAccount } : {}) });
+      await parallelMap(adapters, id => onSettled(id, !outcome.unavailable.includes(id)));
+    };
+    if (!revised) await provision(ids);
+    else {
+      const ordered = ['kilo', 'pollinations', 'beatapi', 'zro', 'tokenharbor', 'runcrate', ...ids];
+      const remaining = [...new Set(ordered)].filter(id => ids.includes(id));
+      let driving = false;
+      let operatorFailure: string | undefined;
+      const deferred: string[] = [];
+      const configure = () => (actions.connectHarness ?? connectHarness)(harness!, port,
+        (binary, args, env) => runHarness(binary, args, env, 45000, { signal: session!.signal }));
+      const useOperator = (anonymousOpenCode = false) => {
+        const agent = (actions.signupHarness ?? signupHarness)(harness!, port, undefined, anonymousOpenCode);
+        squire?.useSignupAgent(async input => {
+          try { await agent(input); }
+          catch (error) {
+            const reason = setupFailureReason(error);
+            if (signupOperatorUnavailable(reason)) operatorFailure = reason;
+            throw error;
+          }
+        });
+      };
+      const activate = async (source: string, bootstrap: boolean) => {
+        if (!harness || !squire || unavailable.includes(source)) return false;
+        try {
+          if (!await (actions.probeOperator ?? probeSetupOperator)(port, source, session!.signal)) return false;
+          await configure();
+          useOperator();
+          console.log(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
+          return true;
+        } catch { session!.signal.throwIfAborted(); return false; }
+      };
+      if (ids.includes('kilo') && !skipAnonymous) {
+        await onSettled('kilo', true);
+        driving = await activate('kilo', false);
+        if (!unavailable.includes('kilo') && (driving || !harness)) remaining.shift();
+        else {
+          settled.delete('kilo');
+          const failed = unavailable.indexOf('kilo');
+          if (failed !== -1) unavailable.splice(failed, 1);
+          else readyCount--;
+          await session.hold('kilo');
+          await session.useKiloAccount();
+        }
+      }
+      if (harness?.id === 'opencode' && !driving && !skipAnonymous) {
+        try {
+          await runHarness('opencode', ['run', '--pure', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
+          useOperator(true);
+          driving = Boolean(squire);
+          console.log('✓ model: OpenCode free');
+        } catch { session.signal.throwIfAborted(); }
+      }
+      if (!driving && harness) console.log('… operator: no working anonymous model; using Squire');
+      if (remaining.length) {
+        try { await connect(); console.log('✓ squire: signed in'); }
+        catch (error) { console.log(`✗ squire: ${setupFailureReason(error)}`); }
+      }
+      const checkOperator = () => {
+        if (!operatorFailure) return;
+        driving = false;
+        squire?.useSignupAgent(undefined);
+        console.log(`… operator: ${operatorFailure}; using Squire`);
+        operatorFailure = undefined;
+      };
+      // With a harness, a Jev-only bootstrap tries every provider before it
+      // hands a browser to the person; the second pass allows that handoff.
+      const retryable = new Set(['browser could not continue', 'needs human verification', 'needs Terms of Service acceptance']);
+      if (harness) squire?.deferHandoff?.(true);
+      for (const id of remaining) {
+        checkOperator();
+        if (!driving && harness && id !== 'opencode') console.log(`… bootstrap: ${id} via Squire`);
+        await provision([id], id === 'kilo');
+        if (!driving && id !== 'opencode') driving = await activate(id, true);
+        if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) deferred.push(id);
+      }
+      squire?.deferHandoff?.(false);
+      for (const id of deferred) {
+        checkOperator();
+        settled.delete(id);
+        failedReasons.delete(id);
+        const failed = unavailable.indexOf(id);
+        if (failed !== -1) unavailable.splice(failed, 1);
+        await provision([id], id === 'kilo');
+        if (!driving && id !== 'opencode') driving = await activate(id, true);
+      }
+    }
     await Promise.all(settled.values());
     session.signal.throwIfAborted();
     if (!readyCount) throw new Error('No adapters passed verification. Run usegrunt setup to resume.');

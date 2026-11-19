@@ -25,13 +25,16 @@ function text(v: unknown): string {
     return [];
   }).join('\n');
 }
-export function decode(body: Obj, api: string, fallback?: string): ModelRequest & { cwdSource: 'request' | 'fallback' | 'scratch' } {
+export function decode(body: Obj, api: string, fallback?: string): ModelRequest & {
+  cwdSource: 'request' | 'fallback' | 'scratch';
+  responseNamespaces?: ReadonlyMap<string, { namespace: string; name: string }>;
+} {
   let messages: Message[];
   if (api === 'responses') {
     messages = typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : array(body.input).flatMap((v): Message[] => {
       const m = object(v);
       if (m.type === 'function_call_output') return [{ role: 'tool', content: typeof m.output === 'string' ? m.output : JSON.stringify(m.output) ?? '', tool_call_id: String(m.call_id) }];
-      if (m.type === 'function_call') return [{ role: 'assistant', content: '', tool_calls: [{ id: String(m.call_id), type: 'function', function: { name: String(m.name), arguments: String(m.arguments) } }] }];
+      if (m.type === 'function_call') return [{ role: 'assistant', content: '', tool_calls: [{ id: String(m.call_id), type: 'function', function: { name: typeof m.namespace === 'string' ? `${m.namespace}__${String(m.name)}` : String(m.name), arguments: String(m.arguments) } }] }];
       if (m.type && m.type !== 'message') return [];
       return [{ role: String(m.role ?? 'user'), content: text(m.content) }];
     });
@@ -49,10 +52,21 @@ export function decode(body: Obj, api: string, fallback?: string): ModelRequest 
     if (body.system) messages.unshift({ role: 'system', content: text(body.system) });
   }
   if (!messages.length) throw new Error('Provide messages or input');
-  const tools: Tool[] = array(body.tools).map(v => {
+  const responseNamespaces = new Map<string, { namespace: string; name: string }>();
+  const tools: Tool[] = array(body.tools).flatMap((v): Tool[] => {
     const t = object(v), f = object(t.function ?? t);
-    if (t.type && t.type !== 'function' && !t.input_schema) return t as Tool;
-    return { type: 'function', function: { name: String(f.name), parameters: f.parameters ?? f.input_schema ?? {}, ...(typeof f.description === 'string' ? { description: f.description } : {}) } };
+    if (api === 'responses' && t.type === 'namespace' && typeof t.name === 'string') {
+      const namespace = t.name;
+      return array(t.tools).flatMap((value): Tool[] => {
+        const child = object(value);
+        if (child.type !== 'function' || typeof child.name !== 'string') return [];
+        const name = `${namespace}__${child.name}`;
+        responseNamespaces.set(name, { namespace, name: child.name });
+        return [{ type: 'function', function: { name, parameters: child.parameters ?? {}, ...(typeof child.description === 'string' ? { description: child.description } : {}) } }];
+      });
+    }
+    if (t.type && t.type !== 'function' && !t.input_schema) return [t as Tool];
+    return [{ type: 'function', function: { name: String(f.name), parameters: f.parameters ?? f.input_schema ?? {}, ...(typeof f.description === 'string' ? { description: f.description } : {}) } }];
   });
   const context = messages.filter(m => ['system', 'developer'].includes(m.role) || /<environment_context>|# Environment/.test(m.content)).map(m => m.content).join('\n');
   const matches = [...context.matchAll(/(?:<cwd>\s*([^<\n]+)\s*<\/cwd>|(?:Working directory|Current working directory|Primary working directory|cwd):\s*([^\n<]+))/gi)];
@@ -66,15 +80,15 @@ export function decode(body: Obj, api: string, fallback?: string): ModelRequest 
   if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
   const imageInput = /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
-  return { model: String(body.model ?? 'grunt'), messages, userMessages, tools, cwd, cwdSource, stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  return { model: String(body.model ?? 'grunt'), messages, userMessages, tools, cwd, cwdSource, ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
 }
-export function encode(result: Completion, model: string, api: string) {
+export function encode(result: Completion, model: string, api: string, namespaces?: ReadonlyMap<string, { namespace: string; name: string }>) {
   const id = randomUUID(), input = result.inputTokens ?? 0, output = result.outputTokens ?? 0;
   if (api === 'messages') return { id: `msg_${id}`, type: 'message', role: 'assistant', model, content: [...(result.text ? [{ type: 'text', text: result.text }] : []), ...(result.calls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.function.name, input: toolInput(c.function.arguments) }))], stop_reason: result.calls?.length ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: input, output_tokens: output } };
-  if (api === 'responses') return { id: `resp_${id}`, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', error: null, incomplete_details: null, model, output: [...(result.text ? [{ id: `msg_${id}`, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: result.text, annotations: [] }] }] : []), ...(result.calls ?? []).map(c => ({ id: `fc_${c.id}`, type: 'function_call', status: 'completed', call_id: c.id, name: c.function.name, arguments: c.function.arguments }))], usage: { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } }, parallel_tool_calls: true, tools: [], tool_choice: 'auto' };
+  if (api === 'responses') return { id: `resp_${id}`, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', error: null, incomplete_details: null, model, output: [...(result.text ? [{ id: `msg_${id}`, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: result.text, annotations: [] }] }] : []), ...(result.calls ?? []).map(c => ({ id: `fc_${c.id}`, type: 'function_call', status: 'completed', call_id: c.id, ...(namespaces?.get(c.function.name) ?? { name: c.function.name }), arguments: c.function.arguments }))], usage: { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } }, parallel_tool_calls: true, tools: [], tool_choice: 'auto' };
   return { id: `chatcmpl-${id}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, message: { role: 'assistant', content: result.text || null, ...(result.calls?.length ? { tool_calls: result.calls } : {}) }, finish_reason: result.calls?.length ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output } };
 }
 export function events(value: Obj, api: string): { event?: string; data: string }[] {
@@ -216,7 +230,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         const source = answeredBy.get(completion);
         if (source) c.header('X-Grunt-Source', source);
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
-        const result = encode(completion, request.model, api);
+        const result = encode(completion, request.model, api, request.responseNamespaces);
         if (request.stream) return streamSSE(c, async stream => {
           stream.onAbort(abort);
           for (const event of events(result, api)) await stream.writeSSE(event);

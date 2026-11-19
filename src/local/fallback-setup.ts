@@ -2,7 +2,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BrowserSquire, setup } from './setup.js';
+import { bootstrapKilo, BrowserSquire, setup } from './setup.js';
 import type { SetupSquire } from './setup.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 import { disabledAdapters } from '../registry.js';
@@ -12,6 +12,7 @@ import { SourceError, Sources } from './source.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
 import { ClixadNativeLoginRequired } from './clixad-setup.js';
 import type { Source } from './source.js';
+import { setupFailureReason } from './setup-failure.js';
 
 const exec = promisify(execFile);
 class FreebuffCompatibilityError extends Error {}
@@ -68,10 +69,11 @@ export async function setupFallbacks(options: {
   connect?: () => Promise<void>;
   signal?: AbortSignal;
   background?: boolean;
+  kiloAccount?: boolean;
   dataSharingApproved?: readonly string[];
-  onSettled?: (id: string, available: boolean) => void | Promise<void>;
+  onSettled?: (id: string, available: boolean, reason?: string) => void | Promise<void>;
 }) {
-  const squire = options.squire ?? new BrowserSquire({ dataSharingApproved: options.dataSharingApproved ?? [] });
+  const squire = options.squire ?? new BrowserSquire({ background: options.background, dataSharingApproved: options.dataSharingApproved ?? [] });
   const owned = squire instanceof BrowserSquire && !options.squire;
   const requested = [...new Set(options.adapters ?? ['opencode'])];
   // A registry may list account-based providers first. Keep their shared
@@ -94,12 +96,19 @@ export async function setupFallbacks(options: {
     catch { await options.run('npm', ['install', '--global', pkg]); }
   };
   const settled = new Set<string>(), callbacks: Promise<void>[] = [], callbackFailures: unknown[] = [];
+  const failures = new Map<string, string>();
+  const failedSetup = (id: string, error: unknown) => {
+    unavailable.push(id);
+    const reason = (squire instanceof BrowserSquire ? squire.signupFailure(id) : undefined) ?? setupFailureReason(error);
+    failures.set(id, reason);
+    if (process.env.GRUNT_SETUP_DEBUG === '1') console.error(`grunt setup: ${id}: ${reason}`);
+  };
   const onSettled = (id: string, available: boolean) => {
     if (!options.onSettled || settled.has(id)) return;
     settled.add(id);
     // Observers may verify the daemon or configure coding tools. Start that
     // work immediately without holding a provider worker or rejecting early.
-    callbacks.push(Promise.resolve().then(() => options.onSettled!(id, available && !options.signal?.aborted))
+    callbacks.push(Promise.resolve().then(() => options.onSettled!(id, available && !options.signal?.aborted, failures.get(id)))
       .catch(error => { callbackFailures.push(error); }));
   };
   options.notify('Free routes run their own tools with your filesystem permissions in the working directory. Free model providers may retain prompts.');
@@ -136,7 +145,7 @@ export async function setupFallbacks(options: {
         if (!await signedIn()) throw new Error('Freebuff is still signed out; rerun setup to resume');
         options.notify('Freebuff: signed in; grunt will start its loopback bridge with the background service');
       } catch (error) {
-        unavailable.push('freebuff');
+        failedSetup('freebuff', error);
         if (error instanceof FreebuffCompatibilityError) options.notify(error.message);
         else options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun usegrunt setup. Continuing with OpenCode.');
       } },
@@ -163,15 +172,20 @@ export async function setupFallbacks(options: {
           await verify();
         }
         options.notify('OpenCode: free model answered');
-      } catch {
-        unavailable.push('opencode');
+      } catch (error) {
+        failedSetup('opencode', error);
         options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
       } },
       kilo: async () => { try {
+        if (options.kiloAccount) {
+          await connect();
+          await bootstrapKilo(squire as SetupSquire, options.directory, options.notify);
+          return;
+        }
         await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, directory: options.directory, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Kilo: free Particle-1 access verified without signup');
-      } catch {
-        unavailable.push('kilo');
+      } catch (error) {
+        failedSetup('kilo', error);
         options.notify('Kilo setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       zro: async () => { try {
@@ -179,8 +193,8 @@ export async function setupFallbacks(options: {
         if (!squire.runs) throw new Error('Provider signup requires Squire');
         await (options.setupProvider ?? setup)(options.notify, ['zro'], { squire: squire as SetupSquire, directory: options.directory, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Zro: daily free DeepSeek V4.1 Flash access connected through Squire');
-      } catch {
-        unavailable.push('zro');
+      } catch (error) {
+        failedSetup('zro', error);
         options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       tokenharbor: async () => { try {
@@ -189,8 +203,8 @@ export async function setupFallbacks(options: {
         await (options.setupProvider ?? setup)(options.notify, ['tokenharbor'], { squire: squire as SetupSquire, directory: options.directory,
           dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Token Harbor: approved free DeepSeek V4.1 Flash access connected through Squire');
-      } catch {
-        unavailable.push('tokenharbor');
+      } catch (error) {
+        failedSetup('tokenharbor', error);
         options.notify('Token Harbor setup incomplete or data sharing not approved. Run usegrunt setup to finish; other routes remain available.');
       } },
       runcrate: async () => { try {
@@ -199,8 +213,8 @@ export async function setupFallbacks(options: {
         await (options.setupProvider ?? setup)(options.notify, ['runcrate'], { squire: squire as SetupSquire, directory: options.directory,
           dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Runcrate: GitHub-verified weekly free DeepSeek V4.1 Flash access connected through Squire');
-      } catch {
-        unavailable.push('runcrate');
+      } catch (error) {
+        failedSetup('runcrate', error);
         options.notify('Runcrate free setup incomplete. GitHub must be at least 30 days old; rerun usegrunt setup to resume. Other routes remain available.');
       } },
       'mistral-vibe': async () => { try {
@@ -208,8 +222,8 @@ export async function setupFallbacks(options: {
         await (options.setupProvider ?? setup)(options.notify, ['mistral-vibe'], { squire: squire as SetupSquire, directory: options.directory,
           dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Mistral Vibe: native free GLM 5.3 Flash access connected through Squire');
-      } catch {
-        unavailable.push('mistral-vibe');
+      } catch (error) {
+        failedSetup('mistral-vibe', error);
         options.notify('Mistral Vibe native free setup incomplete. Install uv or Python 3.12+ if missing, then rerun usegrunt setup; other routes remain available.');
       } },
       livekit: async () => { try {
@@ -217,8 +231,8 @@ export async function setupFallbacks(options: {
         await (options.setupProvider ?? setup)(options.notify, ['livekit'], { squire: squire as SetupSquire, directory: options.directory,
           ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('LiveKit: native free Build DeepSeek V4.1 Flash access connected through Squire');
-      } catch {
-        unavailable.push('livekit');
+      } catch (error) {
+        failedSetup('livekit', error);
         options.notify('LiveKit free Build signup or native CLI pairing incomplete. Rerun usegrunt setup; other routes remain available.');
       } },
       pollinations: async () => { try {
@@ -226,8 +240,8 @@ export async function setupFallbacks(options: {
         await (options.setupProvider ?? setup)(options.notify, ['pollinations'], { squire: squire as SetupSquire, directory: options.directory,
           background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Pollinations: community GLM 5.3 Flash access connected through Squire');
-      } catch {
-        unavailable.push('pollinations');
+      } catch (error) {
+        failedSetup('pollinations', error);
         options.notify('Pollinations free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       beatapi: async () => { try {
@@ -235,8 +249,8 @@ export async function setupFallbacks(options: {
         await (options.setupProvider ?? setup)(options.notify, ['beatapi'], { squire: squire as SetupSquire, directory: options.directory,
           background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('BeatAPI: free DeepSeek V4.1 Flash access connected through Squire');
-      } catch {
-        unavailable.push('beatapi');
+      } catch (error) {
+        failedSetup('beatapi', error);
         options.notify('BeatAPI free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       clixad: async () => { try {
@@ -245,7 +259,7 @@ export async function setupFallbacks(options: {
           background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Clixad: free GLM 5.3 Flash access connected');
       } catch (error) {
-        unavailable.push('clixad');
+        failedSetup('clixad', error);
         options.notify(error instanceof ClixadNativeLoginRequired ? error.message : 'Clixad setup needs attention. Rerun usegrunt setup; other free routes continue.');
       } },
       perch: async () => { try {
@@ -253,8 +267,8 @@ export async function setupFallbacks(options: {
         await (options.setupProvider ?? setup)(options.notify, ['perch'], { squire: squire as SetupSquire, directory: options.directory,
           background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Perch: Starter DeepSeek access connected with optional data sharing and account memory off');
-      } catch {
-        unavailable.push('perch');
+      } catch (error) {
+        failedSetup('perch', error);
         options.notify('Perch Starter setup needs attention. Rerun usegrunt setup; other free routes continue.');
       } },
       nous: async () => { try {
@@ -269,8 +283,8 @@ export async function setupFallbacks(options: {
         if (!squire.runs) throw new Error('Provider signup requires Squire');
         await (options.setupProvider ?? setup)(options.notify, ['nvidia'], { squire: squire as SetupSquire, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('NVIDIA: free DeepSeek V4.1 Flash API access connected through Squire');
-      } catch {
-        unavailable.push('nvidia');
+      } catch (error) {
+        failedSetup('nvidia', error);
         options.notify('NVIDIA setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } }
       };
@@ -281,6 +295,7 @@ export async function setupFallbacks(options: {
         try {
           if (disabledAdapters.has(id)) return;
           if (requiresDataSharing(id) && !approved.includes(id)) {
+            failures.set(id, 'approval required');
             unavailable.push(id);
             options.notify(`${id}: skipped until the grouped data-sharing approval is granted`);
             return;

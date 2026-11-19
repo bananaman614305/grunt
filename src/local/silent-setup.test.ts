@@ -27,7 +27,7 @@ it.each([[false, false], [false, true], [true, false], [true, true]])('runs the 
   const ids = ['opencode', 'kilo', 'tokenharbor', 'perch', 'zro'];
   const squire = new BrowserSquire();
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([{ service: 'zro', reference: 'vault://test', field_names: ['api_key'] }]);
-  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'low_confidence', session_id: 'zro-tab', options: { DONE: 'The goal is complete' } } : {});
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'complete', session_id: 'zro-tab' } : {});
   vi.spyOn(squire, 'close').mockResolvedValue();
   const configure = vi.fn(async () => undefined);
   const tools: Harness[] = ['Pi', 'Claude Code', 'OpenCode'].map((name, index) => ({ id: (['pi', 'claude', 'opencode'] as const)[index]!, name, binary: 'node', configure,

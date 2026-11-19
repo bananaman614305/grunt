@@ -6,9 +6,9 @@ import { join } from 'node:path';
 import type { FreeApiGrant } from './free-api.js';
 
 export const providerGrantDirectory = () => configRoot();
-type Provider = 'runcrate' | 'apinex';
+type Provider = 'runcrate' | 'apinex' | 'kilo';
 function name(provider: Provider) {
-  if (provider !== 'runcrate' && provider !== 'apinex') throw new Error('Invalid private provider');
+  if (provider !== 'runcrate' && provider !== 'apinex' && provider !== 'kilo') throw new Error('Invalid private provider');
   return provider;
 }
 export function validateProviderGrant(value: unknown): FreeApiGrant {

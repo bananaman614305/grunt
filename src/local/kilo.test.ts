@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Kilo, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { writePrivateProviderGrant } from './provider-grant.js';
+import { beginSetupSession, readSetupSession } from './setup-session.js';
 import { createLocalApp } from './api.js';
 import { Sources } from './source.js';
 import type { ModelRequest, ToolCall } from './source.js';
@@ -17,13 +19,13 @@ const usage = () => ({ prompt_tokens: 20, completion_tokens: 5, cost: 0, cost_de
 const result = (patch: Record<string, unknown> = {}) => ({ model: KILO_PARTICLE, choices: [{ message: { role: 'assistant', content: 'Hello.' } }], usage: usage(), ...patch });
 const tool = { type: 'function', function: { name: 'nonce', parameters: { type: 'object', properties: { nonce: { type: 'string', const: 'synthetic' } }, required: ['nonce'], additionalProperties: false } } };
 const call: ToolCall = { id: 'native_call', type: 'function', function: { name: 'nonce', arguments: '{"nonce":"synthetic"}' } };
-function fixture(options: { catalog?: unknown; infer?: (init?: RequestInit) => Response | Promise<Response>; timeout?: number } = {}) {
+function fixture(options: { catalog?: unknown; infer?: (init?: RequestInit) => Response | Promise<Response>; timeout?: number; anonymous?: () => boolean } = {}) {
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
     if (String(url) === `${KILO_ORIGIN}/models`) return Response.json({ data: [options.catalog ?? model()] });
     if (String(url) === `${KILO_ORIGIN}/chat/completions`) return options.infer?.(init) ?? Response.json(result());
     throw new Error('Unexpected endpoint');
   });
-  const source = new Kilo({ directory, fetcher, ...(options.timeout ? { timeout: options.timeout } : {}) }); sources.push(source);
+  const source = new Kilo({ directory, fetcher, ...(options.timeout ? { timeout: options.timeout } : {}), ...(options.anonymous ? { anonymous: options.anonymous } : {}) }); sources.push(source);
   return { source, fetcher, posts: () => fetcher.mock.calls.filter(([, init]) => init?.method === 'POST') };
 }
 it('uses only fixed anonymous Particle with no inherited key, and checks live free metadata before inference', async () => {
@@ -33,6 +35,21 @@ it('uses only fixed anonymous Particle with no inherited key, and checks live fr
   expect(f.fetcher.mock.calls.map(([url]) => url)).toEqual([`${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/chat/completions`]);
   for (const [, init] of f.fetcher.mock.calls) { expect(init?.redirect).toBe('error'); expect(new Headers(init?.headers).has('authorization')).toBe(false); }
   expect(JSON.parse(f.posts()[0]![1]!.body as string)).toMatchObject({ model: KILO_PARTICLE, max_tokens: 4096, stream: false });
+});
+
+it('probes Kilo without its saved grant until setup switches to account bootstrap', async () => {
+  await writePrivateProviderGrant('kilo', { base_url: 'https://squire.test', token: 'synthetic' }, directory);
+  const session = await beginSetupSession(directory, ['kilo'], { anonymousKilo: true });
+  try {
+    let anonymous = (await readSetupSession(directory))?.anonymousKilo === true;
+    const f = fixture({ anonymous: () => anonymous });
+    await expect(f.source.complete(request(), session.signal)).resolves.toMatchObject({ text: 'Hello.' });
+    expect(f.posts().map(([url]) => url)).toEqual([`${KILO_ORIGIN}/chat/completions`]);
+    await session.useKiloAccount();
+    anonymous = (await readSetupSession(directory))?.anonymousKilo === true;
+    await expect(f.source.complete(request(), session.signal)).rejects.toThrow();
+    expect(f.posts().at(-1)?.[0]).toBe('https://squire.test/api/gateway/chat/completions');
+  } finally { await session.close(); }
 });
 it.each([
   { isFree: false }, { id: 'kilo-auto/free' }, { context_length: 199999 }, { pricing: { prompt: '0', completion: '0.01' } },

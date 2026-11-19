@@ -10,14 +10,15 @@ const heartbeat = 15000;
 const claimName = /^\.setup-session-(\d+)-([a-f0-9-]{36})$/;
 const sourceId = /^[a-z][a-z0-9-]{0,63}$/;
 interface Claim { path: string; id: string; pid: number }
-interface State { version: 1; id: string; pid: number; expires: number; owned: string[]; pending: string[]; verifying: string[]; approvals?: string[] }
-export interface SetupSessionState { owned: ReadonlySet<string>; pending: ReadonlySet<string>; verifying: ReadonlySet<string>; approvals?: ReadonlySet<string> }
+interface State { version: 1; id: string; pid: number; expires: number; owned: string[]; pending: string[]; verifying: string[]; approvals?: string[]; anonymousKilo?: true }
+export interface SetupSessionState { owned: ReadonlySet<string>; pending: ReadonlySet<string>; verifying: ReadonlySet<string>; approvals?: ReadonlySet<string>; anonymousKilo?: true }
 export interface SetupSession {
   readonly signal: AbortSignal;
   verify(id: string): Promise<void>;
   hold(id: string): Promise<void>;
   release(id: string): Promise<void>;
   setApprovals(ids: readonly string[]): Promise<void>;
+  useKiloAccount(): Promise<void>;
   close(): Promise<void>;
 }
 const unavailable = () => new Error('Cannot coordinate provider setup safely; finish the existing setup or rerun usegrunt setup');
@@ -66,6 +67,28 @@ async function blockingClaim(claim: Claim) {
   catch { return false; }
 }
 
+// The Kilo route that passed setup verification. It outlives the setup session
+// so routing keeps using the verified anonymous route instead of an older grant.
+const kiloRouteFile = (directory: string) => join(directory, 'kilo-route.json');
+export async function readKiloRoute(directory: string): Promise<'anonymous' | 'account'> {
+  let file;
+  try {
+    file = await open(kiloRouteFile(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size > 1024) return 'account';
+    return (JSON.parse(await file.readFile('utf8')) as { route?: unknown }).route === 'anonymous' ? 'anonymous' : 'account';
+  } catch { return 'account'; }
+  finally { await file?.close(); }
+}
+async function writeKiloRoute(directory: string, anonymous: boolean) {
+  if (!anonymous) { await rm(kiloRouteFile(directory), { force: true }); return; }
+  const temporary = join(directory, `.kilo-route.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, JSON.stringify({ route: 'anonymous' }), { flag: 'wx', mode: 0o600 });
+    await rename(temporary, kiloRouteFile(directory));
+  } finally { await rm(temporary, { force: true }); }
+}
+
 /** No credentials are stored here. Dead or expired owners never block routing. */
 export async function readSetupSession(directory: string): Promise<SetupSessionState | undefined> {
   try {
@@ -86,13 +109,14 @@ export async function readSetupSession(directory: string): Promise<SetupSessionS
       ? state.approvals.filter(id => typeof id === 'string' && state.pending.includes(id) && !state.verifying.includes(id)) : []));
     return {
       owned: new Set(valid.flatMap(state => state.owned)), pending: new Set(valid.flatMap(state => state.pending)),
-      verifying: new Set(valid.flatMap(state => state.verifying)), ...(approvals.size ? { approvals } : {})
+      verifying: new Set(valid.flatMap(state => state.verifying)), ...(approvals.size ? { approvals } : {}),
+      ...(valid.some(state => state.anonymousKilo === true && state.owned.includes('kilo')) ? { anonymousKilo: true as const } : {})
     };
   } catch { return; }
 }
 
 /** Claim before starting the daemon. Keep this owner alive while later approvals run. */
-export async function beginSetupSession(directory: string, ids: readonly string[]): Promise<SetupSession> {
+export async function beginSetupSession(directory: string, ids: readonly string[], options: { anonymousKilo?: boolean } = {}): Promise<SetupSession> {
   if (ids.length > 100 || ids.some(id => !sourceId.test(id)) || new Set(ids).size !== ids.length) throw unavailable();
   await mkdir(directory, { recursive: true, mode: 0o700 });
   if (!await privateDirectory(directory)) throw unavailable();
@@ -104,6 +128,7 @@ export async function beginSetupSession(directory: string, ids: readonly string[
     for (const peer of await claims(directory)) if (peer.id !== id && await blockingClaim(peer)) throw unavailable();
   } catch (error) { await rm(path, { recursive: true, force: true }); throw error; }
   const pending = new Set(ids), verifying = new Set<string>(), approvals = new Set<string>(), controller = new AbortController();
+  let anonymousKilo = options.anonymousKilo === true && ids.includes('kilo');
   let closed = false, initialized = false, failure: Error | undefined, tail: Promise<void> = Promise.resolve();
   let expires = Date.now() + ttl;
   let timer: ReturnType<typeof setInterval> | undefined, expiryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -136,7 +161,8 @@ export async function beginSetupSession(directory: string, ids: readonly string[
       await assertOwner();
       const temporary = join(path, `state.${randomUUID()}.tmp`), nextExpiry = Date.now() + ttl;
       try {
-        const state: State = { version: 1, id, pid, expires: nextExpiry, owned: [...ids], pending: [...pending], verifying: [...verifying], ...(approvals.size ? { approvals: [...approvals] } : {}) };
+        const state: State = { version: 1, id, pid, expires: nextExpiry, owned: [...ids], pending: [...pending], verifying: [...verifying],
+          ...(approvals.size ? { approvals: [...approvals] } : {}), ...(anonymousKilo ? { anonymousKilo: true } : {}) };
         await writeFile(temporary, JSON.stringify(state), { flag: 'wx', mode: 0o600 });
         // Slow IO must not resurrect a lease after its TTL or watchdog abort.
         await assertOwner();
@@ -156,12 +182,17 @@ export async function beginSetupSession(directory: string, ids: readonly string[
     if (state === 'release') { pending.delete(source); verifying.delete(source); approvals.delete(source); }
     else { pending.add(source); if (state === 'verify') { verifying.add(source); approvals.delete(source); } else verifying.delete(source); }
     await persist();
+    // Kilo passed verification on the session's current route; keep that route.
+    if (state === 'release' && source === 'kilo') await writeKiloRoute(directory, anonymousKilo);
   };
   return {
     signal: controller.signal,
     verify: source => update(source, 'verify'),
     hold: source => update(source, 'hold'),
     release: source => update(source, 'release'),
+    async useKiloAccount() {
+      if (anonymousKilo) { anonymousKilo = false; await persist(); }
+    },
     async setApprovals(selected) {
       if (closed || controller.signal.aborted || selected.some(source => !ids.includes(source))) throw unavailable();
       approvals.clear();
