@@ -1,7 +1,7 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { bundledRegistry, localOptInAdapterIds } from '../registry.js';
 import { calendarQuotaDelay, providerQuotaPolicy } from './quota-policy.js';
-import { nousQuotaDelay, quotaRetryAfter } from './quota-timing.js';
+import { nousQuotaDelay, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 
 it('covers each default and optional free route with first-party quota documentation', () => {
   const ids = [...bundledRegistry.adapters.map(adapter => adapter.id), ...localOptInAdapterIds];
@@ -27,4 +27,16 @@ it('uses bounded structured Nous dates and ignores arbitrary messages and malfor
   expect(nousQuotaDelay(new Headers(), { error: { message: 'try next month', retry_after: 1e9 } }, now)).toBeUndefined();
   expect(quotaRetryAfter('Thu, 19 Nov 2026 09:03:00 GMT', now)).toBe(180);
   expect(quotaRetryAfter('9999999999', now)).toBeUndefined();
+});
+
+it('abandons a stalled quota response body so it cannot hold up failover', async () => {
+  vi.useFakeTimers();
+  try {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }), { status: 429 });
+    const parsed = readQuotaError(response);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(parsed).resolves.toEqual({});
+    expect(cancel).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
 });

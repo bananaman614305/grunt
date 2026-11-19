@@ -957,7 +957,7 @@ export class AdminConsole {
       ...(date(provider.scheduledQuotaRefillAt) ? [['Scheduled allowance refill', timestamp(provider.scheduledQuotaRefillAt, true)]] : []),
       ...(policy.detail ? [['Free allowance policy', text(policy.detail)]] : []),
       ...(limits ? [['Published limits', limits]] : []),
-      ...(sellerLimits ? [['Seller request limits', `${sellerLimits} per ${sellerWindow} sliding window`]] : []),
+      ...(sellerLimits ? [['Seller base limits', `${sellerLimits} per ${sellerWindow} sliding window`]] : []),
       ['Observed', timestamp(provider.lastObservedAt, true)]]));
     const history = element('button', 'button', 'View this provider’s requests'); history.type = 'button';
     history.addEventListener('click', () => {

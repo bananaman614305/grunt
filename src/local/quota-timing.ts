@@ -24,15 +24,19 @@ export async function readQuotaError(response: Response) {
   const maxBytes = 8192;
   const reader = body.getReader(), chunks: Uint8Array[] = [];
   let size = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Quota metadata timed out')), 1000);
+  });
   try {
     while (size <= maxBytes) {
-      const chunk = await reader.read();
+      const chunk = await Promise.race([reader.read(), deadline]);
       if (chunk.done) return quotaObject(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       size += chunk.value.length;
       if (size <= maxBytes) chunks.push(chunk.value);
     }
   } catch { /* A non-JSON error can still carry Retry-After. */ }
-  finally { void reader.cancel().catch(() => {}); reader.releaseLock(); }
+  finally { clearTimeout(timer); void reader.cancel().catch(() => {}); reader.releaseLock(); }
   return {};
 }
 

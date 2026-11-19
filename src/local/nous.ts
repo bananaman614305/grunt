@@ -66,7 +66,7 @@ def quota_fields(value):
     if not isinstance(value, dict):
         return {}
     def numeric_or_iso(val):
-        return type(val) in (int, float) or (isinstance(val, str) and re.fullmatch(r"[0-9.TZ:+-]{1,64}", val))
+        return (type(val) in (int, float) and 0 <= val <= 1e12) or (isinstance(val, str) and re.fullmatch(r"[0-9.TZ:+-]{1,64}", val))
     return {key: value[key] for key in reset_fields if key in value and numeric_or_iso(value[key])}
 
 async def read_quota(response):
@@ -127,7 +127,10 @@ async def request():
                     if response.status == 429:
                         result["resets"] = {name: response.headers[name] for name in reset_headers
                                             if re.fullmatch(r"[0-9.]{1,32}", response.headers.get(name, ""))}
-                        result["body"] = await read_quota(response)
+                        try:
+                            result["body"] = await asyncio.wait_for(read_quota(response), timeout=1)
+                        except asyncio.TimeoutError:
+                            pass
                     if response.ok:
                         body = bytearray()
                         async for chunk in response.content.iter_chunked(65536):
