@@ -1,148 +1,0 @@
-Script started on 2026-11-18 20:31:10-05:00 [COMMAND="npx tsx /tmp/ruby-capture/demo.mts" TERM="tmux-256color" TTY="/dev/pts/2" COLUMNS="50" LINES="30"]
-Data sharing on: nous, kenari. Off: GRUNT_SETUP_NO_DATA_SHARING=1
-[2Kname        status
-[2Kclaude-code connecting
-[J[2A[2Kname        status
-[2Kclaude-code connecting
-[2Kkilo        connecting
-[J[3A[2Kname        status
-[2Kclaude-code connecting
-[2Kkilo        connecting
-[2Kopencode    connecting
-[J[4A[2Kname         status
-[2Kclaude-code  connecting
-[2Kkilo         connecting
-[2Kopencode     connecting
-[2Kpollinations connecting
-[J[5A[2Kname         status
-[2Kclaude-code  connecting
-[2Kkilo         connecting
-[2Kopencode     connecting
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[J[6A[2Kname         status
-[2Kclaude-code  connecting
-[2Kkilo         connecting
-[2Kopencode     connecting
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[J[7A[2Kname         status
-[2Kclaude-code  connecting
-[2Kkilo         connecting
-[2Kopencode     connecting
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[J[8A[2Kname         status
-[2Kclaude-code  connecting
-[2Kkilo         connecting
-[2Kopencode     connecting
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[J[9A[2Kname         status
-[2Kclaude-code  connecting
-[2Kkilo         connecting
-[2Kopencode     connecting
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  connecting
-[2Kkilo         ✓ ready
-[2Kopencode     connecting
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     connecting
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     ✓ ready
-[2Kpollinations connecting
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     ✓ ready
-[2Kpollinations skipped (browser could not continue)
-[2Kbeatapi      connecting
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     ✓ ready
-[2Kpollinations skipped (browser could not continue)
-[2Kbeatapi      ✓ ready
-[2Kmistral-vibe connecting
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     ✓ ready
-[2Kpollinations skipped (browser could not continue)
-[2Kbeatapi      ✓ ready
-[2Kmistral-vibe skipped (browser could not continue)
-[2Ktokenharbor  connecting
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     ✓ ready
-[2Kpollinations skipped (browser could not continue)
-[2Kbeatapi      ✓ ready
-[2Kmistral-vibe skipped (browser could not continue)
-[2Ktokenharbor  skipped (key test failed)
-[2Knous         connecting
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     ✓ ready
-[2Kpollinations skipped (browser could not continue)
-[2Kbeatapi      ✓ ready
-[2Kmistral-vibe skipped (browser could not continue)
-[2Ktokenharbor  skipped (key test failed)
-[2Knous         needs you (Nous login)
-[2Kkenari       connecting
-[J[10A[2Kname         status
-[2Kclaude-code  ✓ connected
-[2Kkilo         ✓ ready
-[2Kopencode     ✓ ready
-[2Kpollinations skipped (browser could not continue)
-[2Kbeatapi      ✓ ready
-[2Kmistral-vibe skipped (browser could not continue)
-[2Ktokenharbor  skipped (key test failed)
-[2Knous         needs you (Nous login)
-[2Kkenari       ✓ ready
-[J⠙[1G[0K
-Script done on 2026-11-18 20:31:11-05:00 [COMMAND_EXIT_CODE="0"]
