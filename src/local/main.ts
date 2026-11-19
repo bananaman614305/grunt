@@ -24,6 +24,7 @@ import { Perch } from './perch.js';
 import { Nous } from './nous.js';
 import { Kenari } from './kenari.js';
 import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
+import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
@@ -84,8 +85,14 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const localOptIns = new Set(enabledOptIns.map(adapter => adapter.id));
   const routingRegistry = () => {
     const current = registry();
-    if (deepSeekFlash) return { ...current, adapters: current.adapters.map(adapter => adapter.id === 'numes' ? { ...adapter, model: NUMES_DEEPSEEK_FLASH_MODEL } : adapter) };
-    return localOptIns.size ? { ...current, adapters: [...current.adapters.filter(adapter => !localOptIns.has(adapter.id)), ...enabledOptIns] } : current;
+    const adapters = current.adapters.filter(adapter => !localOptIns.has(adapter.id)).map(adapter => {
+      if (adapter.id !== 'numes') return adapter;
+      if (deepSeekFlash) return { ...adapter, model: NUMES_DEEPSEEK_FLASH_MODEL };
+      const numes = { ...adapter, models: [NUMES_DEEPSEEK_FLASH_MODEL, FREE_API_PROVIDERS.numes.model] };
+      delete numes.model;
+      return numes;
+    });
+    return { ...current, adapters: [...adapters, ...enabledOptIns] };
   };
   const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))
     ? { registry: routingRegistry, localOptIns } : undefined;

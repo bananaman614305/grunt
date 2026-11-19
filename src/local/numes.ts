@@ -1,5 +1,5 @@
 import { configRoot } from '../brand.js';
-import { readDataSharingConsent } from './data-sharing.js';
+import { NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent } from './data-sharing.js';
 import { diagnosticFetch } from './diagnostics.js';
 import { FreeApi, FREE_API_PROVIDERS, readFreeApiGrant } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
@@ -8,10 +8,10 @@ import type { ModelRequest, Source } from './source.js';
 
 const { model, prefix } = FREE_API_PROVIDERS.numes;
 export const NUMES_DEEPSEEK_FLASH_MODEL = 'deepseek/deepseek-v4.1-flash:free';
-export const NUMES_DEEPSEEK_FLASH_CONSENT = 'numes-deepseek-flash';
 const zeroPrice = { prompt: 0, completion: 0 };
 const preferredFreeEndpoint = 'amazee-ai-5149fc8341b341f3a6ebe026ae44f7c7/token-factory-df2d2988c4514d66a143237f387d4e64';
 const chatEndpoint = `${prefix}/chat/completions`;
+const DEEPSEEK_BACKOFF_MS = 15 * 60_000;
 interface Offer {
   id?: string; context_length?: number; pricing?: Record<string, unknown>; supported_parameters?: unknown;
 }
@@ -36,6 +36,7 @@ export class Numes implements Source {
   private directory: string;
   private client: FreeApi;
   private fetcher: typeof fetch;
+  private deepSeekRetryAt = 0;
 
   constructor(private options: NumesOptions = {}) {
     this.directory = options.directory ?? configRoot();
@@ -51,6 +52,12 @@ export class Numes implements Source {
     return readDataSharingConsent(this.directory, [policy]).then(ids => ids.includes(policy));
   }
   private grant() { return this.options.loadGrant?.() ?? readFreeApiGrant(this.id, this.directory); }
+
+  private async deepSeekAvailable(base: string, headers: Headers, signal?: AbortSignal | null) {
+    if (Date.now() < this.deepSeekRetryAt
+      || !(await readDataSharingConsent(this.directory, [NUMES_DEEPSEEK_FLASH_CONSENT])).includes(NUMES_DEEPSEEK_FLASH_CONSENT)) return false;
+    return this.hasDeepSeekOffer(base, headers, signal).catch(() => false);
+  }
 
   private async hasZeroSpendCap(base: string, headers: Headers, signal?: AbortSignal | null) {
     const response = await diagnosticFetch(this.fetcher, this.id, 'account')(`${base}${prefix}/key`, {
@@ -92,7 +99,8 @@ export class Numes implements Source {
       });
       if (!response.ok) { await response.body?.cancel(); return false; }
       const { data } = await response.json() as { data?: Offer[] };
-      return Array.isArray(data) && data.some(entry => entry.id === model && freeOffer(entry));
+      return (Array.isArray(data) && data.some(entry => entry.id === model && freeOffer(entry)))
+        || await this.deepSeekAvailable(base, headers);
     } catch { return false; }
   }
 
@@ -104,8 +112,10 @@ export class Numes implements Source {
     if (!await this.hasZeroSpendCap(base, headers, init.signal)) {
       return new Response(null, { status: 403 });
     }
-    const deepSeekFlash = this.options.deepSeekFlash === true;
-    if (deepSeekFlash && !await this.hasDeepSeekOffer(base, headers, init.signal)) return new Response(null, { status: 503 });
+    const deepSeekFlash = this.options.deepSeekFlash
+      ? await this.hasDeepSeekOffer(base, headers, init.signal)
+      : await this.deepSeekAvailable(base, headers, init.signal);
+    if (this.options.deepSeekFlash && !deepSeekFlash) return new Response(null, { status: 503 });
     init.signal?.throwIfAborted();
     const body = JSON.parse(init.body) as Record<string, unknown>;
     const selectedModel = deepSeekFlash ? NUMES_DEEPSEEK_FLASH_MODEL : model;
@@ -114,7 +124,10 @@ export class Numes implements Source {
       ...init,
       body: JSON.stringify({ ...body, model: selectedModel, provider: { max_price: zeroPrice, require_parameters: true, ...routing } })
     });
-    if (!response.ok) return response;
+    if (!response.ok) {
+      if (deepSeekFlash && !this.options.deepSeekFlash) this.deepSeekRetryAt = Date.now() + DEEPSEEK_BACKOFF_MS;
+      return response;
+    }
     const result = await response.clone().json() as { model?: string; usage?: { cost?: number } };
     if ((result.model !== selectedModel && result.model !== selectedModel.slice(0, -':free'.length)) || result.usage?.cost !== 0) {
       await response.body?.cancel();

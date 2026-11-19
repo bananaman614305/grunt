@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { approveDataSharing, DATA_SHARING_POLICIES, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
+import { approveDataSharing, DATA_SHARING_POLICIES, NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
 import type { DataSharingPolicy } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), isCancel: (value: unknown) => typeof value === 'symbol' }));
@@ -10,6 +10,19 @@ const originalPolicies = DATA_SHARING_POLICIES.map(policy => ({ ...policy }));
 const sharingIds = ['freebuff', 'opencode', 'kilo', 'tokenharbor', 'runcrate', 'apinex', 'mistral-vibe', 'pollinations', 'beatapi'];
 const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-data-sharing-')); directories.push(path); return path; }
+
+it('includes both Numes policies in grouped setup and revokes both on opt-out', async () => {
+  const path = await directory();
+  const providers = ['numes', NUMES_DEEPSEEK_FLASH_CONSENT];
+  await recordDataSharingConsent(path, ['numes']);
+  expect(await readDataSharingConsent(path, providers)).toEqual(['numes']);
+  expect(await approveDataSharing({ directory: path, providers: ['numes'], env: {}, notice: () => {} }))
+    .toEqual({ approved: providers, skipped: [] });
+  expect(await readDataSharingConsent(path, providers)).toEqual(providers);
+  expect(await approveDataSharing({ directory: path, providers: ['numes'], env: { GRUNT_SETUP_NO_DATA_SHARING: '1' } }))
+    .toEqual({ approved: [], skipped: providers });
+  expect(await readDataSharingConsent(path, providers)).toEqual([]);
+});
 afterEach(async () => {
   (DATA_SHARING_POLICIES as DataSharingPolicy[]).splice(0, DATA_SHARING_POLICIES.length, ...originalPolicies.map(policy => ({ ...policy })));
   vi.restoreAllMocks();

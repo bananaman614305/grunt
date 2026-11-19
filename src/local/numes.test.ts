@@ -2,10 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { recordDataSharingConsent } from './data-sharing.js';
+import { NUMES_DEEPSEEK_FLASH_CONSENT, recordDataSharingConsent } from './data-sharing.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
 import { configure } from './main.js';
-import { Numes, NUMES_DEEPSEEK_FLASH_CONSENT, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
+import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
 
 const { model } = FREE_API_PROVIDERS.numes;
 const request = {
@@ -100,7 +100,7 @@ it('allows the private Flash selector only in an exact Numes configuration', asy
   const selected = configure({ ...env, GRUNT_NUMES_MODEL: NUMES_DEEPSEEK_FLASH_MODEL });
   expect(primary.sources.map(adapter => adapter.id)).toEqual(['numes']);
   expect(selected.sources.map(adapter => adapter.id)).toEqual(['numes']);
-  expect(primary.status().sources.find(adapter => adapter.id === 'numes')).toMatchObject({ model });
+  expect(primary.status().sources.find(adapter => adapter.id === 'numes')).toMatchObject({ model: 'Free model rotation' });
   expect(selected.status().sources.find(adapter => adapter.id === 'numes')).toMatchObject({ model: NUMES_DEEPSEEK_FLASH_MODEL });
   expect(() => configure({ ...env, GRUNT_NUMES_MODEL: NUMES_DEEPSEEK_FLASH_MODEL.slice(0, -5) })).toThrow('exact Numes-only');
   expect(() => configure({ ...env, GRUNT_SOURCES: 'numes,zro', GRUNT_NUMES_MODEL: NUMES_DEEPSEEK_FLASH_MODEL })).toThrow('exact Numes-only');
@@ -148,4 +148,32 @@ it.each([
     .mockResolvedValueOnce(endpointResponse());
   await expect(source(fetcher, true).complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'upstream' });
   expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('selects the verified DeepSeek route and uses GLM on the next request after an upstream limit', async () => {
+  await recordDataSharingConsent(directory, ['numes', NUMES_DEEPSEEK_FLASH_CONSENT]);
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(exactEndpoint())
+    .mockResolvedValueOnce(Response.json({ error: { metadata: { error_type: 'rate_limited' } } }, { status: 429 }))
+    .mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(Response.json({ model, choices: [{ message: { content: 'hello' } }], usage: { cost: 0 } }));
+  const numes = source(fetcher);
+  const signal = new AbortController().signal;
+  await expect(numes.complete(request, signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 60 });
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  await expect(numes.complete(request, signal)).resolves.toMatchObject({ text: 'hello' });
+  expect(fetcher).toHaveBeenCalledTimes(5);
+  expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)).model).toBe(NUMES_DEEPSEEK_FLASH_MODEL);
+  expect(JSON.parse(String(fetcher.mock.calls[4]?.[1]?.body)).model).toBe(model);
+});
+
+it('keeps using GLM when the exact DeepSeek endpoint is missing', async () => {
+  await recordDataSharingConsent(directory, ['numes', NUMES_DEEPSEEK_FLASH_CONSENT]);
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(new Response(null, { status: 404 }))
+    .mockResolvedValueOnce(Response.json({ model, choices: [{ message: { content: 'hello' } }], usage: { cost: 0 } }));
+  await expect(source(fetcher).complete(request, new AbortController().signal)).resolves.toMatchObject({ text: 'hello' });
+  expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)).model).toBe(model);
 });

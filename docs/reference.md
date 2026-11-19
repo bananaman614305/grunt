@@ -593,7 +593,7 @@ The additional experimental routes have these requirements:
 | Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
 | Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
 | Kenari | `ernie-5-5-flash-preview:free` | Free Google sign-in through Squire. Kenari lists 50 successful free-model requests per day and five requests per minute for new accounts. Limits are per account and can change. [Kenari free-model limits](https://kenari.id/en/docs/free-models) |
-| Numes | `z-ai/glm-5.3-flash:free` | Free Google sign-in through Squire and a dedicated inference key with a $0 spending cap. Free capacity can vary, with no guaranteed fixed allowance. [Numes free routes](https://numes.ai/docs/models#free-models) |
+| Numes | `deepseek/deepseek-v4.1-flash:free`, `z-ai/glm-5.3-flash:free` | Free Google sign-in through Squire and a dedicated inference key with a $0 spending cap. Free capacity can vary, with no guaranteed fixed allowance. [Numes free routes](https://numes.ai/docs/models#free-models) |
 
 For Nous, approve its data policy in the grouped setup prompt and open the
 Hermes device link on your phone or computer. Sign in or create the Free account
@@ -617,10 +617,11 @@ free source.
 
 For Numes, approve data sharing in the grouped setup prompt and let Squire
 connect your Google account. Use `npx usegrunt add numes` to connect it separately
-or resume setup. Grunt checks the key's $0 cap before each request. It accepts
-replies only when they report the pinned GLM 5.3 Flash model and a $0 charge.
-When Numes rate-limits the route, automatic routing can continue on another
-free source.
+or refresh setup to enable the DeepSeek disclosure. Grunt checks the key's $0
+cap before each request. It prefers DeepSeek when the approved Amazee endpoint
+is listed at zero cost and uses GLM when that endpoint is unavailable. Grunt
+checks the returned model and $0 charge. On a rate limit, automatic routing can
+continue on another free source.
 
 Runcrate keys are captured into Squire. Setup stops if an account
 fails the free-account checks; it does not remove billing, switch identities or
