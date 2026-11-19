@@ -149,6 +149,45 @@ nav{padding:14px 16px}nav .links{gap:12px;font-size:12px}nav{flex-wrap:wrap;gap:
 .hero,section{padding-left:16px;padding-right:16px}.cmd{font-size:15px;padding:10px 12px}
 .stage .walker{--px:2px;left:192px;animation-name:walkS}@keyframes walkS{0%{transform:translateX(0)}50%{transform:translateX(16px)}100%{transform:translateX(0)}}.drop{right:56px;bottom:100px}.stage .pileR .pile{width:96px;height:72px}.pipe{width:40px}}
 @media (max-width:480px){.silos{grid-template-columns:1fr}.cta-end h2{font-size:26px}h2{font-size:24px}footer{flex-direction:column;gap:14px}}
+/* one screen per section */
+:root{--nav:72px;--foot:88px}
+html{scroll-snap-type:y proximity}
+nav{height:var(--nav);padding-top:0;padding-bottom:0;scroll-snap-align:start}
+.hero{min-height:calc(100svh - var(--nav));display:flex;flex-direction:column;padding-top:clamp(12px,4svh,56px)}
+.hero .kicker{margin-top:auto;margin-bottom:clamp(10px,2.5svh,22px)}
+.hero p.sub{margin-top:clamp(12px,3svh,28px)}
+.hero .cta{margin:clamp(14px,3.5svh,30px) 0 8px}
+.hero .stage{flex:1 0 170px;max-height:240px;width:100%;margin-top:auto}
+main>section{min-height:100svh;display:flex;flex-direction:column;justify-content:center;
+padding-top:clamp(20px,5svh,64px);padding-bottom:clamp(20px,5svh,64px);scroll-snap-align:start}
+main>section.cta-end{min-height:calc(100svh - var(--foot))}
+footer{height:var(--foot);padding-top:0;padding-bottom:0}
+.silos{margin-top:clamp(16px,4svh,34px)}.log{margin-top:clamp(14px,3svh,26px)}
+.pool{margin-top:clamp(16px,3svh,40px)}.facts{margin-top:clamp(16px,3svh,40px)}
+.src{padding:5px 10px}.col{gap:6px}
+@media (max-height:820px){.hub .pile{width:84px;height:63px}.hub{padding:12px}}
+@media (max-width:760px){:root{--nav:84px}nav{align-content:center;row-gap:8px}
+.hero p.sub{font-size:14px}.cmd{font-size:14px}
+.hero .stage{flex-basis:120px;max-height:200px}
+.stage .pileL{left:8px}.stage .pileL .pile{width:40px;height:30px}
+.stage .pileR{right:8px}.stage .pileR .pile{width:72px;height:54px}
+.stage .walker{left:136px;animation-name:walkS}@keyframes walkS{0%{transform:translateX(0)}50%{transform:translateX(56px)}100%{transform:translateX(0)}}
+.drop{right:28px;bottom:94px}
+main>section{padding-top:clamp(16px,3svh,64px);padding-bottom:clamp(16px,3svh,64px)}.eyebrow{margin-bottom:8px}h2{font-size:20px;margin-bottom:10px}.lede{font-size:12px}
+.pool,.facts{margin-top:14px}
+.silos{grid-template-columns:1fr 1fr;gap:10px}.silo-card:nth-child(n+3){display:none}.silo-card{padding:10px}
+.log{font-size:12px;padding:10px 12px}.log .x{display:none}
+.pool{grid-template-columns:minmax(0,1fr) 16px minmax(0,1fr);grid-template-areas:"col p1 hub" "col p1 p2" "col p1 agent";gap:0 6px}
+.pool>.col{grid-area:col}.pool>.hub{grid-area:hub}.pool>.agent{grid-area:agent}
+.pool>.pipe:nth-child(2){grid-area:p1;transform:none;width:16px;margin:0}
+.pool>.pipe:nth-child(4){grid-area:p2;width:20px;margin:8px auto}
+.src{font-size:11px;padding:4px 6px;gap:6px;white-space:nowrap}.src .blk{width:16px;height:12px;flex:none}.src i{font-size:10px}.src:nth-child(5),.src:nth-child(6){display:none}
+.hub{padding:8px}.hub .pile{width:48px;height:36px;margin-bottom:4px}.hub b{font-size:13px}.hub small,.agent .small{font-size:10px;white-space:nowrap}
+.agent{padding:8px;font-size:11px}.agent b{margin-bottom:2px}.meter{margin-top:6px}
+.facts{gap:8px}.fact{font-size:11px;line-height:1.4;padding:2px 0 2px 10px}.fact b{font-size:13px;margin-bottom:2px}
+.cta-end h2{font-size:24px}}
+@media (max-width:480px){:root{--foot:120px}.silos{grid-template-columns:1fr 1fr}}
+@media (max-height:500px){html{scroll-snap-type:none}.hero,main>section,main>section.cta-end{min-height:0}.hero .stage{flex:none;height:170px}}
 @media (prefers-reduced-motion:reduce){.walker,.walker .full,.walker .empty,.leg,.drop,.bar .fill,.silo-card .state .ok,.silo-card .state .no,.pipe{animation:none!important}.walker .empty{opacity:0}.silo-card .state .no{opacity:0}html{scroll-behavior:auto}}
 </style></head><body>
 <div class="site">
@@ -174,9 +213,9 @@ nav{padding:14px 16px}nav .links{gap:12px;font-size:12px}nav{flex-wrap:wrap;gap:
 <div class="silos"><div class="silo-card" style="--c:#5ad1e6;--t:7s"><div class="hd"><b>OpenCode</b><i>free tier</i></div><div class="bar"><div class="fill"></div></div><div class="state"><span class="ok">quota ok · working…</span><span class="no">LIMIT HIT · come back tomorrow</span></div><div class="harness">locked to: own agent</div></div><div class="silo-card" style="--c:#a78bfa;--t:9s"><div class="hd"><b>Kilo</b><i>free tier</i></div><div class="bar"><div class="fill"></div></div><div class="state"><span class="ok">quota ok · working…</span><span class="no">LIMIT HIT · come back tomorrow</span></div><div class="harness">locked to: own extension</div></div><div class="silo-card" style="--c:#f4b41a;--t:5s"><div class="hd"><b>Zro</b><i>free tier</i></div><div class="bar"><div class="fill"></div></div><div class="state"><span class="ok">quota ok · working…</span><span class="no">LIMIT HIT · come back tomorrow</span></div><div class="harness">locked to: own console key</div></div><div class="silo-card" style="--c:#6ee7a0;--t:11s"><div class="hd"><b>Nous</b><i>free tier</i></div><div class="bar"><div class="fill"></div></div><div class="state"><span class="ok">quota ok · working…</span><span class="no">LIMIT HIT · come back tomorrow</span></div><div class="harness">locked to: own portal key</div></div></div>
 <div class="log"><span class="d">14:02</span> opencode › refactor auth module… <span class="y">62%</span><br>
 <span class="d">14:19</span> <span class="r">opencode › daily limit reached</span><br>
-<span class="d">14:20</span> kilo › new session. <span class="r">context lost.</span> explaining the codebase again…<br>
+<span class="d">14:20</span> kilo › new session. <span class="r">context lost.</span> explaining the codebase again…<span class="x"><br>
 <span class="d">14:41</span> <span class="r">kilo › rate limited</span><br>
-<span class="d">14:42</span> zro › new session. <span class="r">context lost.</span> starting over…</div>
+<span class="d">14:42</span> zro › new session. <span class="r">context lost.</span> starting over…</span></div>
 </section>
 <section id="sources">
 <div class="eyebrow">▌ what grunt does</div>
