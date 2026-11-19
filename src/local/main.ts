@@ -17,6 +17,7 @@ import { MistralVibe } from './mistral-vibe.js';
 import { LiveKit } from './livekit.js';
 import { Pollinations } from './pollinations.js';
 import { BeatAPI } from './beatapi.js';
+import { AntseedVikey } from './antseed-vikey.js';
 import { Kilo } from './kilo.js';
 import { Clixad } from './clixad.js';
 import { Perch } from './perch.js';
@@ -65,7 +66,15 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   };
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
   const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
-  const ids = (gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id)).filter(id => id && !disabledAdapters.has(id));
+  const configured = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+  const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
+    .filter(id => id === 'antseed-vikey' || id === 'reflection-beam');
+  const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
+  if (ids.includes('antseed-vikey')) {
+    const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
+    registered.push(new AntseedVikey(port ? { port } : {}));
+  }
+  if (ids.includes('reflection-beam')) registered.push(new Kilo({ directory: configDir(env), reflectionBeam: true }));
   const routing = ids.every(id => knownAdapters.has(id)) ? { registry } : undefined;
   const sources = new Sources(ids.map(id => {
     const source = registered.find(source => source.id === id);
