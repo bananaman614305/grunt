@@ -5,7 +5,7 @@ import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore } from './diagnostics.js';
-import { currentRoutingWorkload, nextRoutingPerformance, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
+import { currentRoutingWorkload, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
@@ -122,13 +122,13 @@ export class SourceStatus {
         this.mergePerformance(entry, row.profile, row.value);
       }
       for (const [id, value] of this.backoffs) if ((this.routingRecoveryAt(id) ?? 0) > value.at) {
-        if (value.code === 'quota') this.backoffs.set(id, { ...value, signature: 'quota:::', streak: 1 });
+        if (value.code === 'quota') this.backoffs.set(id, quotaAfterRecovery(value));
         else this.backoffs.delete(id);
       }
       for (const row of state.backoff) if (this.observations.has(row.source) && (row.value.code === 'quota' || (this.routingRecoveryAt(row.source) ?? 0) <= row.value.at)) {
         const old = this.backoffs.get(row.source);
         const incoming = row.value.code === 'quota' && (this.routingRecoveryAt(row.source) ?? 0) > row.value.at
-          ? { ...row.value, signature: 'quota:::', streak: 1 } : row.value;
+          ? quotaAfterRecovery(row.value) : row.value;
         this.backoffs.set(row.source, mergeRoutingBackoff(old, incoming));
       }
     } catch { /* Durable observations must not make a source available or break requests. */ }
@@ -159,6 +159,7 @@ export class SourceStatus {
     try { if (this.history) value = await this.history.failure(id, error, seconds, adaptive, at); }
     catch { /* Keep the bounded in-memory backoff when private storage is unavailable. */ }
     const current = this.backoffs.get(id), recovery = this.routingRecoveryAt(id) ?? 0;
+    if (value.code === 'quota' && recovery > value.at) value = quotaAfterRecovery(value);
     if (value.code !== 'quota' && recovery > value.at) {
       if (current && (current.code === 'quota' || current.at >= recovery)) return current;
       this.backoffs.delete(id);
@@ -190,7 +191,7 @@ export class SourceStatus {
     entry.profiles[profile] = nextRoutingPerformance(entry.profiles[profile], success, latencyMs, at);
     const backoff = this.backoffs.get(id);
     if (success && backoff && at > backoff.at) {
-      if (backoff.code === 'quota') this.backoffs.set(id, { ...backoff, signature: 'quota:::', streak: 1 });
+      if (backoff.code === 'quota') this.backoffs.set(id, quotaAfterRecovery(backoff));
       else this.backoffs.delete(id);
     }
     try {

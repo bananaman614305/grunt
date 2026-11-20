@@ -346,7 +346,7 @@ it.each([
     rejects[5]!(later === 'quota' ? new SourceError('quota', 'Daily limit', 60)
       : new SourceError('upstream', 'Different outage', undefined, undefined, { httpStatus: 502 }));
     await turns[5];
-    expect(status.routingBackoff('runcrate')).toEqual({ ...retired, ...(later === 'quota' ? { code: 'quota' } : {}) });
+    expect(status.routingBackoff('runcrate')).toEqual({ ...retired, ...(later === 'quota' ? { code: 'quota', quotaUntil: 75000 } : {}) });
     expect(value.retired('runcrate')).toBe(true);
     if (stored) {
       const restored = new SourceStatus(['runcrate'], () => now);
@@ -372,8 +372,8 @@ it('preserves retirement when sibling bookkeeping arrives in either order', () =
     { code: 'upstream' as const, signature: 'upstream:502::', streak: 1, at: 11000, until: 911000 }
   ]) {
     const until = other.code === 'quota' ? 86411000 : 7210000;
-    expect(mergeRoutingBackoff(retired, other)).toEqual({ ...retired, code: other.code === 'quota' ? 'quota' : 'upstream', until });
-    expect(mergeRoutingBackoff(other, retired)).toEqual({ ...retired, code: other.code === 'quota' ? 'quota' : 'upstream', until });
+    expect(mergeRoutingBackoff(retired, other)).toEqual({ ...retired, code: other.code === 'quota' ? 'quota' : 'upstream', until, ...(other.code === 'quota' ? { quotaUntil: 86411000 } : {}) });
+    expect(mergeRoutingBackoff(other, retired)).toEqual({ ...retired, code: other.code === 'quota' ? 'quota' : 'upstream', until, ...(other.code === 'quota' ? { quotaUntil: 86411000 } : {}) });
   }
 });
 
@@ -441,4 +441,47 @@ it.each([false, true])('a successful admitted reply clears the failure streak wh
   await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['still quota held'] }, AbortSignal.timeout(1000))).rejects.toThrow();
   now = 70001;
   await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['after actual reset'] }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'PRIVATE_ANSWER' });
+});
+
+it.each([false, true])('clears a recovered upstream cooldown while preserving the actual sixty-second quota reset (stored=%s)', async stored => {
+  let now = 10000;
+  const path = await directory();
+  const status = new SourceStatus(['runcrate'], () => now);
+  if (stored) await status.setRoutingHistory(await open(path));
+  const one = source('runcrate');
+  const admitted: { resolve(value: { text: string }): void; reject(error: SourceError): void }[] = [];
+  one.complete.mockImplementation(() => new Promise((resolve, reject) => { admitted.push({ resolve, reject }); }));
+  const value = router([one], status, () => now);
+  const turns = Array.from({ length: 3 }, (_, i) => value.complete({ ...request, userMessages: [`quota and recovery ${i}`] }, AbortSignal.timeout(5000))
+    .then(result => result, error => error));
+  try {
+    await vi.waitFor(() => expect(admitted).toHaveLength(3));
+    admitted[0]!.reject(new SourceError('quota', 'Reset in sixty seconds', 60));
+    await turns[0];
+    now = 11000;
+    admitted[1]!.reject(new SourceError('upstream', 'Temporary failure', undefined, undefined, { httpStatus: 502 }));
+    await turns[1];
+    expect(value.cooldown('runcrate')!.until).toBe(911000);
+    const sibling = stored ? new SourceStatus(['runcrate'], () => now) : undefined;
+    if (sibling) await sibling.setRoutingHistory(await open(path));
+    now = 12000;
+    admitted[2]!.resolve({ text: 'Sibling recovered' });
+    expect(await turns[2]).toEqual({ text: 'Sibling recovered' });
+    expect(value.cooldown('runcrate')).toEqual({ code: 'quota', until: 70000 });
+    if (sibling) {
+      await sibling.refreshRoutingHistory();
+      expect(router([one], sibling, () => now).cooldown('runcrate')).toEqual({ code: 'quota', until: 70000 });
+      const restored = new SourceStatus(['runcrate'], () => now);
+      await restored.setRoutingHistory(await open(path));
+      expect(router([one], restored, () => now).cooldown('runcrate')).toEqual({ code: 'quota', until: 70000 });
+    }
+    await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['before quota reset'] }, AbortSignal.timeout(1000))).rejects.toThrow();
+    expect(one.complete).toHaveBeenCalledTimes(3);
+    now = 70001;
+    one.complete.mockResolvedValueOnce({ text: 'Available at the actual reset' });
+    await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['after quota reset'] }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'Available at the actual reset' });
+  } finally {
+    for (const turn of admitted) turn.reject(new SourceError('cancelled', 'Test cleanup'));
+    await Promise.all(turns);
+  }
 });

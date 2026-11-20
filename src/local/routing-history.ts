@@ -14,7 +14,7 @@ export const routingWorkloads = ['interactive-text', 'interactive-tools', 'backg
 export type RoutingWorkload = typeof routingWorkloads[number];
 export type RoutingProfile = RoutingWorkload | 'all';
 export interface RoutingPerformance { samples: number; reliability: number; latencyMs: number; failureCostMs: number; at: number; lastSuccessAt?: number }
-export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number }
+export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number; quotaUntil?: number }
 export interface RoutingHistorySnapshot { performance: { source: string; profile: RoutingProfile; value: RoutingPerformance }[]; backoff: { source: string; value: RoutingBackoff }[] }
 const workloads = new AsyncLocalStorage<RoutingWorkload>();
 export const withRoutingWorkload = <T>(workload: RoutingWorkload, run: () => T) => workloads.run(workload, run);
@@ -51,16 +51,20 @@ export function routingFailureSignature(error: SourceError) {
 export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
   if (!previous) return incoming;
   const until = Math.max(previous.until, incoming.until);
-  const quota = previous.code === 'quota' && previous.until > incoming.at
-    || incoming.code === 'quota' && incoming.until > previous.at;
-  if (previous.streak >= RETIRE_AFTER_FAILURES) return { ...previous, ...(quota ? { code: 'quota' as const } : {}), until };
+  const quotaUntil = Math.max(previous.code === 'quota' ? previous.quotaUntil ?? previous.until : 0,
+    incoming.code === 'quota' ? incoming.quotaUntil ?? incoming.until : 0);
+  const quota = quotaUntil > Math.max(previous.at, incoming.at);
+  if (previous.streak >= RETIRE_AFTER_FAILURES) return { ...previous, ...(quota ? { code: 'quota' as const, quotaUntil } : {}), until };
   const code = quota ? 'quota' : incoming.code;
-  if (incoming.streak >= RETIRE_AFTER_FAILURES) return { ...incoming, code, until };
+  if (incoming.streak >= RETIRE_AFTER_FAILURES) return { ...incoming, code, until, ...(quota ? { quotaUntil } : {}) };
   if (incoming.at < previous.at) {
-    if (incoming.code === 'quota' && incoming.until > previous.at) return { ...previous, code: 'quota', until };
+    if (incoming.code === 'quota' && quota) return { ...previous, code: 'quota', quotaUntil, until };
     return previous;
   }
-  return { ...incoming, code, until };
+  return { ...incoming, code, until, ...(quota ? { quotaUntil } : {}) };
+}
+export function quotaAfterRecovery(value: RoutingBackoff): RoutingBackoff {
+  return { ...value, until: value.quotaUntil ?? value.until, signature: 'quota:::', streak: 1 };
 }
 export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
   const signature = routingFailureSignature(error);
@@ -82,8 +86,9 @@ function backoffValue(raw: unknown): RoutingBackoff | undefined {
   const value = object(raw);
   if (!backoffCodes.has(value.code as ErrorCode) || typeof value.signature !== 'string' || !/^[a-z0-9_:]{1,200}$/.test(value.signature)
     || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > RETIRE_AFTER_FAILURES
-    || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000) return;
-  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number };
+    || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000
+    || value.quotaUntil !== undefined && (value.code !== 'quota' || !validTime(value.quotaUntil) || value.quotaUntil < value.at || value.quotaUntil > value.until)) return;
+  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number, ...(value.quotaUntil !== undefined ? { quotaUntil: value.quotaUntil as number } : {}) };
 }
 
 /** Only fixed source/workload IDs, bounded numbers and allowlisted failure classes. */
@@ -196,7 +201,7 @@ export class RoutingHistory {
       }
       if (success) {
         await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
-        await tx.execute({ sql: "UPDATE routing_backoff SET value=json_set(value,'$.signature','quota:::','$.streak',1) WHERE source=? AND json_extract(value,'$.code')='quota' AND at<?", args: [source, now] });
+        await tx.execute({ sql: "UPDATE routing_backoff SET value=json_set(value,'$.until',COALESCE(json_extract(value,'$.quotaUntil'),json_extract(value,'$.until')),'$.signature','quota:::','$.streak',1) WHERE source=? AND json_extract(value,'$.code')='quota' AND at<?", args: [source, now] });
       }
       await tx.execute({ sql: 'DELETE FROM routing_performance WHERE rowid NOT IN (SELECT rowid FROM routing_performance ORDER BY at DESC LIMIT 500)', args: [] });
       return result;

@@ -56,7 +56,7 @@ export class StickyRouter {
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id); }
   cooldown(id: string) {
     let until = this.bars.get(id), code = this.barFailures.get(id);
-    if (until !== undefined && Number.isFinite(until) && code !== 'quota' && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
+    if (until !== undefined && Number.isFinite(until) && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
       this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); until = undefined; code = undefined;
     }
     const observedQuota = this.observation.quotaRetryAt(id);
