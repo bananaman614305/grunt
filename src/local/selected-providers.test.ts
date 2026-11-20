@@ -24,12 +24,13 @@ const signal = new AbortController().signal;
 
 it('reconciles a matching setup-managed source list with curated additions while preserving manual overrides', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-managed-pool-'));
-  await writeAutomaticPool(directory, ['kilo']);
+  await writeAutomaticPool(directory, ['kilo'], ['kilo', 'antseed-vikey', 'freellmapi']);
   const managed = configure({ GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'kilo' });
   const manual = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'kilo' });
   const overridden = configure({ GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'opencode' });
   try {
     expect(managed.sources.map(source => source.id)).toEqual(expect.arrayContaining(bundledRegistry.adapters.map(adapter => adapter.id)));
+    expect(managed.sources.map(source => source.id)).toEqual(expect.arrayContaining(['antseed-vikey', 'freellmapi']));
     expect(manual.sources.map(source => source.id)).toEqual(['kilo']);
     expect(overridden.sources.map(source => source.id)).toEqual(['opencode']);
   } finally { await managed.close(); await manual.close(); await overridden.close(); await rm(directory, { recursive: true, force: true }); }

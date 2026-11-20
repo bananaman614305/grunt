@@ -180,7 +180,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await stage(() => readFile(opencodeConfig)); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  const effectivePort = await stage(() => installBackgroundService('grunt', entry, env, { ...options, automaticPool: true })) ?? port;
+  const effectivePort = await stage(() => installBackgroundService('grunt', entry, env, { ...options, automaticPool: true, selectedSources: selected })) ?? port;
   await stage(() => writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 }));
   const portStage = join(directory, `.installed-port-${randomUUID()}`);
   try {
@@ -188,7 +188,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
     await stage(() => rename(portStage, join(directory, 'installed-port.json')));
   } finally { await rm(portStage, { force: true }); }
 }
-export async function installBackgroundService(name: string, entry: string, env: Record<string, string>, options: { signal?: AbortSignal; automaticPool?: boolean } = {}) {
+export async function installBackgroundService(name: string, entry: string, env: Record<string, string>, options: { signal?: AbortSignal; automaticPool?: boolean; selectedSources?: readonly string[] } = {}) {
   const stage = async <T>(operation: () => Promise<T>) => {
     options.signal?.throwIfAborted();
     const result = await operation();
@@ -235,7 +235,7 @@ export async function installBackgroundService(name: string, entry: string, env:
         }
         if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
       }
-      if (name === 'grunt' && options.automaticPool && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)]));
+      if (name === 'grunt' && options.automaticPool && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources));
       if (process.platform === 'linux') await run('systemctl', ['--user', 'restart', `${identity}.service`]);
       else {
         const domain = `gui/${process.getuid!()}`;
@@ -247,7 +247,7 @@ export async function installBackgroundService(name: string, entry: string, env:
     }
   }
   const declaredSources = env.GRUNT_SOURCES;
-  if (name === 'grunt' && options.automaticPool && declaredSources) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, declaredSources.split(',')));
+  if (name === 'grunt' && options.automaticPool && declaredSources) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, declaredSources.split(','), options.selectedSources));
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
     await stage(() => mkdir(units, { recursive: true }));

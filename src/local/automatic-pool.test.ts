@@ -22,6 +22,24 @@ it('adds newly curated sources only for the matching managed service anchor', as
   expect(await readFile(join(path, AUTOMATIC_POOL_FILE), 'utf8')).not.toMatch(/token|consent|key|grant|approved/);
 });
 
+it('preserves supported explicit additions and the custom API router on an older managed service', async () => {
+  const path = await directory();
+  await writeAutomaticPool(path, configured, ['kilo', 'antseed-vikey', 'freellmapi']);
+  expect(automaticPoolSources(path, configured, curated, true)).toEqual(['opencode', 'kilo', 'antseed-vikey', 'freellmapi', 'reflection-beam']);
+  expect(automaticPoolSources(path, ['opencode'], curated, true)).toEqual(['opencode']);
+  await expect(writeAutomaticPool(path, configured, ['https://example.test/v1'])).rejects.toThrow('Invalid managed');
+});
+
+it('keeps old receipt compatibility without treating malformed selected source data as authority', async () => {
+  const path = await directory(), file = join(path, AUTOMATIC_POOL_FILE);
+  await writeFile(file, JSON.stringify({ version: 1, mode: 'automatic', serviceSources: configured }), { mode: 0o600 });
+  expect(automaticPoolSources(path, configured, curated, true)).toEqual(curated);
+  for (const value of [[], ['antseed-vikey', 'antseed-vikey'], ['unknown-source'], ['https://example.test/v1'], 'antseed-vikey']) {
+    await writeFile(file, JSON.stringify({ version: 1, mode: 'automatic', serviceSources: configured, selectedSources: value }));
+    expect(automaticPoolSources(path, configured, curated, true)).toEqual(configured);
+  }
+});
+
 it.each(['missing', 'malformed', 'world-readable', 'symlink', 'wrong-owner', 'manual'])('preserves explicit sources for %s automatic selection state', async kind => {
   const path = await directory(), file = join(path, AUTOMATIC_POOL_FILE);
   if (kind !== 'missing') await writeAutomaticPool(path, configured);

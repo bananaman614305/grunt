@@ -1514,7 +1514,10 @@ Standard setup records a private `automatic-pool.json` receipt anchored to the
 managed service's existing source list. An ordinary update migrates a verified
 managed installation only when its private setup manifest matches that list.
 The daemon then considers newly curated sources even when the service file still
-contains an older list. Provider signup and current provider-specific consent
+contains an older list. Explicitly added supported sources are retained in a
+separate selection list, including the `freellmapi` router for custom API URLs;
+those additions do not promote an experimental source into the curated registry.
+Provider signup and current provider-specific consent
 remain required; this receipt records source selection, not account access.
 Manual daemons and explicit source overrides that differ from the anchor keep
 their selected list. Malformed, shared, unowned or symlinked receipts never

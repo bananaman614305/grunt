@@ -145,7 +145,7 @@ it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and 
   await mkdir(join(units, `${identity}.service.d`), { recursive: true });
   await writeFile(unit, original, { mode: 0o600 }); await writeFile(dropIn, custom, { mode: 0o600 });
   fixture.serviceEnvironment = `${prefix}_CONFIG_DIR=${join(directory, 'grunt')} ${prefix}_PORT=8792 ${prefix}_SOURCES=opencode,kilo ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3301/v1`;
-  await installService(['kilo']);
+  await installService(['kilo', 'antseed-vikey', 'freellmapi']);
   expect(await readFile(unit, 'utf8')).toBe(original); expect(await readFile(dropIn, 'utf8')).toBe(custom);
   expect(fixture.spawn.mock.calls.map(([binary, args]) => [binary, args])).toEqual([
     ['npm', expect.any(Array)], ['systemctl', ['--user', 'restart', `${identity}.service`]]
@@ -153,8 +153,9 @@ it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and 
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
   // The owned service file can keep its old source environment while setup
   // enrolls newly curated sources through a private, matching selection anchor.
-  expect(automaticPoolSources(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true)).toEqual(['opencode', 'kilo', 'reflection-beam']);
+  expect(automaticPoolSources(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true)).toEqual(['opencode', 'kilo', 'antseed-vikey', 'freellmapi', 'reflection-beam']);
   expect(automaticPoolSources(join(directory, 'grunt'), ['kilo'], ['opencode', 'kilo', 'reflection-beam'], true)).toEqual(['kilo']);
+  expect(JSON.parse(await readFile(join(directory, 'grunt/installed-sources.json'), 'utf8'))).toEqual(['kilo', 'antseed-vikey', 'freellmapi']);
   await expect(readFile(join(units, `${identity === 'grunt' ? 'milo' : 'grunt'}.service`), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
