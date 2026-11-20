@@ -253,7 +253,9 @@ export class Sources {
   private recover: (() => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const parent = currentDiagnosticContext();
-    const context: DiagnosticContext = { requestId: parent?.requestId ?? randomUUID(), kind: !request.worker && this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
+    const actor = request.worker ? { actor: 'worker' as const, workerId: request.worker.id }
+      : parent?.actor ? { actor: parent.actor, ...(parent.actor === 'worker' && parent.workerId ? { workerId: parent.workerId } : {}) } : {};
+    const context: DiagnosticContext = { ...actor, requestId: parent?.requestId ?? randomUUID(), kind: !request.worker && this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
     return withDiagnosticContext(context, async () => {
       const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
       if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });

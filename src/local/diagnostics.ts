@@ -29,9 +29,10 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   outcome?: 'passed' | 'failed' | 'cancelled' | 'skipped'; durationMs?: number;
   errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number;
   reason?: typeof diagnosticReasons[number];
+  actor?: 'client' | 'worker'; workerId?: string;
 }
 export type StoredDiagnosticEvent = DiagnosticEvent & { seq: number };
-export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; errorCode?: DiagnosticEvent['errorCode'] }
+export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
 const context = new AsyncLocalStorage<DiagnosticContext>();
 export const currentDiagnosticContext = () => context.getStore();
 export const withDiagnosticContext = <T>(value: DiagnosticContext, fn: () => T): T => context.run(value, fn);
@@ -50,6 +51,8 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (!v || v.version !== 1 || typeof v.id !== 'string' || !uuid.test(v.id) || !integer(v.at) || v.at > 8640000000000000
     || typeof v.requestId !== 'string' || !uuid.test(v.requestId) || !member(diagnosticTypes, v.type) || !member(diagnosticKinds, v.kind)) return null;
   const result: DiagnosticEvent = { version: 1, id: v.id, at: v.at, type: v.type, requestId: v.requestId, kind: v.kind };
+  if (member(['client', 'worker'] as const, v.actor)) result.actor = v.actor;
+  if (result.actor === 'worker' && typeof v.workerId === 'string' && uuid.test(v.workerId)) result.workerId = v.workerId;
   if (integer(v.seq) && v.seq > 0) result.seq = v.seq;
   if (typeof v.attemptId === 'string' && uuid.test(v.attemptId)) result.attemptId = v.attemptId;
   if (typeof v.source === 'string' && identifier.test(v.source) && !secret.test(v.source)) result.source = v.source;
@@ -171,7 +174,12 @@ export class DiagnosticsStore {
       ...(this.lastWriteAt === undefined ? {} : { lastWriteAt: this.lastWriteAt }), ...(this.error ? { error: this.error } : {}) };
   }
   record(input: DiagnosticEvent) {
-    const event = sanitizeDiagnosticEvent(input);
+    const current = currentDiagnosticContext();
+    // Context is trusted local routing metadata. Only the matching request may
+    // inherit it; unrelated asynchronous writes keep their own attribution.
+    const actor = current?.requestId === input.requestId && current.actor !== undefined
+      ? { actor: current.actor, workerId: current.actor === 'worker' ? current.workerId : undefined } : {};
+    const event = sanitizeDiagnosticEvent({ ...input, ...actor });
     if (!event || !this.db || this.closed) { this.droppedEvents++; return; }
     if (this.queued >= 1000) { this.droppedEvents++; this.error = 'queue_full'; return; }
     this.queued++;
