@@ -1,6 +1,6 @@
 import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { currentDiagnosticContext, diagnosticFetch } from './diagnostics.js';
+import { diagnosticFetch } from './diagnostics.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import type { FreeApiGrant } from './free-api.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
@@ -17,8 +17,22 @@ const count = (value: unknown) => typeof value === 'number' && Number.isSafeInte
 const zero = (value: unknown) => value === 0 || value === '0';
 const timestamp = (value: unknown) => typeof value === 'string' && /^\d{4}-\d\d-\d\dT/.test(value) ? Date.parse(value) : NaN;
 
+export async function fikraFreeWindow(fetcher: typeof fetch = fetch, now = Date.now(), signal?: AbortSignal): Promise<number | undefined> {
+  const response = await diagnosticFetch(fetcher, 'fikra', 'account')('https://fikraapi.co.ke/free-deepseek-api/status.json', {
+    redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
+  });
+  if (!response.ok) { await response.body?.cancel(); return; }
+  const gate = object(await response.json()), expires = timestamp(gate.expires_at);
+  if (gate.active !== true || gate.model_id !== PROMOTIONAL_PROVIDERS.fikra.model || !Number.isFinite(expires) || expires <= now
+    || !Number.isFinite(timestamp(gate.checked_at)) || Math.abs(now - timestamp(gate.checked_at)) > 60000
+    || typeof gate.used_usd !== 'number' || typeof gate.cap_usd !== 'number' || !Number.isFinite(gate.used_usd) || !Number.isFinite(gate.cap_usd)
+    || gate.used_usd < 0 || !(gate.used_usd < gate.cap_usd) || count(gate.tokens_used) === undefined || count(gate.tokens_cap) === undefined
+    || !(Number(gate.tokens_used) < Number(gate.tokens_cap))) return;
+  return Math.min(expires, Date.parse(PROMOTIONAL_PROVIDERS.fikra.expires));
+}
+
 // These offers are temporary, not recurring free tiers. Never change aliases or
-// use a wallet when a promotion ends. They remain opt-in until live qualification.
+// use a wallet when a promotion ends. Both exact aliases passed live qualification.
 export class PromotionalApi implements Source {
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
@@ -27,9 +41,6 @@ export class PromotionalApi implements Source {
   } = {}) {}
   private get spec() { return PROMOTIONAL_PROVIDERS[this.id]; }
   private get now() { return (this.options.now ?? Date.now)(); }
-  // Openference's unattended-use permission is unresolved. Exact-ID interactive
-  // qualification is supported; neither automatic routing nor workers may use it.
-  acceptsRequest(request: ModelRequest) { return this.id !== 'openference' || request.model === this.id && !request.worker && currentDiagnosticContext()?.kind !== 'maintenance'; }
   private async freeGrant(signal?: AbortSignal) {
     if (this.now >= Date.parse(this.spec.expires)) return;
     const directory = this.options.directory ?? configRoot();
@@ -41,25 +52,20 @@ export class PromotionalApi implements Source {
     if (url.origin === 'https://trusty-squire-api.fly.dev') {
       if (!/^\/v1\/egress\/g_[A-Za-z0-9_-]+$/.test(url.pathname)) return;
     } else if (grant.base_url !== `https://${this.spec.host}`) return;
-    const read = async (endpoint: string, publicGate = false) => {
-      const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, publicGate ? 'account' : 'models')(
-        publicGate ? 'https://fikraapi.co.ke/free-deepseek-api/status.json' : `${grant.base_url}${endpoint}`, {
-          redirect: 'error', headers: publicGate ? {} : { Authorization: `Bearer ${grant.token}` },
-          signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
-        });
+    let expires = Date.parse(this.spec.expires);
+    if (this.id === 'fikra') {
+      const liveExpiry = await fikraFreeWindow(this.options.fetcher ?? fetch, this.now, signal);
+      if (liveExpiry === undefined) return;
+      expires = liveExpiry;
+    }
+    const read = async (endpoint: string) => {
+      const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'models')(`${grant.base_url}${endpoint}`, {
+        redirect: 'error', headers: { Authorization: `Bearer ${grant.token}` },
+        signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
+      });
       if (!response.ok) { await response.body?.cancel(); return {}; }
       return object(await response.json());
     };
-    let expires = Date.parse(this.spec.expires);
-    if (this.id === 'fikra') {
-      const gate = await read('', true);
-      if (gate.active !== true || gate.model_id !== this.spec.model || timestamp(gate.expires_at) <= this.now
-        || !Number.isFinite(timestamp(gate.expires_at)) || !Number.isFinite(timestamp(gate.checked_at))
-        || Math.abs(this.now - timestamp(gate.checked_at)) > 60000
-        || typeof gate.used_usd !== 'number' || typeof gate.cap_usd !== 'number' || !Number.isFinite(gate.used_usd) || !Number.isFinite(gate.cap_usd) || gate.used_usd < 0 || !(gate.used_usd < gate.cap_usd)
-        || count(gate.tokens_used) === undefined || count(gate.tokens_cap) === undefined || !(Number(gate.tokens_used) < Number(gate.tokens_cap))) return;
-      expires = Math.min(expires, timestamp(gate.expires_at));
-    }
     const catalog = await read('/v1/models');
     if (!Array.isArray(catalog.data)) return;
     const offers = catalog.data.map(object).filter(row => row.id === this.spec.model);
@@ -80,7 +86,6 @@ export class PromotionalApi implements Source {
   async available() { try { return !!await this.freeGrant(); } catch { return false; } }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     caller.throwIfAborted();
-    if (!this.acceptsRequest(request)) throw new SourceError('refused', 'Openference is limited to explicit interactive qualification');
     if (![this.id, 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported promotional request');
     const grant = await this.freeGrant(caller).catch(() => undefined);
     caller.throwIfAborted();
@@ -89,7 +94,7 @@ export class PromotionalApi implements Source {
     try {
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
-        headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', 'User-Agent': this.id === 'openference' ? 'grunt/free-source-qualification' : 'grunt' },
+        headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', 'User-Agent': 'grunt' },
         body: JSON.stringify({ model: this.spec.model, messages: request.messages, tools: request.tools.length ? request.tools : undefined,
           stream: this.id === 'openference', ...(this.id === 'openference' ? { stream_options: { include_usage: true } } : {}),
           max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })

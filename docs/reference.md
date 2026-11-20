@@ -486,7 +486,8 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari, Numes and Gödel Machines in the experimental tier.
+Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Fikra and Openference in the
+experimental tier. Fikra and Openference are temporary offers with expiry guards.
 Free-account eligibility still applies.
 
 The wizard enables free sources by default and connects every supported coding
@@ -595,32 +596,38 @@ cooldowns and fallback. The account's welcome credit is separate from this route
 
 ### Temporary free sources
 
-`npx usegrunt add fikra` and `npx usegrunt add openference` connect optional
-sources through service-scoped Squire credentials named **Grunt Free**. Setup
-records provider-specific data-sharing approval and verifies the live free gate
-and catalog. Human challenges require a person; setup never bypasses them, adds
-payment details, buys credits, or creates duplicate accounts. Background setup
-only reuses existing verified access. Credential files contain private Squire
-grants with mode 0600.
+Fikra and Openference are included in automatic onboarding through Squire.
+They passed real Grunt text replies, native function calls and cold-context tests
+with 201,098 and 201,139 input tokens respectively. These are temporary free
+promotions, admitted for their current windows rather than promised as recurring
+allowances. `npx usegrunt add fikra` or `npx usegrunt add openference` can also
+resume their setup on an existing installation.
+
+Squire reuses service-scoped credentials named **Grunt Free**, including its
+normal provider-domain host defaults. Grunt only sends requests to the fixed
+API host or its Squire proxy. Setup records source-specific data-sharing approval,
+uses configured verification tools, and prompts the user if an approval cannot
+be completed. It never adds billing, paid plans or top-ups. Model restrictions,
+when offered, should allow only the exact free alias; paid BYOK stays off.
+Background setup only reuses verified access. Grant files have mode 0600.
 
 | Source | Exact model | Expiry and checks |
 | --- | --- | --- |
-| Fikra | `deepseek-v4-1-flash-economy-free` | Zero input/output price, at least 204,096 catalog context, a fresh active gate, and remaining shared dollar/token budgets before each dispatch. The earlier live expiry wins; the gate reported November 23 UTC on November 20 despite the page saying November 25. A hard November 25 cutoff prevents extensions without review. |
-| Openference | `DeepSeek-V4.1-Flash-1017-Free` | Exact free flag, zero prompt/output/cache prices and quota multiplier, native tool support, at least 204,096 catalog context, and expiry after December 31, 2026 UTC. Always uses upstream SSE, including usage and indexed native tool fragments. |
+| Fikra | `deepseek-v4-1-flash-economy-free` | Zero input/output price, at least 204,096 catalog context, a fresh active gate, and remaining shared dollar/token budgets before dispatch. The earlier live expiry wins; the gate reported November 23 UTC on November 20 despite the page saying November 25. A hard November 25 cutoff prevents extensions without review. Setup checks the window before connecting Squire and immediately before signup. |
+| Openference | `DeepSeek-V4.1-Flash-1017-Free` | Exact free flag, zero prompt/output/cache prices and quota multiplier, native tools, at least 204,096 catalog context, and expiry after December 31, 2026 UTC. Upstream SSE supplies usage and native tool fragments. |
 
-These are promotional windows, not recurring token grants. Neither source is
-in default onboarding: live text, native-tool and 200K-input tests remain
-pending account access. Catalog context alone is not a successful context test.
 Fikra advertises 1,000 requests/minute and 100,000/day with no token cap on the
-free alias; the shared promotion can close earlier. Openference does not
-publish the numeric daily allowance. Its 429 `resets_at` and `Retry-After`
-metadata enter normal cooldown tracking; concurrency limits do not imply
-next-day exhaustion. Neither adapter retries a paid model or spends a wallet.
+free alias; its shared promotion can close earlier. Openference does not publish
+the numeric daily allowance. Its 429 reset metadata enters normal cooldown
+tracking. Both use ordinary Grunt failover, including for intermittent upstream
+errors observed during Openference qualification. Neither retries a paid model.
 
-Openference's free page permits compatible clients, but its terms separately
-restrict unattended workloads. Until that scope is resolved, Grunt permits
-only requests explicitly naming `openference`; automatic selection, subworkers
-and inference maintenance cannot use it. No client identity spoofing is used.
+Openference's Free account is on-demand only. The exact free aliases never
+consume subscription allowances or paid credits. This uses the on-demand path
+required by its unattended-workload terms, at verified zero catalog rates,
+with Grunt's own client identity. Subscription quotas and paid BYOK are not used.
+Automatic selection, subworkers and staggered maintenance can use both routes
+while their guards pass.
 
 Primary sources: [Fikra free offer](https://fikraapi.co.ke/free-deepseek-api),
 [Fikra live gate](https://fikraapi.co.ke/free-deepseek-api/status.json),
@@ -860,9 +867,8 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-Fresh setup offers the bundled OpenCode, Kilo, Zro, Token Harbor, Runcrate,
-Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch pool, enabling providers only after their
-required data-sharing approval.
+Fresh setup offers the bundled vetted pool listed above, enabling providers only
+after their required data-sharing approval.
 It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
@@ -1111,8 +1117,9 @@ The bundled registry has three stable adapters in relative proportions 6:8:5:
 OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
-Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes and
-Gödel Machines forward function tool definitions and return tool calls for the harness to execute.
+Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes,
+Gödel Machines, Fikra and Openference forward function tool definitions and return
+tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
 Pollinations, Clixad and Perch also use validated JSON tool bridges for their fixed routes. Providers

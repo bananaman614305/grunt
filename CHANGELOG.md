@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.23] - 2026-11-20
+
+- Add live-qualified Fikra and Openference DeepSeek free routes to automatic Squire onboarding, worker routing and daily maintenance. Keep zero-price and expiry checks, skip closed Fikra signups, and accept Squire's normal provider-domain host defaults when reusing keys.
+
 ## [0.7.22] - 2026-11-20
 
 - Add optional Squire setup and pinned free DeepSeek adapters for Fikra and Openference, with price checks, promotion expiry, token accounting and streamed native tools. Keep both outside default onboarding while live account qualification is pending; restrict Openference to explicit interactive tests pending unattended-use permission.

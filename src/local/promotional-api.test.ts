@@ -87,11 +87,13 @@ it.each(['fikra', 'openference'] as const)('%s blocks changed pricing, expiry an
   expect(await source(id, fresh, () => now, { base_url: 'https://untrusted.example', token: 'synthetic' }).available()).toBe(false);
   expect(fresh).not.toHaveBeenCalled();
 });
-it('Openference skips automatic and worker requests before any egress', async () => {
+it('Openference permits automatic and worker use of the zero-price on-demand offer', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
   const fetcher = transport('openference'), adapter = source('openference', fetcher);
-  expect(adapter.acceptsRequest({ ...request('openference'), model: 'grunt' })).toBe(false);
-  await expect(adapter.complete({ ...request('openference'), worker: { id: 'w1', onSource() {} } }, AbortSignal.timeout(2000))).rejects.toMatchObject({ code: 'refused' });
-  expect(fetcher).not.toHaveBeenCalled();
+  for (const input of [{ ...request('openference'), model: 'grunt' }, { ...request('openference'), worker: { id: 'w1', onSource() {} } }]) {
+    await expect(adapter.complete(input, AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'Hello' });
+  }
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(2);
 });
 it('Openference preserves provider daily reset without retrying or changing models', async () => {
   await recordDataSharingConsent(directory, ['openference']);
@@ -129,11 +131,9 @@ it('aborts a stalled SSE reader', async () => {
   controller.abort();
   await expect(pending).rejects.toBeDefined();
 });
-it('does not add unqualified promotions to default onboarding', () => {
-  for (const id of ['fikra', 'openference']) {
-    expect(bundledRegistry.adapters.some(adapter => adapter.id === id)).toBe(false);
-    expect(localOptInAdapters.some(adapter => adapter.id === id)).toBe(true);
-  }
+it.each(['fikra', 'openference'] as const)('includes qualified %s in automatic onboarding with the exact free alias', id => {
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === id)?.model).toBe(PROMOTIONAL_PROVIDERS[id].model);
+  expect(localOptInAdapters.some(adapter => adapter.id === id)).toBe(false);
 });
 it('routes Fikra native tools through the Grunt HTTP interface with a mixed source configuration', async () => {
   await recordDataSharingConsent(directory, ['fikra']);
@@ -155,13 +155,14 @@ it('routes Fikra native tools through the Grunt HTTP interface with a mixed sour
   } finally { await sources.close(); }
 });
 
-it('Openference rejects background maintenance before inference', async () => {
-  const fetcher = transport('openference'), adapter = source('openference', fetcher);
+it('Openference maintenance retains the free-price guard', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const fetcher = transport('openference', { ...offer('openference'), pricing: { prompt: '1', completion: '0', cache_read: '0' } } as ReturnType<typeof offer>);
+  const adapter = source('openference', fetcher);
   await withDiagnosticContext({ requestId: 'synthetic-maintenance', kind: 'maintenance' }, async () => {
-    expect(adapter.acceptsRequest(request('openference'))).toBe(false);
     await expect(adapter.complete(request('openference'), AbortSignal.timeout(2000))).rejects.toMatchObject({ code: 'refused' });
   });
-  expect(fetcher).not.toHaveBeenCalled();
+  expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/chat/completions'))).toBe(false);
 });
 it.each(['length', 'tool_calls'])('rejects incomplete function JSON with finish %s', async finish => {
   const response = streamResponse(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model, choices: [{ index: 0,
@@ -169,7 +170,7 @@ it.each(['length', 'tool_calls'])('rejects incomplete function JSON with finish 
   await expect(readPromotionalStream(response, PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(2000))).rejects.toBeDefined();
 });
 
-it('Openference streams native tools through Grunt HTTP while rejecting automatic selection', async () => {
+it('Openference streams native tools through Grunt HTTP and automatic selection', async () => {
   await recordDataSharingConsent(directory, ['openference']);
   await writePrivateProviderGrant('openference', grant('openference'), directory);
   const normal = transport('openference');
@@ -190,7 +191,31 @@ it('Openference streams native tools through Grunt HTTP while rejecting automati
     fetcher.mockClear();
     const auto = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...request('openference'), model: 'grunt' }) });
-    expect(auto.status).toBe(429);
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(auto.status).toBe(200);
+    expect(fetcher).toHaveBeenCalled();
+  } finally { await sources.close(); }
+});
+
+it('falls back from an Openference upstream rejection to free Fikra automatically', async () => {
+  await recordDataSharingConsent(directory, ['fikra', 'openference']);
+  for (const id of ['fikra', 'openference'] as const) await writePrivateProviderGrant(id, grant(id), directory);
+  vi.spyOn(Math, 'random').mockReturnValue(0);
+  const sent: string[] = [];
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (url, init) => {
+    const id = String(url).includes('openference') ? 'openference' : 'fikra';
+    if (String(url).endsWith('/status.json')) return Response.json(gate());
+    if (String(url).endsWith('/models')) return Response.json({ data: [offer(id)] });
+    const body = JSON.parse(String(init?.body)); sent.push(body.model);
+    return id === 'openference' ? Response.json({ error: { code: 'invalid_request_error' } }, { status: 422 })
+      : Response.json({ model: PROMOTIONAL_PROVIDERS.fikra.model, choices: [{ message: { content: 'Hello' } }] });
+  }));
+  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'openference,fikra' });
+  try {
+    const response = await createLocalApp(sources, { cwd: directory }).request('http://127.0.0.1:8788/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request('fikra'), model: 'grunt' })
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-grunt-source')).toBe('fikra');
+    expect(sent).toEqual([PROMOTIONAL_PROVIDERS.openference.model, PROMOTIONAL_PROVIDERS.fikra.model]);
   } finally { await sources.close(); }
 });
