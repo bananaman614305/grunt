@@ -17,8 +17,9 @@ usegrunt installs grunt on this machine. It pools free AI quota and serves local
 Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
 
 Setup plays the miner animation, connects every supported coding tool it finds,
-shows one live table of tools and sources, and ends with `Ready`. It asks no
-questions. Grunt is added as an extra named model; existing defaults stay intact.
+shows one live table of tools and sources, and ends with `Ready`. Material
+data terms require a foreground approval; provider verification may also need
+your confirmation. Grunt is added as an extra named model; existing defaults stay intact.
 Sources that cannot finish signup or pass a test request are skipped while working
 sources remain usable. Rerun setup to retry them.
 
@@ -105,11 +106,14 @@ replies, code, credentials or raw provider errors. Normal `npx usegrunt` onboard
 does not enroll a user's machine in the owner console.
 
 Daily upkeep uses a separate persistent queue. It checks one configured curated
-source at a time, then waits 60–90 seconds after that check finishes. A recent
+or explicitly installed opt-in source at a time, then waits 60–90 seconds after
+that check finishes. Sibling runtimes sharing the same private configuration
+coordinate that queue and preserve each other's results. A recent
 successful reply counts toward the daily check. Otherwise the queue sends one
 bounded hello directly to that provider, with normal consent and free-access
 guards. Idle Clixad checks use read-only metadata to avoid automatic wallet or
-streak claims; they are recorded as metadata evidence rather than a fresh reply.
+streak claims. Free-Pi checks also use metadata, avoiding a new coding-session
+trace. Both are recorded as metadata evidence rather than a fresh reply.
 The queue defers checks during user requests, setup and cooldowns. Maintenance
 does not install tools, create accounts or open sign-in flows. When a request finds no source that can answer, the daemon separately starts one background recovery that adds vetted providers whose data-sharing approval is already recorded (saved Squire access first, then signup); it never runs without that approval. The dashboard's
 source details show the last check, its outcome and the next due time. Registry
@@ -148,7 +152,19 @@ that have yet to complete a successful publish after two days.
 
 Maintainers can use the [provider scouting guide](https://github.com/bananaman614305/grunt/blob/main/ops/provider-scout/README.md) for Chad's 09:00/21:00 Eastern search job. It researches recurring free offers, uses Squire for eligible signups and, when release is enabled, requires two independent reviews, sandboxed checks and trusted exact-provider hello/tool probes before merging and publishing a new npm release. Human authentication and approval blockers remain pending. New users receive released additions through `npx usegrunt`; existing installations use `npx usegrunt update`. Scouting is separate from user maintenance and is not installed on users' machines.
 
-Setup groups any required data-sharing approvals into one prompt. Supported providers can reuse the person's Google or GitHub identity and may still require their own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
+Setup records ordinary source policies and groups material terms into one foreground, default-No prompt. Background setup cannot supply that approval. Supported providers can reuse the person's Google or GitHub identity and may still require their own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
+
+The same curated pool is offered to every installation. Anonymous Reflection
+Beam and 100milionseek are included in standard onboarding. 100milionseek pins
+DeepSeek V4.1 Flash Free and checks its permanent 100-million-token daily
+allowance, resetting at midnight UTC; its qualified input limit is the approved
+198,000-token exception. Free-Pi is offered only after explicit consent to sale
+of coding-session traces and requires a reviewed-public-context attestation on
+every request; ordinary Pi and subworker requests do not supply it. See the
+[provider reference](docs/reference.md#curated-sources-and-explicit-selections)
+and [Free-Pi's restrictions](docs/providers/freepi.md). Antseed remains an
+[explicit experimental installation](docs/antseed-vikey-provisioning.md), with
+large-input qualification still incomplete.
 
 Nous uses `qwen/qwen4-max:free` on the Nous Portal Free plan. After the grouped consent prompt, open the Hermes device link and approve inference. Other sources can start serving requests while you finish that step.
 
