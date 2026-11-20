@@ -599,8 +599,8 @@ Openference reply diagnostics distinguish `stream_read` (transport read),
 `stream_format` (invalid SSE framing), `stream_incomplete` (missing completion)
 and `stream_cleanup` (reader cleanup). JSON, model, content and tool validation
 retain their own fixed reasons. The owner trace shows readable labels for these
-codes without retaining stream contents or exception text. A cleanup failure
-does not discard an otherwise accepted reply or replace its original failure;
+codes without retaining stream contents or exception text. A reader-cancellation
+cleanup failure does not discard an otherwise accepted reply or replace its original failure;
 provider cooldowns, cancellation and fallback behavior remain unchanged.
 
 Chat Completions clients requesting `stream_options.include_usage: true` receive
