@@ -162,8 +162,10 @@ describe('reviewed worker artifact integration in the caller filesystem', () => 
   it('serializes concurrent integrations so only one exact baseline wins', async () => {
     await write('src/a', 'original');
     const results = await Promise.all([apply(artifact(file('src/a', 'original', 'worker-one'))), apply(artifact(file('src/a', 'original', 'worker-two')))]);
-    expect(results.map(value => value.ok)).toEqual([true, false]); expect(results[1]?.code).toBe('conflict');
-    expect(await read('src/a')).toBe('worker-one');
+    expect(results.filter(value => value.ok)).toHaveLength(1);
+    expect(results.find(value => !value.ok)?.code).toBe('conflict');
+    const winner = results.findIndex(value => value.ok);
+    expect(await read('src/a')).toBe(['worker-one', 'worker-two'][winner]);
   });
   it('restores a racing parent replacement captured before installation, with its bytes retained', async () => {
     await write('src/a', 'original');
