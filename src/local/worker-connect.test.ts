@@ -115,7 +115,7 @@ it('enables agent workers only with explicit trusted project scope for MCP conne
   await workerConnectCommand(['claude', '--agentic', '--project', directory], options);
   expect(options.notify.mock.calls.at(-1)![0]).toContain('mcp add --scope project');
   await workerConnectCommand(['pi', '--agentic'], options);
-  expect(options.notify.mock.calls.at(-1)![0]).toContain('--grunt-agent-workers --grunt-background-jobs');
+  expect(options.notify.mock.calls.at(-1)![0]).toContain('--grunt-agent-workers --grunt-background-jobs --grunt-checkpoints');
 });
 
 it('registers tool workers at session_start only after the launch flag is enabled', async () => {

@@ -4,6 +4,7 @@ import type { SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext } from './diagnostics.js';
+import type { RoutingHistory } from './routing-history.js';
 export class SourceError extends Error {
   constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string, public diagnostics?: SafeDiagnosticMetadata) { super(message); }
 }
@@ -122,6 +123,8 @@ export class Sources {
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; this.observation.setDiagnostics(store); }
+  setRoutingHistory(store: RoutingHistory) { return this.observation.setRoutingHistory(store); }
+  flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
   diagnosticStore() { return this.diagnostics; }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
   status(): PoolSnapshot {
@@ -340,6 +343,7 @@ export class Sources {
   async close() {
     await Promise.all([this.router?.close(), this.workerRouter?.close()]);
     await Promise.allSettled(this.sources.map(s => s.close?.()));
+    await this.flushRoutingHistory();
   }
 }
 export class Gateway implements Source {

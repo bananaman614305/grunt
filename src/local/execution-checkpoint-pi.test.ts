@@ -19,6 +19,8 @@ it('registers three custom tools only after trusted flag/session_start, never ch
   expect([...f.handlers.keys()]).toEqual(['before_agent_start', 'session_start']);
   const original = 'SYSTEM: preserve every word\nUSER: exact goal and requirements';
   expect(f.handlers.get('before_agent_start')!({ systemPrompt: original }, { cwd: '/tmp' })).toMatchObject({ systemPrompt: expect.stringMatching(/^SYSTEM: preserve every word\nUSER: exact goal and requirements/) });
+  const extended = f.handlers.get('before_agent_start')!({ systemPrompt: original }, { cwd: '/tmp' }) as { systemPrompt: string };
+  expect(f.handlers.get('before_agent_start')!({ systemPrompt: extended.systemPrompt }, { cwd: '/tmp' })).toBeUndefined();
   f.setFlag(false); expect(f.handlers.get('before_agent_start')!({ systemPrompt: original }, { cwd: '/tmp' })).toBeUndefined();
 });
 it('uses only harness cwd/session, returns private write metadata and focused tool-result data on explicit resume', async () => {

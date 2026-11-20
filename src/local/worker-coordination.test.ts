@@ -139,8 +139,17 @@ it('registers coordination only for trusted worker launches and preserves system
   const start = async () => { for (const handler of handlers.get('session_start') ?? []) await handler({}, { cwd: '/tmp' }); };
   await start(); expect(tools.some(tool => tool.name === 'grunt_coordinate')).toBe(false);
   enabled = true; await start(); await start(); expect(tools.filter(tool => tool.name === 'grunt_coordinate')).toHaveLength(1);
-  expect(handlers.get('before_agent_start')![0]!({ systemPrompt: 'Existing permissions and task.' }, { cwd: '/tmp' })).toEqual({ systemPrompt: 'Existing permissions and task.' + COORDINATION_POLICY });
-  enabled = false; expect(handlers.get('before_agent_start')![0]!({ systemPrompt: 'Existing' })).toBeUndefined();
+  const before = async (initial: string) => {
+    let systemPrompt = initial;
+    for (const handler of handlers.get('before_agent_start') ?? []) {
+      const result = await handler({ systemPrompt }, { cwd: '/tmp' }) as { systemPrompt?: string } | undefined;
+      if (result?.systemPrompt !== undefined) systemPrompt = result.systemPrompt;
+    }
+    return systemPrompt;
+  };
+  expect(await before('Existing permissions and task.')).toEqual('Existing permissions and task.' + COORDINATION_POLICY);
+  expect(await before('Existing permissions and task.' + COORDINATION_POLICY)).toEqual('Existing permissions and task.' + COORDINATION_POLICY);
+  enabled = false; expect(await before('Existing')).toBe('Existing');
 });
 
 it('keeps coordination plans separate when a harness switches sessions in the same project', async () => {
