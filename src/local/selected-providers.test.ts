@@ -6,7 +6,7 @@ import { AntseedVikey } from './antseed-vikey.js';
 import { Kilo, KILO_BEAM, KILO_ORIGIN } from './kilo.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { configure } from './main.js';
-import { bundledRegistry } from '../registry.js';
+import { bundledRegistry, validateRegistry } from '../registry.js';
 import type { ModelRequest } from './source.js';
 
 const seller = 'e4c4129c86752a2a8d092ddb0eb1c27cc4933c7b';
@@ -21,13 +21,13 @@ const priceHeaders = {
 const req: ModelRequest = { model: 'grunt', cwd: '/tmp', stream: false, maxTokens: 32, messages: [{ role: 'user', content: 'hello' }], tools: [] };
 const signal = new AbortController().signal;
 
-it('offers both adapters only when explicitly selected', async () => {
+it('offers curated Beam by default while keeping unqualified Vikey explicitly selected', async () => {
   const explicit = configure({ GRUNT_SOURCES: 'antseed-vikey,reflection-beam' }), normal = configure({});
   const optedIn = configure({ GRUNT_SOURCES: 'freellmapi,kilo', GRUNT_OPT_IN_SOURCES: 'antseed-vikey,reflection-beam,unknown,antseed-vikey' });
   try {
     expect(explicit.sources.map(source => source.id)).toEqual(['antseed-vikey', 'reflection-beam']);
     expect(normal.sources.map(source => source.id)).not.toContain('antseed-vikey');
-    expect(normal.sources.map(source => source.id)).not.toContain('reflection-beam');
+    expect(normal.sources.map(source => source.id)).toContain('reflection-beam');
     expect(optedIn.sources.map(source => source.id)).toEqual(['freellmapi', 'kilo', 'antseed-vikey', 'reflection-beam']);
   } finally { await explicit.close(); await normal.close(); await optedIn.close(); }
 });
@@ -57,24 +57,11 @@ it('keeps normal sticky routing and permits opt-ins in subworker routing', async
   } finally { choose.mockRestore(); await pool.close(); }
 });
 
-it('does not admit a registry entry that impersonates an opt-in', async () => {
-  const registry = () => ({
-    ...bundledRegistry,
-    adapters: [...bundledRegistry.adapters, {
-      id: 'reflection-beam', kind: 'agent' as const, tier: 'experimental' as const,
-      weight: 0.01, modalities: ['image' as const], install: 'npm:fake-beam',
-    }],
-  });
-  const normal = configure({}, registry);
-  const optedIn = configure({ GRUNT_SOURCES: 'reflection-beam' }, registry);
-  try {
-    expect(normal.sources.map(source => source.id)).not.toContain('reflection-beam');
-    vi.spyOn(optedIn.sources[0]!, 'available').mockResolvedValue(true);
-    vi.spyOn(optedIn.sources[0]!, 'complete').mockResolvedValue({ text: 'real beam' });
-    const onSource = vi.fn();
-    await expect(optedIn.complete({ ...req, worker: { id: 'verified-beam', onSource } }, signal)).resolves.toMatchObject({ text: 'real beam' });
-    expect(onSource).toHaveBeenCalledWith('reflection-beam');
-  } finally { await normal.close(); await optedIn.close(); }
+it('rejects registry entries that replace the vetted Beam implementation or model', () => {
+  const beam = bundledRegistry.adapters.find(adapter => adapter.id === 'reflection-beam')!;
+  for (const patch of [{ kind: 'agent' }, { modalities: ['image'] }, { install: 'npm:fake-beam' }, { model: 'paid-beam' }]) {
+    expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...beam, ...patch }] })).toThrow();
+  }
 });
 
 it('pins Vikey and declines a nonzero catalog price before inference', async () => {

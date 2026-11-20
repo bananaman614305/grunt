@@ -10,6 +10,7 @@ import { beginSetupSession } from './setup-session.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { serviceEnvironment, serviceEnvironmentTokens as environmentTokens } from './service-environment.js';
 import { migrateManagedPiWorkingContext } from './harnesses.js';
+import { migrateAutomaticPool } from './automatic-pool.js';
 
 const execute = promisify(execFile);
 const LATEST = 'https://registry.npmjs.org/usegrunt/latest';
@@ -21,7 +22,7 @@ export interface UpdateOptions {
   signal?: AbortSignal; platform?: 'linux' | 'darwin'; notify?: (line: string) => void;
   now?: () => number; wait?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
-interface Service { identity: string; port: number; node: string; active: boolean; stop(): Promise<void>; start(): Promise<void> }
+interface Service { identity: string; port: number; node: string; active: boolean; automaticSources?: string[]; stop(): Promise<void>; start(): Promise<void> }
 const failed = (message: string) => new Error(message);
 const runCommand: UpdateRun = async (binary, args, options = {}) => {
   try { return (await execute(binary, args, { ...options, timeout: options.timeout ?? 30000, maxBuffer: 2 * 1024 * 1024 })).stdout; }
@@ -70,7 +71,9 @@ async function serviceInfo(directory: string, platform: string, run: UpdateRun, 
     if (files.trim() || environmentTokens(unset).some(value => ['GRUNT_PORT', 'GRUNT_CONFIG_DIR', 'MILO_PORT', 'MILO_CONFIG_DIR'].some(name => value === name || value.startsWith(name + '=')))) throw failed('The installed Grunt port uses an unsupported environment override; its configuration was not changed');
     const selected = port(gruntEnv('PORT', effective));
     if (!['active', 'inactive', 'failed'].includes(state.trim())) throw failed('The Grunt service is changing state; retry the update after it settles');
-    return { identity, port: selected, node, active: state.trim() === 'active',
+    const selectionOverride = environmentTokens(unset).some(value => /^(?:GRUNT|MILO)_(?:SOURCES|DAEMON)(?:=|$)/.test(value));
+    const automaticSources = !selectionOverride && gruntEnv('DAEMON', effective) === '1' ? gruntEnv('SOURCES', effective)?.split(',').map(id => id.trim()).filter(Boolean) : undefined;
+    return { identity, port: selected, node, active: state.trim() === 'active', ...(automaticSources ? { automaticSources } : {}),
       stop: () => run('systemctl', ['--user', 'stop', identity], { env, timeout: 210000 }).then(() => {}),
       start: () => run('systemctl', ['--user', 'start', identity], { env }).then(() => {}) };
   }
@@ -105,7 +108,10 @@ async function serviceInfo(directory: string, platform: string, run: UpdateRun, 
   ]);
   let args: unknown; try { args = JSON.parse(argumentsText); } catch { throw failed('The existing Grunt service arguments could not be verified'); }
   if (!Array.isArray(args) || args.length !== 2 || typeof args[0] !== 'string' || !args[0].startsWith('/') || !['node', 'nodejs'].includes(basename(args[0])) || args[1] !== entry) throw failed('The existing Grunt service does not use the managed runtime; its configuration was not changed');
-  return { identity, port: port(portText), node: args[0], active: true,
+  const readSetting = (name: string) => readVariable(plist, 'GRUNT_' + name).then(value => value ?? readVariable(plist, 'MILO_' + name));
+  const managed = await readSetting('DAEMON'), selected = await readSetting('SOURCES');
+  const automaticSources = managed === '1' ? selected?.split(',').map(id => id.trim()).filter(Boolean) : undefined;
+  return { identity, port: port(portText), node: args[0], active: true, ...(automaticSources ? { automaticSources } : {}),
     stop: async () => {
       try { await run('launchctl', ['bootout', target], { env, timeout: 210000 }); }
       catch {
@@ -197,6 +203,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
   };
   let temporary: string | undefined, backup: string | undefined, stopped = false, swapped = false;
   let service: Service | undefined;
+  let rollbackSelection: (() => Promise<void>) | undefined;
   try {
     signal.throwIfAborted();
     service = await serviceInfo(directory, platform, run, env, signal);
@@ -221,7 +228,8 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     // --help could accidentally start another daemon.
     await run(service.node, ['--input-type=module', '-e', 'process.argv[1]="";await import(process.argv[2]);', '-', pathToFileURL(join(candidate, 'dist/local/main.js')).href], { env: preparationEnv, signal });
     const currentService = await serviceInfo(directory, platform, run, env, signal);
-    if (currentService.identity !== service.identity || currentService.port !== service.port || currentService.node !== service.node || currentService.active !== service.active) throw failed('The Grunt service changed while preparing the update; retry without changing its configuration');
+    if (currentService.identity !== service.identity || currentService.port !== service.port || currentService.node !== service.node || currentService.active !== service.active
+      || currentService.automaticSources?.join(',') !== service.automaticSources?.join(',')) throw failed('The Grunt service changed while preparing the update; retry without changing its configuration');
     const deadline = now() + 180000;
     for (; service.active;) {
       signal.throwIfAborted();
@@ -238,6 +246,8 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     await rename(runtime, backup);
     try { await rename(candidate, runtime); swapped = true; }
     catch (error) { await rename(backup, runtime); backup = undefined; throw error; }
+    signal.throwIfAborted();
+    rollbackSelection = await migrateAutomaticPool(directory, service.automaticSources);
     signal.throwIfAborted();
     if (!service.active) {
       notify(`Grunt ${download.version} is installed; the service remains stopped`);
@@ -256,6 +266,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     await migratePi(service.port);
     return { version: download.version, port: service.port, backup, active: true };
   } catch (error) {
+    if (rollbackSelection) await rollbackSelection().catch(() => notify('Automatic source selection cleanup needs attention; restoring the previous runtime'));
     if ((stopped || swapped) && service) {
       try {
         if (stopped) await service.stop();

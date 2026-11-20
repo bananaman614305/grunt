@@ -668,7 +668,7 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra and Openference in the
+Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra, Openference and Reflection Beam in the
 experimental tier. Fikra and Openference are temporary offers with expiry guards.
 Free-account eligibility still applies.
 
@@ -1360,7 +1360,7 @@ OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
 Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes,
-Gödel Machines, Darus, Aperture, Fikra and Openference forward function tool definitions and return
+Gödel Machines, Darus, Aperture, Fikra, Openference and Reflection Beam forward function tool definitions and return
 tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
@@ -1500,12 +1500,29 @@ Disconnecting the connector revokes the grant and stops subscriptions when ChatG
 
 References: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [ChatGPT plugin connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
 
-## Optional local sources
+## Curated sources and explicit selections
 
-Add `antseed-vikey,reflection-beam` to `GRUNT_OPT_IN_SOURCES` for a local daemon
-whose provider-specific data-sharing approvals are recorded. Grunt appends
-these sources to the configured chain. Each ID can also be selected directly.
-The bundled automatic registry does not enroll these sources.
+The same curated registry applies to every Grunt installation. Reflection Beam
+is included in ordinary onboarding. It uses Kilo's anonymous
+`reflection/beam-free` route without an account key, with its own current
+data-sharing receipt. Grunt checks the exact free catalog entry before inference
+and requires zero-cost usage on replies. An unavailable source is skipped while
+other sources continue. Adding a source never shares another user's account or
+grants access to paid quota.
+
+Standard setup records a private `automatic-pool.json` receipt anchored to the
+managed service's existing source list. An ordinary update migrates a verified
+managed installation only when its private setup manifest matches that list.
+The daemon then considers newly curated sources even when the service file still
+contains an older list. Provider signup and current provider-specific consent
+remain required; this receipt records source selection, not account access.
+Manual daemons and explicit source overrides that differ from the anchor keep
+their selected list. Malformed, shared, unowned or symlinked receipts never
+expand it.
+
+Antseed Vikey remains an explicit source while usable long-input qualification
+and its managed buyer installation are being verified. Add `antseed-vikey` to
+`GRUNT_OPT_IN_SOURCES` for a local daemon with its provider-specific approval.
 
 - `antseed-vikey` uses a dedicated Antseed buyer listening on loopback port
   8381 by default. Set `GRUNT_ANTSEED_VIKEY_PORT` for a different local port.
@@ -1514,6 +1531,3 @@ The bundled automatic registry does not enroll these sources.
   live zero-price offer and verifies its attribution and pricing on replies.
   Seller rolling token limits can reject long prompts despite the advertised
   context window.
-- `reflection-beam` uses Kilo's anonymous `reflection/beam-free` route with
-  no account key. Grunt checks the exact free catalog entry before inference
-  and requires zero-cost usage on responses.

@@ -60,6 +60,33 @@ it('checks anonymous Particle access without provisioning an account or a legacy
   expect(squire.credentials.grant).not.toHaveBeenCalled();
 });
 
+it('sets up the curated Reflection route without an account, key, or legacy router', async () => {
+  const location = await directory(), squire = client();
+  await recordDataSharingConsent(location, ['reflection-beam']);
+  const signal = new AbortController().signal, notify = vi.fn();
+  await expect(setup(notify, ['reflection-beam'], { directory: location, squire, signal })).resolves.toEqual({});
+  expect(helpers.kilo).toHaveBeenCalledExactlyOnceWith({ reflectionBeam: true, signal });
+  expect(squire.signup).not.toHaveBeenCalled();
+  expect(squire.call).not.toHaveBeenCalled();
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  expect(squire.credentials.grant).not.toHaveBeenCalled();
+});
+
+it('settles anonymous Reflection setup independently of a failed account signup', async () => {
+  const location = await directory(), squire = client();
+  await recordDataSharingConsent(location, ['reflection-beam', 'numes']);
+  const setupProvider = vi.fn<typeof setup>().mockImplementation(async (_notify, providers) => {
+    if (providers.includes('numes')) throw new Error('Synthetic signup pending');
+    expect(providers).toEqual(['reflection-beam']);
+    return {};
+  });
+  const onSettled = vi.fn();
+  await expect(setupFallbacks({ directory: location, adapters: ['numes', 'reflection-beam'], squire,
+    run: vi.fn(), notify: vi.fn(), setupProvider, onSettled })).resolves.toEqual({ unavailable: ['numes'] });
+  expect(onSettled).toHaveBeenCalledWith('reflection-beam', true, undefined);
+  expect(onSettled).toHaveBeenCalledWith('numes', false, expect.any(String));
+});
+
 it.each(['pollinations', 'beatapi', 'clixad', 'perch', 'kilo'])('requires current %s consent before any provisioning', async provider => {
   const location = await directory(), squire = client();
   await expect(setup(vi.fn(), [provider], { directory: location, squire })).rejects.toThrow('grouped setup approval');

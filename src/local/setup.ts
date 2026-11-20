@@ -1067,6 +1067,11 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
   if (options.squire instanceof BrowserSquire) options.squire.approveDataSharing(approved);
   const squire = options.squire ?? owned!;
   try {
+    if (providers.includes('reflection-beam')) {
+      await verifyKiloAccess({ reflectionBeam: true, ...(options.signal ? { signal: options.signal } : {}) });
+      notify('Reflection Beam: exact free access verified; no account or API key required');
+      providers = providers.filter(provider => provider !== 'reflection-beam');
+    }
     if (providers.includes('kilo')) {
       await verifyKiloAccess({ ...(options.signal ? { signal: options.signal } : {}) });
       notify('Kilo: free Particle-1 access verified; no account or API key required');

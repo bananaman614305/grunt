@@ -79,7 +79,7 @@ export async function setupFallbacks(options: {
   const requested = [...new Set(options.adapters ?? ['opencode'])];
   // A registry may list account-based providers first. Keep their shared
   // browser login from occupying every worker before anonymous routes start.
-  const anonymous = ['kilo', 'opencode'];
+  const anonymous = ['kilo', 'opencode', 'reflection-beam'];
   const execution = [...anonymous.filter(id => requested.includes(id)), ...requested.filter(id => !anonymous.includes(id))];
   const unavailable = requested.filter(id => disabledAdapters.has(id));
   for (const id of unavailable) options.notify(`${id}: routing is disabled; other free services continue`);
@@ -179,6 +179,14 @@ export async function setupFallbacks(options: {
       } catch (error) {
         failedSetup('opencode', error);
         options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
+      } },
+      'reflection-beam': async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['reflection-beam'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Reflection Beam: anonymous free access verified');
+      } catch (error) {
+        failedSetup('reflection-beam', error);
+        options.notify('Reflection Beam free check failed; other routes remain available.');
       } },
       kilo: async () => { try {
         if (options.kiloAccount) {
