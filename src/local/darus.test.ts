@@ -36,7 +36,8 @@ it('pins the free route and protects a nonempty wallet without drawing credit', 
   await expect(source(fetcher).complete(request(), AbortSignal.timeout(2000))).resolves.toEqual({ text: 'Hello', inputTokens: 201100, outputTokens: 2 });
   expect(fetcher.mock.calls.map(([url]) => String(url).split('/').at(-1))).toEqual(['models', 'tpd', 'completions']);
   const body = JSON.parse(String(fetcher.mock.calls.at(-1)![1]?.body));
-  expect(body).toMatchObject({ model: DARUS_MODEL, stream: true, max_tokens: 4096 });
+  expect(body).toMatchObject({ model: DARUS_MODEL, stream: false, max_tokens: 4096 });
+  expect(body).not.toHaveProperty('stream_options');
   expect(fetcher.mock.calls.some(([url]) => /check.?in|reward|wallet|topup/i.test(String(url)))).toBe(false);
 });
 it.each([
@@ -117,6 +118,17 @@ it('assembles native SSE function fragments and usage, without executing a tool'
   await expect(source(fetcher).complete({ ...request(), tools: [{ type: 'function', function: { name: 'scout_probe', parameters: { type: 'object' } } }] }, AbortSignal.timeout(2000))).resolves.toEqual({
     text: '', calls: [{ id: 'c1', type: 'function', function: { name: 'scout_probe', arguments: '{"nonce":"test"}' } }], inputTokens: 52, outputTokens: 9
   });
+});
+it('returns a native JSON tool call with exact model attribution and usage', async () => {
+  await recordDataSharingConsent(directory, ['darus']);
+  const calls = [{ id: 'c1', type: 'function', function: { name: 'scout_probe', arguments: '{"nonce":"test"}' } }];
+  const fetcher = transport(status(), offer(), { model: DARUS_MODEL,
+    choices: [{ message: { content: null, tool_calls: calls }, finish_reason: 'tool_calls' }],
+    usage: { prompt_tokens: 52, completion_tokens: 9 } });
+  await expect(source(fetcher).complete({ ...request(), tools: [{ type: 'function', function: { name: 'scout_probe', parameters: { type: 'object' } } }] }, AbortSignal.timeout(2000))).resolves.toEqual({
+    text: '', calls, inputTokens: 52, outputTokens: 9
+  });
+  expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]?.body))).toMatchObject({ model: DARUS_MODEL, stream: false });
 });
 it.each([
   { ...response(), model: 'paid-model' },

@@ -609,8 +609,8 @@ budget, and waits until the next UTC reset after daily exhaustion. It never
 claims check-in or referral rewards, changes to a paid model, or continues
 through a wallet. Unexpected model identity or a model-failover response header
 is rejected. Retention, training and review guarantees remain unknown and are
-included in source-specific grouped consent. Native function calls and usage
-use the normal OpenAI-compatible transport.
+included in source-specific grouped consent. Grunt requests complete JSON responses,
+as in the provider’s OpenAI SDK quickstart, with native function calls and usage.
 
 [Darus API documentation](https://gateway.darusalfatah.id/dokumentasi).
 

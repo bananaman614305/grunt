@@ -102,7 +102,9 @@ export class Darus implements Source {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${checked.grant.token}`, 'Content-Type': 'application/json', 'User-Agent': 'grunt' },
         body: JSON.stringify({ model: DARUS_MODEL, messages: request.messages,
-          tools: request.tools.length ? request.tools : undefined, stream: true, stream_options: { include_usage: true },
+          // Darus's documented SDK quickstart uses complete JSON responses.
+          // Its current streaming path emits nonstandard single-newline SSE.
+          tools: request.tools.length ? request.tools : undefined, stream: false,
           max_tokens: maxTokens })
       });
       if (!response.ok) {
