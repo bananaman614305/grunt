@@ -103,7 +103,11 @@ it.each([
   ['request_body', 'Request format rejected'],
   ['request_tools', 'Tool envelope or history rejected'],
   ['request_tool_schema', 'Tool schema rejected'],
-  ['request_size', 'Request exceeds source size limit']
+  ['request_size', 'Request exceeds source size limit'],
+  ['stream_read', 'Reply stream could not be read'],
+  ['stream_format', 'Invalid reply stream format'],
+  ['stream_incomplete', 'Reply stream ended incomplete'],
+  ['stream_cleanup', 'Reply stream cleanup failed']
 ])('preserves and displays the bounded %s request refusal reason', (failureReason, label) => {
   expect(sanitizeSafeDiagnosticMetadata({ failureReason, rawBody: 'PRIVATE_PAYLOAD' })).toEqual({ failureReason });
   const rendered = helpers(`(() => {

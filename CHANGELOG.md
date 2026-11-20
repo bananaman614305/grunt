@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-20
+
+- Distinguish Openference stream reads, SSE/JSON format, incomplete replies, tool validation and cleanup in redacted diagnostics. Preserve error codes, retry behavior and successful responses when cleanup fails; display fixed reason labels in admin traces.
+
 ## [0.8.2] - 2026-11-20
 
 - Add verified 100milionseek DeepSeek V4.1 Flash to standard Squire setup with a guarded recurring allowance and the approved 198,000-token input exception.

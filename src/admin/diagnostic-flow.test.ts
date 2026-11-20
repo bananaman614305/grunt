@@ -19,7 +19,7 @@ import { adminRoutes } from './routes.js';
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-it('delivers a redacted fallback trace from a local request through authenticated remote ingestion and read-only diagnosis', async () => {
+it.each(['response_choices', 'stream_read', 'stream_format', 'stream_incomplete', 'stream_cleanup'] as const)('delivers a redacted %s fallback trace through authenticated remote ingestion and read-only diagnosis', async failureReason => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-admin-flow-'));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const journal = await DiagnosticsStore.open({ directory });
@@ -27,7 +27,7 @@ it('delivers a redacted fallback trace from a local request through authenticate
   const sources = new Sources([
     { id: 'kilo', supportsFunctionTools: true, available: async () => true, close: async () => {}, complete: async () => {
       throw new SourceError('upstream', 'SECRET_UPSTREAM_MESSAGE', undefined, 'SECRET_UPSTREAM_OUTPUT',
-        { httpStatus: 200, transport: 'http', endpointLabel: 'chat.completions', failureReason: 'response_choices' });
+        { httpStatus: 200, transport: 'http', endpointLabel: 'chat.completions', failureReason });
     } },
     new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: async input => {
       const path = new URL(String(input)).pathname;
@@ -79,7 +79,7 @@ it('delivers a redacted fallback trace from a local request through authenticate
   const trace = await detail.json();
   expect(trace.request).toMatchObject({ id: requestId, outcome: 'passed', source: 'opencode', attemptCount: 2 });
   expect(trace.events).toContainEqual(expect.objectContaining({
-    source: 'kilo', type: 'attempt.finish', outcome: 'failed', httpStatus: 200, failureReason: 'response_choices'
+    source: 'kilo', type: 'attempt.finish', outcome: 'failed', httpStatus: 200, failureReason
   }));
   expect(trace.events).toContainEqual(expect.objectContaining({ source: 'opencode', type: 'attempt.finish', outcome: 'passed', inputTokens: 175, outputTokens: 16 }));
   const windowStart = Date.now() - 60000;

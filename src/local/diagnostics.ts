@@ -16,6 +16,7 @@ export const diagnosticFailureReasons = [
   'request_body', 'request_tools', 'request_tool_schema', 'request_size',
   'response_body', 'response_json', 'response_choices', 'response_content', 'response_tools',
   'completion_model', 'completion_billing', 'completion_usage', 'completion_attestation', 'completion_protocol',
+  'stream_read', 'stream_format', 'stream_incomplete', 'stream_cleanup',
   'turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'
 ] as const;
 export interface SafeDiagnosticMetadata {
