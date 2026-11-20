@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { setupNumes } from './numes-setup.js';
+import { SourceRecovery } from './recovery.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
 import { planSteps } from './fixtures/key-only-goal.js';
@@ -99,4 +100,24 @@ it('keeps a working free route available when Squire is offline during repeat se
     run: async () => { throw new Error('Unexpected install'); } })).resolves.toEqual({ unavailable: [] });
   expect(connect).not.toHaveBeenCalled();
   expect(squire.call).not.toHaveBeenCalled();
+});
+
+it('acquires a missing Numes route through the background recovery pass', async () => {
+  const squire = squireClient();
+  squire.call.mockResolvedValueOnce({ credentials: [] });
+  await recordDataSharingConsent(directory, ['numes']);
+  const setup = vi.fn((options: Parameters<typeof setupFallbacks>[0]) => setupFallbacks({
+    ...options, squire, connect: async () => {}
+  }));
+  const recovery = new SourceRecovery({ directory, candidates: async () => ['numes'], open: async () => 0,
+    driver: async () => async () => {}, setup, notify });
+  try {
+    recovery.trigger();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledOnce());
+    await expect(setup.mock.results[0]!.value).resolves.toEqual({ unavailable: [] });
+    expect(squire.signup).toHaveBeenCalledOnce();
+    expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
+    expect(JSON.parse(await readFile(join(directory, 'numes.json'), 'utf8'))).toEqual(grant);
+    expect((await stat(join(directory, 'numes.json'))).mode & 0o777).toBe(0o600);
+  } finally { await recovery.close(); }
 });

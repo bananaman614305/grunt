@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { beginSetupSession } from './setup-session.js';
 import { SourceRecovery } from './recovery.js';
 import { SourceError, Sources } from './source.js';
 import type { Source } from './source.js';
@@ -19,20 +20,22 @@ describe('source recovery', () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const setup = vi.fn(async () => { await gate; return { unavailable: [] }; });
-    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo', 'perch', 'zro'], notify: () => {}, setup });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo', 'perch', 'zro'], open: async () => 0, notify: () => {}, setup });
     recovery.trigger(); recovery.trigger();
     await settle();
     expect(setup).toHaveBeenCalledTimes(1);
-    expect(setup.mock.calls[0]![0]).toMatchObject({ adapters: ['kilo', 'zro'], background: true });
-    release(); await recovery.close();
+    expect(setup.mock.calls[0]![0]).toMatchObject({ adapters: ['kilo'], background: true });
+    release(); await settle();
+    expect(setup.mock.calls.map(call => (call as unknown as [{ adapters: string[] }])[0].adapters)).toEqual([['kilo'], ['zro']]);
+    await recovery.close();
     recovery.trigger(); await settle();
-    expect(setup).toHaveBeenCalledTimes(1);
+    expect(setup).toHaveBeenCalledTimes(2);
   });
 
   it('does nothing when no provider can be added', async () => {
     const dir = await directory();
     const setup = vi.fn();
-    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo'], notify: () => {}, setup });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo'], open: async () => 0, notify: () => {}, setup });
     recovery.trigger(); await settle();
     expect(setup).not.toHaveBeenCalled();
   });
@@ -42,7 +45,7 @@ describe('source recovery', () => {
     await recordDataSharingConsent(dir, ['kilo']);
     const setup = vi.fn().mockRejectedValueOnce(new Error('squire unavailable')).mockResolvedValue({ unavailable: [] });
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo'], notify: () => {}, setup });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo'], open: async () => 0, notify: () => {}, setup });
     recovery.trigger(); await settle();
     recovery.trigger(); await settle();
     expect(setup).toHaveBeenCalledTimes(2);
@@ -81,4 +84,33 @@ describe('Sources recovery trigger', () => {
     expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'ok' });
     expect(recover).not.toHaveBeenCalled();
   });
+});
+
+it('owns the setup lease during discovery and every signup, then releases it', async () => {
+  const dir = await directory();
+  let releaseDiscovery!: () => void;
+  let discovered!: () => void;
+  const discovering = new Promise<void>(resolve => { discovered = resolve; });
+  const discoveryGate = new Promise<void>(resolve => { releaseDiscovery = resolve; });
+  let done!: () => void;
+  const completed = new Promise<void>(resolve => { done = resolve; });
+  const setup = vi.fn(async () => {
+    await expect(beginSetupSession(dir, ['zro'])).rejects.toThrow('Cannot coordinate');
+    done();
+    return { unavailable: [] };
+  });
+  const recovery = new SourceRecovery({ directory: dir, candidates: async () => {
+    discovered(); await discoveryGate; return ['zro'];
+  }, open: async () => 0, setup, notify: () => {} });
+  try {
+    recovery.trigger();
+    await discovering;
+    await expect(beginSetupSession(dir, ['zro'])).rejects.toThrow('Cannot coordinate');
+    releaseDiscovery();
+    await completed;
+    await recovery.close();
+    expect(setup).toHaveBeenCalledOnce();
+    const foreground = await beginSetupSession(dir, ['zro']);
+    await foreground.close();
+  } finally { releaseDiscovery(); await recovery.close(); }
 });

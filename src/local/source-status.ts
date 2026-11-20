@@ -5,7 +5,7 @@ import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore } from './diagnostics.js';
-import { currentRoutingWorkload, nextRoutingPerformance, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
+import { currentRoutingWorkload, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
@@ -121,10 +121,15 @@ export class SourceStatus {
         if (!entry) continue;
         this.mergePerformance(entry, row.profile, row.value);
       }
-      for (const [id, value] of this.backoffs) if (value.code !== 'quota' && (this.routingRecoveryAt(id) ?? 0) > value.at) this.backoffs.delete(id);
+      for (const [id, value] of this.backoffs) if ((this.routingRecoveryAt(id) ?? 0) > value.at) {
+        if (value.code === 'quota') this.backoffs.set(id, quotaAfterRecovery(value));
+        else this.backoffs.delete(id);
+      }
       for (const row of state.backoff) if (this.observations.has(row.source) && (row.value.code === 'quota' || (this.routingRecoveryAt(row.source) ?? 0) <= row.value.at)) {
         const old = this.backoffs.get(row.source);
-        this.backoffs.set(row.source, mergeRoutingBackoff(old, row.value));
+        const incoming = row.value.code === 'quota' && (this.routingRecoveryAt(row.source) ?? 0) > row.value.at
+          ? quotaAfterRecovery(row.value) : row.value;
+        this.backoffs.set(row.source, mergeRoutingBackoff(old, incoming));
       }
     } catch { /* Durable observations must not make a source available or break requests. */ }
   }
@@ -154,6 +159,7 @@ export class SourceStatus {
     try { if (this.history) value = await this.history.failure(id, error, seconds, adaptive, at); }
     catch { /* Keep the bounded in-memory backoff when private storage is unavailable. */ }
     const current = this.backoffs.get(id), recovery = this.routingRecoveryAt(id) ?? 0;
+    if (value.code === 'quota' && recovery > value.at) value = quotaAfterRecovery(value);
     if (value.code !== 'quota' && recovery > value.at) {
       if (current && (current.code === 'quota' || current.at >= recovery)) return current;
       this.backoffs.delete(id);
@@ -184,7 +190,10 @@ export class SourceStatus {
     entry.profiles ??= {};
     entry.profiles[profile] = nextRoutingPerformance(entry.profiles[profile], success, latencyMs, at);
     const backoff = this.backoffs.get(id);
-    if (success && backoff && backoff.code !== 'quota' && at > backoff.at) this.backoffs.delete(id);
+    if (success && backoff && at > backoff.at) {
+      if (backoff.code === 'quota') this.backoffs.set(id, quotaAfterRecovery(backoff));
+      else this.backoffs.delete(id);
+    }
     try {
       const rows = await this.history?.record(id, profile, success, latencyMs, at);
       if (entry.revision === revision) for (const row of rows ?? []) this.mergePerformance(entry, row.profile, row.value);
@@ -302,6 +311,7 @@ export class SourceStatus {
     approvals: ReadonlySet<string>;
     preparing: ReadonlySet<string>;
     listed?: (id: string) => boolean;
+    retired?: (id: string) => boolean;
     cooldown?: (id: string) => { until: number; code?: ErrorCode } | undefined;
     model?: (id: string) => string | undefined;
   }): PoolSnapshot {
@@ -323,6 +333,7 @@ export class SourceStatus {
       else if (cooldown !== undefined && (entry.state === 'limited' || entry.state === 'error')) row.state = 'available';
       else if (entry.retryAt !== undefined && entry.retryAt > now) row.retryAt = entry.retryAt;
       else if (entry.retryAt !== undefined && entry.state === 'limited') row.state = 'available';
+      if (row.state !== 'disabled' && options.retired?.(id)) row.state = 'unavailable';
       row.detail = `${detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
       return row;
     });

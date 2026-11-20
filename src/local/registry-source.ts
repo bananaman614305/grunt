@@ -1,3 +1,4 @@
+import { scoutRetired } from './routing.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import type { Registry } from '../registry.js';
@@ -13,7 +14,7 @@ export class RegistrySource implements Source {
     if (source.acceptsRequest) this.acceptsRequest = source.acceptsRequest.bind(source);
     if (source.supportsFunctionTools !== undefined) this.supportsFunctionTools = source.supportsFunctionTools;
   }
-  private listed() { return this.registry().adapters.some(adapter => adapter.id === this.id); }
+  private listed() { return this.registry().adapters.some(adapter => adapter.id === this.id && !scoutRetired(adapter)); }
   async available() { return this.listed() && await this.source.available(); }
   quotaWindow() { return this.source.quotaWindow?.(); }
   sellerQuota() { return this.source.sellerQuota?.(); }

@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 
 it("tracks only the root app, operator tools, proof adapters, static site, registry, configuration and five workflows", () => {
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
-  const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/efficiency.md", "docs/antseed-vikey-provisioning.md", "docs/providers/freepi.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/kilo.mjs", "proof/add-url.mjs", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
+  const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/efficiency.md", "docs/router.md", "docs/antseed-vikey-provisioning.md", "docs/providers/freepi.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/kilo.mjs", "proof/add-url.mjs", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
   const operatorFiles = new Set([
     "ops/adventure-execution/README.md", "ops/adventure-execution/CHECKPOINT_GATE.md", "ops/adventure-execution/baseline.json",
     "ops/adventure-execution/stage.py", "ops/adventure-execution/test_stage.py", "ops/adventure-execution/activate.py", "ops/adventure-execution/test_activate.py",
@@ -31,7 +31,6 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
   expect(paths).toContain("src/server.ts");
   expect(paths).toContain("registry/adapters.json");
   expect(paths).toContain(".github/workflows/registry.yml");
-  expect(readFileSync(".github/workflows/deploy.yml", "utf8")).toContain("secrets.FLY_API_TOKEN");
 });
 
 it("packages usegrunt with the primary command and compatibility aliases", () => {

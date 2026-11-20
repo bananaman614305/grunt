@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { gruntEnv } from '../brand.js';
 import { disabledAdapters, knownAdapters, localOptInAdapters } from '../registry.js';
+import { recommendedAdapters, scoutRetired } from './routing.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { basename, join } from 'node:path';
@@ -40,6 +41,7 @@ import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
 import type { Source } from './source.js';
+import { toolCapable } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { RegistrySync } from './registry.js';
@@ -49,7 +51,7 @@ import { SourceRecovery } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 import { createWorkerRuntime } from './worker-runtime.js';
-import { automaticPoolSources } from './automatic-pool.js';
+import { automaticPoolSelection } from './automatic-pool.js';
 import { createRuntimeRoutingHistory } from './runtime-routing.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
@@ -80,19 +82,17 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
   const curated = registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
-  const configured = declared ? automaticPoolSources(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1') : curated;
+  const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1')
+    : { sources: curated, automatic: true, explicit: [] };
+  const configured = selection.sources;
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
     .filter(id => localOptInAdapters.some(adapter => adapter.id === id) || id === 'reflection-beam');
   const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
   if (numesModel !== undefined && (!deepSeekFlash || ids.length !== 1 || ids[0] !== 'numes')) {
     throw new Error('The Numes qualification model requires the exact Numes-only source');
   }
-  if (ids.includes('antseed-vikey')) {
-    const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
-    registered.push(new AntseedVikey(port ? { port } : {}));
-  }
-  if (ids.includes('reflection-beam')) registered.push(new Kilo({ directory: configDir(env), reflectionBeam: true }));
-  const enabledOptIns = localOptInAdapters.filter(adapter => ids.includes(adapter.id));
+  const explicit = new Set([...(selection.explicit ?? declared ?? []), ...optedIn]);
+  const enabledOptIns = localOptInAdapters.filter(adapter => explicit.has(adapter.id));
   const localOptIns = new Set(enabledOptIns.map(adapter => adapter.id));
   const routingRegistry = () => {
     const current = registry();
@@ -103,18 +103,40 @@ export function configure(env = process.env, registry: () => Registry = () => bu
       delete numes.model;
       return numes;
     });
-    return { ...current, adapters: [...adapters, ...enabledOptIns] };
+    return { ...current, adapters: [...adapters, ...enabledOptIns.map(adapter => {
+      const published = current.adapters.find(item => item.id === adapter.id);
+      return { ...adapter,
+        ...(published?.fit !== undefined ? { fit: published.fit } : {}),
+        ...(published?.status !== undefined ? { status: published.status } : {}),
+        ...(published?.expires !== undefined ? { expires: published.expires } : {}) };
+    })] };
   };
   const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))
     ? { registry: routingRegistry, localOptIns } : undefined;
-  const sources = new Sources(ids.map(id => {
-    const source = registered.find(source => source.id === id);
+  const build = (id: string) => {
+    let source = registered.find(source => source.id === id);
+    if (!source && id === 'antseed-vikey') {
+      const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
+      source = new AntseedVikey(port ? { port } : {});
+    }
+    if (!source && id === 'reflection-beam') source = new Kilo({ directory: configDir(env), reflectionBeam: true });
+    if (source && !registered.includes(source)) registered.push(source);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
-    return !routing && knownAdapters.has(id) ? new RegistrySource(consent, routingRegistry) : consent;
-  }), routing, disabledAdapters);
+    return !routing && (knownAdapters.has(id) || localOptIns.has(id)) ? new RegistrySource(consent, routingRegistry) : consent;
+  };
+  const sources = new Sources(ids.map(build), routing, disabledAdapters);
   sources.setWorkerRegistry(routingRegistry, localOptIns);
-  return sources;
+  // Hot-add (docs/router.md): an automatic pool routes a newly listed shipped
+  // adapter without a restart. A manual GRUNT_SOURCES list stays fixed.
+  const adopt = (current: Registry) => {
+    if (!selection.automatic) return;
+    for (const adapter of current.adapters) {
+      if (knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
+        && !sources.sources.some(source => source.id === adapter.id)) sources.add(build(adapter.id));
+    }
+  };
+  return Object.assign(sources, { adopt });
 }
 export function start(env = process.env) {
   let registry = structuredClone(bundledRegistry);
@@ -149,29 +171,59 @@ export function start(env = process.env) {
     sessionRead = result.catch(() => {});
     return result;
   };
-  const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
-    changed: current => { registry = current; }, notify: console.error
-  });
-  const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
-  // With no usable source, add providers by themselves (vault access, then signup).
+  const port = positive(gruntEnv('PORT', env), 8788);
+  if (port > 65535) throw new Error('GRUNT_PORT must be at most 65535');
+  // Open routes (docs/router.md): listed, not scout-retired or router-retired, and configured.
+  const routable = (id: string) => {
+    const adapter = registry.adapters.find(adapter => adapter.id === id);
+    return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
+  };
+  const configuredAccess = (source: Source) => routable(source.id) && source.available().catch(() => false);
+  const live = async (source: Source) => await configuredAccess(source) && sources.dispatchEligible(source.id);
   const recovery = new SourceRecovery({ directory,
+    eligible: id => routable(id) && recommendedAdapters(registry).some(adapter => adapter.id === id),
     candidates: async () => {
       const ids: string[] = [];
-      for (const source of sources.sources) {
-        if (!knownAdapters.has(source.id) || disabledAdapters.has(source.id) || sources.pending.has(source.id)) continue;
-        if (!await source.available().catch(() => false)) ids.push(source.id);
+      for (const adapter of recommendedAdapters(registry)) {
+        const source = sources.sources.find(source => source.id === adapter.id);
+        if (source && routable(source.id) && !await configuredAccess(source)) ids.push(source.id);
       }
       return ids;
-    }, notify: console.error });
+    },
+    open: async () => (await Promise.all(sources.sources.map(live))).filter(Boolean).length,
+    // The driver is a coding harness on model grunt, so the router sends each of
+    // its turns to the best open tool-capable route.
+    driver: async () => {
+      const request = { model: 'grunt', cwd: directory, messages: [], tools: [], stream: false };
+      const drivable = await Promise.all(sources.sources.filter(toolCapable).map(async source =>
+        await live(source) && sources.dispatchEligible(source.id, request) ? source : undefined));
+      if (!drivable.some(Boolean)) return;
+      // Loaded on demand: the daemon's model API never needs harness code.
+      const { detectHarnesses, signupHarness } = await import('./harnesses.js');
+      const [harness] = await detectHarnesses();
+      return harness && drivable.some(source => source && sources.dispatchEligible(source.id, request))
+        ? signupHarness(harness, port) : undefined;
+    },
+    notify: console.error });
   sources.setRecovery(() => recovery.trigger());
-  // Registry downloads and access maintenance are independent. No daemon
-  // maintenance path provisions accounts or starts an interactive browser; only the
-  // recovery below does, and only when no source can answer.
+  let published: string | undefined;
+  const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
+    changed: current => {
+      // A newer publication that still lists a retired route gives it a fresh try.
+      if (published !== undefined && Date.parse(current.published) > Date.parse(published)) sources.unretire(current.adapters.map(adapter => adapter.id));
+      published = current.published;
+      registry = current;
+      sources.adopt(current);
+    },
+    synced: () => recovery.trigger(), notify: console.error
+  });
+  const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
+  // Registry downloads and access maintenance are independent. Only the route
+  // pass above provisions accounts, in the background, after each registry sync
+  // and when no source can answer. It never hands a browser to a person.
   const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready]).then(refreshSession);
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
-  const port = positive(gruntEnv('PORT', env), 8788);
-  if (port > 65535) throw new Error('GRUNT_PORT must be at most 65535');
   const workerRuntime = createWorkerRuntime(sources, { directory });
   const { workers, scopes: workerScopes } = workerRuntime;
   const app = createLocalApp(sources, { port, workers, workerScopes, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });

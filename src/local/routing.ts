@@ -11,12 +11,27 @@ import { disabledAdapters, knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import type { DiagnosticEvent } from './diagnostics.js';
-import { routingWorkload, withRoutingWorkload } from './routing-history.js';
+import { RETIRE_AFTER_FAILURES, routingWorkload, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
 const BAD_SAMPLE_COOLDOWN_SECONDS = 30;
 const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
+// The 5th consecutive identical failure, each within the routing-history window
+// of the last, retires a route (docs/router.md). Quota is availability, not failure.
+export { RETIRE_AFTER_FAILURES } from './routing-history.js';
+// The scout marks an offering expiring or inactive, or its expiry day has passed.
+export function scoutRetired(adapter: Adapter, now = Date.now()) {
+  return adapter.status === 'expiring' || adapter.status === 'inactive'
+    || adapter.expires !== undefined && now >= Date.parse(adapter.expires) + 24 * 60 * 60 * 1000;
+}
+// Routes worth opening, best first: great before possible, then by weight.
+export function recommendedAdapters(registry: Registry, now = Date.now()) {
+  const rank = (adapter: Adapter) => adapter.fit === 'great' ? 0 : 1;
+  return registry.adapters.filter(adapter => adapter.fit !== 'poor' && !scoutRetired(adapter, now))
+    .sort((a, b) => rank(a) - rank(b) || b.weight - a.weight);
+}
+
 export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
@@ -32,12 +47,16 @@ export class StickyRouter {
     this.availability = new SourceAvailability(this.observation);
   }
   private now() { return (this.options.now ?? Date.now)(); }
+  retired(id: string) {
+    const backoff = this.observation.routingBackoff(id);
+    return !!backoff && backoff.streak >= RETIRE_AFTER_FAILURES;
+  }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id); }
   cooldown(id: string) {
     let until = this.bars.get(id), code = this.barFailures.get(id);
-    if (until !== undefined && Number.isFinite(until) && code !== 'quota' && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
+    if (until !== undefined && Number.isFinite(until) && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
       this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); until = undefined; code = undefined;
     }
     const observedQuota = this.observation.quotaRetryAt(id);
@@ -48,8 +67,32 @@ export class StickyRouter {
     if (persisted && (until === undefined || persisted.until >= until)) return { until: persisted.until, code: persisted.code };
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
+  async recordFailure(id: string, failure: SourceError) {
+    if (!this.registered(id) || failure.code === 'cancelled') return;
+    let until: number;
+    if (failure.code === 'quota') {
+      const seconds = failure.retryAfter ?? 3600;
+      until = (await this.observation.failureBackoff(id, failure, seconds, false)).until;
+    }
+    else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
+    else {
+      const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
+      const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
+        && Number.isInteger(status) && status >= 500 && status < 600
+        && retry !== undefined && Number.isFinite(retry) && retry >= 0;
+      // A reply that arrived but held an invalid function call is a bad
+      // sample, not an outage; bench the source only briefly.
+      const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
+      const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
+        : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
+      until = (await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint)).until;
+    }
+    this.barAt.set(id, this.observation.routingBackoff(id)?.at ?? this.now());
+    this.bars.set(id, until); this.barFailures.set(id, this.observation.routingBackoff(id)?.code ?? failure.code);
+  }
+
   private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }
-  listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id); }
+  listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {
     return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
   }
@@ -127,7 +170,7 @@ export class StickyRouter {
           signal.throwIfAborted();
           const adapter = adapters.find(a => a.id === source.id);
           if (!worker && !task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
-          if (!adapter || this.options.disabled?.has(source.id) || worker && !this.workerAdapter(adapter)) {
+          if (!adapter || this.options.disabled?.has(source.id) || scoutRetired(adapter, this.now()) || worker && !this.workerAdapter(adapter)) {
             skip(source.id, 'not_listed');
             continue;
           }
@@ -138,6 +181,7 @@ export class StickyRouter {
           }
           if (this.options.pending?.has(source.id)) { skip(source.id, 'pending_setup'); continue; }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
+          if (this.retired(source.id)) { skip(source.id, 'cooldown'); continue; }
           const until = this.cooldown(source.id)?.until;
           if (until !== undefined && until > this.now()) {
             if (Number.isFinite(until)) retryTimes.push(until);
@@ -208,7 +252,7 @@ export class StickyRouter {
           // race onto the same idle provider.
           const liveAdapter = this.options.registry().adapters.find(adapter => adapter.id === selected.source.id
             && this.registered(adapter.id) && adapter.modalities.includes('text') && (!request.imageInput || adapter.modalities.includes('image')));
-          if (!liveAdapter || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
+          if (!liveAdapter || scoutRetired(liveAdapter, this.now()) || this.retired(selected.source.id) || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
             || worker && (observation.isBusy(selected.source.id) || !this.workerAdapter(liveAdapter))) continue;
           task.source = selected.source.id;
           task.switched = switched;
@@ -224,26 +268,7 @@ export class StickyRouter {
           const failure = error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
-          let until: number;
-          if (failure.code === 'quota') {
-            const seconds = failure.retryAfter ?? 3600;
-            until = (await observation.failureBackoff(selected.source.id, failure, seconds, false)).until;
-          }
-          else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
-          else {
-            const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
-            const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
-              && Number.isInteger(status) && status >= 500 && status < 600
-              && retry !== undefined && Number.isFinite(retry) && retry >= 0;
-            // A reply that arrived but held an invalid function call is a bad
-            // sample, not an outage; bench the source only briefly.
-            const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
-            const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
-              : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
-            until = (await observation.failureBackoff(selected.source.id, failure, seconds, !hasUpstreamHint)).until;
-          }
-          this.barAt.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.at ?? this.now());
-          this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.code ?? failure.code); task.switched = true;
+          await this.recordFailure(selected.source.id, failure); task.switched = true;
         }
       }
     } finally {

@@ -19,22 +19,22 @@ const serialized = (serviceSources: readonly string[], selectedSources: readonly
 
 // This receipt changes source discovery only. It never grants provider access,
 // copies credentials or substitutes for a provider's current consent receipt.
-export function automaticPoolSources(directory: string, configured: readonly string[], curated: readonly string[], managed: boolean): string[] {
-  if (!managed) return [...configured];
+export function automaticPoolSelection(directory: string, configured: readonly string[], curated: readonly string[], managed: boolean): { sources: string[]; automatic: boolean; explicit?: string[] } {
+  if (!managed) return { sources: [...configured], automatic: false };
   let fd: number | undefined;
   try {
     const parent = lstatSync(directory);
-    if (!parent.isDirectory() || !owned(parent, 0o700)) return [...configured];
+    if (!parent.isDirectory() || !owned(parent, 0o700)) return { sources: [...configured], automatic: false };
     fd = openSync(join(directory, AUTOMATIC_POOL_FILE), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = fstatSync(fd);
-    if (!info.isFile() || !owned(info, 0o600) || info.size > 16384) return [...configured];
+    if (!info.isFile() || !owned(info, 0o600) || info.size > 16384) return { sources: [...configured], automatic: false };
     const value = JSON.parse(readFileSync(fd, 'utf8')) as Partial<AutomaticPool>;
-    if (value.version !== 1 || value.mode !== 'automatic' || !ids(value.serviceSources) || !same(value.serviceSources, configured)) return [...configured];
-    if (value.selectedSources !== undefined && !selected(value.selectedSources)) return [...configured];
+    if (value.version !== 1 || value.mode !== 'automatic' || !ids(value.serviceSources) || !same(value.serviceSources, configured)) return { sources: [...configured], automatic: false };
+    if (value.selectedSources !== undefined && !selected(value.selectedSources)) return { sources: [...configured], automatic: false };
     // Setup may explicitly add a supported source outside the curated pool.
     // Keep that selection even when the owned service still has its old env.
-    return [...new Set([...configured, ...(value.selectedSources ?? []), ...curated])];
-  } catch { return [...configured]; }
+    return { sources: [...new Set([...configured, ...(value.selectedSources ?? []), ...curated])], automatic: true, explicit: [...new Set([...configured, ...(value.selectedSources ?? [])])] };
+  } catch { return { sources: [...configured], automatic: false }; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
 

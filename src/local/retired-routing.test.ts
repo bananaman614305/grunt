@@ -34,15 +34,14 @@ it.each([-1000, 1000])('never re-enables retired routes from stale or freshly re
   const expectedIds = expected.adapters.filter(adapter => !retired.includes(adapter.id)).map(adapter => adapter.id);
   const saved = JSON.stringify({ registry, etag: '"old-release"' });
   await writeFile(join(path, 'registry.json'), saved, { mode: 0o600 });
-  const ensure = vi.fn(async (_adapter: Adapter) => {});
   const fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 304 }));
-  const sync = new RegistrySync({ directory: path, ensure, fetcher });
+  const sync = new RegistrySync({ directory: path, fetcher });
   try {
     await sync.load();
     expect(sync.current).toEqual(expected);
     expect(sync.enabled.map(adapter => adapter.id)).toEqual(expectedIds);
     await sync.sync();
-    expect(ensure.mock.calls.map(([adapter]) => adapter.id)).toEqual(expectedIds);
+    expect(sync.enabled.map(adapter => adapter.id)).toEqual(expectedIds);
     expect(await readFile(join(path, 'registry.json'), 'utf8')).toBe(saved);
     const sources = configure({ GRUNT_CONFIG_DIR: path }, () => sync.current);
     expect(sources.sources.map(source => source.id)).toEqual(expectedIds);

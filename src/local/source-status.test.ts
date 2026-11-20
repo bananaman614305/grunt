@@ -53,6 +53,7 @@ it('counts simultaneous calls independently and does not clear the answering sta
   const resolve: ((value: Completion) => void)[] = [];
   vi.mocked(source.complete).mockImplementation(() => new Promise<Completion>(done => { resolve.push(done); }));
   const first = sources.complete(request, new AbortController().signal), second = sources.complete(request, new AbortController().signal);
+  await vi.waitFor(() => expect(source.complete).toHaveBeenCalledTimes(2));
   expect(sources.status()).toMatchObject({ activeRequests: 2, sources: [{ active: 2, state: 'answering' }] });
   resolve[0]!({ text: 'one' }); await first;
   expect(sources.status()).toMatchObject({ activeRequests: 1, sources: [{ active: 1, state: 'answering' }] });

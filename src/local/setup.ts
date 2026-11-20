@@ -566,7 +566,8 @@ export class BrowserSquire implements SetupSquire {
       if (turns >= 8) return dropped('browser recovery limit reached');
       this.retries.set(provider, turns + 1);
       if (retry) { await delay(3000, undefined, { signal }); answer = 'WAIT'; continue; }
-      if (this.options.agent && !this.options.background && url) {
+      // Background signups use the router's driver too; it cannot hand off to a person.
+      if (this.options.agent && url) {
         let agentResult = result;
         try {
           agentResult = await this.harnessSignup(provider, url, instruction, result, active, signal);
@@ -647,12 +648,19 @@ export class BrowserSquire implements SetupSquire {
     let busy = false;
     let email: string | undefined;
     let observation = object(initial.observation);
+    // Values Grunt itself supplies for this signup; the operator may type or pass only these.
+    const supplied = () => ['grunt', 'free', ...(email ? [email] : [])];
     const terminal = () => ['complete', 'needs_sms', 'refused', 'rejected', 'denied', 'forbidden'].includes(String(latest.status));
+    // After a terminal result, answer every further call with a final stop instead
+    // of replaying the stale page, which reads as unfinished work.
+    const finished = () => latest.status === 'complete'
+      ? { status: 'complete', reason: 'Squire finished this signup and stored any requested key in the vault. No further browser steps are needed; stop calling tools and report that Squire completed.' }
+      : { status: String(latest.status), reason: 'This signup has stopped. No further browser steps are available; stop calling tools and report the status.' };
     try { await this.options.agent!({
       service: provider, url, goal, signal,
       tools: tools.tools.filter(tool => signupAgentTools.has(tool.name)),
       call: async (name, args) => {
-        if (terminal()) return signupAgentResult(latest);
+        if (terminal()) return finished();
         if (busy || ++turns > 24 || !signupAgentTools.has(name)) return { status: 'stopped', reason: 'Tool unavailable for this signup' };
         busy = true;
         try {
@@ -667,8 +675,9 @@ export class BrowserSquire implements SetupSquire {
             if (args.answer !== undefined && (!answer || (answer !== 'WAIT' && !guardedSignupChoice(answer, object(latest.options)[answer]))))
               return { status: 'invalid_answer', reason: 'Choose a safe, currently offered option or WAIT' };
             if (oauthRetry(latest)) await delay(3000, undefined, { signal });
-            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { plan: 'free', project_name: 'grunt',
-              ...(email && object(args.facts).email === email ? { email } : {}) }, max_seconds: 45, max_steps: 30,
+            // Forward any fact the operator names whose value Grunt supplies (e.g. "Key Name": "grunt").
+            const facts = Object.fromEntries(Object.entries(object(args.facts)).filter(([, value]) => typeof value === 'string' && supplied().includes(value)));
+            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { ...facts, plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 30,
               ...(answer ? { answer } : {}) });
             observation = object(latest.observation);
             const browserWall = object(latest.needs_user);
@@ -689,16 +698,17 @@ export class BrowserSquire implements SetupSquire {
               return { status: 'stopped', reason: 'Capture directly into this provider’s vault entry' };
             args = { ...(typeof args.selector === 'string' ? { selector: args.selector } : {}), ...(store ? { store } : {}), ...(capture ? { capture } : {}) };
           }
-          if (name === 'operate_type' && (!email || args.text !== email)) return { status: 'stopped', reason: 'Only the Squire-connected email can be typed' };
+          const text = typeof args.text === 'string' ? args.text : '';
+          if (name === 'operate_type' && !supplied().includes(text)) return { status: 'stopped', reason: 'Only values Grunt supplies (key or project name, plan, Squire-connected email) can be typed' };
           if (['operate_click', 'operate_type', 'operate_select'].includes(name)) {
             const ref = typeof args.ref === 'string' ? args.ref : args.target;
             const control = (Array.isArray(observation.safe_table) ? observation.safe_table : [])
               .find(row => Array.isArray(row) && row[0] === ref);
             const label = Array.isArray(control) ? String(control[2] ?? '') : '';
-            const safe = name === 'operate_type' ? /(?:email|e-mail)/i.test(label) : guardedSignupChoice(String(ref), label);
+            const safe = name === 'operate_type' ? Array.isArray(control) && (text !== email || /(?:email|e-mail)/i.test(label)) : guardedSignupChoice(String(ref), label);
             if (!safe) return { status: 'stopped', reason: 'Observe and choose a safe browser control' };
             if (name === 'operate_click') args = { ref };
-            if (name === 'operate_type') args = { ref, text: email };
+            if (name === 'operate_type') args = { ref, text };
             if (name === 'operate_select') {
               const values = Array.isArray(args.values) ? args.values : [];
               if (values.length !== 1 || !guardedSignupChoice(String(ref), values[0])) return { status: 'stopped', reason: 'Select a safe option' };

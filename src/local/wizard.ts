@@ -572,6 +572,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const ordered = ['kilo', 'pollinations', 'beatapi', 'zro', 'tokenharbor', 'runcrate', ...ids];
       const remaining = [...new Set(ordered)].filter(id => ids.includes(id));
       let driving = false;
+      // Anonymous OpenCode drives only until an account route can: it bypasses
+      // grunt routing, so it would never move to a better route by itself.
+      let anonymousDriver = false;
       let operator: string | undefined;
       let operatorFailure: string | undefined;
       const deferred: string[] = [];
@@ -607,6 +610,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         }
         table.step(bootstrap ? `✓ operator: ${source} via ${harness.id}` : '✓ model: grunt (kilo anonymous)');
         operator = source;
+        anonymousDriver = false;
         table.set('source', source, '✓ ready · operator');
         return true;
       };
@@ -627,9 +631,10 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       }
       if (harness?.id === 'opencode' && !driving && !skipAnonymous) {
         try {
-          await runHarness('opencode', ['run', '--pure', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
+          await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
           useOperator(true);
           driving = Boolean(squire);
+          anonymousDriver = driving;
           table.step('✓ model: OpenCode free');
         } catch { session.signal.throwIfAborted(); }
       }
@@ -660,7 +665,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (!driving && harness && id !== 'opencode') table.step(`… bootstrap: ${id} via Squire`);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
-        if (!driving && id !== 'opencode') driving = await activate(id, true);
+        if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
         if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) {
           deferred.push(id);
           table.set('source', id, 'waiting (retry)');
@@ -675,7 +680,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (failed !== -1) unavailable.splice(failed, 1);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
-        if (!driving && id !== 'opencode') driving = await activate(id, true);
+        if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
       }
     }
     await Promise.all(settled.values());

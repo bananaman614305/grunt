@@ -3,10 +3,10 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from '../registry.js';
-import type { Adapter, Registry } from '../registry.js';
-import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
+import type { Registry } from '../registry.js';
 
-export const REGISTRY_INTERVAL = 24 * 60 * 60 * 1000;
+// The slow router loop (docs/router.md): re-read the registry, then open routes.
+export const REGISTRY_INTERVAL = 6 * 60 * 60 * 1000;
 // Existing Fly application is retained as a registry mirror until infrastructure is renamed.
 const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
 export class RegistrySync {
@@ -19,10 +19,10 @@ export class RegistrySync {
     directory: string;
     url?: string;
     fetcher?: typeof fetch;
-    ensure?: (adapter: Adapter, signal: AbortSignal) => Promise<void>;
     notify?: (text: string) => void;
     changed?: (registry: Registry) => void;
-    afterEnsure?: () => Promise<void>;
+    // Runs after every refresh, changed or not; the daemon opens routes here.
+    synced?: () => void;
   }) {}
   get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)); }
   private accepts(registry: Registry) {
@@ -78,18 +78,13 @@ export class RegistrySync {
         this.options.changed?.(registry);
       } else if (!unchanged) throw new Error('Registry unavailable');
     } catch { this.options.notify?.('Registry update unavailable; keeping the last good list'); }
-    if (this.controller.signal.aborted) return;
-    try { await parallelMap(this.enabled, async adapter => {
-      if (!this.options.ensure || this.controller.signal.aborted) return;
-      try { await this.options.ensure(adapter, this.controller.signal); }
-      catch { this.options.notify?.(`${adapter.id}: setup needs attention; run usegrunt setup to finish sign-in`); }
-    }, SETUP_CONCURRENCY); } finally { await this.options.afterEnsure?.(); }
+    if (!this.controller.signal.aborted) this.options.synced?.();
   }
   async start() {
     await this.load();
     if (this.controller.signal.aborted) return;
-    // Refresh the directory at UTC midnight. The daemon paces provider access
-    // checks independently through its daily maintenance queue.
+    // Refresh the directory every interval, aligned to UTC midnight. The daemon
+    // paces provider access checks independently through its daily maintenance queue.
     const schedule = () => {
       if (this.controller.signal.aborted) return;
       const now = Date.now();

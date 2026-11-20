@@ -2,16 +2,17 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { recordDataSharingConsent } from './data-sharing.js';
+import type { SignupAgent } from './signup-mcp.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { withTerminal } from './terminal.js';
 import { BrowserSquire } from './setup.js';
 import { SourceError, Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { createLocalApp } from './api.js';
-import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
+import { parallelMap } from './parallel.js';
 import { VerificationQueue } from './verification-queue.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
-import { RegistrySync } from './registry.js';
 
 const dirs: string[] = [];
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
@@ -115,16 +116,6 @@ it('does not cache failed grants', async () => {
   expect(call).toHaveBeenCalledTimes(2);
 });
 
-it('runs registry background provisioning concurrently too', async () => {
-  const hold = deferred(), started: string[] = [];
-  const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }),
-    ensure: async adapter => { started.push(adapter.id); await hold.promise; } });
-  const pending = sync.sync();
-  const ids = sync.enabled.map(adapter => adapter.id);
-  await vi.waitFor(() => expect(started).toEqual(ids.slice(0, SETUP_CONCURRENCY)));
-  hold.resolve(); await pending; expect(started).toEqual(ids); await sync.close();
-});
-
 it('pins Kilo installer and capabilities instead of accepting executable registry data', () => {
   const kilo = bundledRegistry.adapters.find(a => a.id === 'kilo')!;
   for (const change of [{ install: 'npm:untrusted' }, { install: 'builtin:other' }, { kind: 'agent' }, { modalities: ['image'] }]) {
@@ -157,12 +148,32 @@ it('shares terminal ownership between privileged installers and provider confirm
   hold.resolve(); await Promise.all([installer, verification]);
   expect(order).toEqual(['sudo', 'sudo done', 'confirm kilo']);
 });
-it('closes each registry setup session after all jobs settle and starts a fresh session on retry', async () => {
-  let session = 0, active = 0;
-  const finish = vi.fn(async () => { expect(active).toBe(0); session++; });
-  const attempts: number[] = [];
-  const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }), afterEnsure: finish,
-    ensure: async adapter => { active++; attempts.push(session); await new Promise(resolve => setImmediate(resolve)); active--; if (adapter.id === 'kilo') throw new Error('retry later'); } });
-  await sync.sync(); await sync.sync(); await sync.close();
-  expect(finish).toHaveBeenCalledTimes(2); expect(attempts).toEqual([...sync.enabled.map(() => 0), ...sync.enabled.map(() => 1)]);
+
+it('forwards acquisition cancellation to the owned signup operator', async () => {
+  const dir = await directory();
+  await recordDataSharingConsent(dir, ['numes']);
+  const controller = new AbortController();
+  const release = deferred();
+  const agent = vi.fn<SignupAgent>(async () => { await release.promise; });
+  vi.spyOn(BrowserSquire.prototype, 'call').mockImplementation(async name => name === 'operate_drive'
+    ? { status: 'low_confidence', session_id: 'owned-numes', options: {} } : {});
+  const pending = setupFallbacks({ directory: dir, adapters: ['numes'], background: true, acquire: true,
+    signal: controller.signal, agent, notify: () => {}, connect: async () => {}, run: async () => {},
+    setupProvider: async (_notify, _providers, options) => {
+      await options?.connect?.();
+      const squire = options!.squire as BrowserSquire;
+      const client = (squire as unknown as { client: { listTools(): Promise<unknown> } }).client;
+      vi.spyOn(client, 'listTools').mockResolvedValue({ tools: [] });
+      await squire.signup('numes', 'https://numes.ai/dashboard', 'Complete the free signup');
+    }
+  });
+  const settled = pending.then(() => undefined, error => error);
+  try {
+    await vi.waitFor(() => expect(agent).toHaveBeenCalledOnce());
+    const signal = agent.mock.calls[0]![0].signal;
+    controller.abort(new Error('Acquisition stopped'));
+    expect(signal.aborted).toBe(true);
+    release.resolve();
+    expect(await settled).toBeInstanceOf(Error);
+  } finally { controller.abort(); release.resolve(); await settled; }
 });

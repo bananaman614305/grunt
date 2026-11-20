@@ -15,6 +15,11 @@ const MODEL_QUOTA_COOLDOWN_MS = 60000;
 class UnavailableModel extends SourceError {
   constructor() { super('upstream', 'OpenCode free model is unavailable'); }
 }
+// OpenCode's free limit is per IP and shared by every free model, and OpenCode
+// itself retries it until the reset. Fail fast and cool down the whole pool.
+class FreeLimit extends SourceError {
+  constructor(retryAfter: number | undefined) { super('quota', 'OpenCode free usage limit reached', retryAfter); }
+}
 interface PromptAttempt { session?: string; messageID?: string; partID?: string; retryable: boolean }
 interface StoredMessage { info: { id: string; role: string }; parts: { id: string; type: string; text?: string }[] }
 interface TokenCounts { total?: number; input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
@@ -134,6 +139,11 @@ export class OpenCode implements Source {
         try { return await this.completeModel(request, caller, model, signal, attempt); }
         catch (error) {
           if (signal.aborted || !(error instanceof SourceError) || (error.code !== 'quota' && !(error instanceof UnavailableModel))) throw error;
+          if (error instanceof FreeLimit) {
+            const until = Date.now() + (error.retryAfter ?? MODEL_QUOTA_COOLDOWN_MS / 1000) * 1000;
+            for (const each of models) this.modelCooldowns.set(each, until);
+            throw error;
+          }
           last = error;
           this.modelCooldowns.set(model, Date.now() + (error.retryAfter === undefined ? MODEL_QUOTA_COOLDOWN_MS : error.retryAfter * 1000));
           if (!attempt.retryable) throw error;
@@ -232,6 +242,11 @@ export class OpenCode implements Source {
             const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
             if (!data) continue;
             const event = JSON.parse(data);
+            const status = event.type === 'session.status' ? event.properties : undefined;
+            if (status?.sessionID === session && status.status?.type === 'retry' && status.status.action?.reason === 'free_tier_limit') {
+              const next = status.status.next;
+              throw new FreeLimit(typeof next === 'number' && Number.isFinite(next) ? Math.max(1, Math.ceil((next - Date.now()) / 1000)) : undefined);
+            }
             if (event.type !== 'permission.asked') continue;
             const permission = event.properties;
             if (typeof permission?.sessionID !== 'string') throw new SourceError('upstream', 'OpenCode returned an invalid permission request');
@@ -268,7 +283,8 @@ export class OpenCode implements Source {
         if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'OpenCode request cancelled during shutdown');
         throw new SourceError('timeout', 'OpenCode request timed out');
       }
-      if (error instanceof SourceError && (error.code === 'quota' || error instanceof UnavailableModel) && session && base) {
+      // A free limit is never retried here, and the pending prompt is still sleeping.
+      if (error instanceof SourceError && !(error instanceof FreeLimit) && (error.code === 'quota' || error instanceof UnavailableModel) && session && base) {
         // A provider error can arrive after OpenCode has persisted the user
         // prompt. Reuse that prompt's IDs rather than appending it again. Never
         // replay a turn that already ran native tools, or whose state is unclear.

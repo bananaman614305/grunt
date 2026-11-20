@@ -11,6 +11,10 @@ export interface Adapter {
   signup?: string;
   model?: string;
   models?: string[];
+  // Set by the daily provider scout (docs/router.md). Missing means possible/active.
+  fit?: 'great' | 'possible' | 'poor';
+  status?: 'active' | 'expiring' | 'inactive';
+  expires?: string;
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
 const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes', goedel: 'builtin:goedel', crowllm: 'builtin:crowllm', fikra: 'builtin:fikra', openference: 'builtin:openference', darus: 'builtin:darus', 'aperture-ai': 'builtin:aperture-ai', 'reflection-beam': 'builtin:reflection-beam', 'antseed-vikey': 'builtin:antseed-vikey', millionseek: 'builtin:millionseek', freepi: 'builtin:freepi' };
@@ -42,6 +46,9 @@ export function validateRegistry(value: unknown): Registry {
       || (a.model !== undefined && (typeof a.model !== 'string' || !a.model.trim()))
       || (a.models !== undefined && (a.id !== 'opencode' || a.model !== undefined || !Array.isArray(a.models) || !a.models.length || a.models.length > 20
         || a.models.some(model => typeof model !== 'string' || !model.trim()) || new Set(a.models).size !== a.models.length))) return fail();
+    if (a.fit !== undefined && (typeof a.fit !== 'string' || !['great', 'possible', 'poor'].includes(a.fit))
+      || a.status !== undefined && (typeof a.status !== 'string' || !['active', 'expiring', 'inactive'].includes(a.status))
+      || a.expires !== undefined && (typeof a.expires !== 'string' || !/^\d{4}-\d\d-\d\d$/.test(a.expires) || !Number.isFinite(Date.parse(a.expires)))) return fail();
     if (a.signup !== undefined) {
       if (typeof a.signup !== 'string') return fail();
       let url: URL;

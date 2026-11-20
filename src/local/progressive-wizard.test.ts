@@ -522,3 +522,30 @@ it('keeps sources queued behind the browser limit on waiting until a browser slo
   }
   expect(Object.fromEntries(rows)).toEqual(Object.fromEntries(ids.map(id => [id, '✓ ready'])));
 });
+
+it('upgrades the anonymous OpenCode operator to the first account route that passes the tool probe', async () => {
+  const bin = await mkdtemp(join(tmpdir(), 'grunt-opencode-bin-'));
+  try {
+    const { chmod } = await import('node:fs/promises');
+    await writeFile(join(bin, 'opencode'), `#!${process.execPath}\nconsole.log('grunt is ready.');\n`);
+    await chmod(join(bin, 'opencode'), 0o755);
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    const { HARNESSES } = await import('./harnesses.js');
+    const { BrowserSquire } = await import('./setup.js');
+    const squire = new BrowserSquire();
+    vi.spyOn(squire, 'useSignupAgent').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const stub = actions(['zro', 'tokenharbor']);
+    stub.setupFallbacks.mockImplementation(async options => {
+      await options.onSettled?.(options.adapters![0]!, true);
+      return { unavailable: [] };
+    });
+    const signupHarness = vi.fn((_harness: unknown, _port: number, _run?: unknown, _anonymous?: boolean) => async () => {});
+    const probeOperator = vi.fn(async () => true);
+    await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES.find(harness => harness.id === 'opencode'),
+      connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })), signupHarness, probeOperator, createSquire: () => squire });
+    // Anonymous first, then the grunt-routed operator once zro is ready; no further switches.
+    expect(signupHarness.mock.calls.map(call => call[3] === true)).toEqual([true, false]);
+    expect(probeOperator).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'zro', expect.any(AbortSignal));
+  } finally { await rm(bin, { recursive: true, force: true }); }
+});

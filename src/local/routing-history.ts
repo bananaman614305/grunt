@@ -7,13 +7,14 @@ import type { Client, Transaction } from '@libsql/client';
 import { sanitizeSafeDiagnosticMetadata } from './diagnostics.js';
 import type { ErrorCode, ModelRequest, SourceError } from './source.js';
 
+export const RETIRE_AFTER_FAILURES = 5;
 export const ROUTING_HISTORY_TTL_MS = 6 * 60 * 60 * 1000;
 export const MAX_ADAPTIVE_BACKOFF_SECONDS = 2 * 60 * 60;
 export const routingWorkloads = ['interactive-text', 'interactive-tools', 'background-text', 'background-tools'] as const;
 export type RoutingWorkload = typeof routingWorkloads[number];
 export type RoutingProfile = RoutingWorkload | 'all';
 export interface RoutingPerformance { samples: number; reliability: number; latencyMs: number; failureCostMs: number; at: number; lastSuccessAt?: number }
-export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number }
+export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number; quotaUntil?: number }
 export interface RoutingHistorySnapshot { performance: { source: string; profile: RoutingProfile; value: RoutingPerformance }[]; backoff: { source: string; value: RoutingBackoff }[] }
 const workloads = new AsyncLocalStorage<RoutingWorkload>();
 export const withRoutingWorkload = <T>(workload: RoutingWorkload, run: () => T) => workloads.run(workload, run);
@@ -26,6 +27,7 @@ const validTime = (value: unknown): value is number => typeof value === 'number'
 const profiles = new Set<string>(['all', ...routingWorkloads]);
 const backoffCodes = new Set<ErrorCode>(['quota', 'upstream', 'timeout', 'refused']);
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const CONTENTION_RETRY_MS = 2000;
 const unsafe = () => new Error('Routing history requires bounded private local state');
 
 export function nextRoutingPerformance(previous: RoutingPerformance | undefined, success: boolean, durationMs: number, at: number): RoutingPerformance {
@@ -49,20 +51,26 @@ export function routingFailureSignature(error: SourceError) {
 // deadline, not a delay to restart when another failure arrives.
 export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
   if (!previous) return incoming;
-  if (previous.code === 'quota' && previous.until > incoming.at) {
-    if (incoming.code !== 'quota') return previous;
-    return { ...incoming, at: Math.max(previous.at, incoming.at), until: Math.max(previous.until, incoming.until) };
-  }
+  const until = Math.max(previous.until, incoming.until);
+  const quotaUntil = Math.max(previous.code === 'quota' ? previous.quotaUntil ?? previous.until : 0,
+    incoming.code === 'quota' ? incoming.quotaUntil ?? incoming.until : 0);
+  const quota = quotaUntil > Math.max(previous.at, incoming.at);
+  if (previous.streak >= RETIRE_AFTER_FAILURES) return { ...previous, ...(quota ? { code: 'quota' as const, quotaUntil } : {}), until };
+  const code = quota ? 'quota' : incoming.code;
+  if (incoming.streak >= RETIRE_AFTER_FAILURES) return { ...incoming, code, until, ...(quota ? { quotaUntil } : {}) };
   if (incoming.at < previous.at) {
-    if (incoming.code === 'quota' && incoming.until > previous.at) return { ...incoming, at: previous.at };
+    if (incoming.code === 'quota' && quota) return { ...previous, code: 'quota', quotaUntil, until };
     return previous;
   }
-  return incoming;
+  return { ...incoming, code, until, ...(quota ? { quotaUntil } : {}) };
+}
+export function quotaAfterRecovery(value: RoutingBackoff): RoutingBackoff {
+  return { ...value, until: value.quotaUntil ?? value.until, signature: 'quota:::', streak: 1 };
 }
 export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
   const signature = routingFailureSignature(error);
-  const repeated = adaptive && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
-  const streak = repeated ? Math.min(5, previous.streak + 1) : 1;
+  const repeated = error.code !== 'quota' && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
+  const streak = repeated ? Math.min(RETIRE_AFTER_FAILURES, previous.streak + 1) : 1;
   // Explicit provider/reset hints bypass adaptive multiplication, including zero.
   const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
   return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + delay * 1000 });
@@ -78,9 +86,10 @@ function performanceValue(raw: unknown): RoutingPerformance | undefined {
 function backoffValue(raw: unknown): RoutingBackoff | undefined {
   const value = object(raw);
   if (!backoffCodes.has(value.code as ErrorCode) || typeof value.signature !== 'string' || !/^[a-z0-9_:]{1,200}$/.test(value.signature)
-    || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > 5
-    || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000) return;
-  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number };
+    || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > RETIRE_AFTER_FAILURES
+    || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000
+    || value.quotaUntil !== undefined && (value.code !== 'quota' || !validTime(value.quotaUntil) || value.quotaUntil < value.at || value.quotaUntil > value.until)) return;
+  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number, ...(value.quotaUntil !== undefined ? { quotaUntil: value.quotaUntil as number } : {}) };
 }
 
 /** Only fixed source/workload IDs, bounded numbers and allowlisted failure classes. */
@@ -111,13 +120,14 @@ export class RoutingHistory {
     try {
       await client.execute('PRAGMA busy_timeout=0');
       const { version, journalMode } = await (async () => {
+        const deadline = Date.now() + CONTENTION_RETRY_MS;
         for (let attempt = 0; ; attempt++) {
           try {
             const mode = (await client.execute('PRAGMA journal_mode')).rows[0]?.journal_mode;
             const version = Number((await client.execute('PRAGMA user_version')).rows[0]?.user_version);
             return { version, journalMode: String(mode).toLowerCase() };
           } catch (error) {
-            if (attempt >= 7 || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+            if (Date.now() >= deadline || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
             // Retry only idempotent metadata reads. A failed native read can
             // leave a statement attached, so start with a fresh connection.
             client.close();
@@ -145,10 +155,11 @@ export class RoutingHistory {
   }
   private async transaction<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
     let tx: Transaction | undefined;
+    const deadline = Date.now() + CONTENTION_RETRY_MS;
     for (let attempt = 0; ; attempt++) {
       try { tx = await this.client.transaction('write'); break; }
       catch (error) {
-        if (attempt >= 7 || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+        if (Date.now() >= deadline || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
         // libsql can retain the failed BEGIN statement on this connection, so a
         // later COMMIT reports statements in progress even after the lock ends.
         // No work() has run: discard only the poisoned connection before retry.
@@ -191,7 +202,10 @@ export class RoutingHistory {
         await tx.execute({ sql: 'INSERT INTO routing_performance(source,profile,value,at) VALUES (?,?,?,?) ON CONFLICT(source,profile) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, key, JSON.stringify(value), value.at] });
         result.push({ source, profile: key, value });
       }
-      if (success) await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
+      if (success) {
+        await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
+        await tx.execute({ sql: "UPDATE routing_backoff SET value=json_set(value,'$.until',COALESCE(json_extract(value,'$.quotaUntil'),json_extract(value,'$.until')),'$.signature','quota:::','$.streak',1) WHERE source=? AND json_extract(value,'$.code')='quota' AND at<?", args: [source, now] });
+      }
       await tx.execute({ sql: 'DELETE FROM routing_performance WHERE rowid NOT IN (SELECT rowid FROM routing_performance ORDER BY at DESC LIMIT 500)', args: [] });
       return result;
     }));
@@ -201,10 +215,11 @@ export class RoutingHistory {
     return this.run(() => this.transaction(async tx => {
       const row = (await tx.execute({ sql: 'SELECT value FROM routing_backoff WHERE source=?', args: [source] })).rows[0];
       let old; try { old = backoffValue(JSON.parse(String(row?.value))); } catch { /* Discard corrupt advisory state. */ }
-      if (error.code !== 'quota' && (!old || old.code !== 'quota' || old.until <= now)) {
+      if (error.code !== 'quota') {
         const row = (await tx.execute({ sql: "SELECT value FROM routing_performance WHERE source=? AND profile='all'", args: [source] })).rows[0];
         let performance; try { performance = performanceValue(JSON.parse(String(row?.value))); } catch { /* Invalid recovery is not authority. */ }
         if ((performance?.lastSuccessAt ?? 0) > now) {
+          if (old?.code === 'quota' && old.until > now) return old;
           if (old && old.at >= performance!.lastSuccessAt!) return old;
           // Report no active hold without resurrecting a late pre-recovery failure.
           return { code: error.code, signature: routingFailureSignature(error), streak: 1, at: now, until: now };

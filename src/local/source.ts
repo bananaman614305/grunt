@@ -1,4 +1,5 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
+import { knownAdapters } from '../registry.js';
 import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
 import type { SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
@@ -93,6 +94,7 @@ export class Sources {
   // One routed call to one source, with the first-output deadline. A failure
   // (not a cancellation) is logged and reported to the source.
   private attempt = async (source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> => {
+    if (this.retired(source.id)) throw new SourceError('not_installed', `${source.id} routing is retired`);
     const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s) => this.firstOutput(source, r, s) };
     try { return await this.observation.complete(timed, request, signal); }
     catch (error) {
@@ -122,6 +124,18 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
+  dispatchEligible(id: string, request?: ModelRequest) {
+    const router = this.registeredRouter;
+    const source = this.sources.find(source => source.id === id);
+    return source !== undefined && (!request || !source.acceptsRequest || source.acceptsRequest(request))
+      && !this.disabledModels.has(id) && !this.pending.has(id) && router !== undefined && router.listed(id)
+      && !router.retired(id) && (router.cooldown(id)?.until ?? 0) <= (this.routing?.now ?? Date.now)();
+  }
+  retired(id: string) { return this.registeredRouter?.retired(id) ?? false; }
+  // A newer registry publication that still lists a retired route gives it a fresh try.
+  unretire(ids: readonly string[]) { for (const id of ids) if (this.retired(id)) this.registeredRouter?.verified(id); }
+  // Hot-add a source for a newly listed adapter; the routers share this array.
+  add(source: Source) { this.sources.push(source); }
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; this.observation.setDiagnostics(store); }
   setRoutingHistory(store: RoutingHistory) { return this.observation.setRoutingHistory(store); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
@@ -129,7 +143,7 @@ export class Sources {
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
   status(): PoolSnapshot {
     const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
-      pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
+      retired: id => this.retired(id), pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
       ...(this.router ? { listed: (id: string) => this.router!.listed(id), cooldown: (id: string) => this.router!.cooldown(id) } : {}),
       model: id => {
         const adapter = this.routing?.registry().adapters.find(adapter => adapter.id === id);
@@ -246,9 +260,9 @@ export class Sources {
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
+      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
       if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
-      return s.id;
+      return this.retired(s.id) ? null : s.id;
     }));
     return ['grunt', ...available.filter((id): id is string => id !== null)];
   }
@@ -301,6 +315,8 @@ export class Sources {
       return completion;
     }
     if (this.router) return this.router.complete(request, signal);
+    await this.observation.refreshRoutingHistory();
+    signal.throwIfAborted();
     const known = this.sources.some(s => s.id === request.model);
     // Older harness configurations may still request the former model name.
     const automatic = request.model === 'grunt' || request.model === 'milo' || !known;
@@ -311,7 +327,8 @@ export class Sources {
     let attempted = false;
     for (const source of candidates) {
       signal.throwIfAborted();
-      if (this.pending.has(source.id)) continue;
+      if (this.pending.has(source.id) || this.retired(source.id)
+        || this.workerRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)) continue;
       if (source.acceptsRequest && !source.acceptsRequest(request)) {
         if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
         continue;
@@ -329,6 +346,7 @@ export class Sources {
           throw error;
         }
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
+        await this.workerRouter?.recordFailure(source.id, last);
         console.error(`grunt source: ${source.id} failed (${last.code}) for model ${this.safeModel(request.model)}`);
         // Only dots and OpenCode deadlines and first-output deadlines fall through; caller cancellation stops above.
         if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode' && !cutoffs.has(last)) throw last;

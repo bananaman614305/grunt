@@ -40,7 +40,7 @@ Nineteen experimental sources share the remaining 0.2 equally. Each joins after 
 Cloudflare Qwen is excluded from this pool by the owner's choice; NVIDIA remains optional while its account verification is unvetted.
 New sources enter by pull request, are tested, and reach people only when the owner publishes the registry.
 The registry can only select adapters that grunt already has code for; it cannot add code.
-The daemon pulls the registry once a day and keeps the last good copy when the gateway is down.
+The daemon refreshes the registry on the [router loop schedule](docs/router.md#3-slow-loop-hot-add-and-scout-mapping) and keeps the last good copy when the gateway is down.
 
 ## One adapter per task, hand off at the wall
 
