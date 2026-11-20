@@ -211,6 +211,10 @@ it('falls back from an Openference upstream rejection to free Fikra automaticall
   }));
   const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'openference,fikra' });
   try {
+    // Routing may use the first ready source without waiting for slower metadata.
+    // Admit both offers before draw 0 so this fixture exercises Openference's
+    // upstream rejection and actual Fikra failover, not admission completion order.
+    for (const source of sources.sources) expect(await sources.observation.available(source)).toBe(true);
     const response = await createLocalApp(sources, { cwd: directory }).request('http://127.0.0.1:8788/v1/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request('fikra'), model: 'grunt' })
     });
