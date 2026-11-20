@@ -78,6 +78,8 @@ it('rejects ambiguous pending ID reuse and missing or duplicate results across c
   const completed = [...request.messages, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', tool_call_id: call.id, content: 'result' }];
   for (const messages of [
     [...request.messages, { role: 'assistant', content: '', tool_calls: [call, call] }],
+    [...request.messages, { role: 'assistant', content: '', tool_calls: [call, call] }, { role: 'tool', tool_call_id: call.id, content: 'one ambiguous result' }],
+    [...request.messages, { role: 'assistant', content: '', tool_calls: [call, call] }, { role: 'tool', tool_call_id: call.id, content: 'first ambiguous result' }, { role: 'tool', tool_call_id: call.id, content: 'second ambiguous result' }],
     [...completed, { role: 'assistant', content: '', tool_calls: [call] }],
     [...completed, { role: 'tool', tool_call_id: call.id, content: 'duplicate result' }],
     [...completed, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', tool_call_id: 'orphan', content: 'wrong result' }],
