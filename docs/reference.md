@@ -438,8 +438,8 @@ consume free inference allowance when a fresh reply is needed; the output cap
 does not cap native CLI input/context overhead.
 
 Idle Clixad checks use its existing read-only local checks and public free-model
-catalog instead of inference. Its native wallet command can claim the ordinary
-daily streak bonus and remains reserved for explicit setup and user requests.
+catalog instead of inference. Explicit setup and user requests read the wallet
+through the pinned native client without claiming rewards.
 The maintenance result records `metadata` evidence, which does not establish a
 fresh generated reply or clear an inference cooldown. A recent successful user
 reply still satisfies its daily check as `reply` evidence.
@@ -813,9 +813,10 @@ headless sponsor opt-out is used; grunt does not submit ratings, offers or feedb
 
 Clixad requires wallet balance zero, positive free allowance and native metadata
 showing `free: true`, zero charged credits and balance zero. Explicit setup and
-user calls check the native wallet; that command can claim the ordinary daily
-streak bonus. Idle availability checks use only local metadata and the public
-catalog, and never call the wallet or streak endpoints. Grunt checks wallet state
+user calls read the wallet through the pinned native client without claiming
+rewards; reward endpoints are blocked. Idle availability checks use only local
+metadata and the public catalog, and never call the wallet or streak endpoints.
+Grunt checks wallet state
 before and after user inference. There is no atomic free-only switch: an external
 deposit during a request can defeat a pre-request zero-wallet check before the
 post-check rejects the answer. Keep that account unfunded. The native SSE omits
