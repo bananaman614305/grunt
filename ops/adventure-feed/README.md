@@ -11,7 +11,9 @@ The owner dashboard at `/admin/#activity` shows the answering provider, the
 last successful provider, provider issues and the latest 40 progress or tool
 entries. A failed provider that the project pool can retry now carries its
 current state along with the last error. Model labels come from the configured
-route. The web view refreshes about every five seconds while visible.
+route. Labels matching the receiver's secret filter are omitted while source
+identity, status and progress remain visible; a label never disables the feed.
+The web view refreshes about every five seconds while visible.
 
 The publisher reads the `Current task` and `Next steps` sections of Grunt's
 `GRUNT_STATUS.md` checkpoint. The overview labels the checkpoint with its update

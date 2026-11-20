@@ -29,6 +29,26 @@ class ActivityTest(unittest.TestCase):
                 {'source': 'clixad', 'state': 'error', 'error': 'refused'},
             ])
 
+    def test_omits_secret_shaped_model_labels_without_losing_progress_or_source_state(self):
+        now = 1794948372598
+        progress = {'at': now, 'kind': 'progress', 'text': 'Optimizing texture downloads.'}
+        for label in ('deepseek-v4-1-flash-economy-free', 'sk-synthetic-private-value', 'A' * 40):
+            with self.subTest(label=label), patch('activity.events', return_value=[progress]), \
+                    patch('activity.private_tail', return_value='{"phase":"working"}'), \
+                    patch('activity.time.time', return_value=now / 1000), \
+                    patch('activity.ask', return_value={'sources': [
+                        {'id': 'fikra', 'model': label, 'state': 'answering', 'active': 1,
+                         'lastSuccessAt': now, 'errorCode': 'refused'},
+                        {'id': 'fikra', 'model': label, 'state': 'error', 'errorCode': 'refused'},
+                        {'id': 'opencode', 'model': 'big-pickle', 'state': 'answering', 'active': 1},
+                    ]}):
+                report = snapshot()
+            self.assertEqual(report['events'], [progress])
+            self.assertEqual(report['active'], [{'source': 'fikra'}, {'source': 'opencode', 'model': 'big-pickle'}])
+            self.assertEqual(report['lastReply'], {'source': 'fikra', 'at': now})
+            self.assertEqual(report['issues'], [{'source': 'fikra', 'error': 'refused', 'state': 'error'}])
+            self.assertNotIn(label, json.dumps(report))
+
     def test_projects_only_completed_visible_messages_and_fixed_tool_metadata(self):
         now = 1794948372598
         with tempfile.TemporaryDirectory() as temp:
