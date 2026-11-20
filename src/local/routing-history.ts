@@ -1,0 +1,176 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { Client, Transaction } from '@libsql/client';
+import { sanitizeSafeDiagnosticMetadata } from './diagnostics.js';
+import type { ErrorCode, ModelRequest, SourceError } from './source.js';
+
+export const ROUTING_HISTORY_TTL_MS = 6 * 60 * 60 * 1000;
+export const MAX_ADAPTIVE_BACKOFF_SECONDS = 2 * 60 * 60;
+export const routingWorkloads = ['interactive-text', 'interactive-tools', 'background-text', 'background-tools'] as const;
+export type RoutingWorkload = typeof routingWorkloads[number];
+export type RoutingProfile = RoutingWorkload | 'all';
+export interface RoutingPerformance { samples: number; reliability: number; latencyMs: number; failureCostMs: number; at: number; lastSuccessAt?: number }
+export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number }
+export interface RoutingHistorySnapshot { performance: { source: string; profile: RoutingProfile; value: RoutingPerformance }[]; backoff: { source: string; value: RoutingBackoff }[] }
+const workloads = new AsyncLocalStorage<RoutingWorkload>();
+export const withRoutingWorkload = <T>(workload: RoutingWorkload, run: () => T) => workloads.run(workload, run);
+export function routingWorkload(request: ModelRequest, background = !!request.worker): RoutingWorkload {
+  return `${background ? 'background' : 'interactive'}-${request.tools.some(tool => tool.type === 'function') ? 'tools' : 'text'}`;
+}
+export const currentRoutingWorkload = (request: ModelRequest) => workloads.getStore() ?? routingWorkload(request);
+const identifier = /^[a-z][a-z0-9-]{0,63}$/;
+const validTime = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 8640000000000000;
+const profiles = new Set<string>(['all', ...routingWorkloads]);
+const backoffCodes = new Set<ErrorCode>(['quota', 'upstream', 'timeout', 'refused']);
+const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const unsafe = () => new Error('Routing history requires bounded private local state');
+
+export function nextRoutingPerformance(previous: RoutingPerformance | undefined, success: boolean, durationMs: number, at: number): RoutingPerformance {
+  // Completions can queue behind a sibling captured a few milliseconds later.
+  const old = previous && previous.at - at <= 5000 && at - previous.at <= ROUTING_HISTORY_TTL_MS ? previous : undefined;
+  const observedAt = Math.max(at, old?.at ?? at);
+  const duration = Math.max(250, Math.min(30 * 60 * 1000, Number.isFinite(durationMs) ? durationMs : 10000));
+  return { samples: Math.min(1000, (old?.samples ?? 0) + 1),
+    reliability: old ? old.reliability * .8 + Number(success) * .2 : Number(success),
+    latencyMs: success ? old ? old.latencyMs * .7 + duration * .3 : duration : old?.latencyMs ?? 10000,
+    failureCostMs: old ? old.failureCostMs * .8 + (success ? 0 : duration) * .2 : success ? 0 : duration,
+    at: observedAt, ...(success ? { lastSuccessAt: observedAt } : old?.lastSuccessAt !== undefined ? { lastSuccessAt: old.lastSuccessAt } : {}) };
+}
+export function routingFailureSignature(error: SourceError) {
+  const safe = sanitizeSafeDiagnosticMetadata(error.diagnostics);
+  return [error.code, safe.httpStatus ?? '', safe.failureReason ?? '', safe.networkCode ?? ''].join(':').toLowerCase();
+}
+export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
+  const signature = routingFailureSignature(error);
+  const repeated = adaptive && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
+  const streak = repeated ? Math.min(5, previous.streak + 1) : 1;
+  // Explicit provider/reset hints bypass adaptive multiplication, including zero.
+  const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
+  return { code: error.code, signature, streak, at, until: at + delay * 1000 };
+}
+function performanceValue(raw: unknown): RoutingPerformance | undefined {
+  const value = object(raw);
+  if (!Number.isSafeInteger(value.samples) || Number(value.samples) < 1 || Number(value.samples) > 1000
+    || typeof value.reliability !== 'number' || !Number.isFinite(value.reliability) || value.reliability < 0 || value.reliability > 1
+    || typeof value.latencyMs !== 'number' || !Number.isFinite(value.latencyMs) || value.latencyMs < 250 || value.latencyMs > 1800000
+    || typeof value.failureCostMs !== 'number' || !Number.isFinite(value.failureCostMs) || value.failureCostMs < 0 || value.failureCostMs > 1800000 || !validTime(value.at) || value.lastSuccessAt !== undefined && (!validTime(value.lastSuccessAt) || value.lastSuccessAt > value.at)) return;
+  return { samples: Number(value.samples), reliability: value.reliability as number, latencyMs: value.latencyMs as number, failureCostMs: value.failureCostMs as number, at: value.at as number, ...(value.lastSuccessAt !== undefined ? { lastSuccessAt: value.lastSuccessAt as number } : {}) };
+}
+function backoffValue(raw: unknown): RoutingBackoff | undefined {
+  const value = object(raw);
+  if (!backoffCodes.has(value.code as ErrorCode) || typeof value.signature !== 'string' || !/^[a-z0-9_:]{1,200}$/.test(value.signature)
+    || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > 5
+    || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000) return;
+  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number };
+}
+
+/** Only fixed source/workload IDs, bounded numbers and allowlisted failure classes. */
+const localQueues = new Map<string, { pending: Promise<unknown>; users: number }>();
+export class RoutingHistory {
+  private pending: Promise<unknown> = Promise.resolve();
+  private closed = false;
+  private closing: Promise<void> | undefined;
+  private serial: { pending: Promise<unknown>; users: number };
+  private constructor(private client: Client, private path: string) {
+    this.serial = localQueues.get(path) ?? { pending: Promise.resolve(), users: 0 };
+    this.serial.users++; localQueues.set(path, this.serial);
+  }
+  static async open(directory: string): Promise<RoutingHistory> {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const dir = await lstat(directory);
+    if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o077) !== 0) throw unsafe();
+    const path = resolve(directory, 'routing-history.db');
+    try { const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); await file.close(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw unsafe(); }
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw unsafe();
+    } finally { await file.close(); }
+    const { createClient } = await import('@libsql/client');
+    const client = createClient({ url: pathToFileURL(path).href, concurrency: 1 });
+    try {
+      await client.execute('PRAGMA busy_timeout=0');
+      await client.execute('PRAGMA journal_mode=DELETE');
+      const version = Number((await client.execute('PRAGMA user_version')).rows[0]?.user_version);
+      if (version !== 0 && version !== 1) throw unsafe();
+      await client.batch([
+        'CREATE TABLE IF NOT EXISTS routing_performance (source TEXT NOT NULL, profile TEXT NOT NULL, value TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(source,profile))',
+        'CREATE TABLE IF NOT EXISTS routing_backoff (source TEXT PRIMARY KEY, value TEXT NOT NULL, at REAL NOT NULL)',
+        'PRAGMA user_version=1'
+      ], 'write');
+      return new RoutingHistory(client, path);
+    } catch (error) { client.close(); throw error; }
+  }
+  private run<T>(work: () => Promise<T>): Promise<T> {
+    if (this.closed) return Promise.reject(unsafe());
+    const next = this.serial.pending.catch(() => {}).then(work);
+    this.serial.pending = next; this.pending = next;
+    return next;
+  }
+  private async transaction<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
+    let tx: Transaction | undefined;
+    for (let attempt = 0; ; attempt++) {
+      try { tx = await this.client.transaction('write'); break; }
+      catch (error) {
+        if (attempt >= 7 || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+        // Yield instead of blocking the event loop while a sibling commits.
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, 2 ** (attempt + 1))));
+      }
+    }
+    try { const result = await work(tx); await tx.commit(); return result; }
+    finally { try { await tx.rollback(); } finally { tx.close(); } }
+  }
+  snapshot(now = Date.now()): Promise<RoutingHistorySnapshot> {
+    return this.run(async () => {
+      const cutoff = now - ROUTING_HISTORY_TTL_MS;
+      const result: RoutingHistorySnapshot = { performance: [], backoff: [] };
+      for (const row of (await this.client.execute({ sql: 'SELECT source,profile,value FROM routing_performance WHERE at>=? AND at<=? ORDER BY at DESC LIMIT 500', args: [cutoff, now] })).rows) {
+        if (typeof row.source !== 'string' || !identifier.test(row.source) || typeof row.profile !== 'string' || !profiles.has(row.profile)) continue;
+        let value; try { value = performanceValue(JSON.parse(String(row.value))); } catch { continue; }
+        if (value && value.at >= cutoff && value.at <= now) result.performance.push({ source: row.source, profile: row.profile as RoutingProfile, value });
+      }
+      for (const row of (await this.client.execute({ sql: 'SELECT source,value FROM routing_backoff ORDER BY at DESC LIMIT 100' })).rows) {
+        if (typeof row.source !== 'string' || !identifier.test(row.source)) continue;
+        let value; try { value = backoffValue(JSON.parse(String(row.value))); } catch { continue; }
+        if (value && value.at <= now && (value.at >= cutoff || value.until > now)) result.backoff.push({ source: row.source, value });
+      }
+      return result;
+    });
+  }
+  record(source: string, profile: RoutingWorkload, success: boolean, durationMs: number, now: number): Promise<RoutingHistorySnapshot['performance']> {
+    if (!identifier.test(source) || !(routingWorkloads as readonly string[]).includes(profile) || !validTime(now)) return Promise.reject(unsafe());
+    return this.run(() => this.transaction(async tx => {
+      const result: RoutingHistorySnapshot['performance'] = [];
+      for (const key of ['all', profile] as const) {
+        const row = (await tx.execute({ sql: 'SELECT value FROM routing_performance WHERE source=? AND profile=?', args: [source, key] })).rows[0];
+        let old; try { old = performanceValue(JSON.parse(String(row?.value))); } catch { /* Corrupt observations are not routing authority. */ }
+        const value = nextRoutingPerformance(old, success, durationMs, now);
+        await tx.execute({ sql: 'INSERT INTO routing_performance(source,profile,value,at) VALUES (?,?,?,?) ON CONFLICT(source,profile) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, key, JSON.stringify(value), value.at] });
+        result.push({ source, profile: key, value });
+      }
+      if (success) await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota'", args: [source] });
+      await tx.execute({ sql: 'DELETE FROM routing_performance WHERE rowid NOT IN (SELECT rowid FROM routing_performance ORDER BY at DESC LIMIT 500)', args: [] });
+      return result;
+    }));
+  }
+  failure(source: string, error: SourceError, seconds: number, adaptive: boolean, now: number): Promise<RoutingBackoff> {
+    if (!identifier.test(source) || !backoffCodes.has(error.code) || !validTime(now) || !Number.isFinite(seconds) || seconds < 0 || seconds > 32 * 86400) return Promise.reject(unsafe());
+    return this.run(() => this.transaction(async tx => {
+      const row = (await tx.execute({ sql: 'SELECT value FROM routing_backoff WHERE source=?', args: [source] })).rows[0];
+      let old; try { old = backoffValue(JSON.parse(String(row?.value))); } catch { /* Discard corrupt advisory state. */ }
+      const value = nextRoutingBackoff(old, error, seconds, adaptive, now);
+      await tx.execute({ sql: 'INSERT INTO routing_backoff(source,value,at) VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, JSON.stringify(value), now] });
+      await tx.execute('DELETE FROM routing_backoff WHERE rowid NOT IN (SELECT rowid FROM routing_backoff ORDER BY at DESC LIMIT 100)');
+      return value;
+    }));
+  }
+  clear(source: string): Promise<void> {
+    return this.run(async () => { await this.client.execute({ sql: 'DELETE FROM routing_backoff WHERE source=?', args: [source] }); });
+  }
+  async flush() { await this.pending.catch(() => {}); }
+  close(): Promise<void> { return this.closing ??= (async () => { this.closed = true; await this.flush(); this.client.close(); if (--this.serial.users === 0) localQueues.delete(this.path); })(); }
+}

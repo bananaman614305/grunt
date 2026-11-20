@@ -5,6 +5,8 @@ import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore } from './diagnostics.js';
+import { currentRoutingWorkload, nextRoutingPerformance, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
+import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
 export interface SourceSnapshot {
@@ -37,7 +39,8 @@ interface Observation {
   retryAt?: number;
   availabilityCheckedAt?: number;
   available?: boolean;
-  performance?: { samples: number; reliability: number; latencyMs: number; at: number };
+  performance?: RoutingPerformance;
+  profiles?: Partial<Record<RoutingWorkload, RoutingPerformance>>;
 }
 export interface ObservationGuard { revision: number; acceptedRevision?: number }
 const codes = new Set<ErrorCode>(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
@@ -58,6 +61,8 @@ export class SourceStatus {
   private observations = new Map<string, Observation>();
   private idleListeners = new Set<(source: string) => void>();
   private diagnostics: DiagnosticsStore | undefined;
+  private history: RoutingHistory | undefined;
+  private backoffs = new Map<string, RoutingBackoff>();
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
   constructor(ids: readonly string[], private now: () => number = Date.now) {
     for (const id of ids) this.observations.set(id, { state: 'unknown', active: 0, revision: 0 });
@@ -105,19 +110,68 @@ export class SourceStatus {
     if (age < 0 || age >= (entry.available ? positiveAgeMs : negativeAgeMs)) return;
     return entry.available;
   }
-  routingWeight(id: string, background = false) {
-    const sample = this.entry(id).performance;
-    if (!sample || sample.samples < 2 || this.now() < sample.at || this.now() - sample.at > 30 * 60 * 1000) return 1;
-    const speed = background ? sample.latencyMs / 10000 : 10000 / sample.latencyMs;
-    return Math.max(.05, sample.reliability * Math.max(.25, Math.min(background ? 2 : 4, speed)));
+  // Restored observations are advisory weights and cooldowns, never admission or reply proof.
+  async setRoutingHistory(history: RoutingHistory) { this.history = history; await this.refreshRoutingHistory(); }
+  async refreshRoutingHistory() {
+    if (!this.history) return;
+    try {
+      const state = await this.history.snapshot(this.now());
+      for (const row of state.performance) {
+        const entry = this.observations.get(row.source);
+        if (!entry) continue;
+        this.mergePerformance(entry, row.profile, row.value);
+      }
+      for (const [id, value] of this.backoffs) if (value.code !== 'quota' && (this.routingRecoveryAt(id) ?? 0) > value.at) this.backoffs.delete(id);
+      for (const row of state.backoff) if (this.observations.has(row.source) && (row.value.code === 'quota' || (this.routingRecoveryAt(row.source) ?? 0) <= row.value.at)) {
+        const old = this.backoffs.get(row.source);
+        if (!old || row.value.at >= old.at) this.backoffs.set(row.source, row.value);
+      }
+    } catch { /* Durable observations must not make a source available or break requests. */ }
   }
-  private performance(id: string, success: boolean, latencyMs: number) {
-    const entry = this.entry(id), previous = entry.performance;
-    const latency = Math.max(250, latencyMs);
-    entry.performance = { samples: Math.min(1000, (previous?.samples ?? 0) + 1),
-      reliability: previous ? previous.reliability * .8 + Number(success) * .2 : Number(success),
-      latencyMs: success ? previous ? previous.latencyMs * .7 + latency * .3 : latency : previous?.latencyMs ?? 10000,
-      at: this.now() };
+  async flushRoutingHistory() { await this.history?.flush(); }
+  private mergePerformance(entry: Observation, profile: RoutingProfile, value: RoutingPerformance) {
+    if (profile === 'all') {
+      if (!entry.performance || value.at >= entry.performance.at) entry.performance = value;
+    } else {
+      entry.profiles ??= {};
+      if (!entry.profiles[profile] || value.at >= entry.profiles[profile]!.at) entry.profiles[profile] = value;
+    }
+  }
+  routingRecoveryAt(id: string) { return this.entry(id).performance?.lastSuccessAt; }
+  routingBackoff(id: string) { return this.backoffs.get(id); }
+  clearRoutingBackoff(id: string) {
+    this.backoffs.delete(id);
+    void this.history?.clear(id).catch(() => {});
+  }
+  async failureBackoff(id: string, error: SourceError, seconds: number, adaptive: boolean) {
+    const at = this.now();
+    let value = nextRoutingBackoff(this.backoffs.get(id), error, seconds, adaptive, at);
+    this.backoffs.set(id, value);
+    try { if (this.history) value = await this.history.failure(id, error, seconds, adaptive, at); }
+    catch { /* Keep the bounded in-memory backoff when private storage is unavailable. */ }
+    const current = this.backoffs.get(id);
+    if (!current || current.at <= value.at) this.backoffs.set(id, value);
+    return value;
+  }
+  routingWeight(id: string, background = false, workload?: RoutingWorkload) {
+    const entry = this.entry(id), specific = workload ? entry.profiles?.[workload] : undefined;
+    const sample = specific && specific.samples >= 2 ? specific : entry.performance;
+    if (!sample || sample.samples < 2 || this.now() < sample.at || this.now() - sample.at > ROUTING_HISTORY_TTL_MS) return 1;
+    // Completed failures cost real time even if the few successful samples are quick.
+    const penalty = 1 + sample.failureCostMs / Math.max(250, sample.latencyMs);
+    const speed = background ? sample.latencyMs / 10000 : 10000 / sample.latencyMs;
+    return Math.max(.05, sample.reliability * Math.max(.25, Math.min(background ? 2 : 4, speed)) / penalty);
+  }
+  private async performance(id: string, success: boolean, latencyMs: number, request: ModelRequest) {
+    const entry = this.entry(id), profile = currentRoutingWorkload(request), at = this.now(), revision = entry.revision;
+    entry.performance = nextRoutingPerformance(entry.performance, success, latencyMs, at);
+    entry.profiles ??= {};
+    entry.profiles[profile] = nextRoutingPerformance(entry.profiles[profile], success, latencyMs, at);
+    if (success && this.backoffs.get(id)?.code !== 'quota') this.backoffs.delete(id);
+    try {
+      const rows = await this.history?.record(id, profile, success, latencyMs, at);
+      if (entry.revision === revision) for (const row of rows ?? []) this.mergePerformance(entry, row.profile, row.value);
+    } catch { /* Local routing stays functional during contention, corruption or disk failure. */ }
   }
   isBusy(id: string) { return (this.observations.get(id)?.active ?? 0) > 0; }
   async waitForIdle(sources: readonly string[], signal: AbortSignal) {
@@ -204,9 +258,9 @@ export class SourceStatus {
         entry.revision++;
         entry.state = 'ready'; entry.lastSuccessAt = this.now(); entry.lastReplyMs = Math.max(0, this.now() - started);
         entry.available = true; entry.availabilityCheckedAt = this.now();
-        this.performance(source.id, true, this.now() - started);
         delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
         if (guard) guard.acceptedRevision = entry.revision;
+        await this.performance(source.id, true, this.now() - started, request);
       }
       return result;
     } catch (error) {
@@ -214,8 +268,8 @@ export class SourceStatus {
       if (!signal.aborted && code !== 'cancelled' && (!guard || entry.revision === guard.revision)) {
         const retry = error && typeof error === 'object' && 'retryAfter' in error ? error.retryAfter : undefined;
         this.failed(source.id, code, typeof retry === 'number' ? retry : undefined);
-        if (code !== 'quota') this.performance(source.id, false, this.now() - started);
         if (guard) guard.acceptedRevision = entry.revision;
+        if (code !== 'quota') await this.performance(source.id, false, this.now() - started, request);
       }
       throw error;
     } finally {
@@ -247,6 +301,7 @@ export class SourceStatus {
       else if (cooldown !== undefined && cooldown.until > now) {
         row.state = cooldown.code === 'quota' ? 'limited' : cooldown.until === Infinity ? 'unavailable' : 'error';
         if (Number.isFinite(cooldown.until)) row.retryAt = cooldown.until;
+        if (cooldown.code) row.errorCode = cooldown.code;
       } else if (options.preparing.has(id) && entry.state !== 'ready') row.state = 'connecting';
       else if (cooldown !== undefined && (entry.state === 'limited' || entry.state === 'error')) row.state = 'available';
       else if (entry.retryAt !== undefined && entry.retryAt > now) row.retryAt = entry.retryAt;
