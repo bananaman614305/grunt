@@ -9,6 +9,7 @@ import { privateWorkerPath } from './worker-tool-helper.js';
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === 'object' && !Array.isArray(value) ? value as Json : {};
 const sha = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+const privateArtifact = (path: string) => privateWorkerPath(path) || path.split('/').some(part => part === '.github' || part === '.gitmodules');
 /** A trusted host supplies fixed-argv gh execution. No auth token, executable, URL or shell comes from a model request. */
 export interface PublicationGithubExec {
   (args: string[], input?: string, signal?: AbortSignal): Promise<{ code: number; stdout: string }>;
@@ -32,7 +33,7 @@ export async function readPublicationArtifacts(policy: PublicationPolicy): Promi
     if (++directories > 4000 || depth > 32) throw new Error('Deployment directory budget exceeded.');
     for (const entry of (await readdir(at(dir, '.'), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
       const rel = parent ? parent + '/' + entry.name : entry.name;
-      if (!safeRelative(rel) || privateWorkerPath(rel)) throw new Error('Private-looking deployment artifact.');
+      if (!safeRelative(rel) || privateArtifact(rel)) throw new Error('Private-looking deployment artifact.');
       if (entry.isSymbolicLink()) throw new Error('Deployment artifact symlinks are not supported.');
       if (entry.isDirectory()) {
         const child = await open(at(dir, entry.name), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -152,7 +153,7 @@ export class GithubPublicationTransport implements PublicationTransport {
       if (!files.length || files.length > 2000) throw new Error('Missing verified deployment artifact.');
       const paths = new Set<string>(); let bytes = 0;
       for (const file of files) {
-        if (!safeRelative(file.path) || privateWorkerPath(file.path) || paths.has(file.path) || !Buffer.isBuffer(file.content)
+        if (!safeRelative(file.path) || privateArtifact(file.path) || paths.has(file.path) || !Buffer.isBuffer(file.content)
           || file.content.length > 20 * 1024 * 1024) throw new Error('Unsafe deployment artifact path or content.');
         paths.add(file.path); bytes += file.content.length;
         if (bytes > 100 * 1024 * 1024) throw new Error('Deployment artifact budget exceeded.');
@@ -170,6 +171,7 @@ export class GithubPublicationTransport implements PublicationTransport {
       // base_tree is omitted intentionally: removed build artifacts must also disappear from Pages.
       const created = object(await this.api(policy, '/git/commits', 'POST', { message: marker, tree: createdTree.sha, parents: [head] }, signal));
       if (!sha(created.sha)) throw new Error('Invalid Pages commit.');
+      if (await this.ref(policy, policy.base, signal) !== value.mergeCommit) throw new Error('Base advanced during artifact upload; preserve newer work.');
       await this.api(policy, '/git/refs/heads/' + policy.pagesBranch, 'PATCH', { sha: created.sha, force: false }, signal);
       if (await this.ref(policy, policy.pagesBranch, signal) !== created.sha) throw new Error('Pages ref confirmation failed.');
       await this.api(policy, '/pages/builds', 'POST', {}, signal);

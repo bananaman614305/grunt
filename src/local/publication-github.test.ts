@@ -12,7 +12,7 @@ function fixture() {
   const refs = new Map([['main', base], ['gh-pages', oldPages]]), commits = new Map<string, Record<string, unknown>>([
     [head, { sha: head, tree: { sha: gitTree }, message: 'candidate' }], [base, { sha: base, tree: { sha: '0'.repeat(40) }, message: 'base' }], [oldPages, { sha: oldPages, tree: { sha: '1'.repeat(40) }, message: 'old pages' }]
   ]);
-  let counter = 10, privateRepo = false, race = false, buildStatus = 'building';
+  let counter = 10, privateRepo = false, race = false, pagesRace = false, buildStatus = 'building';
   const pr = () => ({ number: 7, html_url: 'https://github.com/synthetic/project/pull/7', state: 'open', draft: false, head: { sha: head, ref: 'grunt/test', repo: { full_name: policy.repository } }, base: { ref: 'main', sha: base, repo: { full_name: policy.repository } } });
   const calls: { path: string; method: string; body?: Record<string, unknown> }[] = [];
   const exec = vi.fn(async (args: string[], input?: string) => {
@@ -25,6 +25,7 @@ function fixture() {
     else if (path === '/git/commits' && method === 'POST') {
       const id = (++counter).toString(16).padStart(40, '0'); result = { ...body, tree: { sha: body!.tree }, sha: id }; commits.set(id, result as Record<string, unknown>);
       if (race && String(body!.message).startsWith('Grunt merge ')) refs.set('main', '9'.repeat(40));
+      if (pagesRace && String(body!.message).startsWith('Grunt pages ')) refs.set('main', '9'.repeat(40));
     } else if (path.startsWith('/git/refs/heads/') && method === 'PATCH') {
       const name = path.slice('/git/refs/heads/'.length), next = commits.get(String(body!.sha));
       expect(body!.force).toBe(false);
@@ -42,7 +43,7 @@ function fixture() {
   });
   const pushHead = vi.fn(async () => {}), artifacts = vi.fn(async () => [{ path: 'index.html', content: Buffer.from('fixture') }]);
   const transport = new GithubPublicationTransport({ exec, pushHead, artifacts });
-  return { value, transport, calls, refs, commits, pushHead, artifacts, private: () => { privateRepo = true; }, race: () => { race = true; }, built: () => { buildStatus = 'built'; } };
+  return { value, transport, calls, refs, commits, pushHead, artifacts, private: () => { privateRepo = true; }, race: () => { race = true; }, pagesRace: () => { pagesRace = true; }, built: () => { buildStatus = 'built'; } };
 }
 it('publishes only the exact public repository pull request and keeps credential execution host supplied', async () => {
   const f = fixture(); expect(await f.transport.ensurePullRequest(f.value, policy)).toEqual({ number: 7, url: 'https://github.com/synthetic/project/pull/7' }); expect(f.pushHead).toHaveBeenCalledTimes(1);
@@ -73,7 +74,11 @@ it('does not overwrite a newer Pages deployment while waiting for its build', as
   f.refs.set('gh-pages', '8'.repeat(40)); f.commits.set('8'.repeat(40), { sha: '8'.repeat(40), tree: { sha: gitTree }, message: 'someone newer' });
   await expect(f.transport.deploy(f.value, policy)).rejects.toThrow('newer work');
 });
-it.each(['.netrc', 'credentials.json', '.envrc', 'certificate.p12', 'certificate.pfx', 'service-account-prod.json', 'nested/.ssh/id_rsa'])('rejects %s before uploading any blob even if a trusted adapter returns it', async path => {
+it('rechecks the source base after uploading blobs before updating Pages', async () => {
+  const f = fixture(); f.value.mergeCommit = await f.transport.merge(f.value, policy); f.pagesRace();
+  await expect(f.transport.deploy(f.value, policy)).rejects.toThrow('during artifact upload'); expect(f.refs.get('gh-pages')).toBe(oldPages);
+});
+it.each(['.netrc', 'credentials.json', '.envrc', 'certificate.p12', 'certificate.pfx', 'service-account-prod.json', 'nested/.ssh/id_rsa', '.github/workflows/anything.yml', '.gitmodules'])('rejects %s before uploading any blob even if a trusted adapter returns it', async path => {
   const f = fixture(); f.value.mergeCommit = await f.transport.merge(f.value, policy);
   f.artifacts.mockResolvedValueOnce([{ path: 'index.html', content: Buffer.from('fixture') }, { path, content: Buffer.from('private fixture') }]);
   await expect(f.transport.deploy(f.value, policy)).rejects.toThrow('Unsafe deployment'); expect(f.calls.some(c => c.path === '/git/blobs')).toBe(false);
