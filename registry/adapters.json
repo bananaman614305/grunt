@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "published": "2026-11-20T04:39:13Z",
+  "published": "2026-11-20T04:56:26Z",
   "adapters": [
     {
       "id": "opencode",
@@ -44,7 +44,7 @@
       "id": "tokenharbor",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -56,7 +56,7 @@
       "id": "runcrate",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -68,7 +68,7 @@
       "id": "mistral-vibe",
       "kind": "agent",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -80,7 +80,7 @@
       "id": "livekit",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -92,7 +92,7 @@
       "id": "pollinations",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -104,7 +104,7 @@
       "id": "beatapi",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -116,7 +116,7 @@
       "id": "clixad",
       "kind": "agent",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -128,7 +128,7 @@
       "id": "perch",
       "kind": "agent",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -140,7 +140,7 @@
       "id": "nous",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -152,7 +152,7 @@
       "id": "kenari",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -164,7 +164,7 @@
       "id": "numes",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -176,7 +176,7 @@
       "id": "goedel",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -188,7 +188,7 @@
       "id": "fikra",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -200,7 +200,7 @@
       "id": "openference",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
@@ -212,13 +212,25 @@
       "id": "darus",
       "kind": "model",
       "tier": "experimental",
-      "weight": 0.013333333333333334,
+      "weight": 0.0125,
       "modalities": [
         "text"
       ],
       "install": "builtin:darus",
       "signup": "https://gateway.darusalfatah.id/",
       "model": "darus/deepseek-v4.1-flash-1017-FREE"
+    },
+    {
+      "id": "aperture-ai",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.0125,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:aperture-ai",
+      "signup": "https://www.aperture-ai.run/login.html",
+      "model": "baidu/ernie-5.5-flash-preview:free"
     }
   ]
 }

@@ -51,6 +51,8 @@ const policies: Readonly<Record<string, QuotaPolicy>> = {
     { amount: 50, unit: 'requests', period: 'day', scope: 'account' }],
     detail: 'These are the published new-account defaults. Model overrides and account tier can differ. The successful daily quota renews at 00:00 UTC.',
     documentation: 'https://kenari.id/en/docs/rate-limits' },
+  'aperture-ai': { refill: 'utc-daily', limits: [{ amount: 200, unit: 'requests', period: 'day', scope: 'account' }, { amount: 20, unit: 'requests', period: 'minute', scope: 'account' }],
+    detail: 'Free requests reset at 00:00 UTC. The exact :free alias requires no credits and never falls back to paid models. Named daily_quota_exceeded errors use the published reset; generic or upstream throttles retain explicit provider retry signals without being treated as daily exhaustion. TPM and concurrency are unpublished.', documentation: 'https://www.aperture-ai.run/developers/docs.html' },
   darus: { refill: 'utc-daily', limits: [{ amount: 10000000, unit: 'tokens', period: 'day', scope: 'account' }, { amount: 25, unit: 'requests', period: 'minute', scope: 'account' }],
     detail: 'Free tier resets at 00:00 UTC (07:00 WIB), with one concurrent request. Grunt requires the exact -FREE model and live protectBalance=true; it stops rather than spending wallet funds. TPM is unpublished.', documentation: 'https://gateway.darusalfatah.id/dokumentasi' },
   fikra: { refill: 'provider-reported', limits: [{ amount: 1000, unit: 'requests', period: 'minute', scope: 'account' }, { amount: 100000, unit: 'requests', period: 'day', scope: 'account' }],

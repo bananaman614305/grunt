@@ -438,8 +438,8 @@ consume free inference allowance when a fresh reply is needed; the output cap
 does not cap native CLI input/context overhead.
 
 Idle Clixad checks use its existing read-only local checks and public free-model
-catalog instead of inference. Its native wallet command can claim the ordinary
-daily streak bonus and remains reserved for explicit setup and user requests.
+catalog instead of inference. Explicit setup and user requests read the wallet
+through the pinned native client without claiming rewards.
 The maintenance result records `metadata` evidence, which does not establish a
 fresh generated reply or clear an inference cooldown. A recent successful user
 reply still satisfies its daily check as `reply` evidence.
@@ -486,7 +486,7 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Fikra and Openference in the
+Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra and Openference in the
 experimental tier. Fikra and Openference are temporary offers with expiry guards.
 Free-account eligibility still applies.
 
@@ -615,6 +615,35 @@ included in source-specific grouped consent. Grunt requests complete JSON respon
 as in the provider’s OpenAI SDK quickstart, with native function calls and usage.
 
 [Darus API documentation](https://gateway.darusalfatah.id/dokumentasi).
+
+### Aperture daily free source
+
+Owner qualification on November 20, 2026 passed an attributed Grunt reply, a native function call and a cold request with 201,076 input tokens. The provider publishes request quotas, not a fixed daily token budget.
+
+Aperture is pinned to `baidu/ernie-5.5-flash-preview:free`. Squire reuses the
+user's scoped key or completes one ordinary Free account signup with sealed
+email/password inputs. After login, the ordinary Dashboard control on
+`/chat.html` exposes the key for direct vault capture. Squire must complete
+any verification requested by the account.
+
+Before every request Grunt verifies `valid: true` and `plan: free` at `/auth/me`,
+then checks the exact model at `/api/v1/models` for zero prompt, completion and
+other published prices, adequate context, tools and no expiry. It sends native
+JSON function definitions to `/api/v1/chat/completions` and rejects a different
+response model or malformed/truncated function arguments. There is no paid model
+or BYOK fallback. Account and model metadata are bounded and never logged as
+raw response bodies.
+
+The published Free limits are 200 requests/day and 20/minute, resetting at
+00:00 UTC. The named `daily_quota_exceeded` error uses an explicit reported
+reset when present, otherwise the documented UTC cadence. Generic or upstream
+429s retain their explicit retry signals and do not imply daily exhaustion.
+Token-per-minute and concurrency limits are unpublished. Content passes through
+Aperture, OpenRouter and the selected model provider; upstream retention,
+review and training guarantees are unverified. The grouped consent disclosure
+belongs to Aperture independently of Kenari, which offers the same checkpoint.
+See [Aperture's API documentation](https://www.aperture-ai.run/developers/docs.html)
+and [privacy policy](https://www.aperture-ai.run/privacy.html).
 
 ## Temporary free sources
 
@@ -784,9 +813,10 @@ headless sponsor opt-out is used; grunt does not submit ratings, offers or feedb
 
 Clixad requires wallet balance zero, positive free allowance and native metadata
 showing `free: true`, zero charged credits and balance zero. Explicit setup and
-user calls check the native wallet; that command can claim the ordinary daily
-streak bonus. Idle availability checks use only local metadata and the public
-catalog, and never call the wallet or streak endpoints. Grunt checks wallet state
+user calls read the wallet through the pinned native client without claiming
+rewards; reward endpoints are blocked. Idle availability checks use only local
+metadata and the public catalog, and never call the wallet or streak endpoints.
+Grunt checks wallet state
 before and after user inference. There is no atomic free-only switch: an external
 deposit during a request can defeat a pre-request zero-wallet check before the
 post-check rejects the answer. Keep that account unfunded. The native SSE omits
@@ -1140,7 +1170,7 @@ OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
 Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes,
-Gödel Machines, Darus, Fikra and Openference forward function tool definitions and return
+Gödel Machines, Darus, Aperture, Fikra and Openference forward function tool definitions and return
 tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.

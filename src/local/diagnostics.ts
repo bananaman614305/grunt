@@ -13,6 +13,7 @@ export const diagnosticErrors = ['not_installed', 'logged_out', 'quota', 'timeou
 export const diagnosticEndpoints = ['chat.completions', 'models', 'account', 'local.opencode', 'cli'] as const;
 export const diagnosticNetworks = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'] as const;
 export const diagnosticFailureReasons = [
+  'request_body', 'request_tools', 'request_size',
   'response_body', 'response_json', 'response_choices', 'response_content', 'response_tools',
   'completion_model', 'completion_billing', 'completion_usage', 'completion_attestation', 'completion_protocol',
   'turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'
@@ -149,6 +150,9 @@ export class DiagnosticsStore {
       // diagnostics storage or need the SQLite driver's runtime dependencies.
       const { createClient } = await import('@libsql/client');
       db = createClient({ url: pathToFileURL(path).href });
+      // Sibling Grunt processes share this stream. Brief writer contention
+      // must not permanently disable the process that opens the store second.
+      await db.execute('PRAGMA busy_timeout=1000');
       await db.executeMultiple(`PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS diagnostic_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS diagnostic_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, at INTEGER NOT NULL, request_id TEXT NOT NULL, source TEXT, type TEXT NOT NULL, outcome TEXT, data TEXT NOT NULL);

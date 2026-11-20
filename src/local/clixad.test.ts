@@ -8,10 +8,16 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { BinaryLike, BinaryToTextEncoding } from 'node:crypto';
 import type * as NativeOS from 'node:os';
 import type * as NativeCrypto from 'node:crypto';
+import type * as NativeURL from 'node:url';
 import type { ClixadRunResult, ClixadRunner } from './clixad.js';
 import type { ModelRequest } from './source.js';
-const state = vi.hoisted(() => ({ nativeHome: '', hashes: new Map<string, string>() }));
+const state = vi.hoisted(() => ({ nativeHome: '', preload: '', hashes: new Map<string, string>() }));
 vi.mock('node:os', async importOriginal => ({ ...await importOriginal<typeof NativeOS>(), homedir: () => state.nativeHome }));
+vi.mock('node:url', async importOriginal => {
+  const original = await importOriginal<typeof NativeURL>();
+  return { ...original, fileURLToPath: (...args: Parameters<typeof original.fileURLToPath>) =>
+    state.preload && String(args[0]).endsWith('/clixad-preload.js') ? state.preload : original.fileURLToPath(...args) };
+});
 vi.mock('node:crypto', async importOriginal => {
   const original = await importOriginal<typeof NativeCrypto>();
   return { ...original, createHash: (...args: Parameters<typeof original.createHash>) => {
@@ -23,7 +29,7 @@ vi.mock('node:crypto', async importOriginal => {
     return hash;
   } };
 });
-import { Clixad, CLIXAD_CORE_SHA256, CLIXAD_GATEWAY, CLIXAD_MODEL, clixadEnvironment, clixadPaths, prepareClixadDirectories, readClixadInstallReceipt, verifyClixadAccess, writeClixadInstallReceipt } from './clixad.js';
+import { Clixad, CLIXAD_CORE_SHA256, CLIXAD_GATEWAY, CLIXAD_MODEL, clixadEnvironment, clixadPaths, prepareClixadDirectories, readClixadInstallReceipt, runClixadProcess, verifyClixadAccess, writeClixadInstallReceipt } from './clixad.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { createLocalApp } from './api.js';
 import { Sources } from './source.js';
@@ -37,11 +43,11 @@ beforeEach(async () => {
   for (const [name, digest] of Object.entries(CLIXAD_CORE_SHA256)) { const content = `synthetic-clixad-core:${name}`; state.hashes.set(content, digest); await writeFile(join(paths.package, 'dist', name), content, { mode: 0o600 }); }
   await writeClixadInstallReceipt(directory); await recordDataSharingConsent(directory, ['clixad']);
 });
-afterEach(async () => { await Promise.all(sources.splice(0).map(source => source.close())); vi.restoreAllMocks(); vi.unstubAllEnvs(); state.hashes.clear(); await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { await Promise.all(sources.splice(0).map(source => source.close())); vi.restoreAllMocks(); vi.unstubAllEnvs(); state.hashes.clear(); state.preload = ''; await rm(directory, { recursive: true, force: true }); });
 const request = (): ModelRequest => ({ model: 'clixad', messages: [{ role: 'user', content: 'Say Hello' }], tools: [], cwd: '/tmp', stream: false });
 const catalog = () => ({ data: [{ id: CLIXAD_MODEL, free: true, auto_mode: false, context_window: 1048576 }] });
 const publicFetch = () => vi.fn<typeof fetch>(async () => Response.json(catalog()));
-const wallet = (patch: Record<string, unknown> = {}): ClixadRunResult => ({ code: 0, stdout: '', events: [{ event: 'http', operation: 'streak', status: 200 }, { event: 'http', operation: 'wallet', status: 200 }, { event: 'wallet', balance: 0, modelEligible: true, dailyCredits: 120000, creditsLeft: 100000, ...patch }] });
+const wallet = (patch: Record<string, unknown> = {}): ClixadRunResult => ({ code: 0, stdout: '', events: [{ event: 'http', operation: 'wallet', status: 200 }, { event: 'wallet', balance: 0, modelEligible: true, dailyCredits: 120000, creditsLeft: 100000, ...patch }] });
 const completion = (patch: Record<string, unknown> = {}, text = '{"version":1,"type":"final","text":"Hello."}'): ClixadRunResult => ({ code: 0, stdout: `assistant ${text}\n  [0 credits · balance 0]\n`, events: [{ event: 'dispatch', model: CLIXAD_MODEL }, { event: 'http', operation: 'chat', status: 200 }, { event: 'completion', inputTokens: 30, outputTokens: 50, free: true, creditsCharged: 0, balance: 0, creditsLeft: 99999, ...patch }] });
 function fixture(options: { ask?: ClixadRunResult; wallets?: ClixadRunResult[]; model?: string; fetcher?: typeof fetch; timeout?: number } = {}) {
   let wallets = 0;
@@ -165,6 +171,25 @@ it('cancels native commands and deadlines even if an injected runner ignores its
 });
 it('explicit setup access verification uses only the native read-only model and wallet commands', async () => {
   const f = fixture(); await verifyClixadAccess({ directory, runner: f.runner, fetcher: f.fetcher }); expect(f.runner.mock.calls.map(([, mode]) => mode)).toEqual(['model', 'wallet']);
+});
+
+it('reads the wallet through the pinned native client without claiming a streak grant', async () => {
+  const work = join(directory, 'read-only-wallet'); await mkdir(work, { mode: 0o700 });
+  const entry = join(work, 'clixad.mjs'), calls = join(work, 'calls'), fakeFetch = join(work, 'fake-fetch.mjs');
+  state.preload = join(work, 'preload.mjs');
+  await writeFile(state.preload, transpileModule(await readFile(new URL('./clixad-preload.ts', import.meta.url), 'utf8'),
+    { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText);
+  await writeFile(join(work, 'chunk-OPJ5LW6R.mjs'), `export function loadConfig(){return {}};export class GatewayClient{async claimStreak(){return fetch('https://clixad.onrender.com/v1/streak/claim',{method:'POST'})}async wallet(){return (await fetch('https://clixad.onrender.com/v1/wallet')).json()}}`);
+  await writeFile(entry, `import {GatewayClient,loadConfig} from './chunk-OPJ5LW6R.mjs';const c=new GatewayClient(loadConfig());await c.claimStreak();await c.wallet();`);
+  await writeFile(fakeFetch, `import {appendFileSync} from 'node:fs';globalThis.fetch=async(input,init)=>{const u=new URL(input);appendFileSync(process.env.FIXTURE_CALLS,(init?.method??'GET')+' '+u.pathname+'\\n');const b={balance:0,free_tier:{daily_credits:120000,credits_left:100000,models:['glm-5.3-flash']}};const r=new Response(JSON.stringify(b));Object.defineProperty(r,'url',{value:u.href});return r;};`);
+  const result = await runClixadProcess(entry, 'wallet', { cwd: work, signal: AbortSignal.timeout(10000),
+    env: { ...clixadEnvironment(), NODE_OPTIONS: `--import=${fakeFetch}`, FIXTURE_CALLS: calls } });
+  expect(result.code).toBe(0);
+  expect((await readFile(calls, 'utf8')).trim().split('\n')).toEqual(['GET /v1/wallet']);
+  expect(result.events).toEqual([
+    { event: 'http', operation: 'wallet', status: 200 },
+    { event: 'wallet', balance: 0, dailyCredits: 120000, creditsLeft: 100000, modelEligible: true }
+  ]);
 });
 
 async function childFixture(kind: string, input = 'synthetic prompt', mode: 'ask' | 'wallet' = 'ask') {

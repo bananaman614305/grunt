@@ -100,6 +100,22 @@ it('rejects invalid schemas and uncorrelated results before any request', async 
   ]) await expect(f.source.complete(payload, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
   expect(f.fetcher).not.toHaveBeenCalled();
 });
+it.each([
+  ['request_tools', () => ({ ...request(), tools: [{ ...tool, function: { ...tool.function, parameters: { type: 'imaginary' } } }] })],
+  ['request_tools', () => ({ ...request(), messages: [{ role: 'tool', content: 'private uncorrelated result', tool_call_id: 'invented' }] })],
+  ['request_body', () => ({ ...request(), maxTokens: 0 })],
+  ['request_body', () => ({ ...request(), imageInput: true })],
+  ['request_size', () => ({ ...request(), messages: [{ role: 'user', content: 'private request marker ' + 'x'.repeat(2 * 1024 * 1024) }] })]
+] as const)('records only a fixed %s reason for local request refusals before the network', async (failureReason, makeRequest) => {
+  const f = fixture();
+  const pending = f.source.complete(makeRequest(), new AbortController().signal);
+  await expect(pending).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason } });
+  try { await pending; } catch (error) {
+    expect((error as { diagnostics?: unknown }).diagnostics).toEqual({ failureReason });
+    expect(JSON.stringify((error as { diagnostics?: unknown }).diagnostics)).not.toContain('private');
+  }
+  expect(f.fetcher).not.toHaveBeenCalled();
+});
 it('coalesces Responses parallel calls and preserves both correlated results on the native wire', async () => {
   let sent: Record<string, unknown> = {}; const f = fixture({ infer: init => { sent = JSON.parse(String(init?.body)); return Response.json(result()); } });
   const app = createLocalApp(new Sources([f.source]));

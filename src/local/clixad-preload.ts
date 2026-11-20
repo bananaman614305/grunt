@@ -77,8 +77,7 @@ globalThis.fetch = async function(input, init) {
   if (url.origin !== origin || url.username || url.password || url.search || url.hash) fail();
   const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
   const operation = mode === 'wallet' && method === 'GET' && url.pathname === '/v1/wallet' ? 'wallet'
-    : mode === 'wallet' && method === 'POST' && url.pathname === '/v1/streak/claim' ? 'streak'
-      : mode === 'ask' && method === 'POST' && url.pathname === '/v1/chat/completions' ? 'chat' : undefined;
+    : mode === 'ask' && method === 'POST' && url.pathname === '/v1/chat/completions' ? 'chat' : undefined;
   if (!operation || counts.has(operation)) fail(); counts.set(operation, 1);
   if (operation === 'chat') {
     // Validate the CLI's actual dispatch immediately before its single POST.

@@ -82,6 +82,10 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   url: 'https://numes.ai/docs/privacy/data-retention',
   approval: 'explicit'
 }, {
+  provider: 'aperture-ai', name: 'Aperture Free ERNIE 5.5 Flash', version: '2026-11-20',
+  disclosure: 'Prompts, code and tool context pass through Aperture, OpenRouter and the selected inference provider. Account and operational usage metadata may be retained. Upstream retention, staff review and training guarantees are not established for this route. Grunt uses only the exact zero-priced free alias on a verified Free account and never substitutes a paid model.',
+  url: 'https://www.aperture-ai.run/privacy.html', approval: 'explicit'
+}, {
   provider: 'darus', name: 'Darus Gateway daily free DeepSeek V4.1 Flash', version: '2026-11-20',
   disclosure: 'Prompts, code, tool definitions and tool results pass through Darus Gateway and its inference providers. Retention, staff review, training and deletion guarantees have not been established. Grunt uses only the exact -FREE route with Protect Balance enabled and stops when daily free tokens run out.',
   url: 'https://gateway.darusalfatah.id/dokumentasi', approval: 'explicit'

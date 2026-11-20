@@ -3,6 +3,7 @@ import { mkdtemp, rm, stat, chmod, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { DiagnosticsStore, diagnosticFetch, sanitizeDiagnosticEvent, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import { Sources, SourceError } from './source.js';
@@ -45,6 +46,48 @@ it('persists private bounded history across restart with stable stream identity 
   await expect(reopened.list({ after: '../secret' })).rejects.toThrow();
   await expect(reopened.list({ limit: 501 })).rejects.toThrow();
 });
+
+async function withDatabaseWriter(path: string, holdMs: number, inspect: () => Promise<void>) {
+  const program = `import {createClient} from '@libsql/client'; import {pathToFileURL} from 'node:url';
+    process.umask(0o077);
+    const db=createClient({url:pathToFileURL(process.argv[1]).href});
+    const transaction=await db.transaction('write');
+    process.send?.('locked');
+    await new Promise(resolve=>setTimeout(resolve,Number(process.argv[2])));
+    await transaction.rollback();db.close();process.disconnect?.();`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', program, join(path, 'diagnostics.db'), String(holdMs)],
+    { cwd: process.cwd(), stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  const ended = new Promise<void>(resolve => child.once('exit', () => resolve()));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.once('message', message => message === 'locked' ? resolve() : reject(new Error('Unexpected fixture state')));
+      child.once('error', reject);
+      child.once('exit', () => reject(new Error('Writer exited before taking the lock')));
+    });
+    await inspect();
+  } finally { child.kill(); await ended; }
+}
+
+it('opens a shared diagnostic stream after a brief writer lock in another process', async () => {
+  const path = await directory(), first = await store(path), before = event();
+  first.record(before); const saved = await first.list();
+  await withDatabaseWriter(path, 250, async () => {
+    const second = await store(path);
+    expect(second.health()).toMatchObject({ available: true, droppedEvents: 0 });
+    const after = event(); second.record(after);
+    const rows = await first.list();
+    expect(rows.streamId).toBe(saved.streamId);
+    expect(rows.events.map(row => row.id)).toEqual([before.id, after.id]);
+  });
+});
+
+it('fails closed after bounded contention rather than waiting for a long database writer', async () => {
+  const path = await directory(); await store(path);
+  await withDatabaseWriter(path, 5000, async () => {
+    const blocked = await store(path);
+    expect(blocked.health()).toMatchObject({ available: false, error: 'storage_unavailable' });
+  });
+}, 7500);
 
 it('treats URI punctuation in a private directory as filename data', async () => {
   const parent = await directory(), path = join(parent, 'private?mode=shared'), value = await store(path);

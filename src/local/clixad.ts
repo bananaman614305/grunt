@@ -100,13 +100,21 @@ export interface ClixadEvent { event: string; [key: string]: unknown }
 export interface ClixadRunOptions { cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal; input?: string }
 export interface ClixadRunResult { code: number | null; stdout: string; events: ClixadEvent[] }
 export type ClixadRunner = (entry: string, mode: 'model' | 'wallet' | 'ask', options: ClixadRunOptions) => Promise<ClixadRunResult>;
+// The official `wallet` command claims a streak grant. Read the same account
+// metadata through its pinned native client instead, without changing auth or
+// provider payloads and without any reward action during guards or probes.
+const readWallet = `import { dirname, join } from 'node:path'; import { pathToFileURL } from 'node:url';
+const { GatewayClient, loadConfig } = await import(pathToFileURL(join(dirname(process.argv[1]), 'chunk-OPJ5LW6R.mjs')).href);
+await new GatewayClient(loadConfig()).wallet(AbortSignal.timeout(60000));`;
 export const runClixadProcess: ClixadRunner = async (entry, mode, options) => {
   options.signal.throwIfAborted();
   if (!['linux', 'darwin'].includes(process.platform) || !isAbsolute(entry)) throw missing();
   const started = performance.now();
   const nonce = randomBytes(16).toString('hex'), preload = fileURLToPath(new URL('./clixad-preload.js', import.meta.url));
   return new Promise((resolveResult, reject) => {
-    const child = spawn(process.execPath, ['--import', preload, entry, mode], { cwd: options.cwd,
+    const args = mode === 'wallet' ? ['--import', preload, '--input-type=module', '--eval', readWallet, entry, mode]
+      : ['--import', preload, entry, mode];
+    const child = spawn(process.execPath, args, { cwd: options.cwd,
       env: { ...options.env, GRUNT_CLIXAD_NONCE: nonce }, detached: true, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
     let stdout = '', bytes = 0, failure: unknown; const events: ClixadEvent[] = [], decoder = new StringDecoder('utf8');
     const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Our owned process group only. */ } } };
@@ -181,7 +189,7 @@ function nativeErrors(result: ClixadRunResult) {
 function wallet(result: ClixadRunResult, allowExhausted = false) {
   nativeErrors(result); const rows = result.events.filter(event => event.event === 'wallet'), state = object(rows.length === 1 ? rows[0] : undefined);
   if (result.events.filter(event => event.event === 'http' && event.operation === 'wallet').length !== 1
-    || result.events.some(event => !['wallet', 'http'].includes(event.event) || event.event === 'http' && !['wallet', 'streak'].includes(String(event.operation)))
+    || result.events.some(event => !['wallet', 'http'].includes(event.event) || event.event === 'http' && event.operation !== 'wallet')
     || state.balance !== 0 || state.modelEligible !== true || typeof state.dailyCredits !== 'number' || !Number.isFinite(state.dailyCredits) || state.dailyCredits <= 0
     || typeof state.creditsLeft !== 'number' || !Number.isFinite(state.creditsLeft) || state.creditsLeft < 0) throw new SourceError('refused', 'Clixad requires zero account balance and verified free GLM allowance');
   if (!allowExhausted && state.creditsLeft === 0) {
@@ -194,7 +202,7 @@ async function nativeAccess(paths: ReturnType<typeof clixadPaths>, runner: Clixa
   if (pin.events.length || pin.stdout.trim() !== `current model: ${CLIXAD_MODEL}`) throw new SourceError('refused', 'Clixad native model changed; select GLM 5.3 Flash explicitly in setup');
   wallet(await abortable(runner(paths.entry, 'wallet', options), signal));
 }
-/** Called by explicit setup/user requests only: native wallet may claim its ordinary daily streak bonus. */
+/** Read-only native access verification; never claims rewards or changes credit. */
 export async function verifyClixadAccess(options: { directory: string; runner?: ClixadRunner; fetcher?: typeof fetch; signal?: AbortSignal }) {
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(60000)]);
   signal.throwIfAborted();

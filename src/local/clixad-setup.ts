@@ -154,7 +154,7 @@ async function login(options: ClixadSetupOptions, paths: ReturnType<typeof clixa
   try { const result = await run; if (combined.aborted || failed || result.code !== 0 || !pairing) throw failure(); await pairing; if (combined.aborted) throw failure(); }
   finally { lifetime.abort(); await rm(openers, { recursive: true, force: true }); }
 }
-/** Explicit user setup only; the native wallet can claim its ordinary daily streak bonus. */
+/** Explicit user setup only; account checks use read-only native wallet access. */
 export async function setupClixad(options: ClixadSetupOptions): Promise<void> {
   if (!DATA_SHARING_POLICIES.some(policy => policy.provider === 'clixad')) throw new Error('Clixad data-sharing policy is unavailable');
   const approved = await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider));
@@ -190,7 +190,7 @@ export async function setupClixad(options: ClixadSetupOptions): Promise<void> {
     }
     browserStarted = true;
     await bounded(() => options.squire.signup('clixad', CLIXAD_DASHBOARD,
-      'Use this user\'s existing personal GitHub identity to sign in to the ordinary Clixad account, or create its one normal free account if absent. Do not open the wallet or billing to audit it. Clixad uses optional prepaid credit packs: never add a card, payment method, subscription, auto-charge, deposit or paid credits. Do not change existing billing, switch identities, reset or rotate existing native authentication, create a public API key, run offers, earn credits, automate feedback, or claim rewards. The native CLI may perform its ordinary daily streak claim during this explicit setup only. Accept only required terms under the current grouped data-sharing approval; leave optional marketing off. The official CLI GitHub device pairing follows separately with read-only profile/email scopes. Stop on refusal and report required human verification for browser handoff.'), signal);
+      'Use this user\'s existing personal GitHub identity to sign in to the ordinary Clixad account, or create its one normal free account if absent. Do not open the wallet or billing to audit it. Clixad uses optional prepaid credit packs: never add a card, payment method, subscription, auto-charge, deposit or paid credits. Do not change existing billing, switch identities, reset or rotate existing native authentication, create a public API key, run offers, earn credits, automate feedback, or claim rewards. Account metadata checks are read-only and must never claim rewards. Accept only required terms under the current grouped data-sharing approval; leave optional marketing off. The official CLI GitHub device pairing follows separately with read-only profile/email scopes. Stop on refusal and report required human verification for browser handoff.'), signal);
     if (signal.aborted) throw failure();
     if (!existed && await nativeConfig(native)) throw failure();
     await login(options, paths, signal);

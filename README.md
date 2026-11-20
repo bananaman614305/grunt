@@ -137,6 +137,8 @@ CrowLLM is an optional source connected with `npx usegrunt add crowllm`. Squire 
 
 Darus Gateway uses the pinned `darus/deepseek-v4.1-flash-1017-FREE` route. Its Free tier advertises 10 million provider-metered tokens daily, resetting at 00:00 UTC. Each request verifies the free catalog entry, current daily allowance and Protect Balance setting, so exhaustion cannot continue through the wallet. See the [Darus reference](docs/reference.md#darus-daily-free-source).
 
+Aperture uses the pinned `baidu/ernie-5.5-flash-preview:free` route on a verified Free account, with fresh zero-price catalog checks before dispatch. Its published allowance is 200 requests/day and 20/minute, with the daily allowance resetting at 00:00 UTC. See the [Aperture reference](docs/reference.md#aperture-daily-free-source).
+
 Fikra and Openference are included in automatic Squire onboarding for their temporary free DeepSeek V4.1 Flash offers. Both passed live Grunt reply, native-tool and 200K-input checks. Every request verifies the exact free alias and zero pricing; Fikra also checks its live shared-budget gate. Closed promotions stop routing without paid fallback, and Fikra signup does not start when its gate is closed. See the [temporary-source reference](docs/reference.md#temporary-free-sources).
 
 
