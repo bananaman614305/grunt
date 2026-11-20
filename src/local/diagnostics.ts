@@ -149,6 +149,9 @@ export class DiagnosticsStore {
       // diagnostics storage or need the SQLite driver's runtime dependencies.
       const { createClient } = await import('@libsql/client');
       db = createClient({ url: pathToFileURL(path).href });
+      // Sibling Grunt processes share this stream. Brief writer contention
+      // must not permanently disable the process that opens the store second.
+      await db.execute('PRAGMA busy_timeout=1000');
       await db.executeMultiple(`PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS diagnostic_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS diagnostic_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, at INTEGER NOT NULL, request_id TEXT NOT NULL, source TEXT, type TEXT NOT NULL, outcome TEXT, data TEXT NOT NULL);
