@@ -46,7 +46,7 @@ import { DailyMaintenance } from './maintenance.js';
 import { SourceRecovery } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
-import { WorkerPool } from './worker-pool.js';
+import { createWorkerRuntime } from './worker-runtime.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
   const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
@@ -181,11 +181,12 @@ export function start(env = process.env) {
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
   const port = positive(gruntEnv('PORT', env), 8788);
   if (port > 65535) throw new Error('GRUNT_PORT must be at most 65535');
-  const workers = new WorkerPool(sources);
-  const app = createLocalApp(sources, { port, workers, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
+  const workerRuntime = createWorkerRuntime(sources, { directory });
+  const { workers, scopes: workerScopes } = workerRuntime;
+  const app = createLocalApp(sources, { port, workers, workerScopes, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; await refreshSession(); return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;
-  const close = async () => { if (closing) return; closing = true; await Promise.all([workers.close(), maintenance.close(), sync.close(), recovery.close()]); await sources.close(); await diagnosticReady; await diagnostics?.close(); server.close(); };
+  const close = async () => { if (closing) return; closing = true; await Promise.all([workerRuntime.close(), maintenance.close(), sync.close(), recovery.close()]); await sources.close(); await diagnosticReady; await diagnostics?.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, close };
 }
