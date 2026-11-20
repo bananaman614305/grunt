@@ -1,9 +1,31 @@
 import { access, readdir, stat } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
+import { bundledRegistry } from '../registry.js';
 import { currentDiagnosticContext } from './diagnostics.js';
-import { answeredBy, SourceError } from './source.js';
+import { answeredBy, SourceError, Sources } from './source.js';
 import type { ModelRequest } from './source.js';
 import { MAX_WORKER_CONTEXT_BYTES, MAX_WORKER_TASK_BYTES, parseWorkerTask, WorkerPool } from './worker-pool.js';
+import type { WorkerAgentWorkspace, WorkerArtifact } from './worker-agent.js';
+
+const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+function agentWorkspace(ownedPath = 'file.txt') {
+  let content = 'original';
+  const workspace: WorkerAgentWorkspace = {
+    id: randomUUID(), path: '/private-agent-fixture', capabilities: { filesystem: true, commands: false, sandbox: 'filesystem' },
+    tools: [{ type: 'function', function: { name: 'worker_write', parameters: { type: 'object', required: ['content'], additionalProperties: false,
+      properties: { content: { type: 'string' } } } } }],
+    executeTool: vi.fn(async (_name, args) => { content = (args as { content: string }).content; return { ok: true }; }),
+    artifact: vi.fn(async (): Promise<WorkerArtifact> => ({ id: workspace.id, complete: true, truncated: false,
+      files: content === 'original' ? [] : [{ path: ownedPath, beforeSha256: hash('original'), afterSha256: hash(content), content }] })),
+    cleanup: vi.fn(async () => {})
+  };
+  return workspace;
+}
+function agentReply(content = 'updated') {
+  const value = { text: '', calls: [{ id: 'call_0', type: 'function' as const, function: { name: 'worker_write', arguments: JSON.stringify({ content }) } }] };
+  answeredBy.set(value, 'kilo'); return value;
+}
 
 const signal = () => new AbortController().signal;
 
@@ -137,4 +159,105 @@ it('reports typed failures and retry time without returning provider error bodie
     expect(invalid).toEqual({ ok: false, code: 'unavailable', id: expect.any(String) });
     expect(JSON.stringify(pool.status())).not.toMatch(/Private|private-host/);
   } finally { await pool.close(); }
+});
+
+it('requires explicit agent mode, normalized ownership and a trusted project scope', async () => {
+  const complete = vi.fn(), pool = new WorkerPool({ complete });
+  for (const value of [
+    { task: 'x', mode: 'agent' }, { task: 'x', mode: 'agent', ownedPaths: [] },
+    { task: 'x', mode: 'agent', ownedPaths: ['../escape'] }, { task: 'x', mode: 'agent', ownedPaths: ['/absolute'] },
+    { task: 'x', mode: 'agent', ownedPaths: ['.git/config'] }, { task: 'x', mode: 'proposal', ownedPaths: ['file'] },
+    { task: 'x', mode: 'agent', ownedPaths: ['file'], projectRoot: '/private' },
+  ]) expect(await pool.run(value, signal(), { projectRoot: '/project' })).toEqual({ ok: false, code: 'invalid_task' });
+  const task = { task: 'x', mode: 'agent', ownedPaths: ['file.txt'] };
+  expect(await pool.run(task, signal())).toEqual({ ok: false, code: 'invalid_task', reason: 'invalid_workspace' });
+  expect(await pool.run(task, signal(), { projectRoot: '/project' })).toEqual({ ok: false, code: 'unavailable', reason: 'agent_unavailable' });
+  expect(complete).not.toHaveBeenCalled(); await pool.close();
+});
+
+it('keeps two agent tool loops alongside the main route and never sends workers to a custom source', async () => {
+  const parentHold = block(), workerHold = block();
+  const makeSource = (id: string) => ({ id, supportsFunctionTools: true, available: vi.fn(async () => true),
+    complete: vi.fn(async (request: ModelRequest) => {
+      if (!request.tools.length) { await parentHold.wait; return { text: 'Parent completed' }; }
+      if (!request.messages.some(message => message.role === 'tool')) { await workerHold.wait; return {
+        text: '', calls: [{ id: 'call_0', type: 'function' as const, function: { name: 'worker_write', arguments: '{"content":"scoped edit"}' } }]
+      }; }
+      return { text: 'Worker completed' };
+    }) });
+  const custom = makeSource('custom-paid'), kilo = makeSource('kilo'), zro = makeSource('zro');
+  const sources = new Sources([custom, kilo, zro]); sources.setWorkerRegistry(() => bundledRegistry);
+  const workspaces: WorkerAgentWorkspace[] = [];
+  const pool = new WorkerPool(sources, 3000, { createAgentWorkspace: async options => { const workspace = agentWorkspace(options.ownedPaths[0]); workspaces.push(workspace); return workspace; } });
+  const parent = sources.complete({ model: 'grunt', cwd: '/project', messages: [{ role: 'user', content: 'parent' }], tools: [], stream: false }, signal());
+  await vi.waitFor(() => expect(custom.complete).toHaveBeenCalledOnce());
+  const jobs = ['one.txt', 'two.txt'].map(path => pool.run({ task: 'Independent work', mode: 'agent', ownedPaths: [path] }, signal(), { projectRoot: '/project' }));
+  try {
+    await vi.waitFor(() => expect(sources.status().activeRequests).toBe(3));
+    expect(sources.status().sources.map(source => source.active)).toEqual([1, 1, 1]);
+    parentHold.release(); expect((await parent).text).toBe('Parent completed');
+    expect(pool.status().active).toHaveLength(2);
+    workerHold.release();
+    const results = await Promise.all(jobs);
+    expect(results.every(result => result.ok && result.source !== custom.id && result.artifact?.complete)).toBe(true);
+    expect(custom.complete).toHaveBeenCalledOnce();
+    expect(workspaces.every(workspace => vi.mocked(workspace.executeTool).mock.calls.length === 1)).toBe(true);
+  } finally { parentHold.release(); workerHold.release(); await Promise.all(jobs); await pool.close(); await sources.close(); }
+});
+
+it('retains late partial artifacts after prompt cancellation and protects them with the project scope', async () => {
+  const workspace = agentWorkspace(), release = block(), controller = new AbortController(); let count = 0;
+  const complete = vi.fn(async (_request: ModelRequest, caller: AbortSignal) => {
+    if (++count === 1) return agentReply('partial edit');
+    await release.wait; caller.throwIfAborted(); return reply('kilo');
+  });
+  const pool = new WorkerPool({ complete }, 3000, { createAgentWorkspace: async () => workspace });
+  const scope = { projectRoot: '/project' }, job = pool.run({ task: 'Implement', mode: 'agent', ownedPaths: ['file.txt'] }, controller.signal, scope);
+  await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2)); controller.abort();
+  const failure = await job; expect(failure).toMatchObject({ ok: false, code: 'cancelled', id: expect.any(String) });
+  expect(pool.status().active).toHaveLength(1);
+  release.release(); await vi.waitFor(() => expect(pool.status().active).toHaveLength(0));
+  const artifact = pool.artifact(failure.id!, scope)!;
+  expect(artifact.files[0]!.content).toBe('partial edit');
+  expect(pool.artifact(failure.id!, { projectRoot: '/other' })).toBeUndefined();
+  expect(pool.retained({ projectRoot: '/other' })).toEqual([]);
+  expect(await pool.discardArtifact(failure.id!, { projectRoot: '/other' })).toBe(false);
+  artifact.files[0]!.content = 'caller mutation';
+  expect(pool.artifact(failure.id!, scope)!.files[0]!.content).toBe('partial edit');
+  expect(pool.retained(scope)[0]).toMatchObject({ state: 'cancelled', artifactAvailable: true, waitingForSource: false });
+  await pool.close(); expect(workspace.cleanup).not.toHaveBeenCalled();
+  expect(await pool.discardArtifact(failure.id!, scope)).toBe(true);
+  expect(workspace.cleanup).toHaveBeenCalledOnce(); expect(pool.artifact(failure.id!, scope)).toBeUndefined();
+  expect(pool.status().recent[0]!.artifactAvailable).toBe(false);
+});
+
+it('passes private initial snapshots only to the trusted workspace factory, not model context or status', async () => {
+  const workspace = agentWorkspace(), factory = vi.fn(async () => workspace), transitions: unknown[] = [];
+  const snapshot = [{ path: 'file.txt', content: 'private-whole-snapshot', sha256: hash('private-whole-snapshot') }];
+  const complete = vi.fn(async (request: ModelRequest) => {
+    expect(JSON.stringify(request.messages)).not.toMatch(/private-whole-snapshot|projectRoot|sha256/);
+    request.worker!.onWait?.(); request.worker!.onSource('kilo'); return reply('kilo');
+  });
+  const pool = new WorkerPool({ complete }, 3000, { createAgentWorkspace: factory, onTransition: (status, event) => { transitions.push({ status, event }); } });
+  const result = await pool.run({ task: 'Inspect approved files', mode: 'agent', ownedPaths: ['file.txt'], activity: 'review' }, signal(), { projectRoot: '/private-project', initialSnapshot: snapshot });
+  expect(result.ok).toBe(true); expect(factory).toHaveBeenCalledWith({ projectRoot: '/private-project', initialSnapshot: snapshot, readOnly: true, ownedPaths: ['file.txt'] }, expect.any(AbortSignal));
+  expect(JSON.stringify(transitions)).not.toMatch(/private-whole-snapshot|private-project|Inspect approved|file.txt/);
+  expect(transitions).toEqual(expect.arrayContaining([expect.objectContaining({ event: 'waiting', status: expect.objectContaining({ waitingForSource: true }) }),
+    expect.objectContaining({ event: 'source', status: expect.objectContaining({ waitingForSource: false, source: 'kilo' }) })]));
+  expect(pool.status().recent[0]).toMatchObject({ mode: 'agent', turns: 1, toolCalls: 0, capabilities: { filesystem: true, commands: false }, artifactAvailable: true });
+  await pool.close();
+});
+
+it('does not overwrite ownership leases or silently evict retained agent work', async () => {
+  const workspace = agentWorkspace(), hold = block();
+  const complete = vi.fn(async () => { await hold.wait; return reply('kilo'); });
+  const pool = new WorkerPool({ complete }, 3000, { createAgentWorkspace: async () => workspace });
+  const scope = { projectRoot: '/project' }, input = { task: 'Implement', mode: 'agent', ownedPaths: ['src'] };
+  const job = pool.run(input, signal(), scope);
+  expect(await pool.run({ ...input, ownedPaths: ['src/file.ts'] }, signal(), scope)).toEqual({ ok: false, code: 'busy' });
+  hold.release(); const result = await job;
+  expect(await pool.run(input, signal(), scope)).toEqual({ ok: false, code: 'busy' });
+  expect(await pool.discardArtifact(result.id!, scope)).toBe(true);
+  expect((await pool.run(input, signal(), scope)).ok).toBe(true);
+  await pool.close();
 });
