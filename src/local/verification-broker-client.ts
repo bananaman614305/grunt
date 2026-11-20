@@ -17,7 +17,9 @@ async function privateDirectory(path: string) {
 }
 async function read(path: string, limit: number) {
   const f = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try { const st = await f.stat(); if (!st.isFile() || process.getuid && st.uid !== process.getuid() || (st.mode & 0o077) || st.size > limit) throw new Error('Unsafe verification broker message.'); return JSON.parse(await f.readFile('utf8')) as unknown; }
+  try { const st = await f.stat(); if (!st.isFile() || process.getuid && st.uid !== process.getuid() || (st.mode & 0o077) || st.size > limit) throw new Error('Unsafe verification broker message.'); const bytes = Buffer.alloc(limit + 1); const read = await f.read(bytes, 0, bytes.length, 0); const after = await f.stat();
+    if (read.bytesRead > limit || read.bytesRead !== st.size || after.size !== st.size || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) throw new Error('Verification broker message changed while reading.');
+    return JSON.parse(bytes.subarray(0, read.bytesRead).toString('utf8')) as unknown; }
   finally { await f.close(); }
 }
 async function atomic(path: string, value: unknown) {

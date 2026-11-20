@@ -1,14 +1,15 @@
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { VerificationBroker, parseVerificationBrokerRequest } from './verification-broker.js';
 import type { VerificationBrokerRunner, VerificationBrokerRequest } from './verification-broker.js';
 import { createVerificationBrokerFileClient, tickVerificationBroker } from './verification-broker-client.js';
-import { captureVerificationState, verificationEnvironmentDigest } from './verification.js';
+import { captureVerificationState, signVerificationReceipt, verificationEnvironmentDigest } from './verification.js';
 import type { VerificationPlan } from './verification.js';
 
 const exec = promisify(execFile);
@@ -155,4 +156,31 @@ it('prunes only old terminal host receipts that are not protected by pending pub
   await broker.run(f.request); now += 8 * 86400000;
   expect(await broker.prune([f.request.id])).toEqual({ removed: 0 }); expect(await broker.prune([])).toEqual({ removed: 1 });
   expect(await broker.status(f.request.id)).toBeUndefined();
+});
+
+it('rejects a worker-created FIFO result without waiting for a writer', async () => {
+  const channels = { projectRoot: project, inboxDirectory: join(root, 'inbox'), resultDirectory: join(root, 'results') };
+  const client = createVerificationBrokerFileClient(channels), queued = await client.start({ planId: 'publish', checkId: 'unit' }, { cwd: project });
+  const path = join(channels.resultDirectory, queued.id + '.json'); await exec('mkfifo', ['-m', '600', path]);
+  const pending = client.result({ id: queued.id }, { cwd: project }).then(() => 'accepted', () => 'rejected');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<string>(resolve => { timer = setTimeout(() => resolve('blocked'), 500); });
+  const outcome = await Promise.race([pending, deadline]); if (timer) clearTimeout(timer);
+  // If a regression blocks in open(), release it before asserting, so no worker/thread is abandoned.
+  const release = await open(path, constants.O_RDWR | constants.O_NONBLOCK); await release.close(); await pending;
+  expect(outcome).toBe('rejected');
+});
+
+it('rejects absent required artifacts both at execution and when authenticating a completed receipt', async () => {
+  await rm(join(project, 'dist'), { recursive: true }); await exec('git', ['add', '-u'], { cwd: project });
+  await exec('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'remove fixture artifacts'], { cwd: project });
+  const f = await fixture(), result = await f.broker.run(f.request);
+  expect(result.state).toBe('failed'); expect(result.receipt?.after.missingArtifacts).toEqual(['dist']);
+  await expect(f.broker.verifiedReceipt(f.request.id)).rejects.toThrow();
+  // Simulate authentic evidence from an older broker: host authentication must independently fail closed.
+  const path = join(authority, 'requests', f.request.id);
+  const legacy = signVerificationReceipt({ ...result.receipt!, state: 'completed' }, await readFile(join(authority, 'authority.key')));
+  await writeFile(join(path, 'verification.json'), JSON.stringify(legacy), { mode: 0o600 });
+  await writeFile(join(path, 'status.json'), JSON.stringify({ ...result, state: 'completed', receipt: undefined }), { mode: 0o600 });
+  await expect(f.broker.verifiedReceipt(f.request.id)).rejects.toThrow();
 });

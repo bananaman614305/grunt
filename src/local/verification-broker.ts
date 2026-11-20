@@ -41,7 +41,9 @@ async function readJSON(path: string, limit = 128 * 1024): Promise<unknown> {
   try {
     const st = await f.stat();
     if (!st.isFile() || process.getuid && st.uid !== process.getuid() || (st.mode & 0o077) !== 0 || st.size > limit) throw safeError();
-    return JSON.parse(await f.readFile('utf8'));
+    const bytes = Buffer.alloc(limit + 1); const read = await f.read(bytes, 0, bytes.length, 0); const after = await f.stat();
+    if (read.bytesRead > limit || read.bytesRead !== st.size || after.size !== st.size || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) throw safeError();
+    return JSON.parse(bytes.subarray(0, read.bytesRead).toString('utf8'));
   } finally { await f.close(); }
 }
 async function atomic(path: string, value: unknown) {
@@ -164,7 +166,7 @@ export class VerificationBroker {
       const inSnapshot = await captureVerificationState(workspace, artifacts);
       after = await captureVerificationState(this.project, artifacts);
       const unchanged = sameVerificationState(before, after) && sameVerificationState(before, { ...inSnapshot, projectRoot: this.project });
-      const passed = exitCode === 0 && unchanged;
+      const passed = exitCode === 0 && unchanged && !before.missingArtifacts.length && !after.missingArtifacts.length && !inSnapshot.missingArtifacts.length;
       const receipt: VerificationReceipt = signVerificationReceipt({ version: 1, id: request.id, checkId: check.id, mode: 'release', planDigest: verificationPlanDigest(plan), commandDigest: verificationCommandDigest(check.command),
         state: passed ? 'completed' : 'failed', exitCode, completedAt: (this.options.now ?? Date.now)(), unchanged, before, after, environmentDigest: this.options.environmentDigest }, this.key);
       await writeVerificationReceipt(path, receipt);
@@ -178,7 +180,7 @@ export class VerificationBroker {
   /** Publication calls this on the host; a model-supplied `verified:true` is never accepted. */
   async verifiedReceipt(id: string) {
     const status = await this.status(id), receipt = status?.receipt;
-    if (!receipt || status.state !== 'completed' || receipt.state !== 'completed' || receipt.exitCode !== 0 || !receipt.unchanged || !receipt.before.clean || !receipt.after.clean || !sameVerificationState(receipt.before, receipt.after) || receipt.environmentDigest !== this.options.environmentDigest || receipt.completedAt > (this.options.now ?? Date.now)()) throw safeError();
+    if (!receipt || status.state !== 'completed' || receipt.state !== 'completed' || receipt.exitCode !== 0 || !receipt.unchanged || !receipt.before.clean || !receipt.after.clean || receipt.before.missingArtifacts.length > 0 || receipt.after.missingArtifacts.length > 0 || !sameVerificationState(receipt.before, receipt.after) || receipt.environmentDigest !== this.options.environmentDigest || receipt.completedAt > (this.options.now ?? Date.now)()) throw safeError();
     const plan = this.plans.find(p => verificationPlanDigest(p) === receipt.planDigest), check = plan?.checks.find(c => c.id === receipt.checkId);
     if (!check || receipt.commandDigest !== verificationCommandDigest(check.command) || !sameVerificationState(await captureVerificationState(this.project, check.artifactPaths ?? []), receipt.after)) throw safeError();
     return { id: receipt.id, projectRoot: this.project, head: receipt.after.head, treeDigest: receipt.after.treeDigest, artifactDigest: receipt.after.artifactDigest, checkId: receipt.checkId, mode: 'release' as const, state: 'completed' as const, exitCode: 0 as const, unchanged: true as const, verified: true as const, receipt };
