@@ -593,6 +593,40 @@ validity and requires zero input, output and per-request price. A missing,
 changed or unavailable price blocks inference. The source uses normal Grunt
 cooldowns and fallback. The account's welcome credit is separate from this route.
 
+### Temporary free sources
+
+`npx usegrunt add fikra` and `npx usegrunt add openference` connect optional
+sources through service-scoped Squire credentials named **Grunt Free**. Setup
+records provider-specific data-sharing approval and verifies the live free gate
+and catalog. Human challenges require a person; setup never bypasses them, adds
+payment details, buys credits, or creates duplicate accounts. Background setup
+only reuses existing verified access. Credential files contain private Squire
+grants with mode 0600.
+
+| Source | Exact model | Expiry and checks |
+| --- | --- | --- |
+| Fikra | `deepseek-v4-1-flash-economy-free` | Zero input/output price, at least 204,096 catalog context, a fresh active gate, and remaining shared dollar/token budgets before each dispatch. The earlier live expiry wins; the gate reported November 23 UTC on November 20 despite the page saying November 25. A hard November 25 cutoff prevents extensions without review. |
+| Openference | `DeepSeek-V4.1-Flash-1017-Free` | Exact free flag, zero prompt/output/cache prices and quota multiplier, native tool support, at least 204,096 catalog context, and expiry after December 31, 2026 UTC. Always uses upstream SSE, including usage and indexed native tool fragments. |
+
+These are promotional windows, not recurring token grants. Neither source is
+in default onboarding: live text, native-tool and 200K-input tests remain
+pending account access. Catalog context alone is not a successful context test.
+Fikra advertises 1,000 requests/minute and 100,000/day with no token cap on the
+free alias; the shared promotion can close earlier. Openference does not
+publish the numeric daily allowance. Its 429 `resets_at` and `Retry-After`
+metadata enter normal cooldown tracking; concurrency limits do not imply
+next-day exhaustion. Neither adapter retries a paid model or spends a wallet.
+
+Openference's free page permits compatible clients, but its terms separately
+restrict unattended workloads. Until that scope is resolved, Grunt permits
+only requests explicitly naming `openference`; automatic selection, subworkers
+and inference maintenance cannot use it. No client identity spoofing is used.
+
+Primary sources: [Fikra free offer](https://fikraapi.co.ke/free-deepseek-api),
+[Fikra live gate](https://fikraapi.co.ke/free-deepseek-api/status.json),
+[Openference free offer](https://openference.com/free-ai-api), and
+[Openference terms](https://openference.com/terms-of-service).
+
 The additional experimental routes have these requirements:
 
 | Source | Selected route | Free-account requirements and allowance |
