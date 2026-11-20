@@ -38,6 +38,7 @@ export interface WorkerArtifact {
 export interface WorkerCapabilities { filesystem: boolean; commands: boolean; sandbox?: 'bubblewrap' | 'filesystem' }
 export interface WorkerAgentWorkspace {
   readonly id: string;
+  readonly recoveryId?: string;
   readonly path: string;
   readonly tools: ModelRequest['tools'];
   readonly capabilities?: WorkerCapabilities;
@@ -48,6 +49,7 @@ export interface WorkerAgentWorkspace {
 export interface WorkerInitialFile { path: string; content: string; binary?: boolean; sha256?: string }
 export interface WorkerWorkspaceOptions { projectRoot: string; ownedPaths: string[]; readOnly?: boolean; initialSnapshot?: WorkerInitialFile[] }
 export type WorkerWorkspaceFactory = (options: WorkerWorkspaceOptions, signal: AbortSignal) => Promise<WorkerAgentWorkspace>;
+export type WorkerWorkspaceRestorer = (options: { recoveryId: string; workspaceId: string }, signal: AbortSignal) => Promise<WorkerAgentWorkspace>;
 export type WorkerAgentFailureReason = 'invalid_workspace' | 'agent_unavailable' | 'unsupported_sandbox' | 'workspace_failed'
   | 'invalid_completion' | 'turn_limit' | 'tool_limit' | 'output_limit' | 'context_limit';
 export interface WorkerAgentProgress {
@@ -70,6 +72,7 @@ export interface WorkerAgentInput {
   onSource?(source: string): void;
   onWait?(): void;
   onProgress?(progress: WorkerAgentProgress): void;
+  onWorkspace?(workspace: WorkerAgentWorkspace): Promise<void>;
 }
 export interface WorkerAgentOutcome {
   ok: boolean;
@@ -131,7 +134,7 @@ function toolMessage(value: unknown) {
   } catch { /* Tool results never inject arbitrary exceptions into model context. */ }
   return '{"ok":false,"error":"tool_output_limit"}';
 }
-function safeArtifact(value: unknown, workspaceId: string, ownedPaths: string[]): WorkerArtifact {
+export function safeWorkerArtifact(value: unknown, workspaceId: string, ownedPaths: string[]): WorkerArtifact {
   const unavailable = (): WorkerArtifact => ({ id: workspaceId, files: [], complete: false, truncated: true,
     summary: 'Partial work is retained; inspect the workspace before integration.' });
   try {
@@ -182,6 +185,10 @@ async function artifactCheckpoint(workspace: WorkerAgentWorkspace) {
     })]);
   } finally { if (timer) clearTimeout(timer); }
 }
+export async function readWorkerArtifact(workspace: WorkerAgentWorkspace, ownedPaths: string[]): Promise<WorkerArtifact> {
+  try { return safeWorkerArtifact(await artifactCheckpoint(workspace), workspace.id, ownedPaths); }
+  catch { return { id: workspace.id, files: [], complete: false, truncated: true, summary: 'Partial work is retained; inspect the workspace before integration.' }; }
+}
 
 /** A daemon-owned loop: provider inference never runs in a tool subprocess. */
 export async function runWorkerAgent(sources: Pick<Sources, 'complete'>, input: WorkerAgentInput): Promise<WorkerAgentOutcome> {
@@ -197,6 +204,7 @@ export async function runWorkerAgent(sources: Pick<Sources, 'complete'>, input: 
     workspace = await input.createWorkspace({ projectRoot: input.projectRoot, ownedPaths: [...input.ownedPaths], ...(input.readOnly ? { readOnly: true } : {}),
       ...(input.initialSnapshot === undefined ? {} : { initialSnapshot: input.initialSnapshot }) }, input.signal);
     if (!identifier.test(workspace.id) || typeof workspace.path !== 'string' || !isAbsolute(workspace.path)) throw new AgentLimit('workspace_failed');
+    await input.onWorkspace?.(workspace);
     capabilities = workspace.capabilities ? { filesystem: workspace.capabilities.filesystem === true, commands: workspace.capabilities.commands === true,
       ...(workspace.capabilities.sandbox === 'bubblewrap' || workspace.capabilities.sandbox === 'filesystem' ? { sandbox: workspace.capabilities.sandbox } : {}) }
       : { filesystem: true, commands: workspace.tools.some(tool => object(tool.function) && tool.function.name === 'worker_command') };
@@ -261,9 +269,7 @@ export async function runWorkerAgent(sources: Pick<Sources, 'complete'>, input: 
     if (workspace && identifier.test(workspace.id)) {
       // Cancellation is not permission to discard partial edits. Use a separate
       // bounded read signal because the caller's signal may already be aborted.
-      let artifact: WorkerArtifact;
-      try { artifact = safeArtifact(await artifactCheckpoint(workspace), workspace.id, input.ownedPaths); }
-      catch { artifact = { id: workspace.id, files: [], complete: false, truncated: true, summary: 'Partial work is retained; inspect the workspace before integration.' }; }
+      const artifact = await readWorkerArtifact(workspace, input.ownedPaths);
       if (outcome.ok && (!artifact.complete || artifact.truncated || input.readOnly && artifact.files.length)) {
         outcome = { ok: false, code: 'unavailable', reason: 'workspace_failed', turns, toolCalls };
       }

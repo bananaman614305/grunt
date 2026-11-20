@@ -1,6 +1,8 @@
-import { access, readdir, stat } from 'node:fs/promises';
+import { access, readdir, stat, mkdtemp, rm, readFile, writeFile, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { bundledRegistry } from '../registry.js';
 import { currentDiagnosticContext } from './diagnostics.js';
 import { answeredBy, SourceError, Sources } from './source.js';
@@ -9,6 +11,9 @@ import { MAX_WORKER_CONTEXT_BYTES, MAX_WORKER_TASK_BYTES, parseWorkerTask, Worke
 import type { WorkerAgentWorkspace, WorkerArtifact } from './worker-agent.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+const retentionRoots: string[] = [];
+afterEach(async () => { await Promise.all(retentionRoots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+async function retentionRoot() { const path = await mkdtemp(join(tmpdir(), 'grunt-worker-retention-')); retentionRoots.push(path); return path; }
 function agentWorkspace(ownedPath = 'file.txt') {
   let content = 'original';
   const workspace: WorkerAgentWorkspace = {
@@ -246,6 +251,75 @@ it('passes private initial snapshots only to the trusted workspace factory, not 
     expect.objectContaining({ event: 'source', status: expect.objectContaining({ waitingForSource: false, source: 'kilo' }) })]));
   expect(pool.status().recent[0]).toMatchObject({ mode: 'agent', turns: 1, toolCalls: 0, capabilities: { filesystem: true, commands: false }, artifactAvailable: true });
   await pool.close();
+});
+
+it('recovers durable quota artifacts, ownership and retry metadata across independent pool instances', async () => {
+  const directory = await retentionRoot(), workspace = { ...agentWorkspace(), recoveryId: 'worker-test_recovery' }, scope = { projectRoot: '/project', projectIdentity: hash('original project inode') };
+  const restore = vi.fn(async () => workspace);
+  const complete = vi.fn().mockResolvedValueOnce(agentReply('durable partial')).mockRejectedValueOnce(new SourceError('quota', 'private upstream', 120));
+  const options = { createAgentWorkspace: async () => workspace, restoreAgentWorkspace: restore, retentionDirectory: directory };
+  const first = new WorkerPool({ complete }, 3000, options);
+  const result = await first.run({ task: 'secret task text', context: 'secret reference', mode: 'agent', ownedPaths: ['file.txt'] }, signal(), scope);
+  expect(result).toMatchObject({ ok: false, code: 'quota', artifact: { files: [{ content: 'durable partial' }] } });
+  await first.close();
+  const body = await readFile(join(directory, `${result.id}.json`), 'utf8');
+  expect(body).not.toMatch(/secret task text|secret reference|private upstream/);
+  expect((await stat(join(directory, `${result.id}.json`))).mode & 0o077).toBe(0);
+  const restarted = new WorkerPool({ complete: vi.fn() }, 3000, options); await restarted.ready();
+  expect(restore).toHaveBeenCalledWith({ workspaceId: workspace.id, recoveryId: workspace.recoveryId }, expect.any(AbortSignal));
+  expect(restarted.retained(scope)).toMatchObject([{ id: result.id, state: 'failed', code: 'quota', nextAttemptAt: expect.any(Number), artifactAvailable: true }]);
+  expect(restarted.artifact(result.id!, scope)?.files[0]!.content).toBe('durable partial');
+  expect(restarted.artifactOwnership(result.id!, scope)).toEqual(['file.txt']);
+  expect(restarted.artifactOwnership(result.id!, { projectRoot: '/other' })).toBeUndefined();
+  const replacement = { projectRoot: scope.projectRoot, projectIdentity: hash('replacement project inode') };
+  expect(restarted.artifact(result.id!, replacement)).toBeUndefined();
+  expect(restarted.artifact(result.id!, { projectRoot: scope.projectRoot })).toBeUndefined();
+  expect(restarted.artifactOwnership(result.id!, replacement)).toBeUndefined();
+  expect(restarted.retained(replacement)).toEqual([]);
+  expect(await restarted.discardArtifact(result.id!, replacement)).toBe(false);
+  const ownership = restarted.artifactOwnership(result.id!, scope)!; ownership.push('other');
+  expect(restarted.artifactOwnership(result.id!, scope)).toEqual(['file.txt']);
+  expect(await restarted.discardArtifact(result.id!, scope)).toBe(true); await restarted.close();
+  const third = new WorkerPool({ complete: vi.fn() }, 3000, options); await third.ready();
+  expect(third.retained(scope)).toEqual([]); expect(workspace.cleanup).toHaveBeenCalledOnce(); await third.close();
+});
+
+it('marks interrupted durable jobs cancelled and recaptures later disk changes without resuming inference', async () => {
+  const directory = await retentionRoot(), workspace = { ...agentWorkspace(), recoveryId: 'worker-crash_recovery' }, scope = { projectRoot: '/project' };
+  const options = { createAgentWorkspace: async () => workspace, restoreAgentWorkspace: async () => workspace, retentionDirectory: directory };
+  const first = new WorkerPool({ complete: vi.fn(async () => reply('kilo')) }, 3000, options);
+  const result = await first.run({ task: 'job', mode: 'agent', ownedPaths: ['file.txt'] }, signal(), scope); await first.close();
+  const path = join(directory, `${result.id}.json`), record = JSON.parse(await readFile(path, 'utf8'));
+  record.status.state = 'running'; delete record.status.finishedAt;
+  await writeFile(path, JSON.stringify(record), { mode: 0o600 });
+  await workspace.executeTool('worker_write', { content: 'latest crash-time partial' }, signal());
+  const complete = vi.fn(), restarted = new WorkerPool({ complete }, 3000, options); await restarted.ready();
+  expect(restarted.retained(scope)).toMatchObject([{ state: 'cancelled', code: 'cancelled', waitingForSource: false }]);
+  expect(restarted.artifact(result.id!, scope)?.files[0]!.content).toBe('latest crash-time partial');
+  expect(complete).not.toHaveBeenCalled();
+  expect(await restarted.run({ task: 'overlap', mode: 'agent', ownedPaths: ['file.txt'] }, signal(), scope)).toEqual({ ok: false, code: 'busy' });
+  await restarted.close();
+});
+
+it('fails closed on corrupt or symlinked retention records without inferring or discarding them', async () => {
+  const directory = await retentionRoot(), id = randomUUID(), target = join(await retentionRoot(), 'private.json');
+  await writeFile(target, '{}', { mode: 0o600 }); await symlink(target, join(directory, `${id}.json`));
+  const complete = vi.fn(), restore = vi.fn(), pool = new WorkerPool({ complete }, 3000, { retentionDirectory: directory, restoreAgentWorkspace: restore, createAgentWorkspace: vi.fn() });
+  await expect(pool.ready()).rejects.toBeTruthy();
+  expect(await pool.run({ task: 'job', mode: 'agent', ownedPaths: ['file.txt'] }, signal(), { projectRoot: '/project' })).toMatchObject({ ok: false, code: 'unavailable' });
+  expect(complete).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled();
+  expect(await readFile(target, 'utf8')).toBe('{}');
+  const corruptDirectory = await retentionRoot(); await writeFile(join(corruptDirectory, `${randomUUID()}.json`), '{broken', { mode: 0o600 });
+  const corrupt = new WorkerPool({ complete }, 3000, { retentionDirectory: corruptDirectory, restoreAgentWorkspace: restore });
+  await expect(corrupt.ready()).rejects.toBeTruthy(); expect(restore).not.toHaveBeenCalled();
+});
+
+it('refuses more than twenty durable artifacts instead of silently evicting retained work', async () => {
+  const directory = await retentionRoot();
+  for (let index = 0; index < 21; index++) await writeFile(join(directory, `${randomUUID()}.json`), '{}', { mode: 0o600 });
+  const restore = vi.fn(), pool = new WorkerPool({ complete: vi.fn() }, 3000, { retentionDirectory: directory, restoreAgentWorkspace: restore });
+  await expect(pool.ready()).rejects.toThrow(/bounds/); expect(restore).not.toHaveBeenCalled();
+  expect(await readdir(directory)).toHaveLength(21);
 });
 
 it('does not overwrite ownership leases or silently evict retained agent work', async () => {
