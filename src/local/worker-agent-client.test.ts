@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { AgentWorkerBatches } from './worker-agent-client.js';
+import { AgentWorkerBatches, workerResultView } from './worker-agent-client.js';
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-agent-client-')); });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
@@ -73,4 +73,16 @@ it('preserves a preexisting proof path instead of clobbering it', async () => {
   const client = new AgentWorkerBatches(8793, directory, fetcher as typeof fetch);
   await expect(client.retained()).rejects.toThrow();
   expect(await readFile(join(directory, fileName), 'utf8')).toBe('existing'); await client.close();
+});
+
+it('bounds tool result context and omits all retained file contents', () => {
+  const secretContent = 'synthetic-file-body'.repeat(10000);
+  const artifact = { id: randomUUID(), complete: true, truncated: false,
+    files: Array.from({ length: 1000 }, (_, i) => ({ path: `src/${i}-${'x'.repeat(400)}.ts`, beforeSha256: null, afterSha256: 'a'.repeat(64), content: secretContent })), summary: '\0'.repeat(50000) };
+  const result = workerResultView({ ok: true, id: randomUUID(), source: 'kilo', text: '\0'.repeat(100000), artifact });
+  const json = JSON.stringify(result);
+  expect(Buffer.byteLength(json)).toBeLessThan(32768);
+  expect(json).not.toContain('synthetic-file-body');
+  expect(result.artifact).toMatchObject({ view: 'summary', fileCount: 1000, omittedFiles: expect.any(Number), complete: true, truncated: false });
+  expect(artifact.files[0]?.content).toBe(secretContent);
 });

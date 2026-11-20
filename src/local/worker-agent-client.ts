@@ -49,6 +49,32 @@ function resultOf(value: unknown): WorkerResult {
   if (row.ok === false && ['invalid_task', 'busy', 'cancelled', 'timeout', 'quota', 'unavailable'].includes(String(row.code))) return { ok: false, code: row.code as 'unavailable', ...(typeof row.id === 'string' ? { id: row.id } : {}), ...(typeof row.retryAfter === 'number' && Number.isSafeInteger(row.retryAfter) && row.retryAfter > 0 ? { retryAfter: row.retryAfter } : {}), ...(typeof row.reason === 'string' && reasons.has(row.reason) ? { reason: row.reason as WorkerAgentFailureReason } : {}), ...(artifact ? { artifact } : {}) };
   throw new Error('Invalid Grunt worker response');
 }
+/** Tool messages summarize retained edits; full file contents belong in explicit artifact inspection, not model history. */
+export function workerResultView(result: WorkerResult) {
+  const text = (value: string, bytes: number) => {
+    if (Buffer.byteLength(JSON.stringify(value)) <= bytes) return value;
+    let low = 0, high = value.length;
+    while (low < high) { const middle = Math.ceil((low + high) / 2); if (Buffer.byteLength(JSON.stringify(value.slice(0, middle) + '…')) <= bytes) low = middle; else high = middle - 1; }
+    return value.slice(0, low) + '…';
+  };
+  const { artifact, ...base } = result;
+  const bounded = result.ok ? { ...base, text: text(result.text, 8192) } : base;
+  if (!artifact) return bounded;
+  const files = [];
+  let bytes = 0;
+  for (const file of artifact.files) {
+    const summary = { path: file.path, beforeSha256: file.beforeSha256, afterSha256: file.afterSha256,
+      ...(file.deleted ? { deleted: true } : {}), ...(file.binary ? { binary: true } : {}) };
+    const size = Buffer.byteLength(JSON.stringify(summary));
+    if (files.length >= 128 || bytes + size > 12288) break;
+    files.push(summary); bytes += size;
+  }
+  return { ...bounded, artifact: { id: artifact.id, complete: artifact.complete, truncated: artifact.truncated,
+    view: 'summary' as const, fileCount: artifact.files.length, files, omittedFiles: artifact.files.length - files.length,
+    ...(artifact.summary ? { summary: text(artifact.summary, 2048) } : {}),
+    inspect: `usegrunt workers artifact ${result.id ?? '<job-id>'} --project <current-project>`,
+    integration: 'Review the full retained artifact and use the approved workers apply command; discard only after integration or deliberate abandonment.' } };
+}
 interface AgentBatch { controller: AbortController; results?: WorkerResult[]; done?: Promise<void>; }
 /** A trusted frontend instance binds exactly one harness-supplied project. Tokens never enter tool arguments or output. */
 export class AgentWorkerBatches {
@@ -144,7 +170,7 @@ export class AgentWorkerBatches {
   result(input: unknown) {
     const batchId = batchIdOf(input), batch = this.batches.get(batchId);
     if (!batch) throw new Error('Unknown scoped worker batch. Retained artifacts can be recovered with usegrunt workers retained --project <directory>.');
-    return { batchId, state: batch.results ? 'completed' as const : 'running' as const, ...(batch.results ? { results: batch.results } : {}) };
+    return { batchId, state: batch.results ? 'completed' as const : 'running' as const, ...(batch.results ? { results: batch.results.map(workerResultView) } : {}) };
   }
   cancel(input: unknown) {
     const batchId = batchIdOf(input), batch = this.batches.get(batchId);
