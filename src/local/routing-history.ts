@@ -107,11 +107,27 @@ export class RoutingHistory {
       if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw unsafe();
     } finally { await file.close(); }
     const { createClient } = await import('@libsql/client');
-    const client = createClient({ url: pathToFileURL(path).href, concurrency: 1 });
+    let client = createClient({ url: pathToFileURL(path).href, concurrency: 1 });
     try {
       await client.execute('PRAGMA busy_timeout=0');
-      await client.execute('PRAGMA journal_mode=DELETE');
-      const version = Number((await client.execute('PRAGMA user_version')).rows[0]?.user_version);
+      const { version, journalMode } = await (async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const mode = (await client.execute('PRAGMA journal_mode')).rows[0]?.journal_mode;
+            const version = Number((await client.execute('PRAGMA user_version')).rows[0]?.user_version);
+            return { version, journalMode: String(mode).toLowerCase() };
+          } catch (error) {
+            if (attempt >= 7 || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+            // Retry only idempotent metadata reads. A failed native read can
+            // leave a statement attached, so start with a fresh connection.
+            client.close();
+            client = createClient({ url: pathToFileURL(path).href, concurrency: 1 });
+            await client.execute('PRAGMA busy_timeout=0');
+            await new Promise(resolve => setTimeout(resolve, Math.min(25, 2 ** (attempt + 1))));
+          }
+        }
+      })();
+      if (journalMode !== 'delete') await client.execute('PRAGMA journal_mode=DELETE');
       if (version !== 0 && version !== 1) throw unsafe();
       if (version === 0) await client.batch([
         'CREATE TABLE IF NOT EXISTS routing_performance (source TEXT NOT NULL, profile TEXT NOT NULL, value TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(source,profile))',

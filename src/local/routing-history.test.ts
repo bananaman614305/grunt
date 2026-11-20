@@ -258,3 +258,38 @@ it('replaces a connection poisoned by a failed BEGIN without replaying observati
     expect((await history.snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
   } finally { child.stdin.end(); await exited; }
 });
+
+
+it('retries startup metadata reads behind a short exclusive sibling writer without resetting observations', async () => {
+  const path = await directory(), history = await open(path);
+  await history.record('kilo', 'interactive-text', true, 1000, 10000);
+  const script = `import {createRequire} from 'node:module'; const require=createRequire(import.meta.resolve('@libsql/client')); const Database=require('libsql'); const db=new Database(process.argv[1]); db.exec('BEGIN EXCLUSIVE'); console.log('locked'); for await(const chunk of process.stdin) {} db.exec('ROLLBACK'); db.close();`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, join(path, 'routing-history.db')], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = once(child, 'exit');
+  try {
+    await once(child.stdout, 'data');
+    const pending = open(path);
+    // Attach a handler immediately: the baseline must reject before release.
+    const opened = pending.then(value => ({ value }), error => ({ error }));
+    await new Promise(resolve => setTimeout(resolve, 20)); child.stdin.end();
+    const result = await opened;
+    if ('error' in result) throw result.error;
+    expect((await result.value.snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
+    await result.value.record('kilo', 'interactive-text', true, 1000, 12000);
+    expect((await history.snapshot(13000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(2);
+  } finally { child.stdin.end(); await exited; }
+});
+
+
+it('rejects exhausted startup read contention without deleting durable observations', async () => {
+  const path = await directory(), history = await open(path);
+  await history.record('kilo', 'interactive-text', true, 1000, 10000);
+  const script = `import {createRequire} from 'node:module'; const require=createRequire(import.meta.resolve('@libsql/client')); const Database=require('libsql'); const db=new Database(process.argv[1]); db.exec('BEGIN EXCLUSIVE'); console.log('locked'); for await(const chunk of process.stdin) {} db.exec('ROLLBACK'); db.close();`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, join(path, 'routing-history.db')], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = once(child, 'exit');
+  try {
+    await once(child.stdout, 'data');
+    await expect(RoutingHistory.open(path)).rejects.toMatchObject({ code: 'SQLITE_BUSY' });
+  } finally { child.stdin.end(); await exited; }
+  expect((await (await open(path)).snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
+});
