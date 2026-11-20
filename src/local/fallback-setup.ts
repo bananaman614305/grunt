@@ -201,6 +201,20 @@ export async function setupFallbacks(options: {
         failedSetup('zro', error);
         options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
+      fikra: async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['fikra'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('fikra', error);
+        options.notify('fikra: temporary free setup pending; other routes remain available.');
+      } },
+      openference: async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['openference'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('openference', error);
+        options.notify('openference: temporary free setup pending; other routes remain available.');
+      } },
       crowllm: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['crowllm'], { squire: squire as SetupSquire, directory: options.directory,
           connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });

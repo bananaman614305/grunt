@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.22] - 2026-11-20
+
+- Add optional Squire setup and pinned free DeepSeek adapters for Fikra and Openference, with price checks, promotion expiry, token accounting and streamed native tools. Keep both outside default onboarding while live account qualification is pending; restrict Openference to explicit interactive tests pending unattended-use permission.
+
 ## [0.7.21] - 2026-11-20
 
 - Add optional CrowLLM setup through Squire for the zero-price GLM 5.3 Flash route, with current price checks before inference. Keep it outside default onboarding while live qualification remains incomplete.
