@@ -62,9 +62,11 @@ Activation is a separate reviewed operation:
 3. Stop only the two Grunt runtime services, verify original hashes still match
    the stage receipt, and atomically replace the runtime plus staged owner files.
    Keep the `original/` copies and runtime backups available for rollback.
-4. Migrate only the managed Adventure Pi profile on port 8793 from its explicit
-   200000 working context to 65536 with the new migration helper. Preserve all
-   other profiles, custom settings and the session ID. Do not run global setup.
+4. Stage only the approved Adventure Pi profile on port 8793 from its explicit
+   200000 working context to 65536. The automatic migration helper deliberately
+   skips its custom model name, `Grunt free automatic pool`; verify this exact
+   owner profile and change only its `contextWindow` field. Preserve all other
+   fields, profiles, settings and the session ID. Do not run global setup.
 5. Start the same services and verify both ports, diagnostics and the same saved
    session. Read worker capabilities; commands are available only after the real
    sandbox probe succeeds. Verify the wrapper is mounted and both trusted flags
