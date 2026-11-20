@@ -596,6 +596,8 @@ cooldowns and fallback. The account's welcome credit is separate from this route
 
 ### Darus daily free source
 
+Owner qualification on November 20, 2026 passed an attributed Grunt reply, a native function call and a cold request with 201,095 input tokens. This measures usable input on the tested route; its maximum context is not published.
+
 Squire reuses an existing scoped Darus key or signs up one ordinary Free account.
 The adapter pins `darus/deepseek-v4.1-flash-1017-FREE` and checks both the live
 free-model catalog and `/v1/tpd` before every dispatch. The Free tier advertises
