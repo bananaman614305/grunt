@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
 import {mkdtemp,mkdir,writeFile,readFile,stat,rm,readdir,cp,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
 import {runProbe,parseArguments,verifyReview,verifyRegistry,verifyTool} from './probe.mjs';
 
 const execute=promisify(execFile),sourceId='synthetic',model='synthetic-flash';
@@ -28,6 +29,17 @@ async function fixture(t,{realApi=false}={}){
     const repo=resolve(import.meta.dirname,'../..');
     await cp(join(repo,'dist'),join(checkout,'dist'),{recursive:true});
     await cp(await realpath(join(repo,'node_modules/hono')),join(checkout,'node_modules/hono'),{recursive:true});
+    // The API now validates scoped worker tasks through Ajv. Copy its installed
+    // runtime dependency closure into this inert fixture; no installs or host
+    // node_modules mounts may grant the candidate broader filesystem access.
+    const ajv=await realpath(join(repo,'node_modules/ajv'));
+    await cp(ajv,join(checkout,'node_modules/ajv'),{recursive:true});
+    const ajvRequire=createRequire(join(ajv,'package.json'));
+    const ajvPackage=JSON.parse(await readFile(join(ajv,'package.json'),'utf8'));
+    for(const dependency of Object.keys(ajvPackage.dependencies??{})){
+      const manifest=ajvRequire.resolve(dependency+'/package.json');
+      await cp(dirname(manifest),join(checkout,'node_modules',dependency),{recursive:true});
+    }
     await writeFile(join(checkout,'package.json'),json({type:'module'}));
     await writeFile(join(checkout,'dist','registry.js'),`export const bundledRegistry=${JSON.stringify(registry)};export const knownAdapters=new Set(['${sourceId}']);export const disabledAdapters=new Set();`);
     await writeFile(join(checkout,'dist','local','main.js'),`
