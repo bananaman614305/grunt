@@ -14,8 +14,8 @@ const pathList = (value: unknown, allowEmpty = false) => {
   if (new Set(paths).size !== paths.length) throw new Error('Owned paths must be distinct.');
   return paths;
 };
-interface PlannedTask { id: string; input: WorkerTask; dependsOn: string[]; state: 'pending' | 'running' | 'completed' | 'failed'; batchId?: string; requiresIntegration?: boolean }
-interface Plan { id: string; mainPaths: string[]; tasks: PlannedTask[]; batches: { id: string; tasks: string[] }[] }
+interface PlannedTask { id: string; input: WorkerTask; dependsOn: string[]; state: 'pending' | 'running' | 'completed' | 'failed' | 'unresolved'; batchId?: string; workerId?: string; artifactId?: string; requiresIntegration?: boolean }
+interface Plan { id: string; mainPaths: string[]; tasks: PlannedTask[]; batches: { id: string; tasks: string[]; terminal?: boolean }[] }
 export interface CoordinationCapacity { workerSlots: number; idleToolSources: number; dispatchSlots: number }
 
 /** Admission metadata is conservative scheduling advice, never a grant to use a provider. */
@@ -89,26 +89,43 @@ export class WorkerCoordinator {
   constructor(private options: { batches: Pick<AgentWorkerBatches, 'start' | 'result'>; capacity(signal: AbortSignal): Promise<CoordinationCapacity> }) {}
   private refresh() {
     for (const batch of this.plan?.batches ?? []) {
-      const result = this.options.batches.result({ batchId: batch.id });
+      // The shared frontend client evicts old completed batches. Once consumed,
+      // our bounded task summaries must not depend on that cache's lifetime.
+      if (batch.terminal) continue;
+      let result: ReturnType<AgentWorkerBatches['result']>;
+      try { result = this.options.batches.result({ batchId: batch.id }); }
+      catch {
+        // A lost result is not proof that a task never ran. Preserve its ID,
+        // stop automatic dispatch, and ask the caller to inspect retention.
+        batch.terminal = true;
+        for (const id of batch.tasks) this.plan!.tasks.find(row => row.id === id)!.state = 'unresolved';
+        continue;
+      }
       if (result.state !== 'completed') continue;
       for (const [index, id] of batch.tasks.entries()) {
         const task = this.plan!.tasks.find(row => row.id === id)!; const entry = result.results?.[index];
         task.state = entry?.ok ? 'completed' : 'failed';
+        if (entry?.id) task.workerId = entry.id;
+        if (entry && 'artifact' in entry && entry.artifact?.id) task.artifactId = entry.artifact.id;
         task.requiresIntegration = !!(entry && 'artifact' in entry && entry.artifact?.fileCount);
       }
+      batch.terminal = true;
     }
   }
   snapshot() {
     this.refresh(); const plan = this.plan;
     const paths = (values: string[]) => ({ ownedPathCount: values.length, ownedPaths: values.slice(0, 4).map(value => Buffer.byteLength(value) <= 128 ? value : Buffer.from(value).subarray(0, 124).toString('utf8') + '…'), omittedOwnedPaths: Math.max(0, values.length - 4) });
-    return { state: plan ? 'planned' : 'unplanned', ...(plan ? { planId: plan.id, main: paths(plan.mainPaths),
+    const reconciliationRequired = !!plan?.tasks.some(task => task.state === 'unresolved');
+    return { state: plan ? 'planned' : 'unplanned', ...(plan ? { planId: plan.id, main: paths(plan.mainPaths), reconciliationRequired,
       tasks: plan.tasks.map(task => ({ id: task.id, state: task.state, ...paths(task.input.ownedPaths!), dependsOn: task.dependsOn,
-        ...(task.batchId ? { batchId: task.batchId } : {}), ...(task.requiresIntegration ? { requiresIntegration: true } : {}),
+        ...(task.batchId ? { batchId: task.batchId } : {}), ...(task.workerId ? { workerId: task.workerId } : {}), ...(task.artifactId ? { artifactId: task.artifactId } : {}), ...(task.requiresIntegration ? { requiresIntegration: true } : {}),
+        ...(task.state === 'unresolved' ? { reconciliation: 'inspect_retained_artifacts' } : {}),
         ...(task.dependsOn.length ? { deferredReason: 'Review and integrate dependencies, then create a new plan.' } : {}) })) } : {}),
       ...(this.capacity ? { capacity: this.capacity } : {}),
       nextAction: !plan ? 'Declare a main task and independent worker tasks. Empty tasks are valid when no independent work exists.'
+        : reconciliationRequired ? 'Inspect retained artifacts for the unresolved batch IDs before explicitly replanning. Do not repeat work based on a missing frontend result.'
         : plan.tasks.some(task => task.state === 'running') ? 'Continue the main task; collect completed artifacts with grunt_worker_result before review/integration.'
-          : 'Dispatch ready tasks when capacity permits. Review and integrate results before replanning dependent work.' };
+          : 'Dispatch ready tasks when capacity permits. Review and integrate results before replanning dependent work. After frontend batch expiry, inspect retained artifacts using workerId.' };
   }
   async execute(raw: unknown, signal: AbortSignal) {
     signal.throwIfAborted(); const input = object(raw);
@@ -121,6 +138,7 @@ export class WorkerCoordinator {
     this.refresh();
     if (input.operation === 'status') return this.snapshot();
     if (!this.plan) throw new Error('Create a coordination plan before dispatch.');
+    if (this.plan.tasks.some(task => task.state === 'unresolved')) return { ...this.snapshot(), dispatch: 'reconciliation_required' };
     if (this.dispatching || this.plan.tasks.some(task => task.state === 'running')) return { ...this.snapshot(), dispatch: 'already_running' };
     const ready = this.plan.tasks.filter(task => task.state === 'pending' && !task.dependsOn.length);
     if (!ready.length) return { ...this.snapshot(), dispatch: 'no_independent_tasks' };

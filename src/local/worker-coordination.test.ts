@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { AgentWorkerBatches } from './worker-agent-client.js';
+import { AgentWorkerBatches } from './worker-agent-client.js';
 import { COORDINATION_POLICY, readCoordinationCapacity, WorkerCoordinator } from './worker-coordination.js';
 import gruntWorkerExtension from './worker-pi.js';
 
@@ -105,6 +108,57 @@ it('prevents concurrent dispatch and plan replacement while a start is in flight
   expect(await f.store.execute({ operation: 'dispatch' }, signal())).toMatchObject({ dispatch: 'already_running' });
   await expect(f.store.execute(plan(), signal())).rejects.toThrow('running');
   release(); await first; expect(f.batches.start).toHaveBeenCalledTimes(1);
+});
+
+it('retains terminal coordination metadata after direct spawns evict the shared client batch', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-coordination-eviction-'));
+  const challengeId = randomUUID(), fileName = `.grunt-workspace-${randomUUID()}.proof`;
+  const workerId = randomUUID(), artifactId = randomUUID();
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    const path = String(url).split('/v1/workers')[1];
+    if (path === '/projects/challenge') return Response.json({ challengeId, fileName, nonce: 'a'.repeat(64) });
+    if (path === '/projects/register') return Response.json({ token: 'b'.repeat(64), expiresAt: Date.now() + 86400000 });
+    if (path === '/capabilities') return Response.json({ initialSnapshotRequired: false });
+    if (path === '/projects/revoke') return Response.json({ ok: true });
+    if (path === '/run') return Response.json({ ok: true, id: workerId, source: 'kilo', text: 'Ready', artifact: {
+      id: artifactId, complete: true, truncated: false,
+      files: [{ path: 'src/one', beforeSha256: null, afterSha256: 'c'.repeat(64), content: 'synthetic retained artifact' }]
+    } });
+    throw new Error('Unexpected fixture request');
+  });
+  const batches = new AgentWorkerBatches(8793, directory, fetcher);
+  const store = new WorkerCoordinator({ batches, capacity: async () => ({ workerSlots: 2, idleToolSources: 3, dispatchSlots: 2 }) });
+  const input = { ...plan(), tasks: [plan().tasks[0]!] };
+  try {
+    await store.execute(input, signal());
+    const dispatched = await store.execute({ operation: 'dispatch' }, signal());
+    const id = (dispatched as { batchId: string }).batchId;
+    await batches.wait({ batchId: id }, signal());
+    expect(await store.execute({ operation: 'status' }, signal())).toMatchObject({ tasks: [{ id: 'one', state: 'completed', requiresIntegration: true }] });
+    for (let index = 0; index < 8; index++) {
+      const next = await batches.start({ tasks: [{ task: 'Explicit direct spawn', ownedPaths: [`src/direct-${index}`] }] });
+      await batches.wait({ batchId: next.batchId }, signal());
+    }
+    expect(batches.has({ batchId: id })).toBe(false); // Actual eight-batch shared-client retention limit.
+    expect(await store.execute({ operation: 'status' }, signal())).toMatchObject({ tasks: [{ id: 'one', state: 'completed', batchId: id, workerId, artifactId, requiresIntegration: true }] });
+    expect(await store.execute({ operation: 'dispatch' }, signal())).toMatchObject({ dispatch: 'no_independent_tasks' });
+    expect(await store.execute(input, signal())).toMatchObject({ tasks: [{ id: 'one', state: 'pending' }] });
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/run'))).toHaveLength(9); // Explicit replan does not dispatch/replay work.
+  } finally { await batches.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+it('reconciles unknown batches as unresolved without replay and permits an explicit new plan', async () => {
+  const f = fixture(); f.capacity.mockResolvedValue({ workerSlots: 2, idleToolSources: 2, dispatchSlots: 1 });
+  await f.store.execute(plan(), signal());
+  await f.store.execute({ operation: 'dispatch' }, signal());
+  f.batches.result.mockImplementation(() => { throw new Error('Unknown scoped worker batch. Retained artifacts can be recovered.'); });
+  expect(await f.store.execute({ operation: 'status' }, signal())).toMatchObject({ reconciliationRequired: true, tasks: [
+    { id: 'one', state: 'unresolved', reconciliation: 'inspect_retained_artifacts' }, { id: 'two', state: 'pending' }, { id: 'review', state: 'pending' }
+  ] });
+  expect(await f.store.execute({ operation: 'dispatch' }, signal())).toMatchObject({ dispatch: 'reconciliation_required' });
+  expect(f.batches.start).toHaveBeenCalledTimes(1);
+  expect(await f.store.execute({ operation: 'plan', main: { task: 'Inspect retained artifacts before choosing new work', ownedPaths: [] }, tasks: [] }, signal())).toMatchObject({ state: 'planned', tasks: [] });
+  expect(f.batches.start).toHaveBeenCalledTimes(1);
 });
 
 it.each([
