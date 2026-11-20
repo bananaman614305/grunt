@@ -10,7 +10,7 @@ import { configure } from './main.js';
 import { createLocalApp } from './api.js';
 import { withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent, DiagnosticsStore } from './diagnostics.js';
-import { SourceError } from './source.js';
+import { Sources, SourceError } from './source.js';
 import { bundledRegistry, localOptInAdapters } from '../registry.js';
 
 const now = Date.parse('2026-11-20T03:00:00Z');
@@ -270,4 +270,21 @@ it('observes swallowed cleanup failures without failing success or retaining exc
   expect(events).toContainEqual(expect.objectContaining({ source: 'openference', type: 'transport.finish', failureReason: 'stream_cleanup', outcome: 'failed', httpStatus: 200 }));
   expect(JSON.stringify(events)).not.toMatch(/PRIVATE_|synthetic-key|Synthetic hello/);
   expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
+});
+
+it('retains the existing fifteen-minute router cooldown for malformed streamed tools', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const normal = transport('openference');
+  const fetcher: typeof fetch = (url, init) => String(url).endsWith('/chat/completions')
+    ? Promise.resolve(streamResponse(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model, choices: [{ index: 0, delta: { tool_calls: [
+      { index: 0, id: 'call', type: 'function', function: { name: 'ready', arguments: 'INVALID' } }
+    ] }, finish_reason: 'tool_calls' }] }]))) : normal(url, init);
+  const registry = { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(row => ['openference', 'fikra'].includes(row.id)).map(row => ({ ...row, weight: 0.5 })) };
+  const sources = new Sources([source('openference', fetcher), { id: 'fikra', available: async () => true, complete: async () => ({ text: 'fallback' }) }],
+    { registry: () => registry, now: () => now, random: () => 0 });
+  try {
+    for (const entry of sources.sources) await sources.observation.available(entry);
+    await expect(sources.complete({ ...request('openference'), model: 'grunt' }, AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'fallback' });
+    expect(sources.status().sources.find(row => row.id === 'openference')).toMatchObject({ errorCode: 'upstream', retryAt: now + 900000 });
+  } finally { await sources.close(); }
 });
