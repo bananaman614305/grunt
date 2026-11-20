@@ -122,6 +122,13 @@ entitlement and spending guard are verified. A CAPTCHA, manual authentication
 step or material consent decision remains a genuine hold, not an automated
 retry loop.
 
+For a currently unresolved human gate, set `qualification_blocker` to the exact
+structured code `human_verification_required`, `oauth_confirmation_required`
+or `operator_approval_required`. Set it to null (or omit it) when the condition
+is absent or has been completed. Phrases such as "CAPTCHA solved" or "no human
+verification required" are observations, not unresolved blockers. The
+supervisor never infers a permanent hold merely from words in `reason`.
+
 ## Established qualification pipeline
 
 1. Document exact model, context, zero-cost recurring entitlement, rate limits,

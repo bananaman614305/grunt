@@ -205,8 +205,86 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual(ledger['candidates'][scout.candidate_id(released)]['release_request']['head_sha'], 'a' * 40)
         self.assertEqual(ledger['candidates'][scout.candidate_id(released)]['pipeline_status'], 'released')
 
+    def test_placeholder_migration_preserves_holds_in_either_insertion_order(self):
+        for human in (False, True):
+            for reverse_candidates in (False, True):
+                for reverse_pending in (False, True):
+                    with self.subTest(human=human, candidates=reverse_candidates, pending=reverse_pending):
+                        exact = candidate(status='researched', setup_status='not_attempted',
+                                          last_seen='2026-11-19T00:00:00+00:00', reason='Older research')
+                        held = candidate(model='unverified', status='setup_blocked' if human else 'needs_approval',
+                                         setup_status='blocked' if human else 'approval_needed',
+                                         reason='human_verification_required' if human else 'New source-code sale condition',
+                                         last_seen='2026-11-20T00:00:00+00:00',
+                                         primary_sources=['https://synthetic.example/new-policy'])
+                        if human:
+                            held['qualification_blocker'] = 'human_verification_required'
+                        exact_key, held_key = scout.candidate_id(exact), scout.candidate_id(held)
+                        entries = [(exact_key, exact), (held_key, held)]
+                        pending = [(held_key, {**held, 'review_id': 'a' * 64, 'qualification_retry_at': None}),
+                                   (exact_key, {**exact, 'review_id': 'b' * 64,
+                                                'qualification_retry_at': '2026-11-19T12:00:00+00:00'})]
+                        ledger = {'candidates': dict(reversed(entries) if reverse_candidates else entries),
+                                  'discovery_pending': dict(reversed(pending) if reverse_pending else pending)}
+                        scout.canonicalize_ledger(ledger)
+                        current = ledger['candidates'][exact_key]
+                        self.assertEqual(current['model'], exact['model'])
+                        self.assertEqual(current['status'], held['status'])
+                        self.assertEqual(current['setup_status'], held['setup_status'])
+                        self.assertEqual(current['reason'], held['reason'])
+                        self.assertEqual(current['primary_sources'], held['primary_sources'])
+                        self.assertEqual(len(ledger['candidates']), 1)
+                        self.assertIsNone(ledger['discovery_pending'][exact_key]['qualification_retry_at'])
+                        self.assertEqual(ledger['discovery_pending'][exact_key]['reason'], held['reason'])
+                        self.assertEqual(scout.qualification_scope(ledger), {})
+                        before = json.loads(json.dumps(ledger))
+                        scout.canonicalize_ledger(ledger)
+                        self.assertEqual(ledger, before)
+
+    def test_alias_hold_preserves_release_identity_and_skips_legacy_held_scope(self):
+        released = candidate(pipeline_status='publication_pending', release_request={'head_sha': 'a' * 40},
+                             last_seen='2026-11-19T00:00:00+00:00')
+        held = candidate(homepage='https://www.synthetic.example', status='needs_approval',
+                         setup_status='approval_needed', reason='New material condition',
+                         last_seen='2026-11-20T00:00:00+00:00')
+        key = scout.candidate_id(released)
+        ledger = {'candidates': {'old': released, 'new': held},
+                  'discovery_pending': {'new': {**held, 'review_id': 'a' * 64}}}
+        scout.canonicalize_ledger(ledger)
+        self.assertEqual(ledger['candidates'][key]['release_request']['head_sha'], 'a' * 40)
+        self.assertEqual(ledger['candidates'][key]['pipeline_status'], 'publication_pending')
+        self.assertEqual(ledger['candidates'][key]['status'], 'needs_approval')
+        self.assertEqual(scout.qualification_scope(ledger), {})
+
+    def test_freeform_mentions_of_completed_or_absent_challenges_do_not_hold_work(self):
+        for reason in ['No CAPTCHA required; usable context still needs verification',
+                       'Human verification completed; SDK entitlement pending',
+                       'CAPTCHA solved; remaining SDK entitlement pending']:
+            with self.subTest(reason=reason):
+                item = candidate(status='researched', setup_status='not_attempted', reason=reason,
+                                 qualification_blocker=None)
+                self.assertEqual(scout.qualification_retry(item, 1, '2026-11-20T00:00:00+00:00'),
+                                 '2026-11-20T12:00:00+00:00')
+                key = scout.candidate_id(item)
+                # Migrate a null retry left by the former prose regex: the
+                # structured state, not an old null, determines the hold.
+                pending = {**item, 'review_id': 'a' * 64, 'qualification_retry_at': None}
+                ledger = {'candidates': {key: item}, 'discovery_pending': {key: pending}}
+                scout.canonicalize_ledger(ledger)
+                self.assertIn('a' * 64, scout.qualification_scope(ledger))
+
+    def test_structured_unresolved_gate_cannot_be_queued_for_release(self):
+        self.proof()
+        item = candidate(qualification_blocker='human_verification_required',
+                         release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40})
+        self.assertEqual(scout.qualify(item, self.workspace), 'needs_approval')
+        key = scout.candidate_id(item)
+        ledger = {'candidates': {key: {**item, 'pipeline_status': 'deferred'}}}
+        self.assertEqual(scout.queue_candidates(ledger, {'candidates': []}, {'candidates': []}, [], []), [])
+
     def test_resume_uses_latest_review_and_human_gate_is_not_retried(self):
-        item = candidate(status='setup_blocked', setup_status='blocked', reason='human_verification_required')
+        item = candidate(status='setup_blocked', setup_status='blocked', reason='human_verification_required',
+                         qualification_blocker='human_verification_required')
         key = scout.candidate_id(item)
         ledger = {'candidates': {key: item}, 'reviewed_discoveries': {
             'a' * 64: {'candidate_id': key, 'at': '2026-11-01T00:00:00+00:00'},

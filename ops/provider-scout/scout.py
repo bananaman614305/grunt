@@ -121,6 +121,8 @@ def qualify(candidate, workspace, smoke=False):
               or candidate['context_tokens'] is not None and not context_eligible)
     if failed:
         return 'rejected'
+    if not smoke and qualification_hold(candidate):
+        return 'needs_approval'
     eligible = (candidate['free_access'] == 'recurring' and candidate['quality'] in ('target', 'above_baseline')
                 and context_eligible
                 and candidate['signup_friction'] in ('low', 'human_approval'))
@@ -256,6 +258,40 @@ def discovery_identity(candidate):
     return discovery_host(candidate), candidate['model'].strip().casefold()
 
 
+def qualification_hold(item):
+    return (item.get('status') == 'needs_approval' or item.get('setup_status') == 'approval_needed'
+            or item.get('qualification_blocker') in {
+                'human_verification_required', 'oauth_confirmation_required', 'operator_approval_required'})
+
+
+def merge_ledger_rows(left, right, *, exact=None):
+    """Preserve a protective hold independently from exact/release identity."""
+    def rank(item):
+        return (qualification_hold(item), item.get('last_seen', ''), json.dumps(item, sort_keys=True))
+    winner, other = (left, right) if rank(left) >= rank(right) else (right, left)
+    merged = {**other, **winner}
+    if exact is not None:
+        merged.update(model=exact['model'], homepage=exact['homepage'])
+    protected = [row for row in (left, right) if row.get('pipeline_status') in ('released', 'publication_pending')]
+    if protected:
+        authority = max(protected, key=lambda row: (row.get('last_seen', ''), json.dumps(row, sort_keys=True)))
+        for name in list(merged):
+            if name.startswith('pipeline_') or name == 'release_request':
+                del merged[name]
+        merged.update({name: value for name, value in authority.items()
+                       if name.startswith('pipeline_') or name == 'release_request'})
+    stamps = [row['first_seen'] for row in (left, right) if row.get('first_seen')]
+    if stamps:
+        merged['first_seen'] = min(stamps)
+    if any('sightings' in row for row in (left, right)):
+        merged['sightings'] = max(left.get('sightings', 0), right.get('sightings', 0))
+    if any('qualification_attempts' in row for row in (left, right)):
+        merged['qualification_attempts'] = max(left.get('qualification_attempts', 0), right.get('qualification_attempts', 0))
+    if qualification_hold(merged) and any('qualification_retry_at' in row for row in (left, right)):
+        merged['qualification_retry_at'] = None
+    return merged
+
+
 def canonicalize_ledger(ledger, *, initialize_policy=True):
     """Migrate historical aliases without losing trusted promotion identity."""
     if initialize_policy:
@@ -268,14 +304,7 @@ def canonicalize_ledger(ledger, *, initialize_policy=True):
         if prior is None:
             canonical[key] = row
             continue
-        def rank(item):
-            return (item.get('pipeline_status') in ('released', 'publication_pending'), item.get('last_seen', ''))
-        winner, other = (row, prior) if rank(row) > rank(prior) else (prior, row)
-        canonical[key] = {**other, **winner}
-        stamps = [item['first_seen'] for item in (prior, row) if item.get('first_seen')]
-        if stamps:
-            canonical[key]['first_seen'] = min(stamps)
-        canonical[key]['sightings'] = max(prior.get('sightings', 0), row.get('sightings', 0))
+        canonical[key] = merge_ledger_rows(prior, row)
     # A generic discovery placeholder is superseded only when a single exact
     # model on that provider resolves it. Distinct exact models stay distinct.
     for key, row in list(canonical.items()):
@@ -285,8 +314,7 @@ def canonicalize_ledger(ledger, *, initialize_policy=True):
                    and discovery_host(value) == discovery_host(row)]
         if len(matches) == 1:
             exact_key, exact = matches[0]
-            if row.get('first_seen'):
-                exact['first_seen'] = min(exact.get('first_seen', row['first_seen']), row['first_seen'])
+            canonical[exact_key] = merge_ledger_rows(exact, row, exact=exact)
             moved[key] = exact_key
             del canonical[key]
     ledger['candidates'] = canonical
@@ -299,8 +327,18 @@ def canonicalize_ledger(ledger, *, initialize_policy=True):
         canonical_key = destination(key) if key in moved else candidate_id(row)
         resolved = canonical.get(canonical_key)
         if row['model'] == 'unverified' and resolved and resolved['model'] != 'unverified':
-            row = {**resolved, **{name: value for name, value in row.items()
-                                 if name.startswith('qualification_')}, 'review_id': row.get('review_id') or review_id(row)}
+            row = {**merge_ledger_rows(resolved, row, exact=resolved), 'review_id': row.get('review_id') or review_id(row)}
+        if canonical_key in pending:
+            row = merge_ledger_rows(pending[canonical_key], row)
+        if qualification_hold(row):
+            row = {**row, 'qualification_retry_at': None}
+            if resolved:
+                facts = {name: value for name, value in row.items()
+                         if name != 'review_id' and not name.startswith('qualification_')}
+                # qualification_blocker is a fact, not retry bookkeeping.
+                if 'qualification_blocker' in row:
+                    facts['qualification_blocker'] = row['qualification_blocker']
+                canonical[canonical_key] = merge_ledger_rows(resolved, facts, exact=resolved)
         pending[canonical_key] = row
     if pending or 'discovery_pending' in ledger:
         ledger['discovery_pending'] = pending
@@ -311,8 +349,7 @@ def canonicalize_ledger(ledger, *, initialize_policy=True):
 
 def qualification_retry(item, attempts, stamp):
     # Human gates must not generate repeated signups or approval requests.
-    if item['status'] == 'needs_approval' or item.get('setup_status') == 'approval_needed' or re.search(
-            r'captcha|human[_ -]verification', item.get('reason', ''), re.I):
+    if qualification_hold(item):
         return None
     hours = min(168, (24 if item['status'] == 'setup_blocked' else 12) * 2 ** min(4, attempts - 1))
     return (dt.datetime.fromisoformat(stamp.replace('Z', '+00:00')) + dt.timedelta(hours=hours)).isoformat()
@@ -428,11 +465,11 @@ def qualification_scope(ledger):
     scope = {}
     for key, item in ledger.get('discovery_pending', {}).items():
         try:
-            if owner_exclusion(item, ledger):
+            if owner_exclusion(item, ledger) or qualification_hold(item):
                 continue
             if 'qualification_retry_at' in item:
                 retry = item['qualification_retry_at']
-                if retry is None or dt.datetime.fromisoformat(retry.replace('Z', '+00:00')) > dt.datetime.fromisoformat(now()):
+                if retry is not None and dt.datetime.fromisoformat(retry.replace('Z', '+00:00')) > dt.datetime.fromisoformat(now()):
                     continue
             review = item.get('review_id') or review_id(item)
         except (AttributeError, ValueError, TypeError, KeyError):
@@ -757,7 +794,8 @@ def queue_candidates(ledger, report, raw_report, diagnostics, resumed):
             pass
     resumed_heads = {row.get('head_sha') for row in resumed if row.get('head_sha')}
     return [item for key, item in ledger['candidates'].items()
-            if key not in barred and not owner_exclusion(item, ledger) and item['status'] == 'ready_for_review'
+            if key not in barred and not owner_exclusion(item, ledger) and not qualification_hold(item)
+            and item['status'] == 'ready_for_review'
             and item.get('pipeline_status') == 'deferred' and item.get('release_request')
             and item['release_request'].get('head_sha') not in resumed_heads]
 

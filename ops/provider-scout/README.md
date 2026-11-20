@@ -185,6 +185,12 @@ unfinished work. A retry resumes the remaining account/probe/integration step,
 rather than asking discovery to find the provider again. Approval-held and
 CAPTCHA/human-verification-held work has no automatic retry time. The status
 command distinguishes total pending work from currently due reviews.
+Unresolved human gates use the structured `qualification_blocker` code; a
+mention of a CAPTCHA in freeform notes does not hold work. Canonical migration
+preserves approval/human holds and their current evidence across aliases and
+generic-model resolution, independently of protected release identity and
+pending-map insertion order. A stale null retry without structured held state
+does not permanently suppress otherwise retryable qualification.
 
 The qualification worker can inspect free-account metadata and perform bounded
 synthetic verification through Squire when documented signup is eligible. An
