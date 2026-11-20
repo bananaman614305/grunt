@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-20
+
+- Keep Openference's existing stream-validation cooldown while retaining redacted failure-stage diagnostics. Preserve HTTP header status on transport events without activating the router's separate short-cooldown policy for invalid tool replies.
+
 ## [0.8.3] - 2026-11-20
 
-- Distinguish Openference stream reads, SSE/JSON format, incomplete replies, tool validation and cleanup in redacted diagnostics. Preserve error codes, retry behavior and successful responses when cleanup fails; display fixed reason labels in admin traces.
+- Distinguish Openference stream reads, SSE/JSON format, incomplete replies, tool validation and cleanup in redacted diagnostics. Preserve error codes and successful responses when reader cancellation cleanup fails; display fixed reason labels in admin traces.
 
 ## [0.8.2] - 2026-11-20
 

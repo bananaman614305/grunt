@@ -94,7 +94,6 @@ export class PromotionalApi implements Source {
     caller.throwIfAborted();
     if (!grant) throw new SourceError('refused', `${this.id} free offer could not be verified`);
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(180000)]);
-    let completionStatus: number | undefined;
     let completionFailure: FailureReason | undefined;
     try {
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, {
@@ -109,7 +108,6 @@ export class PromotionalApi implements Source {
         throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
           `${this.id} returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
       }
-      completionStatus = response.status;
       if (this.id === 'openference') return await readPromotionalStream(response, this.spec.model, signal, { failure: reason => { completionFailure = reason; }, cleanup: () => {
         recordTransport({ source: this.id, outcome: 'failed', transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions',
           httpStatus: response.status, failureReason: 'stream_cleanup' });
@@ -128,7 +126,7 @@ export class PromotionalApi implements Source {
       if (error instanceof SourceError) throw error;
       const reason = completionFailure;
       throw new SourceError('upstream', `${this.id} returned an invalid completion`, undefined, undefined, reason ? {
-        failureReason: reason, ...(completionStatus === undefined ? {} : { httpStatus: completionStatus }),
+        failureReason: reason,
         transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions'
       } : undefined);
     }
