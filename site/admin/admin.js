@@ -26,6 +26,8 @@ const ERROR_LABELS = {
   busy: 'Busy', foreground: 'Foreground work active', consent: 'Consent needed'
 };
 const FAILURE_REASONS = {
+  request_body: 'Request format rejected', request_tools: 'Tool definitions rejected',
+  request_size: 'Request exceeds source size limit',
   response_body: 'Reply body could not be read', response_json: 'Invalid JSON reply',
   response_choices: 'Reply has no usable choices', response_content: 'Invalid reply content',
   response_tools: 'Invalid tool call', completion_model: 'Returned model did not match',

@@ -13,6 +13,7 @@ export const diagnosticErrors = ['not_installed', 'logged_out', 'quota', 'timeou
 export const diagnosticEndpoints = ['chat.completions', 'models', 'account', 'local.opencode', 'cli'] as const;
 export const diagnosticNetworks = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'] as const;
 export const diagnosticFailureReasons = [
+  'request_body', 'request_tools', 'request_size',
   'response_body', 'response_json', 'response_choices', 'response_content', 'response_tools',
   'completion_model', 'completion_billing', 'completion_usage', 'completion_attestation', 'completion_protocol',
   'turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'

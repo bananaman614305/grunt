@@ -21,6 +21,10 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
     })]);
   } finally { if (abort) signal.removeEventListener('abort', abort); }
 }
+function requestFailure(message: string, failureReason: 'request_body' | 'request_tools' | 'request_size') {
+  // No transport or HTTP status: these checks reject locally before dispatch.
+  return new SourceError('refused', message, undefined, undefined, { failureReason });
+}
 function responseFailure(response: Response, endpointLabel: 'models' | 'chat.completions', code: 'upstream' | 'refused',
   message: string, failureReason: NonNullable<SafeDiagnosticMetadata['failureReason']>) {
   return new SourceError(code, message, undefined, undefined, { transport: 'http', endpointLabel, httpStatus: response.status, failureReason });
@@ -89,7 +93,7 @@ function conversation(request: ModelRequest) {
     const validators = new Map<string, ValidateFunction>(), ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
     for (const tool of request.tools) { const fn = object(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
     return { messages, validators };
-  } catch { throw new SourceError('refused', 'Kilo rejected invalid function tools or an uncorrelated tool conversation'); }
+  } catch { throw requestFailure('Kilo rejected invalid function tools or an uncorrelated tool conversation', 'request_tools'); }
 }
 export class Kilo implements Source {
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
@@ -131,13 +135,13 @@ export class Kilo implements Source {
     const timeout = this.options.timeout, signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 ? Math.min(180000, Math.ceil(timeout)) : 180000)]);
     try {
       signal.throwIfAborted();
-      if (request.imageInput) throw new SourceError('refused', 'This Kilo route supports text inputs');
-      if (request.maxTokens !== undefined && (!Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1)) throw new SourceError('refused', 'Kilo requires a positive integer output-token budget');
+      if (request.imageInput) throw requestFailure('This Kilo route supports text inputs', 'request_body');
+      if (request.maxTokens !== undefined && (!Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1)) throw requestFailure('Kilo requires a positive integer output-token budget', 'request_body');
       const limit = Math.min(4096, request.maxTokens ?? 4096), { messages, validators } = conversation(request);
       if (!await this.approved()) throw new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
       signal.throwIfAborted();
       const body = JSON.stringify({ model: this.model, messages, ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: limit });
-      if (Buffer.byteLength(body) > 2 * 1024 * 1024) throw new SourceError('refused', 'Kilo prompt exceeds the supported input size');
+      if (Buffer.byteLength(body) > 2 * 1024 * 1024) throw requestFailure('Kilo prompt exceeds the supported input size', 'request_size');
       await this.verify(signal);
       signal.throwIfAborted();
       const grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();

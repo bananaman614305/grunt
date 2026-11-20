@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { expect, it } from 'vitest';
+import { sanitizeSafeDiagnosticMetadata } from '../local/diagnostics.js';
 
 const source = readFileSync(new URL('../../site/admin/admin.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../../site/admin/index.html', import.meta.url), 'utf8');
@@ -95,4 +96,35 @@ it('keeps capitalized admin links canonical and restricts admin asset response h
   expect(headers).toContain('X-Frame-Options: DENY');
   expect(headers).toContain('Cache-Control: no-store');
   expect(headers).not.toMatch(/^\/\*\s*$/m);
+});
+
+
+it.each([
+  ['request_body', 'Request format rejected'],
+  ['request_tools', 'Tool definitions rejected'],
+  ['request_size', 'Request exceeds source size limit']
+])('preserves and displays the bounded %s request refusal reason', (failureReason, label) => {
+  expect(sanitizeSafeDiagnosticMetadata({ failureReason, rawBody: 'PRIVATE_PAYLOAD' })).toEqual({ failureReason });
+  const rendered = helpers(`(() => {
+    class FixtureNode {
+      children = []; value = '';
+      set textContent(value) { this.value = String(value); }
+      get textContent() { return [this.value, ...this.children.map(child => child.textContent)].join(' '); }
+      append(...children) { this.children.push(...children); }
+      replaceChildren(...children) { this.children = children; }
+      addEventListener() {}
+    }
+    globalThis.Node = FixtureNode;
+    globalThis.document = {
+      createElement: () => new FixtureNode(),
+      createTextNode: text => { const node = new FixtureNode(); node.textContent = text; return node; }
+    };
+    const content = new FixtureNode();
+    ui.AdminConsole.prototype.renderTrace.call({el: {'trace-content': content}}, {outcome:'failed', source:'kilo'},
+      [{type:'attempt.finish', outcome:'failed', source:'kilo', errorCode:'refused', failureReason:${JSON.stringify(failureReason)}}]);
+    return content.textContent;
+  })()`);
+  expect(rendered).toContain('Failure detail');
+  expect(rendered).toContain(label);
+  expect(rendered).not.toContain('PRIVATE_PAYLOAD');
 });
