@@ -4,6 +4,8 @@
 
 ## [0.7.25] - 2026-11-20
 
+- Explain local Kilo request-size, body and tool-schema refusals in diagnostic traces, and keep Clixad wallet checks read-only instead of claiming rewards.
+
 - Keep diagnostics recording when two local Grunt processes initialize the shared log together, using a bounded wait for SQLite startup contention.
 
 - Add Aperture's free ERNIE 5.5 Flash Preview route to automatic Squire setup, worker routing and maintenance. Require an authenticated Free account and zero-priced exact model before every request; track daily quotas separately from upstream throttling.
