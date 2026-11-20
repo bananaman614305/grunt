@@ -26,8 +26,11 @@ export class WorkerScopeError extends Error {
 export class WorkerScopes {
   private challenges = new Map<string, Challenge>();
   private leases = new Map<string, Lease>();
+  private registering = new Set<string>();
+  private generation = 0;
   constructor(private options: { now?: () => number; challengeMs?: number; leaseMs?: number; maximum?: number } = {}) {}
   private now() { return (this.options.now ?? Date.now)(); }
+  private full() { return this.challenges.size + this.leases.size + this.registering.size >= (this.options.maximum ?? 64); }
   private prune() {
     const now = this.now();
     for (const [id, value] of this.challenges) if (value.expiresAt <= now) this.challenges.delete(id);
@@ -35,7 +38,8 @@ export class WorkerScopes {
   }
   async challenge(input: unknown) {
     this.prune();
-    if (this.challenges.size + this.leases.size >= (this.options.maximum ?? 64)) throw new WorkerScopeError('busy');
+    if (this.full()) throw new WorkerScopeError('busy');
+    const generation = this.generation;
     if (typeof input !== 'string' || input.length > 4096 || /[\0\r\n]/.test(input) || !isAbsolute(input)) throw new WorkerScopeError('invalid_workspace');
     let projectRoot: string, device: number, inode: number;
     try {
@@ -46,6 +50,8 @@ export class WorkerScopes {
         || projectRoot === await realpath(homedir()) || components.some(part => forbidden.has(part))) throw new Error();
       device = info.dev; inode = info.ino;
     } catch { throw new WorkerScopeError('invalid_workspace'); }
+    if (this.generation !== generation) throw new WorkerScopeError('expired_scope');
+    if (this.full()) throw new WorkerScopeError('busy');
     const challengeId = randomUUID(), fileName = `.grunt-workspace-${challengeId}.proof`, nonce = randomBytes(32).toString('hex');
     const projectIdentity = hash(`${device}:${inode}`);
     this.challenges.set(challengeId, { projectRoot, projectIdentity, fileName, nonce, device, inode, expiresAt: this.now() + (this.options.challengeMs ?? 60000) });
@@ -57,6 +63,8 @@ export class WorkerScopes {
     const challenge = this.challenges.get(id);
     this.challenges.delete(id);
     if (!challenge) throw new WorkerScopeError('expired_scope');
+    this.registering.add(id);
+    const generation = this.generation;
     const fileName = join(challenge.projectRoot, challenge.fileName);
     let handle;
     try {
@@ -75,7 +83,8 @@ export class WorkerScopes {
       await handle.close(); handle = undefined;
       await unlink(fileName);
     } catch { throw new WorkerScopeError('permission_denied'); }
-    finally { await handle?.close(); }
+    finally { await handle?.close(); this.registering.delete(id); }
+    if (this.generation !== generation) throw new WorkerScopeError('expired_scope');
     const token = randomBytes(32).toString('hex'), expiresAt = this.now() + (this.options.leaseMs ?? 24 * 60 * 60 * 1000);
     this.leases.set(hash(token), { projectRoot: challenge.projectRoot, projectIdentity: challenge.projectIdentity, device: challenge.device, inode: challenge.inode, expiresAt });
     return { token, expiresAt };
@@ -95,7 +104,7 @@ export class WorkerScopes {
   revoke(token: unknown) {
     return typeof token === 'string' && tokenPattern.test(token) ? this.leases.delete(hash(token)) : false;
   }
-  close() { this.challenges.clear(); this.leases.clear(); }
+  close() { this.generation++; this.challenges.clear(); this.leases.clear(); }
 }
 
 export function scopeContains(scope: WorkerProjectScope, other: WorkerProjectScope) {

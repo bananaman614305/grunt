@@ -99,3 +99,17 @@ it('keeps the directory identity stable across leases and distinguishes a replac
   expect(after?.projectIdentity).not.toBe(before?.projectIdentity);
   expect(await scopes.resolve(first.lease.token)).toBeUndefined();
 });
+
+it('reserves the capacity limit across concurrent filesystem checks and proof verification', async () => {
+  const scopes = new WorkerScopes({ maximum: 1 }), root = await project();
+  const attempts = await Promise.allSettled([scopes.challenge(root), scopes.challenge(root)]);
+  expect(attempts.filter(row => row.status === 'fulfilled')).toHaveLength(1);
+  const accepted = attempts.find(row => row.status === 'fulfilled');
+  if (!accepted || accepted.status !== 'fulfilled') throw new Error('Missing accepted challenge');
+  await writeFile(join(root, accepted.value.fileName), accepted.value.nonce, { mode: 0o600, flag: 'wx' });
+  const registering = scopes.register(accepted.value.challengeId);
+  await expect(scopes.challenge(root)).rejects.toMatchObject({ code: 'busy' });
+  const lease = await registering;
+  expect(await scopes.resolve(lease.token)).toBeDefined();
+  await expect(scopes.challenge(root)).rejects.toMatchObject({ code: 'busy' });
+});
