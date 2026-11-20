@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-20
+
+- Delegate independent implementation to two opt-in tool-using free-pool workers while the main agent continues. Keep edits in private project snapshots, preserve artifacts through quota failures and restarts, and review/apply changes through the parent interface with ownership, conflict and recovery checks.
+- Run opt-in background jobs in Pi with bounded output, cancellation, event-driven waits and safe progress snapshots. Keep command approval explicit and interrupt jobs at session shutdown without replaying them.
+- Pass reported streaming token counts through to coding interfaces, and reduce managed Pi working context to 65,536 tokens. Migrate only recognized local profiles while preserving custom settings and ports.
+- Route from bounded eligibility snapshots and measured provider performance while retaining fresh selected-provider billing, consent and free-access checks.
+- Show observed work categories, Adventure subworkers, successful checks and published-build receipts in the owner overview. Preserve unknown history and distinguish client requests from worker requests in diagnostics.
+- Add a staged owner-runner upgrade and checkpoint gate that preserve active project work. Worker commands require verified Linux namespace and resource limits; dependency access uses sanitized private copies, and unsupported command environments fail closed.
+
 ## [0.7.28] - 2026-11-20
 
 - Distinguish Clixad native-output framing, invalid JSON and caller-envelope failures in diagnostics without exposing reply content, retrying inference or changing acceptance and billing guards.
