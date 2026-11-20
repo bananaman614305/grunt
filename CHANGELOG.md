@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.21] - 2026-11-20
+
+- Add optional CrowLLM setup through Squire for the zero-price GLM 5.3 Flash route, with current price checks before inference. Keep it outside default onboarding while live qualification remains incomplete.
+
 ## [0.7.20] - 2026-11-19
 
 - Add Gödel Machines DeepSeek V4.1 Flash to automatic setup. Routing verifies the dedicated Free Key before inference and requires an explicit public-context request.
