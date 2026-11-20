@@ -22,7 +22,8 @@ import time
 from urllib.parse import urlsplit
 
 from context_policy import CONTEXT_GUIDANCE, meets_context_requirement
-from owner_policy import initialize_exclusions, owner_exclusion
+from owner_policy import (GATEWAY_HOSTS, canonical_candidate_id, canonical_provider_host,
+                          initialize_exclusions, owner_exclusion, qualification_hold, qualification_holds)
 from worker import WorkerError, run_agent
 from url_policy import public_url
 
@@ -79,8 +80,7 @@ class CandidateError(ValueError):
 
 
 def candidate_id(candidate):
-    value = list(discovery_identity(candidate))
-    return hashlib.sha256(json.dumps(value).encode()).hexdigest()[:24]
+    return canonical_candidate_id(candidate)
 
 
 def ready_evidence(candidate, workspace):
@@ -230,7 +230,6 @@ DISCOVERY_LANES = {
     'tools': 'Coding products, agent CLIs, SDK-first hosted inference and developer tools. Search launch notes, developer documentation and source repositories. Exclude direct model hosts and routing marketplaces.',
     'gateways': 'Multi-provider gateways and model marketplaces. Investigate new gateway operators first. Revisit OpenRouter or UnoRouter only for a material change to a specific previously recorded offer.',
 }
-GATEWAY_HOSTS = frozenset({'openrouter.ai', 'unorouter.com'})
 DISCOVERY_QUOTE_LIMIT = 240
 DISCOVERY_SECONDS = 420
 QUALIFICATION_SECONDS = 1200
@@ -250,18 +249,11 @@ CHANGE_EVIDENCE = {
 
 
 def discovery_host(candidate):
-    host = urlsplit(candidate['homepage']).hostname.lower().removeprefix('www.')
-    return next((gateway for gateway in GATEWAY_HOSTS if host.endswith('.' + gateway)), host)
+    return canonical_provider_host(candidate)
 
 
 def discovery_identity(candidate):
     return discovery_host(candidate), candidate['model'].strip().casefold()
-
-
-def qualification_hold(item):
-    return (item.get('status') == 'needs_approval' or item.get('setup_status') == 'approval_needed'
-            or item.get('qualification_blocker') in {
-                'human_verification_required', 'oauth_confirmation_required', 'operator_approval_required'})
 
 
 def merge_ledger_rows(left, right, *, exact=None):
@@ -929,7 +921,8 @@ def run(root, smoke=False):
             if not smoke and config.get('release_enabled') is True:
                 from pipeline import Pipeline
                 pipeline = Pipeline({**config, '_deadline_monotonic': deadline, '_lock_fd': lock.fileno(),
-                                     '_owner_exclusions': ledger['owner_exclusions']}, root)
+                                     '_owner_exclusions': ledger['owner_exclusions'],
+                                     '_qualification_holds': qualification_holds(ledger)}, root)
                 refresh_source_main(config['source_repo'], deadline - time.monotonic())
                 state['pipeline_results'] = pipeline.resume_pending(reserve_seconds=DISCOVERY_SECONDS + QUALIFICATION_SECONDS)
                 for result in state['pipeline_results']:
@@ -1017,6 +1010,8 @@ def run(root, smoke=False):
                                  scope={review: row for review, (_, row) in scope.items()})
                 report = normalized_report(raw_report, updated, diagnostics)
                 finish_reviews(updated, raw_report, scope, diagnostics)
+                if pipeline:
+                    pipeline.set_qualification_holds(qualification_holds(updated))
             else:
                 state['qualification'] = 'skipped_no_pending_offers'
                 result = {'tool_counts': {}}

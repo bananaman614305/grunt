@@ -191,6 +191,11 @@ preserves approval/human holds and their current evidence across aliases and
 generic-model resolution, independently of protected release identity and
 pending-map insertion order. A stale null retry without structured held state
 does not permanently suppress otherwise retryable qualification.
+The trusted controller also supplies current-ledger holds to the release
+pipeline. Both fresh processing and deferred checkpoint resumption check that
+map before reviews, checks, probes or promotion, so an older qualified
+checkpoint cannot bypass a newer approval or human-verification hold. The map
+is refreshed after qualification updates the ledger.
 
 The qualification worker can inspect free-account metadata and perform bounded
 synthetic verification through Squire when documented signup is eligible. An

@@ -719,6 +719,8 @@ class ScoutTests(unittest.TestCase):
             def __init__(self, supplied, root):
                 self.supplied = supplied
                 calls.append(('init', supplied, root))
+            def set_qualification_holds(self, holds):
+                self.supplied['_qualification_holds'] = dict(holds)
             def resume_pending(self, *, reserve_seconds):
                 self.reserve_seconds = reserve_seconds
                 calls.append(('resume',))
