@@ -49,7 +49,7 @@ export async function workerConnectCommand(args: string[], options: WorkerConnec
   if (harness === 'pi') {
     const extension = join(runtime, 'worker-pi.js');
     await installedWorkerFile(extension);
-    notify(`Launch Pi with Grunt subworkers enabled:\npi --provider grunt --model grunt --extension ${shellQuote(extension)} --grunt-worker-port ${port}${agentic ? ' --grunt-agent-workers --grunt-background-jobs' : ''}`);
+    notify(`Launch Pi with Grunt subworkers enabled:\npi --provider grunt --model grunt --extension ${shellQuote(extension)} --grunt-worker-port ${port}${agentic ? ' --grunt-agent-workers --grunt-background-jobs --grunt-checkpoints' : ''}`);
     return;
   }
   if (harness === 'codex') {

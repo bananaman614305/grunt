@@ -5,6 +5,8 @@ import { link, lstat, mkdir, open, readdir, realpath, rename, rm, writeFile } fr
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { captureVerificationState, parseVerificationInput, readVerificationReceipt, sameVerificationState, verificationBinding, verificationEnvironmentDigest, verificationKey, VERIFICATION_MAX_CACHE_AGE_MS, writeVerificationReceipt } from './verification.js';
+import type { VerificationInput, VerificationReceipt, VerificationState } from './verification.js';
 
 export const JOB_CATEGORIES = ['test', 'build', 'render', 'download', 'other'] as const;
 export type JobCategory = typeof JOB_CATEGORIES[number];
@@ -19,7 +21,7 @@ const idPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const sessionPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}$/;
 const headPattern = /^[a-f0-9]{40}$/;
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
-export interface JobInput { command: string; category: JobCategory; timeoutSeconds: number }
+export interface JobInput { command: string; category: JobCategory; timeoutSeconds: number; verification?: VerificationInput }
 export interface JobStatus {
   id: string; category: JobCategory; state: JobState; createdAt: number; ownerPid: number;
   startedAt?: number; finishedAt?: number; collectedAt?: number; exitCode?: number; code?: JobCode;
@@ -31,19 +33,21 @@ export interface JobExecution {
   stdout: string; stderr: string; exitCode?: number; code?: JobCode; truncated?: boolean;
   headAtStart?: string; headAtFinish?: string; cleanAtStart?: boolean; cleanAtFinish?: boolean;
 }
-export type JobResult = JobStatus & Partial<JobExecution>;
+export type JobResult = JobStatus & Partial<JobExecution> & { verification?: VerificationReceipt };
 export interface JobRunRequest { id: string; cwd: string; command: string; timeoutMs: number; maxOutputBytes: number; ownerPid: number; directory: string; signal: AbortSignal }
 export type JobRunner = (request: JobRunRequest) => Promise<JobExecution>;
 export interface JobExec { (command: string, args: string[], options: { cwd: string; signal: AbortSignal; timeout: number }): Promise<{ stdout: string; stderr: string; code: number; killed?: boolean }> }
-interface InternalJob { status: JobStatus; input?: JobInput; cwd?: string; controller?: AbortController; promise?: Promise<void>; result?: JobExecution }
+interface InternalJob { verification?: { input: VerificationInput; key: string; admitted: VerificationState; binding: { planDigest: string; commandDigest: string }; environmentDigest: string }; status: JobStatus; input?: JobInput; cwd?: string; controller?: AbortController; promise?: Promise<void>; result?: JobExecution }
 
 export function parseJobInput(value: unknown): JobInput {
   const v = object(value);
-  if (Object.keys(v).some(k => !['command', 'category', 'timeoutSeconds'].includes(k)) || typeof v.command !== 'string' || !v.command.trim() || Buffer.byteLength(v.command) > 8192 || v.command.includes('\0')) throw new Error('Provide a nonempty command of at most 8 KiB; the current interface supplies its working directory.');
+  if (Object.keys(v).some(k => !['command', 'category', 'timeoutSeconds', 'verification'].includes(k)) || typeof v.command !== 'string' || !v.command.trim() || Buffer.byteLength(v.command) > 8192 || v.command.includes('\0')) throw new Error('Provide a nonempty command of at most 8 KiB; the current interface supplies its working directory.');
   const category = v.category === undefined ? 'other' : JOB_CATEGORIES.find(c => c === v.category);
   const timeoutSeconds = v.timeoutSeconds ?? 900;
   if (!category || !Number.isSafeInteger(timeoutSeconds) || Number(timeoutSeconds) < 1 || Number(timeoutSeconds) > MAX_JOB_TIMEOUT_SECONDS) throw new Error('Use a known job category and a timeout from 1 to 1800 seconds.');
-  return { command: v.command, category, timeoutSeconds: Number(timeoutSeconds) };
+  const verification = v.verification === undefined ? undefined : parseVerificationInput(v.verification);
+  if (verification?.mode === 'release') throw new Error('Release verification must execute through the trusted host authority, not a worker-owned job.');
+  return { command: v.command, category, timeoutSeconds: Number(timeoutSeconds), ...(verification ? { verification } : {}) };
 }
 export function parseJobId(value: unknown) {
   const v = typeof value === 'string' ? { id: value } : object(value);
@@ -188,11 +192,30 @@ export class JobScheduler {
   private async admit(parsed: JobInput, trustedCwd: string) {
     if (this.closed) throw new Error('Grunt jobs are shutting down.');
     if (!isAbsolute(trustedCwd) || !(await lstat(await realpath(trustedCwd))).isDirectory()) throw new Error('The coding interface must supply an existing working directory.');
+    let verification: InternalJob['verification'];
+    if (parsed.verification) {
+      const admitted = await captureVerificationState(trustedCwd, parsed.verification.artifactPaths), binding = verificationBinding(parsed.verification, parsed.command, parsed.timeoutSeconds);
+      const environmentDigest = verificationEnvironmentDigest(jobEnvironment());
+      const key = verificationKey(parsed.verification, binding, admitted, environmentDigest);
+      // A matching in-flight check is one managed execution, never a replay.
+      for (const job of this.jobs.values()) if (job.verification?.key === key && ['queued', 'running'].includes(job.status.state)) return { id: job.status.id, state: job.status.state, reused: true };
+      // Recovered scoped receipts are useful hints only; publication rejects unsigned/scoped proof.
+      for (const job of this.jobs.values()) if (job.status.state === 'completed' && job.status.exitCode === 0 && !job.status.code) {
+        try {
+          const receipt = await readVerificationReceipt(join(this.directory, 'jobs', job.status.id));
+          if (receipt.id === job.status.id && receipt.mode === 'scoped' && receipt.state === 'completed' && receipt.exitCode === 0 && receipt.unchanged
+            && receipt.completedAt <= this.options.now() && this.options.now() - receipt.completedAt <= VERIFICATION_MAX_CACHE_AGE_MS
+            && receipt.planDigest === binding.planDigest && receipt.commandDigest === binding.commandDigest && receipt.environmentDigest === environmentDigest
+            && sameVerificationState(receipt.before, receipt.after) && sameVerificationState(receipt.after, admitted)) return { id: job.status.id, state: job.status.state, reused: true };
+        } catch { /* Invalid or stale receipts never suppress a verification run. */ }
+      }
+      verification = { input: parsed.verification, key, admitted, binding, environmentDigest };
+    }
     if (this.jobs.size >= MAX_RETAINED) await this.pruneCollected();
     if (this.queued.length >= MAX_JOB_QUEUED || this.jobs.size >= MAX_RETAINED) throw new Error('Grunt job capacity reached; retrieve completed results or start a new session.');
     const id = randomUUID(), directory = join(this.directory, 'jobs', id); await privateDirectory(directory);
     const status: JobStatus = { id, category: parsed.category, state: 'queued', createdAt: this.options.now(), ownerPid: process.pid };
-    const job: InternalJob = { status, input: parsed, cwd: await realpath(trustedCwd), controller: new AbortController() };
+    const job: InternalJob = { status, input: parsed, cwd: await realpath(trustedCwd), controller: new AbortController(), ...(verification ? { verification } : {}) };
     await atomicJSON(join(directory, 'receipt.json'), status);
     this.jobs.set(id, job); this.queued.push(job); await this.persist(); this.pump();
     return { id, state: job.status.state };
@@ -217,7 +240,9 @@ export class JobScheduler {
   }
   private async execute(job: InternalJob) {
     const directory = join(this.directory, 'jobs', job.status.id);
+    let verificationBefore: VerificationState | undefined;
     try {
+      if (job.verification) verificationBefore = await captureVerificationState(job.cwd!, job.verification.input.artifactPaths);
       await atomicJSON(join(directory, 'receipt.json'), job.status); await this.persist();
       if (await cancellationRequested(directory)) job.controller!.abort('cancelled');
       job.controller!.signal.throwIfAborted();
@@ -233,6 +258,16 @@ export class JobScheduler {
       job.status.state = job.controller?.signal.aborted ? 'cancelled' : 'failed'; job.status.code = job.controller?.signal.aborted ? job.controller.signal.reason === 'interrupted' ? 'interrupted' : 'cancelled' : 'execution_failed';
     } finally {
       job.status.finishedAt = this.options.now();
+      if (job.verification && verificationBefore) {
+        try {
+          const after = await captureVerificationState(job.cwd!, job.verification.input.artifactPaths);
+          const receipt: VerificationReceipt = { version: 1, id: job.status.id, checkId: job.verification.input.checkId, mode: 'scoped', ...job.verification.binding,
+            state: job.status.state === 'completed' && job.status.exitCode === 0 && !job.status.code && !job.result?.truncated ? 'completed' : 'failed',
+            ...(job.status.exitCode !== undefined ? { exitCode: job.status.exitCode } : {}), completedAt: job.status.finishedAt,
+            before: verificationBefore, after, unchanged: sameVerificationState(verificationBefore, after), environmentDigest: job.verification.environmentDigest };
+          await writeVerificationReceipt(directory, receipt);
+        } catch { /* Missing verification proof never becomes a reusable or release-authorizing result. */ }
+      }
       await atomicJSON(join(directory, 'result.json'), { ...job.status, ...(job.result ?? { stdout: '', stderr: '' }) }).catch(() => {});
       await atomicJSON(join(directory, 'receipt.json'), job.status).catch(() => {});
       this.running.delete(job); await this.persist().catch(() => {}); this.notify(job.status.id); this.pump();
@@ -245,7 +280,9 @@ export class JobScheduler {
     if (job.status.collectedAt === undefined) { job.status.collectedAt = this.options.now(); await atomicJSON(join(this.directory, 'jobs', id, 'receipt.json'), job.status); await this.persist(); }
     let result = job.result;
     if (!result) { try { result = safeExecution(await privateJSON(join(this.directory, 'jobs', id, 'result.json')), this.options.outputBytes); } catch { /* A recovered interrupted job has metadata but may lack output. */ } }
-    return { ...(result ?? {}), ...job.status };
+    let verification: VerificationReceipt | undefined;
+    try { verification = await readVerificationReceipt(join(this.directory, 'jobs', id)); } catch { /* Ordinary jobs or failed attestation have no proof. */ }
+    return { ...(result ?? {}), ...job.status, ...(verification ? { verification } : {}) };
   }
   cancel(input: unknown, code: 'cancelled' | 'interrupted' = 'cancelled') {
     const id = parseJobId(input), job = this.jobs.get(id);
@@ -427,7 +464,10 @@ export async function findJob(stateDirectory: string, idInput: unknown): Promise
 }
 export async function readJobResult(stateDirectory: string, id: unknown): Promise<JobResult> {
   const found = await findJob(stateDirectory, id); if (!found) throw new Error('Unknown Grunt job.');
-  try { return { ...safeExecution(await privateJSON(join(found.directory, 'result.json'))), ...found.status }; }
+  try {
+    let verification: VerificationReceipt | undefined; try { verification = await readVerificationReceipt(found.directory); } catch { /* Ordinary jobs have no verification proof. */ }
+    return { ...safeExecution(await privateJSON(join(found.directory, 'result.json'))), ...found.status, ...(verification ? { verification } : {}) };
+  }
   catch { return { ...found.status }; }
 }
 export async function requestJobCancel(stateDirectory: string, id: unknown) {

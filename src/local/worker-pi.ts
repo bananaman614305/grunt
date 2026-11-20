@@ -2,6 +2,10 @@ import { AgentWorkerBatches, gruntSpawnTool } from './worker-agent-client.js';
 import { registerJobTools } from './jobs-pi.js';
 import type { JobPiContext, JobPiExtension } from './jobs-pi.js';
 import { gruntDelegateTool, gruntWorkerCancelTool, gruntWorkerResultTool, gruntWorkerStatusTool, readWorkerStatus, resolveWorkerPort, WorkerBatches } from './worker-client.js';
+import { COORDINATION_POLICY, gruntCoordinateTool, readCoordinationCapacity, WorkerCoordinator } from './worker-coordination.js';
+import { registerCheckpointTools } from './execution-checkpoint-pi.js';
+import { registerPublicationTools } from './publication-pi.js';
+import { loadExecutionHostChannels } from './efficiency-host.js';
 
 interface PiWorkerTool {
   name: string;
@@ -15,19 +19,35 @@ interface PiWorkerTool {
   }>;
 }
 
-interface PiWorkerExtension extends Omit<JobPiExtension, 'registerFlag'> {
+interface PiWorkerExtension extends Omit<JobPiExtension, 'registerFlag' | 'on'> {
   registerFlag(name: string, options: { type: 'string' | 'boolean'; default?: boolean; description: string }): void;
   getFlag(name: string): string | boolean | undefined;
   registerTool(tool: PiWorkerTool): void;
+  on: JobPiExtension['on'] & ((event: 'before_agent_start', handler: (event: { systemPrompt: string }, context: JobPiContext) => { systemPrompt: string } | undefined | Promise<{ systemPrompt: string } | undefined>) => void);
 }
 
 export const AGENT_WORKERS_FLAG = 'grunt-agent-workers';
 const portFlag = 'grunt-worker-port';
 
 export default function gruntWorkerExtension(pi: PiWorkerExtension) {
-  registerJobTools(pi);
+  const channelFile = process.env.GRUNT_EXECUTION_CHANNEL_FILE;
+  let channels: ReturnType<typeof loadExecutionHostChannels> | undefined;
+  const hostChannels = () => {
+    if (!channelFile) throw new Error('The trusted launcher must configure an execution-host channel manifest.');
+    return channels ??= loadExecutionHostChannels(channelFile).catch((error: unknown) => { channels = undefined; throw error; });
+  };
+  registerJobTools(pi, channelFile ? { verificationBroker: {
+    start: async (...args) => (await hostChannels()).verificationBroker.start(...args),
+    status: async (...args) => (await hostChannels()).verificationBroker.status(...args),
+    result: async (...args) => (await hostChannels()).verificationBroker.result(...args)
+  } } : {});
+  registerCheckpointTools(pi);
+  registerPublicationTools(pi, channelFile ? { channel: {
+    request: async (...args) => (await hostChannels()).publicationChannel.request(...args)
+  } } : {});
   pi.registerFlag(AGENT_WORKERS_FLAG, { type: 'boolean', default: false, description: 'Enable isolated tool-using workers scoped to the current project. Review custom tool approval rules for grunt_spawn.' });
   const agentBatches = new Map<string, Promise<AgentWorkerBatches>>();
+  const coordinators = new Map<string, Promise<WorkerCoordinator>>();
   const agentStore = (ctx?: JobPiContext) => {
     if (pi.getFlag(AGENT_WORKERS_FLAG) !== true || !ctx) throw new Error('Scoped workers require --grunt-agent-workers and a harness project directory.');
     let store = agentBatches.get(ctx.cwd);
@@ -43,7 +63,25 @@ export default function gruntWorkerExtension(pi: PiWorkerExtension) {
         const details = await (await agentStore(ctx)).start(input, signal);
         return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
       } });
+    pi.registerTool({ ...gruntCoordinateTool,
+      async execute(_id, input, signal = new AbortController().signal, _update, ctx) {
+        signal.throwIfAborted();
+        if (!ctx || pi.getFlag(AGENT_WORKERS_FLAG) !== true) throw new Error('Coordination requires the trusted agent-workers launch flag and project directory.');
+        const key = JSON.stringify([ctx.sessionManager?.getSessionId() ?? 'frontend', ctx.cwd]);
+        let coordinator = coordinators.get(key);
+        if (!coordinator) {
+          coordinator = agentStore(ctx).then(batches => new WorkerCoordinator({ batches,
+            capacity: async current => readCoordinationCapacity(await port(), current) })).catch((error: unknown) => { coordinators.delete(key); throw error; });
+          coordinators.set(key, coordinator);
+        }
+        const details = await (await coordinator).execute(input, signal);
+        return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
+      } });
     agentRegistered = true;
+  });
+  pi.on('before_agent_start', event => {
+    if (!agentRegistered || pi.getFlag(AGENT_WORKERS_FLAG) !== true || typeof event.systemPrompt !== 'string' || event.systemPrompt.includes(COORDINATION_POLICY)) return;
+    return { systemPrompt: event.systemPrompt + COORDINATION_POLICY };
   });
   const agentBatch = async (input: unknown) => {
     for (const pending of agentBatches.values()) { const store = await pending; if (store.has(input)) return store; }
@@ -63,6 +101,7 @@ export default function gruntWorkerExtension(pi: PiWorkerExtension) {
   pi.on('session_shutdown', async () => {
     await Promise.allSettled([...agentBatches.values()].map(async store => (await store).close()));
     agentBatches.clear();
+    coordinators.clear();
     const old = pending;
     pending = undefined;
     await old?.then(store => store.close(), () => {});

@@ -11,6 +11,7 @@ import { disabledAdapters, knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import type { DiagnosticEvent } from './diagnostics.js';
+import { routingWorkload, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
@@ -22,6 +23,7 @@ export class StickyRouter {
   private tasks = new Map<string, Task>();
   private bars = new Map<string, number>();
   private barFailures = new Map<string, ErrorCode>();
+  private barAt = new Map<string, number>();
   private observation: SourceStatus;
   private availability: SourceAvailability;
   private shutdown = new AbortController();
@@ -32,13 +34,18 @@ export class StickyRouter {
   private now() { return (this.options.now ?? Date.now)(); }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
-  verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); }
+  verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id); }
   cooldown(id: string) {
-    const until = this.bars.get(id), code = this.barFailures.get(id);
+    let until = this.bars.get(id), code = this.barFailures.get(id);
+    if (until !== undefined && Number.isFinite(until) && code !== 'quota' && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
+      this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); until = undefined; code = undefined;
+    }
     const observedQuota = this.observation.quotaRetryAt(id);
     if (observedQuota !== undefined && (until === undefined || observedQuota >= until)) {
       return { until: observedQuota, code: 'quota' as const };
     }
+    const persisted = this.observation.routingBackoff(id);
+    if (persisted && (until === undefined || persisted.until >= until)) return { until: persisted.until, code: persisted.code };
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
   private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }
@@ -80,7 +87,10 @@ export class StickyRouter {
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal = AbortSignal.any([signal, this.shutdown.signal]);
     signal.throwIfAborted();
+    await this.observation.refreshRoutingHistory();
+    signal.throwIfAborted();
     const { worker, ...adapterRequest } = request;
+    const workload = routingWorkload(request, !!worker);
     const cwd = worker ? request.cwd : await realpath(request.cwd);
     const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, userTurns(request), request.publicContext])).digest('hex');
     let task = this.tasks.get(key);
@@ -140,7 +150,7 @@ export class StickyRouter {
             continue;
           }
           const available = this.availability.peek(source.id);
-          if (source.id === task.source || available === true) eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, !!worker) });
+          if (source.id === task.source || available === true) eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, !!worker, workload) });
           else if (available === undefined) unknown.push(source);
           else {
             // This live allowance check can discover a reset the router did not know at entry.
@@ -205,7 +215,7 @@ export class StickyRouter {
           attempted.add(selected.source.id);
           this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
           try { worker?.onSource(selected.source.id); } catch { /* Status callbacks cannot change routing. */ }
-          const result = await (this.options.attempt ? this.options.attempt(selected.source, input, signal) : observation.complete(selected.source, input, signal));
+          const result = await withRoutingWorkload(workload, () => this.options.attempt ? this.options.attempt(selected.source, input, signal) : observation.complete(selected.source, input, signal));
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
           return result;
@@ -215,7 +225,10 @@ export class StickyRouter {
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
           let until: number;
-          if (failure.code === 'quota') until = this.now() + (failure.retryAfter ?? 3600) * 1000;
+          if (failure.code === 'quota') {
+            const seconds = failure.retryAfter ?? 3600;
+            until = (await observation.failureBackoff(selected.source.id, failure, seconds, false)).until;
+          }
           else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
           else {
             const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
@@ -227,9 +240,10 @@ export class StickyRouter {
             const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
             const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
               : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
-            until = this.now() + seconds * 1000;
+            until = (await observation.failureBackoff(selected.source.id, failure, seconds, !hasUpstreamHint)).until;
           }
-          this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, failure.code); task.switched = true;
+          this.barAt.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.at ?? this.now());
+          this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.code ?? failure.code); task.switched = true;
         }
       }
     } finally {
