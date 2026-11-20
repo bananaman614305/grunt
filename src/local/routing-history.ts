@@ -27,6 +27,7 @@ const validTime = (value: unknown): value is number => typeof value === 'number'
 const profiles = new Set<string>(['all', ...routingWorkloads]);
 const backoffCodes = new Set<ErrorCode>(['quota', 'upstream', 'timeout', 'refused']);
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const CONTENTION_RETRY_MS = 2000;
 const unsafe = () => new Error('Routing history requires bounded private local state');
 
 export function nextRoutingPerformance(previous: RoutingPerformance | undefined, success: boolean, durationMs: number, at: number): RoutingPerformance {
@@ -119,13 +120,14 @@ export class RoutingHistory {
     try {
       await client.execute('PRAGMA busy_timeout=0');
       const { version, journalMode } = await (async () => {
+        const deadline = Date.now() + CONTENTION_RETRY_MS;
         for (let attempt = 0; ; attempt++) {
           try {
             const mode = (await client.execute('PRAGMA journal_mode')).rows[0]?.journal_mode;
             const version = Number((await client.execute('PRAGMA user_version')).rows[0]?.user_version);
             return { version, journalMode: String(mode).toLowerCase() };
           } catch (error) {
-            if (attempt >= 7 || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+            if (Date.now() >= deadline || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
             // Retry only idempotent metadata reads. A failed native read can
             // leave a statement attached, so start with a fresh connection.
             client.close();
@@ -153,10 +155,11 @@ export class RoutingHistory {
   }
   private async transaction<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
     let tx: Transaction | undefined;
+    const deadline = Date.now() + CONTENTION_RETRY_MS;
     for (let attempt = 0; ; attempt++) {
       try { tx = await this.client.transaction('write'); break; }
       catch (error) {
-        if (attempt >= 7 || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+        if (Date.now() >= deadline || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
         // libsql can retain the failed BEGIN statement on this connection, so a
         // later COMMIT reports statements in progress even after the lock ends.
         // No work() has run: discard only the poisoned connection before retry.

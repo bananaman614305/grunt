@@ -257,7 +257,8 @@ it('replaces a connection poisoned by a failed BEGIN without replaying observati
     // Opening an existing schema must not demand a write lock or rerun DDL.
     expect((await (await open(path)).snapshot(11000)).performance).toEqual([]);
     const pending = history.record('kilo', 'interactive-text', true, 1000, 10000);
-    await new Promise(resolve => setTimeout(resolve, 20)); child.stdin.end();
+    // A healthy sibling can hold the database beyond the old ~110 ms retry budget.
+    await new Promise(resolve => setTimeout(resolve, 250)); child.stdin.end();
     await pending;
     expect((await history.snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
   } finally { child.stdin.end(); await exited; }
@@ -275,7 +276,8 @@ it('retries startup metadata reads behind a short exclusive sibling writer witho
     const pending = open(path);
     // Attach a handler immediately: the baseline must reject before release.
     const opened = pending.then(value => ({ value }), error => ({ error }));
-    await new Promise(resolve => setTimeout(resolve, 20)); child.stdin.end();
+    // A healthy sibling can hold the database beyond the old ~110 ms retry budget.
+    await new Promise(resolve => setTimeout(resolve, 250)); child.stdin.end();
     const result = await opened;
     if ('error' in result) throw result.error;
     expect((await result.value.snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
@@ -330,12 +332,15 @@ it.each([
   if (stored) await status.setRoutingHistory(await open(path));
   const one = source('runcrate');
   const rejects: ((reason: SourceError) => void)[] = [];
-  one.complete.mockImplementation(() => new Promise((_resolve, reject) => { rejects.push(reject); }));
+  // Admission includes asynchronous filesystem work, so completion order need not match launch order.
+  one.complete.mockImplementation((input: ModelRequest) => new Promise((_resolve, reject) => {
+    rejects[Number(input.userMessages![0]!.split(' ').at(-1))] = reject;
+  }));
   const value = router([one], status, () => now);
   const turns = Array.from({ length: 6 }, (_, i) => value.complete({ ...request, userMessages: [`admitted task ${i}`] }, AbortSignal.timeout(5000))
     .then(() => undefined, error => error));
   try {
-    await vi.waitFor(() => expect(rejects).toHaveLength(6));
+    await vi.waitFor(() => expect(rejects.filter(Boolean)).toHaveLength(6));
     for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
       rejects[i]!(new SourceError('upstream', 'Synthetic outage'));
       await turns[i];
@@ -384,12 +389,15 @@ it.each([false, true])('counts five HTTP 502 failures after an admitted quota re
   if (stored) await status.setRoutingHistory(await open(path));
   const one = source('runcrate');
   const rejects: ((error: SourceError) => void)[] = [];
-  one.complete.mockImplementation(() => new Promise((_resolve, reject) => { rejects.push(reject); }));
+  // Admission includes asynchronous filesystem work, so completion order need not match launch order.
+  one.complete.mockImplementation((input: ModelRequest) => new Promise((_resolve, reject) => {
+    rejects[Number(input.userMessages![0]!.split(' ').at(-1))] = reject;
+  }));
   const value = router([one], status, () => now);
   const turns = Array.from({ length: 6 }, (_, i) => value.complete({ ...request, userMessages: [`quota-first task ${i}`] }, AbortSignal.timeout(5000))
     .then(() => undefined, error => error));
   try {
-    await vi.waitFor(() => expect(rejects).toHaveLength(6));
+    await vi.waitFor(() => expect(rejects.filter(Boolean)).toHaveLength(6));
     rejects[0]!(new SourceError('quota', 'Reset in sixty seconds', 60));
     await turns[0];
     expect(value.cooldown('runcrate')!.until).toBe(70000);
@@ -450,12 +458,15 @@ it.each([false, true])('clears a recovered upstream cooldown while preserving th
   if (stored) await status.setRoutingHistory(await open(path));
   const one = source('runcrate');
   const admitted: { resolve(value: { text: string }): void; reject(error: SourceError): void }[] = [];
-  one.complete.mockImplementation(() => new Promise((resolve, reject) => { admitted.push({ resolve, reject }); }));
+  // Match deferred replies to their task rather than filesystem-dependent admission order.
+  one.complete.mockImplementation((input: ModelRequest) => new Promise((resolve, reject) => {
+    admitted[Number(input.userMessages![0]!.split(' ').at(-1))] = { resolve, reject };
+  }));
   const value = router([one], status, () => now);
   const turns = Array.from({ length: 3 }, (_, i) => value.complete({ ...request, userMessages: [`quota and recovery ${i}`] }, AbortSignal.timeout(5000))
     .then(result => result, error => error));
   try {
-    await vi.waitFor(() => expect(admitted).toHaveLength(3));
+    await vi.waitFor(() => expect(admitted.filter(Boolean)).toHaveLength(3));
     admitted[0]!.reject(new SourceError('quota', 'Reset in sixty seconds', 60));
     await turns[0];
     now = 11000;
