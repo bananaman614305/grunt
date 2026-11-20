@@ -49,7 +49,7 @@ export class StickyRouter {
   private now() { return (this.options.now ?? Date.now)(); }
   retired(id: string) {
     const backoff = this.observation.routingBackoff(id);
-    return !!backoff && backoff.code !== 'quota' && backoff.streak >= RETIRE_AFTER_FAILURES;
+    return !!backoff && backoff.streak >= RETIRE_AFTER_FAILURES;
   }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }

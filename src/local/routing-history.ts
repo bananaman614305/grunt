@@ -50,17 +50,17 @@ export function routingFailureSignature(error: SourceError) {
 // deadline, not a delay to restart when another failure arrives.
 export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
   if (!previous) return incoming;
-  if (previous.code !== 'quota' && previous.streak >= RETIRE_AFTER_FAILURES) return previous;
-  if (incoming.code !== 'quota' && incoming.streak >= RETIRE_AFTER_FAILURES) return incoming;
-  if (previous.code === 'quota' && previous.until > incoming.at) {
-    if (incoming.code !== 'quota') return previous;
-    return { ...incoming, at: Math.max(previous.at, incoming.at), until: Math.max(previous.until, incoming.until) };
-  }
+  const until = Math.max(previous.until, incoming.until);
+  const quota = previous.code === 'quota' && previous.until > incoming.at
+    || incoming.code === 'quota' && incoming.until > previous.at;
+  if (previous.streak >= RETIRE_AFTER_FAILURES) return { ...previous, ...(quota ? { code: 'quota' as const } : {}), until };
+  const code = quota ? 'quota' : incoming.code;
+  if (incoming.streak >= RETIRE_AFTER_FAILURES) return { ...incoming, code, until };
   if (incoming.at < previous.at) {
-    if (incoming.code === 'quota' && incoming.until > previous.at) return { ...incoming, at: previous.at };
+    if (incoming.code === 'quota' && incoming.until > previous.at) return { ...previous, code: 'quota', until };
     return previous;
   }
-  return incoming;
+  return { ...incoming, code, until };
 }
 export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
   const signature = routingFailureSignature(error);
@@ -194,7 +194,10 @@ export class RoutingHistory {
         await tx.execute({ sql: 'INSERT INTO routing_performance(source,profile,value,at) VALUES (?,?,?,?) ON CONFLICT(source,profile) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, key, JSON.stringify(value), value.at] });
         result.push({ source, profile: key, value });
       }
-      if (success) await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
+      if (success) {
+        await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
+        await tx.execute({ sql: "UPDATE routing_backoff SET value=json_set(value,'$.signature','quota:::','$.streak',1) WHERE source=? AND json_extract(value,'$.code')='quota' AND at<?", args: [source, now] });
+      }
       await tx.execute({ sql: 'DELETE FROM routing_performance WHERE rowid NOT IN (SELECT rowid FROM routing_performance ORDER BY at DESC LIMIT 500)', args: [] });
       return result;
     }));
@@ -204,10 +207,11 @@ export class RoutingHistory {
     return this.run(() => this.transaction(async tx => {
       const row = (await tx.execute({ sql: 'SELECT value FROM routing_backoff WHERE source=?', args: [source] })).rows[0];
       let old; try { old = backoffValue(JSON.parse(String(row?.value))); } catch { /* Discard corrupt advisory state. */ }
-      if (error.code !== 'quota' && (!old || old.code !== 'quota' || old.until <= now)) {
+      if (error.code !== 'quota') {
         const row = (await tx.execute({ sql: "SELECT value FROM routing_performance WHERE source=? AND profile='all'", args: [source] })).rows[0];
         let performance; try { performance = performanceValue(JSON.parse(String(row?.value))); } catch { /* Invalid recovery is not authority. */ }
         if ((performance?.lastSuccessAt ?? 0) > now) {
+          if (old?.code === 'quota' && old.until > now) return old;
           if (old && old.at >= performance!.lastSuccessAt!) return old;
           // Report no active hold without resurrecting a late pre-recovery failure.
           return { code: error.code, signature: routingFailureSignature(error), streak: 1, at: now, until: now };

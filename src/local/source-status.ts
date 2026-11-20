@@ -121,10 +121,15 @@ export class SourceStatus {
         if (!entry) continue;
         this.mergePerformance(entry, row.profile, row.value);
       }
-      for (const [id, value] of this.backoffs) if (value.code !== 'quota' && (this.routingRecoveryAt(id) ?? 0) > value.at) this.backoffs.delete(id);
+      for (const [id, value] of this.backoffs) if ((this.routingRecoveryAt(id) ?? 0) > value.at) {
+        if (value.code === 'quota') this.backoffs.set(id, { ...value, signature: 'quota:::', streak: 1 });
+        else this.backoffs.delete(id);
+      }
       for (const row of state.backoff) if (this.observations.has(row.source) && (row.value.code === 'quota' || (this.routingRecoveryAt(row.source) ?? 0) <= row.value.at)) {
         const old = this.backoffs.get(row.source);
-        this.backoffs.set(row.source, mergeRoutingBackoff(old, row.value));
+        const incoming = row.value.code === 'quota' && (this.routingRecoveryAt(row.source) ?? 0) > row.value.at
+          ? { ...row.value, signature: 'quota:::', streak: 1 } : row.value;
+        this.backoffs.set(row.source, mergeRoutingBackoff(old, incoming));
       }
     } catch { /* Durable observations must not make a source available or break requests. */ }
   }
@@ -184,7 +189,10 @@ export class SourceStatus {
     entry.profiles ??= {};
     entry.profiles[profile] = nextRoutingPerformance(entry.profiles[profile], success, latencyMs, at);
     const backoff = this.backoffs.get(id);
-    if (success && backoff && backoff.code !== 'quota' && at > backoff.at) this.backoffs.delete(id);
+    if (success && backoff && at > backoff.at) {
+      if (backoff.code === 'quota') this.backoffs.set(id, { ...backoff, signature: 'quota:::', streak: 1 });
+      else this.backoffs.delete(id);
+    }
     try {
       const rows = await this.history?.record(id, profile, success, latencyMs, at);
       if (entry.revision === revision) for (const row of rows ?? []) this.mergePerformance(entry, row.profile, row.value);

@@ -154,7 +154,7 @@ it('keeps atomic samples across independent runtime processes sharing the privat
 it('preserves the outstanding absolute quota deadline against sibling failures and shorter quota hints', async () => {
   const path = await directory(), first = await open(path), second = await open(path);
   const quota = await first.failure('kilo', new SourceError('quota', 'PRIVATE', 86400), 86400, false, 10000);
-  expect(await second.failure('kilo', new SourceError('upstream', 'PRIVATE'), 900, true, 11000)).toEqual(quota);
+  expect(await second.failure('kilo', new SourceError('upstream', 'PRIVATE'), 900, true, 11000)).toMatchObject({ code: 'quota', signature: 'upstream:::', streak: 1, until: quota.until });
   const shorter = await second.failure('kilo', new SourceError('quota', 'PRIVATE', 60), 60, false, 12000);
   expect(shorter.until).toBe(quota.until); expect(shorter.at).toBeGreaterThanOrEqual(quota.at);
   const later = await first.failure('kilo', new SourceError('quota', 'PRIVATE', 90000), 90000, false, 13000);
@@ -191,7 +191,7 @@ it('does not let late admitted replies erase newer failures or fabricate a later
 it('uses the same monotonic quota and failure merge in SourceStatus without storage', async () => {
   let now = 10000; const status = new SourceStatus(['kilo'], () => now);
   const quota = await status.failureBackoff('kilo', new SourceError('quota', 'PRIVATE'), 86400, false);
-  now = 11000; expect(await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true)).toEqual(quota);
+  now = 11000; expect(await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true)).toMatchObject({ code: 'quota', signature: 'upstream:::', streak: 1, until: quota.until });
   now = 12000; expect((await status.failureBackoff('kilo', new SourceError('quota', 'PRIVATE'), 60, false)).until).toBe(quota.until);
   status.clearRoutingBackoff('kilo'); now = 20000;
   await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true);
@@ -202,8 +202,8 @@ it('uses the same monotonic quota and failure merge in SourceStatus without stor
 it('installs a stronger sibling quota returned by storage even when its observation timestamp is older', async () => {
   const now = 11000; const path = await directory(), first = await open(path), second = await open(path), status = new SourceStatus(['kilo'], () => now); await status.setRoutingHistory(second);
   const quota = await first.failure('kilo', new SourceError('quota', 'PRIVATE'), 86400, false, 10000);
-  expect(await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true)).toEqual(quota);
-  expect(status.routingBackoff('kilo')).toEqual(quota);
+  expect(await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true)).toMatchObject({ code: 'quota', signature: 'upstream:::', streak: 1, until: quota.until });
+  expect(status.routingBackoff('kilo')).toMatchObject({ code: 'quota', signature: 'upstream:::', streak: 1, until: quota.until });
 });
 
 
@@ -346,7 +346,7 @@ it.each([
     rejects[5]!(later === 'quota' ? new SourceError('quota', 'Daily limit', 60)
       : new SourceError('upstream', 'Different outage', undefined, undefined, { httpStatus: 502 }));
     await turns[5];
-    expect(status.routingBackoff('runcrate')).toEqual(retired);
+    expect(status.routingBackoff('runcrate')).toEqual({ ...retired, ...(later === 'quota' ? { code: 'quota' } : {}) });
     expect(value.retired('runcrate')).toBe(true);
     if (stored) {
       const restored = new SourceStatus(['runcrate'], () => now);
@@ -371,7 +371,74 @@ it('preserves retirement when sibling bookkeeping arrives in either order', () =
     { code: 'quota' as const, signature: 'quota:::', streak: 1, at: 11000, until: 86411000 },
     { code: 'upstream' as const, signature: 'upstream:502::', streak: 1, at: 11000, until: 911000 }
   ]) {
-    expect(mergeRoutingBackoff(retired, other)).toEqual(retired);
-    expect(mergeRoutingBackoff(other, retired)).toEqual(retired);
+    const until = other.code === 'quota' ? 86411000 : 7210000;
+    expect(mergeRoutingBackoff(retired, other)).toEqual({ ...retired, code: other.code === 'quota' ? 'quota' : 'upstream', until });
+    expect(mergeRoutingBackoff(other, retired)).toEqual({ ...retired, code: other.code === 'quota' ? 'quota' : 'upstream', until });
   }
+});
+
+it.each([false, true])('counts five HTTP 502 failures after an admitted quota response without shortening its deadline (stored=%s)', async stored => {
+  let now = 10000;
+  const path = await directory();
+  const status = new SourceStatus(['runcrate'], () => now);
+  if (stored) await status.setRoutingHistory(await open(path));
+  const one = source('runcrate');
+  const rejects: ((error: SourceError) => void)[] = [];
+  one.complete.mockImplementation(() => new Promise((_resolve, reject) => { rejects.push(reject); }));
+  const value = router([one], status, () => now);
+  const turns = Array.from({ length: 6 }, (_, i) => value.complete({ ...request, userMessages: [`quota-first task ${i}`] }, AbortSignal.timeout(5000))
+    .then(() => undefined, error => error));
+  try {
+    await vi.waitFor(() => expect(rejects).toHaveLength(6));
+    rejects[0]!(new SourceError('quota', 'Reset in sixty seconds', 60));
+    await turns[0];
+    expect(value.cooldown('runcrate')!.until).toBe(70000);
+    for (let i = 1; i <= 5; i++) {
+      now += 1000;
+      rejects[i]!(new SourceError('upstream', 'Temporary upstream error', 4, undefined, { httpStatus: 502 }));
+      await turns[i];
+      expect(value.cooldown('runcrate')!.until).toBe(70000);
+      expect(status.routingBackoff('runcrate')).toMatchObject({ code: 'quota', signature: 'upstream:502::', streak: i });
+      expect(value.retired('runcrate')).toBe(i === 5);
+    }
+    now = 70001;
+    await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['after quota reset'] }, AbortSignal.timeout(1000))).rejects.toThrow();
+    expect(one.complete).toHaveBeenCalledTimes(6);
+    if (stored) {
+      const restored = new SourceStatus(['runcrate'], () => now);
+      await restored.setRoutingHistory(await open(path));
+      expect(router([one], restored, () => now).retired('runcrate')).toBe(true);
+    }
+  } finally {
+    for (const reject of rejects) reject(new SourceError('cancelled', 'Test cleanup'));
+    await Promise.all(turns);
+  }
+});
+
+it.each([false, true])('a successful admitted reply clears the failure streak while retaining the quota hold (stored=%s)', async stored => {
+  let now = 10000;
+  const path = await directory();
+  const status = new SourceStatus(['runcrate'], () => now);
+  if (stored) await status.setRoutingHistory(await open(path));
+  const one = source('runcrate'), value = router([one], status, () => now);
+  await status.failureBackoff('runcrate', new SourceError('quota', 'Daily reset'), 60, false);
+  for (let i = 0; i < 5; i++) {
+    now += 1000;
+    await status.failureBackoff('runcrate', new SourceError('upstream', 'Temporary error', 4, undefined, { httpStatus: 502 }), 4, false);
+  }
+  expect(value.retired('runcrate')).toBe(true);
+  now += 1000;
+  await status.complete(one, request, new AbortController().signal);
+  expect(value.retired('runcrate')).toBe(false);
+  expect(value.cooldown('runcrate')).toEqual({ code: 'quota', until: 70000 });
+  if (stored) {
+    const restored = new SourceStatus(['runcrate'], () => now);
+    await restored.setRoutingHistory(await open(path));
+    const reloaded = router([one], restored, () => now);
+    expect(reloaded.retired('runcrate')).toBe(false);
+    expect(reloaded.cooldown('runcrate')).toEqual({ code: 'quota', until: 70000 });
+  }
+  await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['still quota held'] }, AbortSignal.timeout(1000))).rejects.toThrow();
+  now = 70001;
+  await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['after actual reset'] }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'PRIVATE_ANSWER' });
 });
