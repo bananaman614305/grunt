@@ -103,6 +103,8 @@ export class FreePi implements Source {
     try { const token = await this.token(); await this.guard(token, signal); return true; }
     catch (error) { if (error instanceof SourceError && error.code === 'quota') throw error; return false; }
   }
+  // Maintenance verifies native access/free rights without selling another trace.
+  async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     caller.throwIfAborted();
     if (!this.acceptsRequest(request) || ![this.id, 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Free-Pi requires a reviewed public-only request');
