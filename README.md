@@ -63,12 +63,13 @@ copies:
 ```bash
 npx usegrunt workers connect pi --agentic
 # Launch Pi with the printed command, including:
-# --grunt-agent-workers --grunt-background-jobs
+# --grunt-agent-workers --grunt-background-jobs --grunt-checkpoints
 npx usegrunt workers status
 ```
 
 The Pi flags are separate opt-ins: `--grunt-agent-workers` enables scoped
-workers; `--grunt-background-jobs` enables local command jobs. Review your
+workers; `--grunt-background-jobs` enables local command jobs;
+`--grunt-checkpoints` enables private progress checkpoints and focused handoffs. Review your
 interface's custom-tool approval rules before enabling them. For Codex, Claude
 Code or OpenCode, use `workers connect <interface> --agentic --project "$PWD"`
 and install the printed MCP configuration. Omitting `--agentic` keeps proposal
@@ -91,6 +92,18 @@ for long tests, builds and renders. Managed jobs return control to Pi so the
 agent can continue independent work; collect results or cancel them before the
 session ends. Neither feature is enabled by ordinary setup. Existing daemons
 need `npx usegrunt update` after installing a release with these capabilities.
+
+With agentic Pi enabled, `grunt_coordinate` plans independent work for the main
+agent and two workers, using current pool capacity while leaving artifacts for
+explicit review and integration. Content-bound verification jobs can reuse a
+recent successful result when the command and all inputs still match. Local
+routing performance and failure backoff persist across runtime restarts.
+
+Operators can also configure a private execution host for required release
+checks, a separate Grunt reviewer, exact tested-tree merging and verified GitHub
+Pages publication. Its `--grunt-publication` flag and read-only channel manifest
+are explicit launch configuration; credentials and signing authority stay outside
+the coding interface. See [execution efficiency](docs/efficiency.md).
 
 The [private owner console](docs/reference.md#private-owner-admin) opens on
 Grunt's current work, subworker activity and per-source daily, weekly and lifetime usage.
