@@ -30,18 +30,34 @@ const unsafe = () => new Error('Routing history requires bounded private local s
 
 export function nextRoutingPerformance(previous: RoutingPerformance | undefined, success: boolean, durationMs: number, at: number): RoutingPerformance {
   // Completions can queue behind a sibling captured a few milliseconds later.
-  const old = previous && previous.at - at <= 5000 && at - previous.at <= ROUTING_HISTORY_TTL_MS ? previous : undefined;
+  if (previous && previous.at - at > 5000) return success
+    ? { ...previous, lastSuccessAt: Math.max(at, previous.lastSuccessAt ?? 0) } : previous;
+  const old = previous && at - previous.at <= ROUTING_HISTORY_TTL_MS ? previous : undefined;
   const observedAt = Math.max(at, old?.at ?? at);
   const duration = Math.max(250, Math.min(30 * 60 * 1000, Number.isFinite(durationMs) ? durationMs : 10000));
   return { samples: Math.min(1000, (old?.samples ?? 0) + 1),
     reliability: old ? old.reliability * .8 + Number(success) * .2 : Number(success),
     latencyMs: success ? old ? old.latencyMs * .7 + duration * .3 : duration : old?.latencyMs ?? 10000,
     failureCostMs: old ? old.failureCostMs * .8 + (success ? 0 : duration) * .2 : success ? 0 : duration,
-    at: observedAt, ...(success ? { lastSuccessAt: observedAt } : old?.lastSuccessAt !== undefined ? { lastSuccessAt: old.lastSuccessAt } : {}) };
+    at: observedAt, ...(success ? { lastSuccessAt: Math.max(at, old?.lastSuccessAt ?? 0) } : old?.lastSuccessAt !== undefined ? { lastSuccessAt: old.lastSuccessAt } : {}) };
 }
 export function routingFailureSignature(error: SourceError) {
   const safe = sanitizeSafeDiagnosticMetadata(error.diagnostics);
   return [error.code, safe.httpStatus ?? '', safe.failureReason ?? '', safe.networkCode ?? ''].join(':').toLowerCase();
+}
+// Parallel admitted calls can finish out of order. A quota is an absolute reset
+// deadline, not a delay to restart when another failure arrives.
+export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
+  if (!previous) return incoming;
+  if (previous.code === 'quota' && previous.until > incoming.at) {
+    if (incoming.code !== 'quota') return previous;
+    return { ...incoming, at: Math.max(previous.at, incoming.at), until: Math.max(previous.until, incoming.until) };
+  }
+  if (incoming.at < previous.at) {
+    if (incoming.code === 'quota' && incoming.until > previous.at) return { ...incoming, at: previous.at };
+    return previous;
+  }
+  return incoming;
 }
 export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
   const signature = routingFailureSignature(error);
@@ -49,7 +65,7 @@ export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: 
   const streak = repeated ? Math.min(5, previous.streak + 1) : 1;
   // Explicit provider/reset hints bypass adaptive multiplication, including zero.
   const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
-  return { code: error.code, signature, streak, at, until: at + delay * 1000 };
+  return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + delay * 1000 });
 }
 function performanceValue(raw: unknown): RoutingPerformance | undefined {
   const value = object(raw);
@@ -152,7 +168,7 @@ export class RoutingHistory {
         await tx.execute({ sql: 'INSERT INTO routing_performance(source,profile,value,at) VALUES (?,?,?,?) ON CONFLICT(source,profile) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, key, JSON.stringify(value), value.at] });
         result.push({ source, profile: key, value });
       }
-      if (success) await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota'", args: [source] });
+      if (success) await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
       await tx.execute({ sql: 'DELETE FROM routing_performance WHERE rowid NOT IN (SELECT rowid FROM routing_performance ORDER BY at DESC LIMIT 500)', args: [] });
       return result;
     }));
@@ -162,8 +178,17 @@ export class RoutingHistory {
     return this.run(() => this.transaction(async tx => {
       const row = (await tx.execute({ sql: 'SELECT value FROM routing_backoff WHERE source=?', args: [source] })).rows[0];
       let old; try { old = backoffValue(JSON.parse(String(row?.value))); } catch { /* Discard corrupt advisory state. */ }
+      if (error.code !== 'quota' && (!old || old.code !== 'quota' || old.until <= now)) {
+        const row = (await tx.execute({ sql: "SELECT value FROM routing_performance WHERE source=? AND profile='all'", args: [source] })).rows[0];
+        let performance; try { performance = performanceValue(JSON.parse(String(row?.value))); } catch { /* Invalid recovery is not authority. */ }
+        if ((performance?.lastSuccessAt ?? 0) > now) {
+          if (old && old.at >= performance!.lastSuccessAt!) return old;
+          // Report no active hold without resurrecting a late pre-recovery failure.
+          return { code: error.code, signature: routingFailureSignature(error), streak: 1, at: now, until: now };
+        }
+      }
       const value = nextRoutingBackoff(old, error, seconds, adaptive, now);
-      await tx.execute({ sql: 'INSERT INTO routing_backoff(source,value,at) VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, JSON.stringify(value), now] });
+      await tx.execute({ sql: 'INSERT INTO routing_backoff(source,value,at) VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, JSON.stringify(value), value.at] });
       await tx.execute('DELETE FROM routing_backoff WHERE rowid NOT IN (SELECT rowid FROM routing_backoff ORDER BY at DESC LIMIT 100)');
       return value;
     }));

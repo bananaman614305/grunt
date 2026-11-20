@@ -5,7 +5,7 @@ import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore } from './diagnostics.js';
-import { currentRoutingWorkload, nextRoutingPerformance, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
+import { currentRoutingWorkload, nextRoutingPerformance, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
@@ -124,7 +124,7 @@ export class SourceStatus {
       for (const [id, value] of this.backoffs) if (value.code !== 'quota' && (this.routingRecoveryAt(id) ?? 0) > value.at) this.backoffs.delete(id);
       for (const row of state.backoff) if (this.observations.has(row.source) && (row.value.code === 'quota' || (this.routingRecoveryAt(row.source) ?? 0) <= row.value.at)) {
         const old = this.backoffs.get(row.source);
-        if (!old || row.value.at >= old.at) this.backoffs.set(row.source, row.value);
+        this.backoffs.set(row.source, mergeRoutingBackoff(old, row.value));
       }
     } catch { /* Durable observations must not make a source available or break requests. */ }
   }
@@ -145,14 +145,30 @@ export class SourceStatus {
   }
   async failureBackoff(id: string, error: SourceError, seconds: number, adaptive: boolean) {
     const at = this.now();
-    let value = nextRoutingBackoff(this.backoffs.get(id), error, seconds, adaptive, at);
-    this.backoffs.set(id, value);
+    const recovered = error.code !== 'quota' && (this.routingRecoveryAt(id) ?? 0) > at;
+    const candidate = recovered
+      ? { code: error.code, signature: '', streak: 1, at, until: at }
+      : nextRoutingBackoff(this.backoffs.get(id), error, seconds, adaptive, at);
+    if (!recovered) this.backoffs.set(id, candidate);
+    let value = candidate;
     try { if (this.history) value = await this.history.failure(id, error, seconds, adaptive, at); }
     catch { /* Keep the bounded in-memory backoff when private storage is unavailable. */ }
-    const current = this.backoffs.get(id);
-    if (!current || current.at <= value.at) this.backoffs.set(id, value);
+    const current = this.backoffs.get(id), recovery = this.routingRecoveryAt(id) ?? 0;
+    if (value.code !== 'quota' && recovery > value.at) {
+      if (current && (current.code === 'quota' || current.at >= recovery)) return current;
+      this.backoffs.delete(id);
+      return { ...value, until: value.at };
+    }
+    if (current === candidate || !current) {
+      if (value.until <= value.at) this.backoffs.delete(id);
+      else this.backoffs.set(id, value);
+    } else {
+      value = mergeRoutingBackoff(current, value);
+      this.backoffs.set(id, value);
+    }
     return value;
   }
+
   routingWeight(id: string, background = false, workload?: RoutingWorkload) {
     const entry = this.entry(id), specific = workload ? entry.profiles?.[workload] : undefined;
     const sample = specific && specific.samples >= 2 ? specific : entry.performance;
@@ -167,7 +183,8 @@ export class SourceStatus {
     entry.performance = nextRoutingPerformance(entry.performance, success, latencyMs, at);
     entry.profiles ??= {};
     entry.profiles[profile] = nextRoutingPerformance(entry.profiles[profile], success, latencyMs, at);
-    if (success && this.backoffs.get(id)?.code !== 'quota') this.backoffs.delete(id);
+    const backoff = this.backoffs.get(id);
+    if (success && backoff && backoff.code !== 'quota' && at > backoff.at) this.backoffs.delete(id);
     try {
       const rows = await this.history?.record(id, profile, success, latencyMs, at);
       if (entry.revision === revision) for (const row of rows ?? []) this.mergePerformance(entry, row.profile, row.value);

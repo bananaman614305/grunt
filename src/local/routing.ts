@@ -243,7 +243,7 @@ export class StickyRouter {
             until = (await observation.failureBackoff(selected.source.id, failure, seconds, !hasUpstreamHint)).until;
           }
           this.barAt.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.at ?? this.now());
-          this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, failure.code); task.switched = true;
+          this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.code ?? failure.code); task.switched = true;
         }
       }
     } finally {

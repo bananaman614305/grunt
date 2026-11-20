@@ -145,3 +145,98 @@ it('keeps atomic samples across independent runtime processes sharing the privat
   await Promise.all([0, 1].map(() => promisify(execFile)(process.execPath, ['--import', createRequire(import.meta.url).resolve('tsx'), '--input-type=module', '-e', script, new URL('./routing-history.ts', import.meta.url).href, path], { cwd: process.cwd(), timeout: 15000, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } })));
   expect((await store.snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(16);
 });
+
+it('preserves the outstanding absolute quota deadline against sibling failures and shorter quota hints', async () => {
+  const path = await directory(), first = await open(path), second = await open(path);
+  const quota = await first.failure('kilo', new SourceError('quota', 'PRIVATE', 86400), 86400, false, 10000);
+  expect(await second.failure('kilo', new SourceError('upstream', 'PRIVATE'), 900, true, 11000)).toEqual(quota);
+  const shorter = await second.failure('kilo', new SourceError('quota', 'PRIVATE', 60), 60, false, 12000);
+  expect(shorter.until).toBe(quota.until); expect(shorter.at).toBeGreaterThanOrEqual(quota.at);
+  const later = await first.failure('kilo', new SourceError('quota', 'PRIVATE', 90000), 90000, false, 13000);
+  expect(later.until).toBe(90013000);
+  // A stale long quota uses its original deadline, never arrival time plus its old delay.
+  const delayed = await second.failure('kilo', new SourceError('quota', 'PRIVATE', 100000), 100000, false, 12500);
+  expect(delayed.until).toBe(100012500); expect(delayed.at).toBe(later.at);
+});
+
+it('ignores stale adaptive failures instead of rewinding or escalating a newer hold', async () => {
+  const path = await directory(), first = await open(path), second = await open(path), error = new SourceError('upstream', 'PRIVATE');
+  await first.failure('kilo', error, 900, true, 20000);
+  const newest = await second.failure('kilo', error, 900, true, 30000);
+  expect(newest).toMatchObject({ at: 30000, streak: 2, until: 1830000 });
+  expect(await first.failure('kilo', error, 900, true, 25000)).toEqual(newest);
+  expect((await second.snapshot(31000)).backoff[0]!.value).toEqual(newest);
+});
+
+it('does not let late admitted replies erase newer failures or fabricate a later recovery timestamp', async () => {
+  const path = await directory(), first = await open(path), second = await open(path), error = new SourceError('upstream', 'PRIVATE');
+  await first.record('kilo', 'interactive-text', false, 1000, 30000);
+  const failure = await first.failure('kilo', error, 900, true, 30000);
+  await second.record('kilo', 'interactive-text', true, 1000, 25000);
+  const state = await first.snapshot(31000);
+  expect(state.backoff[0]!.value).toEqual(failure);
+  expect(state.performance.find(row => row.profile === 'all')!.value.lastSuccessAt).toBe(25000);
+  await second.record('kilo', 'interactive-text', true, 1000, 32000);
+  expect((await first.snapshot(33000)).backoff).toEqual([]);
+  const stale = await first.failure('kilo', error, 900, true, 31000);
+  expect(stale.until).toBeLessThanOrEqual(32000);
+  expect((await second.snapshot(33000)).backoff).toEqual([]);
+});
+
+it('uses the same monotonic quota and failure merge in SourceStatus without storage', async () => {
+  let now = 10000; const status = new SourceStatus(['kilo'], () => now);
+  const quota = await status.failureBackoff('kilo', new SourceError('quota', 'PRIVATE'), 86400, false);
+  now = 11000; expect(await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true)).toEqual(quota);
+  now = 12000; expect((await status.failureBackoff('kilo', new SourceError('quota', 'PRIVATE'), 60, false)).until).toBe(quota.until);
+  status.clearRoutingBackoff('kilo'); now = 20000;
+  await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true);
+  now = 30000; const newest = await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true);
+  now = 25000; expect(await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true)).toEqual(newest);
+});
+
+it('installs a stronger sibling quota returned by storage even when its observation timestamp is older', async () => {
+  const now = 11000; const path = await directory(), first = await open(path), second = await open(path), status = new SourceStatus(['kilo'], () => now); await status.setRoutingHistory(second);
+  const quota = await first.failure('kilo', new SourceError('quota', 'PRIVATE'), 86400, false, 10000);
+  expect(await status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true)).toEqual(quota);
+  expect(status.routingBackoff('kilo')).toEqual(quota);
+});
+
+
+it('preserves newer in-memory failure and recovery ordering for late completions', async () => {
+  let now = 30000; const status = new SourceStatus(['kilo'], () => now), error = new SourceError('upstream', 'PRIVATE');
+  const newer = await status.failureBackoff('kilo', error, 900, true);
+  now = 25000; await status.complete(source('kilo'), request, new AbortController().signal);
+  expect(status.routingRecoveryAt('kilo')).toBe(25000);
+  expect(status.routingBackoff('kilo')).toEqual(newer);
+  now = 32000; await status.complete(source('kilo'), request, new AbortController().signal);
+  expect(status.routingBackoff('kilo')).toBeUndefined();
+  now = 31000; expect((await status.failureBackoff('kilo', error, 900, true)).until).toBe(31000);
+  expect(status.routingBackoff('kilo')).toBeUndefined();
+});
+
+it('returns the newer existing failure when a delayed pre-recovery failure is ignored', async () => {
+  let now = 34000; const path = await directory(), first = await open(path), second = await open(path);
+  const status = new SourceStatus(['kilo'], () => now); await status.setRoutingHistory(second);
+  await first.record('kilo', 'interactive-text', true, 1000, 32000);
+  const error = new SourceError('upstream', 'PRIVATE');
+  const latest = await status.failureBackoff('kilo', error, 900, true);
+  now = 31000;
+  expect(await status.failureBackoff('kilo', error, 900, true)).toEqual(latest);
+  expect(status.routingBackoff('kilo')).toEqual(latest);
+  expect((await first.snapshot(35000)).backoff[0]!.value).toEqual(latest);
+});
+
+it('does not restore a persisted failure result after a newer reply finishes during its await', async () => {
+  let now = 30000; const history = await open(await directory()), status = new SourceStatus(['kilo'], () => now); await status.setRoutingHistory(history);
+  const failure = history.failure.bind(history);
+  let release!: () => void, stored!: () => void;
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { stored = resolve; });
+  vi.spyOn(history, 'failure').mockImplementation(async (...args) => { const value = await failure(...args); stored(); await wait; return value; });
+  const pending = status.failureBackoff('kilo', new SourceError('upstream', 'PRIVATE'), 900, true);
+  await ready; now = 32000;
+  await status.complete(source('kilo'), request, new AbortController().signal);
+  release(); expect((await pending).until).toBeLessThanOrEqual(now);
+  expect(status.routingBackoff('kilo')).toBeUndefined();
+  expect((await history.snapshot(now)).backoff).toEqual([]);
+});
