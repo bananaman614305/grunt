@@ -66,6 +66,7 @@ function git(cwd: string, args: string[]) {
 }
 /** Hash full tracked and nonignored untracked input; explicit artifacts also cover ignored generated output. */
 export async function captureVerificationState(cwd: string, artifactPaths: readonly string[] = []): Promise<VerificationState> {
+  const normalizedArtifacts = parseVerificationInput({ checkId: 'capture', mode: 'scoped', artifactPaths: [...artifactPaths] }).artifactPaths;
   const root = await realpath(git(cwd, ['rev-parse', '--show-toplevel']).trim());
   if (!isAbsolute(root)) throw new Error('Invalid verification project.');
   const head = git(root, ['rev-parse', '--verify', 'HEAD']).trim();
@@ -102,12 +103,14 @@ export async function captureVerificationState(cwd: string, artifactPaths: reado
   const artifactFiles: VerificationArtifact[] = [], missingArtifacts: string[] = []; let artifactNodes = 0;
   const walk = async (name: string, depth: number) => {
     if (++artifactNodes > 10000 || depth > 32) throw new Error('Verification artifact nesting exceeds its limit.');
+    let ancestor = dirname(join(root, name));
+    while (ancestor !== root) { if ((await lstat(ancestor)).isSymbolicLink()) throw new Error('Verification artifacts cannot traverse symlinks.'); const next = dirname(ancestor); if (next === ancestor) throw new Error('Verification artifact escaped project.'); ancestor = next; }
     let st; try { st = await lstat(join(root, name)); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') { missingArtifacts.push(name); return; } throw e; }
     if (st.isSymbolicLink()) throw new Error('Verification artifacts cannot be symlinks.');
     if (st.isDirectory()) { const children = (await readdir(join(root, name))).sort(); witnesses.push({ name, children }); for (const child of children) await walk(name + '/' + child, depth + 1); }
     else { const row = await read(name); if (row[1] === 'missing') throw new Error('Artifact disappeared while hashing.'); artifactFiles.push({ path: name, sha256: String(row[1]) }); if (artifactFiles.length > 4096) throw new Error('Verification artifact manifest exceeds4096 files.'); }
   };
-  for (const path of artifactPaths) { parseVerificationInput({ checkId: 'artifact', mode: 'scoped', artifactPaths: [path] }); await walk(path, 0); }
+  for (const path of normalizedArtifacts) { parseVerificationInput({ checkId: 'artifact', mode: 'scoped', artifactPaths: [path] }); await walk(path, 0); }
   for (const witness of witnesses) {
     let current; try { current = await lstat(join(root, witness.name), { bigint: true }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT' || witness.stamp || witness.children) throw new Error('Verification input changed while hashing.'); continue; }
     if (current.isSymbolicLink() || (witness.children ? !current.isDirectory() || canonical((await readdir(join(root, witness.name))).sort()) !== canonical(witness.children) : !witness.stamp || stamp(current) !== witness.stamp)) throw new Error('Verification input changed while hashing.');
@@ -116,7 +119,7 @@ export async function captureVerificationState(cwd: string, artifactPaths: reado
   // Check index/list membership and HEAD again after reads to fail closed on concurrent Git work.
   if (git(root, ['rev-parse', '--verify', 'HEAD']).trim() !== head || canonical([...new Set(git(root, ['ls-files', '-c', '-o', '--exclude-standard', '-z']).split('\0').filter(Boolean))].sort()) !== canonical(names)) throw new Error('Verification revision changed while hashing.');
   if (Buffer.byteLength(canonical(artifactFiles)) > 400 * 1024) throw new Error('Verification artifact manifest exceeds its metadata budget.');
-  const artifactRoots = [...artifactPaths].sort(); missingArtifacts.sort(); artifactFiles.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const artifactRoots = normalizedArtifacts; missingArtifacts.sort(); artifactFiles.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   return { projectRoot: root, head, treeDigest: digest(source), artifactDigest: digest({ artifactRoots, artifactFiles, missingArtifacts }), artifactRoots, artifactFiles, missingArtifacts, clean: status.length === 0, files: names.length };
 }
 export function assertVerificationArtifactContents(state: VerificationState, files: readonly { path: string; content: Uint8Array }[]) {

@@ -33,6 +33,8 @@ it('rejects symlinks and artifact traversal rather than reading outside the proj
   const f = await fixture(); await symlink('/etc/passwd', join(f.project, 'leak')); await expect(captureVerificationState(f.project)).rejects.toThrow('regular file');
   await rm(join(f.project, 'leak')); await expect(captureVerificationState(f.project, ['../outside'])).rejects.toThrow('relative');
   await symlink('/tmp', join(f.project, 'dist/link')); await expect(captureVerificationState(f.project, ['dist'])).rejects.toThrow('symlinks');
+  const empty = join(f.root, 'empty'); await mkdir(empty); await rm(join(f.project, 'dist/link')); await symlink(f.root, join(f.project, 'dist/link'));
+  await expect(captureVerificationState(f.project, ['dist/link/empty'])).rejects.toThrow('traverse symlinks');
 });
 it('deduplicates identical queued/running checks and reuses a completed unchanged scoped check without executing it again', async () => {
   const f = await fixture(); let release: (() => void) | undefined;
