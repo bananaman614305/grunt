@@ -24,8 +24,8 @@ no new service.
   soon as N routes are open. So the cap holds even when the registry lists
   more than N routes (test: "stops at N = 6 open routes when the registry
   lists more"). A pass also makes
-  at most N signup attempts. A candidate that failed in the previous pass
-  moves to the end of the order, so one broken signup can't starve the rest.
+  at most N signup attempts. Untried candidates come first; failed candidates
+  rotate to the end after each attempt, so repeated failures can't starve the rest.
 - **Driver.** Before each signup, the pass checks for an open tool-capable
   route. If there is one, it hands Squire a fallback operator: the first coding
   harness found on `PATH` (Pi, Codex, OpenCode, Claude Code), pointed at the

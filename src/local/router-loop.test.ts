@@ -7,8 +7,8 @@ import type { Registry } from '../registry.js';
 import { configure } from './main.js';
 import { recordDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import { MAX_OPEN_ROUTES, SourceRecovery } from './recovery.js';
-import { RETIRE_AFTER_FAILURES } from './routing.js';
-import { beginSetupSession } from './setup-session.js';
+import { recommendedAdapters, RETIRE_AFTER_FAILURES } from './routing.js';
+import { beginSetupSession, readSetupSession } from './setup-session.js';
 import { SourceError, Sources } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import type { SignupAgent } from './signup-mcp.js';
@@ -210,5 +210,80 @@ it('preserves published scout retirement for a local opt-in', async () => {
   try {
     await expect(sources.complete({ ...ask('opt-in'), model: 'antseed-vikey' }, AbortSignal.timeout(1000))).rejects.toThrow();
     expect(complete).not.toHaveBeenCalled();
+  } finally { await sources.close(); }
+});
+
+it('reaches every candidate across capped passes with persistent failures', async () => {
+  const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus', 'fikra', 'openference', 'pollinations', 'livekit', 'millionseek'];
+  const run = pass(ids, 0, () => false);
+  const dir = await consented(ids);
+  const recovery = new SourceRecovery({ directory: dir, ...run.options });
+  try {
+    for (let i = 1; i <= 5; i++) {
+      recovery.trigger();
+      await vi.waitFor(() => expect(run.order).toHaveLength(i * MAX_OPEN_ROUTES));
+      await vi.waitFor(async () => expect(await readSetupSession(dir)).toBeUndefined());
+    }
+    expect(run.order.slice(0, ids.length).map(entry => entry.id)).toEqual(ids);
+    expect(run.order.slice(ids.length, 2 * ids.length).map(entry => entry.id)).toEqual(ids);
+  } finally { await recovery.close(); }
+});
+
+it.each(['earlier signup', 'driver discovery', 'expiry'] as const)('rechecks recommendation after %s before opening the next route', async change => {
+  let now = Date.parse('2026-11-20T23:59:59Z');
+  const listed: Registry = { ...bundledRegistry, adapters: ['zro', 'runcrate'].map(id => ({
+    ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, fit: 'great', status: 'active', expires: '2026-11-20'
+  })) };
+  const dir = await consented(['zro', 'runcrate']);
+  const recommended = () => recommendedAdapters(listed, now).map(adapter => adapter.id);
+  let drivers = 0;
+  const setup = vi.fn(async (options: { adapters?: string[] }) => {
+    if (options.adapters![0] === 'zro') {
+      if (change === 'earlier signup') listed.adapters[1]!.status = 'inactive';
+      if (change === 'expiry') now += 2000;
+    }
+    return { unavailable: [] };
+  });
+  const recovery = new SourceRecovery({ directory: dir, candidates: async () => recommended(),
+    eligible: id => recommended().includes(id), open: async () => 0,
+    driver: async () => {
+      await Promise.resolve();
+      if (++drivers === 2 && change === 'driver discovery') listed.adapters[1]!.status = 'inactive';
+      return undefined;
+    }, setup: setup as never, notify: () => {} });
+  try {
+    recovery.trigger();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => expect(await readSetupSession(dir)).toBeUndefined());
+    expect(setup.mock.calls.map(([options]) => options.adapters)).toEqual([['zro']]);
+  } finally { await recovery.close(); }
+});
+
+it.each(['freepi', 'goedel'] as const)('excludes %s from private signup traffic while allowing reviewed public requests', async id => {
+  const { FreePi } = await import('./freepi.js');
+  const { Goedel } = await import('./goedel.js');
+  const dir = await directory();
+  const route = id === 'freepi' ? new FreePi({ directory: dir }) : new Goedel({ directory: dir });
+  const sources = new Sources([route], { registry: () => bundledRegistry });
+  const request = ask('Complete a provider signup', true);
+  try {
+    expect(sources.dispatchEligible(id)).toBe(true);
+    expect(sources.dispatchEligible(id, request)).toBe(false);
+    expect(sources.dispatchEligible(id, { ...request, publicContext: true })).toBe(true);
+    await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toThrow();
+  } finally { await sources.close(); }
+});
+
+it.each(['unmanaged', 'no receipt', 'authorized'] as const)('uses automatic-pool authorization for hot-adds: %s', async mode => {
+  const { writeAutomaticPool } = await import('./automatic-pool.js');
+  const dir = await directory();
+  const initial: Registry = { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(adapter => ['opencode', 'kilo'].includes(adapter.id)) };
+  if (mode === 'authorized') await writeAutomaticPool(dir, ['opencode', 'kilo']);
+  const sources = configure({ GRUNT_CONFIG_DIR: dir, GRUNT_SOURCES: 'opencode,kilo',
+    ...(mode !== 'unmanaged' ? { GRUNT_DAEMON: '1' } : {}) }, () => initial);
+  const added = { id: 'nvidia', kind: 'model' as const, tier: 'experimental' as const, weight: 0.01, modalities: ['text' as const], install: 'builtin:nvidia' };
+  try {
+    sources.adopt({ ...initial, adapters: [...initial.adapters, added] });
+    expect(sources.sources.map(source => source.id)).toEqual(mode === 'authorized' ? ['opencode', 'kilo', 'nvidia'] : ['opencode', 'kilo']);
   } finally { await sources.close(); }
 });

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { updateRuntime } from './update.js';
-import { AUTOMATIC_POOL_FILE, automaticPoolSources } from './automatic-pool.js';
+import { AUTOMATIC_POOL_FILE, automaticPoolSelection } from './automatic-pool.js';
 import type { UpdateRun, UpdateOptions } from './update.js';
 import { beginSetupSession } from './setup-session.js';
 
@@ -133,7 +133,7 @@ async function legacyPi(directory: string, port = 18792, contextWindow = 128000)
 it.each(['linux', 'darwin'] as const)('enrolls verified setup-managed services in current curated defaults on update (%s)', async platform => {
   const f = await fixture({ platform, automaticPool: true });
   await updateRuntime(f.options);
-  expect(automaticPoolSources(f.directory, ['freellmapi', 'perch'], ['perch', 'reflection-beam'], true)).toEqual(['freellmapi', 'perch', 'reflection-beam']);
+  expect(automaticPoolSelection(f.directory, ['freellmapi', 'perch'], ['perch', 'reflection-beam'], true).sources).toEqual(['freellmapi', 'perch', 'reflection-beam']);
   await f.preserved();
 });
 

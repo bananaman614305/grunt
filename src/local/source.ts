@@ -122,9 +122,11 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
-  dispatchEligible(id: string) {
+  dispatchEligible(id: string, request?: ModelRequest) {
     const router = this.registeredRouter;
-    return !this.disabledModels.has(id) && !this.pending.has(id) && router !== undefined && router.listed(id)
+    const source = this.sources.find(source => source.id === id);
+    return source !== undefined && (!request || !source.acceptsRequest || source.acceptsRequest(request))
+      && !this.disabledModels.has(id) && !this.pending.has(id) && router !== undefined && router.listed(id)
       && !router.retired(id) && (router.cooldown(id)?.until ?? 0) <= (this.routing?.now ?? Date.now)();
   }
   retired(id: string) { return this.registeredRouter?.retired(id) ?? false; }

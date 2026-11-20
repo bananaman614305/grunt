@@ -16,6 +16,7 @@ export interface RecoveryOptions {
   candidates: () => Promise<readonly string[]>;
   // How many routes are open (available and not retired).
   open: () => Promise<number>;
+  eligible?: (id: string) => boolean;
   // A fallback operator when an open tool-capable route can drive signups.
   driver?: () => Promise<SignupAgent | undefined>;
   notify?: (line: string) => void;
@@ -28,7 +29,7 @@ export interface RecoveryOptions {
 export class SourceRecovery {
   private running: Promise<void> | undefined;
   private readonly abort = new AbortController();
-  private failedLastPass = new Set<string>();
+  private failed = new Set<string>();
   constructor(private options: RecoveryOptions) {}
   trigger(): void {
     if (this.running || this.abort.signal.aborted) return;
@@ -50,16 +51,16 @@ export class SourceRecovery {
       const candidates = [...await this.options.candidates()];
       const approved = new Set(await readDataSharingConsent(this.options.directory, candidates.filter(requiresDataSharing)));
       const eligible = candidates.filter(id => !requiresDataSharing(id) || approved.has(id));
-      // A signup that failed last pass goes last, so it cannot starve the others.
-      const ordered = [...eligible.filter(id => !this.failedLastPass.has(id)), ...eligible.filter(id => this.failedLastPass.has(id))];
-      const failed = new Set<string>();
+      this.failed = new Set([...this.failed].filter(id => eligible.includes(id)));
+      const ordered = [...eligible.filter(id => !this.failed.has(id)), ...this.failed];
       let attempts = 0;
       for (const id of ordered) {
         if (signal.aborted || attempts >= MAX_OPEN_ROUTES || await this.options.open() >= MAX_OPEN_ROUTES) break;
-        attempts++;
         // Re-checked per signup: the first route that opens drives the rest.
         const agent = await this.options.driver?.();
         signal.throwIfAborted();
+        if (this.options.eligible && !this.options.eligible(id)) continue;
+        attempts++;
         notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
         const outcome = await (this.options.setup ?? setupFallbacks)({
           directory: this.options.directory, adapters: [id], background: true, notify, signal,
@@ -69,9 +70,9 @@ export class SourceRecovery {
             await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal });
           },
         }).catch(() => ({ unavailable: [id] }));
-        if (outcome.unavailable.includes(id)) failed.add(id);
+        this.failed.delete(id);
+        if (outcome.unavailable.includes(id)) this.failed.add(id);
       }
-      this.failedLastPass = failed;
     } finally { await session.close(); }
   }
 }

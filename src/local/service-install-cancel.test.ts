@@ -22,7 +22,7 @@ vi.mock('node:os', async original => {
 });
 
 import { installService, installBackgroundService } from './wizard.js';
-import { automaticPoolSources } from './automatic-pool.js';
+import { automaticPoolSelection } from './automatic-pool.js';
 
 let directory: string;
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -153,8 +153,8 @@ it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and 
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
   // The owned service file can keep its old source environment while setup
   // enrolls newly curated sources through a private, matching selection anchor.
-  expect(automaticPoolSources(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true)).toEqual(['opencode', 'kilo', 'antseed-vikey', 'freellmapi', 'reflection-beam']);
-  expect(automaticPoolSources(join(directory, 'grunt'), ['kilo'], ['opencode', 'kilo', 'reflection-beam'], true)).toEqual(['kilo']);
+  expect(automaticPoolSelection(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['opencode', 'kilo', 'antseed-vikey', 'freellmapi', 'reflection-beam']);
+  expect(automaticPoolSelection(join(directory, 'grunt'), ['kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['kilo']);
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-sources.json'), 'utf8'))).toEqual(['kilo', 'antseed-vikey', 'freellmapi']);
   await expect(readFile(join(units, `${identity === 'grunt' ? 'milo' : 'grunt'}.service`), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
