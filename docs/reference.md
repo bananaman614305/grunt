@@ -618,11 +618,13 @@ as in the provider’s OpenAI SDK quickstart, with native function calls and usa
 
 ### Aperture daily free source
 
+Owner qualification on November 20, 2026 passed an attributed Grunt reply, a native function call and a cold request with 201,076 input tokens. The provider publishes request quotas, not a fixed daily token budget.
+
 Aperture is pinned to `baidu/ernie-5.5-flash-preview:free`. Squire reuses the
 user's scoped key or completes one ordinary Free account signup with sealed
 email/password inputs. After login, the ordinary Dashboard control on
-`/chat.html` exposes the key for direct vault capture without the separate
-native password prompt on the developer dashboard.
+`/chat.html` exposes the key for direct vault capture. Squire must complete
+any verification requested by the account.
 
 Before every request Grunt verifies `valid: true` and `plan: free` at `/auth/me`,
 then checks the exact model at `/api/v1/models` for zero prompt, completion and

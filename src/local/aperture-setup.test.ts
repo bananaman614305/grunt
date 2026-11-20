@@ -67,7 +67,7 @@ it('uses the ordinary chat Dashboard capture path and stops if no scoped key res
   const squire = browser([]);
   await expect(setupAperture({ directory, squire, notify, background: false })).rejects.toThrow('unambiguous');
   expect(squire.signup).toHaveBeenCalledWith(APERTURE_ID, 'https://www.aperture-ai.run/login.html', expect.stringContaining('open /chat.html'));
-  expect(squire.signup.mock.calls[0]![2]).toContain('Avoid the native Reveal password prompt');
+  expect(squire.signup.mock.calls[0]![2]).toContain('complete any verification the account requests');
   expect(squire.credentials.grant).not.toHaveBeenCalled();
 });
 it('does not save an unverifiable or paid account grant', async () => {
