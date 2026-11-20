@@ -7,6 +7,7 @@ import type { Client, Transaction } from '@libsql/client';
 import { sanitizeSafeDiagnosticMetadata } from './diagnostics.js';
 import type { ErrorCode, ModelRequest, SourceError } from './source.js';
 
+export const RETIRE_AFTER_FAILURES = 5;
 export const ROUTING_HISTORY_TTL_MS = 6 * 60 * 60 * 1000;
 export const MAX_ADAPTIVE_BACKOFF_SECONDS = 2 * 60 * 60;
 export const routingWorkloads = ['interactive-text', 'interactive-tools', 'background-text', 'background-tools'] as const;
@@ -49,6 +50,8 @@ export function routingFailureSignature(error: SourceError) {
 // deadline, not a delay to restart when another failure arrives.
 export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
   if (!previous) return incoming;
+  if (previous.code !== 'quota' && previous.streak >= RETIRE_AFTER_FAILURES) return previous;
+  if (incoming.code !== 'quota' && incoming.streak >= RETIRE_AFTER_FAILURES) return incoming;
   if (previous.code === 'quota' && previous.until > incoming.at) {
     if (incoming.code !== 'quota') return previous;
     return { ...incoming, at: Math.max(previous.at, incoming.at), until: Math.max(previous.until, incoming.until) };
@@ -61,8 +64,8 @@ export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incomi
 }
 export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
   const signature = routingFailureSignature(error);
-  const repeated = adaptive && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
-  const streak = repeated ? Math.min(5, previous.streak + 1) : 1;
+  const repeated = error.code !== 'quota' && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
+  const streak = repeated ? Math.min(RETIRE_AFTER_FAILURES, previous.streak + 1) : 1;
   // Explicit provider/reset hints bypass adaptive multiplication, including zero.
   const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
   return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + delay * 1000 });
@@ -78,7 +81,7 @@ function performanceValue(raw: unknown): RoutingPerformance | undefined {
 function backoffValue(raw: unknown): RoutingBackoff | undefined {
   const value = object(raw);
   if (!backoffCodes.has(value.code as ErrorCode) || typeof value.signature !== 'string' || !/^[a-z0-9_:]{1,200}$/.test(value.signature)
-    || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > 5
+    || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > RETIRE_AFTER_FAILURES
     || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000) return;
   return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number };
 }

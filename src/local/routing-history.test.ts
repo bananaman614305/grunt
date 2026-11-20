@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { RoutingHistory, MAX_ADAPTIVE_BACKOFF_SECONDS, ROUTING_HISTORY_TTL_MS, withRoutingWorkload } from './routing-history.js';
+import { mergeRoutingBackoff, RoutingHistory, MAX_ADAPTIVE_BACKOFF_SECONDS, ROUTING_HISTORY_TTL_MS, withRoutingWorkload } from './routing-history.js';
 import { SourceStatus } from './source-status.js';
 import { RETIRE_AFTER_FAILURES, StickyRouter } from './routing.js';
 import { SourceError } from './source.js';
@@ -296,4 +296,82 @@ it('rejects exhausted startup read contention without deleting durable observati
     await expect(RoutingHistory.open(path)).rejects.toMatchObject({ code: 'SQLITE_BUSY' });
   } finally { child.stdin.end(); await exited; }
   expect((await (await open(path)).snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
+});
+
+it.each([false, true])('retires repeated HTTP 529 failures while preserving four-second retry hints (stored=%s)', async stored => {
+  let now = 10000;
+  const path = await directory();
+  const status = new SourceStatus(['runcrate', 'livekit'], () => now);
+  if (stored) await status.setRoutingHistory(await open(path));
+  const failing = source('runcrate'), fallback = source('livekit');
+  failing.complete.mockRejectedValue(new SourceError('upstream', 'Temporary overload', 4, undefined, { httpStatus: 529 }));
+  const value = router([failing, fallback], status, () => now);
+  for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
+    await value.complete({ ...request, userMessages: [`hinted task ${i}`] }, AbortSignal.timeout(1000));
+    expect(value.cooldown('runcrate')!.until - now).toBe(4000);
+    now += 4001;
+  }
+  expect(value.retired('runcrate')).toBe(true);
+  await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['retired explicit request'] }, AbortSignal.timeout(1000))).rejects.toThrow();
+  expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
+  if (stored) {
+    const restored = new SourceStatus(['runcrate', 'livekit'], () => now);
+    await restored.setRoutingHistory(await open(path));
+    expect(router([failing, fallback], restored, () => now).retired('runcrate')).toBe(true);
+  }
+});
+
+it.each([
+  [false, 'quota'], [false, 'different'], [true, 'quota'], [true, 'different']
+] as const)('keeps retirement with stored=%s after a sixth admitted %s failure', async (stored, later) => {
+  let now = 10000;
+  const path = await directory();
+  const status = new SourceStatus(['runcrate'], () => now);
+  if (stored) await status.setRoutingHistory(await open(path));
+  const one = source('runcrate');
+  const rejects: ((reason: SourceError) => void)[] = [];
+  one.complete.mockImplementation(() => new Promise((_resolve, reject) => { rejects.push(reject); }));
+  const value = router([one], status, () => now);
+  const turns = Array.from({ length: 6 }, (_, i) => value.complete({ ...request, userMessages: [`admitted task ${i}`] }, AbortSignal.timeout(5000))
+    .then(() => undefined, error => error));
+  try {
+    await vi.waitFor(() => expect(rejects).toHaveLength(6));
+    for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
+      rejects[i]!(new SourceError('upstream', 'Synthetic outage'));
+      await turns[i];
+      now += 1000;
+    }
+    expect(value.retired('runcrate')).toBe(true);
+    const retired = status.routingBackoff('runcrate');
+    rejects[5]!(later === 'quota' ? new SourceError('quota', 'Daily limit', 60)
+      : new SourceError('upstream', 'Different outage', undefined, undefined, { httpStatus: 502 }));
+    await turns[5];
+    expect(status.routingBackoff('runcrate')).toEqual(retired);
+    expect(value.retired('runcrate')).toBe(true);
+    if (stored) {
+      const restored = new SourceStatus(['runcrate'], () => now);
+      await restored.setRoutingHistory(await open(path));
+      expect(router([one], restored, () => now).retired('runcrate')).toBe(true);
+    }
+    now += 2 * 60 * 60 * 1000 + 1;
+    await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['after late failure'] }, AbortSignal.timeout(1000))).rejects.toThrow();
+    expect(one.complete).toHaveBeenCalledTimes(6);
+    value.verified('runcrate');
+    one.complete.mockResolvedValueOnce({ text: 'verified recovery' });
+    await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['after verification'] }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'verified recovery' });
+  } finally {
+    for (const reject of rejects) reject(new SourceError('cancelled', 'Test cleanup'));
+    await Promise.all(turns);
+  }
+});
+
+it('preserves retirement when sibling bookkeeping arrives in either order', () => {
+  const retired = { code: 'upstream' as const, signature: 'upstream:::', streak: 5, at: 10000, until: 7210000 };
+  for (const other of [
+    { code: 'quota' as const, signature: 'quota:::', streak: 1, at: 11000, until: 86411000 },
+    { code: 'upstream' as const, signature: 'upstream:502::', streak: 1, at: 11000, until: 911000 }
+  ]) {
+    expect(mergeRoutingBackoff(retired, other)).toEqual(retired);
+    expect(mergeRoutingBackoff(other, retired)).toEqual(retired);
+  }
 });

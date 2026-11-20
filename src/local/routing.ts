@@ -11,7 +11,7 @@ import { disabledAdapters, knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import type { DiagnosticEvent } from './diagnostics.js';
-import { routingWorkload, withRoutingWorkload } from './routing-history.js';
+import { RETIRE_AFTER_FAILURES, routingWorkload, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
@@ -19,7 +19,7 @@ const BAD_SAMPLE_COOLDOWN_SECONDS = 30;
 const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
 // The 5th consecutive identical failure, each within the routing-history window
 // of the last, retires a route (docs/router.md). Quota is availability, not failure.
-export const RETIRE_AFTER_FAILURES = 5;
+export { RETIRE_AFTER_FAILURES } from './routing-history.js';
 // The scout marks an offering expiring or inactive, or its expiry day has passed.
 export function scoutRetired(adapter: Adapter, now = Date.now()) {
   return adapter.status === 'expiring' || adapter.status === 'inactive'
