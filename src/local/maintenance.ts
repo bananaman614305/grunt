@@ -2,6 +2,8 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { Client } from '@libsql/client';
 
 export const MAINTENANCE_INTERVAL = 24 * 60 * 60 * 1000;
 export const MAINTENANCE_GAP = 60000;
@@ -46,11 +48,15 @@ const unsafeState = () => new Error('Provider maintenance requires private local
 export class DailyMaintenance {
   private entries = new Map<string, MaintenanceEntry>();
   private nextStartAt = 0;
+  private contentionUntil = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private initialization: Promise<void> | undefined;
   private active: Promise<void> | undefined;
   private closed = false;
   private controller = new AbortController();
+  // A separate database supplies an OS-owned lock, released even if its owner
+  // crashes. Never lock the diagnostics database or wait on a sibling's probe.
+  private coordination: Client | undefined;
   constructor(private options: MaintenanceOptions) {}
   private now() { return (this.options.now ?? Date.now)(); }
   private gap() {
@@ -62,8 +68,12 @@ export class DailyMaintenance {
   }
   private reconcile() {
     const ids = this.ids();
-    for (const id of this.entries.keys()) if (!ids.includes(id)) this.entries.delete(id);
-    for (const id of ids) if (!this.entries.has(id)) this.entries.set(id, { nextCheckAt: this.now() });
+    // Sibling runtimes may serve different provider subsets. Keep their durable
+    // history; snapshot() and dispatch still expose only this runtime's sources.
+    for (const id of ids) if (!this.entries.has(id)) {
+      if (this.entries.size >= 100) throw unsafeState();
+      this.entries.set(id, { nextCheckAt: this.now() });
+    }
     return ids;
   }
   snapshot(): Record<string, MaintenanceEntry> {
@@ -76,8 +86,8 @@ export class DailyMaintenance {
     return this.initialization ??= (async () => {
       await this.load();
       if (this.closed) return;
-      this.reconcile();
-      await this.persist();
+      await this.openCoordination();
+      await this.exclusive(async () => { await this.load(); this.reconcile(); await this.persist(); });
       this.schedule();
     })();
   }
@@ -88,6 +98,7 @@ export class DailyMaintenance {
   }
   private async load() {
     await this.directory();
+    this.entries.clear();
     let file;
     try {
       file = await open(join(this.options.directory, 'maintenance.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -116,6 +127,39 @@ export class DailyMaintenance {
       this.nextStartAt = this.now();
     } finally { await file?.close(); }
   }
+  private async openCoordination() {
+    const path = join(this.options.directory, 'maintenance-lock.db');
+    try {
+      const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      await file.close();
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw unsafeState(); }
+    try {
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) throw unsafeState();
+      } finally { await file.close(); }
+    } catch { throw unsafeState(); }
+    const { createClient } = await import('@libsql/client');
+    this.coordination = createClient({ url: pathToFileURL(path).href });
+    await this.coordination.execute('PRAGMA busy_timeout=0');
+  }
+  private async exclusive(work: () => Promise<void>) {
+    let transaction;
+    try { transaction = await this.coordination!.transaction('write'); }
+    catch (error) {
+      // Contention is expected, not a maintenance/storage failure. A later
+      // timer reads the latest schedule after the current owner releases it.
+      if (['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) {
+        this.contentionUntil = this.now() + MAINTENANCE_GAP;
+        return;
+      }
+      throw error;
+    }
+    this.contentionUntil = 0;
+    try { await work(); }
+    finally { try { await transaction.rollback(); } finally { transaction.close(); } }
+  }
   private async persist() {
     await this.directory();
     const temporary = join(this.options.directory, `maintenance.${randomUUID()}.tmp`);
@@ -130,10 +174,10 @@ export class DailyMaintenance {
     if (this.closed || this.active) return;
     if (this.timer) clearTimeout(this.timer);
     this.reconcile();
-    const due = Math.min(...[...this.entries.values()].map(entry => entry.nextCheckAt));
+    const due = Math.min(...this.ids().map(id => this.entries.get(id)?.nextCheckAt ?? this.now()));
     // Revisit the provider list at least every minute, even if all current
     // providers are checked for today, so registry additions do not wait a day.
-    const delay = Math.min(MAINTENANCE_GAP, Math.max(0, Math.max(this.nextStartAt, due) - this.now()));
+    const delay = Math.min(MAINTENANCE_GAP, Math.max(0, Math.max(this.nextStartAt, this.contentionUntil, due) - this.now()));
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.active = this.tick().catch(() => {
@@ -145,7 +189,16 @@ export class DailyMaintenance {
     this.timer.unref();
   }
   private async tick() {
-    if (this.closed || this.nextStartAt > this.now()) return;
+    if (this.closed) return;
+    await this.exclusive(async () => {
+      // Every write and check starts from the latest sibling state under the
+      // same lock. Retain it through callback cleanup, even beyond its deadline.
+      await this.load();
+      if (this.closed || this.nextStartAt > this.now()) return;
+      await this.checkNext();
+    });
+  }
+  private async checkNext() {
     const ids = this.reconcile();
     const id = ids.filter(id => this.entries.get(id)!.nextCheckAt <= this.now())
       .sort((a, b) => this.entries.get(a)!.nextCheckAt - this.entries.get(b)!.nextCheckAt)[0];
@@ -188,5 +241,6 @@ export class DailyMaintenance {
     // Do not race a timeout against a native process: a new check cannot start
     // until the callback actually settles and its resource cleanup finishes.
     await this.active;
+    this.coordination?.close();
   }
 }
