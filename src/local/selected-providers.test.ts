@@ -138,3 +138,18 @@ it('gates Beam on the exact live $0 offer and never uses a Kilo grant', async ()
     expect(JSON.parse(String(init?.body))).toMatchObject({ model: KILO_BEAM, max_tokens: 32 });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+it('includes the qualified new sources in ordinary setup and pins their registry identities', async () => {
+  const pool = configure({});
+  try {
+    expect(pool.sources.map(source => source.id)).toEqual(expect.arrayContaining(['millionseek', 'freepi', 'reflection-beam']));
+    const publicOnly = pool.sources.find(source => source.id === 'freepi')!;
+    expect(publicOnly.acceptsRequest?.(req)).toBe(false);
+    expect(publicOnly.acceptsRequest?.({ ...req, publicContext: true })).toBe(true);
+    for (const id of ['millionseek', 'freepi']) {
+      const adapter = bundledRegistry.adapters.find(adapter => adapter.id === id)!;
+      expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...adapter, model: 'unqualified-alias' }] })).toThrow();
+      expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...adapter, install: 'npm:unqualified-package' }] })).toThrow();
+    }
+  } finally { await pool.close(); }
+});

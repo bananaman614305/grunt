@@ -6,7 +6,7 @@ import { BrowserSquire } from './setup.js';
 import type { setupFallbacks } from './fallback-setup.js';
 import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
-import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry, installedSources, installService, confirmMaterialDataSharing } from './wizard.js';
+import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry, installedSources, installService, confirmMaterialDataSharing, probeSetupOperator } from './wizard.js';
 import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -305,7 +305,7 @@ it('leaves explicit sources out of default setup and add with the data-sharing o
   try {
     const first = stubActions([], { approveDataSharing });
     await wizard(undefined, first);
-    const others = defaultIds().filter(id => !dataSharingPolicies([id]).some(entry => entry.approval === 'explicit'));
+    const others = defaultIds().filter(id => !dataSharingPolicies([id]).some(entry => entry.approval === 'explicit' || entry.approval === 'material'));
     expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
     expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
     expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);
@@ -346,6 +346,13 @@ it('adds the anonymous Reflection route without asking for a Squire login', asyn
   expect(actions.connectSquire).not.toHaveBeenCalled();
   expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['reflection-beam'], { dataSharingApproved: sharingIds() });
   expect(actions.checkFallbackServices).toHaveBeenCalledWith(expect.any(Array), expect.any(Number), expect.any(Function), ['reflection-beam']);
+});
+it('adds the portable Antseed source without an unrelated browser sign-in', async () => {
+  const actions = stubActions([]);
+  await wizard('antseed-vikey', actions);
+  expect(actions.connectSquire).not.toHaveBeenCalled();
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['antseed-vikey'], { dataSharingApproved: expect.arrayContaining([...sharingIds(), 'antseed-vikey']) });
+  expect(actions.checkFallbackServices).toHaveBeenCalledWith(expect.any(Array), expect.any(Number), expect.any(Function), ['antseed-vikey']);
 });
 it('does not restart the daemon or report success when Kilo setup fails', async () => {
   const actions = stubActions([]);
@@ -509,4 +516,20 @@ it.each(['https://example.test/v1', 'groq', 'cerebras'])('adds a provider from %
 });
 it('explains how to add an unknown provider by URL', async () => {
   await expect(wizard('unknown', stubActions([]))).rejects.toThrow('or paste an OpenAI-compatible base URL');
+});
+
+it('marks only the fixed Free-Pi setup probes as public context', async () => {
+  const observed: boolean[] = [];
+  const source = fake('freepi', async request => {
+    observed.push(request.publicContext === true);
+    return request.tools.length ? { text: '', calls: [{ id: 'setup-call', type: 'function', function: { name: 'setup_ready', arguments: '{}' } }] } : { text: 'ready' };
+  });
+  const live = await service(new Sources([source]));
+  const unavailable: string[] = [];
+  try {
+    await checkFallbackServices(unavailable, live.port, () => {}, ['freepi']);
+    await expect(probeSetupOperator(live.port, 'freepi', new AbortController().signal)).resolves.toBe(true);
+    expect(unavailable).toEqual([]);
+    expect(observed).toEqual([true, true]);
+  } finally { await live.close(); }
 });

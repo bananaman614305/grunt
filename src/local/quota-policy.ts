@@ -16,6 +16,7 @@ interface QuotaPolicy {
 // scopes, not a local counter or a promise about live upstream capacity.
 const kiloFreeLimit = { amount: 200, unit: 'requests', period: 'hour', scope: 'ip' } as const;
 const policies: Readonly<Record<string, QuotaPolicy>> = {
+  freepi: { refill: 'utc-daily', detail: 'The account-specific daily free allowance renews at the authenticated refill_at time. Amounts vary by account and may be promotional. Every paid, earned and bonus wallet must be verified empty before and after each request. One account request is admitted at a time; no automatic purchase is made. Public reviewed requests and explicit trace-sale consent are required.', documentation: 'https://freepi.ai/docs/models-and-limits' },
   opencode: { refill: 'unpublished', detail: 'Free models are promotional and change independently. The rotation tracks cooldowns per model. OpenCode lists GLM-5.3-Flash Free as retired on November 18, 2026.',
     documentation: 'https://opencode.ai/docs/console/models/' },
   kilo: { refill: 'provider-reported', limits: [kiloFreeLimit],

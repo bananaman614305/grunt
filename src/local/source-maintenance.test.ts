@@ -311,3 +311,11 @@ it('awaits an actual read-only Clixad check before cancellation releases the sch
   expect(source.complete).not.toHaveBeenCalled();
   expect(sources.status().sources[0]).toMatchObject({ state: 'unknown' });
 });
+
+it('checks Free-Pi metadata without creating a session trace', async () => {
+  const source = fake('freepi');
+  const sources = new Sources([source]);
+  expect(await sources.check('freepi', signal())).toMatchObject({ outcome: 'passed', evidence: 'metadata' });
+  expect(source.healthCheck).toHaveBeenCalledOnce();
+  expect(source.complete).not.toHaveBeenCalled();
+});

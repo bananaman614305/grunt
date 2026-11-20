@@ -188,6 +188,24 @@ export async function setupFallbacks(options: {
         failedSetup('antseed-vikey', error);
         options.notify('Antseed Vikey setup unavailable on this platform or buyer configuration; other routes remain available.');
       } },
+      millionseek: async () => { try {
+        if (!options.background) await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['millionseek'], { squire: squire as SetupSquire, directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('100milionseek: recurring free DeepSeek access connected');
+      } catch (error) {
+        failedSetup('millionseek', error);
+        options.notify('100milionseek setup needs attention; other free sources continue.');
+      } },
+      freepi: async () => { try {
+        if (!options.background) await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['freepi'], { squire: squire as SetupSquire, directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Free-Pi: public-project free access connected under the approved data terms');
+      } catch (error) {
+        failedSetup('freepi', error);
+        options.notify('Free-Pi setup needs attention; other free sources continue.');
+      } },
       'reflection-beam': async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['reflection-beam'], { squire: squire as SetupSquire, directory: options.directory,
           dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });

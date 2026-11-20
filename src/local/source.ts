@@ -190,16 +190,17 @@ export class Sources {
     };
     const signal = AbortSignal.any([caller, AbortSignal.timeout(MAINTENANCE_CHECK_TIMEOUT)]);
     try {
-      if (id === 'clixad') {
+      if (id === 'clixad' || id === 'freepi') {
         // Clixad's explicit ask path invokes wallet operations which can claim
         // a daily streak reward. Idle maintenance is restricted to its bounded
         // read-only installation/receipt/public-model projection instead.
         guard = this.observation.guard(id);
-        const available = await source.available();
+        // Free-Pi must not publish new session traces during idle checks.
+        const available = id === 'freepi' ? await (source.healthCheck?.() ?? source.available()) : await source.available();
         signal.throwIfAborted();
         const newer = newerEvidence();
         if (newer) return newer;
-        if (!available) throw new SourceError('not_installed', 'Clixad read-only metadata is unavailable');
+        if (!available) throw new SourceError('not_installed', `${id} read-only metadata is unavailable`);
         this.observation.metadata(id, guard);
         return { outcome: 'passed', evidence: 'metadata' };
       }

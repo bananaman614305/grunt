@@ -4,13 +4,15 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type * as ClixadSetup from './clixad-setup.js';
 
-const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(), kilo: vi.fn(), antseed: vi.fn() }));
+const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(), kilo: vi.fn(), antseed: vi.fn(), millionseek: vi.fn(), freepi: vi.fn() }));
 vi.mock('./pollinations-setup.js', () => ({ setupPollinations: helpers.pollinations }));
 vi.mock('./beatapi-setup.js', () => ({ setupBeatAPI: helpers.beatapi }));
 vi.mock('./clixad-setup.js', async importOriginal => ({ ...await importOriginal<typeof ClixadSetup>(), setupClixad: helpers.clixad }));
 vi.mock('./perch-setup.js', () => ({ setupPerch: helpers.perch }));
 vi.mock('./kilo.js', () => ({ verifyKiloAccess: helpers.kilo, KILO_PARTICLE: 'particle-ai/particle-1:free' }));
 vi.mock('./antseed-vikey-setup.js', () => ({ setupAntseedVikey: helpers.antseed }));
+vi.mock('./millionseek-setup.js', () => ({ setupMillionSeek: helpers.millionseek }));
+vi.mock('./freepi-setup.js', () => ({ setupFreePi: helpers.freepi }));
 import { BrowserSquire, setup } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
@@ -209,4 +211,25 @@ it('covers parallel cold-start setup jobs using one reusable connection and no r
   expect(run).toHaveBeenCalledExactlyOnceWith('opencode', ['--version']);
   expect(setupProvider.mock.calls.map(call => call[1][0]).sort()).toEqual(providers.filter(id => id !== 'opencode').sort());
   for (const call of setupProvider.mock.calls) expect(call[2]).toMatchObject({ directory: location, squire, signal });
+});
+
+it.each(['millionseek', 'freepi'] as const)('dispatches %s through its guarded public setup helper after current consent', async provider => {
+  const location = await directory(), squire = client(), notify = vi.fn();
+  await expect(setup(notify, [provider], { directory: location, squire })).rejects.toThrow('approval');
+  expect(helpers[provider]).not.toHaveBeenCalled();
+  await recordDataSharingConsent(location, [provider]);
+  await expect(setup(notify, [provider], { directory: location, squire })).resolves.toEqual({});
+  expect(helpers[provider]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ directory: location, background: false, notify }));
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('keeps MillionSeek setup progressing when material Free-Pi consent was declined', async () => {
+  const location = await directory(), squire = client(), onSettled = vi.fn();
+  await recordDataSharingConsent(location, ['millionseek']);
+  const result = await setupFallbacks({ directory: location, squire, adapters: ['freepi', 'millionseek'],
+    notify: vi.fn(), connect: vi.fn(async () => {}), run: vi.fn(), onSettled });
+  expect(result).toEqual({ unavailable: ['freepi'] });
+  expect(helpers.freepi).not.toHaveBeenCalled();
+  expect(helpers.millionseek).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ directory: location }));
+  expect(onSettled).toHaveBeenCalledWith('millionseek', true, undefined);
 });

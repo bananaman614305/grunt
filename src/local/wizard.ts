@@ -327,7 +327,7 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
         let preparing = false;
         try {
           const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', ...(source === 'goedel' ? { 'X-Grunt-Context': 'public' } : {}) },
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...(['goedel', 'freepi'].includes(source) ? { 'X-Grunt-Context': 'public' } : {}) },
             body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files. Check ${attempt}.` }], stream: false, max_tokens: 256 }),
             signal: AbortSignal.any([AbortSignal.timeout(120000), ...(wait.signal ? [wait.signal] : [])])
           });
@@ -390,7 +390,7 @@ export class OperatorProbeFailure extends Error {}
 // with the reason otherwise, so setup can say why a source cannot drive.
 export async function probeSetupOperator(port: number, source: string, signal: AbortSignal) {
   const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(source === 'goedel' ? { 'X-Grunt-Context': 'public' } : {}) },
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(['goedel', 'freepi'].includes(source) ? { 'X-Grunt-Context': 'public' } : {}) },
     signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]),
     body: JSON.stringify({ model: source, max_tokens: 256, messages: [
       { role: 'user', content: `Call the setup_ready tool once with no arguments. Check ${randomUUID()}.` }
