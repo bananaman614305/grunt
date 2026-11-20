@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Let the fallback signup operator type and pass the values Grunt supplies (key name, plan, project name, email) into any field, and click secret-key and captcha controls.
+
 ## [0.7.20] - 2026-11-19
 
 - Add Gödel Machines DeepSeek V4.1 Flash to automatic setup. Routing verifies the dedicated Free Key before inference and requires an explicit public-context request.
