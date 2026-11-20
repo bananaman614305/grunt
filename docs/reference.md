@@ -878,7 +878,9 @@ API host or its Squire proxy. Setup records source-specific data-sharing approva
 uses configured verification tools, and prompts the user if an approval cannot
 be completed. It never adds billing, paid plans or top-ups. Model restrictions,
 when offered, should allow only the exact free alias; paid BYOK stays off.
-Background setup only reuses verified access. Grant files have mode 0600.
+Routine background checks only reuse verified access; the
+[route acquisition pass](router.md#1-greedy-first-pass-driver-cap) can also sign
+up recommended providers with current consent. Grant files have mode 0600.
 
 | Source | Exact model | Expiry and checks |
 | --- | --- | --- |
@@ -1269,8 +1271,11 @@ New conversations rotate across `deepseek-v4.1-flash-free`,
 `glm-5.3-flash-free` and `big-pickle`. Follow-ups stay with their successful
 model and session. A model that returns a quota error cools down while another
 pool member is tried; the other Grunt sources remain available when the pool
-is exhausted. Providers may share quotas across models, so this does not imply
-three independent credit balances.
+is exhausted. OpenCode's shared per-IP free-limit signal stops the request
+immediately and cools down every model in the pool until its reported reset
+(or one minute when no reset is reported). The CLI signup operator also stops
+on that signal rather than waiting through OpenCode's internal retries. The
+pool does not provide independent credit balances.
 
 `GRUNT_OPENCODE_MODEL` overrides the pool with one explicit model.
 Use a currently free model from your OpenCode catalog; grunt does not buy credits
@@ -1438,11 +1443,8 @@ wallet confirms the daily free allowance is exhausted. Kenari uses its
 documented midnight reset when the response identifies daily exhaustion and
 omits Retry-After. Nous and Vikey also consume documented reset metadata.
 In registry routing, other upstream failures, timeouts and provider refusals
-switch immediately and bar the adapter for fifteen minutes, doubling for each
-identical repeat within six hours up to two hours. The fifth identical failure in
-a row retires the route until a successful reply, a passing daily check or a
-newer registry publication. A missing installation or expired login
-bars it until a successful health check. Caller cancellation stops the chain.
+switch immediately under the [router back-off and retirement policy](router.md#2-score-back-off-retirement).
+Caller cancellation stops the chain.
 When no eligible adapter remains, the API returns HTTP 429 and, when known,
 the earliest Retry-After. Agent adapters return final text, so streaming headers
 are sent after completion; quota failures retain their HTTP status.
@@ -1464,7 +1466,8 @@ survives deploys and has an ETag. Stable weights total (0.8) and experimental
 weights total (0.2) when both tiers are present. Unknown adapter identifiers
 are ignored locally and cannot install new code.
 
-The daemon synchronizes on startup and every six hours from midnight UTC with
+The daemon synchronizes on startup and on the
+[router loop schedule](router.md#3-slow-loop-hot-add-and-scout-mapping) with
 If-None-Match. It tries `https://api.grunt.run/v1/registry` first and falls back
 to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
 unreachable, invalid or older than the retained registry. An explicit
@@ -1475,10 +1478,9 @@ The bundled publication is the minimum revision: older cached or remote lists
 cannot hide providers shipped with that package. An existing publication
 timestamp is immutable; changed entries require a strictly newer `published`
 timestamp, including revocations. Identical same-time data may refresh the ETag.
-Each sync then starts one background route pass (see [router](router.md)) that
-signs up recommended routes, one at a time, until six are open. A separate
-persistent queue checks configured curated sources one at a time with
-60–90-second gaps; it does not run provisioning helpers. The foreground wizard still installs providers
+Each sync triggers the [route acquisition pass](router.md#1-greedy-first-pass-driver-cap).
+Access checks run independently through [daily maintenance](#daily-maintenance).
+The foreground wizard still installs providers
 with up to six concurrent jobs and a shared Squire connection. During that setup, a private session
 lease owns all providers selected for that session, including providers already
 verified. Daily maintenance defers those providers. Pending

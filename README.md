@@ -128,9 +128,12 @@ guards. Idle Clixad checks use read-only metadata to avoid automatic wallet or
 streak claims. Free-Pi checks also use metadata, avoiding a new coding-session
 trace. Both are recorded as metadata evidence rather than a fresh reply.
 The queue defers checks during user requests, setup and cooldowns. Maintenance
-does not install tools, create accounts or open sign-in flows. When a request finds no source that can answer, the daemon separately starts one background recovery that adds vetted providers whose data-sharing approval is already recorded (saved Squire access first, then signup); it never runs without that approval. The dashboard's
-source details show the last check, its outcome and the next due time. Registry
-downloads still refresh independently, and first-time onboarding stays parallel.
+does not install tools, create accounts or open sign-in flows. Separately, the
+daemon uses the registry to acquire recommended routes with current consent,
+including after registry refreshes and when no source can answer. See the
+[router guide](docs/router.md) for acquisition limits, refresh timing and automatic
+pool updates. The dashboard's source details show the last check, its outcome
+and the next due time. First-time onboarding stays parallel.
 
 Maintenance starts automatically with the installed daemon in 0.6.9 and later.
 Existing users update that daemon with:
@@ -201,9 +204,9 @@ LiveKit adds DeepSeek V4.1 Flash through its free Build plan, using one free pro
 The four additions in 0.6.6 are BeatAPI, Pollinations, Clixad and Perch. BeatAPI's ongoing free DeepSeek route permits one successful request per minute and leaves its separate $2 welcome credit untouched. Pollinations' fixed community GLM route needs a numeric zero-budget, Quest-only key and a positive unused Quest balance; the zero-priced route does not spend its one-time first-key reward. Clixad uses its native free GLM route with a zero wallet balance. Perch uses active Starter access with 20,000 Perch Tokens per month, the optional Data Program off, and both memory switches off. Native CLI output limits are local checks and cannot hard-cap upstream generation; keep Clixad's wallet at zero and Perch on Starter. See the reference for model-attestation and billing limits.
 
 Within OpenCode, new conversations rotate across DeepSeek V4.1 Flash Free,
-GLM 5.3 Flash Free and Big Pickle. Follow-ups keep their model, and quota errors
-try another free model. These models may share provider limits; the pool does
-not create extra credit balances or purchase credits.
+GLM 5.3 Flash Free and Big Pickle. Follow-ups keep their model. See the
+[OpenCode reference](docs/reference.md#opencode-app-driver) for model-level quota
+failover and shared free-limit handling. Grunt does not purchase credits.
 
 Zro setup confirms the Free plan, no purchased usage balance and no payment method before connecting it. Keep that account free: Zro uses the same model ID on its paid plans, so changing the account outside grunt can change billing. Token Harbor uses its explicit `:free` model ID. Runcrate requires no paid balance, no card and automatic top-ups off; Mistral Vibe keeps pay-as-you-go off. Setup saves current provider data policies in a private receipt. Background setup never prompts, and signup and routing require the current receipt where required.
 

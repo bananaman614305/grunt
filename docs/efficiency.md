@@ -39,9 +39,9 @@ usable after the shared batch cache evicts their detailed results.
 The daemon keeps bounded reliability, latency and failure-cost observations in a
 private `routing-history.db` alongside its local configuration. Text/tool and
 interactive/background workloads have separate observations. Performance history
-expires after six hours. Identical unhinted transient failures extend adaptive
-backoff from the existing delay up to two hours. Explicit provider reset hints and
-quota deadlines retain their own timing, including across sibling runtime writes.
+expires after six hours. The [router policy](router.md#2-score-back-off-retirement)
+defines failure back-off, retirement and provider reset handling, including
+across sibling runtime writes.
 
 History never grants access or marks a source ready. Fresh free-access, consent,
 billing and eligibility checks still run. If this optional store cannot open, the

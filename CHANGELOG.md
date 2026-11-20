@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Open routes from the registry in the daemon ([router](docs/router.md)): a background pass after every six-hourly registry sync signs up recommended routes best-first, one at a time, until six are open, with the first open tool-capable route driving the rest. Retire a route on its fifth consecutive identical failure until a successful reply, a passing daily check or a newer registry publication. Accept the scout's optional `fit`, `status` and `expires` registry fields, and hot-add newly listed shipped adapters in the automatic pool.
+- Open routes from the registry in the daemon ([router](docs/router.md)): a background pass after every six-hourly registry sync signs up recommended routes best-first, one at a time, until six are open, with the first open tool-capable route driving the rest. Add adaptive back-off and retirement for repeatedly failing routes. Accept the scout's optional `fit`, `status` and `expires` registry fields, and hot-add newly listed shipped adapters in the automatic pool.
 - Let the fallback signup operator type and pass the values Grunt supplies (plan, key or project name, and the Squire-connected email into email fields). After Squire reports a signup complete, answer the operator with a final stop instead of replaying the stale page.
 - Fail fast on OpenCode's free usage limit, in both the serve and CLI paths, and cool down the whole OpenCode model pool until its reset. Upgrade the anonymous OpenCode setup operator to the first account route that passes the tool-call probe.
 

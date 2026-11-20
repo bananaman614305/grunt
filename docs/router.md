@@ -1,9 +1,9 @@
 # Router
 
-The registry lists every free route Grunt knows, ranked by the daily scout.
+The registry lists free routes Grunt knows and accepts ratings from the daily scout.
 The daemon opens routes greedily from that list, best-rated first, until it has
-`MAX_OPEN_ROUTES` (N = 6) open. Once any tool-capable route is open, it drives
-the signups for the rest. Every request records success, failure and latency
+`MAX_OPEN_ROUTES` (N = 6) open. An eligible tool-capable route can drive
+the signups for the rest through an installed coding harness. Every request records success, failure and latency
 per route. The router turns that record into a score and a back-off, and
 retires a route that keeps failing. Every six hours the daemon re-reads the
 registry and runs the same pass again. This reuses `StickyRouter`,
@@ -20,23 +20,25 @@ no new service.
   `readDataSharingConsent` check. The pass adds no other approval step. The
   registry is the vetted list.
 - **Cap.** A route is *open* when its source reports `available()` and the
-  router has not retired it. The pass runs signups one at a time and stops as
-  soon as N routes are open. So the cap holds even when the registry lists
-  more than N routes (test: "stops at N = 6 open routes when the registry
-  lists more"). A pass also makes
-  at most N signup attempts. Untried candidates come first; failed candidates
+  router permits dispatch (including registry, setup and cooldown checks).
+  The pass runs signups one at a time and stops as soon as N routes are open;
+  it does not close routes already opened by setup or earlier use. A pass
+  also makes at most N signup attempts. Untried candidates come first; failed candidates
   rotate to the end after each attempt, so repeated failures can't starve the rest.
 - **Driver.** Before each signup, the pass checks for an open tool-capable
-  route. If there is one, it hands Squire a fallback operator: the first coding
-  harness found on `PATH` (Pi, Codex, OpenCode, Claude Code), pointed at the
-  local `grunt` model. Otherwise Squire's drive runs alone. So the first route
-  that signs up becomes the driver for the rest. A registry-flagged route that
-  is already open is ranked first, so it drives from the start.
-- **Best route, not first.** The driver asks for model `grunt` and carries
-  tools. The router therefore sends each turn to the best-scoring open
-  tool-capable route. A newly opened, better route takes over on the next
-  task. In setup, the anonymous OpenCode operator is replaced as soon as an
-  account route passes the tool-call probe.
+  route eligible for the signup request. When a coding harness is installed,
+  it hands Squire a fallback operator: the first harness found on `PATH`
+  (Pi, Codex, OpenCode, Claude Code), pointed at the local `grunt` model.
+  Otherwise Squire's drive runs alone. So the first route
+  that signs up and is eligible for the private, tool-capable signup request
+  can drive the rest. An eligible route already open can drive from the start.
+  Public-only routes cannot drive private signup traffic.
+- **Driver routing.** The driver asks for model `grunt` and carries tools.
+  The router draws an eligible tool-capable route using its weights and
+  observations, then keeps that task bound until a handoff is needed. Newly
+  opened routes participate in later task draws. In setup, the anonymous
+  OpenCode operator is replaced as soon as an account route passes the
+  tool-call probe.
 - **Driver failure.** If the driver's route is benched or retired mid-signup,
   the sticky router hands the same task to the next eligible tool-capable
   route, with the usual handoff prompt. If none is left, the harness fails with
@@ -49,13 +51,18 @@ no new service.
 - **Score.** Each success or failure updates the route's reliability, latency
   and failure cost in `SourceStatus`, and this persists in routing history.
   The weighted draw uses `registry weight × routingWeight` (existing code).
-- **Back-off.** On a failure, the route is benched for 15 minutes. Each
-  repeat of the same failure within 6 hours of the previous one doubles the
-  bench, up to a ceiling of 2 hours. A quota failure uses the provider's reset
-  time instead.
+- **Back-off.** Upstream failures, timeouts and refusals normally bench the
+  route for 15 minutes. Each identical repeat within 6 hours doubles that
+  delay, up to 2 hours. An invalid function-call response starts at 30 seconds
+  instead. Explicit HTTP 5xx retry hints bypass multiplication and are bounded
+  to 1 second–24 hours. Quota failures use the provider's reset time instead;
+  successful recovery preserves that quota deadline. Missing installations
+  and expired logins stay barred until a successful health check.
 - **Retirement.** On the **5th consecutive identical failure**, each within
   6 hours of the last, the route is retired. Quota failures never count
-  toward this. A retired route gets no traffic, including explicitly named
+  toward this; identical non-quota failures still count during a quota hold
+  and when retry hints set the delay. Later failures cannot clear established
+  retirement. A retired route gets no traffic, including explicitly named
   requests, doesn't count as open (so the next pass
   opens a replacement), and isn't re-signed up.
 - **Return.** Three things bring a retired route back:
@@ -97,5 +104,5 @@ skips them.
   (`free`), the key or project name (`grunt`), and the Squire-connected email.
 - Once Squire reports a signup complete, every later operator tool call gets
   a final "finished, stop" reply instead of a replay of the stale page.
-- OpenCode's free-limit signal fails fast as a quota error, and that cools
-  down the whole OpenCode pool.
+- OpenCode free-limit handling is described in the
+  [OpenCode reference](reference.md#opencode-app-driver).
