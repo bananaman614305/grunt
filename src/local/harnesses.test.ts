@@ -1,12 +1,151 @@
-import { mkdtemp, readFile, readdir, rm, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile, mkdir, chmod, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { HARNESSES, configureCodex, configureOpenCode, configurePi, connectHarness, detectHarnesses, runHarness } from './harnesses.js';
+import { HARNESSES, configureCodex, configureOpenCode, configurePi, connectHarness, detectHarnesses, migrateManagedPiWorkingContext, runHarness } from './harnesses.js';
 
 let dir: string;
 afterEach(async () => { vi.unstubAllEnvs(); if (dir) await rm(dir, { recursive: true, force: true }); });
 const backups = async (directory: string) => (await readdir(directory)).filter(name => name.includes('.grunt-backup-'));
+const managedPi = (port = 19878, contextWindow = 128000) => ({ baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
+  models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 4096 }] });
+async function piFixture(provider = managedPi()) {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-pi-context-test-'));
+  vi.stubEnv('PI_CODING_AGENT_DIR', dir);
+  const path = join(dir, 'models.json'), env = { PI_CODING_AGENT_DIR: dir };
+  const saved = { defaultProvider: 'other', defaultModel: 'keep', providers: { other: { apiKey: 'synthetic-other-key' }, grunt: provider } };
+  await writeFile(path, JSON.stringify(saved), { mode: 0o600 });
+  return { path, env, saved };
+}
+
+it('Pi: uses an efficient working window without changing global compaction settings', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-pi-context-default-'));
+  vi.stubEnv('PI_CODING_AGENT_DIR', dir);
+  const env = { PI_CODING_AGENT_DIR: dir }, settings = '{"defaultProvider":"other","compaction":{"keepRecentTokens":12000}}';
+  await writeFile(join(dir, 'settings.json'), settings, { mode: 0o600 });
+  await configurePi(19878, { env });
+  const written = JSON.parse(await readFile(join(dir, 'models.json'), 'utf8'));
+  expect(written.providers.grunt.models[0]).toMatchObject({ contextWindow: 65536, maxTokens: 4096 });
+  expect(await readFile(join(dir, 'settings.json'), 'utf8')).toBe(settings);
+  expect((await stat(join(dir, 'models.json'))).mode & 0o777).toBe(0o600);
+});
+
+it('Pi setup merges managed fields while keeping extra models, provider fields and custom model settings', async () => {
+  const f = await piFixture();
+  const extra = { id: 'other-grunt-model', contextWindow: 222222, maxTokens: 1000 };
+  const saved = { ...f.saved, providers: { ...f.saved.providers, grunt: { ...f.saved.providers.grunt,
+    headers: { 'X-Custom': 'keep' }, models: [{ ...f.saved.providers.grunt.models[0], contextWindow: 131072, custom: 'keep' }, extra] } } };
+  await writeFile(f.path, JSON.stringify(saved), { mode: 0o600 });
+  await configurePi(19879, { env: f.env });
+  const result = JSON.parse(await readFile(f.path, 'utf8'));
+  expect(result).toMatchObject({ defaultProvider: 'other', defaultModel: 'keep', providers: { other: saved.providers.other,
+    grunt: { baseUrl: 'http://127.0.0.1:19879/v1', headers: { 'X-Custom': 'keep' }, models: saved.providers.grunt.models } } });
+  expect(await configurePi(19879, { env: f.env })).toEqual({ changed: false });
+  expect(await backups(dir)).toHaveLength(1);
+});
+
+it('Pi migration updates only the managed legacy working window and backs up privately once', async () => {
+  const f = await piFixture();
+  const first = await migrateManagedPiWorkingContext(19878, f.env);
+  expect(first.changed).toBe(true);
+  const result = JSON.parse(await readFile(f.path, 'utf8'));
+  expect(result).toEqual({ ...f.saved, providers: { ...f.saved.providers, grunt: { ...f.saved.providers.grunt,
+    models: [{ ...f.saved.providers.grunt.models[0], contextWindow: 65536 }] } } });
+  expect(first.changed && first.backup && JSON.parse(await readFile(first.backup, 'utf8'))).toEqual(f.saved);
+  expect(first.changed && first.backup && (await stat(first.backup)).mode & 0o777).toBe(0o600);
+  expect(await migrateManagedPiWorkingContext(19878, f.env)).toEqual({ changed: false });
+  expect(await backups(dir)).toHaveLength(1);
+});
+
+it.each([
+  ['different port', 19879, managedPi()],
+  ['custom window', 19878, managedPi(19878, 200000)],
+  ['custom model', 19878, { ...managedPi(), models: [{ ...managedPi().models[0], name: 'my-custom-grunt' }] }],
+  ['custom token budget', 19878, { ...managedPi(), models: [{ ...managedPi().models[0], maxTokens: 8192 }] }],
+  ['remote provider', 19878, { ...managedPi(), baseUrl: 'https://example.invalid/v1' }],
+] as const)('Pi migration leaves %s unchanged', async (_name, port, provider) => {
+  const f = await piFixture(provider as ReturnType<typeof managedPi>), original = await readFile(f.path, 'utf8');
+  expect(await migrateManagedPiWorkingContext(port, f.env)).toEqual({ changed: false });
+  expect(await readFile(f.path, 'utf8')).toBe(original);
+  expect(await backups(dir)).toEqual([]);
+});
+
+it('Pi setup refuses an unmanaged remote Grunt provider without overwriting it or its key', async () => {
+  const f = await piFixture({ ...managedPi(), baseUrl: 'https://example.invalid/v1', apiKey: 'synthetic-custom-key' });
+  const original = await readFile(f.path, 'utf8');
+  await expect(configurePi(19878, { env: f.env })).rejects.toThrow('unmanaged Grunt Pi provider');
+  expect(await readFile(f.path, 'utf8')).toBe(original);
+  expect(await backups(dir)).toEqual([]);
+});
+
+it('Pi setup refuses an unrecognized local Grunt model before changing its endpoint', async () => {
+  const f = await piFixture({ ...managedPi(), models: [{ ...managedPi().models[0], name: 'my-custom-grunt' }] });
+  const original = await readFile(f.path, 'utf8');
+  await expect(configurePi(19879, { env: f.env })).rejects.toThrow('unmanaged Grunt Pi model');
+  expect(await readFile(f.path, 'utf8')).toBe(original);
+  expect(await backups(dir)).toEqual([]);
+});
+
+it('Pi migration can explicitly change an authorized owner window while preserving its separate endpoint', async () => {
+  const f = await piFixture(managedPi(8793, 200000));
+  expect(await migrateManagedPiWorkingContext(8792, f.env, { fromContextWindows: [200000] })).toEqual({ changed: false });
+  expect(await migrateManagedPiWorkingContext(8793, f.env)).toEqual({ changed: false });
+  expect((await migrateManagedPiWorkingContext(8793, f.env, { workingContextTokens: 65536, fromContextWindows: [200000] })).changed).toBe(true);
+  const result = JSON.parse(await readFile(f.path, 'utf8'));
+  expect(result.providers.grunt.baseUrl).toBe('http://127.0.0.1:8793/v1');
+  expect(result.providers.grunt.models[0].contextWindow).toBe(65536);
+});
+
+it('Pi migration does not create a missing profile or configuration directory', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-pi-context-missing-'));
+  const location = join(dir, 'absent');
+  expect(await migrateManagedPiWorkingContext(19878, { PI_CODING_AGENT_DIR: location })).toEqual({ changed: false });
+  expect(await readdir(dir)).toEqual([]);
+});
+
+it('Pi rejects malformed configuration without leaking the contents or creating a backup', async () => {
+  const f = await piFixture(), invalid = '{"private":"synthetic-private-value",';
+  await writeFile(f.path, invalid, { mode: 0o600 });
+  const error = await migrateManagedPiWorkingContext(19878, f.env).catch(error => error);
+  expect(error).toBeInstanceOf(Error);
+  expect(error.message).not.toContain('synthetic-private-value');
+  expect(await readFile(f.path, 'utf8')).toBe(invalid);
+  expect(await backups(dir)).toEqual([]);
+});
+
+it('Pi refuses symlinked configuration files and parent directories', async () => {
+  const f = await piFixture(), original = await readFile(f.path, 'utf8'), target = join(dir, 'target.json');
+  await writeFile(target, original, { mode: 0o600 }); await rm(f.path); await symlink(target, f.path);
+  await expect(migrateManagedPiWorkingContext(19878, f.env)).rejects.toThrow('Cannot safely update');
+  expect(await readFile(target, 'utf8')).toBe(original);
+  const actual = join(dir, 'actual'), linked = join(dir, 'linked');
+  await mkdir(join(actual, 'nested'), { recursive: true, mode: 0o700 });
+  await writeFile(join(actual, 'nested', 'models.json'), original, { mode: 0o600 }); await symlink(actual, linked, 'dir');
+  await expect(configurePi(19878, { env: { PI_CODING_AGENT_DIR: join(linked, 'nested') } })).rejects.toThrow('Cannot safely update');
+  expect(await readFile(join(actual, 'nested', 'models.json'), 'utf8')).toBe(original);
+});
+
+(process.platform === 'win32' ? it.skip : it)('Pi refuses writable-by-others profile files and directories', async () => {
+  const f = await piFixture(); await chmod(f.path, 0o666);
+  await expect(migrateManagedPiWorkingContext(19878, f.env)).rejects.toThrow('Cannot safely update');
+  await chmod(f.path, 0o600); await chmod(dir, 0o777);
+  try { await expect(configurePi(19878, { env: f.env })).rejects.toThrow('Cannot safely update'); }
+  finally { await chmod(dir, 0o700); }
+});
+
+it.each(['', 'nonsense', '1', '65535', '200001', '1.5'])('Pi validates the explicit working window (%s) before writing', async value => {
+  const f = await piFixture(), original = await readFile(f.path, 'utf8');
+  await expect(configurePi(19878, { env: { ...f.env, GRUNT_WORKING_CONTEXT_TOKENS: value } })).rejects.toThrow('GRUNT_WORKING_CONTEXT_TOKENS');
+  expect(await readFile(f.path, 'utf8')).toBe(original);
+});
+
+it('Pi honors an explicit supported working window without changing unrelated providers', async () => {
+  const f = await piFixture();
+  await configurePi(19878, { env: { ...f.env, GRUNT_WORKING_CONTEXT_TOKENS: '100000' } });
+  const result = JSON.parse(await readFile(f.path, 'utf8'));
+  expect(result.providers.grunt.models[0].contextWindow).toBe(100000);
+  expect(result.providers.other).toEqual(f.saved.providers.other);
+});
 
 it.each([
   ['Pi', 'PI_CODING_AGENT_DIR', '', 'models.json', configurePi, { defaultProvider: 'anthropic', providers: { anthropic: { apiKey: 'keep' } } }],

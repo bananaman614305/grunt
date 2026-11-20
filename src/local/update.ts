@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { beginSetupSession } from './setup-session.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { serviceEnvironment, serviceEnvironmentTokens as environmentTokens } from './service-environment.js';
+import { migrateManagedPiWorkingContext } from './harnesses.js';
 
 const execute = promisify(execFile);
 const LATEST = 'https://registry.npmjs.org/usegrunt/latest';
@@ -186,6 +187,14 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
   for (const key of ['TAR_OPTIONS', 'NODE_OPTIONS', 'NODE_PATH']) delete preparationEnv[key];
   const now = options.now ?? Date.now, wait = options.wait ?? ((ms, signal) => delay(ms, undefined, { signal }));
   const notify = (message: string) => { try { options.notify?.(message); } catch { /* Progress output must not interrupt a runtime transaction. */ } };
+  const migratePi = async (port: number) => {
+    try {
+      if ((await migrateManagedPiWorkingContext(port, env)).changed) notify('Updated the managed Pi working context');
+    } catch {
+      // A custom or malformed harness file must not roll back a healthy daemon.
+      notify('Grunt updated; Pi working-context migration was skipped. Repair the Pi profile before retrying setup.');
+    }
+  };
   let temporary: string | undefined, backup: string | undefined, stopped = false, swapped = false;
   let service: Service | undefined;
   try {
@@ -232,6 +241,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     signal.throwIfAborted();
     if (!service.active) {
       notify(`Grunt ${download.version} is installed; the service remains stopped`);
+      await migratePi(service.port);
       return { version: download.version, port: service.port, backup, active: false };
     }
     await service.start();
@@ -243,6 +253,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     }
     if (!ready) throw failed('The updated Grunt daemon did not become ready');
     notify(`Grunt ${download.version} is ready on port ${service.port}`);
+    await migratePi(service.port);
     return { version: download.version, port: service.port, backup, active: true };
   } catch (error) {
     if ((stopped || swapped) && service) {
