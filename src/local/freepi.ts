@@ -1,3 +1,6 @@
+import { Ajv } from 'ajv';
+import type { AnySchema, ValidateFunction } from 'ajv';
+import { FreebuffTools } from './freebuff-tools.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -110,6 +113,7 @@ export class FreePi implements Source {
     caller.throwIfAborted();
     if (!this.acceptsRequest(request) || ![this.id, 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Free-Pi requires a reviewed public-only request');
     if (Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools }), 'utf8') > 1024 * 1024) throw new SourceError('refused', 'Free-Pi request exceeds the verified context envelope');
+    const prepared = prepareTools(request);
     const token = await this.token();
     // JWT sub is used only to derive a local account mutex, never as an auth assertion.
     let subject: unknown;
@@ -120,16 +124,18 @@ export class FreePi implements Source {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(180000)]);
     try {
       await this.guard(token, signal);
-      const body = await this.read('/v1/chat/completions', signal, token, { model: FREEPI_MODEL, messages: request.messages,
+      const body = await this.read('/v1/chat/completions', signal, token, { model: FREEPI_MODEL, messages: prepared.messages,
         ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) });
       // Preserve provider-sponsored text exactly; never hide or rewrite ads.
       assertFreePiAccount(await this.read('/me/stats', signal, token), (this.options.now ?? Date.now)(), true);
       if (body.model !== 'deepseek-ai/deepseek-v41-flash-1017' || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected Free-Pi model');
       const choice = object(body.choices[0]), message = object(choice.message), usage = object(body.usage), calls = message.tool_calls;
       if (message.refusal) throw new SourceError('refused', 'Free-Pi refused this request');
-      if (!['stop', 'tool_calls', 'length'].includes(String(choice.finish_reason)) || calls != null && !validCalls(calls)
-        || typeof message.content !== 'string' && !(validCalls(calls) && calls.length) || !message.content && !(validCalls(calls) && calls.length)) throw new Error('Invalid Free-Pi completion');
-      return { text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),
+      if (message.content !== undefined && message.content !== null && typeof message.content !== 'string') throw new Error('Invalid Free-Pi content');
+      const checkedCalls = calls == null ? [] : validatedCalls(calls, prepared.validators, request);
+      if (!['stop', 'tool_calls', 'length'].includes(String(choice.finish_reason)) || choice.finish_reason === 'length' && checkedCalls.length
+        || choice.finish_reason === 'tool_calls' && !checkedCalls.length || typeof message.content !== 'string' && !checkedCalls.length || !message.content && !checkedCalls.length) throw new Error('Invalid Free-Pi completion');
+      return { text: typeof message.content === 'string' ? message.content : '', ...(checkedCalls.length ? { calls: checkedCalls } : {}),
         ...(count(usage.prompt_tokens) ? { inputTokens: usage.prompt_tokens } : {}), ...(count(usage.completion_tokens) ? { outputTokens: usage.completion_tokens } : {}) };
     } catch (error) {
       caller.throwIfAborted();
@@ -141,13 +147,33 @@ export class FreePi implements Source {
   }
   async close() { this.shutdown.abort(); }
 }
-function validCalls(value: unknown): value is ToolCall[] {
-  if (!Array.isArray(value) || value.length > 128) return false;
+function prepareTools(request: ModelRequest) {
+  try {
+    const messages: ModelRequest['messages'] = [];
+    for (const message of request.messages) {
+      const previous = messages.at(-1);
+      if (message.role === 'assistant' && message.content === '' && message.tool_calls?.length && !message.tool_call_id
+        && previous?.role === 'assistant' && previous.content === '' && previous.tool_calls?.length && !previous.tool_call_id) previous.tool_calls = [...previous.tool_calls, ...message.tool_calls];
+      else messages.push({ ...message });
+    }
+    // Validation only: never render a bridge prompt or execute a tool.
+    new FreebuffTools({ ...request, messages });
+    const validators = new Map<string, ValidateFunction>();
+    const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
+    for (const tool of request.tools) { const fn = object(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
+    return { messages, validators };
+  } catch { throw new SourceError('refused', 'Free-Pi rejected invalid tools or an uncorrelated conversation'); }
+}
+function validatedCalls(value: unknown, validators: Map<string, ValidateFunction>, request: ModelRequest): ToolCall[] {
+  if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid Free-Pi tools');
   const ids = new Set<string>();
-  return value.every(item => {
+  return value.map(item => {
     const call = object(item), fn = object(call.function);
-    if (typeof call.id !== 'string' || !call.id || ids.has(call.id) || call.type !== 'function' || typeof fn.name !== 'string' || !fn.name || typeof fn.arguments !== 'string') return false;
+    if (typeof call.id !== 'string' || !call.id || call.id.length > 256 || ids.has(call.id) || call.type !== 'function' || typeof fn.name !== 'string' || !fn.name || typeof fn.arguments !== 'string'
+      || request.messages.some(message => message.tool_calls?.some(old => old.id === call.id))) throw new Error('Invalid Free-Pi tool call');
+    const args: unknown = JSON.parse(fn.arguments);
+    if (!args || typeof args !== 'object' || Array.isArray(args) || !validators.get(fn.name)?.(args)) throw new Error('Invalid Free-Pi tool arguments');
     ids.add(call.id);
-    try { const args: unknown = JSON.parse(fn.arguments); return args !== null && typeof args === 'object' && !Array.isArray(args); } catch { return false; }
+    return { id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } };
   });
 }

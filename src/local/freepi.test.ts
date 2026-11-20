@@ -60,7 +60,7 @@ describe('Free-Pi guarded official API', () => {
   it('preserves structured tools and rejects model substitution', async () => {
     const tool = { id: 'synthetic', type: 'function', function: { name: 'echo', arguments: '{"value":"ok"}' } };
     const f = fixture({ reply: { ...reply(), choices: [{ finish_reason: 'tool_calls', message: { content: null, tool_calls: [tool] } }] } });
-    expect((await f.source.complete(request(), AbortSignal.timeout(1000))).calls).toEqual([tool]);
+    expect((await f.source.complete({ ...request(), tools: [{ type: 'function', function: { name: 'echo', parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false } } }] }, AbortSignal.timeout(1000))).calls).toEqual([tool]);
     const wrong = fixture({ reply: { ...reply(), model: 'unapproved-model' } }); await expect(wrong.source.complete(request(), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
   });
   it('fails closed on a postflight wallet change', async () => {
@@ -76,4 +76,25 @@ describe('Free-Pi guarded official API', () => {
     await expect(second.source.complete(request(), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'quota' });
     release(); await ongoing;
   });
+  it.each([
+    { name: 'unadvertised', args: '{"value":"ok"}', finish: 'tool_calls', historical: false },
+    { name: 'echo', args: '{"value":1}', finish: 'tool_calls', historical: false },
+    { name: 'echo', args: '{"value":"ok"}', finish: 'length', historical: false },
+    { name: 'echo', args: '{"value":"ok"}', finish: 'tool_calls', historical: true }
+  ])('rejects unadvertised, invalid, truncated or historically duplicated calls: %j', async row => {
+    const call = { id: 'old-call', type: 'function' as const, function: { name: row.name, arguments: row.args } };
+    const f = fixture({ reply: { ...reply(), choices: [{ finish_reason: row.finish, message: { content: null, tool_calls: [call] } }] } });
+    const r = request(); r.tools = [{ type: 'function', function: { name: 'echo', parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false } } }];
+    if (row.historical) r.messages = [{ role: 'user', content: 'Synthetic history' }, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', content: 'Synthetic result', tool_call_id: call.id }, { role: 'user', content: 'Continue' }];
+    await expect(f.source.complete(r, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
+  });
+  it('rejects an invalid advertised schema before any network call', async () => {
+    const f = fixture(); await expect(f.source.complete({ ...request(), tools: [{ type: 'function', function: { name: 'bad', parameters: { type: 'not-a-json-schema-type' } } }] }, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused' }); expect(f.calls).toEqual([]);
+  });
+
+  it('rejects non-string sponsored/content envelopes even with valid tools', async () => {
+    const f = fixture({ reply: { ...reply(), choices: [{ finish_reason: 'tool_calls', message: { content: { sponsored: 'not-string' }, tool_calls: [{ id: 'new-call', type: 'function', function: { name: 'echo', arguments: '{}' } }] } }] } });
+    await expect(f.source.complete({ ...request(), tools: [{ type: 'function', function: { name: 'echo', parameters: { type: 'object' } } }] }, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
+  });
+
 });
