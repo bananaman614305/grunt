@@ -6,6 +6,7 @@ from pathlib import Path
 import stat
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 
@@ -20,6 +21,12 @@ def sandbox():
 def run_cycle():
     args=['--extension',WORKER_EXTENSION,'--grunt-worker-port','8793',
           '--session-id',configuration['sessionId']]
+def main():
+    if True:
+        if True:
+            failures=0
+            while not STOP:
+                run_fixture_cycle()
 """
 POOL = """import { WorkerPool } from './runtime/dist/local/worker-pool.js';
 const workers=new WorkerPool(sources);
@@ -121,6 +128,56 @@ class StageTests(unittest.TestCase):
             result = subprocess.run([str(wrapper), *command], capture_output=True)
             self.assertEqual(result.returncode, 64)
             self.assertNotIn(b"node", result.stderr)
+
+    def hold_fixture(self, *, backend_exit=None, stop_while_held=False):
+        self.stage()
+        state = self.root / "private-state"
+        state.mkdir()
+        hold = state / "execution-upgrade-hold"
+        hold.write_text("operator-owned activation hold")
+        events = []
+        namespace = {"STATE": state, "STOP": False, "status": {},
+                     "backend": SimpleNamespace(poll=lambda: backend_exit),
+                     "save": lambda path, status: events.append(("status", dict(status)))}
+        sleeps = []
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if stop_while_held:
+                namespace["STOP"] = True
+            elif len(sleeps) == 2:
+                hold.unlink()
+        def cycle():
+            events.append(("cycle", None))
+            namespace["STOP"] = True
+        namespace.update(time=SimpleNamespace(sleep=sleep), run_fixture_cycle=cycle)
+        # Execute only synthetic infrastructure; no real supervisor, process,
+        # model request, filesystem game source or game test is involved.
+        code = (self.destination / "next" / "supervisor.py").read_text()
+        exec(compile(code, "synthetic-owner-runner", "exec"), namespace)
+        return namespace, events, sleeps, hold
+
+    def test_startup_hold_keeps_backend_up_and_blocks_cycles_until_released(self):
+        namespace, events, sleeps, hold = self.hold_fixture()
+        namespace["main"]()
+        self.assertEqual(sleeps, [0.25, 0.25])
+        self.assertEqual(events, [("status", {"phase": "paused", "workerPid": None}),
+                                  ("status", {"phase": "paused", "workerPid": None}), ("cycle", None)])
+        self.assertFalse(hold.exists())
+
+    def test_startup_hold_honors_stop_without_removing_operator_marker(self):
+        namespace, events, sleeps, hold = self.hold_fixture(stop_while_held=True)
+        namespace["main"]()
+        self.assertEqual(sleeps, [0.25])
+        self.assertFalse(any(event == "cycle" for event, _ in events))
+        self.assertTrue(hold.exists())
+
+    def test_startup_hold_fails_if_backend_dies_without_starting_cycle(self):
+        namespace, events, sleeps, hold = self.hold_fixture(backend_exit=1)
+        with self.assertRaisesRegex(RuntimeError, "Free pool stopped during activation hold"):
+            namespace["main"]()
+        self.assertEqual(events, [])
+        self.assertEqual(sleeps, [])
+        self.assertTrue(hold.exists())
 
 
 if __name__ == "__main__":

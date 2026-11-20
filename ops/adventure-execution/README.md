@@ -53,6 +53,17 @@ records interruption and does not replay a command. The jobs state is explicitly
 
 Activation is a separate reviewed operation:
 
+The staged supervisor supports an operator-owned startup hold at
+`/home/alan/.local/state/usegrunt-adventure/execution-upgrade-hold`, outside the
+game's writable `/worker/state` mount. Before stopping the old supervisor, the
+activation operation must create that marker exclusively and abort if it already
+exists. The new supervisor starts its backend, reports `paused` with no worker
+PID and waits before its first project cycle. It keeps checking backend health
+and honors termination while held. Remove only the marker created by this
+activation, **last**, after every runtime, profile, diagnostics and publisher
+check succeeds. If a check fails, roll back while no new game cycle has run;
+preserve any preexisting operator hold and never remove it as automatic cleanup.
+
 1. Stage and verify the matching public Grunt runtime first. It must contain
    `worker-runtime.js`, the Pi tool registration, job helpers, client-side artifact
    integration and their dependencies. Confirm synthetic worker/job checks pass.

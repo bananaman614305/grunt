@@ -49,6 +49,15 @@ def transform(files, runtime_directory):
     supervisor = replace_once(supervisor,
         "'--extension',WORKER_EXTENSION,'--grunt-worker-port','8793',",
         "'--extension',WORKER_EXTENSION,'--grunt-worker-port','8793','--grunt-agent-workers','--grunt-background-jobs',")
+    supervisor = replace_once(supervisor,
+        "failures=0\n            while not STOP:",
+        "failures=0\n"
+        "            while not STOP and (STATE/'execution-upgrade-hold').exists():\n"
+        "                if backend.poll() is not None:raise RuntimeError('Free pool stopped during activation hold')\n"
+        "                status.update(phase='paused',workerPid=None)\n"
+        "                save(STATE/'status.json',status)\n"
+        "                time.sleep(.25)\n"
+        "            while not STOP:")
     ast.parse(supervisor)
     pool = files["free-pool.mjs"].decode("utf-8")
     pool = replace_once(pool,
