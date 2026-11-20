@@ -1520,9 +1520,13 @@ Manual daemons and explicit source overrides that differ from the anchor keep
 their selected list. Malformed, shared, unowned or symlinked receipts never
 expand it.
 
-Antseed Vikey remains an explicit source while usable long-input qualification
-and its managed buyer installation are being verified. Add `antseed-vikey` to
-`GRUNT_OPT_IN_SOURCES` for a local daemon with its provider-specific approval.
+Antseed Vikey remains an explicit experimental source while usable long-input
+qualification is incomplete. `npx usegrunt add antseed-vikey` installs its pinned
+private buyer on Linux x64 with glibc, Node22/24 and user systemd; unsupported
+platforms skip it while other sources remain usable. Existing different buyer
+units and occupied ports are preserved. See [buyer provisioning](antseed-vikey-provisioning.md).
+`GRUNT_OPT_IN_SOURCES=antseed-vikey` also remains supported for a daemon whose
+buyer and provider-specific approval are already present.
 
 - `antseed-vikey` uses a dedicated Antseed buyer listening on loopback port
   8381 by default. Set `GRUNT_ANTSEED_VIKEY_PORT` for a different local port.

@@ -180,6 +180,14 @@ export async function setupFallbacks(options: {
         failedSetup('opencode', error);
         options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
       } },
+      'antseed-vikey': async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['antseed-vikey'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Antseed Vikey: private zero-price buyer connected; functional verification remains required');
+      } catch (error) {
+        failedSetup('antseed-vikey', error);
+        options.notify('Antseed Vikey setup unavailable on this platform or buyer configuration; other routes remain available.');
+      } },
       'reflection-beam': async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['reflection-beam'], { squire: squire as SetupSquire, directory: options.directory,
           dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });

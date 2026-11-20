@@ -13,9 +13,9 @@ export interface Adapter {
   models?: string[];
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
-const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes', goedel: 'builtin:goedel', crowllm: 'builtin:crowllm', fikra: 'builtin:fikra', openference: 'builtin:openference', darus: 'builtin:darus', 'aperture-ai': 'builtin:aperture-ai', 'reflection-beam': 'builtin:reflection-beam' };
+const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes', goedel: 'builtin:goedel', crowllm: 'builtin:crowllm', fikra: 'builtin:fikra', openference: 'builtin:openference', darus: 'builtin:darus', 'aperture-ai': 'builtin:aperture-ai', 'reflection-beam': 'builtin:reflection-beam', 'antseed-vikey': 'builtin:antseed-vikey' };
 export const knownAdapters = new Set(Object.keys(installers));
-// These descriptors are local only and cannot be selected by registry updates.
+// Explicit fallback descriptors do not enroll sources in the bundled registry.
 export const localOptInAdapters: readonly Adapter[] = [
   { id: 'crowllm', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:crowllm', model: 'glm-5.3-flash:free' },
   { id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:antseed-vikey' },
@@ -49,7 +49,7 @@ export function validateRegistry(value: unknown): Registry {
       if (url.protocol !== 'https:' || url.username || url.password) return fail();
     }
     // Known adapters have fixed installers and capabilities; registry data never supplies code.
-    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit', 'pollinations', 'beatapi', 'nous', 'kenari', 'numes', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai', 'reflection-beam'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
+    if (knownAdapters.has(a.id) && (a.kind !== (['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit', 'pollinations', 'beatapi', 'nous', 'kenari', 'numes', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai', 'reflection-beam', 'antseed-vikey'].includes(a.id) ? 'model' : 'agent') || a.install !== installers[a.id as keyof typeof installers]
       || a.modalities.some(m => m !== 'text'))) return fail();
     if (a.id === 'aperture-ai' && a.model !== 'baidu/ernie-5.5-flash-preview:free') return fail();
     if (a.id === 'darus' && a.model !== 'darus/deepseek-v4.1-flash-1017-FREE') return fail();
@@ -57,6 +57,7 @@ export function validateRegistry(value: unknown): Registry {
     if (a.id === 'openference' && a.model !== 'DeepSeek-V4.1-Flash-1017-Free') return fail();
     if (a.id === 'crowllm' && a.model !== 'glm-5.3-flash:free') return fail();
     if (a.id === 'reflection-beam' && a.model !== 'reflection/beam-free') return fail();
+    if (a.id === 'antseed-vikey' && a.model !== 'deepseek/deepseek-v4.1-flash-free') return fail();
     if (a.id === 'goedel' && a.model !== 'deepseek/deepseek-v4.1-flash') return fail();
     if (a.id === 'nous' && a.model !== 'qwen/qwen4-max:free') return fail();
     ids.add(a.id);

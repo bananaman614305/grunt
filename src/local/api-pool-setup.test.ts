@@ -4,12 +4,13 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type * as ClixadSetup from './clixad-setup.js';
 
-const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(), kilo: vi.fn() }));
+const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(), kilo: vi.fn(), antseed: vi.fn() }));
 vi.mock('./pollinations-setup.js', () => ({ setupPollinations: helpers.pollinations }));
 vi.mock('./beatapi-setup.js', () => ({ setupBeatAPI: helpers.beatapi }));
 vi.mock('./clixad-setup.js', async importOriginal => ({ ...await importOriginal<typeof ClixadSetup>(), setupClixad: helpers.clixad }));
 vi.mock('./perch-setup.js', () => ({ setupPerch: helpers.perch }));
 vi.mock('./kilo.js', () => ({ verifyKiloAccess: helpers.kilo, KILO_PARTICLE: 'particle-ai/particle-1:free' }));
+vi.mock('./antseed-vikey-setup.js', () => ({ setupAntseedVikey: helpers.antseed }));
 import { BrowserSquire, setup } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
@@ -85,6 +86,36 @@ it('settles anonymous Reflection setup independently of a failed account signup'
     run: vi.fn(), notify: vi.fn(), setupProvider, onSettled })).resolves.toEqual({ unavailable: ['numes'] });
   expect(onSettled).toHaveBeenCalledWith('reflection-beam', true, undefined);
   expect(onSettled).toHaveBeenCalledWith('numes', false, expect.any(String));
+});
+
+it('provisions an explicitly selected private Antseed buyer without another account or vault grant', async () => {
+  const location = await directory(), squire = client(), notify = vi.fn();
+  await recordDataSharingConsent(location, ['antseed-vikey']);
+  const signal = new AbortController().signal;
+  await expect(setup(notify, ['antseed-vikey'], { directory: location, squire, signal })).resolves.toEqual({});
+  expect(helpers.antseed).toHaveBeenCalledExactlyOnceWith({ directory: location, signal, dataSharingApproved: ['antseed-vikey'], notify });
+  expect(squire.signup).not.toHaveBeenCalled();
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  expect(squire.credentials.grant).not.toHaveBeenCalled();
+});
+
+it('requires current Antseed consent before invoking its installer', async () => {
+  await expect(setup(vi.fn(), ['antseed-vikey'], { directory: await directory(), squire: client() })).rejects.toThrow('grouped setup approval');
+  expect(helpers.antseed).not.toHaveBeenCalled();
+});
+
+it('settles an unsupported Antseed platform without blocking another working free source', async () => {
+  const location = await directory(), squire = client();
+  await recordDataSharingConsent(location, ['antseed-vikey', 'reflection-beam']);
+  const setupProvider = vi.fn<typeof setup>().mockImplementation(async (_notify, providers) => {
+    if (providers.includes('antseed-vikey')) throw new Error('Unsupported buyer platform');
+    return {};
+  });
+  const onSettled = vi.fn();
+  await expect(setupFallbacks({ directory: location, adapters: ['antseed-vikey', 'reflection-beam'], squire,
+    run: vi.fn(), notify: vi.fn(), setupProvider, onSettled })).resolves.toEqual({ unavailable: ['antseed-vikey'] });
+  expect(onSettled).toHaveBeenCalledWith('antseed-vikey', false, expect.any(String));
+  expect(onSettled).toHaveBeenCalledWith('reflection-beam', true, undefined);
 });
 
 it.each(['pollinations', 'beatapi', 'clixad', 'perch', 'kilo'])('requires current %s consent before any provisioning', async provider => {

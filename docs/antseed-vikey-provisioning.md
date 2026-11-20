@@ -1,8 +1,11 @@
 # Antseed-Vikey buyer provisioning
 
-`setupAntseedVikey()` installs a private buyer only after the curated source has
-passed the normal provider qualification pipeline. Provisioning is not evidence
-of usable context, model quality, a successful inference, or free quota.
+`npx usegrunt add antseed-vikey` uses `setupAntseedVikey()` to install a private
+buyer under the user's Grunt configuration after its source-specific disclosure
+is approved. No separate provider account or existing owner installation is
+needed. It remains an explicit experimental source outside default onboarding
+until the required usable-input qualification passes. Provisioning is not
+evidence of usable context, model quality, a successful inference, or free quota.
 
 Initial installation coverage is Linux x64 with glibc, Node22 or Node24, and a
 working user systemd manager. Unsupported platforms skip this source while other
