@@ -82,6 +82,14 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   url: 'https://numes.ai/docs/privacy/data-retention',
   approval: 'explicit'
 }, {
+  provider: 'fikra', name: 'Fikra temporary free DeepSeek V4.1 Flash Economy', version: '2026-11-20',
+  disclosure: 'Prompts, code and tool context go through Fikra and upstream inference providers. Fikra caches responses briefly and retains operational metadata. Upstream retention, training and review policies vary. This temporary free offer ends at the earlier live gate deadline or shared budget limit.',
+  url: 'https://fikraapi.co.ke/privacy', approval: 'explicit'
+}, {
+  provider: 'openference', name: 'Openference temporary free DeepSeek V4.1 Flash', version: '2026-11-20',
+  disclosure: 'Prompts, code and tool context pass through Openference and its inference providers. Upstream training is permitted without an opt-out. Retention and review guarantees are unverified. This offer ends December 31, 2026 UTC. Grunt enables only exact-ID interactive qualification until unattended-use permission is established.',
+  url: 'https://openference.com/terms-of-service', approval: 'explicit'
+}, {
   provider: 'crowllm', name: 'CrowLLM GLM 5.3 Flash Free', version: '2026-11-20',
   disclosure: 'Prompts, code, tool definitions and tool results pass through CrowLLM and its inference upstream. Retention, staff review, training and deletion guarantees have not been verified. Grunt uses only the exact model with a zero price in the live catalog.',
   url: 'https://crowllm.com/docs',
