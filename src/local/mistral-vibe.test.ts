@@ -86,6 +86,24 @@ it('allows one protocol repair and accounts for both native calls', async () => 
     await expect(f.source.complete({ ...request(), tools }, AbortSignal.timeout(5000))).resolves.toEqual({ text: 'repaired', inputTokens: 401686, outputTokens: 52 });
   } finally { await f.source.close(); }
 });
+
+it('bridges completed historical ID reuse without changing tool results or native safety limits', async () => {
+  const f = await fixture('tools');
+  try {
+    const tools = [{ type: 'function' as const, function: { name: 'read_file', parameters: { type: 'object' } } }];
+    const call = { id: 'call_0', type: 'function' as const, function: { name: 'read_file', arguments: '{}' } };
+    const messages = [{ role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', tool_call_id: call.id, content: 'first result' },
+      { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', tool_call_id: call.id, content: 'second result' }, { role: 'user', content: 'continue' }];
+    const original = structuredClone(messages);
+    const completion = await f.source.complete({ ...request(), messages, tools }, AbortSignal.timeout(5000));
+    expect(completion.calls).toHaveLength(1);
+    expect(messages).toEqual(original);
+    const sent = JSON.parse(await readFile(f.snapshot, 'utf8'));
+    expect(JSON.parse(sent.prompt.split('\n').at(-1)).messages).toEqual(original);
+    expect(sent.args.slice(0, 4)).toEqual(['--model', MISTRAL_VIBE_MODEL, '--disabled-tools', '*']);
+    expect(sent.hasShellApiKey).toBe(false);
+  } finally { await f.source.close(); }
+});
 it.each(['wrong-model', 'wrong-host', 'paid-compactor', 'malformed', 'native-tool', 'badtool', 'quota'])('rejects %s without leaking raw native errors or accepting another model', async mode => {
   const f = await fixture(mode);
   try {

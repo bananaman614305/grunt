@@ -29,7 +29,6 @@ export class FreebuffTools {
     }
     // Results are data supplied by Pi, never model-authored bridge envelopes.
     const pending = new Set<string>();
-    const seen = new Set<string>();
     for (const message of request.messages) {
       if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(message.role) || typeof message.content !== 'string') throw fail();
       if (message.role === 'tool') {
@@ -40,10 +39,12 @@ export class FreebuffTools {
       if (message.tool_calls?.length) {
         if (message.role !== 'assistant') throw fail();
         for (const call of message.tool_calls) {
-          if (call.type !== 'function' || !call.id || seen.has(call.id)) throw fail();
+          // IDs correlate one pending call/result pair. Other providers can
+          // reuse an ID after that pair has completed in an earlier turn.
+          if (call.type !== 'function' || !call.id || pending.has(call.id)) throw fail();
           // Historical tools need not still be available. Their arguments must be JSON.
           try { if (!object(JSON.parse(call.function.arguments))) throw fail(); } catch { throw fail(); }
-          seen.add(call.id); pending.add(call.id);
+          pending.add(call.id);
         }
       }
     }

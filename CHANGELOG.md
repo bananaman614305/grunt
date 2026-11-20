@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.27] - 2026-11-20
+
+- Keep the shared tool bridge usable when providers reuse a call ID in separate completed turns, including Mistral Vibe. Preserve exact historical results and continue rejecting duplicate pending calls, orphan results and incomplete histories.
+
 ## [0.7.26] - 2026-11-20
 
 - Keep Kilo usable after switching providers that reuse tool-call IDs in separate completed turns. Normalize those historical IDs without changing their results, and distinguish tool schema errors from malformed or incomplete tool histories in diagnostics.
