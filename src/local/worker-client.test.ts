@@ -143,3 +143,26 @@ it('cancels an in-flight daemon call when the harness closes its stdio pipe', as
   await server;
   expect(fetcher.mock.calls[0]![1]!.signal?.aborted).toBe(true);
 });
+
+it('requires an explicit trusted project for agent MCP and recovery commands', async () => {
+  const fetcher = vi.fn<typeof fetch>();
+  for (const args of [['mcp', '--agentic'], ['mcp', '--project', '/tmp/example'], ['apply', workerId], ['artifact', workerId, '--project', 'relative'], ['retained', '--project', '/tmp/example', '--unknown']]) {
+    await expect(workerCommand(args, { fetcher })).rejects.toThrow('Usage');
+  }
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+it('keeps the tool-using worker absent from unscoped MCP and exposes it only for explicit scope', async () => {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const server = createWorkerMcpServer(8788, vi.fn<typeof fetch>(), { projectRoot: '/tmp/synthetic-project' });
+  const client = new Client({ name: 'test', version: '1.0.0' });
+  await server.connect(serverTransport); await client.connect(clientTransport);
+  try { expect((await client.listTools()).tools.map(tool => tool.name)).toContain('grunt_spawn'); }
+  finally { await client.close(); }
+});
+
+it('does not let the legacy proposal tool opt into agent mode', async () => {
+  const fetcher = vi.fn<typeof fetch>();
+  await expect(delegateWorkers(8788, { tasks: [{ task: 'Edit', mode: 'agent', ownedPaths: ['src'] }] }, signal(), fetcher)).rejects.toThrow();
+  expect(fetcher).not.toHaveBeenCalled();
+});

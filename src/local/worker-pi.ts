@@ -1,3 +1,6 @@
+import { AgentWorkerBatches, gruntSpawnTool } from './worker-agent-client.js';
+import { registerJobTools } from './jobs-pi.js';
+import type { JobPiContext, JobPiExtension } from './jobs-pi.js';
 import { gruntDelegateTool, gruntWorkerCancelTool, gruntWorkerResultTool, gruntWorkerStatusTool, readWorkerStatus, resolveWorkerPort, WorkerBatches } from './worker-client.js';
 
 interface PiWorkerTool {
@@ -6,22 +9,46 @@ interface PiWorkerTool {
   description: string;
   promptSnippet: string;
   parameters: object;
-  execute(id: string, input: unknown, signal?: AbortSignal): Promise<{
+  execute(id: string, input: unknown, signal?: AbortSignal, onUpdate?: unknown, context?: JobPiContext): Promise<{
     content: { type: 'text'; text: string }[];
     details: unknown;
   }>;
 }
 
-interface PiWorkerExtension {
-  registerFlag(name: string, options: { type: 'string'; description: string }): void;
+interface PiWorkerExtension extends Omit<JobPiExtension, 'registerFlag'> {
+  registerFlag(name: string, options: { type: 'string' | 'boolean'; default?: boolean; description: string }): void;
   getFlag(name: string): string | boolean | undefined;
   registerTool(tool: PiWorkerTool): void;
-  on(event: 'session_shutdown', handler: () => Promise<void>): void;
 }
 
+export const AGENT_WORKERS_FLAG = 'grunt-agent-workers';
 const portFlag = 'grunt-worker-port';
 
 export default function gruntWorkerExtension(pi: PiWorkerExtension) {
+  registerJobTools(pi);
+  pi.registerFlag(AGENT_WORKERS_FLAG, { type: 'boolean', default: false, description: 'Enable isolated tool-using workers scoped to the current project. Review custom tool approval rules for grunt_spawn.' });
+  const agentBatches = new Map<string, Promise<AgentWorkerBatches>>();
+  const agentStore = (ctx?: JobPiContext) => {
+    if (pi.getFlag(AGENT_WORKERS_FLAG) !== true || !ctx) throw new Error('Scoped workers require --grunt-agent-workers and a harness project directory.');
+    let store = agentBatches.get(ctx.cwd);
+    if (!store) { store = port().then(value => new AgentWorkerBatches(value, ctx.cwd)).catch((error: unknown) => { agentBatches.delete(ctx.cwd); throw error; }); agentBatches.set(ctx.cwd, store); }
+    return store;
+  };
+  let agentRegistered = false;
+  pi.on('session_start', () => {
+    if (pi.getFlag(AGENT_WORKERS_FLAG) !== true || agentRegistered) return;
+    pi.registerTool({ name: gruntSpawnTool.name, label: gruntSpawnTool.annotations.title, description: gruntSpawnTool.description, promptSnippet: 'Delegate independent scoped edits to tool-using free-source workers and continue working', parameters: gruntSpawnTool.inputSchema,
+      async execute(_id, input, signal = new AbortController().signal, _update, ctx) {
+        signal.throwIfAborted();
+        const details = await (await agentStore(ctx)).start(input, signal);
+        return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
+      } });
+    agentRegistered = true;
+  });
+  const agentBatch = async (input: unknown) => {
+    for (const pending of agentBatches.values()) { const store = await pending; if (store.has(input)) return store; }
+    return undefined;
+  };
   pi.registerFlag(portFlag, { type: 'string', description: 'Local Grunt daemon port for subworkers' });
 
   const port = () => {
@@ -34,6 +61,8 @@ export default function gruntWorkerExtension(pi: PiWorkerExtension) {
     throw error;
   });
   pi.on('session_shutdown', async () => {
+    await Promise.allSettled([...agentBatches.values()].map(async store => (await store).close()));
+    agentBatches.clear();
     const old = pending;
     pending = undefined;
     await old?.then(store => store.close(), () => {});
@@ -53,7 +82,7 @@ export default function gruntWorkerExtension(pi: PiWorkerExtension) {
     signal.throwIfAborted();
     return store.start(input);
   });
-  register(gruntWorkerResultTool, 'Retrieve results from a batch of Grunt subworkers', async input => (await batches()).result(input));
-  register(gruntWorkerCancelTool, 'Cancel pending work in a Grunt subworker batch', async input => (await batches()).cancel(input));
+  register(gruntWorkerResultTool, 'Retrieve results from a batch of Grunt subworkers', async input => (await agentBatch(input) ?? await batches()).result(input));
+  register(gruntWorkerCancelTool, 'Cancel pending work in a Grunt subworker batch', async input => (await agentBatch(input) ?? await batches()).cancel(input));
   register(gruntWorkerStatusTool, 'Get local Grunt worker status', async (_input, signal) => readWorkerStatus(await port(), signal));
 }

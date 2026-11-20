@@ -66,11 +66,11 @@ function piFixture() {
   const definitions: Parameters<Parameters<typeof gruntWorkerExtension>[0]['registerTool']>[0][] = [];
   const registerFlag = vi.fn(), on = vi.fn();
   const getFlag = vi.fn(() => '19879');
-  gruntWorkerExtension({ registerFlag, getFlag, on, registerTool: tool => { definitions.push(tool); } });
+  gruntWorkerExtension({ registerFlag, getFlag, on, exec: vi.fn(), registerTool: tool => { definitions.push(tool); } });
   const tool = (name: string) => definitions.find(definition => definition.name === name)!;
   expect(registerFlag).toHaveBeenCalledWith('grunt-worker-port', expect.objectContaining({ type: 'string' }));
   expect(on).toHaveBeenCalledWith('session_shutdown', expect.any(Function));
-  return { tool, getFlag, close: on.mock.calls[0]![1] as () => Promise<void> };
+  return { tool, getFlag, close: async () => { for (const [event, handler] of on.mock.calls) if (event === 'session_shutdown') await handler(); } };
 }
 
 it('starts a Pi batch without waiting and returns provider results through a later tool', async () => {
@@ -105,4 +105,29 @@ it('aborts pending Pi workers when their session closes', async () => {
   await tool('grunt_delegate').execute('call', { tasks: [{ task: 'Review this' }, { task: 'Review that' }] });
   await close();
   expect(aborted).toHaveBeenCalledTimes(2);
+});
+
+it('enables agent workers only with explicit trusted project scope for MCP connectors', async () => {
+  const options = settings();
+  await expect(workerConnectCommand(['codex', '--agentic'], options)).rejects.toThrow('Usage');
+  await workerConnectCommand(['codex', '--agentic', '--project', directory], options);
+  expect(options.notify.mock.calls.at(-1)![0]).toContain('"--agentic","--project"');
+  await workerConnectCommand(['claude', '--agentic', '--project', directory], options);
+  expect(options.notify.mock.calls.at(-1)![0]).toContain('mcp add --scope project');
+  await workerConnectCommand(['pi', '--agentic'], options);
+  expect(options.notify.mock.calls.at(-1)![0]).toContain('--grunt-agent-workers --grunt-background-jobs');
+});
+
+it('registers tool workers at session_start only after the launch flag is enabled', async () => {
+  const tools: { name: string }[] = [], handlers = new Map<string, (() => Promise<void> | void)[]>();
+  let enabled = false;
+  gruntWorkerExtension({ registerFlag: vi.fn(), getFlag: name => name === 'grunt-agent-workers' ? enabled : name === 'grunt-worker-port' ? '8793' : false,
+    registerTool: tool => { tools.push(tool); }, exec: vi.fn(), on: (event, handler) => { handlers.set(event, [...handlers.get(event) ?? [], handler as () => Promise<void> | void]); } });
+  expect(tools.some(tool => tool.name === 'grunt_spawn')).toBe(false);
+  for (const handler of handlers.get('session_start') ?? []) await handler();
+  expect(tools.some(tool => tool.name === 'grunt_spawn')).toBe(false);
+  enabled = true;
+  for (const handler of handlers.get('session_start') ?? []) await handler();
+  for (const handler of handlers.get('session_start') ?? []) await handler();
+  expect(tools.filter(tool => tool.name === 'grunt_spawn')).toHaveLength(1);
 });
