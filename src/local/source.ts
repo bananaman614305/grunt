@@ -35,7 +35,7 @@ export interface Source {
   // A source that calls output() when it first produces output gets the
   // first-output deadline. Other sources keep only their own timeouts.
   reportsOutput?: boolean;
-  available(): Promise<boolean>;
+  available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;
   sellerQuota?(): SellerQuota | undefined;
@@ -334,7 +334,10 @@ export class Sources {
     }
     throw last;
   }
-  async close() { await Promise.allSettled(this.sources.map(s => s.close?.())); }
+  async close() {
+    await Promise.all([this.router?.close(), this.workerRouter?.close()]);
+    await Promise.allSettled(this.sources.map(s => s.close?.()));
+  }
 }
 export class Gateway implements Source {
   id = 'gateway';

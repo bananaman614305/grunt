@@ -1,0 +1,115 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { bundledRegistry } from '../registry.js';
+import { SourceError, Sources } from './source.js';
+import type { ModelRequest, Source } from './source.js';
+
+const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'Complete a synthetic task.' }], cwd: '/tmp', tools: [], stream: false };
+const sources: Sources[] = [];
+const source = (id: string): Source & { available: ReturnType<typeof vi.fn>; complete: ReturnType<typeof vi.fn> } => ({
+  id, available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: id }))
+});
+function pool(items: Source[], now?: () => number, draw = () => 0) {
+  const value = new Sources(items, { registry: () => ({ ...bundledRegistry, adapters: items.map(item => ({ ...bundledRegistry.adapters.find(a => a.id === item.id)!, weight: 1 })) }), random: draw, ...(now ? { now } : {}) });
+  sources.push(value);
+  return value;
+}
+function hold() { let release!: (value: boolean) => void; const promise = new Promise<boolean>(resolve => { release = resolve; }); return { promise, release }; }
+afterEach(async () => { await Promise.all(sources.splice(0).map(source => source.close())); vi.restoreAllMocks(); });
+
+it.each(['cold', 'warm'] as const)('answers from ready free capacity without awaiting an unrelated hung admission check (%s)', async state => {
+  const slow = source('numes'), fast = source('kilo'), pending = hold();
+  slow.available.mockImplementation(() => pending.promise);
+  const value = pool([slow, fast]);
+  if (state === 'warm') await value.complete({ ...request, model: fast.id, userMessages: ['warm the verified source'] }, AbortSignal.timeout(1000));
+  const before = fast.complete.mock.calls.length;
+  const result = value.complete({ ...request, userMessages: ['new task'] }, AbortSignal.timeout(2000));
+  try {
+    await vi.waitFor(() => expect(fast.complete).toHaveBeenCalledTimes(before + 1), { timeout: 500 });
+    expect((await result).text).toBe(fast.id);
+    expect(slow.complete).not.toHaveBeenCalled();
+  } finally { pending.release(false); await result.catch(() => {}); }
+});
+
+it('reuses only admission metadata and still runs the selected adapter live guard on each dispatch', async () => {
+  const guarded = source('kilo'), fallback = source('livekit');
+  let funded = false, liveChecks = 0, admitted = 0;
+  guarded.complete.mockImplementation(async () => {
+    liveChecks++;
+    if (funded) throw new SourceError('refused', 'Synthetic current free-access guard rejected funded account');
+    admitted++;
+    return { text: 'free answer' };
+  });
+  const value = pool([guarded, fallback]);
+  expect((await value.complete({ ...request, userMessages: ['first'] }, AbortSignal.timeout(1000))).text).toBe('free answer');
+  funded = true;
+  expect((await value.complete({ ...request, userMessages: ['second'] }, AbortSignal.timeout(1000))).text).toBe(fallback.id);
+  expect(guarded.available).toHaveBeenCalledOnce();
+  expect(liveChecks).toBe(2);
+  expect(admitted).toBe(1);
+});
+
+it('prefers measured fast healthy providers for new main tasks and slower reliable idle providers for background workers', async () => {
+  let now = 1000;
+  const fast = source('kilo'), slow = source('numes');
+  fast.complete.mockImplementation(async () => { now += 3000; return { text: fast.id }; });
+  slow.complete.mockImplementation(async () => { now += 60000; return { text: slow.id }; });
+  const value = pool([fast, slow], () => now, () => .8);
+  for (const item of [fast, slow]) for (let i = 0; i < 2; i++) {
+    await value.complete({ ...request, model: item.id, userMessages: [`sample-${item.id}-${i}`] }, AbortSignal.timeout(1000));
+  }
+  expect((await value.complete({ ...request, userMessages: ['interactive turn'] }, AbortSignal.timeout(1000))).text).toBe(fast.id);
+  const onSource = vi.fn();
+  expect((await value.complete({ ...request, worker: { id: 'synthetic-worker', onSource } }, AbortSignal.timeout(1000))).text).toBe(slow.id);
+  expect(onSource).toHaveBeenCalledWith(slow.id);
+});
+
+it('never dispatches a cold provider whose metadata denies admission', async () => {
+  const denied = source('kilo'), allowed = source('livekit');
+  denied.available.mockResolvedValue(false);
+  const value = pool([denied, allowed]);
+  expect((await value.complete(request, AbortSignal.timeout(1000))).text).toBe(allowed.id);
+  expect(denied.complete).not.toHaveBeenCalled();
+});
+
+it('keeps selected dispatch guards active after cached availability expires or setup changes', async () => {
+  let now = 1000;
+  const one = source('kilo'), two = source('livekit'), value = pool([one, two], () => now);
+  await value.models();
+  value.pending.add(one.id);
+  expect((await value.complete({ ...request, userMessages: ['setup in progress'] }, AbortSignal.timeout(1000))).text).toBe(two.id);
+  expect(one.complete).not.toHaveBeenCalled();
+  value.pending.delete(one.id); now += 31000;
+  one.available.mockResolvedValue(false);
+  expect((await value.complete({ ...request, userMessages: ['expired metadata'] }, AbortSignal.timeout(1000))).text).toBe(two.id);
+  expect(one.complete).not.toHaveBeenCalled();
+});
+
+
+it('does not make the main request wait behind a worker reservation when another provider is idle', async () => {
+  const reserved = source('kilo'), idle = source('livekit');
+  let release!: () => void;
+  reserved.complete.mockImplementation(() => new Promise(resolve => { release = () => resolve({ text: reserved.id }); }));
+  const value = pool([reserved, idle]);
+  await value.models();
+  const working = value.complete({ ...request, worker: { id: 'background', onSource: vi.fn() } }, AbortSignal.timeout(2000));
+  try {
+    await vi.waitFor(() => expect(reserved.complete).toHaveBeenCalledOnce());
+    expect((await value.complete({ ...request, userMessages: ['foreground'] }, AbortSignal.timeout(1000))).text).toBe(idle.id);
+    expect(reserved.complete).toHaveBeenCalledOnce();
+  } finally { release(); await working; }
+});
+
+
+it('preserves an existing main task binding while preferring idle capacity for unbound work', async () => {
+  const bound = source('kilo'), idle = source('livekit'), value = pool([bound, idle]);
+  const main = { ...request, userMessages: ['existing task'] };
+  await value.complete(main, AbortSignal.timeout(1000));
+  let release!: () => void;
+  bound.complete.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ text: 'worker' }); }));
+  const working = value.complete({ ...request, worker: { id: 'background', onSource: vi.fn() } }, AbortSignal.timeout(2000));
+  try {
+    await vi.waitFor(() => expect(bound.complete).toHaveBeenCalledTimes(2));
+    expect((await value.complete(main, AbortSignal.timeout(1000))).text).toBe(bound.id);
+    expect(idle.complete).not.toHaveBeenCalled();
+  } finally { release(); await working; }
+});

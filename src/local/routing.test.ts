@@ -300,6 +300,9 @@ it('hands off current persisted Freebuff output when quota is already logged', a
     const legacyRegistry = { ...launchRegistry, adapters: launchRegistry.adapters.map(adapter => adapter.id === 'opencode'
       ? { id: 'freebuff', kind: 'agent' as const, tier: 'stable' as const, weight: 0.5, modalities: ['text' as const], install: 'npm:freebuff' } : adapter) };
     const sources = new Sources([driver, next], { registry: () => legacyRegistry, random: () => 0 });
+    // This test exercises an already-admitted native route's partial handoff,
+    // rather than racing its filesystem admission against a ready mock.
+    await sources.models();
     await sources.complete({ ...request, cwd }, AbortSignal.timeout(2000));
     expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('CURRENT PARTIAL WORK');
   } finally { vi.unstubAllEnvs(); await rm(cwd, { recursive: true, force: true }); }
