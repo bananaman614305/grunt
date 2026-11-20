@@ -486,7 +486,7 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Fikra and Openference in the
+Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Fikra and Openference in the
 experimental tier. Fikra and Openference are temporary offers with expiry guards.
 Free-account eligibility still applies.
 
@@ -594,7 +594,29 @@ validity and requires zero input, output and per-request price. A missing,
 changed or unavailable price blocks inference. The source uses normal Grunt
 cooldowns and fallback. The account's welcome credit is separate from this route.
 
-### Temporary free sources
+### Darus daily free source
+
+Owner qualification on November 20, 2026 passed an attributed Grunt reply, a native function call and a cold request with 201,095 input tokens. This measures usable input on the tested route; its maximum context is not published.
+
+Squire reuses an existing scoped Darus key or signs up one ordinary Free account.
+The adapter pins `darus/deepseek-v4.1-flash-1017-FREE` and checks both the live
+free-model catalog and `/v1/tpd` before every dispatch. The Free tier advertises
+10 million provider-metered TPD tokens daily, 25 requests/minute and one
+concurrent request. Its reset is 07:00 WIB, or 00:00 UTC. These are provider
+accounting units, not a promise about physical model tokens or live capacity.
+
+`Simpan Saldo` / Protect Balance must remain on. Grunt refuses missing, changed
+or inconsistent entitlement metadata, checks a conservative remaining request
+budget, and waits until the next UTC reset after daily exhaustion. It never
+claims check-in or referral rewards, changes to a paid model, or continues
+through a wallet. Unexpected model identity or a model-failover response header
+is rejected. Retention, training and review guarantees remain unknown and are
+included in source-specific grouped consent. Grunt requests complete JSON responses,
+as in the provider’s OpenAI SDK quickstart, with native function calls and usage.
+
+[Darus API documentation](https://gateway.darusalfatah.id/dokumentasi).
+
+## Temporary free sources
 
 Fikra and Openference are included in automatic onboarding through Squire.
 They passed real Grunt text replies, native function calls and cold-context tests
@@ -1118,7 +1140,7 @@ OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
 Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes,
-Gödel Machines, Fikra and Openference forward function tool definitions and return
+Gödel Machines, Darus, Fikra and Openference forward function tool definitions and return
 tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.

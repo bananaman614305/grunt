@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.24] - 2026-11-20
+
+- Add Darus Gateway DeepSeek V4.1 Flash 1017 to automatic Squire setup, workers and maintenance. Verify its daily free allowance and Protect Balance before every request, preserve midnight UTC quota resets, and use native non-streamed responses for tools and token accounting.
+
 ## [0.7.23] - 2026-11-20
 
 - Add live-qualified Fikra and Openference DeepSeek free routes to automatic Squire onboarding, worker routing and daily maintenance. Keep zero-price and expiry checks, skip closed Fikra signups, and accept Squire's normal provider-domain host defaults when reusing keys.
