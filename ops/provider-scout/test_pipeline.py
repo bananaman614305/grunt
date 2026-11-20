@@ -127,6 +127,21 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertFalse(self.root.is_relative_to(self.workspace))
 
+    def test_owner_exclusion_blocks_fresh_and_resumed_release(self):
+        p = self.make()
+        item = {**self.candidate, 'homepage': 'https://freeinference.org'}
+        self.assertEqual(p.process(item), {'status': 'blocked', 'reason': 'owner_excluded'})
+        self.assertEqual(self.calls, [])
+        self.promotion_status = 'deferred'
+        self.assertEqual(p.process(self.candidate)['status'], 'deferred')
+        checkpoint = pipeline._read(self.checkpoint())
+        checkpoint['candidate']['homepage'] = item['homepage']
+        pipeline._write(self.checkpoint(), checkpoint)
+        self.calls.clear()
+        resumed = p.resume_pending()
+        self.assertEqual(resumed[0]['reason'], 'owner_excluded')
+        self.assertEqual(self.calls, [])
+
     def test_released_head_is_idempotent(self):
         supervisor = self.make()
         first = supervisor.process(self.candidate)

@@ -22,6 +22,7 @@ import time
 from urllib.parse import urlsplit
 
 from context_policy import CONTEXT_GUIDANCE, meets_context_requirement
+from owner_policy import initialize_exclusions, owner_exclusion
 from worker import WorkerError, run_agent
 from url_policy import public_url
 
@@ -78,7 +79,7 @@ class CandidateError(ValueError):
 
 
 def candidate_id(candidate):
-    value = [urlsplit(candidate['homepage']).hostname.lower(), candidate['model'].strip().lower()]
+    value = list(discovery_identity(candidate))
     return hashlib.sha256(json.dumps(value).encode()).hexdigest()[:24]
 
 
@@ -144,6 +145,7 @@ def ingest(report, ledger, workspace, smoke=False, diagnostics=None, scope=None)
     if smoke and any(isinstance(item, dict) and item.get('release_request') is not None for item in candidates):
         raise ValueError('Integration budget exceeded')
     updated = json.loads(json.dumps(ledger))
+    canonicalize_ledger(updated, initialize_policy=False)
     stamp = now()
     errors, rows, counts = [], [], {}
     for index, candidate in enumerate(candidates):
@@ -151,13 +153,15 @@ def ingest(report, ledger, workspace, smoke=False, diagnostics=None, scope=None)
             if not isinstance(candidate, dict) or not isinstance(candidate.get('model'), str) or not candidate['model'].strip():
                 raise CandidateError('invalid_candidate_shape')
             key = candidate_id(candidate)
+            if owner_exclusion(candidate, updated):
+                raise CandidateError('owner_excluded')
             counts[key] = counts.get(key, 0) + 1
             status = qualify(candidate, workspace, smoke)
             if scope is not None:
                 review = scope.get(candidate.get('review_id'))
                 if review is None or (key != candidate_id(review) and not (
                     review['model'] == 'unverified'
-                    and urlsplit(candidate['homepage']).hostname == urlsplit(review['homepage']).hostname
+                    and discovery_host(candidate) == discovery_host(review)
                 )):
                     raise CandidateError('outside_qualification_scope')
             rows.append((index, key, {name: value for name, value in candidate.items() if name != 'review_id'}, status))
@@ -170,6 +174,11 @@ def ingest(report, ledger, workspace, smoke=False, diagnostics=None, scope=None)
             errors.append({'row': index, 'code': 'duplicate_candidate_id'})
             continue
         old = updated['candidates'].get(key, {})
+        if scope is not None and not old:
+            reviewed_offer = scope[candidates[index]['review_id']]
+            previous_key = candidate_id(reviewed_offer)
+            if reviewed_offer['model'] == 'unverified' and previous_key != key:
+                old = updated['candidates'].pop(previous_key, {})
         old_request = old.get('release_request')
         request = candidate.get('release_request')
         old_head = old_request.get('head_sha') if isinstance(old_request, dict) else None
@@ -245,6 +254,91 @@ def discovery_host(candidate):
 
 def discovery_identity(candidate):
     return discovery_host(candidate), candidate['model'].strip().casefold()
+
+
+def canonicalize_ledger(ledger, *, initialize_policy=True):
+    """Migrate historical aliases without losing trusted promotion identity."""
+    if initialize_policy:
+        initialize_exclusions(ledger)
+    canonical, moved = {}, {}
+    for old_key, row in ledger.get('candidates', {}).items():
+        key = candidate_id(row)
+        moved[old_key] = key
+        prior = canonical.get(key)
+        if prior is None:
+            canonical[key] = row
+            continue
+        def rank(item):
+            return (item.get('pipeline_status') in ('released', 'publication_pending'), item.get('last_seen', ''))
+        winner, other = (row, prior) if rank(row) > rank(prior) else (prior, row)
+        canonical[key] = {**other, **winner}
+        stamps = [item['first_seen'] for item in (prior, row) if item.get('first_seen')]
+        if stamps:
+            canonical[key]['first_seen'] = min(stamps)
+        canonical[key]['sightings'] = max(prior.get('sightings', 0), row.get('sightings', 0))
+    # A generic discovery placeholder is superseded only when a single exact
+    # model on that provider resolves it. Distinct exact models stay distinct.
+    for key, row in list(canonical.items()):
+        if row['model'] != 'unverified' or row.get('release_request'):
+            continue
+        matches = [(k, value) for k, value in canonical.items() if value['model'] != 'unverified'
+                   and discovery_host(value) == discovery_host(row)]
+        if len(matches) == 1:
+            exact_key, exact = matches[0]
+            if row.get('first_seen'):
+                exact['first_seen'] = min(exact.get('first_seen', row['first_seen']), row['first_seen'])
+            moved[key] = exact_key
+            del canonical[key]
+    ledger['candidates'] = canonical
+    def destination(key):
+        while key in moved and moved[key] != key:
+            key = moved[key]
+        return key
+    pending = {}
+    for key, row in ledger.get('discovery_pending', {}).items():
+        canonical_key = destination(key) if key in moved else candidate_id(row)
+        resolved = canonical.get(canonical_key)
+        if row['model'] == 'unverified' and resolved and resolved['model'] != 'unverified':
+            row = {**resolved, **{name: value for name, value in row.items()
+                                 if name.startswith('qualification_')}, 'review_id': row.get('review_id') or review_id(row)}
+        pending[canonical_key] = row
+    if pending or 'discovery_pending' in ledger:
+        ledger['discovery_pending'] = pending
+    for review in ledger.get('reviewed_discoveries', {}).values():
+        if review.get('candidate_id') in moved:
+            review['candidate_id'] = destination(review['candidate_id'])
+
+
+def qualification_retry(item, attempts, stamp):
+    # Human gates must not generate repeated signups or approval requests.
+    if item['status'] == 'needs_approval' or item.get('setup_status') == 'approval_needed' or re.search(
+            r'captcha|human[_ -]verification', item.get('reason', ''), re.I):
+        return None
+    hours = min(168, (24 if item['status'] == 'setup_blocked' else 12) * 2 ** min(4, attempts - 1))
+    return (dt.datetime.fromisoformat(stamp.replace('Z', '+00:00')) + dt.timedelta(hours=hours)).isoformat()
+
+
+def resume_unfinished_reviews(ledger):
+    """Repair old completed-review records which silently discarded unfinished work."""
+    pending = ledger.setdefault('discovery_pending', {})
+    latest = {}
+    for review, receipt in ledger.get('reviewed_discoveries', {}).items():
+        key = receipt.get('candidate_id')
+        if key not in latest or str(receipt.get('at', '')) > str(latest[key][1].get('at', '')):
+            latest[key] = (review, receipt)
+    for review, receipt in latest.values():
+        key = receipt.get('candidate_id'); item = ledger['candidates'].get(key)
+        if (not item or key in pending or owner_exclusion(item, ledger)
+                or item.get('status') not in ('researched', 'setup_blocked', 'integration_pending', 'needs_approval')
+                or item.get('pipeline_status') in ('released', 'publication_pending')):
+            continue
+        stamp = receipt.get('at')
+        try:
+            retry = qualification_retry(item, 1, stamp)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        pending[key] = {**item, 'review_id': review, 'qualification_attempts': 1,
+                        'qualification_retry_at': retry, 'qualification_last_reviewed_at': stamp}
 
 
 def query_history(queries):
@@ -334,6 +428,12 @@ def qualification_scope(ledger):
     scope = {}
     for key, item in ledger.get('discovery_pending', {}).items():
         try:
+            if owner_exclusion(item, ledger):
+                continue
+            if 'qualification_retry_at' in item:
+                retry = item['qualification_retry_at']
+                if retry is None or dt.datetime.fromisoformat(retry.replace('Z', '+00:00')) > dt.datetime.fromisoformat(now()):
+                    continue
             review = item.get('review_id') or review_id(item)
         except (AttributeError, ValueError, TypeError, KeyError):
             continue
@@ -353,12 +453,22 @@ def finish_reviews(updated, raw_report, scope, diagnostics):
         key, item = scope[review]
         if key in pending:
             del pending[key]
+            result_key = candidate_id(row)
+            result = updated['candidates'][result_key]
+            stamp = now()
             reviewed[review] = {'at': now(), 'candidate_id': candidate_id(row),
                                 **({'change_evidence': item['change_evidence']} if 'change_evidence' in item else {})}
+            if result['status'] in ('researched', 'setup_blocked', 'integration_pending', 'needs_approval'):
+                attempts = min(1000, item.get('qualification_attempts', 0) + 1)
+                pending[result_key] = {**result, 'review_id': review, 'qualification_attempts': attempts,
+                                       'qualification_last_reviewed_at': stamp,
+                                       'qualification_retry_at': qualification_retry(result, attempts, stamp)}
 
 
 def discover_lanes(root, directory, workspace, registry, ledger, schema, config, deadline, lock_fd):
+    canonicalize_ledger(ledger)
     archive_history(root, ledger)
+    resume_unfinished_reviews(ledger)
     prior = ledger.get('search_queries', {})
     known = {}
     for value in ledger['candidates'].values():
@@ -382,6 +492,7 @@ def discover_lanes(root, directory, workspace, registry, ledger, schema, config,
     ]
     context = json.dumps({'date_utc': now(), 'prior_search_queries': list(prior.values())[-160:],
                           'previous_offers': already_examined,
+                          'owner_exclusions': ledger['owner_exclusions'],
                           'installed_sources': [row['id'] for row in registry.get('adapters', [])]})
     discovery_schema = with_review_field(schema, 'change_evidence',
                                          {'anyOf': [CHANGE_EVIDENCE, {'type': 'null'}]}, required=True)
@@ -448,7 +559,7 @@ def discover_lanes(root, directory, workspace, registry, ledger, schema, config,
         if report['web_search_used'] is not True or len(lane_queries) < 2:
             status[lane].update(status='failed', reason='invalid_discovery_queries')
             continue
-        new = repeated_offers = changed = invalid = 0
+        new = repeated_offers = changed = invalid = excluded = 0
         for candidate in report['candidates']:
             try:
                 verdict = qualify(candidate, workspace, smoke=True)
@@ -457,6 +568,9 @@ def discover_lanes(root, directory, workspace, registry, ledger, schema, config,
                     raise CandidateError('invalid_discovery_candidate')
             except (ValueError, TypeError, AttributeError, KeyError):
                 invalid += 1
+                continue
+            if owner_exclusion(candidate, ledger):
+                excluded += 1
                 continue
             if key in seen or lane != 'gateways' and key[0] in GATEWAY_HOSTS:
                 repeated_offers += 1
@@ -487,7 +601,7 @@ def discover_lanes(root, directory, workspace, registry, ledger, schema, config,
             for key, query in lane_queries.items():
                 queries.setdefault(key, query)
         status[lane].update(new_offers=new, changed_offers=changed, duplicate_offers=repeated_offers,
-                            repeat_queries=sum(key in prior for key in lane_queries))
+                            owner_excluded_offers=excluded, repeat_queries=sum(key in prior for key in lane_queries))
     completed = sum(row['status'] != 'failed' for row in status.values())
     discovery = {'status': ('completed' if completed == len(DISCOVERY_LANES) and
                             all(row['status'] == 'completed' for row in status.values())
@@ -524,6 +638,26 @@ def cron_text(existing, command):
             finish += 1
         existing = existing[:start] + existing[finish:]
     return existing.rstrip('\n') + '\n\n' + BEGIN + '\n# 09:00 and 21:00 America/New_York (server timezone)\n0 9,21 * * * ' + command + '\n' + END + '\n'
+
+
+def owner_decision(root, homepage, *, excluded, reason):
+    """Only the trusted operator CLI can change a persistent opt-out."""
+    if not public_url(homepage) or not isinstance(reason, str) or not 0 < len(reason.strip()) <= 500:
+        raise ValueError('An operator decision needs a public homepage and concise reason')
+    private_directory(root)
+    descriptor = os.open(root / 'run.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        ledger = load(root / 'ledger.json', {'version': 1, 'candidates': {}}, max_bytes=None)
+        canonicalize_ledger(ledger)
+        host = discovery_host({'homepage': homepage})
+        ledger['owner_exclusions'][host] = {'excluded': excluded, 'reason': reason.strip(), 'at': now()}
+        if excluded:
+            for key, item in list(ledger.get('discovery_pending', {}).items()):
+                if owner_exclusion(item, ledger):
+                    del ledger['discovery_pending'][key]
+        atomic(root / 'ledger.json', ledger)
+    return {'host': host, 'excluded': excluded}
 
 
 def install(root, source_repo):
@@ -623,7 +757,7 @@ def queue_candidates(ledger, report, raw_report, diagnostics, resumed):
             pass
     resumed_heads = {row.get('head_sha') for row in resumed if row.get('head_sha')}
     return [item for key, item in ledger['candidates'].items()
-            if key not in barred and item['status'] == 'ready_for_review'
+            if key not in barred and not owner_exclusion(item, ledger) and item['status'] == 'ready_for_review'
             and item.get('pipeline_status') == 'deferred' and item.get('release_request')
             and item['release_request'].get('head_sha') not in resumed_heads]
 
@@ -742,6 +876,8 @@ def run(root, smoke=False):
         atomic(root / 'last-run.json', state)
         # The trusted ledger aggregates multiple already bounded worker reports.
         ledger = load(root / 'ledger.json', {'version': 1, 'candidates': {}}, max_bytes=None)
+        canonicalize_ledger(ledger)
+        resume_unfinished_reviews(ledger)
         pipeline = None
         snapshot = None
         output = directory / 'result.json'
@@ -754,7 +890,8 @@ def run(root, smoke=False):
         try:
             if not smoke and config.get('release_enabled') is True:
                 from pipeline import Pipeline
-                pipeline = Pipeline({**config, '_deadline_monotonic': deadline, '_lock_fd': lock.fileno()}, root)
+                pipeline = Pipeline({**config, '_deadline_monotonic': deadline, '_lock_fd': lock.fileno(),
+                                     '_owner_exclusions': ledger['owner_exclusions']}, root)
                 refresh_source_main(config['source_repo'], deadline - time.monotonic())
                 state['pipeline_results'] = pipeline.resume_pending(reserve_seconds=DISCOVERY_SECONDS + QUALIFICATION_SECONDS)
                 for result in state['pipeline_results']:
@@ -801,6 +938,7 @@ def run(root, smoke=False):
                            'repository': REPOSITORY, 'workspace': str(workspace), 'curated_registry': registry,
                            'base_sha': snapshot['base_sha'] if snapshot else None,
                            'new_or_changed_offers': offers, 'current_discovery_queries': discovery['search_queries'],
+                           'owner_exclusions': ledger['owner_exclusions'],
                            'release_enabled': bool(pipeline)}
                 policy = (Path(__file__).parent / 'POLICY.md').read_text()
                 policy += ('\n\nDiscovery already ran in parallel. Qualify only the supplied new or changed offers. '
@@ -809,7 +947,13 @@ def run(root, smoke=False):
                            'Use the supplied canonical homepage. Copy its review_id to every result for that offer, '
                            'including rejected, unchanged, or unverified results. Leave unexamined offers out. '
                            'For an unverified model, you may provide the exact model on the same provider hostname. '
-                           'Do not repeat broad discovery queries or reopen other historical decisions.')
+                           'Do not repeat broad discovery queries or reopen other historical decisions. '
+                           'Offers with qualification_attempts are unfinished work, not fresh discovery: resume their '
+                           'specific remaining verification using prior evidence and existing Squire sessions. '
+                           'Do not stop solely because a public page omits an allowance or usable-input figure: '
+                           'when the documented free signup is eligible, inspect the account/model metadata through '
+                           'Squire and perform bounded synthetic qualification under the policy. Never infer free '
+                           'billing, override spending guards, or generate large probes without a verified free entitlement.')
                 prompt = policy + '\n\n## This run\n' + json.dumps(context, indent=2)
                 duration = min(QUALIFICATION_SECONDS, deadline - time.monotonic())
                 if duration <= 0:
@@ -908,15 +1052,26 @@ def main():
     check = commands.add_parser('run')
     check.add_argument('--smoke', action='store_true', help='Live research only; no signups, inference or code changes')
     commands.add_parser('status')
+    for name in ('exclude', 'allow'):
+        decision = commands.add_parser(name, help='Record an explicit owner exclusion or reopening')
+        decision.add_argument('--homepage', required=True)
+        decision.add_argument('--reason', required=True)
     options = parser.parse_args()
     if options.command == 'install':
         install(options.state, options.source_repo)
         return 0
+    if options.command in ('exclude', 'allow'):
+        print(json.dumps(owner_decision(options.state, options.homepage,
+                                        excluded=options.command == 'exclude', reason=options.reason)))
+        return 0
     if options.command == 'status':
         ledger = load(options.state / 'ledger.json', {'candidates': {}}, max_bytes=None)
+        canonicalize_ledger(ledger)
         print(json.dumps({'schedule': '09:00 and 21:00 America/New_York', 'last_run': load(options.state / 'last-run.json'),
                           'candidates': len(ledger['candidates']), 'unique_searches': len(ledger.get('search_queries', {})),
-                          'pending_reviews': len(ledger.get('discovery_pending', {}))}, indent=2))
+                          'pending_reviews': len(ledger.get('discovery_pending', {})),
+                          'due_reviews': len(qualification_scope(ledger)),
+                          'owner_exclusions': ledger['owner_exclusions']}, indent=2))
         return 0
     try:
         return run(options.state, options.smoke)

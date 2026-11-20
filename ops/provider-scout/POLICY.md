@@ -85,8 +85,15 @@ Deduplicate existing provider/model offers. Revisit rejected offers only when
 their terms/models materially change; explain what changed. Prior decisions:
 Freebuff is disabled pending reliability/terms review; APInex lost its recurring
 card-free entitlement; Routeway's 42K offer is too small; Gonka's SMS gate,
-Free Inference's academic eligibility, Cloudflare's previously reviewed Qwen,
+Cloudflare's previously reviewed Qwen,
 and M3.1 do not qualify. A future materially different offer can be researched.
+
+Explicit owner exclusions are a separate authority in the supplied
+`owner_exclusions` record. They currently include FreeInference, AxForge, CCode,
+Meldport and Packet.ai. Skip those providers even when their advertising,
+models, eligibility or earlier rejection reason changes. Only a new explicit
+operator decision can reopen an excluded provider. Do not reinterpret a changed
+academic-affiliation rule as permission to resume a cancelled submission.
 
 Skip offers with a verified recurring free allowance of 1 million tokens
 (or provider-metered equivalent) per 30 days or less. DeepCodex is rejected
@@ -95,10 +102,25 @@ materially increases.
 
 Qualify only offers supplied by the supervisor. Each offer includes a review
 identifier and its prior decision where available. A previously reviewed offer
-requires a documented substantive change before another qualification. Return
+requires a documented substantive change before fresh research. Supplied offers
+with `qualification_attempts` instead represent unfinished qualification:
+resume the recorded remaining step, reuse existing Squire sessions and account
+access, and do not repeat the broad search or signup from scratch. Return
 the review identifier after evaluating the evidence, even when the offer is
 still blocked. Leave unexamined offers queued. Reuse pending Squire workflows
 when a new review covers them.
+
+An unpublished numeric allowance or input limit is verification work, not a
+reason to permanently discard an otherwise promising free route. Once a
+documented card-free signup and the provider's terms permit qualification,
+use scoped Squire access to inspect the account's actual free entitlement,
+model/input limits, reset and zero-spend controls. Then implement and test the
+guarded adapter in isolation when the requirements are met. Mark unadvertised
+numbers unknown; never invent them or substitute a nominal context window for
+usable input. Do not make large-context or inference probes until the free
+entitlement and spending guard are verified. A CAPTCHA, manual authentication
+step or material consent decision remains a genuine hold, not an automated
+retry loop.
 
 ## Established qualification pipeline
 
