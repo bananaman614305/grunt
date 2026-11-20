@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-20
+
+- Coordinate a main coding agent and two independent workers with explicit ownership, dependency deferral and local capacity awareness. Preserve completed coordination summaries after shared batch eviction.
+- Retain private workload-specific routing performance and repeated-failure backoff across restarts while preserving provider reset hints, quota waits and fresh access checks.
+- Deduplicate unchanged verification jobs and reuse recent successful scoped results. Keep required release checks in isolated host execution with authenticated receipts bound to exact inputs and artifacts.
+- Save private task checkpoints and focused handoffs with requirement retention, revision checks and stale-file detection. Reconcile pending work before repeating it.
+- Add an opt-in trusted publication host: independent Grunt review, authenticated checks, exact tested-tree merging and verified GitHub Pages artifacts. Keep signing keys, credentials and release authority outside worker mounts.
+
 ## [0.8.4] - 2026-11-20
 
 - Keep Openference's existing stream-validation cooldown while retaining redacted failure-stage diagnostics. Preserve HTTP header status on transport events without activating the router's separate short-cooldown policy for invalid tool replies.
