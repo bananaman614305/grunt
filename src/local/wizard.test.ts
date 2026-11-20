@@ -313,6 +313,13 @@ it('connects Kilo and restarts the daemon before reporting success', async () =>
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.connectHarnesses).not.toHaveBeenCalled();
 });
+it('adds the anonymous Reflection route without asking for a Squire login', async () => {
+  const actions = stubActions([]);
+  await wizard('reflection-beam', actions);
+  expect(actions.connectSquire).not.toHaveBeenCalled();
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['reflection-beam'], { dataSharingApproved: sharingIds() });
+  expect(actions.checkFallbackServices).toHaveBeenCalledWith(expect.any(Array), expect.any(Number), expect.any(Function), ['reflection-beam']);
+});
 it('does not restart the daemon or report success when Kilo setup fails', async () => {
   const actions = stubActions([]);
   actions.setup.mockRejectedValue(new Error('No Kilo access'));

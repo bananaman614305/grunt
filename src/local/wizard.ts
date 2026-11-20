@@ -467,7 +467,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const port = await setupPort();
     if (add) {
       table.set('source', add, 'connecting');
-      if (add !== 'nous') { await connect(); console.log('✓ Trusty Squire: signed in'); }
+      if (!['nous', 'reflection-beam'].includes(add)) { await connect(); console.log('✓ Trusty Squire: signed in'); }
       table.start();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved,
