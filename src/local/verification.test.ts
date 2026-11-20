@@ -29,6 +29,16 @@ it('fingerprints tracked/untracked contents, revision and ignored artifacts with
   await rm(join(f.project, 'new.txt')); await writeFile(join(f.project, 'dist/index.html'), 'changed-page'); expect((await captureVerificationState(f.project, ['dist'])).artifactDigest).not.toBe(first.artifactDigest);
   await writeFile(join(f.project, 'dist/index.html'), 'verified-page'); f.git('commit', '--allow-empty', '-qm', 'new revision'); expect((await captureVerificationState(f.project, ['dist'])).head).not.toBe(first.head);
 });
+it('ignores local Git replacement objects when binding the actual HEAD and source state', async () => {
+  const f = await fixture(), base = await captureVerificationState(f.project, ['dist']);
+  await writeFile(join(f.project, 'source.txt'), 'candidate bytes'); f.git('add', 'source.txt'); f.git('commit', '-qm', 'candidate'); const candidate = f.git('rev-parse', 'HEAD');
+  f.git('checkout', '--detach', base.head); f.git('replace', base.head, candidate);
+  // Ordinary Git now compares against the substituted candidate tree. Capture must use the real base.
+  expect(f.git('status', '--porcelain')).not.toBe('');
+  expect(await captureVerificationState(f.project, ['dist'])).toEqual(base);
+  await writeFile(join(f.project, 'source.txt'), 'candidate bytes'); f.git('add', 'source.txt'); expect(f.git('status', '--porcelain')).toBe('');
+  const changed = await captureVerificationState(f.project, ['dist']); expect(changed.head).toBe(base.head); expect(changed.clean).toBe(false); expect(changed.treeDigest).not.toBe(base.treeDigest);
+});
 it('rejects symlinks and artifact traversal rather than reading outside the project', async () => {
   const f = await fixture(); await symlink('/etc/passwd', join(f.project, 'leak')); await expect(captureVerificationState(f.project)).rejects.toThrow('regular file');
   await rm(join(f.project, 'leak')); await expect(captureVerificationState(f.project, ['../outside'])).rejects.toThrow('relative');

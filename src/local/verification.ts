@@ -59,7 +59,7 @@ export function verificationBinding(input: VerificationInput, command: string, t
 export const verificationCommandDigest = (command: string) => digest(command);
 export function verificationEnvironmentDigest(env: NodeJS.ProcessEnv) { return digest({ env, node: process.version, executable: process.execPath, platform: process.platform, arch: process.arch }); }
 function git(cwd: string, args: string[]) {
-  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' };
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' };
   const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args], { cwd, env, timeout: 5000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8', windowsHide: true });
   if (result.error || result.status !== 0) throw new Error('Verification needs bounded readable Git metadata.');
   return result.stdout;
