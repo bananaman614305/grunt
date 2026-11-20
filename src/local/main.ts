@@ -105,7 +105,13 @@ export function configure(env = process.env, registry: () => Registry = () => bu
       delete numes.model;
       return numes;
     });
-    return { ...current, adapters: [...adapters, ...enabledOptIns] };
+    return { ...current, adapters: [...adapters, ...enabledOptIns.map(adapter => {
+      const published = current.adapters.find(item => item.id === adapter.id);
+      return { ...adapter,
+        ...(published?.fit !== undefined ? { fit: published.fit } : {}),
+        ...(published?.status !== undefined ? { status: published.status } : {}),
+        ...(published?.expires !== undefined ? { expires: published.expires } : {}) };
+    })] };
   };
   const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))
     ? { registry: routingRegistry, localOptIns } : undefined;
@@ -113,7 +119,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     const source = registered.find(source => source.id === id);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
-    return !routing && knownAdapters.has(id) ? new RegistrySource(consent, routingRegistry) : consent;
+    return !routing && (knownAdapters.has(id) || localOptIns.has(id)) ? new RegistrySource(consent, routingRegistry) : consent;
   };
   const sources = new Sources(ids.map(build), routing, disabledAdapters);
   sources.setWorkerRegistry(routingRegistry, localOptIns);
@@ -169,13 +175,14 @@ export function start(env = process.env) {
     const adapter = registry.adapters.find(adapter => adapter.id === id);
     return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
   };
-  const live = (source: Source) => routable(source.id) && source.available().catch(() => false);
+  const configuredAccess = (source: Source) => routable(source.id) && source.available().catch(() => false);
+  const live = async (source: Source) => await configuredAccess(source) && sources.dispatchEligible(source.id);
   const recovery = new SourceRecovery({ directory,
     candidates: async () => {
       const ids: string[] = [];
       for (const adapter of recommendedAdapters(registry)) {
         const source = sources.sources.find(source => source.id === adapter.id);
-        if (source && routable(source.id) && !await live(source)) ids.push(source.id);
+        if (source && routable(source.id) && !await configuredAccess(source)) ids.push(source.id);
       }
       return ids;
     },
@@ -190,7 +197,6 @@ export function start(env = process.env) {
       const [harness] = await detectHarnesses();
       return harness ? signupHarness(harness, port) : undefined;
     },
-    busy: async () => !!await readSetupSession(directory).catch(() => undefined),
     notify: console.error });
   sources.setRecovery(() => recovery.trigger());
   let published: string | undefined;

@@ -170,3 +170,9 @@ it('accepts the scout fields and ranks great before possible before weight, neve
     expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...base, ...bad }] })).toThrow('Invalid adapter registry');
   }
 });
+
+it.each([{ fit: ['poor'] }, { status: ['inactive'] }, { fit: {} }, { status: 1 }])('rejects non-string scout enums: %j', fields => {
+  const registry = structuredClone(bundledRegistry);
+  Object.assign(registry.adapters[0]!, fields);
+  expect(() => validateRegistry(registry)).toThrow('Invalid adapter registry');
+});

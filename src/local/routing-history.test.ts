@@ -72,7 +72,10 @@ it('uses finite escalating cooldowns for repeated identical failures and resets 
     now = value.cooldown('kilo')!.until + 1;
   }
   failing.complete.mockResolvedValue({ text: 'recovered' });
-  await value.complete({ ...request, model: 'kilo', userMessages: ['recover'] }, AbortSignal.timeout(1000));
+  await expect(value.complete({ ...request, model: 'kilo', userMessages: ['recover'] }, AbortSignal.timeout(1000))).rejects.toThrow();
+  expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
+  value.verified('kilo');
+  await value.complete({ ...request, model: 'kilo', userMessages: ['verified recovery'] }, AbortSignal.timeout(1000));
   failing.complete.mockRejectedValue(new SourceError('upstream', 'PRIVATE_ERROR', undefined, undefined, { failureReason: 'response_json' }));
   value = router([failing, fallback], status, () => now);
   await value.complete({ ...request, userMessages: ['failure after real recovery'] }, AbortSignal.timeout(1000));

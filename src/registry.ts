@@ -46,8 +46,8 @@ export function validateRegistry(value: unknown): Registry {
       || (a.model !== undefined && (typeof a.model !== 'string' || !a.model.trim()))
       || (a.models !== undefined && (a.id !== 'opencode' || a.model !== undefined || !Array.isArray(a.models) || !a.models.length || a.models.length > 20
         || a.models.some(model => typeof model !== 'string' || !model.trim()) || new Set(a.models).size !== a.models.length))) return fail();
-    if (a.fit !== undefined && !['great', 'possible', 'poor'].includes(String(a.fit))
-      || a.status !== undefined && !['active', 'expiring', 'inactive'].includes(String(a.status))
+    if (a.fit !== undefined && (typeof a.fit !== 'string' || !['great', 'possible', 'poor'].includes(a.fit))
+      || a.status !== undefined && (typeof a.status !== 'string' || !['active', 'expiring', 'inactive'].includes(a.status))
       || a.expires !== undefined && (typeof a.expires !== 'string' || !/^\d{4}-\d\d-\d\d$/.test(a.expires) || !Number.isFinite(Date.parse(a.expires)))) return fail();
     if (a.signup !== undefined) {
       if (typeof a.signup !== 'string') return fail();

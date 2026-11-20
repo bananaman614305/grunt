@@ -55,8 +55,8 @@ no new service.
   time instead.
 - **Retirement.** On the **5th consecutive identical failure**, each within
   6 hours of the last, the route is retired. Quota failures never count
-  toward this. A retired route gets no automatic traffic (a request that names
-  it explicitly may still try it), doesn't count as open (so the next pass
+  toward this. A retired route gets no traffic, including explicitly named
+  requests, doesn't count as open (so the next pass
   opens a replacement), and isn't re-signed up.
 - **Return.** Three things bring a retired route back:
   - a successful reply, which includes the daily access check (that check

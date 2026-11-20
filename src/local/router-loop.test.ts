@@ -8,6 +8,7 @@ import { configure } from './main.js';
 import { recordDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import { MAX_OPEN_ROUTES, SourceRecovery } from './recovery.js';
 import { RETIRE_AFTER_FAILURES } from './routing.js';
+import { beginSetupSession } from './setup-session.js';
 import { SourceError, Sources } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import type { SignupAgent } from './signup-mcp.js';
@@ -126,9 +127,13 @@ it('moves last pass\'s failed signups to the end so they cannot starve the rest'
 
 it('skips the pass while foreground setup owns signups', async () => {
   const run = pass(['zro'], 0, () => true);
-  const recovery = new SourceRecovery({ directory: await directory(), ...run.options, busy: async () => true });
-  recovery.trigger(); await settle(); await recovery.close();
-  expect(run.setup).not.toHaveBeenCalled();
+  const dir = await directory();
+  const session = await beginSetupSession(dir, ['zro']);
+  const recovery = new SourceRecovery({ directory: dir, ...run.options });
+  try {
+    recovery.trigger(); await settle(); await recovery.close();
+    expect(run.setup).not.toHaveBeenCalled();
+  } finally { await session.close(); }
 });
 
 it('hot-adds a newly listed shipped adapter in the automatic pool, not in a manual source list', async () => {
@@ -160,4 +165,50 @@ it('lets a background signup use the driver instead of dropping for a foreground
   expect(agent).toHaveBeenCalledOnce();
   expect(result.dropped).toEqual([]);
   await squire.close();
+});
+
+it('excludes a benched route from usable capacity even when its catalog stays available', async () => {
+  const routes = pool(() => new SourceError('upstream', 'Synthetic outage'));
+  try {
+    expect(routes.sources.dispatchEligible('opencode')).toBe(true);
+    await routes.sources.complete(ask('bench driver'), AbortSignal.timeout(1000));
+    expect(await routes.a.available()).toBe(true);
+    expect(routes.sources.dispatchEligible('opencode')).toBe(false);
+    expect(routes.sources.dispatchEligible('kilo')).toBe(true);
+    routes.advance(15 * 60 * 1000 + 1);
+    expect(routes.sources.dispatchEligible('opencode')).toBe(true);
+    routes.sources.pending.add('opencode');
+    expect(routes.sources.dispatchEligible('opencode')).toBe(false);
+  } finally { await routes.sources.close(); }
+});
+
+it.each(['inactive', 'expiring', 'expired'] as const)('blocks %s scout routes in fixed chains and setup probes', async state => {
+  const { RegistrySource } = await import('./registry-source.js');
+  const adapter = bundledRegistry.adapters.find(adapter => adapter.id === 'zro')!;
+  const listed: Registry = { ...bundledRegistry, adapters: [{ ...adapter,
+    ...(state === 'expired' ? { expires: '2000-01-01' } : { status: state }) }] };
+  for (const fixed of [false, true]) {
+    const a = source('zro');
+    const sources = new Sources([fixed ? new RegistrySource(a, () => listed) : a], fixed ? undefined : { registry: () => listed });
+    try {
+      await expect(sources.complete({ ...ask('retired'), model: 'zro' }, AbortSignal.timeout(1000))).rejects.toThrow();
+      sources.pending.add('zro'); sources.verifying.add('zro');
+      await expect(sources.complete({ ...ask('probe retired'), model: 'zro' }, AbortSignal.timeout(1000))).rejects.toThrow();
+      expect(a.complete).not.toHaveBeenCalled();
+    } finally { await sources.close(); }
+  }
+});
+
+it('preserves published scout retirement for a local opt-in', async () => {
+  const listed: Registry = { ...bundledRegistry, adapters: [...bundledRegistry.adapters, {
+    id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'],
+    install: 'builtin:antseed-vikey', status: 'inactive'
+  }] };
+  const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_OPT_IN_SOURCES: 'antseed-vikey' }, () => listed);
+  const opted = sources.sources.find(source => source.id === 'antseed-vikey')!;
+  const complete = vi.spyOn(opted, 'complete').mockResolvedValue({ text: 'must not answer' });
+  try {
+    await expect(sources.complete({ ...ask('opt-in'), model: 'antseed-vikey' }, AbortSignal.timeout(1000))).rejects.toThrow();
+    expect(complete).not.toHaveBeenCalled();
+  } finally { await sources.close(); }
 });

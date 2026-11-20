@@ -68,7 +68,7 @@ export class StickyRouter {
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
   private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }
-  listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id); }
+  listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {
     return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
   }
@@ -157,8 +157,7 @@ export class StickyRouter {
           }
           if (this.options.pending?.has(source.id)) { skip(source.id, 'pending_setup'); continue; }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
-          // A caller that names a retired route explicitly may still try it.
-          if (this.retired(source.id) && source.id !== request.model) { skip(source.id, 'cooldown'); continue; }
+          if (this.retired(source.id)) { skip(source.id, 'cooldown'); continue; }
           const until = this.cooldown(source.id)?.until;
           if (until !== undefined && until > this.now()) {
             if (Number.isFinite(until)) retryTimes.push(until);
@@ -229,7 +228,7 @@ export class StickyRouter {
           // race onto the same idle provider.
           const liveAdapter = this.options.registry().adapters.find(adapter => adapter.id === selected.source.id
             && this.registered(adapter.id) && adapter.modalities.includes('text') && (!request.imageInput || adapter.modalities.includes('image')));
-          if (!liveAdapter || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
+          if (!liveAdapter || scoutRetired(liveAdapter, this.now()) || this.retired(selected.source.id) || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
             || worker && (observation.isBusy(selected.source.id) || !this.workerAdapter(liveAdapter))) continue;
           task.source = selected.source.id;
           task.switched = switched;

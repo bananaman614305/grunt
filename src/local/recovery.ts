@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { beginSetupSession } from './setup-session.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import type { SignupAgent } from './signup-mcp.js';
@@ -17,8 +18,6 @@ export interface RecoveryOptions {
   open: () => Promise<number>;
   // A fallback operator when an open tool-capable route can drive signups.
   driver?: () => Promise<SignupAgent | undefined>;
-  // Foreground setup owns signups while it runs.
-  busy?: () => Promise<boolean>;
   notify?: (line: string) => void;
   setup?: typeof setupFallbacks;
 }
@@ -43,30 +42,36 @@ export class SourceRecovery {
   }
   private async recover(): Promise<void> {
     const notify = this.options.notify ?? console.error;
-    if (await this.options.busy?.()) return;
-    const candidates = [...await this.options.candidates()];
-    const approved = new Set(await readDataSharingConsent(this.options.directory, candidates.filter(requiresDataSharing)));
-    const eligible = candidates.filter(id => !requiresDataSharing(id) || approved.has(id));
-    // A signup that failed last pass goes last, so it cannot starve the others.
-    const ordered = [...eligible.filter(id => !this.failedLastPass.has(id)), ...eligible.filter(id => this.failedLastPass.has(id))];
-    const failed = new Set<string>();
-    let attempts = 0;
-    for (const id of ordered) {
-      if (this.abort.signal.aborted || attempts >= MAX_OPEN_ROUTES || await this.options.open() >= MAX_OPEN_ROUTES) break;
-      attempts++;
-      // Re-checked per signup: the first route that opens drives the rest.
-      const agent = await this.options.driver?.();
-      notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
-      const outcome = await (this.options.setup ?? setupFallbacks)({
-        directory: this.options.directory, adapters: [id], background: true, notify, signal: this.abort.signal,
-        ...(agent ? { agent } : {}),
-        run: async (binary, args, interactive) => {
-          if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
-          await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal: this.abort.signal });
-        },
-      }).catch(() => ({ unavailable: [id] }));
-      if (outcome.unavailable.includes(id)) failed.add(id);
-    }
-    this.failedLastPass = failed;
+    const session = await beginSetupSession(this.options.directory, []).catch(() => undefined);
+    if (!session) return;
+    const signal = AbortSignal.any([this.abort.signal, session.signal]);
+    try {
+      signal.throwIfAborted();
+      const candidates = [...await this.options.candidates()];
+      const approved = new Set(await readDataSharingConsent(this.options.directory, candidates.filter(requiresDataSharing)));
+      const eligible = candidates.filter(id => !requiresDataSharing(id) || approved.has(id));
+      // A signup that failed last pass goes last, so it cannot starve the others.
+      const ordered = [...eligible.filter(id => !this.failedLastPass.has(id)), ...eligible.filter(id => this.failedLastPass.has(id))];
+      const failed = new Set<string>();
+      let attempts = 0;
+      for (const id of ordered) {
+        if (signal.aborted || attempts >= MAX_OPEN_ROUTES || await this.options.open() >= MAX_OPEN_ROUTES) break;
+        attempts++;
+        // Re-checked per signup: the first route that opens drives the rest.
+        const agent = await this.options.driver?.();
+        signal.throwIfAborted();
+        notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
+        const outcome = await (this.options.setup ?? setupFallbacks)({
+          directory: this.options.directory, adapters: [id], background: true, notify, signal,
+          ...(agent ? { agent } : {}),
+          run: async (binary, args, interactive) => {
+            if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
+            await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal });
+          },
+        }).catch(() => ({ unavailable: [id] }));
+        if (outcome.unavailable.includes(id)) failed.add(id);
+      }
+      this.failedLastPass = failed;
+    } finally { await session.close(); }
   }
 }

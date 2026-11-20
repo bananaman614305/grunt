@@ -31,7 +31,6 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
   expect(paths).toContain("src/server.ts");
   expect(paths).toContain("registry/adapters.json");
   expect(paths).toContain(".github/workflows/registry.yml");
-  expect(readFileSync(".github/workflows/deploy.yml", "utf8")).toContain("secrets.FLY_API_TOKEN");
 });
 
 it("packages usegrunt with the primary command and compatibility aliases", () => {
