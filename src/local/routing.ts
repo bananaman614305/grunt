@@ -67,6 +67,30 @@ export class StickyRouter {
     if (persisted && (until === undefined || persisted.until >= until)) return { until: persisted.until, code: persisted.code };
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
+  async recordFailure(id: string, failure: SourceError) {
+    if (!this.registered(id) || failure.code === 'cancelled') return;
+    let until: number;
+    if (failure.code === 'quota') {
+      const seconds = failure.retryAfter ?? 3600;
+      until = (await this.observation.failureBackoff(id, failure, seconds, false)).until;
+    }
+    else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
+    else {
+      const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
+      const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
+        && Number.isInteger(status) && status >= 500 && status < 600
+        && retry !== undefined && Number.isFinite(retry) && retry >= 0;
+      // A reply that arrived but held an invalid function call is a bad
+      // sample, not an outage; bench the source only briefly.
+      const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
+      const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
+        : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
+      until = (await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint)).until;
+    }
+    this.barAt.set(id, this.observation.routingBackoff(id)?.at ?? this.now());
+    this.bars.set(id, until); this.barFailures.set(id, this.observation.routingBackoff(id)?.code ?? failure.code);
+  }
+
   private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }
   listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {
@@ -244,26 +268,7 @@ export class StickyRouter {
           const failure = error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
-          let until: number;
-          if (failure.code === 'quota') {
-            const seconds = failure.retryAfter ?? 3600;
-            until = (await observation.failureBackoff(selected.source.id, failure, seconds, false)).until;
-          }
-          else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
-          else {
-            const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
-            const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
-              && Number.isInteger(status) && status >= 500 && status < 600
-              && retry !== undefined && Number.isFinite(retry) && retry >= 0;
-            // A reply that arrived but held an invalid function call is a bad
-            // sample, not an outage; bench the source only briefly.
-            const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
-            const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
-              : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
-            until = (await observation.failureBackoff(selected.source.id, failure, seconds, !hasUpstreamHint)).until;
-          }
-          this.barAt.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.at ?? this.now());
-          this.bars.set(selected.source.id, until); this.barFailures.set(selected.source.id, this.observation.routingBackoff(selected.source.id)?.code ?? failure.code); task.switched = true;
+          await this.recordFailure(selected.source.id, failure); task.switched = true;
         }
       }
     } finally {

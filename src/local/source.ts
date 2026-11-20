@@ -1,4 +1,5 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
+import { knownAdapters } from '../registry.js';
 import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
 import type { SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
@@ -93,6 +94,7 @@ export class Sources {
   // One routed call to one source, with the first-output deadline. A failure
   // (not a cancellation) is logged and reported to the source.
   private attempt = async (source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> => {
+    if (this.retired(source.id)) throw new SourceError('not_installed', `${source.id} routing is retired`);
     const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s) => this.firstOutput(source, r, s) };
     try { return await this.observation.complete(timed, request, signal); }
     catch (error) {
@@ -313,6 +315,8 @@ export class Sources {
       return completion;
     }
     if (this.router) return this.router.complete(request, signal);
+    await this.observation.refreshRoutingHistory();
+    signal.throwIfAborted();
     const known = this.sources.some(s => s.id === request.model);
     // Older harness configurations may still request the former model name.
     const automatic = request.model === 'grunt' || request.model === 'milo' || !known;
@@ -323,7 +327,8 @@ export class Sources {
     let attempted = false;
     for (const source of candidates) {
       signal.throwIfAborted();
-      if (this.pending.has(source.id)) continue;
+      if (this.pending.has(source.id) || this.retired(source.id)
+        || this.workerRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)) continue;
       if (source.acceptsRequest && !source.acceptsRequest(request)) {
         if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
         continue;
@@ -341,6 +346,7 @@ export class Sources {
           throw error;
         }
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
+        await this.workerRouter?.recordFailure(source.id, last);
         console.error(`grunt source: ${source.id} failed (${last.code}) for model ${this.safeModel(request.model)}`);
         // Only dots and OpenCode deadlines and first-output deadlines fall through; caller cancellation stops above.
         if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode' && !cutoffs.has(last)) throw last;

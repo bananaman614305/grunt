@@ -333,3 +333,70 @@ it('keeps retirement visible in status and model listings after the cooldown end
     expect(projected().state).toBe('ready');
   } finally { await routes.sources.close(); }
 });
+
+it.each(['main', 'worker'] as const)('shares retirement from %s failures across mixed-pool request paths', async failingPath => {
+  let now = Date.parse('2026-11-20T00:00:00Z');
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const failing = source('kilo', () => new SourceError('upstream', 'Synthetic outage'));
+  const custom = source('freellmapi');
+  const listed: Registry = { ...bundledRegistry, adapters: [bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!] };
+  const sources = new Sources([failing, custom]);
+  sources.setWorkerRegistry(() => listed);
+  try {
+    for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
+      const request = ask(`failure ${i}`, true);
+      if (failingPath === 'worker') {
+        await expect(sources.complete({ ...request, worker: { id: `worker-${i}`, onSource: () => {} } }, AbortSignal.timeout(1000))).rejects.toThrow();
+      } else {
+        await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'freellmapi done' });
+      }
+      now += 2 * 60 * 60 * 1000 + 1;
+    }
+    expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
+    expect(sources.retired('kilo')).toBe(true);
+    await expect(sources.complete(ask('automatic after retirement'), AbortSignal.timeout(1000))).resolves.toEqual({ text: 'freellmapi done' });
+    await expect(sources.complete({ ...ask('explicit after retirement'), model: 'kilo' }, AbortSignal.timeout(1000))).rejects.toThrow();
+    expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
+    sources.unretire(['kilo']);
+    vi.mocked(failing.complete).mockResolvedValueOnce({ text: 'recovered' });
+    await expect(sources.complete({ ...ask('revived'), model: 'kilo' }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'recovered' });
+  } finally { await sources.close(); }
+});
+
+it.each(['boot', 'hot-add', 'explicit', 'receipt'] as const)('distinguishes %s enrollment from opt-in authority after registry removal', async enrollment => {
+  const { RegistrySource } = await import('./registry-source.js');
+  for (const mixed of [false, true]) for (const adapter of localOptInAdapters) {
+    const dir = await directory();
+    const base: Registry = { ...bundledRegistry, adapters: [bundledRegistry.adapters.find(adapter => adapter.id === 'opencode')!] };
+    let current = enrollment === 'hot-add' ? base : { ...base, adapters: [...base.adapters, adapter] };
+    const managed = mixed || enrollment === 'receipt';
+    const configured = ['opencode', ...(mixed ? ['freellmapi'] : [])];
+    const env = { GRUNT_CONFIG_DIR: dir,
+      ...(managed ? { GRUNT_SOURCES: configured.join(','), GRUNT_DAEMON: '1' } : {}),
+      ...(enrollment === 'explicit' ? { GRUNT_OPT_IN_SOURCES: adapter.id } : {}) };
+    if (managed) {
+      const { writeAutomaticPool } = await import('./automatic-pool.js');
+      await writeAutomaticPool(dir, configured, [...configured, ...(enrollment === 'receipt' ? [adapter.id] : [])]);
+    }
+    const sources = configure(env, () => current);
+    try {
+      current = { ...base, adapters: [...base.adapters, adapter] };
+      sources.adopt(current);
+      const wrapped = sources.sources.find(source => source.id === adapter.id)!;
+      const delegate = wrapped instanceof RegistrySource ? wrapped.source : wrapped;
+      vi.spyOn(delegate, 'available').mockResolvedValue(true);
+      const completed = vi.spyOn(delegate, 'complete').mockResolvedValue({ text: 'synthetic response' });
+      const request = { ...ask('registry removal'), model: adapter.id };
+      await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'synthetic response' });
+      current = base;
+      sources.adopt(current);
+      if (enrollment === 'explicit' || enrollment === 'receipt') {
+        await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'synthetic response' });
+        expect(completed).toHaveBeenCalledTimes(2);
+      } else {
+        await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toThrow();
+        expect(completed).toHaveBeenCalledOnce();
+      }
+    } finally { await sources.close(); }
+  }
+});

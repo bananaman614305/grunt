@@ -16,7 +16,7 @@ afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.spli
 it('adds newly curated sources only for the matching managed service anchor', async () => {
   const path = await directory();
   await writeAutomaticPool(path, configured);
-  expect(automaticPoolSelection(path, configured, curated, true)).toEqual({ sources: curated, automatic: true });
+  expect(automaticPoolSelection(path, configured, curated, true)).toEqual({ sources: curated, automatic: true, explicit: configured });
   expect(automaticPoolSelection(path, configured, curated, false)).toEqual({ sources: configured, automatic: false });
   expect(automaticPoolSelection(path, ['kilo'], curated, true).sources).toEqual(['kilo']);
   expect(await readFile(join(path, AUTOMATIC_POOL_FILE), 'utf8')).not.toMatch(/token|consent|key|grant|approved/);

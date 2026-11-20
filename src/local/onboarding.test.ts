@@ -2,6 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { recordDataSharingConsent } from './data-sharing.js';
+import type { SignupAgent } from './signup-mcp.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { withTerminal } from './terminal.js';
 import { BrowserSquire } from './setup.js';
@@ -145,4 +147,33 @@ it('shares terminal ownership between privileged installers and provider confirm
   expect(order).toEqual(['sudo']);
   hold.resolve(); await Promise.all([installer, verification]);
   expect(order).toEqual(['sudo', 'sudo done', 'confirm kilo']);
+});
+
+it('forwards acquisition cancellation to the owned signup operator', async () => {
+  const dir = await directory();
+  await recordDataSharingConsent(dir, ['numes']);
+  const controller = new AbortController();
+  const release = deferred();
+  const agent = vi.fn<SignupAgent>(async () => { await release.promise; });
+  vi.spyOn(BrowserSquire.prototype, 'call').mockImplementation(async name => name === 'operate_drive'
+    ? { status: 'low_confidence', session_id: 'owned-numes', options: {} } : {});
+  const pending = setupFallbacks({ directory: dir, adapters: ['numes'], background: true, acquire: true,
+    signal: controller.signal, agent, notify: () => {}, connect: async () => {}, run: async () => {},
+    setupProvider: async (_notify, _providers, options) => {
+      await options?.connect?.();
+      const squire = options!.squire as BrowserSquire;
+      const client = (squire as unknown as { client: { listTools(): Promise<unknown> } }).client;
+      vi.spyOn(client, 'listTools').mockResolvedValue({ tools: [] });
+      await squire.signup('numes', 'https://numes.ai/dashboard', 'Complete the free signup');
+    }
+  });
+  const settled = pending.then(() => undefined, error => error);
+  try {
+    await vi.waitFor(() => expect(agent).toHaveBeenCalledOnce());
+    const signal = agent.mock.calls[0]![0].signal;
+    controller.abort(new Error('Acquisition stopped'));
+    expect(signal.aborted).toBe(true);
+    release.resolve();
+    expect(await settled).toBeInstanceOf(Error);
+  } finally { controller.abort(); release.resolve(); await settled; }
 });

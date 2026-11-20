@@ -78,7 +78,7 @@ export async function setupFallbacks(options: {
   // Fallback operator for an owned background browser (the router's driver).
   agent?: SignupAgent;
 }) {
-  const squire = options.squire ?? new BrowserSquire({ background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}) });
+  const squire = options.squire ?? new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}) });
   const owned = squire instanceof BrowserSquire && !options.squire;
   const reuseOnly = options.background === true && options.acquire !== true;
   const requested = [...new Set(options.adapters ?? ['opencode'])];

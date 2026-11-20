@@ -19,7 +19,7 @@ const serialized = (serviceSources: readonly string[], selectedSources: readonly
 
 // This receipt changes source discovery only. It never grants provider access,
 // copies credentials or substitutes for a provider's current consent receipt.
-export function automaticPoolSelection(directory: string, configured: readonly string[], curated: readonly string[], managed: boolean): { sources: string[]; automatic: boolean } {
+export function automaticPoolSelection(directory: string, configured: readonly string[], curated: readonly string[], managed: boolean): { sources: string[]; automatic: boolean; explicit?: string[] } {
   if (!managed) return { sources: [...configured], automatic: false };
   let fd: number | undefined;
   try {
@@ -33,7 +33,7 @@ export function automaticPoolSelection(directory: string, configured: readonly s
     if (value.selectedSources !== undefined && !selected(value.selectedSources)) return { sources: [...configured], automatic: false };
     // Setup may explicitly add a supported source outside the curated pool.
     // Keep that selection even when the owned service still has its old env.
-    return { sources: [...new Set([...configured, ...(value.selectedSources ?? []), ...curated])], automatic: true };
+    return { sources: [...new Set([...configured, ...(value.selectedSources ?? []), ...curated])], automatic: true, explicit: [...new Set([...configured, ...(value.selectedSources ?? [])])] };
   } catch { return { sources: [...configured], automatic: false }; }
   finally { if (fd !== undefined) closeSync(fd); }
 }

@@ -83,7 +83,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
   const curated = registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1')
-    : { sources: curated, automatic: true };
+    : { sources: curated, automatic: true, explicit: [] };
   const configured = selection.sources;
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
     .filter(id => localOptInAdapters.some(adapter => adapter.id === id) || id === 'reflection-beam');
@@ -91,7 +91,8 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   if (numesModel !== undefined && (!deepSeekFlash || ids.length !== 1 || ids[0] !== 'numes')) {
     throw new Error('The Numes qualification model requires the exact Numes-only source');
   }
-  const enabledOptIns = localOptInAdapters.filter(adapter => ids.includes(adapter.id));
+  const explicit = new Set([...(selection.explicit ?? declared ?? []), ...optedIn]);
+  const enabledOptIns = localOptInAdapters.filter(adapter => explicit.has(adapter.id));
   const localOptIns = new Set(enabledOptIns.map(adapter => adapter.id));
   const routingRegistry = () => {
     const current = registry();
@@ -120,8 +121,6 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     }
     if (!source && id === 'reflection-beam') source = new Kilo({ directory: configDir(env), reflectionBeam: true });
     if (source && !registered.includes(source)) registered.push(source);
-    const optIn = localOptInAdapters.find(adapter => adapter.id === id);
-    if (optIn && !localOptIns.has(id)) { enabledOptIns.push(optIn); localOptIns.add(id); }
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
     return !routing && (knownAdapters.has(id) || localOptIns.has(id)) ? new RegistrySource(consent, routingRegistry) : consent;
