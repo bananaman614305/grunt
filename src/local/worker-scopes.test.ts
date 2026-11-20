@@ -25,7 +25,7 @@ it('requires a caller-created private project proof before authorizing any proje
 it('issues an opaque revocable lease and removes only the validated proof', async () => {
   const scopes = new WorkerScopes(), root = await project(), { challenge, lease } = await registered(scopes, root);
   expect(lease.token).toMatch(/^[a-f0-9]{64}$/);
-  expect(await scopes.resolve(lease.token)).toEqual({ projectRoot: root });
+  expect(await scopes.resolve(lease.token)).toEqual({ projectRoot: root, projectIdentity: expect.stringMatching(/^[a-f0-9]{64}$/) });
   await expect(readFile(join(root, challenge.fileName))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(scopes.revoke(lease.token)).toBe(true);
   expect(await scopes.resolve(lease.token)).toBeUndefined();
@@ -85,4 +85,17 @@ it('bounds registrations and releases expired entries', async () => {
   await expect(scopes.challenge(root)).rejects.toMatchObject({ code: 'busy' });
   now += 21; await expect(scopes.challenge(root)).resolves.toHaveProperty('challengeId');
   scopes.close(); await expect(scopes.challenge(root)).resolves.toHaveProperty('challengeId');
+});
+
+it('keeps the directory identity stable across leases and distinguishes a replacement at the same path', async () => {
+  const scopes = new WorkerScopes(), root = await project(), original = join(root, 'project');
+  await mkdir(original);
+  const first = await registered(scopes, original), second = await registered(scopes, original);
+  const before = await scopes.resolve(first.lease.token);
+  expect(await scopes.resolve(second.lease.token)).toEqual(before);
+  await rename(original, join(root, 'previous')); await mkdir(original);
+  const replacement = await registered(scopes, original), after = await scopes.resolve(replacement.lease.token);
+  expect(after?.projectRoot).toBe(before?.projectRoot);
+  expect(after?.projectIdentity).not.toBe(before?.projectIdentity);
+  expect(await scopes.resolve(first.lease.token)).toBeUndefined();
 });

@@ -8,7 +8,7 @@ const forbidden = new Set(['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.config
 const idPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const tokenPattern = /^[a-f0-9]{64}$/;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-export interface WorkerProjectScope { projectRoot: string }
+export interface WorkerProjectScope { projectRoot: string; projectIdentity: string }
 interface Challenge extends WorkerProjectScope { fileName: string; nonce: string; expiresAt: number; device: number; inode: number }
 interface Lease extends WorkerProjectScope { expiresAt: number; device: number; inode: number }
 
@@ -47,7 +47,8 @@ export class WorkerScopes {
       device = info.dev; inode = info.ino;
     } catch { throw new WorkerScopeError('invalid_workspace'); }
     const challengeId = randomUUID(), fileName = `.grunt-workspace-${challengeId}.proof`, nonce = randomBytes(32).toString('hex');
-    this.challenges.set(challengeId, { projectRoot, fileName, nonce, device, inode, expiresAt: this.now() + (this.options.challengeMs ?? 60000) });
+    const projectIdentity = hash(`${device}:${inode}`);
+    this.challenges.set(challengeId, { projectRoot, projectIdentity, fileName, nonce, device, inode, expiresAt: this.now() + (this.options.challengeMs ?? 60000) });
     return { challengeId, fileName, nonce };
   }
   async register(id: unknown) {
@@ -76,7 +77,7 @@ export class WorkerScopes {
     } catch { throw new WorkerScopeError('permission_denied'); }
     finally { await handle?.close(); }
     const token = randomBytes(32).toString('hex'), expiresAt = this.now() + (this.options.leaseMs ?? 24 * 60 * 60 * 1000);
-    this.leases.set(hash(token), { projectRoot: challenge.projectRoot, device: challenge.device, inode: challenge.inode, expiresAt });
+    this.leases.set(hash(token), { projectRoot: challenge.projectRoot, projectIdentity: challenge.projectIdentity, device: challenge.device, inode: challenge.inode, expiresAt });
     return { token, expiresAt };
   }
   async resolve(token: unknown): Promise<WorkerProjectScope | undefined> {
@@ -88,7 +89,7 @@ export class WorkerScopes {
       const info = await lstat(lease.projectRoot);
       if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== lease.device || info.ino !== lease.inode
         || await realpath(lease.projectRoot) !== lease.projectRoot) return;
-      return { projectRoot: lease.projectRoot };
+      return { projectRoot: lease.projectRoot, projectIdentity: lease.projectIdentity };
     } catch { return; }
   }
   revoke(token: unknown) {
@@ -97,6 +98,6 @@ export class WorkerScopes {
   close() { this.challenges.clear(); this.leases.clear(); }
 }
 
-export function scopeContains(scope: WorkerProjectScope, projectRoot: string) {
-  return relative(scope.projectRoot, projectRoot) === '';
+export function scopeContains(scope: WorkerProjectScope, other: WorkerProjectScope) {
+  return relative(scope.projectRoot, other.projectRoot) === '' && scope.projectIdentity === other.projectIdentity;
 }
