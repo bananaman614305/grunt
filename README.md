@@ -135,6 +135,8 @@ Numes uses `z-ai/glm-5.3-flash:free` and a dedicated Squire key with a $0 spendi
 
 CrowLLM is an optional source connected with `npx usegrunt add crowllm`. Squire reuses a vaulted key named Grunt Free. The route pins `glm-5.3-flash:free` and verifies zero pricing before every request. It skips paid models and account welcome credit. Free capacity and request limits are unpublished. Context capacity and a live tool response remain unverified, so CrowLLM is outside default onboarding. [CrowLLM free model](https://crowllm.com/models/glm-5.3-flash:free)
 
+Darus Gateway uses the pinned `darus/deepseek-v4.1-flash-1017-FREE` route. Its Free tier advertises 10 million provider-metered tokens daily, resetting at 00:00 UTC. Each request verifies the free catalog entry, current daily allowance and Protect Balance setting, so exhaustion cannot continue through the wallet. See the [Darus reference](docs/reference.md#darus-daily-free-source).
+
 Fikra and Openference are included in automatic Squire onboarding for their temporary free DeepSeek V4.1 Flash offers. Both passed live Grunt reply, native-tool and 200K-input checks. Every request verifies the exact free alias and zero pricing; Fikra also checks its live shared-budget gate. Closed promotions stop routing without paid fallback, and Fikra signup does not start when its gate is closed. See the [temporary-source reference](docs/reference.md#temporary-free-sources).
 
 

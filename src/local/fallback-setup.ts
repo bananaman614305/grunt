@@ -201,6 +201,13 @@ export async function setupFallbacks(options: {
         failedSetup('zro', error);
         options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
+      darus: async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['darus'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('darus', error);
+        options.notify('Darus protected free setup is pending. Other routes remain available.');
+      } },
       fikra: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['fikra'], { squire: squire as SetupSquire, directory: options.directory,
           connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });

@@ -51,6 +51,8 @@ const policies: Readonly<Record<string, QuotaPolicy>> = {
     { amount: 50, unit: 'requests', period: 'day', scope: 'account' }],
     detail: 'These are the published new-account defaults. Model overrides and account tier can differ. The successful daily quota renews at 00:00 UTC.',
     documentation: 'https://kenari.id/en/docs/rate-limits' },
+  darus: { refill: 'utc-daily', limits: [{ amount: 10000000, unit: 'tokens', period: 'day', scope: 'account' }, { amount: 25, unit: 'requests', period: 'minute', scope: 'account' }],
+    detail: 'Free tier resets at 00:00 UTC (07:00 WIB), with one concurrent request. Grunt requires the exact -FREE model and live protectBalance=true; it stops rather than spending wallet funds. TPM is unpublished.', documentation: 'https://gateway.darusalfatah.id/dokumentasi' },
   fikra: { refill: 'provider-reported', limits: [{ amount: 1000, unit: 'requests', period: 'minute', scope: 'account' }, { amount: 100000, unit: 'requests', period: 'day', scope: 'account' }],
     detail: 'Temporary shared free window, not recurring tokens. The live gate can expire earlier than the public November 25 date or close when its shared budget is exhausted. No TPM/TPD cap is advertised for the exact free alias.', documentation: 'https://fikraapi.co.ke/free-deepseek-api' },
   openference: { refill: 'provider-reported', detail: 'Temporary DeepSeek free alias through December 31, 2026 UTC. Numeric daily and concurrency allowances are unpublished. Daily exhaustion reports resets_at; concurrent-request limits clear when a request finishes. No paid fallback.', documentation: 'https://openference.com/free-ai-api' },
