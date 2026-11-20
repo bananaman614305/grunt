@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.26] - 2026-11-20
+
+- Keep Kilo usable after switching providers that reuse tool-call IDs in separate completed turns. Normalize those historical IDs without changing their results, and distinguish tool schema errors from malformed or incomplete tool histories in diagnostics.
+
 ## [0.7.25] - 2026-11-20
 
 - Explain local Kilo request-size, body and tool-schema refusals in diagnostic traces, and keep Clixad wallet checks read-only instead of claiming rewards.

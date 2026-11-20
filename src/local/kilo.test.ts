@@ -101,7 +101,7 @@ it('rejects invalid schemas and uncorrelated results before any request', async 
   expect(f.fetcher).not.toHaveBeenCalled();
 });
 it.each([
-  ['request_tools', () => ({ ...request(), tools: [{ ...tool, function: { ...tool.function, parameters: { type: 'imaginary' } } }] })],
+  ['request_tool_schema', () => ({ ...request(), tools: [{ ...tool, function: { ...tool.function, parameters: { type: 'imaginary' } } }] })],
   ['request_tools', () => ({ ...request(), messages: [{ role: 'tool', content: 'private uncorrelated result', tool_call_id: 'invented' }] })],
   ['request_body', () => ({ ...request(), maxTokens: 0 })],
   ['request_body', () => ({ ...request(), imageInput: true })],
@@ -131,6 +131,61 @@ it('coalesces Responses parallel calls and preserves both correlated results on 
     { role: 'assistant', content: '', tool_calls: [{ ...call, id: 'a' }, { ...call, id: 'b' }] },
     { role: 'tool', content: 'result-a', tool_call_id: 'a' }, { role: 'tool', content: 'result-b', tool_call_id: 'b' }
   ]);
+});
+it('remaps a reused historical call ID only after its results completed, without mutating the request', async () => {
+  let sent: ModelRequest['messages'] = []; const f = fixture({ infer: init => { sent = JSON.parse(String(init?.body)).messages; return Response.json(result()); } });
+  // Metadata-only reproduction: separately completed turns reuse one call ID.
+  const payload = { ...request(), messages: [
+    { role: 'user', content: 'synthetic context' },
+    { role: 'assistant', content: '', tool_calls: [call] },
+    { role: 'tool', content: 'first synthetic result', tool_call_id: call.id },
+    { role: 'assistant', content: '', tool_calls: [{ ...call, id: 'other_call' }] },
+    { role: 'tool', content: 'other synthetic result', tool_call_id: 'other_call' },
+    { role: 'assistant', content: '', tool_calls: [call] },
+    { role: 'tool', content: 'second synthetic result', tool_call_id: call.id },
+    { role: 'user', content: 'continue' }
+  ] };
+  const before = structuredClone(payload);
+  await expect(f.source.complete(payload, new AbortController().signal)).resolves.toMatchObject({ text: 'Hello.' });
+  expect(payload).toEqual(before);
+  expect(sent[1]!.tool_calls![0]!.id).toBe(call.id);
+  const repeatedId = sent[5]!.tool_calls![0]!.id;
+  expect(repeatedId).not.toBe(call.id); expect(repeatedId).not.toBe('other_call');
+  expect(sent[2]).toEqual({ role: 'tool', content: 'first synthetic result', tool_call_id: call.id });
+  expect(sent[6]).toEqual({ role: 'tool', content: 'second synthetic result', tool_call_id: repeatedId });
+});
+it('reserves future original IDs and rejects responses reusing remapped history IDs', async () => {
+  const payload = { ...request(), tools: [tool], messages: [
+    { role: 'assistant', content: '', tool_calls: [call] },
+    { role: 'tool', content: 'synthetic result one', tool_call_id: call.id },
+    { role: 'assistant', content: '', tool_calls: [call] },
+    { role: 'tool', content: 'synthetic result two', tool_call_id: call.id },
+    { role: 'assistant', content: '', tool_calls: [{ ...call, id: 'grunt_call_1' }] },
+    { role: 'tool', content: 'synthetic result three', tool_call_id: 'grunt_call_1' }
+  ] };
+  const sent: ModelRequest['messages'][] = [];
+  const f = fixture({ infer: init => {
+    const messages: ModelRequest['messages'] = JSON.parse(String(init?.body)).messages; sent.push(messages);
+    return Response.json(result({ choices: [{ message: { content: null, tool_calls: [{ ...call, id: messages[2]!.tool_calls![0]!.id }] } }] }));
+  } });
+  await expect(f.source.complete(payload, new AbortController().signal)).rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_tools' } });
+  expect(sent).toHaveLength(2); // Existing single malformed-call retry also remains guarded.
+  expect(sent[0]![2]!.tool_calls![0]!.id).toBe('grunt_call_2');
+  expect(sent[0]![3]!.tool_call_id).toBe('grunt_call_2');
+  expect(sent[0]![4]!.tool_calls![0]!.id).toBe('grunt_call_1');
+  expect(sent[1]).toEqual(sent[0]);
+});
+it.each([
+  [{ role: 'assistant', content: '', tool_calls: [call, call] }, { role: 'tool', content: 'synthetic result', tool_call_id: call.id }],
+  [{ role: 'assistant', content: '', tool_calls: [call] }, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', content: 'synthetic result', tool_call_id: call.id }],
+  [{ role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', content: 'synthetic result', tool_call_id: 'orphan' }],
+  [{ role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', content: 'synthetic result', tool_call_id: call.id }, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', content: 'synthetic orphan', tool_call_id: 'grunt_call_1' }],
+  [{ role: 'assistant', content: '', tool_calls: [call] }],
+  [{ role: 'assistant', content: '', tool_calls: [{ ...call, function: { ...call.function, arguments: 'null' } }] }, { role: 'tool', content: 'synthetic result', tool_call_id: call.id }]
+])('still rejects ambiguous pending IDs and missing/orphan results before the network (%j)', async (...messages) => {
+  const f = fixture();
+  await expect(f.source.complete({ ...request(), messages }, new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_tools' } });
+  expect(f.fetcher).not.toHaveBeenCalled();
 });
 it('maps free rate limits to a bounded retry without trying another model or endpoint', async () => {
   const f = fixture({ infer: () => new Response('private upstream body', { status: 429, headers: { 'retry-after': '13' } }) });

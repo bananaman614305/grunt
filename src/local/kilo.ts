@@ -21,7 +21,7 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
     })]);
   } finally { if (abort) signal.removeEventListener('abort', abort); }
 }
-function requestFailure(message: string, failureReason: 'request_body' | 'request_tools' | 'request_size') {
+function requestFailure(message: string, failureReason: 'request_body' | 'request_tools' | 'request_tool_schema' | 'request_size') {
   // No transport or HTTP status: these checks reject locally before dispatch.
   return new SourceError('refused', message, undefined, undefined, { failureReason });
 }
@@ -79,8 +79,8 @@ export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal
   }
 }
 function conversation(request: ModelRequest) {
+  const messages: ModelRequest['messages'] = [];
   try {
-    const messages: ModelRequest['messages'] = [];
     for (const message of request.messages) {
       const previous = messages.at(-1);
       // Responses expresses parallel calls as separate assistant items.
@@ -89,11 +89,32 @@ function conversation(request: ModelRequest) {
         previous.tool_calls = [...previous.tool_calls, ...message.tool_calls];
       } else messages.push({ ...message });
     }
+    // Some upstream sources reuse call IDs across completed turns. Preserve each
+    // exact pair on this request's native wire without accepting ambiguous IDs.
+    const reserved = new Set(messages.flatMap(message => [...(message.tool_calls?.map(call => call.id) ?? []), ...(message.tool_call_id ? [message.tool_call_id] : [])]));
+    const seen = new Set<string>(), pending = new Map<string, string>(); let serial = 0;
+    for (const message of messages) {
+      if (message.role === 'tool') {
+        const original = message.tool_call_id;
+        if (original && pending.has(original)) { message.tool_call_id = pending.get(original)!; pending.delete(original); }
+      } else if (message.tool_calls?.length) {
+        message.tool_calls = message.tool_calls.map(call => {
+          const original = call.id;
+          if (pending.has(original)) throw new Error('Ambiguous pending tool call ID');
+          let id = original;
+          if (seen.has(original)) { do { id = `grunt_call_${++serial}`; } while (reserved.has(id)); reserved.add(id); }
+          seen.add(original); pending.set(original, id);
+          return { ...call, id };
+        });
+      }
+    }
     new FreebuffTools({ ...request, messages }); // Validate roles and actual correlated results; no JSON bridge or tool execution.
+  } catch { throw requestFailure('Kilo rejected invalid function tools or an uncorrelated tool conversation', 'request_tools'); }
+  try {
     const validators = new Map<string, ValidateFunction>(), ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
     for (const tool of request.tools) { const fn = object(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
     return { messages, validators };
-  } catch { throw requestFailure('Kilo rejected invalid function tools or an uncorrelated tool conversation', 'request_tools'); }
+  } catch { throw requestFailure('Kilo rejected a function tool schema', 'request_tool_schema'); }
 }
 export class Kilo implements Source {
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
@@ -171,7 +192,7 @@ export class Kilo implements Source {
           const call = object(value), fn = object(call.function); let args: unknown;
           try { args = JSON.parse(String(fn.arguments)); } catch { throw fail('upstream', 'Kilo returned invalid function arguments', 'response_tools'); }
           if (call.type !== 'function' || typeof call.id !== 'string' || !call.id || call.id.length > 256 || ids.has(call.id)
-            || request.messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string'
+            || request.messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string'
             || !args || typeof args !== 'object' || Array.isArray(args) || !validators.get(fn.name)?.(args)) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
           ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } });
         }

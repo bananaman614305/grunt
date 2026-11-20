@@ -101,7 +101,8 @@ it('keeps capitalized admin links canonical and restricts admin asset response h
 
 it.each([
   ['request_body', 'Request format rejected'],
-  ['request_tools', 'Tool definitions rejected'],
+  ['request_tools', 'Tool envelope or history rejected'],
+  ['request_tool_schema', 'Tool schema rejected'],
   ['request_size', 'Request exceeds source size limit']
 ])('preserves and displays the bounded %s request refusal reason', (failureReason, label) => {
   expect(sanitizeSafeDiagnosticMetadata({ failureReason, rawBody: 'PRIVATE_PAYLOAD' })).toEqual({ failureReason });
