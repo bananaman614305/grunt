@@ -14,6 +14,7 @@ import type { DiagnosticContext } from './diagnostics.js';
 import type { WorkerPool } from './worker-pool.js';
 import { WorkerScopes, WorkerScopeError } from './worker-scopes.js';
 import { getWorkerCapabilities } from './worker-workspace.js';
+import { WORKER_SNAPSHOT_TRANSPORT } from './worker-transport.js';
 import { validOwnedPath } from './worker-agent.js';
 import type { WorkerInitialFile } from './worker-agent.js';
 type Obj = Record<string, unknown>;
@@ -173,7 +174,8 @@ function parseWorkerSnapshot(input: unknown): WorkerInitialFile[] | undefined {
     const content = Buffer.from(row.content, row.binary ? 'base64' : 'utf8');
     if (row.binary && content.toString('base64') !== row.content) return;
     bytes += content.byteLength;
-    if (bytes > 4 * 1024 * 1024 || row.sha256 && createHash('sha256').update(content).digest('hex') !== row.sha256) return;
+    if (content.byteLength > WORKER_SNAPSHOT_TRANSPORT.maxFileBytes || bytes > WORKER_SNAPSHOT_TRANSPORT.maxSnapshotBytes
+      || row.sha256 && createHash('sha256').update(content).digest('hex') !== row.sha256) return;
     paths.add(row.path);
     files.push({ path: row.path, content: row.content, ...(row.binary === undefined ? {} : { binary: row.binary }), ...(row.sha256 === undefined ? {} : { sha256: row.sha256 as string }) });
   }
@@ -225,7 +227,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       c.header('Cache-Control', 'no-store');
       return c.json(workers.status());
     });
-    app.get('/v1/workers/capabilities', async c => c.json(await getWorkerCapabilities()));
+    app.get('/v1/workers/capabilities', async c => c.json({ ...await getWorkerCapabilities(), snapshotTransport: WORKER_SNAPSHOT_TRANSPORT }));
     app.post('/v1/workers/projects/challenge', smallBody, async c => {
       try {
         const body = object(await c.req.json());
@@ -258,7 +260,14 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       const ok = await workers.discardArtifact(c.req.param('id'), scope);
       return ok ? c.json({ ok }) : c.json({ ok: false, code: 'not_found' }, 404);
     });
-    app.post('/v1/workers/run', bodyLimit({ maxSize: 8 * 1024 * 1024, onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) }), async c => {
+    app.post('/v1/workers/run', async (c, next) => {
+      // Only an already proved project gets the larger complete-snapshot transport.
+      // Revalidate the lease below before authorizing execution; none of these
+      // transport fields grant filesystem or model-selected project authority.
+      const scope = await scopes.resolve(token(c.req.header('authorization')));
+      return bodyLimit({ maxSize: scope ? WORKER_SNAPSHOT_TRANSPORT.maxRequestBytes : 256 * 1024,
+        onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) })(c, next);
+    }, async c => {
       let input: unknown, raw: string;
       try { raw = await c.req.text(); input = JSON.parse(raw); }
       catch { return c.json({ ok: false, code: 'invalid_task' }, 400); }

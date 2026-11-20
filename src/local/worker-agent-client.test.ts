@@ -1,13 +1,15 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AgentWorkerBatches, workerResultView } from './worker-agent-client.js';
+import { WORKER_SNAPSHOT_TRANSPORT } from './worker-transport.js';
+import type { WorkerInitialFile } from './worker-workspace.js';
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-agent-client-')); });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
-function fixture(run?: (request: RequestInit) => Promise<Response>) {
+function fixture(run?: (request: RequestInit) => Promise<Response>, capabilities: Record<string, unknown> = { initialSnapshotRequired: false }) {
   const challengeId = randomUUID(), fileName = `.grunt-workspace-${randomUUID()}.proof`, token = 'a'.repeat(64), nonce = 'b'.repeat(64), jobId = randomUUID();
   const artifact = { id: randomUUID(), complete: true, truncated: false, files: [] };
   const requests: { path: string; request: RequestInit }[] = [];
@@ -20,7 +22,7 @@ function fixture(run?: (request: RequestInit) => Promise<Response>) {
       await rm(join(directory, fileName));
       return Response.json({ token, expiresAt: Date.now() + 86400000 });
     }
-    if (path === '/capabilities') return Response.json({ filesystem: true, commands: true, sandbox: 'bubblewrap', initialSnapshotRequired: false });
+    if (path === '/capabilities') return Response.json({ filesystem: true, commands: true, sandbox: 'bubblewrap', ...capabilities });
     expect(new Headers(request.headers).get('Authorization')).toBe(`Bearer ${token}`);
     if (path === '/run') return run ? run(request) : Response.json({ ok: true, id: jobId, source: 'kilo', text: 'Complete', artifact });
     if (path === '/retained') return Response.json({ retained: [{ id: jobId }] });
@@ -132,5 +134,42 @@ it.each(['network', 'forbidden', 'repeated-invalid-scope'] as const)('does not r
   expect((await client.wait({ batchId: batch.batchId }, new AbortController().signal)).results?.[0]).toMatchObject({ ok: false, code: 'unavailable' });
   expect(calls).toBe(mode === 'repeated-invalid-scope' ? 2 : 1);
   expect(requests.filter(item => item.path === '/projects/register')).toHaveLength(mode === 'repeated-invalid-scope' ? 2 : 1);
+  await client.close();
+});
+
+it('negotiates complete binary and source snapshots above the old raw, file and wire limits without projection', async () => {
+  await mkdir(join(directory, 'assets')); await mkdir(join(directory, 'src'));
+  const data = Buffer.alloc(5 * 1024 * 1024);
+  await writeFile(join(directory, 'assets/a.bin'), data);
+  await writeFile(join(directory, 'assets/b.bin'), data);
+  await writeFile(join(directory, 'src/dependency.ts'), 'export const shared = 42;');
+  const { client, requests } = fixture(undefined, { initialSnapshotRequired: true, snapshotTransport: WORKER_SNAPSHOT_TRANSPORT });
+  const batch = await client.start({ tasks: [{ task: 'Synthetic scoped edit', ownedPaths: ['src/new.ts'] }] });
+  expect((await client.wait({ batchId: batch.batchId }, new AbortController().signal)).results?.[0]).toMatchObject({ ok: true });
+  const request = requests.find(row => row.path === '/run')!;
+  expect(Buffer.byteLength(String(request.request.body))).toBeGreaterThan(8 * 1024 * 1024);
+  const snapshot = JSON.parse(String(request.request.body)).initialSnapshot as WorkerInitialFile[];
+  expect(snapshot.map(file => file.path).sort()).toEqual(['assets/a.bin', 'assets/b.bin', 'src/dependency.ts']);
+  for (const file of snapshot.filter(file => file.binary)) {
+    expect(Buffer.from(file.content, 'base64').equals(data)).toBe(true);
+    expect(file.sha256).toBe(createHash('sha256').update(data).digest('hex'));
+  }
+  expect(snapshot.find(file => file.path === 'src/dependency.ts')?.content).toBe('export const shared = 42;');
+  await client.close();
+});
+
+it('keeps legacy daemon snapshot limits and rejects the complete project before submitting any work', async () => {
+  await writeFile(join(directory, 'large.bin'), Buffer.alloc(5 * 1024 * 1024));
+  const { client, requests } = fixture(undefined, { initialSnapshotRequired: true });
+  await expect(client.start({ tasks: [{ task: 'Synthetic edit', ownedPaths: ['new.txt'] }] })).rejects.toThrow();
+  expect(requests.filter(row => row.path === '/run')).toHaveLength(0);
+  await client.close();
+});
+
+it('checks escaped complete snapshot wire size before sending any task in a batch', async () => {
+  await writeFile(join(directory, 'control.txt'), '\u0001'.repeat(1024));
+  const { client, requests } = fixture(undefined, { initialSnapshotRequired: true, snapshotTransport: { maxSnapshotBytes: 2048, maxFileBytes: 2048, maxRequestBytes: 4096 } });
+  await expect(client.start({ tasks: [{ task: 'Synthetic edit', ownedPaths: ['first.txt'] }, { task: 'Independent edit', ownedPaths: ['second.txt'] }] })).rejects.toThrow('no tasks were submitted');
+  expect(requests.filter(row => row.path === '/run')).toHaveLength(0);
   await client.close();
 });

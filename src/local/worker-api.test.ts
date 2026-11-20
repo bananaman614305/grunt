@@ -8,7 +8,9 @@ import { DiagnosticsStore } from './diagnostics.js';
 import { Sources, answeredBy } from './source.js';
 import { WorkerPool } from './worker-pool.js';
 import { WorkerScopes } from './worker-scopes.js';
+import { WORKER_SNAPSHOT_TRANSPORT } from './worker-transport.js';
 import type { WorkerAgentWorkspace } from './worker-agent.js';
+import * as workerWorkspace from './worker-workspace.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -34,6 +36,15 @@ async function fixture() {
   return { root, project, app, scopes, workers, complete, workspace, createAgentWorkspace, request, register };
 }
 const task = { mode: 'agent', task: 'Edit synthetic file', ownedPaths: ['file.txt'] };
+
+it('advertises complete snapshot limits alongside the trusted sandbox capability', async () => {
+  const f = await fixture();
+  const probe = vi.spyOn(workerWorkspace, 'getWorkerCapabilities').mockResolvedValue({ filesystem: true, commands: false, sandbox: 'filesystem', initialSnapshotRequired: true });
+  try {
+    const response = await f.request('/v1/workers/capabilities');
+    expect(await response.json()).toEqual({ filesystem: true, commands: false, sandbox: 'filesystem', initialSnapshotRequired: true, snapshotTransport: WORKER_SNAPSHOT_TRANSPORT });
+  } finally { probe.mockRestore(); }
+});
 
 it('requires current-project proof and keeps transport scope outside model task', async () => {
   const f = await fixture();
@@ -89,7 +100,7 @@ it('rejects body-supplied cwd, authorization and proposal snapshots', async () =
 it.each([
   [{ path: '../secret', content: '' }], [{ path: 'x', content: 'x', sha256: '0'.repeat(64) }],
   [{ path: 'x', content: '!!!', binary: true }], [{ path: 'x', content: 'AB==', binary: true }], [{ path: 'x', content: '' }, { path: 'x', content: '' }],
-  [{ path: 'x', content: 'x', extra: true }], [{ path: 'x', content: 'x'.repeat(4 * 1024 * 1024 + 1) }]
+  [{ path: 'x', content: 'x', extra: true }], [{ path: 'x', content: 'x'.repeat(WORKER_SNAPSHOT_TRANSPORT.maxFileBytes + 1) }]
 ])('rejects malformed or oversized snapshot before creating a workspace', async snapshot => {
   const f = await fixture(), token = await f.register();
   const result = await f.request('/v1/workers/run', { ...task, initialSnapshot: snapshot }, token);
@@ -146,4 +157,32 @@ it('accepts canonical binary snapshots within decoded byte bounds', async () => 
   const content = Buffer.alloc(4 * 1024 * 1024, 17).toString('base64');
   const result = await f.request('/v1/workers/run', { ...task, initialSnapshot: [{path:'asset.bin',binary:true,content}] }, token);
   expect(result.status).toBe(200); expect(f.createAgentWorkspace).toHaveBeenCalledTimes(1);
+});
+
+it('accepts a complete snapshot above the legacy raw and wire limits only with current project proof', async () => {
+  const f = await fixture(), token = await f.register();
+  const data = Buffer.alloc(5 * 1024 * 1024, 17);
+  const snapshot = ['a.bin', 'b.bin'].map(path => ({ path, content: data.toString('base64'), binary: true, sha256: createHash('sha256').update(data).digest('hex') }));
+  const body = { ...task, initialSnapshot: snapshot };
+  expect(Buffer.byteLength(JSON.stringify(body))).toBeGreaterThan(8 * 1024 * 1024);
+  expect((await f.request('/v1/workers/run', body)).status).toBe(413);
+  expect((await f.request('/v1/workers/run', body, 'f'.repeat(64))).status).toBe(413);
+  expect(f.createAgentWorkspace).not.toHaveBeenCalled();
+  expect((await f.request('/v1/workers/run', body, token)).status).toBe(200);
+  expect(f.createAgentWorkspace.mock.calls[0]?.[0]).toMatchObject({ initialSnapshot: snapshot });
+  await f.workers.close();
+});
+
+it('rejects excessive aggregate decoded snapshot content without creating a partial workspace', async () => {
+  const f = await fixture(), token = await f.register();
+  const content = 'x'.repeat(8 * 1024 * 1024);
+  const snapshot = Array.from({ length: 5 }, (_, i) => ({ path: `${i}.txt`, content }));
+  expect((await f.request('/v1/workers/run', { ...task, initialSnapshot: snapshot }, token)).status).toBe(400);
+  expect(f.createAgentWorkspace).not.toHaveBeenCalled();
+});
+
+it('bounds the authenticated wire body before parsing', async () => {
+  const f = await fixture(), token = await f.register();
+  const response = await f.app.request('http://127.0.0.1:8788/v1/workers/run', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: 'x'.repeat(WORKER_SNAPSHOT_TRANSPORT.maxRequestBytes + 1) });
+  expect(response.status).toBe(413); expect(f.createAgentWorkspace).not.toHaveBeenCalled();
 });

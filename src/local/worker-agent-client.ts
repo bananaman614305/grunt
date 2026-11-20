@@ -8,6 +8,7 @@ import type { WorkerAgentFailureReason } from './worker-agent.js';
 import type { WorkerArtifact, WorkerResult, WorkerTask } from './worker-pool.js';
 import { captureWorkerInitialSnapshot } from './worker-workspace.js';
 import { applyWorkerArtifact } from './worker-integration.js';
+import { workerSnapshotTransport } from './worker-transport.js';
 
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const reasons = new Set(['invalid_workspace', 'agent_unavailable', 'unsupported_sandbox', 'workspace_failed', 'invalid_completion', 'turn_limit', 'tool_limit', 'output_limit', 'context_limit']);
@@ -86,9 +87,9 @@ export class AgentWorkerBatches {
   constructor(private port: number, private projectRoot: string, private fetcher = fetch) {
     if (!isAbsolute(projectRoot)) throw new Error('Agent workers require a trusted absolute project directory.');
   }
-  private async json(path: string, options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal } = {}): Promise<unknown> {
+  private async json(path: string, options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal; maxBodyBytes?: number } = {}): Promise<unknown> {
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
-    if (body && Buffer.byteLength(body) > 8 * 1024 * 1024) throw new Error('Worker request is too large.');
+    if (body && Buffer.byteLength(body) > (options.maxBodyBytes ?? 8 * 1024 * 1024)) throw new Error('Worker request is too large.');
     const signal = options.signal ?? AbortSignal.timeout(10000);
     signal.throwIfAborted();
     const response = await this.fetcher(`http://127.0.0.1:${this.port}/v1/workers${path}`, { redirect: 'error', signal, method: options.method ?? 'GET', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}) }, ...(body ? { body } : {}) });
@@ -111,7 +112,7 @@ export class AgentWorkerBatches {
       return payload;
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   }
-  private async scopedJson(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}) {
+  private async scopedJson(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; maxBodyBytes?: number } = {}) {
     const original = await this.scope();
     try { return await this.json(path, { ...options, token: original.token }); }
     catch (error) {
@@ -165,7 +166,11 @@ export class AgentWorkerBatches {
     const scope = await this.scope(); signal.throwIfAborted();
     const capability = record(await this.json('/capabilities', { signal }));
     if (typeof capability.initialSnapshotRequired !== 'boolean') throw new Error('Update the Grunt daemon to enable scoped workers.');
-    const initialSnapshot = capability.initialSnapshotRequired ? await captureWorkerInitialSnapshot(scope.root, { maxSnapshotBytes: 4 * 1024 * 1024, maxFileBytes: 4 * 1024 * 1024 }, signal) : undefined;
+    const transport = workerSnapshotTransport(capability.snapshotTransport);
+    const initialSnapshot = capability.initialSnapshotRequired ? await captureWorkerInitialSnapshot(scope.root, { maxSnapshotBytes: transport.maxSnapshotBytes, maxFileBytes: transport.maxFileBytes }, signal) : undefined;
+    // Text escaping/base64 plus task metadata can exceed the wire bound even
+    // when decoded files fit. Reject the whole batch before any task is sent.
+    for (const task of tasks) if (Buffer.byteLength(JSON.stringify({ ...task, ...(initialSnapshot ? { initialSnapshot } : {}) })) > transport.maxRequestBytes) throw new Error('Complete worker snapshot exceeds the request transport limit; no tasks were submitted.');
     signal.throwIfAborted();
     if (this.closed) throw new Error('This worker session is closed.');
     if (this.batches.size >= 8) {
@@ -177,7 +182,7 @@ export class AgentWorkerBatches {
     this.batches.set(batchId, batch);
     batch.done = Promise.all(tasks.map(async task => {
       const deadline = AbortSignal.timeout(330000);
-      try { return resultOf(await this.scopedJson('/run', { method: 'POST', body: { ...task, ...(initialSnapshot ? { initialSnapshot } : {}) }, signal: AbortSignal.any([batch.controller.signal, deadline]) })); }
+      try { return resultOf(await this.scopedJson('/run', { method: 'POST', body: { ...task, ...(initialSnapshot ? { initialSnapshot } : {}) }, maxBodyBytes: transport.maxRequestBytes, signal: AbortSignal.any([batch.controller.signal, deadline]) })); }
       catch { return { ok: false as const, code: batch.controller.signal.aborted ? 'cancelled' as const : deadline.aborted ? 'timeout' as const : 'unavailable' as const }; }
     })).then(results => { batch.results = results; });
     return { batchId, state: 'running' as const };
