@@ -7,6 +7,7 @@ import { Kilo, KILO_BEAM, KILO_ORIGIN } from './kilo.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { configure } from './main.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
+import { writeAutomaticPool } from './automatic-pool.js';
 import type { ModelRequest } from './source.js';
 
 const seller = 'e4c4129c86752a2a8d092ddb0eb1c27cc4933c7b';
@@ -20,6 +21,19 @@ const priceHeaders = {
 };
 const req: ModelRequest = { model: 'grunt', cwd: '/tmp', stream: false, maxTokens: 32, messages: [{ role: 'user', content: 'hello' }], tools: [] };
 const signal = new AbortController().signal;
+
+it('reconciles a matching setup-managed source list with curated additions while preserving manual overrides', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-managed-pool-'));
+  await writeAutomaticPool(directory, ['kilo']);
+  const managed = configure({ GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'kilo' });
+  const manual = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'kilo' });
+  const overridden = configure({ GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'opencode' });
+  try {
+    expect(managed.sources.map(source => source.id)).toEqual(expect.arrayContaining(bundledRegistry.adapters.map(adapter => adapter.id)));
+    expect(manual.sources.map(source => source.id)).toEqual(['kilo']);
+    expect(overridden.sources.map(source => source.id)).toEqual(['opencode']);
+  } finally { await managed.close(); await manual.close(); await overridden.close(); await rm(directory, { recursive: true, force: true }); }
+});
 
 it('offers curated Beam by default while keeping unqualified Vikey explicitly selected', async () => {
   const explicit = configure({ GRUNT_SOURCES: 'antseed-vikey,reflection-beam' }), normal = configure({});
