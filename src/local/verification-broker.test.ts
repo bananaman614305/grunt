@@ -184,3 +184,12 @@ it('rejects absent required artifacts both at execution and when authenticating 
   await writeFile(join(path, 'status.json'), JSON.stringify({ ...result, state: 'completed', receipt: undefined }), { mode: 0o600 });
   await expect(f.broker.verifiedReceipt(f.request.id)).rejects.toThrow();
 });
+
+it('disables local replacement objects for every broker clone and checkout', async () => {
+  const bin = join(root, 'bin'); await mkdir(bin);
+  // Synthetic Git shim checks only broker snapshot operations, then delegates to real Git.
+  await writeFile(join(bin, 'git'), `#!${process.execPath}\nconst {spawnSync}=require('node:child_process');\nconst args=process.argv.slice(2);\nif(args.some(a=>a==='clone'||a==='checkout')&&process.env.GIT_NO_REPLACE_OBJECTS!=='1')process.exit(93);\nconst result=spawnSync('/usr/bin/git',args,{stdio:'inherit'});process.exit(result.status??1);\n`, { mode: 0o700 });
+  const previousPath = process.env.PATH; process.env.PATH = bin + ':' + previousPath;
+  try { const f = await fixture(); expect((await f.broker.run(f.request)).state).toBe('completed'); expect(f.run).toHaveBeenCalledTimes(1); }
+  finally { process.env.PATH = previousPath; }
+});

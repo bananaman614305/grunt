@@ -60,7 +60,7 @@ async function keyFile(path: string) {
 }
 async function startTicks(pid: number) { try { return (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ').slice(1).join(') ').split(' ')[19]; } catch { return undefined; } }
 async function ownerAlive(pid: number, ticks?: string) { try { process.kill(pid, 0); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EPERM') return false; } return ticks === undefined || await startTicks(pid) === ticks; }
-const gitEnv = () => ({ PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' });
+const gitEnv = () => ({ PATH: process.env.PATH, HOME: process.env.HOME, GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' });
 async function git(args: string[], cwd?: string) { await execute('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args], { ...(cwd ? { cwd } : {}), env: gitEnv(), timeout: 60000, maxBuffer: 1024 * 1024 }); }
 async function snapshot(project: string, destination: string, before: VerificationState, artifacts: readonly string[]) {
   await git(['clone', '--no-checkout', '--no-hardlinks', '--', project, destination]);
