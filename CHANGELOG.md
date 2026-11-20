@@ -4,6 +4,7 @@
 
 ## [0.9.2] - 2026-11-20
 
+- Retry routing-history commits within a bounded wait when a sibling reader holds the database, preserving atomic observations without replaying writes.
 - Show restored quota and backoff deadlines for mixed legacy and registry source pools without changing legacy fallback order.
 - Allow operators to disable background account acquisition while keeping registry refresh, existing sources and access maintenance active.
 - Open routes from the registry in the daemon ([router](docs/router.md)): a background pass after every six-hourly registry sync signs up recommended routes best-first, one at a time, until six are open, with the first open tool-capable route driving the rest. Add adaptive back-off and retirement for repeatedly failing routes. Accept the scout's optional `fit`, `status` and `expires` registry fields, and hot-add newly listed shipped adapters in the automatic pool.
