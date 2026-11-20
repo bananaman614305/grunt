@@ -10,6 +10,14 @@ registry and runs the same pass again. This reuses `StickyRouter`,
 `SourceStatus`, `RegistrySync`, `SourceRecovery` and `setupFallbacks`. There is
 no new service.
 
+Set `GRUNT_BACKGROUND_ACCOUNT_ACQUISITION=0` before starting the daemon to
+disable background account acquisition after registry syncs and request
+failures. Registry refresh, automatic source discovery, routing, existing
+provider access and daily health checks continue. Explicit foreground
+`usegrunt setup` and `usegrunt add` keep their normal behavior. The default
+enables acquisition; the legacy `MILO_BACKGROUND_ACCOUNT_ACQUISITION` alias is
+accepted, with `GRUNT_*` taking precedence.
+
 ## 1. Greedy first pass, driver, cap
 
 - **Order.** Each pass takes the registry's adapters that Grunt ships, sorted
