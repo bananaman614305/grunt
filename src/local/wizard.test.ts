@@ -39,7 +39,7 @@ it('adds the Pi provider without removing user providers and preserves it on rep
   } });
   expect((await stat(path)).mode & 0o777).toBe(0o600);
   await writeFile(path, '{invalid');
-  await expect(configurePi()).rejects.toThrow('Cannot read Pi');
+  await expect(configurePi()).rejects.toThrow('Cannot safely update Pi models config');
   expect(await readFile(path, 'utf8')).toBe('{invalid');
 });
 

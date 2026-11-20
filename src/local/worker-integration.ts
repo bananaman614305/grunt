@@ -30,7 +30,7 @@ class Fault extends Error {
 }
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const MAX_BYTES = 1024 * 1024;
-const MAX_FILES = 128;
+const MAX_FILES = 256;
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const fileFlags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === 'ENOENT';

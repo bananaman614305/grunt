@@ -36,6 +36,12 @@ const write = (name: string, value: string) => fs.writeFile(join(root, name), va
 const read = (name: string) => fs.readFile(join(root, name), 'utf8');
 
 describe('reviewed worker artifact integration in the caller filesystem', () => {
+  it('accepts the full 256-file bound produced by scoped workers', async () => {
+    const files = Array.from({ length: 256 }, (_, i) => file(`src/batch-${i}.txt`, null, `verified ${i}`));
+    const result = await apply(artifact(...files));
+    expect(result.ok).toBe(true); expect(result.appliedFiles).toHaveLength(256);
+    expect(await read('src/batch-255.txt')).toBe('verified 255');
+  });
   it('atomically installs file content, new directories, binary assets and deletions, retaining recovery originals', async () => {
     await write('src/update.ts', 'before');
     await write('src/delete.ts', 'delete');
@@ -96,7 +102,7 @@ describe('reviewed worker artifact integration in the caller filesystem', () => 
   });
   it('bounds payload bytes and file count', async () => {
     expect((await apply(artifact(file('src/large', null, 'a'.repeat(1024 * 1024 + 1))))).code).toBe('invalid_artifact');
-    expect((await apply(artifact(...Array.from({ length: 129 }, (_, i) => file(`src/a${i}`, null, 'x'))))).code).toBe('invalid_artifact');
+    expect((await apply(artifact(...Array.from({ length: 257 }, (_, i) => file(`src/a${i}`, null, 'x'))))).code).toBe('invalid_artifact');
   });
   it.each(['leaf', 'parent'])('rejects symlink %s without modifying its destination', async kind => {
     const outside = await fs.mkdtemp(join(tmpdir(), 'grunt-outside-'));
