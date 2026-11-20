@@ -213,7 +213,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'Grunt workers command failed'); process.exitCode = 1; }
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | workers <run|status|retained|artifact|apply|discard|connect|mcp> | jobs <run|status|result|cancel> | execution-host <serve|tick> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool, or workers to delegate independent tasks.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | workers <run|status|retained|artifact|apply|discard|connect|mcp> | jobs <run|status|result|cancel> | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool, or workers to delegate independent tasks.');
   } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }

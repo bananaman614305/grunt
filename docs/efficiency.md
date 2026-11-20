@@ -77,6 +77,12 @@ the worker namespace; the host policy uses the corresponding host paths.
 Publication tools are absent without both the flag and configured channel.
 No checks, reviews or GitHub operations run merely because the service starts.
 
+Run the configured host with `usegrunt execution-host serve --config
+/absolute/private-policy.json`; `tick` consumes one bounded batch and `status`
+reads its private health metadata. Configure holds and the service lifecycle to
+follow the coding worker's deliberate pauses. A stale process lease can be
+recovered without replaying interrupted checks.
+
 Grunt queues each configured check with
 `grunt_verify_release({planId, checkId})`, continues independent work and collects
 the result with `grunt_verify_release_result({id})`. The host runs only its fixed

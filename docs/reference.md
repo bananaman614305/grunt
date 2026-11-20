@@ -362,7 +362,7 @@ npx usegrunt workers connect pi --agentic
 ```
 
 Run the printed Pi command with the installed extension. It includes
-`--grunt-agent-workers` and `--grunt-background-jobs`; each flag controls a
+`--grunt-agent-workers`, `--grunt-background-jobs` and `--grunt-checkpoints`; each flag controls a
 separate capability and can be omitted independently.
 Without these trusted launch flags, the extension retains proposal workers and
 does not expose scoped edits or jobs.
@@ -474,6 +474,12 @@ can run. If dependencies or commands are unavailable, the main agent can review
 retained edits and run checks through its
 own approved [background jobs](#background-command-jobs).
 
+Snapshot transport is negotiated separately from command support. Compatible
+clients and daemons support complete snapshots up to 32 MiB total decoded content,
+16 MiB per file and 48 MiB JSON request size after project-scope proof. Legacy
+daemons retain the previous 4 MiB snapshot/8 MiB request limits. Oversized snapshots
+fail explicitly; files are never silently omitted to fit a transport limit.
+
 ### Background command jobs
 
 Pi's `--grunt-background-jobs` opt-in adds session-owned command jobs. These
@@ -516,6 +522,12 @@ No HTTP/MCP endpoint exposes these host commands. The tools are session-owned,
 so collect or cancel them before the final reply/checkpoint and session shutdown.
 Shutdown cancels outstanding jobs. Recovery marks interrupted jobs as
 interrupted rather than executing commands again automatically.
+
+For content-bound verification reuse, task checkpoint tools and an operator-owned
+host service for required checks, independent review and publication, see
+[execution efficiency](efficiency.md). These capabilities preserve the coding
+interface's approvals; worker-owned progress and scoped receipts cannot authorize
+a release.
 
 ### Source dashboard
 
