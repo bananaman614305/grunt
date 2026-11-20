@@ -74,6 +74,24 @@ last check time. Errors retain dated cached evidence for at most one hour,
 then return unknown. Successful deployment is not proof of playability. No
 Actions workflow, game test or deployment is run by this collector.
 
+These metrics require real opt-in execution metadata. Pi must load Grunt's
+installed worker extension and be launched with `--grunt-agent-workers` for
+scoped workers and `--grunt-background-jobs` for managed jobs; neither ordinary
+setup nor a dashboard deploy grants those capabilities. Use
+`usegrunt workers connect pi --agentic` for the launch command. The owner's
+separate [execution staging runbook](../adventure-execution/README.md) handles
+reviewed installation and restart preparation; this collector never starts
+workers, applies artifacts, runs checks or develops the game.
+
+Managed jobs belong to the coding session. The agent must collect their outcomes
+or cancel them before ending/checkpointing; shutdown cancels active work and
+recovery records interruptions without replaying commands. Worker artifacts
+remain retained for scoped inspection and explicit caller-side application.
+The dashboard receives only their availability flags, not their contents.
+For commands and the review/apply/discard workflow, see the
+[worker reference](../../docs/reference.md#subworkers) and
+[background-job reference](../../docs/reference.md#background-command-jobs).
+
 Updating the npm package alone does not install these operator scripts. For this
 owner deployment, install the reviewed `activity.py` and `uptime.py` together in
 the existing activity-service directory, preserve its private state directory and
