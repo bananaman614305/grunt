@@ -9,6 +9,8 @@ import { writePrivateProviderGrant } from './provider-grant.js';
 import { configure } from './main.js';
 import { createLocalApp } from './api.js';
 import { withDiagnosticContext } from './diagnostics.js';
+import type { DiagnosticEvent, DiagnosticsStore } from './diagnostics.js';
+import { SourceError } from './source.js';
 import { bundledRegistry, localOptInAdapters } from '../registry.js';
 
 const now = Date.parse('2026-11-20T03:00:00Z');
@@ -222,4 +224,50 @@ it('falls back from an Openference upstream rejection to free Fikra automaticall
     expect(response.headers.get('x-grunt-source')).toBe('fikra');
     expect(sent).toEqual([PROMOTIONAL_PROVIDERS.openference.model, PROMOTIONAL_PROVIDERS.fikra.model]);
   } finally { await sources.close(); }
+});
+
+// These fixtures never contact a provider. HTTP headers can succeed before a
+// body or protocol failure, so each stage needs fixed diagnostic metadata.
+it.each([
+  ['stream_read', () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('PRIVATE_STREAM_EXCEPTION')); } }), { headers: { 'Content-Type': 'text/event-stream' } })],
+  ['stream_read', () => new Response(new ReadableStream({ start(controller) { controller.error('PRIVATE_NON_ERROR_EXCEPTION'); } }), { headers: { 'Content-Type': 'text/event-stream' } })],
+  ['response_json', () => streamResponse('data: PRIVATE_INVALID_JSON\n\n')],
+  ['stream_format', () => new Response('PRIVATE_BODY', { headers: { 'Content-Type': 'application/json' } })],
+  ['stream_incomplete', () => streamResponse(sse(frames(), false))],
+  ['response_tools', () => streamResponse(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call', type: 'function', function: { name: 'ready', arguments: 'PRIVATE_ARGUMENTS' } }] }, finish_reason: 'tool_calls' }] }]))]
+] as const)('classifies post-header %s without retaining content or replaying inference', async (reason, makeResponse) => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const normal = transport('openference');
+  const fetcher = vi.fn<typeof fetch>((url, init) => String(url).endsWith('/chat/completions') ? Promise.resolve(makeResponse()) : normal(url, init));
+  const error = await source('openference', fetcher).complete(request('openference'), AbortSignal.timeout(2000)).catch(error => error);
+  expect(error).toBeInstanceOf(SourceError);
+  expect(error).toMatchObject({ code: 'upstream', diagnostics: { failureReason: reason } });
+  expect(JSON.stringify(error)).not.toContain('PRIVATE_');
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
+});
+
+it('preserves an existing SourceError identity, code and retry delay from the reader', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const original = new SourceError('quota', 'PRIVATE_EXCEPTION', 23);
+  const normal = transport('openference');
+  const fetcher = vi.fn<typeof fetch>((url, init) => String(url).endsWith('/chat/completions')
+    ? Promise.resolve(new Response(new ReadableStream({ start(controller) { controller.error(original); } }), { headers: { 'Content-Type': 'text/event-stream' } })) : normal(url, init));
+  await expect(source('openference', fetcher).complete(request('openference'), AbortSignal.timeout(2000))).rejects.toBe(original);
+  expect(original).toMatchObject({ code: 'quota', retryAfter: 23 });
+  expect(original.diagnostics).toBeUndefined();
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
+});
+it('observes swallowed cleanup failures without failing success or retaining exception text', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const normal = transport('openference');
+  const fetcher = vi.fn<typeof fetch>((url, init) => String(url).endsWith('/chat/completions')
+    ? Promise.resolve(new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(sse(frames()))); },
+      cancel() { throw new Error('PRIVATE_CLEANUP_EXCEPTION'); } }), { headers: { 'Content-Type': 'text/event-stream' } })) : normal(url, init));
+  const events: DiagnosticEvent[] = [];
+  const sink = { record(event: DiagnosticEvent) { events.push(event); } } as unknown as DiagnosticsStore;
+  await expect(withDiagnosticContext({ requestId: '11111111-1111-4111-8111-111111111111', kind: 'diagnostic', sink },
+    () => source('openference', fetcher).complete(request('openference'), AbortSignal.timeout(2000)))).resolves.toMatchObject({ text: 'Hello' });
+  expect(events).toContainEqual(expect.objectContaining({ source: 'openference', type: 'transport.finish', failureReason: 'stream_cleanup', outcome: 'failed', httpStatus: 200 }));
+  expect(JSON.stringify(events)).not.toMatch(/PRIVATE_|synthetic-key|Synthetic hello/);
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
 });

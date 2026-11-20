@@ -35,6 +35,8 @@ const FAILURE_REASONS = {
   completion_billing: 'Free billing could not be verified', completion_usage: 'Usage was missing, invalid, or over budget',
   completion_attestation: 'Completion metadata could not be verified',
   completion_protocol: 'Reply did not match the expected protocol',
+  stream_read: 'Reply stream could not be read', stream_format: 'Invalid reply stream format',
+  stream_incomplete: 'Reply stream ended incomplete', stream_cleanup: 'Reply stream cleanup failed',
   turn_limit: 'Native turn limit reached', token_limit: 'Native token limit reached',
   price_limit: 'Native price limit reached', deadline: 'Native deadline reached',
   terminated: 'Native run terminated', length: 'Model stopped at its length limit', refusal: 'Model refused the request'
