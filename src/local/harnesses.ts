@@ -243,6 +243,7 @@ export async function detectHarnesses(harnesses = HARNESSES) {
   const found = await Promise.all(harnesses.map(harness => onPath(harness.binary)));
   return harnesses.filter((_, index) => found[index]);
 }
+const FREE_LIMIT = /FreeUsageLimitError|Free usage limit reached|free_tier_limit/;
 export async function runHarness(binary: string, args: string[], env: Record<string, string | undefined> = {}, timeoutMs = 240000, options: { cwd?: string; signal?: AbortSignal } = {}) {
   const cwd = options.cwd ?? await mkdtemp(join(tmpdir(), 'grunt-harness-check-'));
   const timeout = AbortSignal.timeout(timeoutMs);
@@ -252,9 +253,16 @@ export async function runHarness(binary: string, args: string[], env: Record<str
   try {
     return await new Promise<string>((resolve, reject) => {
       const child = spawn(binary, args, { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'], signal });
-      let stdout = '', stderr = '';
-      child.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); });
-      child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); });
+      let stdout = '', stderr = '', limited = false;
+      // OpenCode retries its free limit until the next UTC day; fail fast instead.
+      const watch = (text: string) => {
+        if (limited || !FREE_LIMIT.test(text)) return;
+        limited = true;
+        child.kill();
+        reject(new Error('quota exhausted: free usage limit reached'));
+      };
+      child.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
+      child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
       child.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
       child.once('close', code => {
         const reason = setupFailureReason(new Error(stdout + '\n' + stderr));
@@ -286,7 +294,8 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
       'Use only the existing Squire-connected identity. Never type secrets or select payment, an upgrade, billing changes, another account, or unrequested consent.',
       'Accept required provider Terms of Service for this free signup. Stop if a terms control also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.',
       'Stop on refusal or SMS. For verification only the person can do, call operate_share, then resume operate_drive if the person finishes.',
-      'Capture any requested key directly into the Squire vault with operate_extract store. If no value is found, pass capture {store, source: {role: "textbox" or "code", name}} for the revealed key field; if storage is unresolved, retry with the returned capture write_id. Never read or return a raw secret. Report only whether Squire completed.'
+      'Capture any requested key directly into the Squire vault with operate_extract store. If no value is found, pass capture {store, source: {role: "textbox" or "code", name}} for the revealed key field; if storage is unresolved, retry with the returned capture write_id. Never read or return a raw secret. Report only whether Squire completed.',
+      'When operate_drive returns status complete, Squire has already stored any requested key in the vault: stop calling tools and report completion. Use operate_extract only when Squire says a key was not stored.'
     ].join('\n');
     const write = (name: string, content: unknown) => writeFile(join(directory, name), JSON.stringify(content), { mode: 0o600 });
     let args: string[];
@@ -323,7 +332,8 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
         env.XDG_CONFIG_HOME = directory;
         env.XDG_DATA_HOME = directory;
         env.XDG_STATE_HOME = directory;
-        args = ['run', '--pure', '-m', openCodeAnonymous ? 'opencode/big-pickle' : 'grunt/grunt', prompt];
+        // --print-logs puts OpenCode's free-limit error on stderr, so runHarness can stop at once.
+        args = ['run', '--pure', '--print-logs', '-m', openCodeAnonymous ? 'opencode/big-pickle' : 'grunt/grunt', prompt];
         break;
     }
     await run(harness.binary, args, env, 240000, { cwd: directory, signal: input.signal });

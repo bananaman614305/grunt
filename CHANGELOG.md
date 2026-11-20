@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Let the fallback signup operator type and pass the values Grunt supplies (plan, key or project name, and the Squire-connected email into email fields). After Squire reports a signup complete, answer the operator with a final stop instead of replaying the stale page.
+- Fail fast on OpenCode's free usage limit, in both the serve and CLI paths, and cool down the whole OpenCode model pool until its reset. Upgrade the anonymous OpenCode setup operator to the first account route that passes the tool-call probe.
+
 ## [0.9.1] - 2026-11-20
 
 - Let the execution host use an existing pinned Git configuration with hooks disabled at `/dev/null`. Continue rejecting custom hooks, included configuration and changed configuration bytes.

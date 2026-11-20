@@ -494,3 +494,69 @@ it('keeps a UUID write_id visible while still hiding secret-shaped values', asyn
   expect(signupAgentResult({ write_id: id, nested: { write_id: 'sk-abcdefghijklmnop' }, note: `token ${'a'.repeat(40)}` }))
     .toEqual({ write_id: id, nested: {}, note: 'token [omitted]' });
 });
+
+it('lets the operator type only values Grunt supplies, and the email only into an email field', async () => {
+  const { setupProviders } = await import('./setup.js');
+  const squire = harnessSquire();
+  const typed: Record<string, unknown>[] = [];
+  vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'operate_type') { typed.push(args); return {}; }
+    if (name === 'operate_observe') return { user_email: 'person@example.test', safe_table: [['key-name', 't', 'Key Name'], ['email', 't', 'Email address']] };
+    return name === 'operate_drive' ? { status: 'low_confidence', session_id: 'zro-tab', options: {} } : {};
+  });
+  squire.useSignupAgent(async agent => {
+    await agent.call('operate_drive', {});
+    await agent.call('operate_observe', {});
+    expect(await agent.call('operate_type', { ref: 'key-name', text: 'grunt' })).not.toMatchObject({ status: 'stopped' });
+    expect(await agent.call('operate_type', { ref: 'email', text: 'person@example.test' })).not.toMatchObject({ status: 'stopped' });
+    expect(await agent.call('operate_type', { ref: 'key-name', text: 'person@example.test' })).toMatchObject({ status: 'stopped' });
+    expect(await agent.call('operate_type', { ref: 'key-name', text: 'Synthetic!Pass42' })).toMatchObject({ status: 'stopped' });
+    expect(await agent.call('operate_type', { ref: 'unobserved', text: 'grunt' })).toMatchObject({ status: 'stopped' });
+  });
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  expect(typed).toEqual([
+    { ref: 'key-name', text: 'grunt', session_id: 'zro-tab' },
+    { ref: 'email', text: 'person@example.test', session_id: 'zro-tab' }
+  ]);
+  await squire.close();
+});
+
+it('passes Grunt-supplied facts the operator names through operate_drive and drops others', async () => {
+  const { setupProviders } = await import('./setup.js');
+  const squire = harnessSquire();
+  const drives: Record<string, unknown>[] = [];
+  vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'operate_drive') { drives.push(args); return { status: 'low_confidence', session_id: 'zro-tab', options: {} }; }
+    return {};
+  });
+  squire.useSignupAgent(async agent => {
+    await agent.call('operate_drive', {});
+    await agent.call('operate_drive', { facts: { 'Key Name': 'grunt', 'Card Number': '4242424242424242', plan: 'pro' } });
+  });
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  expect(object(drives.at(-1)).facts).toEqual({ 'Key Name': 'grunt', plan: 'free', project_name: 'grunt' });
+  await squire.close();
+});
+
+it('answers every call after a complete drive with a final stop, not the stale page', async () => {
+  const { setupProviders } = await import('./setup.js');
+  const squire = harnessSquire();
+  let drives = 0;
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => name !== 'operate_drive' ? {}
+    : ++drives === 1 ? { status: 'low_confidence', session_id: 'zro-tab', options: {} }
+      : { status: 'complete', session_id: 'zro-tab', observation: { safe_table: [['@e:1', 'b', '@copy-key']] } });
+  const after: unknown[] = [];
+  squire.useSignupAgent(async agent => {
+    await agent.call('operate_drive', {});
+    expect(await agent.call('operate_drive', {})).toMatchObject({ status: 'complete' });
+    after.push(await agent.call('operate_extract', { store: { service: 'zro' } }), await agent.call('operate_observe', {}));
+  });
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  expect(after).toEqual([0, 1].map(() => expect.objectContaining({ status: 'complete', reason: expect.stringMatching(/stored any requested key.*stop calling tools/) })));
+  expect(after[0]).not.toHaveProperty('observation');
+  expect(call.mock.calls.filter(([name]) => name !== 'operate_drive' && name !== 'operate_finish').map(([name]) => name)).not.toContain('operate_extract');
+  await squire.close();
+});

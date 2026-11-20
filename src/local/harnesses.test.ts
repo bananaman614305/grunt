@@ -249,3 +249,13 @@ it('mounts Squire for a headless harness using only its temporary configuration'
   expect(invoke).toHaveBeenCalledWith('operate_drive', {});
   await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
 });
+
+it('stops a harness at once when OpenCode logs its free usage limit', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-free-limit-'));
+  const opencode = join(dir, 'opencode');
+  await writeFile(opencode, `#!${process.execPath}\nconsole.error('level=ERROR message="stream error" error.error="AI_APICallError: Free usage limit reached"');\nsetTimeout(() => {}, 60000);\n`);
+  await chmod(opencode, 0o755);
+  const started = Date.now();
+  await expect(runHarness(opencode, [], {}, 30000)).rejects.toThrow(/quota exhausted/);
+  expect(Date.now() - started).toBeLessThan(5000);
+});
