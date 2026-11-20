@@ -41,7 +41,7 @@ async function failRepeatedly(routes: ReturnType<typeof pool>, times: number) {
   }
 }
 
-it(`retires a route on its ${RETIRE_AFTER_FAILURES}th consecutive identical failure, and a health check brings it back`, async () => {
+it(`retires a route on its ${RETIRE_AFTER_FAILURES}th consecutive identical failure, and unretiring gives it a fresh try`, async () => {
   const routes = pool(() => new SourceError('upstream', 'Synthetic outage'));
   await failRepeatedly(routes, RETIRE_AFTER_FAILURES - 1);
   expect(routes.sources.retired('opencode')).toBe(false);
@@ -56,6 +56,18 @@ it(`retires a route on its ${RETIRE_AFTER_FAILURES}th consecutive identical fail
   expect(routes.sources.retired('opencode')).toBe(false);
   vi.mocked(routes.a.complete).mockResolvedValueOnce({ text: 'opencode back' });
   await expect(routes.sources.complete(ask('fresh try'), AbortSignal.timeout(1000))).resolves.toEqual({ text: 'opencode back' });
+});
+
+it('brings a retired route back after a successful daily maintenance probe', async () => {
+  const routes = pool(() => new SourceError('upstream', 'Synthetic outage'));
+  await failRepeatedly(routes, RETIRE_AFTER_FAILURES);
+  expect(routes.sources.retired('opencode')).toBe(true);
+  // The probe calls the source directly, so it can still reach a retired route.
+  vi.mocked(routes.a.complete).mockResolvedValueOnce({ text: 'Hello from opencode.' });
+  await expect(routes.sources.check('opencode', AbortSignal.timeout(5000))).resolves.toMatchObject({ outcome: 'passed', evidence: 'reply' });
+  expect(routes.sources.retired('opencode')).toBe(false);
+  vi.mocked(routes.a.complete).mockResolvedValueOnce({ text: 'opencode back' });
+  await expect(routes.sources.complete(ask('after the daily check'), AbortSignal.timeout(1000))).resolves.toEqual({ text: 'opencode back' });
 });
 
 it('never retires a route for quota, which is availability rather than failure', async () => {
