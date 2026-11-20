@@ -6,7 +6,7 @@ import { BrowserSquire } from './setup.js';
 import type { setupFallbacks } from './fallback-setup.js';
 import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
-import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry, installedSources, installService } from './wizard.js';
+import { configurePi, connectSquire, preflight, wizard, checkFallbackServices, checkService, checkServiceSources, serviceSources, loadRegistry, installedSources, installService, confirmMaterialDataSharing } from './wizard.js';
 import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -27,6 +27,17 @@ afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); if (dir) await
 const defaultIds = () => bundledRegistry.adapters.map(adapter => adapter.id);
 const sharingIds = () => dataSharingPolicies(defaultIds()).map(policy => policy.provider);
 const approvedBatch = async ({ providers }: { providers: readonly string[] }) => ({ approved: dataSharingPolicies(providers).map(policy => policy.provider), skipped: [] });
+it('shows material sale terms in one foreground prompt with a default refusal', async () => {
+  const { confirm } = await import('@clack/prompts');
+  vi.mocked(confirm).mockClear();
+  const policies = dataSharingPolicies(['freepi']);
+  vi.mocked(confirm).mockResolvedValueOnce(true);
+  expect(await confirmMaterialDataSharing(policies)).toBe(true);
+  expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ initialValue: false, message: expect.stringMatching(/sell.*no ordinary opt-out/s) }));
+  vi.mocked(confirm).mockResolvedValueOnce(Symbol('cancel'));
+  expect(await confirmMaterialDataSharing(policies)).toBe(false);
+  vi.mocked(confirm).mockClear();
+});
 it('adds the Pi provider without removing user providers and preserves it on repeat setup', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-pi-test-'));
   vi.stubEnv('PI_CODING_AGENT_DIR', dir);
@@ -269,6 +280,22 @@ it('enables explicit sources in unattended default setup without asking', async 
   await wizard(undefined, actions);
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: expect.arrayContaining(['nous', 'kenari']) }));
   expect(await readDataSharingConsent(consentDir, ['nous', 'kenari'])).toEqual(['nous', 'kenari']);
+});
+it('keeps ordinary sources ready when unattended setup cannot approve a material policy', async () => {
+  const policy = dataSharingPolicies(['kilo'])[0]!, previous = policy.approval;
+  policy.approval = 'material';
+  try {
+    const actions = stubActions([], { approveDataSharing: options => approveDataSharing({ ...options, interactive: false }) });
+    await wizard(undefined, actions);
+    const allowed = defaultIds().filter(id => !dataSharingPolicies([id]).some(entry => entry.approval === 'material'));
+    expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: allowed }));
+    expect(actions.installService).toHaveBeenCalledWith(allowed, expect.anything());
+    expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);
+    const added = stubActions([], { approveDataSharing: options => approveDataSharing({ ...options, interactive: false }) });
+    await wizard('kilo', added);
+    expect(added.setup).not.toHaveBeenCalled();
+    expect(added.connectSquire).not.toHaveBeenCalled();
+  } finally { policy.approval = previous; }
 });
 it('leaves explicit sources out of default setup and add with the data-sharing opt-out', async () => {
   const policy = dataSharingPolicies(['kilo'])[0]!;

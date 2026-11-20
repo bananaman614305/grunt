@@ -17,6 +17,7 @@ import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js
 import { writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
+import type { DataSharingPolicy } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
@@ -24,10 +25,19 @@ import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { SetupTable } from './setup-table.js';
 import { setupAttention, setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
-import { select, isCancel } from '@clack/prompts';
+import { select, confirm, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
 
 export const configDir = (env = process.env) => configRoot(env);
+export async function confirmMaterialDataSharing(policies: readonly DataSharingPolicy[]) {
+  return withTerminal(async () => {
+    const answer = await confirm({
+      message: `${policies.map(policy => `${policy.name}: ${policy.disclosure} Details: ${policy.url}`).join('\n\n')}\nAllow these providers to process your project under these terms?`,
+      initialValue: false
+    });
+    return !isCancel(answer) && answer === true;
+  });
+}
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal, env?: NodeJS.ProcessEnv) {
   signal?.throwIfAborted();
   const run = () => new Promise<void>((resolve, reject) => {
@@ -453,13 +463,15 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       ? [...new Set([...(previous.length ? previous : defaults), add])]
       : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
     let sharingNotice: string | undefined;
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources, notice: line => { sharingNotice = line; } });
-    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${DATA_SHARING_OPT_OUT})`
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources,
+      interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) && gruntEnv('SETUP_NO_HUMAN') !== '1',
+      prompt: confirmMaterialDataSharing, notice: line => { sharingNotice = line; } });
+    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${gruntEnv('SETUP_NO_DATA_SHARING') === '1' ? DATA_SHARING_OPT_OUT : 'approval not granted'})`
       : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');
     squire?.approveDataSharing?.(consent.approved);
     const skipped = new Set(consent.skipped);
     const ids = requested.filter(id => !skipped.has(id));
-    for (const id of requested) if (skipped.has(id)) table.set('source', id, 'off (data sharing opt-out)');
+    for (const id of requested) if (skipped.has(id)) table.set('source', id, 'off (data sharing not approved)');
     // Sources queue behind setup workers (one at a time with a harness), so a
     // row says waiting until its own setup starts.
     for (const id of ids) table.set('source', id, 'waiting');
@@ -467,7 +479,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const port = await setupPort();
     if (add) {
       table.set('source', add, 'connecting');
-      if (!['nous', 'reflection-beam'].includes(add)) { await connect(); console.log('✓ Trusty Squire: signed in'); }
+      if (!['nous', 'reflection-beam', 'antseed-vikey'].includes(add)) { await connect(); console.log('✓ Trusty Squire: signed in'); }
       table.start();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved,

@@ -10,7 +10,7 @@ export interface DataSharingPolicy {
   version: string;
   disclosure: string;
   url: string;
-  approval?: 'explicit';
+  approval?: 'explicit' | 'material';
 }
 
 export const NUMES_DEEPSEEK_FLASH_CONSENT = 'numes-deepseek-flash';
@@ -121,6 +121,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   disclosure: 'Prompts, code, and tool results pass through Kilo Gateway and the upstream hosting Reflection Beam. Their retention, review, and training practices for this route have not been verified.',
   url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
   approval: 'explicit'
+}, {
+  provider: 'freepi', name: 'Free-Pi DeepSeek V4.1 Flash', version: '2026-11-20-trace-sale-v4',
+  disclosure: 'Free-Pi collects coding-session traces, including prompts, code, tool definitions, tool results and outputs, and may sell or commercially license them to third parties. Redaction is not guaranteed: project identity or personal/confidential information may remain identifiable. There is no ordinary opt-out. Send only a request you have reviewed in full as safe for public sharing. Grunt requires every spendable wallet to be zero and stops when the current exact free model offer or daily allowance is unavailable.',
+  url: 'https://freepi.ai/privacy',
+  approval: 'material'
 }];
 
 const fileName = 'data-sharing-consent.json';
@@ -134,7 +139,7 @@ export function dataSharingPolicies(providers: readonly string[]): DataSharingPo
   return DATA_SHARING_POLICIES.filter(policy => selected.has(policy.provider));
 }
 export const requiresDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider);
-export const requiresExplicitDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider && policy.approval === 'explicit');
+export const requiresExplicitDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider && policy.approval !== undefined);
 
 async function receipt(directory: string): Promise<Receipt> {
   try {
@@ -166,7 +171,8 @@ async function writeReceipt(directory: string, saved: Receipt) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-// Setup records these by default. Background setup only reads receipts.
+// Trusted setup/probe callers record the policies actually approved for this
+// private configuration. Background setup only reads receipts.
 export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
   const policies = dataSharingPolicies(providers);
   if (!policies.length) return;
@@ -189,21 +195,36 @@ export const DATA_SHARING_OPT_OUT = 'GRUNT_SETUP_NO_DATA_SHARING=1';
 export interface DataSharingApprovalOptions {
   directory: string;
   providers: readonly string[];
-  // Kept for callers that pass terminal state. Setup never asks either way.
+  // Only the foreground wizard supplies a prompt for material conditions.
+  // Background and unattended callers never synthesize consent.
   interactive?: boolean;
+  prompt?: (policies: readonly DataSharingPolicy[]) => Promise<unknown>;
   env?: NodeJS.ProcessEnv;
   notice?: (line: string) => void;
 }
 
-// Setup enables every free source under its listed terms without asking.
-// GRUNT_SETUP_NO_DATA_SHARING=1 keeps the explicit-approval sources off.
+// Ordinary free-source sharing retains the existing grouped default. Material
+// conditions (for example sale of project traces) require a separate human
+// decision covering the displayed policy; an ordinary setup flag is not assent.
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
   const providers = options.providers.includes('numes') ? [...options.providers, NUMES_DEEPSEEK_FLASH_CONSENT] : options.providers;
   const policies = dataSharingPolicies(providers);
   const saved = new Set(await readDataSharingConsent(options.directory, providers));
   const optOut = gruntEnv('SETUP_NO_DATA_SHARING', options.env) === '1';
-  const skipped = optOut ? policies.filter(policy => policy.approval === 'explicit').map(policy => policy.provider) : [];
+  const skipped = optOut ? policies.filter(policy => policy.approval !== undefined).map(policy => policy.provider) : [];
   if (skipped.length) await revokeDataSharingConsent(options.directory, skipped);
+  const pendingMaterial = policies.filter(policy => policy.approval === 'material' && !saved.has(policy.provider) && !skipped.includes(policy.provider));
+  if (pendingMaterial.length) {
+    const displayed = pendingMaterial.map(policy => ({ ...policy }));
+    let accepted = false;
+    if (options.interactive === true && options.prompt) {
+      try { accepted = await options.prompt(displayed) === true; } catch { /* Cancellation keeps other providers available. */ }
+    }
+    for (const policy of displayed) {
+      const current = dataSharingPolicies([policy.provider])[0];
+      if (!accepted || !current || fingerprint(current) !== fingerprint(policy)) skipped.push(policy.provider);
+    }
+  }
   const approved = policies.map(policy => policy.provider).filter(provider => !skipped.includes(provider));
   const added = approved.filter(provider => !saved.has(provider));
   await recordDataSharingConsent(options.directory, added);
