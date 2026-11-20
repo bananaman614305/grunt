@@ -18,6 +18,10 @@ export const NUMES_DEEPSEEK_FLASH_CONSENT = 'numes-deepseek-flash';
 // Keep these provider-specific. An unknown policy must not inherit consent to
 // another provider merely because both offer free inference.
 export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
+  provider: 'millionseek', name: '100milionseek DeepSeek V4.1 Flash', version: '2026-11-20',
+  disclosure: 'The relay says prompts and replies are not stored, logged, trained on or sold. An unnamed model provider receives prompts without email or account ID; that provider’s retention and training practices remain unverified. Account and quota metadata are retained separately.',
+  url: 'https://100milionseek.top/privacy'
+}, {
   provider: 'freebuff', name: 'Freebuff', version: '2026-11-15',
   disclosure: 'Prompt, code, and project data may be retained and reviewed for safety, analyzed for advertising and ad-model training. For features marked for AI training, data may also be shared or sold for training and research.',
   url: 'https://freebuff.com/privacy-policy'
