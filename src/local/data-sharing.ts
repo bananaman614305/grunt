@@ -82,6 +82,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   url: 'https://numes.ai/docs/privacy/data-retention',
   approval: 'explicit'
 }, {
+  provider: 'crowllm', name: 'CrowLLM GLM 5.3 Flash Free', version: '2026-11-20',
+  disclosure: 'Prompts, code, tool definitions and tool results pass through CrowLLM and its inference upstream. Retention, staff review, training and deletion guarantees have not been verified. Grunt uses only the exact model with a zero price in the live catalog.',
+  url: 'https://crowllm.com/docs',
+  approval: 'explicit'
+}, {
   provider: 'goedel', name: 'Gödel Machines DeepSeek V4.1 Flash Free', version: '2026-11-19',
   disclosure: 'The free tier stores prompts and responses in India, permits staff review and training, and retains content until deletion is requested. It forbids sending secrets, confidential business information, or other people’s personal data. Grunt requires the client to confirm the entire request is safe to share.',
   url: 'https://inference.goedelmachines.com/legal#free-tier',

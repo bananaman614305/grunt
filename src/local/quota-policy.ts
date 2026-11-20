@@ -51,6 +51,8 @@ const policies: Readonly<Record<string, QuotaPolicy>> = {
     { amount: 50, unit: 'requests', period: 'day', scope: 'account' }],
     detail: 'These are the published new-account defaults. Model overrides and account tier can differ. The successful daily quota renews at 00:00 UTC.',
     documentation: 'https://kenari.id/en/docs/rate-limits' },
+  crowllm: { refill: 'provider-reported', detail: 'The pinned GLM free route has zero model pricing in the live catalog. Request caps and reset schedules are unpublished. Welcome account credit is separate and is not used by this route.',
+    documentation: 'https://crowllm.com/models/glm-5.3-flash:free' },
   goedel: { refill: 'utc-daily', limits: [{ amount: 600000, unit: 'tokens', period: 'day', scope: 'account' },
     { amount: 150000, unit: 'tokens', period: 'day', scope: 'account' }],
     detail: 'Separate daily allowances are 600,000 uncached input tokens and 150,000 output tokens. They reset at 00:00 UTC. The free key also has a 100,000 uncached input token per minute refill rate and two concurrent requests.',

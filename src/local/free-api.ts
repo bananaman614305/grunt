@@ -17,6 +17,7 @@ export const FREE_API_PROVIDERS = {
   apinex: { model: 'free/deepseek-v4.1-flash', prefix: '/v1' },
   livekit: { model: 'deepseek-ai/deepseek-v4.1-flash', prefix: '/v1' },
   nous: { model: 'qwen/qwen4-max:free', prefix: '/v1' },
+  crowllm: { model: 'glm-5.3-flash:free', prefix: '/v1' },
   goedel: { model: 'deepseek/deepseek-v4.1-flash', prefix: '/v1' },
   numes: { model: 'z-ai/glm-5.3-flash:free', prefix: '/api/v1' }
 } as const;

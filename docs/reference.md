@@ -585,6 +585,14 @@ guarantees are unestablished. The Kilo consent policy is now
 route. Setup records the current policy without asking, and existing runtime
 guards continue checking the receipt.
 
+CrowLLM is available as an optional local source through `npx usegrunt add crowllm`.
+It is outside the default registry while context capacity and live tools remain
+unverified. Setup reuses the person's Squire key and verifies the exact
+`glm-5.3-flash:free` entry in CrowLLM's pricing API. Each dispatch checks token
+validity and requires zero input, output and per-request price. A missing,
+changed or unavailable price blocks inference. The source uses normal Grunt
+cooldowns and fallback. The account's welcome credit is separate from this route.
+
 The additional experimental routes have these requirements:
 
 | Source | Selected route | Free-account requirements and allowance |

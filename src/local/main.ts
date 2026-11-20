@@ -23,6 +23,7 @@ import { Clixad } from './clixad.js';
 import { Perch } from './perch.js';
 import { Nous } from './nous.js';
 import { Kenari } from './kenari.js';
+import { CrowLLM } from './crowllm.js';
 import { Goedel } from './goedel.js';
 import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
@@ -69,7 +70,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
   const numesModel = gruntEnv('NUMES_MODEL', env);
   const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const configured = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
     .filter(id => localOptInAdapters.some(adapter => adapter.id === id));
@@ -100,8 +101,8 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const sources = new Sources(ids.map(id => {
     const source = registered.find(source => source.id === id);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
-    const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
-    return !routing && knownAdapters.has(id) ? new RegistrySource(consent, registry) : consent;
+    const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
+    return !routing && knownAdapters.has(id) ? new RegistrySource(consent, routingRegistry) : consent;
   }), routing, disabledAdapters);
   sources.setWorkerRegistry(routingRegistry, localOptIns);
   return sources;
@@ -142,8 +143,8 @@ export function start(env = process.env) {
     changed: current => { registry = current; }, notify: console.error
   });
   const maintenance = new DailyMaintenance({ directory,
-    providers: () => registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
-      && sources.sources.some(source => source.id === adapter.id)).map(adapter => adapter.id),
+    providers: () => [...new Set([...registry.adapters, ...localOptInAdapters].filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
+      && sources.sources.some(source => source.id === adapter.id)).map(adapter => adapter.id))],
     check: async (id, signal) => {
       signal.throwIfAborted();
       const session = await refreshSession();
