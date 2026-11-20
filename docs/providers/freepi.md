@@ -38,9 +38,9 @@ the next preflight stops at the reported reset. Generic 429s retain provider
 Retry-After, without inventing a daily reset.
 
 A per-account mutex shared across Grunt configuration directories prevents
-concurrent Grunt requests on this account. The mutex is intentionally fail-closed
-after a process crash; clear a stale lock only after establishing no matching
-request remains. This does not control another client, account top-ups performed
+concurrent Grunt requests on this account. A private SQLite write transaction owns this mutex. The operating system
+releases it if the process crashes; Grunt never steals a live owner's lock or
+deletes a lock file based on time or a PID. This does not control another client, account top-ups performed
 outside Grunt, or server-side accounting changes between a preflight and dispatch.
 The provider documents manual prepaid packs; the qualification account has never
 supplied payment details. There is no proven server-side atomic `free_only`

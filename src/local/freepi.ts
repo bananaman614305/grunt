@@ -1,10 +1,11 @@
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, rm } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { open } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
+import { acquireFreePiAccountLease } from './freepi-lock.js';
 import { quotaRetryAfter } from './quota-timing.js';
 import { diagnosticFetch } from './diagnostics.js';
 import { SourceError } from './source.js';
@@ -115,12 +116,7 @@ export class FreePi implements Source {
     try { subject = object(JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString())).sub; } catch { /* Fail closed below. */ }
     if (typeof subject !== 'string' || !subject) throw new SourceError('logged_out', 'Free-Pi account token is invalid');
     const lockRoot = this.options.lockDirectory ?? join(homedir(), '.cache', 'usegrunt-freepi-locks');
-    await mkdir(lockRoot, { recursive: true, mode: 0o700 });
-    const rootStat = await lstat(lockRoot);
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || rootStat.uid !== process.getuid?.() || (rootStat.mode & 0o777) !== 0o700) throw new SourceError('refused', 'Free-Pi account lock directory is unsafe');
-    const lock = join(lockRoot, createHash('sha256').update(subject).digest('hex'));
-    try { await mkdir(lock, { mode: 0o700 }); }
-    catch { throw new SourceError('quota', 'Free-Pi account already has an active Grunt request; retry later', 30); }
+    const release = await acquireFreePiAccountLease(subject, lockRoot);
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(180000)]);
     try {
       await this.guard(token, signal);
@@ -141,7 +137,7 @@ export class FreePi implements Source {
       if (signal.aborted) throw new SourceError('timeout', 'Free-Pi response timed out');
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'Free-Pi response or free-account guard could not be verified');
-    } finally { await rm(lock, { recursive: true, force: true }); }
+    } finally { await release(); }
   }
   async close() { this.shutdown.abort(); }
 }
