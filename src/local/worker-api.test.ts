@@ -43,7 +43,7 @@ it('requires current-project proof and keeps transport scope outside model task'
   const snapshot = [{ path: 'file.txt', content: 'Original' }];
   const response = await f.request('/v1/workers/run', { ...task, initialSnapshot: snapshot }, token);
   expect(response.status).toBe(200);
-  expect(f.createAgentWorkspace).toHaveBeenCalledWith({ projectRoot: f.project, ownedPaths: ['file.txt'], initialSnapshot: snapshot }, expect.any(AbortSignal));
+  expect(f.createAgentWorkspace).toHaveBeenCalledWith({ projectRoot: f.project, projectIdentity: expect.stringMatching(/^[a-f0-9]{64}$/), ownedPaths: ['file.txt'], initialSnapshot: snapshot }, expect.any(AbortSignal));
   expect(JSON.stringify(f.complete.mock.calls)).not.toContain(token);
   expect(JSON.stringify(f.complete.mock.calls)).not.toContain('initialSnapshot');
   expect(await readFile(join(f.project, 'file.txt'), 'utf8')).toBe('Original');
