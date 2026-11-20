@@ -1,16 +1,24 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type * as FileSystem from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { createServer as unixServer } from 'node:net';
+import * as resources from './worker-resources.js';
 import ts from 'typescript';
 import { captureWorkerInitialSnapshot, createWorkerWorkspace, restoreWorkerWorkspace } from './worker-workspace.js';
 import type { WorkerWorkspace, WorkerWorkspaceOptions } from './worker-workspace.js';
 import { WorkerSandbox } from './worker-sandbox.js';
-import { privateWorkerPath, workerRelativePath, ownsWorkerPath } from './worker-tool-helper.js';
+import { privateWorkerPath, workerRelativePath, ownsWorkerPath, snapshotWorkerFiles } from './worker-tool-helper.js';
 
+const captureHook = vi.hoisted(() => ({ beforeOpen: undefined as ((path: unknown) => Promise<void>) | undefined }));
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof FileSystem>();
+  return { ...actual, open: async (...args: Parameters<typeof actual.open>) => { await captureHook.beforeOpen?.(args[0]); return actual.open(...args); } };
+});
 const signal = () => new AbortController().signal;
 const hash = (content: string | Buffer) => createHash('sha256').update(content).digest('hex');
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -53,6 +61,24 @@ it('captures the current dirty caller working copy without Git, secrets, depende
   const { root } = await fixture(), snapshot = await captureWorkerInitialSnapshot(root);
   expect(snapshot.map(file => file.path).sort()).toEqual(['.gitignore', 'outside.txt', 'src/a.ts', 'src/b.ts', 'src/new.ts']);
   expect(snapshot.find(file => file.path === 'src/a.ts')).toEqual({ path: 'src/a.ts', content: 'export const a = 3; // dirty\n', sha256: hash('export const a = 3; // dirty\n') });
+});
+it.each(['client', 'sandbox helper'])('pins every source ancestor against a deterministic confidential-directory swap during %s capture', async mode => {
+  const root = await directory(), destination = await directory(); await mkdir(join(root, 'src')); await mkdir(join(root, '.config'));
+  await writeFile(join(root, 'src/target.ts'), 'public source'); await writeFile(join(root, '.config/target.ts'), 'PRIVATE_CREDENTIAL');
+  captureHook.beforeOpen = async path => {
+    if (typeof path === 'string' && path.endsWith('/target.ts')) {
+      captureHook.beforeOpen = undefined;
+      await rename(join(root, 'src'), join(root, 'original-src')); await symlink('.config', join(root, 'src'));
+    }
+  };
+  try {
+    if (mode === 'client') {
+      const files = await captureWorkerInitialSnapshot(root); expect(files.find(file => file.path === 'src/target.ts')?.content).toBe('public source'); expect(JSON.stringify(files)).not.toContain('PRIVATE_CREDENTIAL');
+    } else {
+      await snapshotWorkerFiles(root, { root: destination, ownedPaths: ['src'], readOnly: false, maxFileBytes: 4096, maxFiles: 100, maxOutputBytes: 4096 }, ['src/target.ts'], 4096);
+      expect(await readFile(join(destination, 'src/target.ts'), 'utf8')).toBe('public source');
+    }
+  } finally { captureHook.beforeOpen = undefined; }
 });
 it('portable filesystem mode requires a supplied snapshot before reading any original path', async () => {
   await expect(createWorkerWorkspace({ projectRoot: '/does-not-exist/private-project', ownedPaths: ['src'], sandbox: { mode: 'filesystem' } }, signal())).rejects.toMatchObject({ code: 'snapshot_required' });
@@ -150,6 +176,63 @@ describe('verified Linux namespace integration', () => {
     } finally { delete process.env.GRUNT_FIXTURE_SECRET; }
     expect(await readdir(worker.path)).not.toContain('.git'); expect(await readFile(join(root, 'src/a.ts'), 'utf8')).toContain('3; // dirty');
   }, 15000);
+  it('rejects a replaced registered project before capture and portable snapshots avoid original identity reads', async context => {
+    const portable = await workspace({ projectIdentity: hash('registered inode') });
+    expect(await portable.artifact()).toMatchObject({ complete: true, files: [] });
+    if (!namespaces) { context.skip(); return; }
+    const { root } = await fixture(), stat = await lstat(root), projectIdentity = hash(`${stat.dev}:${stat.ino}`);
+    await rename(root, root + '-original'); roots.push(root + '-original'); await mkdir(root); await writeFile(join(root, 'secret'), 'replacement');
+    await expect(linux({ projectRoot: root, projectIdentity, initialSnapshot: undefined })).rejects.toMatchObject({ code: 'invalid_workspace' });
+  }, 10000);
+  it('rejects project replacement after capture before any dependencies or workspace are returned', async context => {
+    if (!namespaces) { context.skip(); return; }
+    const { root } = await fixture(), stat = await lstat(root), projectIdentity = hash(`${stat.dev}:${stat.ino}`);
+    const original = WorkerSandbox.prototype.snapshot;
+    const mocked = vi.spyOn(WorkerSandbox.prototype, 'snapshot').mockImplementation(async function(...args) {
+      const result = await original.apply(this, args);
+      await rename(root, root + '-original'); roots.push(root + '-original'); await mkdir(root);
+      return result;
+    });
+    try { await expect(linux({ projectRoot: root, projectIdentity, initialSnapshot: undefined })).rejects.toMatchObject({ code: 'invalid_workspace' }); }
+    finally { mocked.mockRestore(); }
+  }, 10000);
+  it('keeps dependency directory inode pinned when its pathname becomes a vault symlink', async context => {
+    if (!namespaces) { context.skip(); return; }
+    const { root } = await fixture(), vault = await directory(); await writeFile(join(vault, 'secret.txt'), 'must never be mounted');
+    const original = WorkerSandbox.prototype.copyDependencies;
+    const mocked = vi.spyOn(WorkerSandbox.prototype, 'copyDependencies').mockImplementation(async function(...args) {
+      const handle = await original.apply(this, args);
+      await rename(join(root, 'node_modules'), join(root, 'node_modules-old')); await symlink(vault, join(root, 'node_modules'));
+      return handle;
+    });
+    try {
+      const worker = await linux({ projectRoot: root, initialSnapshot: undefined });
+      const script = "const fs=require('fs');if(fs.existsSync('node_modules/secret.txt'))throw Error('vault mounted');for(const d of ['/workspace/node_modules',...fs.readdirSync('/proc/self/fd').map(f=>'/proc/self/fd/'+f)]){try{if(fs.existsSync(d+'/fixture.txt')){fs.writeFileSync(d+'/fixture.txt','LEAK');throw Error('writable dependency FD')}}catch(e){if(e.message==='writable dependency FD')throw e;}}console.log(fs.readFileSync('node_modules/fixture.txt','utf8'))";
+      expect(await worker.executeTool('worker_command', { command: '/opt/grunt/node -e ' + quote(script) }, signal())).toMatchObject({ ok: true, stdout: 'readonly dependency\n' });
+    } finally { mocked.mockRestore(); }
+  }, 10000);
+  it('sanitizes dependency secrets and sockets while preserving safe internal package links', async context => {
+    if (!namespaces) { context.skip(); return; }
+    const { root } = await fixture(), deps = join(root, 'node_modules');
+    await writeFile(join(deps, '.env'), 'PRIVATE_DEP_CREDENTIAL'); await writeFile(join(deps, 'credentials-prod.json'), 'PRIVATE_DEP_CREDENTIAL');
+    await mkdir(join(deps, 'pkg')); await writeFile(join(deps, 'pkg/index.js'), 'safe package'); await mkdir(join(deps, '.bin')); await symlink('../pkg/index.js', join(deps, '.bin/tool'));
+    const server = unixServer(); await new Promise<void>(resolve => server.listen(join(deps, 'service.sock'), resolve));
+    try {
+      const worker = await linux({ projectRoot: root, initialSnapshot: undefined }); expect(worker.dependencyStatus).toMatchObject({ available: true });
+      const script = "const fs=require('fs');for(const p of ['.env','credentials-prod.json','service.sock'])if(fs.existsSync('node_modules/'+p))throw Error('private dependency copied');console.log(fs.readFileSync('node_modules/.bin/tool','utf8'))";
+      expect(await worker.executeTool('worker_command', { command: '/opt/grunt/node -e ' + quote(script) }, signal())).toMatchObject({ ok: true, stdout: 'safe package\n' });
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  }, 10000);
+  it('retains safe namespace snapshots but withholds commands when resource limits cannot be enforced', async context => {
+    if (!namespaces) { context.skip(); return; }
+    const mocked = vi.spyOn(resources, 'probeWorkerResources').mockResolvedValue(false);
+    try {
+      const { root } = await fixture(), worker = await linux({ projectRoot: root, initialSnapshot: undefined });
+      expect(worker.capabilities).toEqual({ filesystem: true, commands: false, sandbox: 'bubblewrap' });
+      expect(await worker.executeTool('worker_read', { path: 'src/a.ts' }, signal())).toMatchObject({ ok: true });
+      expect(await worker.executeTool('worker_command', { command: 'echo forbidden' }, signal())).toMatchObject({ ok: false, code: 'unsupported_sandbox' });
+    } finally { mocked.mockRestore(); }
+  }, 10000);
   it('denies network access including the trusted parent localhost listener', async context => {
     if (!namespaces) { context.skip(); return; }
     const server = createServer((_request, response) => response.end('private-parent'));
@@ -189,6 +272,8 @@ describe('verified Linux namespace integration', () => {
     if (!namespaces) { context.skip(); return; }
     const worker = await linux({ limits: { maxWorkspaceBytes: 4096, maxFileBytes: 8192 } });
     expect(await worker.executeTool('worker_command', { command: '/opt/grunt/node -e ' + quote("require('fs').writeFileSync('src/large',Buffer.alloc(5000));setTimeout(()=>{},10000)"), timeoutSeconds: 5 }, signal())).toMatchObject({ ok: false, code: 'workspace_limit' });
+    const unboundDeps = await linux({ limits: { maxWorkspaceBytes: 4096, maxFileBytes: 8192 } });
+    expect(await unboundDeps.executeTool('worker_command', { command: '/opt/grunt/node -e ' + quote("require('fs').mkdirSync('node_modules');require('fs').writeFileSync('node_modules/growth',Buffer.alloc(5000));setTimeout(()=>{},10000)"), timeoutSeconds: 5 }, signal())).toMatchObject({ ok: false, code: 'workspace_limit' });
     const separate = await linux({ limits: { maxFileBytes: 4096 } });
     expect(await separate.executeTool('worker_command', { command: '/opt/grunt/node -e ' + quote("require('fs').writeFileSync('src/large',Buffer.alloc(8192))") }, signal())).toMatchObject({ ok: false });
   }, 10000);

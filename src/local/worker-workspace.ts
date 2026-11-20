@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -7,7 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { WorkerSandbox } from './worker-sandbox.js';
 import type { WorkerCapabilities, WorkerSandboxOptions } from './worker-sandbox.js';
-import { ownsWorkerPath, privateWorkerPath, workerRelativePath } from './worker-tool-helper.js';
+import { ownsWorkerPath, privateWorkerPath, readScopedWorkerFile, workerRelativePath } from './worker-tool-helper.js';
 import type { WorkerToolPolicy, WorkerToolResult, SnapshotWorkerFile, WorkerSnapshotManifest } from './worker-tool-helper.js';
 import type { ModelRequest } from './source.js';
 export type { WorkerCapabilities, WorkerToolResult };
@@ -18,6 +19,8 @@ export interface WorkerArtifact { id: string; files: WorkerArtifactFile[]; compl
 export interface WorkerWorkspaceLimits { maxFiles?: number; maxSnapshotBytes?: number; maxFileBytes?: number; maxArtifactBytes?: number; maxOutputBytes?: number; maxWorkspaceBytes?: number }
 export interface WorkerWorkspaceOptions {
   projectRoot: string;
+  /** Trusted registered project inode identity: SHA-256(dev:ino). */
+  projectIdentity?: string;
   ownedPaths: string[];
   readOnly?: boolean;
   stateDirectory?: string;
@@ -52,6 +55,10 @@ async function localProject(path: string) {
   const root = projectPath(path), actual = await realpath(root), info = await lstat(root);
   if (actual !== root || !info.isDirectory() || info.isSymbolicLink() || process.getuid && info.uid !== process.getuid()) throw new WorkerWorkspaceError('invalid_workspace', 'The project root must be an owned real directory');
   return root;
+}
+async function assertProjectIdentity(root: string, expected: string) {
+  const info = await lstat(root);
+  if (!info.isDirectory() || info.isSymbolicLink() || sha256(Buffer.from(`${info.dev}:${info.ino}`)) !== expected) throw new WorkerWorkspaceError('invalid_workspace', 'The registered project directory was replaced');
 }
 async function gitFiles(root: string, maxFiles: number, signal: AbortSignal): Promise<string[] | undefined> {
   try {
@@ -88,27 +95,17 @@ async function sourcePaths(root: string, maxFiles: number, signal: AbortSignal) 
 
 /** Run only in the authorized caller's own filesystem permissions, not as a daemon fallback. */
 export async function captureWorkerInitialSnapshot(projectRoot: string, options: WorkerWorkspaceLimits = {}, signal = new AbortController().signal): Promise<WorkerInitialFile[]> {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') throw new WorkerWorkspaceError('unsupported_sandbox', 'Safe caller snapshot capture requires directory-relative file opens; provide an authorized snapshot instead');
   const root = await localProject(projectRoot), cap = limits(options), files: WorkerInitialFile[] = [];
   let bytes = 0;
   for (const input of await sourcePaths(root, cap.maxFiles, signal)) {
-    signal.throwIfAborted();
-    const path = workerRelativePath(input); let current = root, skip = false;
-    for (const part of path.split('/')) {
-      current = join(current, part);
-      try { if ((await lstat(current)).isSymbolicLink()) { skip = true; break; } }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') { skip = true; break; } throw error; }
-    }
-    if (skip) continue;
-    const file = await open(current, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const info = await file.stat(); if (!info.isFile()) continue;
-      if (info.size > cap.maxFileBytes) throw new WorkerWorkspaceError('snapshot_too_large', 'A project file exceeds the snapshot limit');
-      const data = await file.readFile(), after = await file.stat();
-      if (info.size !== after.size || info.mtimeMs !== after.mtimeMs || info.ctimeMs !== after.ctimeMs) throw new WorkerWorkspaceError('workspace_failed', 'Project changed during snapshot capture; retry');
-      bytes += data.length; if (bytes > cap.maxSnapshotBytes) throw new WorkerWorkspaceError('snapshot_too_large', 'Project content exceeds the snapshot limit');
-      const text = data.toString('utf8'), binary = data.includes(0) || !Buffer.from(text).equals(data);
-      files.push({ path, content: binary ? data.toString('base64') : text, ...(binary ? { binary: true } : {}), sha256: sha256(data) });
-    } finally { await file.close(); }
+    signal.throwIfAborted(); const path = workerRelativePath(input);
+    let data: Buffer;
+    try { data = (await readScopedWorkerFile(root, path, cap.maxFileBytes)).data; }
+    catch (error) { if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) continue; throw error; }
+    bytes += data.length; if (bytes > cap.maxSnapshotBytes) throw new WorkerWorkspaceError('snapshot_too_large', 'Project content exceeds the snapshot limit');
+    const text = data.toString('utf8'), binary = data.includes(0) || !Buffer.from(text).equals(data);
+    files.push({ path, content: binary ? data.toString('base64') : text, ...(binary ? { binary: true } : {}), sha256: sha256(data) });
   }
   return files;
 }
@@ -154,6 +151,7 @@ async function suppliedSnapshot(root: string, initial: WorkerInitialFile[], cap:
 export class WorkerWorkspace {
   readonly tools: ModelRequest['tools'];
   readonly recoveryId: string;
+  dependencyStatus?: { available: boolean; reason?: string };
   readonly capabilities: WorkerCapabilities;
   private closed = false;
   private serial: Promise<unknown> = Promise.resolve();
@@ -172,7 +170,7 @@ export class WorkerWorkspace {
         const artifact = await this.inspect(signal);
         if (artifact.outside.length) return { ...result, ok: false, code: 'ownership_violation', message: 'Command changed files outside assigned ownership; those changes cannot be integrated.', paths: artifact.outside.slice(0, 30) };
       }
-      return result;
+      return name === 'worker_command' && !result.ok && this.dependencyStatus && !this.dependencyStatus.available ? { ...result, dependencyWarning: this.dependencyStatus.reason } : result;
     });
     this.serial = result.catch(() => {}); return result;
   }
@@ -233,12 +231,13 @@ export class WorkerWorkspace {
     return artifact;
   }
   /** Explicit cleanup only; callers must retain this object on quota/cancel/timeout. */
-  async cleanup() { await this.serial; this.closed = true; await rm(this.path, { recursive: true, force: true }); if (this.manifestPath) await rm(this.manifestPath, { force: true }); }
+  async cleanup() { await this.serial; this.closed = true; await this.sandbox.close(); await rm(this.path, { recursive: true, force: true }); if (this.manifestPath) await rm(this.manifestPath, { force: true }); }
 }
 
 export async function createWorkerWorkspace(options: WorkerWorkspaceOptions, signal: AbortSignal): Promise<WorkerWorkspace> {
   signal.throwIfAborted();
   const projectRoot = projectPath(options.projectRoot), cap = limits(options.limits), readOnly = options.readOnly === true;
+  if (options.projectIdentity !== undefined && !/^[a-f0-9]{64}$/.test(options.projectIdentity)) throw new WorkerWorkspaceError('invalid_workspace', 'Invalid registered project identity');
   if (cap.maxArtifactBytes < 128) throw new WorkerWorkspaceError('invalid_workspace', 'Worker artifact limit must allow its envelope');
   if (!Array.isArray(options.ownedPaths) || options.ownedPaths.length > 32 || !readOnly && !options.ownedPaths.length) throw new WorkerWorkspaceError('invalid_workspace', 'Implementation workers require one to 32 assigned relative paths');
   const ownedPaths = [...new Set(options.ownedPaths.map(path => workerRelativePath(path)))];
@@ -246,35 +245,55 @@ export async function createWorkerWorkspace(options: WorkerWorkspaceOptions, sig
   if (options.stateDirectory) { await privateDirectory(options.stateDirectory); directory = await mkdtemp(join(options.stateDirectory, 'worker-')); }
   else directory = await mkdtemp(join(tmpdir(), 'grunt-agent-'));
   const policy: WorkerToolPolicy = { root: directory, ownedPaths, readOnly, maxFileBytes: cap.maxFileBytes, maxOutputBytes: cap.maxOutputBytes, maxFiles: cap.maxFiles, maxWorkspaceBytes: cap.maxWorkspaceBytes };
+  let createdManifestPath: string | undefined;
+  let dependencyHandle: FileHandle | undefined, dependencyStatus: { available: boolean; reason?: string } | undefined, finalSandbox: WorkerSandbox | undefined;
   try {
+    const { sourceRoot: _sourceRoot, sourceIdentity: _sourceIdentity, dependencyHandle: _dependencyHandle, ...toolOptions } = options.sandbox ?? {};
     // Probe before touching source contents. A portable daemon accepts only a
     // snapshot captured within the authorized caller's own permissions.
     let candidate: WorkerSandbox;
-    try { candidate = await WorkerSandbox.create(policy, options.sandbox, signal); }
+    try { candidate = await WorkerSandbox.create(policy, toolOptions, signal); }
     catch { signal.throwIfAborted(); throw new WorkerWorkspaceError('unsupported_sandbox', 'The required worker command sandbox is unavailable'); }
-    let baseline: WorkerSnapshotManifest, localSource = false;
+    await candidate.close();
+    let baseline: WorkerSnapshotManifest, localSource = false, projectIdentity: string | undefined;
     if (options.initialSnapshot) baseline = await suppliedSnapshot(directory, options.initialSnapshot, cap, signal);
     else {
-      if (!candidate.capabilities.commands) throw new WorkerWorkspaceError('snapshot_required', 'This platform requires a caller-provided project snapshot; no project files were read');
-      const source = await localProject(projectRoot), selected = await sourcePaths(source, cap.maxFiles, signal);
-      const capture = await WorkerSandbox.create({ ...policy, readOnly: false }, { ...options.sandbox, sourceRoot: source, mode: 'bubblewrap' }, signal);
-      baseline = await capture.snapshot(selected, cap.maxSnapshotBytes, signal); localSource = true;
+      if (candidate.capabilities.sandbox !== 'bubblewrap') throw new WorkerWorkspaceError('snapshot_required', 'This platform requires a caller-provided project snapshot; no project files were read');
+      const source = await localProject(projectRoot), info = await lstat(source);
+      projectIdentity = options.projectIdentity ?? sha256(Buffer.from(`${info.dev}:${info.ino}`));
+      await assertProjectIdentity(projectRoot, projectIdentity);
+      const selected = await sourcePaths(source, cap.maxFiles, signal);
+      const capture = await WorkerSandbox.create({ ...policy, readOnly: false }, { ...toolOptions, sourceRoot: source, sourceIdentity: projectIdentity, mode: 'bubblewrap' }, signal);
+      try {
+        baseline = await capture.snapshot(selected, cap.maxSnapshotBytes, signal);
+        await assertProjectIdentity(projectRoot, projectIdentity);
+        // Pin relative to the same authorized source inode, never a re-resolved parent path.
+        await assertProjectIdentity(projectRoot, projectIdentity);
+        dependencyStatus = await capture.copyDependencies(signal);
+        if (!dependencyStatus.available) await rm(join(directory, 'node_modules'), { recursive: true, force: true });
+        if (dependencyStatus.available) dependencyHandle = await open(join(directory, 'node_modules'), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      } finally { await capture.close(); }
+      localSource = true;
     }
-    let dependencies: string | undefined;
-    if (localSource) { try { const path = join(projectRoot, 'node_modules'), info = await lstat(path); if (info.isDirectory() && !info.isSymbolicLink()) dependencies = path; } catch { /* Dependencies are optional. */ } }
-    if (dependencies) await mkdir(join(directory, 'node_modules'), { mode: 0o700 });
-    const { sourceRoot: _sourceRoot, ...toolOptions } = options.sandbox ?? {};
-    const sandbox = await WorkerSandbox.create(policy, { ...toolOptions, ...(dependencies ? { dependencies } : {}) }, signal);
+    const sandbox = await WorkerSandbox.create(policy, { ...toolOptions, ...(dependencyHandle ? { dependencyHandle } : {}) }, signal);
+    finalSandbox = sandbox;
+    if (projectIdentity) await assertProjectIdentity(projectRoot, projectIdentity);
     const id = randomUUID();
     const manifestPath = options.stateDirectory ? join(options.stateDirectory, basename(directory) + '.json') : undefined;
     if (manifestPath) {
+      createdManifestPath = manifestPath;
       const serialized = JSON.stringify({ schema: 1, id, directory: basename(directory), projectRoot, baseline, ownedPaths, readOnly, cap });
       if (Buffer.byteLength(serialized) > 8 * 1024 * 1024) throw new WorkerWorkspaceError('snapshot_too_large', 'Worker recovery metadata exceeds its limit');
       const manifest = await open(manifestPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       try { await manifest.writeFile(serialized); await manifest.sync(); } finally { await manifest.close(); }
     }
-    return new WorkerWorkspace(id, directory, projectRoot, sandbox, baseline, ownedPaths, readOnly, cap, localSource, manifestPath);
+    if (projectIdentity) await assertProjectIdentity(projectRoot, projectIdentity);
+    const workspace = new WorkerWorkspace(id, directory, projectRoot, sandbox, baseline, ownedPaths, readOnly, cap, localSource, manifestPath);
+    if (dependencyStatus) workspace.dependencyStatus = dependencyStatus;
+    return workspace;
   } catch (error) {
+    await finalSandbox?.close(); await dependencyHandle?.close();
+    if (createdManifestPath) await rm(createdManifestPath, { force: true });
     await rm(directory, { recursive: true, force: true }); signal.throwIfAborted();
     if (error instanceof WorkerWorkspaceError) throw error;
     throw new WorkerWorkspaceError('workspace_failed', 'The isolated worker snapshot could not be created');
@@ -287,7 +306,7 @@ export function getWorkerCapabilities() {
     const root = await mkdtemp(join(tmpdir(), 'grunt-sandbox-probe-'));
     try {
       const sandbox = await WorkerSandbox.create({ root, ownedPaths: [], readOnly: true, maxFiles: 1, maxFileBytes: 1024, maxOutputBytes: 1024 }, {}, AbortSignal.timeout(7000));
-      return { ...sandbox.capabilities, initialSnapshotRequired: !sandbox.capabilities.commands };
+      return { ...sandbox.capabilities, initialSnapshotRequired: sandbox.capabilities.sandbox !== 'bubblewrap' };
     } finally { await rm(root, { recursive: true, force: true }); }
   })();
 }
@@ -325,7 +344,7 @@ export async function restoreWorkerWorkspace(options: RestoreWorkerWorkspaceOpti
     seen.add(path);
   }
   const policy: WorkerToolPolicy = { root: directory, ownedPaths, readOnly: value.readOnly, maxFileBytes: cap.maxFileBytes, maxOutputBytes: cap.maxOutputBytes, maxFiles: cap.maxFiles, maxWorkspaceBytes: cap.maxWorkspaceBytes };
-  const { sourceRoot: _sourceRoot, dependencies: _dependencies, ...sandboxOptions } = options.sandbox ?? {};
+  const { sourceRoot: _sourceRoot, sourceIdentity: _sourceIdentity, dependencyHandle: _dependencyHandle, ...sandboxOptions } = options.sandbox ?? {};
   const sandbox = await WorkerSandbox.create(policy, sandboxOptions, signal);
   return new WorkerWorkspace(options.workspaceId, directory, projectRoot, sandbox, baseline, ownedPaths, value.readOnly, cap, false, manifestPath, true);
 }

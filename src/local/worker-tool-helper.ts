@@ -1,8 +1,8 @@
 /** Fixed filesystem operations shared by the portable worker and its sandbox helper. */
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readlink, realpath, rm, symlink, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
@@ -15,6 +15,7 @@ export interface WorkerToolPolicy {
   maxOutputBytes: number;
   maxFiles: number;
   maxWorkspaceBytes?: number;
+  readOnlyDependencies?: boolean;
 }
 export interface InspectedWorkerFile { path: string; sha256: string; size: number; binary: boolean; executable: boolean; content?: string }
 export interface WorkerInspection { files: InspectedWorkerFile[]; unsafe: string[]; truncated: boolean }
@@ -70,17 +71,31 @@ async function checkedPath(policy: WorkerToolPolicy, relative: string, createPar
   }
   return current;
 }
-async function readBytes(policy: WorkerToolPolicy, path: string, limit = policy.maxFileBytes) {
-  const full = await checkedPath(policy, path);
-  const file = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+/** Component-relative opens pin each directory and refuse symlinks at every hop. */
+export async function readScopedWorkerFile(root: string, path: string, limit: number) {
+  workerRelativePath(path);
+  const descriptorRoot = process.platform === 'linux' ? '/proc/self/fd' : process.platform === 'darwin' ? '/dev/fd' : undefined;
+  if (!descriptorRoot) throw new ToolFailure('unsupported_sandbox');
+  const handles: Awaited<ReturnType<typeof open>>[] = [];
   try {
+    let directory = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); handles.push(directory);
+    const parts = path.split('/');
+    for (const part of parts.slice(0, -1)) { directory = await open(`${descriptorRoot}/${directory.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); handles.push(directory); }
+    const file = await open(`${descriptorRoot}/${directory.fd}/${parts.at(-1)!}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); handles.push(file);
     const info = await file.stat();
     if (!info.isFile()) throw new ToolFailure('invalid_path');
     if (info.size > limit) throw new ToolFailure('too_large');
     const data = await file.readFile(), after = await file.stat();
     if (info.size !== after.size || info.mtimeMs !== after.mtimeMs || info.ctimeMs !== after.ctimeMs || data.length !== info.size) throw new ToolFailure('tool_failed');
-    return data;
-  } finally { await file.close(); }
+    return { data, info };
+  } finally { await Promise.all(handles.reverse().map(handle => handle.close())); }
+}
+async function readBytes(policy: WorkerToolPolicy, path: string, limit = policy.maxFileBytes) {
+  if (process.platform === 'linux' || process.platform === 'darwin') return (await readScopedWorkerFile(policy.root, path, limit)).data;
+  // Portable private working copies have no untrusted commands or symlink creation tools.
+  const full = await checkedPath(policy, path), file = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try { const info = await file.stat(); if (!info.isFile() || info.size > limit) throw new ToolFailure('too_large'); return await file.readFile(); }
+  finally { await file.close(); }
 }
 async function writeBytes(policy: WorkerToolPolicy, path: string, data: string) {
   if (policy.readOnly) throw new ToolFailure('read_only');
@@ -142,11 +157,9 @@ export async function snapshotWorkerFiles(sourceRoot: string, policy: WorkerTool
     const path = workerRelativePath(input);
     let data: Buffer, info;
     try {
-      const full = await checkedPath(source, path); info = await lstat(full);
-      if (!info.isFile() || info.isSymbolicLink()) { omittedPaths.push(path); continue; }
-      data = await readBytes(source, path);
+      const read = await readScopedWorkerFile(source.root, path, source.maxFileBytes); data = read.data; info = read.info;
     } catch (error) {
-      if (error instanceof ToolFailure && ['invalid_path', 'not_found'].includes(error.code) || (error as NodeJS.ErrnoException).code === 'ENOENT') { omittedPaths.push(path); continue; }
+      if (error instanceof ToolFailure && ['invalid_path', 'not_found'].includes(error.code) || ['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) { omittedPaths.push(path); continue; }
       throw error;
     }
     bytes += data.length; if (bytes > maxBytes) throw new ToolFailure('too_large');
@@ -155,6 +168,50 @@ export async function snapshotWorkerFiles(sourceRoot: string, policy: WorkerTool
     files.push({ path, sha256: hash(data), size: data.length, binary: data.includes(0) || !Buffer.from(data.toString('utf8')).equals(data), executable: !!(info.mode & 0o111) });
   }
   return { files, omittedPaths };
+}
+/** Bounded regular-file dependency snapshot. No source sockets or secret files are mounted for models. */
+export async function snapshotWorkerDependencies(source: string, destination: string) {
+  const opened: Awaited<ReturnType<typeof open>>[] = [], links: { path: string; target: string }[] = [];
+  let files = 0, bytes = 0; const deadline = Date.now() + 15000;
+  const root = await open(source, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); opened.push(root);
+  await mkdir(destination, { mode: 0o700 });
+  const visit = async (handle: Awaited<ReturnType<typeof open>>, prefix: string) => {
+    for (const entry of await readdir(`/proc/self/fd/${handle.fd}`, { withFileTypes: true })) {
+      if (++files > 20000 || Date.now() > deadline) throw new ToolFailure('too_large');
+      const path = prefix ? prefix + '/' + entry.name : entry.name;
+      if (privateWorkerPath(path.split('/').filter(part => part !== 'node_modules').join('/'))) continue;
+      // Validate portable names without treating nested dependency directories as secrets.
+      for (const part of path.split('/')) if (part !== 'node_modules') workerRelativePath(part);
+      const from = `/proc/self/fd/${handle.fd}/${entry.name}`, to = join(destination, path);
+      if (entry.isSymbolicLink()) { links.push({ path, target: await readlink(from) }); continue; }
+      if (entry.isDirectory()) {
+        const child = await open(from, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); opened.push(child);
+        await mkdir(to, { mode: 0o700 }); await visit(child, path); await child.close(); opened.splice(opened.indexOf(child), 1);
+      } else if (entry.isFile()) {
+        const input = await open(from, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); opened.push(input);
+        const stat = await input.stat(); if (!stat.isFile() || stat.size > 16 * 1024 * 1024 || (bytes += stat.size) > 256 * 1024 * 1024) throw new ToolFailure('too_large');
+        const data = await input.readFile(), after = await input.stat();
+        if (stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs || data.length !== stat.size) throw new ToolFailure('tool_failed');
+        const output = await open(to, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, stat.mode & 0o111 ? 0o700 : 0o600);
+        try { await output.writeFile(data); } finally { await output.close(); }
+        await input.close(); opened.splice(opened.indexOf(input), 1);
+      }
+      // All sockets, devices, FIFOs and other special nodes are omitted.
+    }
+  };
+  try {
+    await visit(root, '');
+    // Only materialize relative links after regular-file copying, and only to
+    // already-copied targets. Repeated passes handle ordinary internal link chains.
+    for (let pass = 0; pass < 8 && links.length; pass++) for (let index = links.length - 1; index >= 0; index--) {
+      const link = links[index]!; if (isAbsolute(link.target)) { links.splice(index, 1); continue; }
+      const target = resolve(dirname(join(destination, link.path)), link.target), rel = relative(destination, target);
+      if (!rel || rel === '..' || rel.startsWith('../')) { links.splice(index, 1); continue; }
+      try { const actual = await realpath(target); if (actual !== destination && !actual.startsWith(destination + '/')) continue; await symlink(link.target, join(destination, link.path)); links.splice(index, 1); } catch { /* Missing or excluded targets remain absent. */ }
+    }
+    return { available: true, files, bytes };
+  } catch { await rm(destination, { recursive: true, force: true }); return { available: false, reason: 'Dependency snapshot exceeded its bounds or changed while copying.' }; }
+  finally { await Promise.all(opened.map(handle => handle.close())); }
 }
 export async function executeWorkerTool(policy: WorkerToolPolicy, name: string, input: unknown): Promise<WorkerToolResult> {
   try {
@@ -222,7 +279,7 @@ async function boundedUsage(policy: WorkerToolPolicy) {
   const visit = async (root: string) => {
     for (const entry of await readdir(root, { withFileTypes: true })) {
       // Read-only dependencies cannot grow and can contain arbitrarily many files.
-      if (root === policy.root && entry.name === 'node_modules') continue;
+      if (policy.readOnlyDependencies && root === policy.root && entry.name === 'node_modules') continue;
       if (++entries > policy.maxFiles * 2) throw new ToolFailure('workspace_limit');
       const path = join(root, entry.name), info = await lstat(path);
       if (info.isSymbolicLink()) continue;
@@ -270,7 +327,8 @@ async function main() {
   for await (const chunk of process.stdin) { bytes += chunk.length; if (bytes > 2 * 1024 * 1024) throw new ToolFailure('too_large'); chunks.push(chunk); }
   const request = object(JSON.parse(Buffer.concat(chunks).toString('utf8'))), policy = request.policy as WorkerToolPolicy;
   // The parent owns this policy and transport. Model input occupies args only.
-  const result = request.operation === 'snapshot' ? await snapshotWorkerFiles('/source', policy, request.paths as string[], Number(request.maxBytes))
+  const result = request.operation === 'dependencies' ? await snapshotWorkerDependencies('/source/node_modules', '/workspace/node_modules')
+    : request.operation === 'snapshot' ? await snapshotWorkerFiles('/source', policy, request.paths as string[], Number(request.maxBytes))
     : request.operation === 'inspect' ? await inspectWorkerFiles(policy, Number(request.maxBytes), request.baseline as Record<string, string> | undefined)
     : request.operation === 'worker_command' ? await command(policy, request.args) : await executeWorkerTool(policy, String(request.operation), request.args);
   process.stdout.write(JSON.stringify(result));
