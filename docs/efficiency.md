@@ -109,6 +109,8 @@ repository, branch prefix/base, Pages branch, static artifact directory, require
 check IDs, fixed check commands, independent review paths and merge/deploy
 permissions. It also pins Git configuration and an isolated sandbox argv template.
 Keep the policy and authority directory outside the project and all worker mounts.
+An existing `core.hooksPath=/dev/null` is accepted; custom hooks and included
+Git configuration remain rejected.
 
 The host currently requires Linux, `/usr/bin/bwrap`, `/usr/bin/git`,
 `/usr/bin/gh`, host-side GitHub authentication and a running local Grunt daemon

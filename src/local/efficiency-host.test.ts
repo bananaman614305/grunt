@@ -284,3 +284,14 @@ it('runs a real isolated synthetic bwrap check with inherited readonly mount des
   const check = await verification.start({ planId: 'release', checkId: 'tests' }, { cwd: f.projectRoot }); await host.tick();
   expect(await host.broker.verifiedReceipt(check.id)).toMatchObject({ verified: true });
 });
+
+
+it.each(['/dev/null', '/tmp/synthetic-custom-hooks', '/dev/null\n'])('accepts pinned core.hooksPath only with the exact safe value: %j', async hooksPath => {
+  const f = await fixture(); git(f.projectRoot, 'config', 'core.hooksPath', hooksPath);
+  f.policy.gitConfigSha256 = createHash('sha256').update(await readFile(join(f.projectRoot, '.git/config'))).digest('hex');
+  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const request = { head: f.head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [randomUUID()] };
+  if (hooksPath === '/dev/null') expect(await host.queue.prepare(request)).toMatchObject({ phase: 'blocked', reason: 'verification_required' });
+  else await expect(host.queue.prepare(request)).rejects.toThrow('execution-sensitive');
+  expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+});

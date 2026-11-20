@@ -199,7 +199,10 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
         // Parse only pinned bytes through stdin, outside the project. Includes are never expanded.
         const parsed = await exec(['/usr/bin/git', 'config', '--no-includes', '--file', '-', '--null', '--list'], { input: content.toString('utf8'), cwd: policy.stateDirectory, environment: { ...minimalEnvironment, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
         const allowed = /^(?:core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|user\.(?:name|email)|remote\.[^.]+\.(?:url|fetch)|branch\..+\.(?:remote|merge)|init\.defaultbranch)$/;
-        if (parsed.code || parsed.stdout.split('\0').filter(Boolean).some(row => !allowed.test(row.split('\n')[0]!))) throw new Error('Execution host refuses included or execution-sensitive Git configuration.');
+        if (parsed.code || parsed.stdout.split('\0').filter(Boolean).some(row => {
+          const boundary = row.indexOf('\n'), key = boundary < 0 ? row : row.slice(0, boundary), value = boundary < 0 ? '' : row.slice(boundary + 1);
+          return key === 'core.hookspath' ? value !== '/dev/null' : !allowed.test(key);
+        })) throw new Error('Execution host refuses included or execution-sensitive Git configuration.');
         configParsed = true;
       }
     }
