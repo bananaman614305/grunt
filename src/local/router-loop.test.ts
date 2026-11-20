@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bundledRegistry } from '../registry.js';
+import { bundledRegistry, localOptInAdapters } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { configure } from './main.js';
 import { recordDataSharingConsent, requiresDataSharing } from './data-sharing.js';
@@ -286,4 +286,50 @@ it.each(['unmanaged', 'no receipt', 'authorized'] as const)('uses automatic-pool
     sources.adopt({ ...initial, adapters: [...initial.adapters, added] });
     expect(sources.sources.map(source => source.id)).toEqual(mode === 'authorized' ? ['opencode', 'kilo', 'nvidia'] : ['opencode', 'kilo']);
   } finally { await sources.close(); }
+});
+
+it.each(['automatic', 'managed custom', 'manual'] as const)('matches restart enrollment after hot-add for a %s pool', async mode => {
+  const { writeAutomaticPool } = await import('./automatic-pool.js');
+  const dir = await directory();
+  let current: Registry = { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(adapter => ['opencode', 'kilo'].includes(adapter.id)) };
+  const configured = mode === 'managed custom' ? ['opencode', 'kilo', 'freellmapi'] : ['opencode', 'kilo'];
+  if (mode === 'managed custom') await writeAutomaticPool(dir, configured);
+  const env = { GRUNT_CONFIG_DIR: dir,
+    ...(mode !== 'automatic' ? { GRUNT_SOURCES: configured.join(',') } : {}),
+    ...(mode === 'managed custom' ? { GRUNT_DAEMON: '1' } : {}) };
+  const sources = configure(env, () => current);
+  const additions = [
+    ...localOptInAdapters,
+    { id: 'reflection-beam', kind: 'model' as const, tier: 'experimental' as const, weight: 0.01, modalities: ['text' as const], install: 'builtin:reflection-beam', model: 'reflection/beam-free' }
+  ];
+  current = { ...current, adapters: [...current.adapters, ...additions] };
+  const restarted = configure(env, () => current);
+  try {
+    sources.adopt(current);
+    sources.adopt(current);
+    const ids = sources.sources.map(source => source.id);
+    expect(ids).toEqual(restarted.sources.map(source => source.id));
+    for (const id of ['crowllm', 'antseed-vikey', 'reflection-beam']) {
+      expect(ids.includes(id)).toBe(mode !== 'manual');
+    }
+  } finally { await Promise.all([sources.close(), restarted.close()]); }
+});
+
+it('keeps retirement visible in status and model listings after the cooldown ends', async () => {
+  const routes = pool(() => new SourceError('upstream', 'Synthetic outage'));
+  try {
+    await failRepeatedly(routes, RETIRE_AFTER_FAILURES);
+    expect(await routes.a.available()).toBe(true);
+    const projected = () => routes.sources.status().sources.find(row => row.id === 'opencode')!;
+    expect(projected().state).toBe('unavailable');
+    expect(await routes.sources.models()).toEqual(['grunt', 'kilo']);
+    expect(routes.sources.retired('opencode')).toBe(true);
+    await expect(routes.sources.complete({ ...ask('explicit retired request'), model: 'opencode' }, AbortSignal.timeout(1000))).rejects.toThrow();
+    routes.sources.unretire(['opencode']);
+    expect(await routes.sources.models()).toEqual(['grunt', 'opencode', 'kilo']);
+    expect(routes.sources.retired('opencode')).toBe(false);
+    vi.mocked(routes.a.complete).mockResolvedValueOnce({ text: 'recovered' });
+    await expect(routes.sources.complete({ ...ask('revived request'), model: 'opencode' }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'recovered' });
+    expect(projected().state).toBe('ready');
+  } finally { await routes.sources.close(); }
 });

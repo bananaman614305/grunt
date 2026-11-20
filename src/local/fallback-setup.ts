@@ -70,6 +70,7 @@ export async function setupFallbacks(options: {
   connect?: () => Promise<void>;
   signal?: AbortSignal;
   background?: boolean;
+  acquire?: boolean;
   kiloAccount?: boolean;
   dataSharingApproved?: readonly string[];
   onSettled?: (id: string, available: boolean, reason?: string) => void | Promise<void>;
@@ -79,6 +80,7 @@ export async function setupFallbacks(options: {
 }) {
   const squire = options.squire ?? new BrowserSquire({ background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}) });
   const owned = squire instanceof BrowserSquire && !options.squire;
+  const reuseOnly = options.background === true && options.acquire !== true;
   const requested = [...new Set(options.adapters ?? ['opencode'])];
   // A registry may list account-based providers first. Keep their shared
   // browser login from occupying every worker before anonymous routes start.
@@ -192,18 +194,18 @@ export async function setupFallbacks(options: {
         options.notify('Antseed Vikey setup unavailable on this platform or buyer configuration; other routes remain available.');
       } },
       millionseek: async () => { try {
-        if (!options.background) await connect();
+        if (!reuseOnly) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['millionseek'], { squire: squire as SetupSquire, directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('100milionseek: recurring free DeepSeek access connected');
       } catch (error) {
         failedSetup('millionseek', error);
         options.notify('100milionseek setup needs attention; other free sources continue.');
       } },
       freepi: async () => { try {
-        if (!options.background) await connect();
+        if (!reuseOnly) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['freepi'], { squire: squire as SetupSquire, directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Free-Pi: public-project free access connected under the approved data terms');
       } catch (error) {
         failedSetup('freepi', error);
@@ -240,56 +242,56 @@ export async function setupFallbacks(options: {
       } },
       'aperture-ai': async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['aperture-ai'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('aperture-ai', error);
         options.notify('Aperture Free setup is pending. Other routes remain available.');
       } },
       darus: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['darus'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('darus', error);
         options.notify('Darus protected free setup is pending. Other routes remain available.');
       } },
       fikra: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['fikra'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('fikra', error);
         options.notify('fikra: temporary free setup pending; other routes remain available.');
       } },
       openference: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['openference'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('openference', error);
         options.notify('openference: temporary free setup pending; other routes remain available.');
       } },
       crowllm: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['crowllm'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('crowllm', error);
         options.notify('CrowLLM free setup is pending. Other routes remain available.');
       } },
       goedel: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['goedel'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('goedel', error);
         options.notify('Gödel free setup is pending. Other routes remain available.');
       } },
       numes: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['numes'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('numes', error);
         options.notify('Numes free setup is pending. Other routes remain available.');
       } },
       kenari: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['kenari'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         failedSetup('kenari', error);
         options.notify('Kenari free setup is pending. Other routes remain available.');
@@ -333,36 +335,36 @@ export async function setupFallbacks(options: {
         options.notify('LiveKit free Build signup or native CLI pairing incomplete. Rerun usegrunt setup; other routes remain available.');
       } },
       pollinations: async () => { try {
-        if (!options.background) await connect();
+        if (!reuseOnly) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['pollinations'], { squire: squire as SetupSquire, directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Pollinations: community GLM 5.3 Flash access connected through Squire');
       } catch (error) {
         failedSetup('pollinations', error);
         options.notify('Pollinations free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       beatapi: async () => { try {
-        if (!options.background) await connect();
+        if (!reuseOnly) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['beatapi'], { squire: squire as SetupSquire, directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('BeatAPI: verified free access connected through Squire');
       } catch (error) {
         failedSetup('beatapi', error);
         options.notify('BeatAPI free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
       clixad: async () => { try {
-        if (!options.background) await connect();
+        if (!reuseOnly) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['clixad'], { squire: squire as SetupSquire, directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Clixad: free GLM 5.3 Flash access connected');
       } catch (error) {
         failedSetup('clixad', error);
         options.notify(error instanceof ClixadNativeLoginRequired ? error.message : 'Clixad setup needs attention. Rerun usegrunt setup; other free routes continue.');
       } },
       perch: async () => { try {
-        if (!options.background) await connect();
+        if (!reuseOnly) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['perch'], { squire: squire as SetupSquire, directory: options.directory,
-          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
         options.notify('Perch: Starter DeepSeek access connected with optional data sharing and account memory off');
       } catch (error) {
         failedSetup('perch', error);
@@ -370,7 +372,7 @@ export async function setupFallbacks(options: {
       } },
       nous: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['nous'], { squire: squire as SetupSquire, directory: options.directory,
-          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         unavailable.push('nous');
         // Prefer the Nous reason over Squire's browser reason: the table shows

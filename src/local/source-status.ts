@@ -302,6 +302,7 @@ export class SourceStatus {
     approvals: ReadonlySet<string>;
     preparing: ReadonlySet<string>;
     listed?: (id: string) => boolean;
+    retired?: (id: string) => boolean;
     cooldown?: (id: string) => { until: number; code?: ErrorCode } | undefined;
     model?: (id: string) => string | undefined;
   }): PoolSnapshot {
@@ -323,6 +324,7 @@ export class SourceStatus {
       else if (cooldown !== undefined && (entry.state === 'limited' || entry.state === 'error')) row.state = 'available';
       else if (entry.retryAt !== undefined && entry.retryAt > now) row.retryAt = entry.retryAt;
       else if (entry.retryAt !== undefined && entry.state === 'limited') row.state = 'available';
+      if (row.state !== 'disabled' && options.retired?.(id)) row.state = 'unavailable';
       row.detail = `${detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
       return row;
     });

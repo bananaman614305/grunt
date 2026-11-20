@@ -141,7 +141,7 @@ export class Sources {
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
   status(): PoolSnapshot {
     const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
-      pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
+      retired: id => this.retired(id), pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
       ...(this.router ? { listed: (id: string) => this.router!.listed(id), cooldown: (id: string) => this.router!.cooldown(id) } : {}),
       model: id => {
         const adapter = this.routing?.registry().adapters.find(adapter => adapter.id === id);
@@ -258,9 +258,9 @@ export class Sources {
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
+      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
       if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
-      return s.id;
+      return this.retired(s.id) ? null : s.id;
     }));
     return ['grunt', ...available.filter((id): id is string => id !== null)];
   }

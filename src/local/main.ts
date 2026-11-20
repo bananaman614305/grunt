@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { gruntEnv } from '../brand.js';
-import { disabledAdapters, knownAdapters, localOptInAdapterIds, localOptInAdapters } from '../registry.js';
+import { disabledAdapters, knownAdapters, localOptInAdapters } from '../registry.js';
 import { recommendedAdapters, scoutRetired } from './routing.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -91,11 +91,6 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   if (numesModel !== undefined && (!deepSeekFlash || ids.length !== 1 || ids[0] !== 'numes')) {
     throw new Error('The Numes qualification model requires the exact Numes-only source');
   }
-  if (ids.includes('antseed-vikey')) {
-    const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
-    registered.push(new AntseedVikey(port ? { port } : {}));
-  }
-  if (ids.includes('reflection-beam')) registered.push(new Kilo({ directory: configDir(env), reflectionBeam: true }));
   const enabledOptIns = localOptInAdapters.filter(adapter => ids.includes(adapter.id));
   const localOptIns = new Set(enabledOptIns.map(adapter => adapter.id));
   const routingRegistry = () => {
@@ -118,7 +113,15 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))
     ? { registry: routingRegistry, localOptIns } : undefined;
   const build = (id: string) => {
-    const source = registered.find(source => source.id === id);
+    let source = registered.find(source => source.id === id);
+    if (!source && id === 'antseed-vikey') {
+      const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
+      source = new AntseedVikey(port ? { port } : {});
+    }
+    if (!source && id === 'reflection-beam') source = new Kilo({ directory: configDir(env), reflectionBeam: true });
+    if (source && !registered.includes(source)) registered.push(source);
+    const optIn = localOptInAdapters.find(adapter => adapter.id === id);
+    if (optIn && !localOptIns.has(id)) { enabledOptIns.push(optIn); localOptIns.add(id); }
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
     return !routing && (knownAdapters.has(id) || localOptIns.has(id)) ? new RegistrySource(consent, routingRegistry) : consent;
@@ -127,12 +130,11 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   sources.setWorkerRegistry(routingRegistry, localOptIns);
   // Hot-add (docs/router.md): an automatic pool routes a newly listed shipped
   // adapter without a restart. A manual GRUNT_SOURCES list stays fixed.
-  const automatic = routing && selection.automatic;
   const adopt = (current: Registry) => {
-    if (!automatic) return;
+    if (!selection.automatic) return;
     for (const adapter of current.adapters) {
-      if (knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id) && !localOptInAdapterIds.has(adapter.id)
-        && registered.some(source => source.id === adapter.id) && !sources.sources.some(source => source.id === adapter.id)) sources.add(build(adapter.id));
+      if (knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
+        && !sources.sources.some(source => source.id === adapter.id)) sources.add(build(adapter.id));
     }
   };
   return Object.assign(sources, { adopt });

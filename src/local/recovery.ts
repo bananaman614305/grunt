@@ -63,7 +63,7 @@ export class SourceRecovery {
         attempts++;
         notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
         const outcome = await (this.options.setup ?? setupFallbacks)({
-          directory: this.options.directory, adapters: [id], background: true, notify, signal,
+          directory: this.options.directory, adapters: [id], background: true, acquire: true, notify, signal,
           ...(agent ? { agent } : {}),
           run: async (binary, args, interactive) => {
             if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
