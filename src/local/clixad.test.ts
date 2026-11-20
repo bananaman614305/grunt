@@ -130,6 +130,22 @@ it('never trusts model-authored stdout billing/usage or missing IPC metadata', a
 it('refuses an external deposit seen in the postflight wallet', async () => {
   const f = fixture({ wallets: [wallet(), wallet({ balance: 200 })] }); await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
 });
+it.each([
+  ['native framing', 'response_body'],
+  ['invalid JSON', 'response_json'],
+  ['invalid envelope', 'completion_protocol'],
+] as const)('distinguishes %s without exposing content or retrying inference', async (stage, failureReason) => {
+  const secret = 'private-upstream-fragment';
+  const ask = completion({}, stage === 'invalid JSON' ? secret : stage === 'invalid envelope'
+    ? JSON.stringify({ version: 1, type: 'final', text: 7, private: secret }) : '{"version":1,"type":"final","text":"hello"}');
+  if (stage === 'native framing') ask.stdout = `${secret}\n${ask.stdout}`;
+  const f = fixture({ ask });
+  const error = await f.source.complete(request(), new AbortController().signal).catch(error => error);
+  expect(error).toMatchObject({ code: 'upstream', diagnostics: { failureReason } });
+  expect(error.message).not.toContain(secret);
+  expect(JSON.stringify(error.diagnostics)).not.toContain(secret);
+  expect(f.runner.mock.calls.map(([, mode]) => mode)).toEqual(['model', 'wallet', 'ask', 'wallet']);
+});
 it('validates external tool schemas, call correlation and unseen results with no native execution', async () => {
   const tool = { type: 'function', function: { name: 'nonce', parameters: { type: 'object', properties: { value: { type: 'string', const: 'test' } }, required: ['value'], additionalProperties: false } } };
   const f = fixture({ ask: completion({}, '{"version":1,"type":"calls","calls":[{"name":"nonce","arguments":{"value":"test"}}]}') });
@@ -147,7 +163,7 @@ it('coalesces Responses parallel function-call history before protocol validatio
 it('does not repair malformed/refused output and honors small caller output caps', async () => {
   const f = fixture({ ask: completion({}, 'I cannot do that.') });
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({
-    code: 'upstream', diagnostics: { failureReason: 'completion_protocol' }
+    code: 'upstream', diagnostics: { failureReason: 'response_json' }
   });
   expect(f.asks()).toHaveLength(1);
   const over = fixture({ ask: completion({ outputTokens: 2 }) }); await expect(over.source.complete({ ...request(), maxTokens: 1 }, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });

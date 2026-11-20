@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.28] - 2026-11-20
+
+- Distinguish Clixad native-output framing, invalid JSON and caller-envelope failures in diagnostics without exposing reply content, retrying inference or changing acceptance and billing guards.
+
 ## [0.7.27] - 2026-11-20
 
 - Keep the shared tool bridge usable when providers reuse a call ID in separate completed turns, including Mistral Vibe. Preserve exact historical results and continue rejecting duplicate pending calls, orphan results and incomplete histories.
