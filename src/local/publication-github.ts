@@ -4,6 +4,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { publicationMarker, safeRelative } from './publication.js';
 import type { PublicationPolicy, PublicationRecord, PublicationTransport } from './publication.js';
+import { privateWorkerPath } from './worker-tool-helper.js';
 
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === 'object' && !Array.isArray(value) ? value as Json : {};
@@ -31,7 +32,7 @@ export async function readPublicationArtifacts(policy: PublicationPolicy): Promi
     if (++directories > 4000 || depth > 32) throw new Error('Deployment directory budget exceeded.');
     for (const entry of (await readdir(at(dir, '.'), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
       const rel = parent ? parent + '/' + entry.name : entry.name;
-      if (!safeRelative(rel) || /(^|\/)(?:\.env(?:\..*)?|\.npmrc|auth\.json|models\.json)$|\.(?:pem|key)$/i.test(rel)) throw new Error('Private-looking deployment artifact.');
+      if (!safeRelative(rel) || privateWorkerPath(rel)) throw new Error('Private-looking deployment artifact.');
       if (entry.isSymbolicLink()) throw new Error('Deployment artifact symlinks are not supported.');
       if (entry.isDirectory()) {
         const child = await open(at(dir, entry.name), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -41,7 +42,15 @@ export async function readPublicationArtifacts(policy: PublicationPolicy): Promi
       const file = await open(at(dir, entry.name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
         const st = await file.stat(); if (!st.isFile() || st.size > 20 * 1024 * 1024 || process.getuid && st.uid !== process.getuid()) throw new Error('Unsafe deployment artifact.');
-        const content = await file.readFile(); total += content.length;
+        const chunks: Buffer[] = [], buffer = Buffer.alloc(65536); let bytes = 0;
+        for (;;) {
+          const { bytesRead } = await file.read(buffer, 0, buffer.length, null);
+          if (!bytesRead) break;
+          bytes += bytesRead;
+          if (bytes > 20 * 1024 * 1024 || total + bytes > 100 * 1024 * 1024) throw new Error('Deployment artifact budget exceeded.');
+          chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+        }
+        const content = Buffer.concat(chunks); total += content.length;
         if (files.length >= 2000 || total > 100 * 1024 * 1024) throw new Error('Deployment artifact budget exceeded.');
         files.push({ path: rel, content });
       } finally { await file.close(); }
@@ -141,10 +150,17 @@ export class GithubPublicationTransport implements PublicationTransport {
     if (current.message !== marker) {
       const files = await this.options.artifacts(value, policy);
       if (!files.length || files.length > 2000) throw new Error('Missing verified deployment artifact.');
+      const paths = new Set<string>(); let bytes = 0;
+      for (const file of files) {
+        if (!safeRelative(file.path) || privateWorkerPath(file.path) || paths.has(file.path) || !Buffer.isBuffer(file.content)
+          || file.content.length > 20 * 1024 * 1024) throw new Error('Unsafe deployment artifact path or content.');
+        paths.add(file.path); bytes += file.content.length;
+        if (bytes > 100 * 1024 * 1024) throw new Error('Deployment artifact budget exceeded.');
+      }
+      if (!paths.has('index.html')) throw new Error('Missing verified index.html.');
       const tree = [];
       for (const file of files) {
         signal?.throwIfAborted();
-        if (!safeRelative(file.path)) throw new Error('Unsafe deployment artifact path.');
         const blob = object(await this.api(policy, '/git/blobs', 'POST', { content: file.content.toString('base64'), encoding: 'base64' }, signal));
         if (!sha(blob.sha)) throw new Error('Invalid deployment blob.');
         tree.push({ path: file.path, mode: '100644', type: 'blob', sha: blob.sha });

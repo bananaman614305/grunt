@@ -73,6 +73,11 @@ it('does not overwrite a newer Pages deployment while waiting for its build', as
   f.refs.set('gh-pages', '8'.repeat(40)); f.commits.set('8'.repeat(40), { sha: '8'.repeat(40), tree: { sha: gitTree }, message: 'someone newer' });
   await expect(f.transport.deploy(f.value, policy)).rejects.toThrow('newer work');
 });
+it.each(['.netrc', 'credentials.json', '.envrc', 'certificate.p12', 'certificate.pfx', 'service-account-prod.json', 'nested/.ssh/id_rsa'])('rejects %s before uploading any blob even if a trusted adapter returns it', async path => {
+  const f = fixture(); f.value.mergeCommit = await f.transport.merge(f.value, policy);
+  f.artifacts.mockResolvedValueOnce([{ path: 'index.html', content: Buffer.from('fixture') }, { path, content: Buffer.from('private fixture') }]);
+  await expect(f.transport.deploy(f.value, policy)).rejects.toThrow('Unsafe deployment'); expect(f.calls.some(c => c.path === '/git/blobs')).toBe(false);
+});
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 it('reads a bounded static artifact tree without symlinks or private-looking files', async () => {
@@ -80,4 +85,8 @@ it('reads a bounded static artifact tree without symlinks or private-looking fil
   const p = { ...policy, projectRoot: root }; expect((await readPublicationArtifacts(p)).map(f => f.path)).toEqual(['index.html']);
   await writeFile(join(root, 'dist/.env'), 'private'); await expect(readPublicationArtifacts(p)).rejects.toThrow('Private-looking'); await rm(join(root, 'dist/.env'));
   await symlink(join(root, 'dist/index.html'), join(root, 'dist/outside')); await expect(readPublicationArtifacts(p)).rejects.toThrow('symlinks');
+});
+it.each(['.netrc', 'credentials.json', '.envrc', 'certificate.p12', 'certificate.pfx', 'service-account-prod.json'])('excludes private artifact %s from fd-relative reading', async path => {
+  const root = await mkdtemp(join(tmpdir(), 'grunt-pages-private-')); roots.push(root); await mkdir(join(root, 'dist')); await writeFile(join(root, 'dist/index.html'), 'fixture'); await writeFile(join(root, 'dist', path), 'private fixture');
+  await expect(readPublicationArtifacts({ ...policy, projectRoot: root })).rejects.toThrow('Private-looking');
 });
