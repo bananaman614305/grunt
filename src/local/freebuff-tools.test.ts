@@ -59,6 +59,34 @@ it('rejects duplicate definitions and passes tools whose schema Ajv cannot compi
   expect(() => new FreebuffTools({...request,tools:[{type:'function',function:{name:'read',parameters:{$ref:'https://invalid.example/schema'}}}]})).not.toThrow();
 });
 
+it('preserves reused call IDs in separately completed turns without mutating caller history', () => {
+  const call = { id: 'call_0', type: 'function' as const, function: { name: 'read', arguments: '{"path":"a"}' } };
+  const messages = [...request.messages,
+    { role: 'assistant', content: '', tool_calls: [call] },
+    { role: 'tool', tool_call_id: call.id, content: 'first result' },
+    { role: 'assistant', content: '', tool_calls: [{ ...call, function: { ...call.function, arguments: '{"path":"b"}' } }] },
+    { role: 'tool', tool_call_id: call.id, content: 'second result' }];
+  const original = structuredClone(messages);
+  const bridge = new FreebuffTools({ ...request, messages });
+  expect(JSON.parse(bridge.prompt().split('\n').at(-1)!).messages).toEqual(original);
+  expect(messages).toEqual(original);
+  expect(bridge.parse('{"version":1,"type":"final","text":"done"}')).toEqual({ text: 'done' });
+});
+
+it('rejects ambiguous pending ID reuse and missing or duplicate results across completed turns', () => {
+  const call = { id: 'call_0', type: 'function' as const, function: { name: 'read', arguments: '{}' } };
+  const completed = [...request.messages, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', tool_call_id: call.id, content: 'result' }];
+  for (const messages of [
+    [...request.messages, { role: 'assistant', content: '', tool_calls: [call, call] }],
+    [...request.messages, { role: 'assistant', content: '', tool_calls: [call, call] }, { role: 'tool', tool_call_id: call.id, content: 'one ambiguous result' }],
+    [...request.messages, { role: 'assistant', content: '', tool_calls: [call, call] }, { role: 'tool', tool_call_id: call.id, content: 'first ambiguous result' }, { role: 'tool', tool_call_id: call.id, content: 'second ambiguous result' }],
+    [...completed, { role: 'assistant', content: '', tool_calls: [call] }],
+    [...completed, { role: 'tool', tool_call_id: call.id, content: 'duplicate result' }],
+    [...completed, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', tool_call_id: 'orphan', content: 'wrong result' }],
+    [...completed, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'user', content: 'missing result' }],
+  ]) expect(() => new FreebuffTools({ ...request, messages })).toThrow(SourceError);
+});
+
 it('does not retain schemas from successive requests in a shared validator', () => {
   const compile = vi.spyOn(Ajv.prototype, 'compile');
   try {
