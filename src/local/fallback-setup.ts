@@ -201,6 +201,13 @@ export async function setupFallbacks(options: {
         failedSetup('zro', error);
         options.notify('Zro setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
+      'aperture-ai': async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['aperture-ai'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('aperture-ai', error);
+        options.notify('Aperture Free setup is pending. Other routes remain available.');
+      } },
       darus: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['darus'], { squire: squire as SetupSquire, directory: options.directory,
           connect, background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
