@@ -17,8 +17,6 @@ const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo
 export const knownAdapters = new Set(Object.keys(installers));
 // These descriptors are local only and cannot be selected by registry updates.
 export const localOptInAdapters: readonly Adapter[] = [
-  { id: 'fikra', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:fikra', model: 'deepseek-v4-1-flash-economy-free' },
-  { id: 'openference', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:openference', model: 'DeepSeek-V4.1-Flash-1017-Free' },
   { id: 'crowllm', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:crowllm', model: 'glm-5.3-flash:free' },
   { id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:antseed-vikey' },
   { id: 'reflection-beam', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:reflection-beam' },

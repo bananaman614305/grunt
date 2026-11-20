@@ -14,7 +14,7 @@ beforeEach(async () => { vi.spyOn(Date, 'now').mockReturnValue(now); directory =
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await rm(directory, { recursive: true, force: true }); });
 function squire(id: PromotionalProvider) {
   return { call: vi.fn(async () => ({ credentials: [{ service: id, label: 'Grunt Free', reference: 'vault://synthetic-key',
-    allowed_hosts: [PROMOTIONAL_PROVIDERS[id].host], field_names: ['value'] }] })), signup: vi.fn(async () => {}),
+    allowed_hosts: [PROMOTIONAL_PROVIDERS[id].host, new URL(PROMOTIONAL_PROVIDERS[id].signup).hostname, `*.${new URL(PROMOTIONAL_PROVIDERS[id].signup).hostname}`], field_names: ['value'] }] })), signup: vi.fn(async () => {}),
   credentials: { list: vi.fn(async () => []), grant: vi.fn(async () => ({ base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_synthetic', token: 'synthetic-grant' })) } };
 }
 it('requires foreground source consent before any signup or vault access', async () => {
@@ -49,7 +49,26 @@ it('stops when signup cannot produce an eligible key, without persisting a grant
   const browser = squire('openference');
   browser.call.mockResolvedValue({ credentials: [] });
   await expect(setupPromotionalApi('openference', { directory, squire: browser, notify, background: false })).rejects.toThrow('unambiguous');
-  expect(browser.signup).toHaveBeenCalledWith('openference', 'https://openference.com/register', expect.stringContaining('Stop for human verification or CAPTCHA'));
+  expect(browser.signup).toHaveBeenCalledWith('openference', 'https://openference.com/register', expect.stringContaining("Use Squire's configured verification tools"));
   expect(browser.credentials.grant).not.toHaveBeenCalled();
   await expect(stat(join(directory, 'openference.json'))).rejects.toThrow();
+});
+
+it('does not open signup when the shared Fikra promotion is closed', async () => {
+  await recordDataSharingConsent(directory, ['fikra']);
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({ active: false })));
+  const browser = squire('fikra');
+  await expect(setupPromotionalApi('fikra', { directory, squire: browser, notify, background: false })).rejects.toThrow('signup was not started');
+  expect(browser.signup).not.toHaveBeenCalled();
+  expect(browser.call).not.toHaveBeenCalled();
+});
+
+it('rechecks expiry after a slow Squire connection before opening signup', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const browser = squire('openference');
+  browser.call.mockResolvedValue({ credentials: [] });
+  await expect(setupPromotionalApi('openference', { directory, squire: browser, notify, background: false,
+    connect: async () => { vi.mocked(Date.now).mockReturnValue(Date.parse('2027-01-01T00:00:00Z')); }
+  })).rejects.toThrow('signup was not started');
+  expect(browser.signup).not.toHaveBeenCalled();
 });

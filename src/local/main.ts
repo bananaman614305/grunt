@@ -144,7 +144,7 @@ export function start(env = process.env) {
     changed: current => { registry = current; }, notify: console.error
   });
   const maintenance = new DailyMaintenance({ directory,
-    providers: () => [...new Set([...registry.adapters, ...localOptInAdapters].filter(adapter => adapter.id !== 'openference' && knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
+    providers: () => [...new Set([...registry.adapters, ...localOptInAdapters].filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
       && sources.sources.some(source => source.id === adapter.id)).map(adapter => adapter.id))],
     check: async (id, signal) => {
       signal.throwIfAborted();
