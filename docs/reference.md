@@ -45,6 +45,9 @@ Environment:
 
 ## Behavior
 
+This section describes the hosted `/agent/*` chat service. The local daemon’s
+[proposal and tool-using subworkers](#subworkers) have separate limits and tools.
+
 grunt answers quick questions and uses `dispatch`, `status`, `cancel`, and
 `remember` for longer work and durable preferences. Each message uses one front
 model turn, with a retry on a second model only for transient failure. A worker
@@ -160,11 +163,21 @@ Monday for those periods. Only successful user-facing attempts contribute to
 these totals. The table marks incomplete token reporting and keeps reply counts
 visible regardless of coverage. Detailed diagnostics remain in their own views.
 
-Work uptime shows how long Grunt was observed doing project work across the
-last 24 hours and seven days. The publisher samples the runner and its project
-pool every five seconds and counts provider waits, stalls, pauses and time
-between work cycles as downtime. The percentage uses measured time, with
-missing coverage shown separately.
+The overview separates observed execution/orchestration, inference, tool/job
+waits, provider waits, idle/paused and blocked/unavailable time over 24 hours and
+seven days. Inference includes useful model processing and generation. CPU or
+process activity does not prove a completed game feature. Legacy work/downtime
+percentages remain, using measured time; monitoring gaps and older unclassified
+intervals are shown rather than invented.
+
+Two-slot worker utilization includes observed source waits and excludes recording
+gaps. Test/build delivery counts come from managed job exits; distinct revisions
+require successful checks on an unchanged clean Git HEAD. Published-build counts
+come from actual successful GitHub Pages deployment receipts with bounded lookup
+coverage. These counts are observed lower bounds, not proof of correctness,
+playability or a complete release history. The dashboard shows missing/stale
+coverage and timestamps. See the [activity collector](../ops/adventure-feed/README.md)
+for sampling and retention details.
 
 ### Authentication and configuration
 
@@ -303,42 +316,204 @@ error rather than silently losing context.
 
 ### Subworkers
 
-The installed daemon can run two subworker jobs at once while your main agent
-coordinates the work. Jobs use the registered free model sources and prefer
-separate idle sources. They wait when every eligible source is busy. Grunt
-continues to honor provider consent, quotas and retry windows.
+The local daemon has two subworker slots shared by all connected coding
+interfaces, alongside your main agent. Workers prefer separate idle registered
+free sources and honor source consent, billing guards and cooldowns. This
+permits up to three simultaneous model workers for one main-agent session;
+opening another interface does not create another pair of daemon slots.
+
+There are two modes:
+
+| Mode | Enablement | Work and result |
+| --- | --- | --- |
+| Proposal | Default `grunt_delegate`, `workers run`, or `workers connect <interface>` | Sends the supplied task and excerpts to a model. No filesystem or shell access. The main agent reviews and applies its suggestions. |
+| Tool-using | Pi `--grunt-agent-workers`, or explicit `--agentic --project <absolute-directory>` for CLI/MCP | Uses a private, scoped project snapshot with filesystem tools and, where verified confinement is available, bounded commands. Returns retained edits for review and explicit application. |
+
+Both accept one or two tasks per batch, with at most 8 KiB of task text and
+32 KiB of supplied context per task. Activity labels are `review`, `tests`,
+`implementation`, or `research`. Tasks and permitted project context go to the
+selected sources under their data-sharing policies. Workers never receive the
+parent's raw conversation automatically.
+
+For proposal workers:
 
 ```bash
+npx usegrunt workers connect pi
 npx usegrunt workers run <<'JSON'
 {"tasks":[
-  {"activity":"review","task":"Review the pagination logic for edge cases","context":"Paste the relevant code or excerpt here"},
-  {"activity":"tests","task":"Propose tests for the empty results state","context":"Paste the related test or API contract here"}
+  {"activity":"review","task":"Review pagination for edge cases","context":"Paste the relevant excerpt here"},
+  {"activity":"tests","task":"Propose empty-state tests","context":"Paste the relevant contract here"}
 ]}
 JSON
-npx usegrunt workers status
 ```
 
-The command takes one or two tasks in a batch, with at most 8 KiB of instructions
-and 32 KiB of context per task. The results are returned in submission order
-with the provider that replied. Provide relevant excerpts and the file or
-component each worker should own. Use the optional activity label `review`,
-`tests`, `implementation`, or `research` to make it easier to follow in status.
-The main agent reviews suggestions and applies edits using its existing tools
-and permissions. Subworkers have no filesystem or shell tools. Task text and context go to the configured provider under the
-same data-sharing terms as other Grunt requests.
+`workers run` waits and prints results in submission order. Pi/MCP
+`grunt_delegate` returns a batch ID immediately; keep working, then retrieve
+it with `grunt_worker_result` or cancel with `grunt_worker_cancel`.
+`grunt_worker_status` and `npx usegrunt workers status` show current sources
+and outcomes. Add `--port <port>` when the daemon uses a different port.
 
-Run `npx usegrunt workers connect <pi|opencode|codex|claude>` for the matching
-tool setup. The MCP server for other compatible clients is
-`usegrunt workers mcp` over stdio. In Pi and MCP, `grunt_delegate` returns a batch ID
-immediately so the main agent can keep working. Retrieve the ordered results
-with `grunt_worker_result` or stop the jobs with `grunt_worker_cancel`.
-`grunt_worker_status` reads the daemon-wide status. Use `--port <port>` if your
-daemon uses a different port from the one saved during setup.
+#### Enable tool-using workers
 
-A job has up to five minutes including queue time. If the daemon's 16 waiting
-slots are full, callers receive a busy result. Disconnecting cancels outstanding
-jobs. Worker status includes the current source and recent outcomes. Only
-explicitly enrolled collectors send worker metadata to the owner dashboard.
+```bash
+npx usegrunt workers connect pi --agentic
+```
+
+Run the printed Pi command with the installed extension. It includes
+`--grunt-agent-workers` and `--grunt-background-jobs`; each flag controls a
+separate capability and can be omitted independently.
+Without these trusted launch flags, the extension retains proposal workers and
+does not expose scoped edits or jobs.
+Pi supplies the current project directory; model tool arguments cannot select
+an arbitrary host project, runtime or credential scope.
+
+For the other interfaces, specify the project at registration:
+
+```bash
+npx usegrunt workers connect codex --agentic --project "$PWD"
+npx usegrunt workers connect claude --agentic --project "$PWD"
+npx usegrunt workers connect opencode --agentic --project "$PWD"
+# A compatible MCP client can launch the same project-scoped server:
+npx usegrunt workers mcp --agentic --project "$PWD"
+```
+
+Install the printed configuration for your chosen interface and restart it.
+The Claude Code command uses project scope. The registration enables
+`grunt_spawn` in addition to the proposal tools. Model calls supply tasks and
+one to 32 relative file or directory `ownedPaths`, while the frontend binds the
+trusted project and proves local access to it. The project lease remains private to the client.
+Custom tools such as `grunt_spawn` and `grunt_job_start` require their own
+approval policy; a rule that approves only a tool named `bash` does not cover
+them.
+
+A terminal can run the same scoped task synchronously:
+
+```bash
+npx usegrunt workers run --agentic --project "$PWD" <<'JSON'
+{"tasks":[
+  {"activity":"implementation","task":"Implement the empty-state component","ownedPaths":["src/empty-state.ts"]},
+  {"activity":"tests","task":"Add empty-state tests","ownedPaths":["src/empty-state.test.ts"]}
+]}
+JSON
+```
+
+`grunt_spawn` returns a batch ID without blocking the main agent. Collect it
+with `grunt_worker_result`. Results contain bounded text and artifact summaries:
+file paths, before/after hashes, counts and completeness flags, with truncated
+listings explicitly marked. Full file contents stay out of model tool results.
+The daemon retains the complete artifact for deliberate inspection.
+
+#### Review, apply and recover retained edits
+
+Use the individual **job ID** in a result or retained list, rather than the
+batch ID or artifact/workspace ID:
+
+```bash
+npx usegrunt workers retained --project "$PWD"
+npx usegrunt workers artifact <job-id> --project "$PWD"
+# Review the artifact, then run through the caller's approved shell:
+npx usegrunt workers apply <job-id> --project "$PWD"
+# After integration and testing, or deliberate abandonment:
+npx usegrunt workers discard <job-id> --project "$PWD"
+```
+
+`artifact` is the explicit inspection path and can include full changed-file
+contents. Review those contents before applying. Workers write only their
+owned paths in private copies. Applying happens in the caller's process under
+its filesystem permissions and sandbox; the daemon has no host apply endpoint
+and `grunt_spawn` cannot authorize integration.
+
+Application validates original ownership, file paths, before/after hashes and
+current project contents. It refuses incomplete/truncated artifacts, oversized
+changes and conflicting edits. Descriptor-relative filesystem operations keep
+writes anchored to the chosen project and fail closed when the required
+semantics are unavailable. A private journal stages new contents and retains
+originals for rollback. Inspect the returned conflict, rollback and journal
+information after any failed application; a partial rollback is not success.
+A successful apply leaves the artifact retained until explicit discard.
+
+Both completed and interrupted tool-using jobs retain inspectable work.
+After a daemon restart, reconnect to the same project and use `retained`;
+interrupted execution is not silently resumed. A quota failure preserves its
+retry hint and partial artifact. Review what was done, then dispatch a new task
+when useful work or capacity is available. Cancellation and session shutdown
+stop outstanding execution without discarding retained edits.
+
+Each job has five minutes including queue time. Tool-using jobs additionally
+stop at 24 model turns, 96 tool calls, 24,576 reported output tokens or their
+bounded context/artifact limits. The daemon has 16 waiting slots. Twenty
+retained artifacts plus outstanding scoped jobs trigger backpressure;
+inspect and discard integrated or abandoned work before dispatching more.
+Same-project editing tasks with overlapping ownership cannot run together,
+including while earlier overlapping artifacts remain retained.
+
+#### Worker sandbox and platform limits
+
+File tools exclude private/special paths and apply ownership rules to edits.
+`review` and `research` jobs are read-only; editing jobs need disjoint relative
+owned paths. Model inference runs in the daemon, outside the command sandbox;
+provider credentials are not passed to tool subprocesses.
+Worker commands require a successful Linux namespace probe and verified user
+cgroup memory/process limits. If that confinement is unavailable, capabilities
+report `commands: false` and only filesystem tools remain. This is not a promise
+that every operating system supports the whole scoped-worker workflow:
+frontend snapshot capture and application need supported descriptor-relative
+filesystem semantics, including a runtime probe on macOS. Automatic frontend
+capture is unsupported on Windows; proposal workers remain available.
+
+Command sandboxes have no network access and cannot download new dependencies.
+An existing dependency tree may be available as a sanitized, bounded private
+copy; it is never a live mount of host `node_modules`. Secret and special files
+are omitted, and internal links are kept only when they resolve to copied
+content. Dependency preparation has limits of 20,000 entries, 256 MiB total,
+16 MiB per file and fifteen seconds. Check command capabilities and any
+`dependencyWarning` returned by a failed worker command before assuming tests
+can run. If dependencies or commands are unavailable, the main agent can review
+retained edits and run checks through its
+own approved [background jobs](#background-command-jobs).
+
+### Background command jobs
+
+Pi's `--grunt-background-jobs` opt-in adds session-owned command jobs. These
+execute within the current coding interface's working directory and permissions;
+they do not grant worker sandbox permissions or bypass interface approval.
+They are POSIX process-group jobs, currently unsupported on Windows. The model
+cannot choose a different host working directory. Configure approval for
+`grunt_job_start` explicitly; custom tools do not inherit `bash`-name-only rules.
+
+| Tool | Behavior |
+| --- | --- |
+| `grunt_job_start` | Starts or queues a bounded command and returns its job ID immediately. Categories: `test`, `build`, `render`, `download`, `other`. |
+| `grunt_job_status` | Reads queued/running/recent metadata without command output. |
+| `grunt_job_result` | Collects one job's bounded stdout/stderr and exit status; a running job returns immediately. |
+| `grunt_job_wait` | Waits up to 120 seconds when all independent useful work is blocked. Timeout returns status without cancelling the job. |
+| `grunt_job_cancel` | Stops an owned job and its process group. |
+
+Start long tests, builds or renders, continue independent work, and collect the
+result before claiming success. The opt-in extension blocks simple foreground
+shell commands whose only purpose is more than ten seconds of explicit sleep;
+use managed jobs instead of sleep/poll loops. This is a narrow rule, not a
+promise to recognize every blocking shell program. If all useful work is
+blocked on a provider's known reset, checkpoint and let the supervisor wait.
+
+The explicit terminal interface is also available:
+
+```bash
+npx usegrunt jobs run --category test --timeout 900 -- pnpm test
+npx usegrunt jobs status
+npx usegrunt jobs result <job-id>
+npx usegrunt jobs cancel <job-id>
+```
+
+The CLI `run` waits for that command; Pi's start tool is the nonblocking path.
+There are two active command jobs and sixteen queued jobs per session, with a
+fifteen-minute default and thirty-minute maximum timeout. Output is bounded to
+64 KiB. Private state defaults to `~/.cache/grunt/jobs`; set
+`GRUNT_JOBS_STATE_DIR` to another absolute private directory when needed.
+No HTTP/MCP endpoint exposes these host commands. The tools are session-owned,
+so collect or cancel them before the final reply/checkpoint and session shutdown.
+Shutdown cancels outstanding jobs. Recovery marks interrupted jobs as
+interrupted rather than executing commands again automatically.
 
 ### Source dashboard
 
@@ -417,6 +592,13 @@ records no prompt, reply, code, request body, raw provider error, header value
 or native output.
 Source/model labels do not establish a physical-model attestation. Unknown token
 usage stays absent and is counted separately from known zero usage.
+
+Chat Completions clients requesting `stream_options.include_usage: true` receive
+a final SSE usage chunk before `[DONE]`. It carries measured input/output totals
+when both are reported and `null` when complete usage is unknown. Other chunk
+usage fields are `null`; no inferred token count is substituted. Diagnostics
+separate trusted client and worker actors where recorded, without backfilling
+actor identities for older events.
 
 ### Daily maintenance
 
@@ -1106,7 +1288,7 @@ Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
       "models": [{
         "id": "grunt", "name": "grunt", "reasoning": false, "input": ["text"],
         "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-        "contextWindow": 128000, "maxTokens": 8192
+        "contextWindow": 65536, "maxTokens": 4096
       }]
     }
   }
@@ -1114,6 +1296,14 @@ Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
 ```
 
 Run `pi --provider grunt --model grunt`. See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
+
+The managed Pi profile uses a 65,536-token working context to compact conversation
+history earlier and reduce repeated input. This local setting does not reduce a
+provider's native context capacity or change the provider qualification floor.
+Default setup/update migration changes only Grunt-managed profiles using this
+daemon's loopback endpoint and the former 128,000 setting; custom providers, remote endpoints and
+user-adjusted contexts are preserved. For an explicit managed setup/update,
+`GRUNT_WORKING_CONTEXT_TOKENS` accepts integers from 65,536 to 200,000.
 
 ### Claude Code
 
@@ -1182,6 +1372,14 @@ all plans; it does not add a policy to the existing approval group.
 Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
+
+Source admission uses bounded concurrent metadata probes and short eligibility
+caches: thirty seconds for positive observations, five for negative observations.
+A warm eligible source can dispatch without waiting for unrelated slow probes.
+These cached observations do not authorize billing or data sharing: the selected
+adapter still performs its current consent, account, model and free-access checks
+before sending a request. Public status and maintenance preserve their own
+observation semantics; a cached eligibility check is not a generated reply.
 
 Every bundled free route and optional free route has a quota policy in
 `src/local/quota-policy.ts`. Local `/v1/status` publishes it as `quotaPolicy`,

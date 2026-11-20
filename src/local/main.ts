@@ -46,7 +46,7 @@ import { DailyMaintenance } from './maintenance.js';
 import { SourceRecovery } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
-import { WorkerPool } from './worker-pool.js';
+import { createWorkerRuntime } from './worker-runtime.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
   const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
@@ -181,11 +181,12 @@ export function start(env = process.env) {
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
   const port = positive(gruntEnv('PORT', env), 8788);
   if (port > 65535) throw new Error('GRUNT_PORT must be at most 65535');
-  const workers = new WorkerPool(sources);
-  const app = createLocalApp(sources, { port, workers, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
+  const workerRuntime = createWorkerRuntime(sources, { directory });
+  const { workers, scopes: workerScopes } = workerRuntime;
+  const app = createLocalApp(sources, { port, workers, workerScopes, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; await refreshSession(); return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;
-  const close = async () => { if (closing) return; closing = true; await Promise.all([workers.close(), maintenance.close(), sync.close(), recovery.close()]); await sources.close(); await diagnosticReady; await diagnostics?.close(); server.close(); };
+  const close = async () => { if (closing) return; closing = true; await Promise.all([workerRuntime.close(), maintenance.close(), sync.close(), recovery.close()]); await sources.close(); await diagnosticReady; await diagnostics?.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, close };
 }
@@ -201,6 +202,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const { statusCommand } = await import('./dashboard.js');
     try { await statusCommand(process.argv.slice(3)); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'jobs') {
+    try { const { jobsCommand } = await import('./jobs-cli.js'); process.exitCode = await jobsCommand(process.argv.slice(3)); }
+    catch (error) { console.error(error instanceof Error ? error.message : 'Grunt jobs command failed'); process.exitCode = 1; }
   } else if (process.argv[2] === 'workers') {
     try {
       if (process.argv[3] === 'connect') {
@@ -213,7 +217,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'Grunt workers command failed'); process.exitCode = 1; }
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | workers <run|status|connect|mcp>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool, or workers to delegate independent tasks.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | workers <run|status|retained|artifact|apply|discard|connect|mcp> | jobs <run|status|result|cancel>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool, or workers to delegate independent tasks.');
   } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }

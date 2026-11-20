@@ -116,6 +116,7 @@ const PHASE_LABELS = { starting: 'Starting', working: 'Working', checkpoint: 'Be
   waiting_for_free_pool: 'Waiting for a free source', stopped: 'Stopped', offline: 'Offline' };
 const WORK_STATUS = {
   working: ['running', 'Working'], provider_wait: ['limited', 'Waiting for a provider'],
+  tool_wait: ['limited', 'Waiting on a tool or job'],
   stalled: ['error', 'No recent progress'], offline: ['offline', 'Runner offline'],
   between_cycles: ['unknown', 'Between work cycles'], starting: ['connecting', 'Starting'],
   paused: ['unknown', 'Paused'], unknown: ['unknown', 'Work status unknown']
@@ -127,6 +128,21 @@ const WORKER_STATUS = {
 };
 
 const WORKER_ACTIVITY = { review: 'Code review', tests: 'Tests', implementation: 'Implementation', research: 'Research' };
+const WORKER_FAILURES = { invalid_task: 'Invalid task', busy: 'Worker capacity reached', cancelled: 'Cancelled', timeout: 'Time limit reached',
+  quota: 'Free allowance unavailable', unavailable: 'Source unavailable', invalid_workspace: 'Workspace unavailable', unsupported_sandbox: 'Sandbox unavailable',
+  ownership_violation: 'File ownership conflict', artifact_conflict: 'Changes conflict with newer work', limit: 'Work limit reached' };
+
+export function homeWorkerInstallations(overview, activity, now = Date.now()) {
+  const installations = new Map(array(overview?.instances).filter(instance => instance.snapshot?.workers).map(instance => [instance.id, instance]));
+  for (const entry of array(activity?.instances)) {
+    if (!entry.activity?.workers) continue;
+    const observedAt = number(entry.activity.observedAt) ?? number(entry.receivedAt);
+    const fresh = freshActivity(entry, now) && observedAt !== null && now - observedAt <= 20000 && observedAt <= now + 5000;
+    installations.set(entry.instanceId, { id: entry.instanceId, connected: fresh, snapshotObservedAt: observedAt,
+      snapshot: { workers: entry.activity.workers }, system: { daemonReachable: fresh }, workerOrigin: 'activity' });
+  }
+  return [...installations.values()];
+}
 
 function workDuration(ms) {
   const seconds = Math.floor(ms / 1000);
@@ -463,7 +479,7 @@ export class AdminConsole {
     }
 
     this.renderHomeWorkers(now);
-    this.renderWorkUptime(measurement, now);
+    this.renderWorkUptime(measurement, now, latest?.activity?.project?.publications);
     this.renderProjectContext(latest?.activity?.project);
 
     const windows = usageWindows(new Date(now));
@@ -516,7 +532,7 @@ export class AdminConsole {
   }
   renderHomeWorkers(now = Date.now()) {
     const section = this.el['home-workers'], list = this.el['home-worker-list'];
-    const installations = array(this.overview?.instances).filter(instance => instance.snapshot?.workers);
+    const installations = homeWorkerInstallations(this.overview, this.activity, now);
     section.hidden = !installations.length;
     list.replaceChildren();
     const counts = this.el['home-worker-counts'];
@@ -542,17 +558,22 @@ export class AdminConsole {
       if (!own(WORKER_STATUS, worker.state)) continue;
       let status = WORKER_STATUS[worker.state];
       if (!fresh && ['running', 'queued'].includes(worker.state)) status = ['unknown', `Was ${status[1].toLowerCase()}`];
-      else if (worker.state === 'running' && !worker.source) status = ['limited', 'Waiting for a source'];
+      else if (worker.state === 'running' && (worker.waitingForSource === true || worker.mode !== 'agent' && !worker.source)) status = ['limited', 'Waiting for a source'];
       const item = element('li');
       const activity = own(WORKER_ACTIVITY, worker.activity) ? WORKER_ACTIVITY[worker.activity] : '';
       const provider = text(worker.source, ['running', 'queued'].includes(worker.state) ? 'Source pending' : 'No source');
       const name = [activity, provider,
         installations.length > 1 ? text(instance.id) : ''].filter(Boolean).join(' · ');
       item.append(badge(...status), element('span', '', name), timestamp(worker.finishedAt ?? worker.startedAt ?? worker.createdAt));
+      const detail = [worker.mode === 'agent' ? 'Tool-using worker' : worker.mode === 'proposal' ? 'Proposal worker' : '',
+        number(worker.turns) !== null ? `${worker.turns} turns` : '', number(worker.toolCalls) !== null ? `${worker.toolCalls} tool calls` : '',
+        own(WORKER_FAILURES, worker.code) ? WORKER_FAILURES[worker.code] : '',
+        worker.artifactAvailable ? worker.state === 'completed' ? 'Changes ready for review' : 'Partial changes retained' : ''].filter(Boolean).join(' · ');
+      if (detail) item.append(element('span', 'home-worker-detail secondary', detail));
       list.append(item);
     }
   }
-  renderWorkUptime(measurement, now = Date.now()) {
+  renderWorkUptime(measurement, now = Date.now(), publications) {
     const root = this.el['home-uptime'], target = this.el['home-uptime-totals'];
     root.hidden = !measurement;
     if (!measurement) { target.replaceChildren(); return; }
@@ -578,7 +599,51 @@ export class AdminConsole {
       if (measured < cap) coverage.append(element('span', 'secondary', workDuration(cap - measured) + ' unmeasured'));
       cell(row, coverage); body.append(row);
     }
-    target.replaceChildren(result);
+    const sections = [result];
+    const breakdowns = [measurement.day?.breakdown, measurement.week?.breakdown];
+    sections.push(element('h3', 'home-performance-heading', 'Where time goes'));
+    if (breakdowns.some(Boolean)) {
+      const detail = table(['Observed activity', ['Last 24h', 'number'], ['Last 7d', 'number']], 'home-performance-table');
+      for (const [field, label] of [['executionMs', 'Execution and orchestration'], ['inferenceMs', 'Inference'], ['toolWaitMs', 'Tool and job waits'],
+        ['providerWaitMs', 'Provider waits'], ['idleMs', 'Idle or paused'], ['blockedMs', 'Blocked or unavailable'], ['unclassifiedMs', 'Unclassified measured time']]) {
+        const row = element('tr'), heading = element('th', '', label); heading.scope = 'row'; row.append(heading);
+        for (const breakdown of breakdowns) cell(row, breakdown && number(breakdown[field]) !== null ? workDuration(breakdown[field]) : 'Not measured', 'number');
+        detail.body.append(row);
+      }
+      sections.push(detail.result, element('p', 'section-note', 'Each measured interval appears once. Inference includes model processing and generation. Execution is observed processing, not proof of a completed feature. Older intervals may be unclassified.'));
+    } else sections.push(element('p', 'section-note', 'Detailed time classification has not been reported yet. Earlier history is not backfilled.'));
+    sections.push(element('h3', 'home-performance-heading', 'Parallel work'));
+    const workers = measurement.workerUtilization;
+    if (workers) {
+      const detail = table(['Window', ['Slot use', 'number'], ['Finished', 'number'], ['Failed', 'number']], 'home-performance-table');
+      for (const [label, value] of [['Last 24h', workers.day], ['Last 7d', workers.week]]) {
+        const row = element('tr'), heading = element('th', '', label); heading.scope = 'row'; row.append(heading);
+        cell(row, value.capacityMs > 0 ? `${(value.occupiedMs / value.capacityMs * 100).toFixed(1)}%` : 'Not measured', 'number');
+        cell(row, formatCount(value.completed), 'number'); cell(row, formatCount(value.failed), 'number'); detail.body.append(row);
+      }
+      sections.push(detail.result, element('p', 'section-note', 'Observed occupancy of the two subworker slots, sampled every few seconds. Recording gaps are excluded; occupied time includes source waits. Source waits: ' + workDuration(workers.day.sourceWaitMs) + ' in 24h; ' + workDuration(workers.week.sourceWaitMs) + ' in 7d. Monitoring began ' + relativeTime(workers.observedSince, now) + '.'));
+    } else sections.push(element('p', 'section-note', 'Worker utilization has not been measured yet. An empty recent-job list does not prove earlier workers were idle.'));
+    sections.push(element('h3', 'home-performance-heading', 'Checks and published builds'));
+    const delivery = measurement.delivery;
+    if (delivery) {
+      const detail = table(['Window', ['Succeeded', 'number'], ['Failed', 'number'], ['Revisions checked', 'number']], 'home-performance-table');
+      for (const [label, value] of [['Last 24h', delivery.day], ['Last 7d', delivery.week]]) {
+        const row = element('tr'), heading = element('th', '', label); heading.scope = 'row'; row.append(heading);
+        for (const field of ['successfulChecks', 'failedChecks', 'headLinkedChecks']) cell(row, formatCount(value[field]), 'number');
+        detail.body.append(row);
+      }
+      sections.push(detail.result, element('p', 'section-note', 'Counts observed test/build job exits, not inferred feature completion. Distinct revisions count checks that began and finished on the same clean revision. Monitoring began ' + relativeTime(delivery.observedSince, now) + '.'));
+    } else sections.push(element('p', 'section-note', 'Check-job outcomes have not been reported yet.'));
+    if (publications) {
+      const detail = table(['Published builds', ['Deployments', 'number'], ['Revisions', 'number']], 'home-performance-table');
+      for (const [label, value] of [['Last 24h', publications.day], ['Last 7d', publications.week]]) {
+        const row = element('tr'), heading = element('th', '', label); heading.scope = 'row'; row.append(heading);
+        cell(row, formatCount(value.builds), 'number'); cell(row, formatCount(value.revisions), 'number'); detail.body.append(row);
+      }
+      sections.push(detail.result, element('p', 'section-note', 'Observed successful GitHub Pages deployment receipts. Coverage is partial: bounded recent deployments, cached status lookups. Counts are lower bounds, not proof of playability. Last checked ' + relativeTime(publications.observedAt, now) + '.'));
+      if (publications.latest) sections.push(element('p', 'section-note', 'Latest published revision ' + publications.latest.head.slice(0, 7) + ' · ' + relativeTime(publications.latest.at, now)));
+    } else sections.push(element('p', 'section-note', 'Published builds: not measured. Pull request titles and draft status do not establish a successful game deployment.'));
+    target.replaceChildren(...sections);
   }
   renderProjectContext(value) {
     const root = this.el['home-project-context'];
@@ -1011,6 +1076,8 @@ export class AdminConsole {
       if (source) identity.append(element('p', 'event-source mono', source));
       header.append(identity, timestamp(event.at, true)); item.append(header);
       const details = [];
+      if (event.actor === 'worker' || event.actor === 'client') details.push(['Request origin', event.actor === 'worker' ? 'Subworker' : 'Client interface']);
+      if (event.actor === 'worker' && isRequestId(event.workerId)) details.push(['Worker ID', event.workerId, true]);
       if (own(LABELS, event.outcome)) details.push(['Outcome', badge(event.outcome)]);
       if (number(event.durationMs) !== null) details.push(['Duration', formatDuration(event.durationMs)]);
       if (count(event.httpStatus) !== null) details.push(['HTTP status', String(event.httpStatus)]);

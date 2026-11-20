@@ -49,16 +49,14 @@ it('queues a second worker when both select against the same idle provider', asy
   const kilo = source('kilo'), pool = routed([kilo]);
   const entered = pause(), hold = pause();
   let readinessChecks = 0;
-  kilo.available.mockImplementation(async () => {
-    if (++readinessChecks === 2) entered.resume();
-    await entered.blocked;
-    return true;
-  });
+  kilo.available.mockImplementation(async () => { readinessChecks++; await entered.blocked; return true; });
   kilo.complete.mockImplementationOnce(async () => { await hold.blocked; return { text: 'first' }; });
   const jobs = Promise.all([pool.complete(worker('worker-a'), signal()), pool.complete(worker('worker-b'), signal())]);
   try {
+    await vi.waitFor(() => expect(readinessChecks).toBe(1));
+    entered.resume();
     await vi.waitFor(() => expect(kilo.complete).toHaveBeenCalledOnce());
-    expect(readinessChecks).toBe(2);
+    expect(readinessChecks).toBe(1);
     expect(pool.status().activeRequests).toBe(1);
   } finally { hold.resume(); }
   expect((await jobs).map(answer => answer.text)).toEqual(['first', 'kilo']);
@@ -85,7 +83,7 @@ it('cancels a worker waiting on capacity without dispatching an attempt', async 
   await one;
 });
 
-it('does not probe later providers after the worker is cancelled during an availability check', async () => {
+it('cancels concurrent metadata discovery before dispatching any provider attempt', async () => {
   const kilo = source('kilo'), zro = source('zro'), pool = routed([kilo, zro]);
   const entered = pause(), hold = pause(), controller = new AbortController();
   kilo.available.mockImplementationOnce(async () => {
@@ -99,7 +97,10 @@ it('does not probe later providers after the worker is cancelled during an avail
   controller.abort();
   hold.resume();
   await expect(result).rejects.toMatchObject({ name: 'AbortError' });
-  expect(zro.available).not.toHaveBeenCalled();
+  // Both bounded metadata probes started before cancellation. Neither may
+  // dispatch inference merely because its read-only admission check finishes.
+  expect(zro.complete).not.toHaveBeenCalled();
+  expect(kilo.complete).not.toHaveBeenCalled();
   expect(request.worker.onSource).not.toHaveBeenCalled();
 });
 

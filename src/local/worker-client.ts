@@ -1,3 +1,5 @@
+import { isAbsolute } from 'node:path';
+import { AgentWorkerBatches, gruntSpawnTool } from './worker-agent-client.js';
 import { randomUUID } from 'node:crypto';
 import { addAbortSignal } from 'node:stream';
 import type { Readable, Writable } from 'node:stream';
@@ -10,7 +12,7 @@ import { installedPort } from './dashboard.js';
 import { MAX_WORKER_ACTIVE, MAX_WORKER_CONTEXT_BYTES, MAX_WORKER_QUEUED, MAX_WORKER_RECENT, MAX_WORKER_TASK_BYTES, parseWorkerTask, workerActivities } from './worker-pool.js';
 import type { WorkerFailureCode, WorkerResult, WorkerSnapshot, WorkerStatus, WorkerTask } from './worker-pool.js';
 
-const usage = 'Usage: usegrunt workers <run | status | mcp> [--port <1-65535>]';
+const usage = 'Usage: usegrunt workers <run | status | retained | artifact <id> | apply <id> | discard <id> | mcp> [--port <1-65535>] [--agentic --project <absolute-directory>]';
 const taskUsage = 'Provide one or two tasks, for example {"tasks":[{"task":"Review the supplied code","context":"..."}]}.';
 const runUsage = `Pass the batch as JSON on stdin. ${taskUsage}`;
 // JSON escapes use at most six wire bytes for every byte of decoded input.
@@ -31,7 +33,7 @@ function parseTasks(input: unknown) {
   if (Object.keys(envelope).length !== 1 || !Array.isArray(tasks) || !tasks.length || tasks.length > MAX_WORKER_ACTIVE) throw new Error(taskUsage);
   return tasks.map((task: unknown) => {
     const parsed = parseWorkerTask(task);
-    if (!parsed) throw new Error('Each worker needs a nonempty task of at most 8 KiB and optional context of at most 32 KiB.');
+    if (!parsed || parsed.mode === 'agent') throw new Error('Each worker needs a nonempty task of at most 8 KiB and optional context of at most 32 KiB.');
     return parsed;
   });
 }
@@ -47,12 +49,26 @@ function parseResult(input: unknown): WorkerResult {
 }
 
 function parseWorkerStatus(input: unknown): WorkerStatus {
-  const { id, state, createdAt, startedAt, finishedAt, source, code, activity } = record(input);
+  const row = record(input);
+  const { id, state, createdAt, startedAt, finishedAt, source, code, activity } = row;
   if (typeof id !== 'string' || !uuid.test(id) || typeof state !== 'string' || !workerStates.has(state) || !timestamp(createdAt)) throw new Error('Invalid Grunt worker status');
   const workerActivity = workerActivities.find(value => value === activity);
+  const candidate = record(row.capabilities);
+  const capabilities = typeof candidate.filesystem === 'boolean' && typeof candidate.commands === 'boolean'
+    ? { filesystem: candidate.filesystem, commands: candidate.commands, ...(candidate.sandbox === 'bubblewrap' || candidate.sandbox === 'filesystem' ? { sandbox: candidate.sandbox as 'bubblewrap' | 'filesystem' } : {}) } : undefined;
+  const dependency = record(row.dependencyStatus);
+  const dependencyStatus = typeof dependency.available === 'boolean' ? { available: dependency.available,
+    ...(typeof dependency.reason === 'string' && dependency.reason.length <= 256 && /^[a-zA-Z0-9 .,;:-]+$/.test(dependency.reason) ? { reason: dependency.reason } : {}) } : undefined;
   return { id, state: state as WorkerStatus['state'], createdAt, ...(timestamp(startedAt) ? { startedAt } : {}),
     ...(timestamp(finishedAt) ? { finishedAt } : {}), ...(typeof source === 'string' && providerId.test(source) ? { source } : {}),
-    ...(isFailureCode(code) ? { code } : {}), ...(workerActivity ? { activity: workerActivity } : {}) };
+    ...(isFailureCode(code) ? { code } : {}), ...(workerActivity ? { activity: workerActivity } : {}),
+    ...(capabilities ? { capabilities } : {}), ...(dependencyStatus ? { dependencyStatus } : {}),
+    ...(row.mode === 'agent' || row.mode === 'proposal' ? { mode: row.mode } : {}),
+    ...(timestamp(row.turns) ? { turns: row.turns } : {}), ...(timestamp(row.toolCalls) ? { toolCalls: row.toolCalls } : {}),
+    ...(timestamp(row.updatedAt) ? { updatedAt: row.updatedAt } : {}), ...(timestamp(row.nextAttemptAt) ? { nextAttemptAt: row.nextAttemptAt } : {}),
+    ...(typeof row.artifactAvailable === 'boolean' ? { artifactAvailable: row.artifactAvailable } : {}),
+    ...(typeof row.waitingForSource === 'boolean' ? { waitingForSource: row.waitingForSource } : {}),
+    ...(['preparing', 'inference', 'tool', 'source_wait'].includes(String(row.phase)) ? { phase: row.phase as WorkerStatus['phase'] & string } : {}) };
 }
 
 function parseSnapshot(input: unknown): WorkerSnapshot {
@@ -192,7 +208,7 @@ export const gruntWorkerResultTool = {
   inputSchema: batchInputSchema, annotations: { title: 'Get Grunt worker results', readOnlyHint: true, openWorldHint: false }
 } satisfies Tool;
 export const gruntWorkerCancelTool = {
-  name: 'grunt_worker_cancel', description: 'Cancel a Grunt batch from this session and discard its results.',
+  name: 'grunt_worker_cancel', description: 'Cancel a Grunt batch from this session. Proposal results are discarded; tool-using worker artifacts remain recoverable through usegrunt workers retained.',
   inputSchema: batchInputSchema, annotations: { title: 'Cancel a Grunt batch', readOnlyHint: false, destructiveHint: true, openWorldHint: false }
 } satisfies Tool;
 export const gruntWorkerStatusTool = {
@@ -200,22 +216,24 @@ export const gruntWorkerStatusTool = {
   inputSchema: { type: 'object', additionalProperties: false }, annotations: { title: 'Grunt worker status', readOnlyHint: true, openWorldHint: false }
 } satisfies Tool;
 
-export function createWorkerMcpServer(port: number, fetcher = fetch) {
+export function createWorkerMcpServer(port: number, fetcher = fetch, options: { projectRoot?: string } = {}) {
+  const agents = options.projectRoot ? new AgentWorkerBatches(port, options.projectRoot, fetcher) : undefined;
   const batches = new WorkerBatches(port, fetcher);
   const server = new Server({ name: 'grunt-workers', version: '1.0.0' }, { capabilities: { tools: {} } });
-  server.onclose = () => batches.close();
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [gruntDelegateTool, gruntWorkerResultTool, gruntWorkerCancelTool, gruntWorkerStatusTool] }));
+  server.onclose = async () => { batches.close(); await agents?.close(); };
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...(agents ? [gruntSpawnTool] : []), gruntDelegateTool, gruntWorkerResultTool, gruntWorkerCancelTool, gruntWorkerStatusTool] }));
   server.setRequestHandler(CallToolRequestSchema, async ({ params }, { signal }) => {
     try {
       signal.throwIfAborted();
       const args = params.arguments ?? {};
-      let payload: WorkerSnapshot | ReturnType<WorkerBatches['result']> | ReturnType<WorkerBatches['cancel']>;
-      if (params.name === gruntDelegateTool.name) payload = batches.start(args);
-      else if (params.name === gruntWorkerResultTool.name) payload = batches.result(args);
-      else if (params.name === gruntWorkerCancelTool.name) payload = batches.cancel(args);
+      let payload: unknown;
+      if (params.name === gruntSpawnTool.name && agents) payload = await agents.start(args, signal);
+      else if (params.name === gruntDelegateTool.name) payload = batches.start(args);
+      else if (params.name === gruntWorkerResultTool.name) payload = agents?.has(args) ? agents.result(args) : batches.result(args);
+      else if (params.name === gruntWorkerCancelTool.name) payload = agents?.has(args) ? agents.cancel(args) : batches.cancel(args);
       else if (params.name === gruntWorkerStatusTool.name && !Object.keys(args).length) payload = await readWorkerStatus(port, signal, fetcher);
       else throw new Error('Unknown Grunt worker tool or invalid arguments.');
-      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: { ...payload } };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: record(payload) };
     } catch (error) {
       return { content: [{ type: 'text', text: error instanceof Error ? error.message : 'Grunt worker request failed' }], isError: true };
     }
@@ -223,13 +241,13 @@ export function createWorkerMcpServer(port: number, fetcher = fetch) {
   return server;
 }
 
-async function serveWorkers(port: number, input: Readable, output: Writable, signal: AbortSignal, fetcher: typeof fetch) {
-  const server = createWorkerMcpServer(port, fetcher);
+async function serveWorkers(port: number, input: Readable, output: Writable, signal: AbortSignal, fetcher: typeof fetch, projectRoot?: string) {
+  const server = createWorkerMcpServer(port, fetcher, projectRoot ? { projectRoot } : {});
   const transport = new StdioServerTransport(input, output, { maxBufferSize: maxRequestBytes + 4096 });
   let closed!: () => void;
   const done = new Promise<void>(resolve => { closed = resolve; });
   const onClose = server.onclose;
-  server.onclose = () => { onClose?.(); closed(); };
+  server.onclose = async () => { await onClose?.(); closed(); };
   const close = () => { void server.close().catch(closed); };
   try {
     input.once('end', close);
@@ -267,8 +285,19 @@ export async function resolveWorkerPort(args: string[], env = process.env): Prom
 }
 
 export async function workerCommand(args: string[], options: WorkerCommandOptions = {}): Promise<void> {
-  const [command, ...flags] = args;
-  if (!['run', 'status', 'mcp'].includes(command ?? '')) throw new Error(usage);
+  const [command, ...remaining] = args;
+  let projectRoot: string | undefined, agentic = false, jobId: string | undefined; const flags: string[] = [];
+  for (let i = 0; i < remaining.length; i++) {
+    const flag = remaining[i]!;
+    if (flag === '--project' && remaining[i + 1] && projectRoot === undefined) projectRoot = remaining[++i];
+    else if (flag === '--agentic' && !agentic) agentic = true;
+    else if (flag === '--port' && remaining[i + 1] && !flags.length) flags.push(flag, remaining[++i]!);
+    else if (['artifact', 'apply', 'discard'].includes(command ?? '') && !jobId && !flag.startsWith('-')) jobId = flag;
+    else throw new Error(usage);
+  }
+  const scoped = ['retained', 'artifact', 'apply', 'discard'].includes(command ?? '') || agentic;
+  if (scoped && (!projectRoot || !isAbsolute(projectRoot)) || !scoped && projectRoot || ['artifact', 'apply', 'discard'].includes(command ?? '') && !jobId || agentic && !['run', 'mcp'].includes(command ?? '')) throw new Error(usage);
+  if (!['run', 'status', 'mcp', 'retained', 'artifact', 'apply', 'discard'].includes(command ?? '')) throw new Error(usage);
   const { env = process.env, input = process.stdin, output = process.stdout, fetcher = fetch } = options;
   const port = await resolveWorkerPort(flags, env);
   const controller = new AbortController(), signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
@@ -277,7 +306,16 @@ export async function workerCommand(args: string[], options: WorkerCommandOption
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', terminate);
   try {
-    if (command === 'mcp') return await serveWorkers(port, input, output, signal, fetcher);
+    if (command === 'mcp') return await serveWorkers(port, input, output, signal, fetcher, projectRoot);
+    if (['retained', 'artifact', 'apply', 'discard'].includes(command ?? '')) {
+      const agents = new AgentWorkerBatches(port, projectRoot!, fetcher);
+      try {
+        const result = command === 'retained' ? await agents.retained() : command === 'artifact' ? await agents.artifact(jobId!) : command === 'apply' ? await agents.apply(jobId!, signal) : await agents.discard(jobId!);
+        output.write(JSON.stringify(result, null, 2) + '\n');
+        if (command === 'apply' && record(result).ok === false) process.exitCode = 1;
+      } finally { await agents.close(); }
+      return;
+    }
     if (command === 'status') {
       output.write(JSON.stringify(await readWorkerStatus(port, signal, fetcher), null, 2) + '\n');
       return;
@@ -294,7 +332,15 @@ export async function workerCommand(args: string[], options: WorkerCommandOption
     let body: unknown;
     try { body = JSON.parse(Buffer.concat(chunks, size).toString('utf8')); }
     catch { throw new Error(runUsage); }
-    output.write(JSON.stringify(await delegateWorkers(port, body, signal, fetcher), null, 2) + '\n');
+    if (agentic) {
+      const agents = new AgentWorkerBatches(port, projectRoot!, fetcher);
+      try {
+        const batch = await agents.start(body, signal);
+        // CLI run is explicitly synchronous; wait without inference or shell polling.
+        const completed = await agents.wait({ batchId: batch.batchId }, signal);
+        output.write(JSON.stringify(completed, null, 2) + '\n');
+      } finally { await agents.close(); }
+    } else output.write(JSON.stringify(await delegateWorkers(port, body, signal, fetcher), null, 2) + '\n');
   } catch (error) {
     if (!controller.signal.aborted) throw error;
   } finally {

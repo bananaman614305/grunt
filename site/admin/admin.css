@@ -39,6 +39,7 @@
 .home-workers li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .home-workers li time { margin-left: auto; color: var(--dim); font-size: 12px; }
 .home-workers .section-heading { gap: 4px 12px; flex-wrap: wrap; }
+.home-worker-detail { flex-basis: 100%; font-size: 12px; }
 .home-usage-note { margin-top: 11px; }
 .home-source-table .home-source-name { color: var(--ink); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; white-space: normal; }
 .home-source-table th.number, .home-source-table td.number { width: 21%; white-space: normal; }
@@ -98,6 +99,11 @@
 .home-uptime-value strong { font-weight: 600; }
 .home-uptime-value .secondary { line-height: 1.4; }
 .home-uptime > .section-note { margin-top: 9px; }
+.home-performance-heading { margin: 24px 0 8px; font-size: 15px; font-weight: 600; }
+.home-performance-table { table-layout: fixed; }
+.home-performance-table th, .home-performance-table td { overflow-wrap: anywhere; }
+.home-performance-table th[scope=row] { color: var(--ink); font-weight: 500; white-space: normal; }
+#home-uptime-totals > .section-note { max-width: 75ch; margin-top: 9px; }
 @media (max-width: 580px) {
   .home-uptime-table td, .home-uptime-table th { padding-inline: 5px; font-size: 11px; }
   .home-uptime-table tbody th { font-size: 11px; }
@@ -116,3 +122,5 @@
   .provider-usage-table th:last-child { width: 31%; }
   .provider-usage-table th.number, .provider-usage-table td.number { white-space: normal; }
 }
+
+.home-performance-table thead th, .home-performance-table thead th.number { white-space: normal; }

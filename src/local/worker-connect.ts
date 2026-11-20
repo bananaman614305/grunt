@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { configRoot } from '../brand.js';
 import { resolveWorkerPort } from './worker-client.js';
 
-const usage = 'Usage: usegrunt workers connect <pi | opencode | codex | claude> [--port <1-65535>]';
+const usage = 'Usage: usegrunt workers connect <pi | opencode | codex | claude> [--port <1-65535>] [--agentic --project <absolute-directory>]';
 const serverName = 'grunt-workers';
 const toolTimeoutSeconds = 330;
 const installedOpenCode = (env: NodeJS.ProcessEnv) => promisify(execFile)('opencode', ['--version'], { env, timeout: 5000 }).then(result => result.stdout);
@@ -28,20 +28,28 @@ interface WorkerConnectOptions {
 }
 
 export async function workerConnectCommand(args: string[], options: WorkerConnectOptions = {}) {
-  const [harness, ...flags] = args;
-  if (!['pi', 'opencode', 'codex', 'claude'].includes(harness ?? '') || flags.length && (flags.length !== 2 || flags[0] !== '--port')) throw new Error(usage);
+  const [harness, ...remaining] = args;
+  const flags: string[] = []; let agentic = false, projectRoot: string | undefined;
+  for (let i = 0; i < remaining.length; i++) {
+    const arg = remaining[i];
+    if (arg === '--agentic' && !agentic) agentic = true;
+    else if (arg === '--project' && remaining[i + 1] && !projectRoot) projectRoot = remaining[++i];
+    else if (arg === '--port' && remaining[i + 1] && !flags.length) flags.push(arg, remaining[++i]!);
+    else throw new Error(usage);
+  }
+  if (!['pi', 'opencode', 'codex', 'claude'].includes(harness ?? '') || agentic && harness !== 'pi' && (!projectRoot || !isAbsolute(projectRoot)) || projectRoot && (!agentic || !isAbsolute(projectRoot))) throw new Error(usage);
   const { env = process.env, node = process.execPath, notify = console.log, openCodeVersion = installedOpenCode } = options;
   const port = String(await resolveWorkerPort(flags, env));
   const entry = resolve(configRoot(env), 'runtime', 'dist', 'local', 'main.js');
   const runtime = dirname(entry);
   await installedWorkerFile(entry);
   await installedWorkerFile(join(runtime, 'worker-client.js'));
-  const command = [node, entry, 'workers', 'mcp', '--port', port];
+  const command = [node, entry, 'workers', 'mcp', '--port', port, ...(agentic ? ['--agentic', '--project', projectRoot!] : [])];
 
   if (harness === 'pi') {
     const extension = join(runtime, 'worker-pi.js');
     await installedWorkerFile(extension);
-    notify(`Launch Pi with Grunt subworkers enabled:\npi --provider grunt --model grunt --extension ${shellQuote(extension)} --grunt-worker-port ${port}`);
+    notify(`Launch Pi with Grunt subworkers enabled:\npi --provider grunt --model grunt --extension ${shellQuote(extension)} --grunt-worker-port ${port}${agentic ? ' --grunt-agent-workers --grunt-background-jobs' : ''}`);
     return;
   }
   if (harness === 'codex') {
@@ -50,7 +58,7 @@ export async function workerConnectCommand(args: string[], options: WorkerConnec
     return;
   }
   if (harness === 'claude') {
-    notify(`Register Grunt subworkers across your Claude Code projects:\nclaude mcp add --scope user --transport stdio ${serverName} -- ${command.map(shellQuote).join(' ')}`);
+    notify(`Register Grunt subworkers${agentic ? ' for this project' : ' across your Claude Code projects'}:\nclaude mcp add --scope ${agentic ? 'project' : 'user'} --transport stdio ${serverName} -- ${command.map(shellQuote).join(' ')}`);
     return;
   }
   const version = await openCodeVersion(env).catch(() => '');

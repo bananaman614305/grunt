@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { signupMcp } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
@@ -41,15 +41,130 @@ async function readJson(path: string, what: string) {
   }
 }
 
-const piProvider = (port: number) => ({ baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
-  models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }] });
-
-export async function configurePi(port = 8788): Promise<Change> {
-  const path = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'models.json');
-  const saved = await readJson(path, 'Pi models config');
-  const providers = objectOrEmpty(saved.providers, 'Pi models config');
-  providers.grunt = piProvider(port);
-  return writeConfig(path, JSON.stringify({ ...saved, providers }, null, 2) + '\n');
+export const PI_WORKING_CONTEXT_TOKENS = 65536;
+const piProvider = (port: number, contextWindow = PI_WORKING_CONTEXT_TOKENS) => ({ baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
+  models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 4096 }] });
+interface PiContextOptions { workingContextTokens?: number; fromContextWindows?: readonly number[] }
+interface PiConfigureOptions extends PiContextOptions { env?: NodeJS.ProcessEnv }
+const piFailure = () => new Error('Cannot safely update Pi models config; repair its ownership, permissions or JSON before retrying setup');
+const privatePiMode = (mode: number) => process.platform === 'win32' || (mode & 0o022) === 0;
+function piContext(env: NodeJS.ProcessEnv, explicit?: number) {
+  const setting = explicit ?? (env.GRUNT_WORKING_CONTEXT_TOKENS === undefined ? PI_WORKING_CONTEXT_TOKENS
+    : /^\d+$/.test(env.GRUNT_WORKING_CONTEXT_TOKENS) ? Number(env.GRUNT_WORKING_CONTEXT_TOKENS) : NaN);
+  if (!Number.isSafeInteger(setting) || setting < PI_WORKING_CONTEXT_TOKENS || setting > 200000) {
+    throw new Error('GRUNT_WORKING_CONTEXT_TOKENS must be an integer from 65536 to 200000');
+  }
+  return setting;
+}
+async function piDirectory(path: string, create: boolean): Promise<boolean> {
+  let current = path, missing = false;
+  for (;;) {
+    try {
+      const info = await lstat(current);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw piFailure();
+      if (current === path && ((process.getuid && info.uid !== process.getuid()) || !privatePiMode(info.mode))) throw piFailure();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw piFailure();
+      if (current === path) missing = true;
+    }
+    const parent = dirname(current);
+    if (current === parent) break;
+    current = parent;
+  }
+  if (missing && create) {
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    return piDirectory(path, false);
+  }
+  return !missing;
+}
+async function readPiConfig(env: NodeJS.ProcessEnv) {
+  const directory = resolve(env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent')), path = join(directory, 'models.json');
+  if (!await piDirectory(directory, false)) return { directory, path, saved: {} as Record<string, unknown>, text: undefined as string | undefined };
+  let file;
+  try {
+    if ((await lstat(path)).isSymbolicLink()) throw piFailure();
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = await file.stat();
+    if (!info.isFile() || (process.getuid && info.uid !== process.getuid()) || !privatePiMode(info.mode) || info.size > 2 * 1024 * 1024) throw piFailure();
+    const text = await file.readFile('utf8');
+    return { directory, path, saved: objectOrEmpty(JSON.parse(text), 'Pi models config'), text };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { directory, path, saved: {} as Record<string, unknown>, text: undefined as string | undefined };
+    throw piFailure();
+  } finally { await file?.close(); }
+}
+async function writePiConfig(current: Awaited<ReturnType<typeof readPiConfig>>, saved: Record<string, unknown>): Promise<Change> {
+  const text = JSON.stringify(saved, null, 2) + '\n';
+  if (current.text === text) return { changed: false };
+  await piDirectory(current.directory, true);
+  // Re-read without following links before either backing up or replacing a
+  // profile. Backups use the bytes already read, never a second symlink-following copy.
+  const before = await readPiConfig({ PI_CODING_AGENT_DIR: current.directory });
+  if (before.text !== current.text) throw new Error('Pi models config changed during setup; retry without overwriting it');
+  const suffix = `${process.pid}-${randomInt(100000, 1000000)}`;
+  const temporary = `${current.path}.${suffix}.tmp`;
+  let backup: string | undefined;
+  try {
+    if (current.text !== undefined) {
+      backup = `${current.path}.grunt-backup-${new Date().toISOString().replace(/[:.]/g, '-')}-${suffix}`;
+      await writeFile(backup, current.text, { mode: 0o600, flag: 'wx' });
+    }
+    await writeFile(temporary, text, { mode: 0o600, flag: 'wx' });
+    const latest = await readPiConfig({ PI_CODING_AGENT_DIR: current.directory });
+    if (latest.text !== current.text) throw new Error('Pi models config changed during setup; retry without overwriting it');
+    await rename(temporary, current.path);
+    return { changed: true, backup };
+  } finally { await rm(temporary, { force: true }); }
+}
+function localPiProvider(value: unknown, port?: number) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const provider = value as Record<string, unknown>;
+  if (provider.api !== 'openai-completions' || provider.apiKey !== 'local' || typeof provider.baseUrl !== 'string') return false;
+  try {
+    const url = new URL(provider.baseUrl);
+    return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) && !url.username && !url.password && !url.search && !url.hash
+      && /^\/v1\/?$/.test(url.pathname) && /^\d+$/.test(url.port) && Number(url.port) >= 1 && Number(url.port) <= 65535 && (port === undefined || Number(url.port) === port);
+  } catch { return false; }
+}
+function managedPiModel(model: Record<string, unknown>) {
+  const cost = model.cost && typeof model.cost === 'object' && !Array.isArray(model.cost) ? model.cost as Record<string, unknown> : {};
+  return model.id === 'grunt' && model.name === 'grunt' && model.reasoning === false && model.maxTokens === 4096
+    && Array.isArray(model.input) && model.input.length === 1 && model.input[0] === 'text'
+    && ['input', 'output', 'cacheRead', 'cacheWrite'].every(key => cost[key] === 0);
+}
+function piModels(provider: Record<string, unknown>) {
+  if (provider.models === undefined) return [] as Record<string, unknown>[];
+  if (!Array.isArray(provider.models) || provider.models.some(model => !model || typeof model !== 'object' || Array.isArray(model))) throw piFailure();
+  return provider.models as Record<string, unknown>[];
+}
+export async function configurePi(port = 8788, options: PiConfigureOptions = {}): Promise<Change> {
+  const env = options.env ?? process.env, current = await readPiConfig(env), providers = objectOrEmpty(current.saved.providers, 'Pi models config');
+  const previous = providers.grunt;
+  if (previous !== undefined && !localPiProvider(previous)) throw new Error('An unmanaged Grunt Pi provider already exists; preserve it under another provider name before running Grunt setup');
+  const provider = objectOrEmpty(previous, 'Grunt Pi provider'), models = piModels(provider), primary = models.filter(model => model.id === 'grunt');
+  if (primary.length > 1) throw piFailure();
+  if (previous !== undefined && (primary.length !== 1 || primary[0]!.name !== 'grunt')) {
+    throw new Error('An unmanaged Grunt Pi model already exists; preserve it under another provider name before running Grunt setup');
+  }
+  const explicit = options.workingContextTokens !== undefined || env.GRUNT_WORKING_CONTEXT_TOKENS !== undefined;
+  const contextWindow = piContext(env, options.workingContextTokens), generated = piProvider(port, contextWindow);
+  const merged = models.map(model => model.id !== 'grunt' ? model : { ...model,
+    ...(explicit || managedPiModel(model) && model.contextWindow === 128000 ? { contextWindow } : {}) });
+  if (!primary.length) merged.push(generated.models[0]!);
+  return writePiConfig(current, { ...current.saved, providers: { ...providers, grunt: { ...provider, ...generated, models: merged } } });
+}
+/** Update only an existing managed profile on this daemon's endpoint. */
+export async function migrateManagedPiWorkingContext(port: number, env: NodeJS.ProcessEnv = process.env, options: PiContextOptions = {}): Promise<Change> {
+  const target = piContext(env, options.workingContextTokens), current = await readPiConfig(env);
+  if (current.text === undefined) return { changed: false };
+  const providers = objectOrEmpty(current.saved.providers, 'Pi models config'), provider = providers.grunt;
+  if (!localPiProvider(provider, port)) return { changed: false };
+  const selected = provider as Record<string, unknown>, models = piModels(selected), primary = models.filter(model => model.id === 'grunt');
+  if (primary.length !== 1) return { changed: false };
+  const model = primary[0]!, from = options.fromContextWindows ?? [128000];
+  if (!managedPiModel(model) || typeof model.contextWindow !== 'number' || !from.includes(model.contextWindow) || model.contextWindow === target) return { changed: false };
+  return writePiConfig(current, { ...current.saved, providers: { ...providers, grunt: { ...selected,
+    models: models.map(item => item === model ? { ...item, contextWindow: target } : item) } } });
 }
 // Codex layers $CODEX_HOME/<name>.config.toml over config.toml for `codex --profile <name>`,
 // so grunt gets its own file and the user's config.toml is never edited.

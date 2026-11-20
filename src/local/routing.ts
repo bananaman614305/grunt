@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
+import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { userTurns } from './harness.js';
 import { SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { disabledAdapters, knownAdapters } from '../registry.js';
-import type { SourceStatus } from './source-status.js';
+import { SourceStatus } from './source-status.js';
+import { SourceAvailability } from './source-availability.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 
 const exec = promisify(execFile);
@@ -20,14 +22,20 @@ export class StickyRouter {
   private tasks = new Map<string, Task>();
   private bars = new Map<string, number>();
   private barFailures = new Map<string, ErrorCode>();
-  constructor(private sources: Source[], private options: RoutingOptions) {}
+  private observation: SourceStatus;
+  private availability: SourceAvailability;
+  private shutdown = new AbortController();
+  constructor(private sources: Source[], private options: RoutingOptions) {
+    this.observation = options.observation ?? new SourceStatus(sources.map(source => source.id), options.now);
+    this.availability = new SourceAvailability(this.observation);
+  }
   private now() { return (this.options.now ?? Date.now)(); }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); }
   cooldown(id: string) {
     const until = this.bars.get(id), code = this.barFailures.get(id);
-    const observedQuota = this.options.observation?.quotaRetryAt(id);
+    const observedQuota = this.observation.quotaRetryAt(id);
     if (observedQuota !== undefined && (until === undefined || observedQuota >= until)) {
       return { until: observedQuota, code: 'quota' as const };
     }
@@ -70,6 +78,7 @@ export class StickyRouter {
     return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
   }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+    signal = AbortSignal.any([signal, this.shutdown.signal]);
     signal.throwIfAborted();
     const { worker, ...adapterRequest } = request;
     const cwd = worker ? request.cwd : await realpath(request.cwd);
@@ -88,7 +97,8 @@ export class StickyRouter {
     // when Pi attaches tools, unless the caller named that source explicitly.
     const toolsRequired = needsFunctionTools(request) && (!!worker || !this.sources.some(s => s.id === request.model));
     const attempted = new Set<string>();
-    const observation = this.options.observation;
+    let yieldedMetadata = false;
+    const observation = this.observation;
     const reportedSkips = worker ? new Set<string>() : undefined;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => {
       const key = `${source}:${reason}`;
@@ -101,12 +111,13 @@ export class StickyRouter {
         signal.throwIfAborted();
         const adapters = this.options.registry().adapters.filter(a => this.registered(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
         const eligible: { source: Source; weight: number }[] = [];
+        const unknown: Source[] = [];
         const retryTimes: number[] = [];
         for (const source of this.sources) {
           signal.throwIfAborted();
           const adapter = adapters.find(a => a.id === source.id);
           if (!worker && !task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
-          if (!adapter || worker && !this.workerAdapter(adapter)) {
+          if (!adapter || this.options.disabled?.has(source.id) || worker && !this.workerAdapter(adapter)) {
             skip(source.id, 'not_listed');
             continue;
           }
@@ -128,7 +139,9 @@ export class StickyRouter {
             retryTimes.push(this.now());
             continue;
           }
-          if (source.id === task.source || await (observation ? observation.available(source) : source.available()).catch(() => false)) eligible.push({ source, weight: adapter.weight });
+          const available = this.availability.peek(source.id);
+          if (source.id === task.source || available === true) eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, !!worker) });
+          else if (available === undefined) unknown.push(source);
           else {
             // This live allowance check can discover a reset the router did not know at entry.
             const checkedUntil = this.cooldown(source.id)?.until;
@@ -137,10 +150,28 @@ export class StickyRouter {
           }
         }
         signal.throwIfAborted();
-        if (!eligible.length) throw this.exhausted(toolsRequired, retryTimes);
-        const ready = worker && observation ? eligible.filter(candidate => !observation.isBusy(candidate.source.id)) : eligible;
-        if (worker && observation && !ready.length) {
-          try { worker.onWait?.(); } catch { /* Status callbacks cannot change routing. */ }
+        // At most four read-only admission checks run together. A ready source
+        // can answer immediately while unrelated checks finish in the background.
+        // Checks never replace the selected adapter's fresh dispatch guards.
+        const startedChecks = this.availability.start(unknown);
+        // Admit already-settled metadata before drawing (including a just-reset
+        // quota), without waiting for network or a slow unrelated provider.
+        if (eligible.length && startedChecks && !yieldedMetadata) {
+          yieldedMetadata = true;
+          await metadataTurn(undefined, { signal });
+          continue;
+        }
+        if (!eligible.length) {
+          if (this.availability.hasPending()) { await this.availability.changed(signal); continue; }
+          throw this.exhausted(toolsRequired, retryTimes);
+        }
+        const idle = eligible.filter(candidate => !observation.isBusy(candidate.source.id));
+        // Main requests may overlap a read-only/maintenance observation. They
+        // prefer idle capacity but must not wait behind background work.
+        const boundMain = !worker && eligible.some(candidate => candidate.source.id === task.source);
+        const ready = boundMain ? eligible : worker || idle.length ? idle : eligible;
+        if (worker && !ready.length) {
+          try { worker?.onWait?.(); } catch { /* Status callbacks cannot change routing. */ }
           await observation.waitForIdle(eligible.map(candidate => candidate.source.id), signal);
           continue;
         }
@@ -165,14 +196,16 @@ export class StickyRouter {
           signal.throwIfAborted();
           // Keep this check and attempt dispatch synchronous so workers cannot
           // race onto the same idle provider.
-          if (worker && (observation?.isBusy(selected.source.id) || this.options.pending?.has(selected.source.id)
-            || !this.options.registry().adapters.some(adapter => adapter.id === selected.source.id && this.workerAdapter(adapter)))) continue;
+          const liveAdapter = this.options.registry().adapters.find(adapter => adapter.id === selected.source.id
+            && this.registered(adapter.id) && adapter.modalities.includes('text') && (!request.imageInput || adapter.modalities.includes('image')));
+          if (!liveAdapter || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
+            || worker && (observation.isBusy(selected.source.id) || !this.workerAdapter(liveAdapter))) continue;
           task.source = selected.source.id;
           task.switched = switched;
           attempted.add(selected.source.id);
           this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
           try { worker?.onSource(selected.source.id); } catch { /* Status callbacks cannot change routing. */ }
-          const result = await (this.options.attempt ? this.options.attempt(selected.source, input, signal) : this.options.observation ? this.options.observation.complete(selected.source, input, signal) : selected.source.complete(input, signal));
+          const result = await (this.options.attempt ? this.options.attempt(selected.source, input, signal) : observation.complete(selected.source, input, signal));
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
           return result;
@@ -206,5 +239,9 @@ export class StickyRouter {
         if (oldKey !== key && !oldTask.busy) { this.tasks.delete(oldKey); break; }
       }
     }
+  }
+  async close() {
+    this.shutdown.abort(new SourceError('cancelled', 'Routing stopped'));
+    await this.availability.close();
   }
 }

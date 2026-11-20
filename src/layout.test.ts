@@ -6,6 +6,8 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
   const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/kilo.mjs", "proof/add-url.mjs", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
   const operatorFiles = new Set([
+    "ops/adventure-execution/README.md", "ops/adventure-execution/CHECKPOINT_GATE.md", "ops/adventure-execution/baseline.json",
+    "ops/adventure-execution/stage.py", "ops/adventure-execution/test_stage.py", "ops/adventure-execution/activate.py", "ops/adventure-execution/test_activate.py",
     "ops/adventure-feed/README.md", "ops/adventure-feed/activity.py", "ops/adventure-feed/uptime.py", "ops/adventure-feed/test_activity.py",
     "ops/provider-scout/.gitignore", "ops/provider-scout/POLICY.md", "ops/provider-scout/README.md",
     "ops/provider-scout/report.schema.json", "ops/provider-scout/scout.py", "ops/provider-scout/test_scout.py",

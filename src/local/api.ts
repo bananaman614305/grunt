@@ -12,6 +12,10 @@ import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from 
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
 import type { WorkerPool } from './worker-pool.js';
+import { WorkerScopes, WorkerScopeError } from './worker-scopes.js';
+import { getWorkerCapabilities } from './worker-workspace.js';
+import { validOwnedPath } from './worker-agent.js';
+import type { WorkerInitialFile } from './worker-agent.js';
 type Obj = Record<string, unknown>;
 const object = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
 const array = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
@@ -85,23 +89,42 @@ export function decode(body: Obj, api: string, fallback?: string): ModelRequest 
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
 }
+interface ChatUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+// Preserve the legacy JSON encoding without presenting its fallback zeros as
+// measured token counts to streaming clients. Entries die with their response.
+const encodedChatUsage = new WeakMap<Obj, ChatUsage | null>();
+function measuredChatUsage(input: unknown, output: unknown): ChatUsage | null {
+  if (typeof input !== 'number' || !Number.isSafeInteger(input) || input < 0
+    || typeof output !== 'number' || !Number.isSafeInteger(output) || output < 0
+    || !Number.isSafeInteger(input + output)) return null;
+  return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output };
+}
 export function encode(result: Completion, model: string, api: string, namespaces?: ReadonlyMap<string, { namespace: string; name: string }>) {
   const id = randomUUID(), input = result.inputTokens ?? 0, output = result.outputTokens ?? 0;
   if (api === 'messages') return { id: `msg_${id}`, type: 'message', role: 'assistant', model, content: [...(result.text ? [{ type: 'text', text: result.text }] : []), ...(result.calls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.function.name, input: toolInput(c.function.arguments) }))], stop_reason: result.calls?.length ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: input, output_tokens: output } };
   if (api === 'responses') return { id: `resp_${id}`, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', error: null, incomplete_details: null, model, output: [...(result.text ? [{ id: `msg_${id}`, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: result.text, annotations: [] }] }] : []), ...(result.calls ?? []).map(c => ({ id: `fc_${c.id}`, type: 'function_call', status: 'completed', call_id: c.id, ...(namespaces?.get(c.function.name) ?? { name: c.function.name }), arguments: c.function.arguments }))], usage: { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } }, parallel_tool_calls: true, tools: [], tool_choice: 'auto' };
-  return { id: `chatcmpl-${id}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, message: { role: 'assistant', content: result.text || null, ...(result.calls?.length ? { tool_calls: result.calls } : {}) }, finish_reason: result.calls?.length ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output } };
+  const value = { id: `chatcmpl-${id}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, message: { role: 'assistant', content: result.text || null, ...(result.calls?.length ? { tool_calls: result.calls } : {}) }, finish_reason: result.calls?.length ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output } };
+  encodedChatUsage.set(value, measuredChatUsage(result.inputTokens, result.outputTokens));
+  return value;
 }
-export function events(value: Obj, api: string): { event?: string; data: string }[] {
+export function events(value: Obj, api: string, options: { includeUsage?: boolean } = {}): { event?: string; data: string }[] {
   const out: { event?: string; data: string }[] = [];
   let seq = 0;
   const push = (event: string, data: Obj) => out.push({ ...(api !== 'chat' ? { event } : {}), data: JSON.stringify(api === 'responses' ? { ...data, sequence_number: seq++ } : data) });
   if (api === 'chat') {
     const choice = object(array(value.choices)[0]), message = object(choice.message);
-    const chunk = (delta: Obj, finish: unknown = null) => push('', { id: value.id, object: 'chat.completion.chunk', created: value.created, model: value.model, choices: [{ index: 0, delta, finish_reason: finish }] });
+    const base = { id: value.id, object: 'chat.completion.chunk', created: value.created, model: value.model };
+    const chunk = (delta: Obj, finish: unknown = null) => push('', { ...base, choices: [{ index: 0, delta, finish_reason: finish }], ...(options.includeUsage ? { usage: null } : {}) });
     chunk({ role: 'assistant', content: '' });
     if (message.content) chunk({ content: message.content });
     array(message.tool_calls).forEach((c, index) => chunk({ tool_calls: [{ ...object(c), index }] }));
     chunk({}, choice.finish_reason);
+    if (options.includeUsage) {
+      const raw = object(value.usage);
+      const usage = encodedChatUsage.has(value) ? encodedChatUsage.get(value)!
+        : measuredChatUsage(raw.prompt_tokens, raw.completion_tokens);
+      push('', { ...base, choices: [], usage });
+    }
     out.push({ data: '[DONE]' });
   } else if (api === 'messages') {
     push('message_start', { type: 'message_start', message: { ...value, content: [], stop_reason: null, usage: { ...object(value.usage), output_tokens: 0 } } });
@@ -135,7 +158,28 @@ export function events(value: Obj, api: string): { event?: string; data: string 
   }
   return out;
 }
-export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; workers?: WorkerPool } = {}) {
+/** Strictly bounded transport data, not model-controlled filesystem authority. */
+function parseWorkerSnapshot(input: unknown): WorkerInitialFile[] | undefined {
+  if (!Array.isArray(input) || input.length > 5000) return;
+  const paths = new Set<string>();
+  let bytes = 0;
+  const files: WorkerInitialFile[] = [];
+  for (const value of input) {
+    const row = object(value);
+    if (Object.keys(row).some(key => !['path', 'content', 'binary', 'sha256'].includes(key)) || !validOwnedPath(row.path)
+      || paths.has(row.path) || typeof row.content !== 'string' || row.binary !== undefined && typeof row.binary !== 'boolean'
+      || row.sha256 !== undefined && (typeof row.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256))) return;
+    if (row.binary && (row.content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(row.content))) return;
+    const content = Buffer.from(row.content, row.binary ? 'base64' : 'utf8');
+    if (row.binary && content.toString('base64') !== row.content) return;
+    bytes += content.byteLength;
+    if (bytes > 4 * 1024 * 1024 || row.sha256 && createHash('sha256').update(content).digest('hex') !== row.sha256) return;
+    paths.add(row.path);
+    files.push({ path: row.path, content: row.content, ...(row.binary === undefined ? {} : { binary: row.binary }), ...(row.sha256 === undefined ? {} : { sha256: row.sha256 as string }) });
+  }
+  return files;
+}
+export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; workers?: WorkerPool; workerScopes?: WorkerScopes } = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
@@ -143,8 +187,8 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || (c.req.raw.headers.has('origin') && c.req.path !== '/dots/pair')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
     const tracked = c.req.method === 'POST' && ['/v1/chat/completions', '/v1/messages', '/v1/responses'].includes(c.req.path);
     const store = sources.diagnosticStore(), requestId = randomUUID(), started = Date.now(), startedMono = performance.now();
-    const context: DiagnosticContext = { requestId, kind: 'user', requestRecorded: true, ...(store ? { sink: store } : {}) };
-    if (tracked) { c.header('X-Grunt-Request-Id', requestId); store?.record({ version: 1, id: randomUUID(), at: started, requestId, kind: 'user', type: 'request.start' }); }
+    const context: DiagnosticContext = { requestId, kind: 'user', actor: 'client', requestRecorded: true, ...(store ? { sink: store } : {}) };
+    if (tracked) { c.header('X-Grunt-Request-Id', requestId); store?.record({ version: 1, id: randomUUID(), at: started, requestId, kind: 'user', actor: 'client', type: 'request.start' }); }
     let status: number | undefined;
     const run = async () => {
       try {
@@ -169,16 +213,67 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     return c.json({ ...sources.status(), ...(workers ? { workers: workers.status() } : {}) });
   });
   if (workers) {
+    const scopes = options.workerScopes ?? new WorkerScopes();
+    const token = (authorization: string | undefined) => authorization?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
+    const smallBody = bodyLimit({ maxSize: 8 * 1024, onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) });
+    app.use('/v1/workers/*', async (c, next) => {
+      c.header('Cache-Control', 'no-store');
+      try { await workers.ready(); } catch { return c.json({ ok: false, code: 'unavailable' }, 503); }
+      await next();
+    });
     app.get('/v1/workers', c => {
       c.header('Cache-Control', 'no-store');
       return c.json(workers.status());
     });
-    app.post('/v1/workers/run', bodyLimit({ maxSize: 256 * 1024, onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) }), async c => {
-      c.header('Cache-Control', 'no-store');
-      let input: unknown;
-      try { input = await c.req.json(); }
+    app.get('/v1/workers/capabilities', async c => c.json(await getWorkerCapabilities()));
+    app.post('/v1/workers/projects/challenge', smallBody, async c => {
+      try {
+        const body = object(await c.req.json());
+        if (Object.keys(body).length !== 1 || !('projectRoot' in body)) return c.json({ ok: false, code: 'invalid_task' }, 400);
+        return c.json(await scopes.challenge(body.projectRoot));
+      } catch (error) { return c.json({ ok: false, code: error instanceof WorkerScopeError ? error.code : 'invalid_task' }, error instanceof WorkerScopeError && error.code === 'busy' ? 429 : 400); }
+    });
+    app.post('/v1/workers/projects/register', smallBody, async c => {
+      try {
+        const body = object(await c.req.json());
+        if (Object.keys(body).length !== 1 || !('challengeId' in body)) return c.json({ ok: false, code: 'invalid_task' }, 400);
+        return c.json(await scopes.register(body.challengeId));
+      } catch (error) { return c.json({ ok: false, code: error instanceof WorkerScopeError ? error.code : 'invalid_task' }, error instanceof WorkerScopeError ? 403 : 400); }
+    });
+    app.post('/v1/workers/projects/revoke', smallBody, c => c.json({ ok: scopes.revoke(token(c.req.header('authorization'))) }));
+    app.get('/v1/workers/retained', async c => {
+      const scope = await scopes.resolve(token(c.req.header('authorization')));
+      if (!scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
+      return c.json({ retained: workers.retained(scope) });
+    });
+    app.get('/v1/workers/artifacts/:id', async c => {
+      const scope = await scopes.resolve(token(c.req.header('authorization')));
+      if (!scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
+      const artifact = workers.artifact(c.req.param('id'), scope), ownedPaths = workers.artifactOwnership(c.req.param('id'), scope);
+      return artifact && ownedPaths ? c.json({ artifact, ownedPaths }) : c.json({ ok: false, code: 'not_found' }, 404);
+    });
+    app.post('/v1/workers/artifacts/:id/discard', smallBody, async c => {
+      const scope = await scopes.resolve(token(c.req.header('authorization')));
+      if (!scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
+      const ok = await workers.discardArtifact(c.req.param('id'), scope);
+      return ok ? c.json({ ok }) : c.json({ ok: false, code: 'not_found' }, 404);
+    });
+    app.post('/v1/workers/run', bodyLimit({ maxSize: 8 * 1024 * 1024, onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) }), async c => {
+      let input: unknown, raw: string;
+      try { raw = await c.req.text(); input = JSON.parse(raw); }
       catch { return c.json({ ok: false, code: 'invalid_task' }, 400); }
-      const result = await workers.run(input, c.req.raw.signal);
+      const body = object(input), agent = body.mode === 'agent';
+      if (!agent && Buffer.byteLength(raw) > 256 * 1024) return c.json({ ok: false, code: 'invalid_task' }, 413);
+      const scope = agent ? await scopes.resolve(token(c.req.header('authorization'))) : undefined;
+      if (agent && !scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
+      let snapshot: WorkerInitialFile[] | undefined;
+      if (agent && body.initialSnapshot !== undefined) {
+        snapshot = parseWorkerSnapshot(body.initialSnapshot);
+        if (!snapshot) return c.json({ ok: false, code: 'invalid_snapshot' }, 400);
+      }
+      // Private transport fields never become part of the model's task input.
+      const task = agent ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'initialSnapshot')) : input;
+      const result = await workers.run(task, c.req.raw.signal, scope ? { ...scope, ...(snapshot === undefined ? {} : { initialSnapshot: snapshot }) } : undefined);
       if (result.ok) return c.json(result);
       const status = { invalid_task: 400, busy: 429, cancelled: 409, timeout: 504, quota: 429, unavailable: 503 } as const;
       if (result.retryAfter !== undefined) c.header('Retry-After', String(result.retryAfter));
@@ -209,7 +304,12 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
   for (const [path, api] of [['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const) {
     app.post(`/v1/${path}`, async c => {
       let request: ReturnType<typeof decode>;
-      try { request = decode(object(await c.req.json()), api, options.cwd); }
+      let includeUsage = false;
+      try {
+        const body = object(await c.req.json());
+        request = decode(body, api, options.cwd);
+        includeUsage = api === 'chat' && object(body.stream_options).include_usage === true;
+      }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }
       if (c.req.header('x-grunt-context') === 'public') request.publicContext = true;
       const local = housekeeping(request);
@@ -234,7 +334,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         const result = encode(completion, request.model, api, request.responseNamespaces);
         if (request.stream) return streamSSE(c, async stream => {
           stream.onAbort(abort);
-          for (const event of events(result, api)) await stream.writeSSE(event);
+          for (const event of events(result, api, { includeUsage })) await stream.writeSSE(event);
         });
         return c.json(result);
       } catch (e) {

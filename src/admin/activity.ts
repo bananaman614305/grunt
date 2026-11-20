@@ -1,4 +1,5 @@
-import { AdminDataError, isAdminSourceId } from './types.js';
+import { AdminDataError, isAdminSourceId, projectAdminWorkers } from './types.js';
+import type { AdminWorkers } from './types.js';
 
 const phases = ['starting', 'working', 'checkpoint', 'waiting_for_free_pool', 'stopped', 'offline'] as const;
 const errors = ['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'] as const;
@@ -9,16 +10,29 @@ type Provider = { source: string; model?: string };
 type Event = { at: number; kind: 'progress'; text: string }
   | { at: number; kind: 'tool'; tool: typeof toolNames[number]; failed: boolean };
 const milestoneStates = ['draft', 'review', 'merged', 'closed'] as const;
-const workStates = ['working', 'provider_wait', 'between_cycles', 'starting', 'paused', 'offline', 'stalled', 'unknown'] as const;
+const workStates = ['working', 'provider_wait', 'between_cycles', 'starting', 'paused', 'offline', 'stalled', 'tool_wait', 'unknown'] as const;
 const dayMs = 86400000;
-type WorkWindow = { workingMs: number; downtimeMs: number; providerWaitMs: number };
+const breakdownFields = ['executionMs', 'inferenceMs', 'toolWaitMs', 'providerWaitMs', 'idleMs', 'blockedMs', 'unclassifiedMs'] as const;
+type WorkWindow = { workingMs: number; downtimeMs: number; providerWaitMs: number; breakdown?: Record<typeof breakdownFields[number], number> };
+type WorkerWindow = { capacityMs: number; occupiedMs: number; sourceWaitMs: number; completed: number; failed: number };
+type DeliveryWindow = { successfulChecks: number; failedChecks: number; headLinkedChecks: number };
 interface WorkActivity {
   at: number;
   state: typeof workStates[number];
   day: WorkWindow;
   week: WorkWindow;
+  workerUtilization?: { observedSince: number; day: WorkerWindow; week: WorkerWindow };
+  delivery?: { observedSince: number; day: DeliveryWindow; week: DeliveryWindow; playableDeployments: null };
+}
+interface PublicationActivity {
+  observedAt: number;
+  coverage: 'partial';
+  day: { builds: number; revisions: number };
+  week: { builds: number; revisions: number };
+  latest?: { at: number; head: string };
 }
 interface ProjectActivity {
+  publications?: PublicationActivity;
   checkpoint?: { at: number; summary?: string; next: string[] };
   milestones: { at: number; number: number; title: string; status: typeof milestoneStates[number] }[];
 }
@@ -33,6 +47,7 @@ export interface AgentActivity {
   events: Event[];
   project?: ProjectActivity;
   work?: WorkActivity;
+  workers?: AdminWorkers;
 }
 
 const unsafeText = /[<>\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]|https?:\/\/|vault:|\/(?:home|tmp|worker|root|proc|etc)\/|file:|\b(?:bearer|password|secret|credential|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|cookie|private[ _-]?key|authorization)\b|\b(?:sk-|gh[pousr]_|AKIA|GOCSPX-|AIza)[\w-]+|[\w.+-]+@[\w.-]+\.[a-z]{2,}|[A-Za-z0-9_+/=-]{32,}/i;
@@ -77,12 +92,30 @@ function projectTimeline(value: unknown, observedAt: number): ProjectActivity {
     return { title, number: time(row.number, 1, 1000000), at: time(row.at, 1, observedAt + 5000),
       status: oneOf(row.status, milestoneStates) };
   }).filter((row): row is ProjectActivity['milestones'][number] => row !== null).sort((a, b) => b.at - a.at);
-  if (data.checkpoint === undefined) return { milestones };
+  const publications = data.publications === undefined ? undefined : projectPublications(data.publications, observedAt);
+  if (data.checkpoint === undefined) return { milestones, ...(publications ? { publications } : {}) };
   const checkpoint = record(data.checkpoint);
   const summary = checkpoint.summary === undefined ? null : projectedProse(checkpoint.summary, 400);
   const next = list(checkpoint.next, 3, step => projectedProse(step, 400)).filter((step): step is string => step !== null);
   const at = time(checkpoint.at, observedAt - 30 * 86400000, observedAt + 5000);
-  return { milestones, ...(summary || next.length ? { checkpoint: { at, ...(summary ? { summary } : {}), next } } : {}) };
+  return { milestones, ...(publications ? { publications } : {}), ...(summary || next.length ? { checkpoint: { at, ...(summary ? { summary } : {}), next } } : {}) };
+}
+
+function projectPublications(value: unknown, observedAt: number): PublicationActivity {
+  const row = record(value);
+  const window = (value: unknown) => {
+    const raw = record(value), builds = time(raw.builds, 0, 256);
+    return { builds, revisions: time(raw.revisions, 0, builds) };
+  };
+  const result: PublicationActivity = { observedAt: time(row.observedAt, observedAt - 3600000, observedAt + 5000),
+    coverage: oneOf(row.coverage, ['partial']), day: window(row.day), week: window(row.week) };
+  if (result.day.builds > result.week.builds || result.day.revisions > result.week.revisions) return invalid();
+  if (row.latest !== undefined) {
+    const latest = record(row.latest);
+    if (typeof latest.head !== 'string' || !/^[a-f0-9]{40}$/.test(latest.head)) return invalid();
+    result.latest = { at: time(latest.at, 1, observedAt + 5000), head: latest.head };
+  }
+  return result;
 }
 
 function projectWork(value: unknown, observedAt: number): WorkActivity {
@@ -91,10 +124,37 @@ function projectWork(value: unknown, observedAt: number): WorkActivity {
     const row = record(value);
     const workingMs = time(row.workingMs, 0, duration);
     const downtimeMs = time(row.downtimeMs, 0, duration - workingMs);
-    return { workingMs, downtimeMs, providerWaitMs: time(row.providerWaitMs, 0, downtimeMs) };
+    const result: WorkWindow = { workingMs, downtimeMs, providerWaitMs: time(row.providerWaitMs, 0, downtimeMs) };
+    if (row.breakdown !== undefined) {
+      const raw = record(row.breakdown), breakdown = Object.fromEntries(breakdownFields.map(key => [key, time(raw[key], 0, workingMs + downtimeMs)])) as Record<typeof breakdownFields[number], number>;
+      if (Object.values(breakdown).reduce((total, value) => total + value, 0) !== workingMs + downtimeMs
+          || breakdown.providerWaitMs > result.providerWaitMs
+          || breakdown.executionMs + breakdown.inferenceMs > workingMs
+          || breakdown.toolWaitMs + breakdown.providerWaitMs + breakdown.idleMs + breakdown.blockedMs > downtimeMs) return invalid();
+      result.breakdown = breakdown;
+    }
+    return result;
   };
-  return { at: time(data.at, observedAt - 15000, observedAt + 5000), state: oneOf(data.state, workStates),
+  const result: WorkActivity = { at: time(data.at, observedAt - 15000, observedAt + 5000), state: oneOf(data.state, workStates),
     day: window(data.day, dayMs), week: window(data.week, 7 * dayMs) };
+  if (data.workerUtilization !== undefined) {
+    const raw = record(data.workerUtilization);
+    const workerWindow = (value: unknown, duration: number): WorkerWindow => {
+      const row = record(value), capacityMs = time(row.capacityMs, 0, duration * 2), occupiedMs = time(row.occupiedMs, 0, capacityMs);
+      return { capacityMs, occupiedMs, sourceWaitMs: time(row.sourceWaitMs, 0, occupiedMs), completed: time(row.completed, 0, 1000000), failed: time(row.failed, 0, 1000000) };
+    };
+    result.workerUtilization = { observedSince: time(raw.observedSince, 1, result.at), day: workerWindow(raw.day, dayMs), week: workerWindow(raw.week, dayMs * 7) };
+  }
+  if (data.delivery !== undefined) {
+    const raw = record(data.delivery);
+    const deliveryWindow = (value: unknown): DeliveryWindow => {
+      const row = record(value), successfulChecks = time(row.successfulChecks, 0, 1000000);
+      return { successfulChecks, failedChecks: time(row.failedChecks, 0, 1000000), headLinkedChecks: time(row.headLinkedChecks, 0, successfulChecks) };
+    };
+    if (raw.playableDeployments !== null) return invalid();
+    result.delivery = { observedSince: time(raw.observedSince, 1, result.at), day: deliveryWindow(raw.day), week: deliveryWindow(raw.week), playableDeployments: null };
+  }
+  return result;
 }
 
 export function projectAgentActivity(value: unknown, now: number): AgentActivity {
@@ -124,7 +184,8 @@ export function projectAgentActivity(value: unknown, now: number): AgentActivity
     }),
     events: events.filter((event): event is Event => event !== null).sort((a, b) => a.at - b.at),
     ...(data.project === undefined ? {} : { project: projectTimeline(data.project, observedAt) }),
-    ...(data.work === undefined ? {} : { work: projectWork(data.work, observedAt) })
+    ...(data.work === undefined ? {} : { work: projectWork(data.work, observedAt) }),
+    ...(data.workers === undefined ? {} : { workers: projectAdminWorkers(data.workers, observedAt) })
   };
 }
 

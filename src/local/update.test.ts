@@ -25,7 +25,7 @@ type Settings = { brand?: 'grunt' | 'milo'; duplicate?: boolean; active?: boolea
 async function fixture(settings: Settings = {}) {
   const base = await mkdtemp(join(tmpdir(), 'grunt-update-test-')); directories.push(base);
   const brand = settings.brand ?? 'milo', prefix = brand.toUpperCase();
-  const directory = join(base, brand), runtime = join(directory, 'runtime'), remote = join(base, 'remote'), pkg = join(remote, 'package');
+  const directory = join(base, brand), runtime = join(directory, 'runtime'), remote = join(base, 'remote'), pkg = join(remote, 'package'), piDirectory = join(base, 'pi');
   await mkdir(join(runtime, 'dist/local'), { recursive: true, mode: 0o700 });
   await writeFile(join(runtime, 'dist/local/main.js'), 'original runtime');
   await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', version: '0.1.0', type: 'module' }));
@@ -106,15 +106,75 @@ async function fixture(settings: Settings = {}) {
     if (settings.badReady && current.version === '1.2.3') return new Response('synthetic unavailable', { status: 503 });
     return new Response(JSON.stringify({ version: 1, activeRequests: 0, sources: [] }));
   };
-  const options: UpdateOptions = { directory, env: { MILO_PORT: '8788', PATH: process.env.PATH }, platform: settings.platform ?? 'linux', run, fetcher, now: () => clock,
+  const options: UpdateOptions = { directory, env: { MILO_PORT: '8788', PATH: process.env.PATH, PI_CODING_AGENT_DIR: piDirectory }, platform: settings.platform ?? 'linux', run, fetcher, now: () => clock,
     wait: async ms => { clock += ms; }, ...(settings.abort ? { signal: settings.abort.signal } : {}) };
   const preserved = async () => {
     for (const [name, contents] of Object.entries(saved)) expect(await readFile(join(directory, name), 'utf8')).toBe(contents);
     for (const file of [unit, dropIn, plist]) expect(await readFile(file, 'utf8')).toBe('preserve original service configuration');
     expect((await readdir(directory)).some(name => name.startsWith('.setup-session-'))).toBe(false);
   };
-  return { directory, runtime, options, calls, urls, metadata, preserved, counts: () => ({ stops, starts, active }) };
+  return { directory, runtime, piDirectory, options, calls, urls, metadata, preserved, counts: () => ({ stops, starts, active }) };
 }
+
+async function legacyPi(directory: string, port = 18792, contextWindow = 128000) {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, 'models.json');
+  const saved = { defaultProvider: 'other', providers: { other: { apiKey: 'synthetic-private-other' }, grunt: {
+    baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
+    models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 4096 },
+      { id: 'custom-grunt', contextWindow: 200000 }] } } };
+  await writeFile(path, JSON.stringify(saved), { mode: 0o600 });
+  return { path, saved };
+}
+
+it.each([true, false])('migrates the matching managed Pi window only after a successful update (active=%s)', async active => {
+  const f = await fixture({ active }), pi = await legacyPi(f.piDirectory), lines: string[] = [];
+  const result = await updateRuntime({ ...f.options, notify: line => lines.push(line) });
+  expect(result.active).toBe(active);
+  const written = JSON.parse(await readFile(pi.path, 'utf8'));
+  expect(written.providers.grunt.models[0].contextWindow).toBe(65536);
+  expect(written.providers.grunt.baseUrl).toBe('http://127.0.0.1:18792/v1');
+  expect(written.providers.grunt.models[1]).toEqual(pi.saved.providers.grunt.models[1]);
+  expect(written.providers.other).toEqual(pi.saved.providers.other);
+  expect(written.defaultProvider).toBe('other');
+  expect((await readdir(f.piDirectory)).filter(name => name.includes('.grunt-backup-'))).toHaveLength(1);
+  expect(lines.at(-1)).toBe('Updated the managed Pi working context');
+  await f.preserved();
+});
+
+it('does not migrate Pi when runtime activation fails', async () => {
+  const f = await fixture({ badReady: true }), pi = await legacyPi(f.piDirectory), original = await readFile(pi.path, 'utf8');
+  await expect(updateRuntime(f.options)).rejects.toThrow('previous runtime and service were restored');
+  expect(await readFile(pi.path, 'utf8')).toBe(original);
+  expect((await readdir(f.piDirectory)).filter(name => name.includes('.grunt-backup-'))).toEqual([]);
+  await f.preserved();
+});
+
+it.each([[18793, 128000], [18792, 200000]] as const)('does not rewrite another Pi endpoint or a custom window (%s/%s)', async (port, contextWindow) => {
+  const f = await fixture(), pi = await legacyPi(f.piDirectory, port, contextWindow), original = await readFile(pi.path, 'utf8');
+  await updateRuntime(f.options);
+  expect(await readFile(pi.path, 'utf8')).toBe(original);
+  expect((await readdir(f.piDirectory)).filter(name => name.includes('.grunt-backup-'))).toEqual([]);
+  await f.preserved();
+});
+
+it('does not create a Pi profile during an ordinary runtime update', async () => {
+  const f = await fixture(); await updateRuntime(f.options);
+  await expect(readFile(join(f.piDirectory, 'models.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await f.preserved();
+});
+
+it('reports a malformed Pi profile without rolling back a healthy updated service or leaking its content', async () => {
+  const f = await fixture(), pi = await legacyPi(f.piDirectory), invalid = '{"secret":"synthetic-sensitive-value",', lines: string[] = [];
+  await writeFile(pi.path, invalid, { mode: 0o600 });
+  expect((await updateRuntime({ ...f.options, notify: line => lines.push(line) })).active).toBe(true);
+  expect(JSON.parse(await readFile(join(f.runtime, 'package.json'), 'utf8')).version).toBe('1.2.3');
+  expect(f.counts()).toEqual({ stops: 1, starts: 1, active: true });
+  expect(await readFile(pi.path, 'utf8')).toBe(invalid);
+  expect(lines.at(-1)).toContain('migration was skipped');
+  expect(lines.join('\n')).not.toContain('synthetic-sensitive-value');
+  await f.preserved();
+});
 
 it('fetches latest even from an older CLI and replaces only the managed runtime at the effective custom port', async () => {
   const f = await fixture();

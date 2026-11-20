@@ -54,19 +54,42 @@ prints a single plain snapshot. New setup remembers the installed port;
 
 ### Delegate to Grunt subworkers
 
-Your coding agent can give Grunt up to two independent tasks at a time.
-Subworkers return findings or proposed edits for the main agent to review and
-apply. They work from the task and context you send.
+Grunt can run two subworkers alongside your main coding agent. The default
+`grunt_delegate` tools return proposals from the task and excerpts you supply.
+Opt in to tool-using workers when you want independent edits in private project
+copies:
 
 ```bash
-npx usegrunt workers connect pi
+npx usegrunt workers connect pi --agentic
+# Launch Pi with the printed command, including:
+# --grunt-agent-workers --grunt-background-jobs
 npx usegrunt workers status
 ```
 
-Use `opencode`, `codex`, or `claude` in place of `pi` for those interfaces,
-or run tasks from any terminal with
-[`usegrunt workers run`](docs/reference.md#subworkers). Installations with an
-older daemon need `npx usegrunt update` after a release with subworkers.
+The Pi flags are separate opt-ins: `--grunt-agent-workers` enables scoped
+workers; `--grunt-background-jobs` enables local command jobs. Review your
+interface's custom-tool approval rules before enabling them. For Codex, Claude
+Code or OpenCode, use `workers connect <interface> --agentic --project "$PWD"`
+and install the printed MCP configuration. Omitting `--agentic` keeps proposal
+workers.
+
+Give each tool-using worker explicit `ownedPaths`. It can read the permitted
+project snapshot and edit its owned files, while your main agent continues.
+Command execution requires a verified Linux namespace and resource-limited
+sandbox; otherwise workers have filesystem tools only. Worker commands have no
+network access; Grunt still handles model inference through eligible sources.
+Retained edits survive failed jobs and daemon restarts. Inspect and review the
+full artifact before using the approved `workers apply` command. Verify the
+integrated result, then explicitly discard its retained copy; deliberate
+abandonment also requires discard. Twenty retained/outstanding artifacts
+fill the bounded queue until you clear reviewed work.
+
+Use [the worker reference](docs/reference.md#subworkers) for launch commands,
+artifact recovery and platform limits, or [background jobs](docs/reference.md#background-command-jobs)
+for long tests, builds and renders. Managed jobs return control to Pi so the
+agent can continue independent work; collect results or cancel them before the
+session ends. Neither feature is enabled by ordinary setup. Existing daemons
+need `npx usegrunt update` after installing a release with these capabilities.
 
 The [private owner console](docs/reference.md#private-owner-admin) opens on
 Grunt's current work, subworker activity and per-source daily, weekly and lifetime usage.

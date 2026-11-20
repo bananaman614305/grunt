@@ -16,7 +16,7 @@ export interface AdminDiagnosticEvent {
   durationMs?: number; httpStatus?: number; errorCode?: DiagnosticErrorCode; retryAfterSeconds?: number;
   inputTokens?: number; outputTokens?: number; transport?: 'http' | 'cli'; httpMethod?: 'GET' | 'POST';
   endpointLabel?: 'chat.completions' | 'models' | 'account' | 'local.opencode' | 'cli'; networkCode?: string;
-  exitCode?: number; reason?: string;
+  exitCode?: number; reason?: string; actor?: 'client' | 'worker'; workerId?: string;
   failureReason?: typeof diagnosticFailureReasons[number];
 }
 export type AdminSourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
@@ -29,6 +29,8 @@ export interface AdminSourceSnapshot {
 export interface AdminWorker {
   id: string; state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   createdAt: number; startedAt?: number; finishedAt?: number; source?: string; activity?: typeof workerActivities[number];
+  code?: string; mode?: 'proposal' | 'agent'; turns?: number; toolCalls?: number; artifactAvailable?: boolean; waitingForSource?: boolean; nextAttemptAt?: number;
+  capabilities?: { filesystem: boolean; commands: boolean; sandbox?: 'bubblewrap' | 'filesystem' };
 }
 export interface AdminWorkers { active: AdminWorker[]; queued: AdminWorker[]; recent: AdminWorker[] }
 export interface AdminPoolSnapshot { version: 1; updatedAt: number; activeRequests: number; sources: AdminSourceSnapshot[]; workers?: AdminWorkers }
@@ -87,6 +89,11 @@ const optional = (from: Record<string, unknown>, name: string, parse: (value: un
 export function validateAdminEvent(value: unknown, now = Date.now()): AdminDiagnosticEvent {
   const raw = record(value); if (raw.version !== 1) fail();
   const event: AdminDiagnosticEvent = { version: 1, id: id(raw.id), at: timestamp(raw.at, now, Math.max(0, now - 30 * 86400000)), type: member(raw.type, eventTypes), requestId: id(raw.requestId), kind: member(raw.kind, kinds) };
+  optional(raw, 'actor', v => member(v, ['client', 'worker']), event);
+  if (raw.workerId !== undefined) {
+    if (event.actor !== 'worker') fail();
+    event.workerId = id(raw.workerId);
+  }
   optional(raw, 'seq', v => integer(v, 1), event); optional(raw, 'attemptId', id, event);
   optional(raw, 'source', v => isAdminSourceId(v) ? v : fail(), event);
   optional(raw, 'model', v => isAdminModelId(v) ? v : fail(), event);
@@ -116,6 +123,17 @@ export function projectAdminWorkers(value: unknown, now: number): AdminWorkers {
       optional(row, 'startedAt', v => timestamp(v, now, result.createdAt), result);
       optional(row, 'finishedAt', v => timestamp(v, now, result.startedAt ?? result.createdAt), result);
       optional(row, 'source', v => isAdminSourceId(v) && (knownAdapters.has(v) || localOptInAdapterIds.has(v)) ? v : fail(), result);
+      if (typeof row.code === 'string' && ['invalid_task', 'busy', 'cancelled', 'timeout', 'quota', 'unavailable', 'invalid_workspace', 'unsupported_sandbox', 'ownership_violation', 'artifact_conflict', 'limit'].includes(row.code)) result.code = row.code;
+      optional(row, 'mode', v => member(v, ['proposal', 'agent']), result);
+      for (const name of ['turns', 'toolCalls'] as const) optional(row, name, v => integer(v, 0, 10000), result);
+      for (const name of ['artifactAvailable', 'waitingForSource'] as const) optional(row, name, v => typeof v === 'boolean' ? v : fail(), result);
+      optional(row, 'nextAttemptAt', v => integer(v, 0, now + 35 * 86400000), result);
+      if (row.capabilities !== undefined) {
+        const caps = record(row.capabilities);
+        if (typeof caps.filesystem !== 'boolean' || typeof caps.commands !== 'boolean') fail();
+        result.capabilities = { filesystem: caps.filesystem as boolean, commands: caps.commands as boolean,
+          ...(caps.sandbox === undefined ? {} : { sandbox: member(caps.sandbox, ['bubblewrap', 'filesystem']) }) };
+      }
       return result;
     });
   };

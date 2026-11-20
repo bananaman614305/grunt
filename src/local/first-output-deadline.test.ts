@@ -123,9 +123,13 @@ it.each([false, true])('a real Freebuff that never replies falls through and run
     await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff')); await chmod(join(home, 'freebuff'), 0o755);
     vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
     const after = next();
+    const sources = chain([driver, after], sticky, 1500);
+    // This fixture exercises inference timeout after admission, rather than the
+    // intentional race between native eligibility and an already-ready mock.
+    await sources.models();
     const started = Date.now();
     // The doctor never finishes during this request; the answer must not wait for it.
-    expect(await chain([driver, after], sticky, 1500).complete({ ...request, cwd: home }, new AbortController().signal)).toEqual({ text: 'next answer' });
+    expect(await sources.complete({ ...request, cwd: home }, new AbortController().signal)).toEqual({ text: 'next answer' });
     expect(Date.now() - started).toBeLessThan(5000);
     expect(doctor).toHaveBeenCalledOnce();
     finish('Freebuff doctor\nall checks passed');

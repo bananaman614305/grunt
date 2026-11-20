@@ -41,6 +41,9 @@ jobs:
       - name: Check live activity projection
         if: ${{ !cancelled() }}
         run: python3 -W error::ResourceWarning -m unittest discover -s ops/adventure-feed
+      - name: Check staged owner execution upgrades
+        if: ${{ !cancelled() }}
+        run: python3 -W error::ResourceWarning -m unittest discover -s ops/adventure-execution
       - name: Check isolated routing and private provisioning
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node --test ops/provider-scout/test_probe.mjs ops/provider-scout/test_provision.mjs

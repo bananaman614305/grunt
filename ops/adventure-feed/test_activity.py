@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 from uptime import (
     DAY_MS, MODEL_PROGRESS_MS, TOOL_PROGRESS_MS, WORK_TICKS,
-    WorkLedger, WorkProbe, classify_work, shell_activity, tool_running,
+    WorkLedger, WorkProbe, classify_work, shell_activity, tool_running, project_workers, project_jobs, managed_jobs,
 )
 
-from activity import events, private_tail, progress_text, project_checkpoint, project_pulls, snapshot
+from activity import events, private_tail, progress_text, project_checkpoint, project_pulls, publications, snapshot
 
 
 class ActivityTest(unittest.TestCase):
@@ -172,7 +172,7 @@ These must not be included.
                              {'workingMs': 10000, 'downtimeMs': 5000, 'providerWaitMs': 5000})
             ledger.db.close()
 
-    def test_a_quiet_live_shell_keeps_working_status_with_a_buffered_tool_start(self):
+    def test_a_quiet_live_shell_is_a_wait_with_a_buffered_tool_start(self):
         now = 1794948372598
         status = {'phase': 'working', 'workerPid': 101, 'lastActivityAt': now / 1000 - 60,
                   'lastToolStartedAt': now / 1000 - 60, 'lastLog': 'cycle-20261117T202749Z.jsonl'}
@@ -183,7 +183,8 @@ These must not be included.
 
         probe = WorkProbe(Path('/test-state'), read, lambda: pool)
         with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(True, False, {})) as shell:
-            self.assertEqual(probe.sample(now), 'working')
+            self.assertEqual(probe.sample(now), 'tool_wait')
+            self.assertEqual(probe.category, 'tool_wait')
             shell.assert_called_once_with(101)
         with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(False, False, {})):
             self.assertEqual(probe.sample(now), 'stalled')
@@ -216,7 +217,8 @@ These must not be included.
             self.assertEqual(probe.sample(now + TOOL_PROGRESS_MS), 'stalled')
             status.update(lastActivityAt=now / 1000 - 60, lastToolStartedAt=now / 1000 - 60)
             shell.return_value = (True, True, {})
-            self.assertEqual(probe.sample(now), 'stalled')
+            self.assertEqual(probe.sample(now), 'tool_wait')
+            self.assertEqual(probe.category, 'tool_wait')
 
     def test_quiet_nested_request_counts_as_work_until_its_progress_expires(self):
         now = 1794948372598
@@ -275,6 +277,170 @@ These must not be included.
             process(108, 'pi', 'S', [109], ticks=3)
             process(109, 'node', 'R', [], ticks=15)
             self.assertEqual(shell_activity(101, proc), (True, False, {(108, 118): 3, (109, 119): 15}))
+
+
+class PerformanceTest(unittest.TestCase):
+    now = 1794948372598
+    worker_id = '11111111-1111-4111-8111-111111111111'
+    other_id = '22222222-2222-4222-8222-222222222222'
+
+    def workers(self, **fields):
+        return {'active': [{'id': self.worker_id, 'state': 'running', 'createdAt': self.now - 1000, **fields}],
+                'queued': [], 'recent': []}
+
+    def jobs(self, **fields):
+        return {'version': 1, 'observedAt': self.now, 'active': [], 'queued': [], 'recent': [], **fields}
+
+    def test_projects_actual_adventure_workers_and_preserves_safe_failure_and_capability_fields(self):
+        workers = self.workers(mode='agent', turns=3, toolCalls=7, artifactAvailable=True,
+                               code='ownership_violation', waitingForSource=False,
+                               capabilities={'filesystem': True, 'commands': True, 'sandbox': 'bubblewrap', 'secret': 'PRIVATE'},
+                               task='PRIVATE TASK', command='PRIVATE COMMAND', artifact='PRIVATE DIFF')
+        with patch('activity.events', return_value=[]), patch('activity.private_tail', return_value='{"phase":"working"}'), \
+                patch('activity.ask', return_value={'sources': [], 'workers': workers}), \
+                patch('activity.time.time', return_value=self.now / 1000):
+            result = snapshot()['workers']
+        self.assertEqual(result['active'][0]['code'], 'ownership_violation')
+        self.assertEqual(result['active'][0]['toolCalls'], 7)
+        self.assertEqual(result['active'][0]['capabilities'], {'filesystem': True, 'commands': True, 'sandbox': 'bubblewrap'})
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        for field in ('state', 'id', 'createdAt'):
+            with self.subTest(field=field):
+                self.assertIsNone(project_workers(self.workers(**{field: []}), self.now))
+        self.assertIsNone(project_workers({'active': [], 'queued': [], 'recent': [workers['active'][0]]}, self.now))
+        self.assertIsNone(project_workers({'active': [workers['active'][0]] * 2, 'queued': [], 'recent': []}, self.now))
+
+    def test_time_categories_are_disjoint_migrate_history_and_do_not_fill_gaps(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'work.sqlite3'
+            ledger = WorkLedger(path)
+            ledger.record(self.now, 'working')  # Historical interval lacks detail.
+            for offset, state, category in [(5000, 'working', 'execution'), (10000, 'model_only', 'inference'),
+                                            (15000, 'tool_wait', 'tool_wait'), (20000, 'provider_wait', 'provider_wait'),
+                                            (25000, 'paused', 'idle'), (30000, 'stalled', 'blocked'),
+                                            (35000, 'unknown', None), (60000, 'working', 'execution')]:
+                ledger.record(self.now + offset, state, category=category)
+            report = ledger.summary(self.now + 60000, 'working')['day']
+            self.assertEqual(report['breakdown'], dict(executionMs=5000, inferenceMs=5000, toolWaitMs=5000,
+                                                      providerWaitMs=5000, idleMs=5000, blockedMs=5000, unclassifiedMs=5000))
+            self.assertEqual(sum(report['breakdown'].values()), report['workingMs'] + report['downtimeMs'])
+            ledger.db.close()
+            reopened = WorkLedger(path)
+            reopened.record(self.now + 65000, 'working', category='execution')
+            self.assertEqual(reopened.summary(self.now + 65000, 'working')['day'], report)
+            reopened.db.close()
+
+    def test_failed_inference_reclassification_changes_only_that_category(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ledger = WorkLedger(Path(temp) / 'work.sqlite3')
+            ledger.record(self.now, 'working', category='execution')
+            ledger.record(self.now + 5000, 'model_only', category='inference')
+            ledger.record(self.now + 10000, 'model_only', category='inference')
+            ledger.record(self.now + 15000, 'provider_wait', self.now + 10000, category='provider_wait')
+            result = ledger.summary(self.now + 15000, 'provider_wait')['day']
+            self.assertEqual(result['breakdown']['inferenceMs'], 5000)
+            self.assertEqual(result['breakdown']['executionMs'], 5000)
+            self.assertEqual(result['breakdown']['providerWaitMs'], 5000)
+            ledger.db.close()
+
+    def test_worker_rollup_uses_sampled_slot_time_and_durable_deduplicated_completions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'work.sqlite3'
+            ledger = WorkLedger(path)
+            workers = self.workers(waitingForSource=True)
+            ledger.record_workers(self.now, workers)
+            ledger.record_workers(self.now + 5000, workers)
+            finished = {'active': [], 'queued': [], 'recent': [{**workers['active'][0], 'state': 'completed', 'finishedAt': self.now + 5000}]}
+            ledger.record_workers(self.now + 10000, finished)
+            ledger.record_workers(self.now + 15000, finished)
+            ledger.record_workers(self.now + 45000, finished)  # Missing observations are excluded.
+            result = ledger.summary(self.now + 45000, 'working')['workerUtilization']['day']
+            self.assertEqual(result, dict(capacityMs=30000, occupiedMs=10000, sourceWaitMs=10000, completed=1, failed=0))
+            ledger.db.close()
+            ledger = WorkLedger(path)
+            ledger.record_workers(self.now + 50000, finished)
+            self.assertEqual(ledger.summary(self.now + 50000, 'working')['workerUtilization']['day'], result)
+            ledger.db.close()
+
+    def test_job_projection_rejects_stale_or_invalid_snapshots_and_omits_command_output(self):
+        raw = self.jobs(active=[dict(id=self.worker_id, state='running', category='test', createdAt=self.now,
+                                    command='PRIVATE', output='PRIVATE', ownerPid=101)])
+        result = project_jobs(raw, self.now)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        self.assertNotIn('ownerPid', json.dumps(result))
+        self.assertIsNone(project_jobs(raw, self.now + 15001))
+        raw['active'][0]['category'] = []
+        self.assertIsNone(project_jobs(raw, self.now))
+        raw['active'][0]['category'] = 'test'
+        def read(path, _limit):
+            return json.dumps({'sessionId': self.worker_id}) if path.name == 'config.json' else json.dumps(raw)
+        self.assertEqual(managed_jobs(Path('/state'), read, self.now), project_jobs(raw, self.now))
+
+    def test_check_jobs_count_real_exits_deduplicate_jobs_and_clean_revisions_without_claiming_playability(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ledger = WorkLedger(Path(temp) / 'work.sqlite3')
+            ledger.record_jobs(self.now, self.jobs())
+            head = 'a' * 40
+            row = dict(id=self.worker_id, category='test', state='completed', createdAt=self.now,
+                       finishedAt=self.now + 5000, exitCode=0, headAtStart=head, headAtFinish=head,
+                       cleanAtStart=True, cleanAtFinish=True)
+            rows = [row, {**row, 'id': self.other_id},
+                    {**row, 'id': '33333333-3333-4333-8333-333333333333', 'state': 'failed', 'exitCode': 1},
+                    {**row, 'id': '44444444-4444-4444-8444-444444444444', 'cleanAtFinish': False},
+                    {**row, 'id': '55555555-5555-4555-8555-555555555555', 'exitCode': None}]
+            for _ in range(2):
+                ledger.record_jobs(self.now + 5000, self.jobs(recent=rows))
+            result = ledger.summary(self.now + 5000, 'working')['delivery']
+            self.assertEqual(result['day'], dict(successfulChecks=3, failedChecks=1, headLinkedChecks=1))
+            self.assertIsNone(result['playableDeployments'])
+            ledger.db.close()
+
+    def test_published_builds_require_real_success_receipts_and_cache_bounded_lookups(self):
+        head = 'a' * 40
+        stamp = datetime.datetime.fromtimestamp((self.now - 5000) / 1000, datetime.timezone.utc).isoformat()
+        deployments = [dict(id=1, environment='github-pages', sha=head, statuses_url='https://PRIVATE'),
+                       dict(id=2, environment='github-pages', sha=head),
+                       dict(id=3, environment='other', sha=head)]
+        cache = dict(poll_at=float('-inf'), received_at=float('-inf'), observed_at=0, statuses={})
+        with patch('activity._publication_cache', cache), patch('activity.time.monotonic', return_value=0), \
+                patch('activity.ask', side_effect=[deployments, [dict(state='success', created_at=stamp)],
+                                                   [dict(state='success', created_at=stamp)]]) as request:
+            result = publications(self.now)
+            self.assertEqual(request.call_count, 3)
+            self.assertNotIn('PRIVATE', str(request.call_args_list))
+            self.assertEqual(result['day'], dict(builds=2, revisions=1))
+            self.assertEqual(result['latest'], dict(at=self.now - 5000, head=head))
+            self.assertEqual(result['coverage'], 'partial')
+            self.assertEqual(publications(self.now), result)
+            self.assertEqual(request.call_count, 3)
+        with patch('activity._publication_cache', cache), patch('activity.time.monotonic', return_value=240), \
+                patch('activity.ask', side_effect=OSError('unavailable')):
+            self.assertEqual(publications(self.now)['observedAt'], self.now)
+        with patch('activity._publication_cache', cache), patch('activity.time.monotonic', return_value=4000), \
+                patch('activity.ask', side_effect=OSError('unavailable')):
+            self.assertIsNone(publications(self.now + 4000000))
+
+    def test_failed_or_pending_deployments_and_pull_request_prose_do_not_count_as_publications(self):
+        cache = dict(poll_at=float('-inf'), received_at=float('-inf'), observed_at=0, statuses={})
+        deployments = [dict(id=1, environment='github-pages', sha='a' * 40),
+                       dict(id=2, environment='github-pages', sha='b' * 40)]
+        with patch('activity._publication_cache', cache), patch('activity.time.monotonic', return_value=0), \
+                patch('activity.ask', side_effect=[deployments, [dict(state='failure')], [dict(state='pending')]]):
+            result = publications(self.now)
+            self.assertEqual(result['week'], dict(builds=0, revisions=0))
+            self.assertNotIn('latest', result)
+
+    def test_managed_running_job_is_a_wait_even_when_old_tool_has_no_cpu_progress(self):
+        start = self.now / 1000 - 600
+        status = dict(phase='working', workerPid=101, lastActivityAt=start, lastToolStartedAt=start)
+        job = self.jobs(active=[dict(id=self.worker_id, category='build', state='running', createdAt=self.now - 600000)])
+        def read(path, _limit):
+            return json.dumps({'sessionId': self.worker_id} if path.name == 'config.json' else job if path.name == 'snapshot.json' else status)
+        probe = WorkProbe(Path('/state'), read, lambda: {'activeRequests': 0, 'sources': []})
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(True, False, {})):
+            self.assertEqual(probe.sample(self.now), 'tool_wait')
+            self.assertEqual(probe.category, 'tool_wait')
+            self.assertEqual(probe.sample(self.now + 15001), 'stalled')
 
 
 if __name__ == '__main__':

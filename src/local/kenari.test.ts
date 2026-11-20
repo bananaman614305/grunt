@@ -96,6 +96,8 @@ it('falls through from a registered Kenari quota error to another free source', 
   })) };
   const sources = new Sources([source(fetcher), fallback], { registry: () => registry, random: () => 0 });
   try {
+    // Exercise the admitted provider's quota failover, independent of admission latency.
+    await sources.models();
     expect(await sources.complete({ ...request, model: 'grunt' }, new AbortController().signal)).toEqual({ text: 'fallback reply' });
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/v1/chat/completions'))).toHaveLength(1);
     expect(fallback.complete).toHaveBeenCalledOnce();

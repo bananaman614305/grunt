@@ -35,7 +35,7 @@ export interface Source {
   // A source that calls output() when it first produces output gets the
   // first-output deadline. Other sources keep only their own timeouts.
   reportsOutput?: boolean;
-  available(): Promise<boolean>;
+  available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;
   sellerQuota?(): SellerQuota | undefined;
@@ -253,7 +253,9 @@ export class Sources {
   private recover: (() => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const parent = currentDiagnosticContext();
-    const context: DiagnosticContext = { requestId: parent?.requestId ?? randomUUID(), kind: !request.worker && this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
+    const actor = request.worker ? { actor: 'worker' as const, workerId: request.worker.id }
+      : parent?.actor ? { actor: parent.actor, ...(parent.actor === 'worker' && parent.workerId ? { workerId: parent.workerId } : {}) } : {};
+    const context: DiagnosticContext = { ...actor, requestId: parent?.requestId ?? randomUUID(), kind: !request.worker && this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
     return withDiagnosticContext(context, async () => {
       const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
       if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
@@ -334,7 +336,10 @@ export class Sources {
     }
     throw last;
   }
-  async close() { await Promise.allSettled(this.sources.map(s => s.close?.())); }
+  async close() {
+    await Promise.all([this.router?.close(), this.workerRouter?.close()]);
+    await Promise.allSettled(this.sources.map(s => s.close?.()));
+  }
 }
 export class Gateway implements Source {
   id = 'gateway';

@@ -16,6 +16,8 @@ POOL = 'http://127.0.0.1:8793/v1/status'
 RECEIVER = 'https://milo-gateway.fly.dev/admin/ingest/activity'
 PROJECT = Path.home() / 'projects/amazing-adventure'
 PULL_REQUESTS = 'https://api.github.com/repos/bananaman614305/amazing-adventure/pulls?state=all&sort=updated&direction=desc&per_page=6'
+DEPLOYMENTS = 'https://api.github.com/repos/bananaman614305/amazing-adventure/deployments'
+_publication_cache = {'poll_at': float('-inf'), 'received_at': float('-inf'), 'observed_at': 0, 'statuses': {}}
 MILESTONE_REFRESH = 240
 MILESTONE_STALE = 3600
 _milestone_cache = {'poll_at': float('-inf'), 'received_at': float('-inf'), 'rows': []}
@@ -226,6 +228,63 @@ def milestones():
     return _milestone_cache['rows'] if now - _milestone_cache['received_at'] <= MILESTONE_STALE else []
 
 
+def publications(now):
+    """Bounded read-only GitHub deployment receipts, never playability claims."""
+    clock = time.monotonic()
+    cache = _publication_cache
+    if clock - cache['poll_at'] >= MILESTONE_REFRESH:
+        cache['poll_at'] = clock
+        headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'grunt-project-status'}
+        try:
+            deployments = ask(DEPLOYMENTS + '?environment=github-pages&per_page=20', limit=131072, timeout=3, headers=headers)
+            if not isinstance(deployments, list) or len(deployments) > 20:
+                raise ValueError('Unexpected deployment list')
+            eligible = []
+            for row in deployments:
+                if (isinstance(row, dict) and row.get('environment') == 'github-pages'
+                        and type(row.get('id')) is int and 0 < row['id'] < 2 ** 53
+                        and isinstance(row.get('sha'), str) and re.fullmatch(r'[a-f0-9]{40}', row['sha'])):
+                    eligible.append((row['id'], row['sha']))
+            # Spread the bounded status lookups over refreshes. A pending newest
+            # deployment must not prevent older unseen receipts being examined.
+            candidates = [(cache['statuses'].get(key, {}).get('checked_at', float('-inf')), index, key, head)
+                          for index, (key, head) in enumerate(eligible) if not cache['statuses'].get(key, {}).get('terminal')]
+            for _, _, key, head in sorted(candidates)[:2]:
+                try:
+                    statuses = ask(DEPLOYMENTS + '/' + str(key) + '/statuses?per_page=5', limit=65536, timeout=3, headers=headers)
+                    if not isinstance(statuses, list) or len(statuses) > 5:
+                        raise ValueError('Unexpected deployment statuses')
+                    receipt = None
+                    for status in statuses:
+                        if not isinstance(status, dict) or status.get('state') != 'success':
+                            continue
+                        date = datetime.datetime.fromisoformat(status.get('created_at', ''))
+                        if date.tzinfo and 0 < int(date.timestamp() * 1000) <= now + 5000:
+                            receipt = {'at': int(date.timestamp() * 1000), 'head': head}
+                            break
+                    terminal = bool(receipt) or bool(statuses and isinstance(statuses[0], dict)
+                                and statuses[0].get('state') in ('failure', 'error', 'inactive'))
+                    cache['statuses'][key] = {'checked_at': clock, 'terminal': terminal, 'receipt': receipt}
+                except (OSError, ValueError, TypeError, OverflowError):
+                    cache['statuses'][key] = {'checked_at': clock, 'terminal': False, 'receipt': None}
+            cache['received_at'], cache['observed_at'] = clock, now
+            if len(cache['statuses']) > 256:
+                cache['statuses'] = dict(sorted(cache['statuses'].items(), key=lambda row: row[1]['checked_at'], reverse=True)[:256])
+        except (OSError, ValueError):
+            pass
+    if clock - cache['received_at'] > MILESTONE_STALE or not 0 <= now - cache['observed_at'] <= MILESTONE_STALE * 1000:
+        return None
+    receipts = [row['receipt'] for row in cache['statuses'].values() if row.get('receipt')]
+    def window(duration):
+        rows = [row for row in receipts if now - duration < row['at'] <= now]
+        return {'builds': len(rows), 'revisions': len({row['head'] for row in rows})}
+    result = {'observedAt': cache['observed_at'], 'coverage': 'partial',
+              'day': window(86400000), 'week': window(7 * 86400000)}
+    if receipts:
+        result['latest'] = max(receipts, key=lambda row: row['at'])
+    return result
+
+
 def snapshot(state=STATE, *, include_project=False):
     now = int(time.time() * 1000)
     try:
@@ -237,15 +296,21 @@ def snapshot(state=STATE, *, include_project=False):
     except (OSError, ValueError):
         status = {}
     try:
-        sources = ask(POOL)['sources']
+        pool = ask(POOL)
+        sources = pool['sources']
         pool_online = True
     except (OSError, ValueError, KeyError):
         sources = []
         pool_online = False
+        pool = None
     phase = status.get('phase')
     result = {'version': 1, 'observedAt': now,
               'phase': phase if phase in PHASES and pool_online else 'offline',
               'active': [], 'lastReply': None, 'issues': [], 'events': history}
+    from uptime import project_workers
+    workers = project_workers(pool.get('workers'), now) if isinstance(pool, dict) else None
+    if workers is not None:
+        result['workers'] = workers
     for row in sources:
         source = row.get('id', '')
         if not isinstance(source, str) or not PROVIDER.fullmatch(source):
@@ -267,6 +332,9 @@ def snapshot(state=STATE, *, include_project=False):
     if include_project:
         recent_milestones = [row for row in milestones() if 0 < row['at'] <= now + 5000]
         project = {'milestones': recent_milestones}
+        published = publications(now)
+        if published is not None:
+            project['publications'] = published
         report = checkpoint(PROJECT / 'GRUNT_STATUS.md', now)
         if report:
             project['checkpoint'] = report

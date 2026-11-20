@@ -35,6 +35,9 @@ interface Observation {
   failure?: ErrorCode;
   availabilityQuota?: boolean;
   retryAt?: number;
+  availabilityCheckedAt?: number;
+  available?: boolean;
+  performance?: { samples: number; reliability: number; latencyMs: number; at: number };
 }
 export interface ObservationGuard { revision: number; acceptedRevision?: number }
 const codes = new Set<ErrorCode>(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
@@ -73,6 +76,7 @@ export class SourceStatus {
     // not recover failures or turn an old successful response into fresh proof.
     entry.revision++;
     entry.state = 'available';
+    entry.available = true; entry.availabilityCheckedAt = this.now();
     guard.acceptedRevision = entry.revision;
   }
   healthy(id: string) {
@@ -80,18 +84,41 @@ export class SourceStatus {
     entry.revision++;
     delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
     if (entry.state !== 'ready') entry.state = 'available';
+    entry.available = true; entry.availabilityCheckedAt = this.now();
   }
   failed(id: string, code: ErrorCode, retryAfter?: number) {
     const entry = this.entry(id);
     entry.revision++;
     entry.failure = code;
     delete entry.availabilityQuota;
+    delete entry.availabilityCheckedAt; delete entry.available;
     entry.state = code === 'quota' ? 'limited' : code === 'logged_out' || code === 'not_installed' ? 'unavailable' : 'error';
     const seconds = code === 'quota' && typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined;
     const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
     if (until !== undefined && Number.isFinite(until)) entry.retryAt = until; else delete entry.retryAt;
   }
   quotaRetryAt(id: string) { return this.observations.get(id)?.retryAt; }
+  routingAvailability(id: string, positiveAgeMs: number, negativeAgeMs: number): boolean | undefined {
+    const entry = this.entry(id), now = this.now();
+    if (entry.availabilityCheckedAt === undefined || entry.available === undefined) return;
+    const age = now - entry.availabilityCheckedAt;
+    if (age < 0 || age >= (entry.available ? positiveAgeMs : negativeAgeMs)) return;
+    return entry.available;
+  }
+  routingWeight(id: string, background = false) {
+    const sample = this.entry(id).performance;
+    if (!sample || sample.samples < 2 || this.now() < sample.at || this.now() - sample.at > 30 * 60 * 1000) return 1;
+    const speed = background ? sample.latencyMs / 10000 : 10000 / sample.latencyMs;
+    return Math.max(.05, sample.reliability * Math.max(.25, Math.min(background ? 2 : 4, speed)));
+  }
+  private performance(id: string, success: boolean, latencyMs: number) {
+    const entry = this.entry(id), previous = entry.performance;
+    const latency = Math.max(250, latencyMs);
+    entry.performance = { samples: Math.min(1000, (previous?.samples ?? 0) + 1),
+      reliability: previous ? previous.reliability * .8 + Number(success) * .2 : Number(success),
+      latencyMs: success ? previous ? previous.latencyMs * .7 + latency * .3 : latency : previous?.latencyMs ?? 10000,
+      at: this.now() };
+  }
   isBusy(id: string) { return (this.observations.get(id)?.active ?? 0) > 0; }
   async waitForIdle(sources: readonly string[], signal: AbortSignal) {
     signal.throwIfAborted();
@@ -126,6 +153,7 @@ export class SourceStatus {
           entry.revision++; entry.state = 'unavailable';
         } else if (healthCheck || entry.availabilityQuota) this.healthy(source.id);
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
+        entry.available = result; entry.availabilityCheckedAt = this.now();
       }
       return result;
     } catch (error) {
@@ -134,10 +162,11 @@ export class SourceStatus {
         if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota || (entry.retryAt ?? 0) <= this.now())) {
           this.failed(source.id, 'quota', error.retryAfter);
           entry.availabilityQuota = true;
+          entry.available = false; entry.availabilityCheckedAt = this.now();
         }
         return false;
       }
-      if (entry.revision === revision) { entry.revision++; entry.state = 'unavailable'; }
+      if (entry.revision === revision) { entry.revision++; entry.state = 'unavailable'; entry.available = false; entry.availabilityCheckedAt = this.now(); }
       throw error;
     }
   }
@@ -174,6 +203,8 @@ export class SourceStatus {
       if (!signal.aborted && (!guard || entry.revision === guard.revision)) {
         entry.revision++;
         entry.state = 'ready'; entry.lastSuccessAt = this.now(); entry.lastReplyMs = Math.max(0, this.now() - started);
+        entry.available = true; entry.availabilityCheckedAt = this.now();
+        this.performance(source.id, true, this.now() - started);
         delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
         if (guard) guard.acceptedRevision = entry.revision;
       }
@@ -183,6 +214,7 @@ export class SourceStatus {
       if (!signal.aborted && code !== 'cancelled' && (!guard || entry.revision === guard.revision)) {
         const retry = error && typeof error === 'object' && 'retryAfter' in error ? error.retryAfter : undefined;
         this.failed(source.id, code, typeof retry === 'number' ? retry : undefined);
+        if (code !== 'quota') this.performance(source.id, false, this.now() - started);
         if (guard) guard.acceptedRevision = entry.revision;
       }
       throw error;
