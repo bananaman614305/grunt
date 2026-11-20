@@ -33,6 +33,12 @@ describe('harness wire contracts', () => {
         if (api === 'chat') {
           expect(data.pop()).toBe('[DONE]');
           const chunks = data.map(d => JSON.parse(d));
+          if (body.stream_options?.include_usage === true) {
+            // This fixture source has no measured counts. Requested usage is
+            // represented honestly as unknown in the terminal usage chunk.
+            expect(chunks.pop()).toMatchObject({ choices: [], usage: null });
+            expect(chunks.every(c => c.usage === null)).toBe(true);
+          }
           for (const c of chunks) expect(c).toMatchObject({ id: expect.any(String), object: 'chat.completion.chunk', created: expect.any(Number), choices: [{ index: 0, delta: expect.any(Object) }] });
           expect(chunks[0].choices[0].delta.role).toBe('assistant');
           expect(chunks.at(-1).choices[0].finish_reason).toBe('stop');
