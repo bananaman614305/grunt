@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-20
+
+- Keep owner diagnostics uploading when Grunt skips a source that requires approved public context. Use the same bounded routing-reason vocabulary in the local recorder, collector and admin API while continuing to reject arbitrary text.
+
 ## [0.8.0] - 2026-11-20
 
 - Delegate independent implementation to two opt-in tool-using free-pool workers while the main agent continues. Keep edits in private project snapshots, preserve artifacts through quota failures and restarts, and review/apply changes through the parent interface with ownership, conflict and recovery checks.

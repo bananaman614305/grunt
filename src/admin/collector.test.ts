@@ -3,9 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createClient } from '@libsql/client';
-import { DiagnosticsStore } from '../local/diagnostics.js';
+import { DiagnosticsStore, diagnosticReasons } from '../local/diagnostics.js';
 import type { DiagnosticEvent } from '../local/diagnostics.js';
 import { AdminStore } from './store.js';
+import { validateAdminBatch, validateAdminEvent } from './types.js';
 import { AdminCollector, collectorConfig, projectCollectorMaintenance, projectCollectorScout, projectCollectorSnapshot } from './collector.js';
 
 const roots: string[] = [];
@@ -43,6 +44,28 @@ async function fixture(options: { failUpload?: boolean; rejectAck?: boolean; una
   return { collector, directory: directoryPath, uploads, gets, fetcher, options };
 }
 afterEach(async () => { vi.useRealTimers(); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+
+it('uploads a public-context skip and advances past it without exposing private fields', async () => {
+  const f = await fixture(), original = f.fetcher.getMockImplementation()!;
+  f.fetcher.mockImplementation(async (input, init) => {
+    if (new URL(String(input)).pathname === '/v1/diagnostics/events') return Response.json({ streamId: stream,
+      events: [{ ...event(), type: 'route.skip', source: 'goedel', outcome: 'skipped', reason: 'context_not_approved',
+        prompt: 'synthetic private prompt', authorization: 'synthetic token' }], nextCursor: '1' });
+    return original(input, init);
+  });
+  await expect(f.collector.cycle()).resolves.toMatchObject({ uploadedEvents: 1 });
+  expect(validateAdminBatch(f.uploads[0]!.body, now).events[0]).toMatchObject({ source: 'goedel', outcome: 'skipped', reason: 'context_not_approved' });
+  expect(JSON.stringify(f.uploads[0]!.body)).not.toMatch(/synthetic private|synthetic token/);
+  expect(JSON.parse(await readFile(join(f.directory, 'admin-collector-state.json'), 'utf8')).cursor).toBe('1');
+  f.collector.stop();
+});
+
+it('accepts exactly the bounded local diagnostic reason vocabulary at the admin boundary', () => {
+  for (const reason of diagnosticReasons) expect(validateAdminEvent({ ...event(), reason }, now).reason).toBe(reason);
+  for (const reason of ['arbitrary-provider-message', 'https://private.example', 'context_not_approved private']) {
+    expect(() => validateAdminEvent({ ...event(), reason }, now)).toThrow('invalid_admin_batch');
+  }
+});
 
 it('requires an explicit private machine key and instance, and only accepts owned HTTPS ingestion destinations', () => {
   expect(() => collectorConfig({})).toThrow('invalid_configuration');

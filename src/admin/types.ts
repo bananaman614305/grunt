@@ -2,7 +2,7 @@
 // credentials, paths and arbitrary upstream messages are intentionally absent.
 import { sellerQuota } from '../local/quota-policy.js';
 import type { SellerQuota } from '../local/quota-policy.js';
-import { diagnosticFailureReasons } from '../local/diagnostics.js';
+import { diagnosticFailureReasons, diagnosticReasons } from '../local/diagnostics.js';
 import { knownAdapters, localOptInAdapterIds } from '../registry.js';
 import { MAX_WORKER_ACTIVE, MAX_WORKER_QUEUED, MAX_WORKER_RECENT, workerActivities } from '../local/worker-pool.js';
 
@@ -108,7 +108,7 @@ export function validateAdminEvent(value: unknown, now = Date.now()): AdminDiagn
   optional(raw, 'networkCode', v => member(v, ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']), event);
   optional(raw, 'exitCode', v => integer(v, -255, 255), event);
   optional(raw, 'failureReason', v => member(v, diagnosticFailureReasons), event);
-  optional(raw, 'reason', v => member(v, ['not_listed', 'pending_setup', 'cooldown', 'tools_unsupported', 'input_unsupported', 'unavailable', 'sticky', 'weighted', 'explicit', 'fallback', 'local']), event);
+  optional(raw, 'reason', v => member(v, diagnosticReasons), event);
   return event;
 }
 export function projectAdminWorkers(value: unknown, now: number): AdminWorkers {
