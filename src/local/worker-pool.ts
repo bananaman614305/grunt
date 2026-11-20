@@ -334,7 +334,7 @@ export class WorkerPool {
     try {
       if (job.input.mode === 'agent') {
         const agent = await runWorkerAgent(this.sources, { id, task, ...(context === undefined ? {} : { context }), ownedPaths: job.input.ownedPaths!,
-          projectRoot: job.scope!.projectRoot, ...(job.input.activity === 'review' || job.input.activity === 'research' ? { readOnly: true } : {}),
+          projectRoot: job.scope!.projectRoot, ...(job.scope!.projectIdentity === undefined ? {} : { projectIdentity: job.scope!.projectIdentity }), ...(job.input.activity === 'review' || job.input.activity === 'research' ? { readOnly: true } : {}),
           ...(job.scope!.initialSnapshot === undefined ? {} : { initialSnapshot: job.scope!.initialSnapshot }),
           signal, createWorkspace: this.options.createAgentWorkspace!,
           ...(this.options.retentionDirectory ? { onWorkspace: async (workspace: WorkerAgentWorkspace) => {

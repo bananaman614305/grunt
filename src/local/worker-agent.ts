@@ -47,7 +47,7 @@ export interface WorkerAgentWorkspace {
   cleanup(): Promise<void>;
 }
 export interface WorkerInitialFile { path: string; content: string; binary?: boolean; sha256?: string }
-export interface WorkerWorkspaceOptions { projectRoot: string; ownedPaths: string[]; readOnly?: boolean; initialSnapshot?: WorkerInitialFile[] }
+export interface WorkerWorkspaceOptions { projectRoot: string; projectIdentity?: string; ownedPaths: string[]; readOnly?: boolean; initialSnapshot?: WorkerInitialFile[] }
 export type WorkerWorkspaceFactory = (options: WorkerWorkspaceOptions, signal: AbortSignal) => Promise<WorkerAgentWorkspace>;
 export type WorkerWorkspaceRestorer = (options: { recoveryId: string; workspaceId: string }, signal: AbortSignal) => Promise<WorkerAgentWorkspace>;
 export type WorkerAgentFailureReason = 'invalid_workspace' | 'agent_unavailable' | 'unsupported_sandbox' | 'workspace_failed'
@@ -65,6 +65,7 @@ export interface WorkerAgentInput {
   context?: string;
   ownedPaths: string[];
   projectRoot: string;
+  projectIdentity?: string;
   readOnly?: boolean;
   initialSnapshot?: WorkerInitialFile[];
   signal: AbortSignal;
@@ -201,7 +202,7 @@ export async function runWorkerAgent(sources: Pick<Sources, 'complete'>, input: 
   };
   try {
     input.signal.throwIfAborted(); progress('preparing');
-    workspace = await input.createWorkspace({ projectRoot: input.projectRoot, ownedPaths: [...input.ownedPaths], ...(input.readOnly ? { readOnly: true } : {}),
+    workspace = await input.createWorkspace({ projectRoot: input.projectRoot, ...(input.projectIdentity === undefined ? {} : { projectIdentity: input.projectIdentity }), ownedPaths: [...input.ownedPaths], ...(input.readOnly ? { readOnly: true } : {}),
       ...(input.initialSnapshot === undefined ? {} : { initialSnapshot: input.initialSnapshot }) }, input.signal);
     if (!identifier.test(workspace.id) || typeof workspace.path !== 'string' || !isAbsolute(workspace.path)) throw new AgentLimit('workspace_failed');
     await input.onWorkspace?.(workspace);
