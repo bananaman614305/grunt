@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, writeFile, rm, lstat, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
 import { JobScheduler, createLocalJobRunner, jobEnvironment, jobsStateDirectory, parseJobInput, readJobResult, requestJobCancel } from './jobs.js';
@@ -143,4 +144,39 @@ it('bounds UTF-8 result bytes even when a cap splits a multibyte character', asy
   const { store, root } = await make(async () => ({ stdout: '🔥'.repeat(20), stderr: 'more', exitCode: 0 }), { maxOutputBytes: 7 });
   const job = await store.start({ command: 'unicode' }, root), result = await store.wait(job.id);
   expect(Buffer.byteLength((result.stdout ?? '') + (result.stderr ?? ''))).toBeLessThanOrEqual(7); expect(result.truncated).toBe(true);
+});
+it('admits only one owner when many processes race to recover the same stale generation', async () => {
+  const root = await directory(), session = join(root, 'sessions', 'takeover');
+  await mkdir(session, { recursive: true, mode: 0o700 });
+  await writeFile(join(session, 'owner.json'), JSON.stringify({ ownerPid: 999999999, token: 'stale-generation' }), { mode: 0o600 });
+  const attempts = await Promise.allSettled(Array.from({ length: 32 }, () => JobScheduler.open({ stateDirectory: root, sessionId: 'takeover', runner: vi.fn() })));
+  const owners = attempts.filter((result): result is PromiseFulfilledResult<JobScheduler> => result.status === 'fulfilled').map(result => result.value); stores.push(...owners);
+  expect(owners).toHaveLength(1);
+  const lease = JSON.parse(await readFile(join(session, 'owner.json'), 'utf8')); expect(lease.ownerPid).toBe(process.pid);
+  const before = await readFile(join(session, 'owner.json'), 'utf8');
+  await expect(JobScheduler.open({ stateDirectory: root, sessionId: 'takeover', runner: vi.fn() })).rejects.toThrow('live owner');
+  expect(await readFile(join(session, 'owner.json'), 'utf8')).toBe(before);
+});
+
+it('recovers a stale owner even if prior recovery claimants died before publishing their owner lease', async () => {
+  const root = await directory(), session = join(root, 'sessions', 'abandoned'), claims = join(session, 'takeovers');
+  await mkdir(claims, { recursive: true, mode: 0o700 });
+  const original = { ownerPid: 999999999, token: 'stale-generation' }, abandoned = { ownerPid: 999999998, token: 'abandoned-recovery' };
+  const key = (lease: object) => createHash('sha256').update(JSON.stringify(lease)).digest('hex');
+  await writeFile(join(session, 'owner.json'), JSON.stringify(original), { mode: 0o600 });
+  await writeFile(join(claims, key(original) + '.json'), JSON.stringify(abandoned), { mode: 0o600 });
+  const attempts = await Promise.allSettled(Array.from({ length: 16 }, () => JobScheduler.open({ stateDirectory: root, sessionId: 'abandoned', runner: vi.fn() })));
+  const owners = attempts.filter((result): result is PromiseFulfilledResult<JobScheduler> => result.status === 'fulfilled').map(result => result.value); stores.push(...owners);
+  expect(owners).toHaveLength(1);
+  expect(JSON.parse(await readFile(join(claims, key(original) + '.json'), 'utf8'))).toEqual(abandoned);
+  const recoveredClaim = JSON.parse(await readFile(join(claims, key(abandoned) + '.json'), 'utf8')); expect(recoveredClaim.ownerPid).toBe(process.pid);
+  await expect(JobScheduler.open({ stateDirectory: root, sessionId: 'abandoned', runner: vi.fn() })).rejects.toThrow('live owner');
+});
+
+it('acquires a missing owner after a claimant died between stale removal and fresh publication', async () => {
+  const root = await directory(), session = join(root, 'sessions', 'removed'), claims = join(session, 'takeovers');
+  await mkdir(claims, { recursive: true, mode: 0o700 });
+  await writeFile(join(claims, 'a'.repeat(64) + '.json'), JSON.stringify({ ownerPid: 999999999, token: 'dead-after-removal' }), { mode: 0o600 });
+  const store = await JobScheduler.open({ stateDirectory: root, sessionId: 'removed', runner: vi.fn() }); stores.push(store);
+  expect(JSON.parse(await readFile(join(session, 'owner.json'), 'utf8')).ownerPid).toBe(process.pid);
 });

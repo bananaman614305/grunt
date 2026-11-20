@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,9 +73,40 @@ async function atomicJSON(path: string, value: unknown) {
   try { await writeFile(staged, JSON.stringify(value) + '\n', { flag: 'wx', mode: 0o600 }); await rename(staged, path); }
   finally { await rm(staged, { force: true }); }
 }
+async function exclusiveJSON(path: string, value: unknown) {
+  const staged = join(dirname(path), `.lease-${randomUUID()}.tmp`);
+  try {
+    await writeFile(staged, JSON.stringify(value) + '\n', { flag: 'wx', mode: 0o600 });
+    // Publish an already complete file atomically without replacing any owner.
+    await link(staged, path);
+  } finally { await rm(staged, { force: true }); }
+}
 function alive(pid: unknown) {
   if (!Number.isSafeInteger(pid) || Number(pid) <= 0) return false;
   try { process.kill(Number(pid), 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+interface OwnerLease { ownerPid: number; token: string }
+function ownerLease(value: unknown): OwnerLease {
+  const v = object(value);
+  if (!Number.isSafeInteger(v.ownerPid) || Number(v.ownerPid) <= 0 || typeof v.token !== 'string' || !v.token || v.token.length > 128) throw new Error('Invalid Grunt job owner lease; refusing unsafe recovery.');
+  return { ownerPid: Number(v.ownerPid), token: v.token };
+}
+function leaseDigest(lease: OwnerLease) { return createHash('sha256').update(JSON.stringify(lease)).digest('hex'); }
+async function claimStaleOwner(directory: string, previous: OwnerLease, token: string) {
+  const claims = join(directory, 'takeovers'); await privateDirectory(claims);
+  let observed = previous;
+  // Immutable per-generation claims fence delayed contenders. An abandoned claim is
+  // recovered by claiming its own generation, never by unlinking a shared lock.
+  for (let depth = 0; depth < 128; depth++) {
+    const path = join(claims, `${leaseDigest(observed)}.json`);
+    try {
+      await exclusiveJSON(path, { ownerPid: process.pid, token });
+      return;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    observed = ownerLease(await privateJSON(path, 2048));
+    if (alive(observed.ownerPid)) throw new Error('This Grunt job session already has a live recovery owner.');
+  }
+  throw new Error('Grunt job recovery claim chain exceeded its safety limit.');
 }
 function statusProjection(value: unknown): JobStatus | undefined {
   const v = object(value), category = JOB_CATEGORIES.find(c => c === v.category);
@@ -114,11 +145,14 @@ export class JobScheduler {
     try {
       const lock = join(directory, 'owner.json');
       try {
-        const previous = object(await privateJSON(lock, 2048));
+        const previous = ownerLease(await privateJSON(lock, 2048));
         if (alive(previous.ownerPid)) throw new Error('This Grunt job session already has a live owner.');
+        await claimStaleOwner(directory, previous, out.token);
+        const current = ownerLease(await privateJSON(lock, 2048));
+        if (current.token !== previous.token || current.ownerPid !== previous.ownerPid || alive(current.ownerPid)) throw new Error('Grunt job owner changed during recovery; refusing to remove its lease.');
         await rm(lock);
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      await writeFile(lock, JSON.stringify({ ownerPid: process.pid, token: out.token }), { flag: 'wx', mode: 0o600 });
+      await exclusiveJSON(lock, { ownerPid: process.pid, token: out.token });
       for (const entry of (await readdir(join(directory, 'jobs'), { withFileTypes: true })).slice(0, MAX_RETAINED)) {
         if (!entry.isDirectory() || entry.isSymbolicLink() || !idPattern.test(entry.name)) continue;
         try {
