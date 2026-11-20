@@ -21,6 +21,7 @@ from validation import validate_release_request, run_checks, review_candidate
 from worker import run_agent
 from sandbox import SandboxRunner
 from promotion import promote_candidate
+from owner_policy import canonical_candidate_id, owner_exclusion, qualification_hold
 
 SHA = re.compile(r'^[a-f0-9]{40}$')
 
@@ -144,6 +145,12 @@ class Pipeline:
         receipt = checkpoint['receipt']
         directory = Path(checkpoint['directory'])
         try:
+            candidate = checkpoint['candidate']
+            if isinstance(candidate.get('homepage'), str) and owner_exclusion(
+                    candidate, {'owner_exclusions': self.config.get('_owner_exclusions', {})}):
+                return self._result(checkpoint, 'blocked', 'owner_excluded')
+            if self._qualification_held(candidate):
+                return self._result(checkpoint, 'blocked', 'qualification_held')
             # Once promotion starts, its own protected checkpoint owns merge/npm
             # retries, including when main has advanced or the worker clone is gone.
             if checkpoint.get('phase') != 'promotion':
@@ -224,6 +231,11 @@ class Pipeline:
         if self.config.get('release_enabled') is not True:
             return {'status': 'disabled', 'reason': 'automatic_release_not_enabled'}
         try:
+            if isinstance(candidate.get('homepage'), str) and owner_exclusion(
+                    candidate, {'owner_exclusions': self.config.get('_owner_exclusions', {})}):
+                return {'status': 'blocked', 'reason': 'owner_excluded'}
+            if self._qualification_held(candidate):
+                return {'status': 'blocked', 'reason': 'qualification_held'}
             self._budget()
             receipt = self.validate(candidate, self.workspace, Path(self.config['source_repo']))
             head = receipt['head_sha']
@@ -251,6 +263,16 @@ class Pipeline:
             return {'status': 'deferred', 'reason': 'pipeline_budget_exhausted'}
         except Exception:
             return {'status': 'blocked', 'reason': 'candidate_validation_failed'}
+
+    def set_qualification_holds(self, holds):
+        self.config['_qualification_holds'] = dict(holds)
+
+    def _qualification_held(self, candidate):
+        if qualification_hold(candidate):
+            return True
+        if not isinstance(candidate.get('homepage'), str) or not isinstance(candidate.get('model'), str):
+            return False  # Other shape requirements remain the validator's job.
+        return self.config.get('_qualification_holds', {}).get(canonical_candidate_id(candidate)) is True
 
     def resume_pending(self, *, reserve_seconds=0):
         if self.config.get('release_enabled') is not True:

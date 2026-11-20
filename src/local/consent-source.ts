@@ -7,8 +7,10 @@ import type { ModelRequest, Source } from './source.js';
 export class ConsentSource implements Source {
   readonly id: string;
   readonly supportsFunctionTools?: boolean;
+  readonly acceptsRequest?: NonNullable<Source['acceptsRequest']>;
   constructor(readonly source: Source, private directory: string) {
     this.id = source.id;
+    if (source.acceptsRequest) this.acceptsRequest = source.acceptsRequest.bind(source);
     if (source.supportsFunctionTools !== undefined) this.supportsFunctionTools = source.supportsFunctionTools;
   }
   private async approved() { return (await readDataSharingConsent(this.directory, [this.id])).includes(this.id); }

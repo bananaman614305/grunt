@@ -292,8 +292,10 @@ id such as `kilo`. This process is separate from the Fly server and Docker
 entry point. Keep this endpoint on your own machine.
 
 The local chat, messages and responses endpoints accept the request header
-`X-Grunt-Context: public`. It enables Gödel Machines for that request through
-model `grunt` or source `goedel`. Set it only when the full text and tool
+`X-Grunt-Context: public`. It enables eligible Gödel Machines and Free-Pi requests through
+model `grunt` or their explicit source IDs, subject to each source's consent and
+request restrictions. Free-Pi additionally requires affirmative trace-sale consent.
+Set it only when the full text and tool
 payload can be retained, reviewed by staff and used for training, and contains
 no secrets, confidential business information or other people’s personal data.
 
@@ -550,7 +552,7 @@ on a custom port can pass `--port` until setup records it. For example, Chad use
 `usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
 
 Setup shows one live table of tools and sources, then `Ready`, and exits.
-It asks no questions and does not open the status dashboard. Run
+It asks for material data terms when required and does not open the status dashboard. Run
 `usegrunt status --watch` separately to open that view. Closing setup before
 completion pauses unfinished signups; verified daemon routes remain usable.
 
@@ -611,6 +613,14 @@ gap. In-flight checks reserve a bounded startup window in case the daemon exits
 before saving their result. Shutdown aborts its owned check and waits for actual
 cleanup before releasing the queue.
 
+Runtimes sharing a private configuration directory coordinate with a separate
+`maintenance-lock.db` SQLite transaction, not the diagnostics database. A busy
+sibling defers rather than overlapping checks; a process exit releases its lock.
+The owner reloads current state before saving, retains other runtimes' provider
+entries and preserves the shared quiet gap. Installed curated sources and
+explicitly installed opt-ins are covered; disabled and custom sources are skipped.
+See the [owner maintenance rollout](../ops/adventure-execution/MAINTENANCE.md).
+
 A successful reply within the past 24 hours satisfies a check if no newer error
 or cooldown has invalidated that evidence. Otherwise maintenance makes one
 exact-source hello request with a 1,024-token output cap and a private empty
@@ -625,6 +635,8 @@ through the pinned native client without claiming rewards.
 The maintenance result records `metadata` evidence, which does not establish a
 fresh generated reply or clear an inference cooldown. A recent successful user
 reply still satisfies its daily check as `reply` evidence.
+Free-Pi also uses its metadata-only health check, without creating a session
+trace. Its idle check still requires current source-specific consent.
 
 Foreground-owned sources, current user requests and routing cooldowns defer the
 check. An update pauses the queue while existing routes remain usable until the
@@ -668,9 +680,11 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra and Openference in the
+Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra,
+Openference, Reflection Beam, 100milionseek and Free-Pi in the
 experimental tier. Fikra and Openference are temporary offers with expiry guards.
-Free-account eligibility still applies.
+Free-account eligibility still applies. Free-Pi requires affirmative material
+consent and reviewed public context; registry membership alone does not enable it.
 
 The wizard enables free sources by default and connects every supported coding
 tool it detects. It installs the persistent daemon once before provider jobs.
@@ -742,8 +756,10 @@ Zro setup prefers Google login through Squire. Before connecting a new local gra
 
 Setup enables the free sources by default, including sources that may retain,
 review or train on prompts. It records current provider policies in a private
-receipt for the existing runtime guards, without printing disclosures or asking
-for approval. Retired Freebuff and APInex records do not authorize routing.
+receipt for the existing runtime guards. Material terms such as Free-Pi's trace
+sale are displayed in a foreground, default-No prompt. Noninteractive or
+background setup skips an unapproved material policy; a changed policy requires
+fresh approval. Retired Freebuff and APInex records do not authorize routing.
 Daily maintenance does not provision accounts; rerun setup to retry a skipped
 source. Provider-specific data policies remain documented below and in
 `src/local/data-sharing.ts`.
@@ -1360,7 +1376,8 @@ OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
 Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes,
-Gödel Machines, Darus, Aperture, Fikra and Openference forward function tool definitions and return
+Gödel Machines, Darus, Aperture, Fikra, Openference, Reflection Beam,
+100milionseek and Free-Pi forward function tool definitions and return
 tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
@@ -1500,12 +1517,58 @@ Disconnecting the connector revokes the grant and stops subscriptions when ChatG
 
 References: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [ChatGPT plugin connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
 
-## Optional local sources
+## Curated sources and explicit selections
 
-Add `antseed-vikey,reflection-beam` to `GRUNT_OPT_IN_SOURCES` for a local daemon
-whose provider-specific data-sharing approvals are recorded. Grunt appends
-these sources to the configured chain. Each ID can also be selected directly.
-The bundled automatic registry does not enroll these sources.
+The same curated registry applies to every Grunt installation. Reflection Beam
+is included in ordinary onboarding. It uses Kilo's anonymous
+`reflection/beam-free` route without an account key, with its own current
+data-sharing receipt. Grunt checks the exact free catalog entry before inference
+and requires zero-cost usage on replies. An unavailable source is skipped while
+other sources continue. Adding a source never shares another user's account or
+grants access to paid quota.
+
+`millionseek` connects [100milionseek](https://100milionseek.top) through Squire
+and pins `deepseek-v4.1-flash-free`. The adapter verifies the permanent combined
+100-million-token daily entitlement independently of temporary bonuses, with a
+00:00 UTC reset and five concurrent sessions. Its live qualification passed a
+Grunt-attributed hello, native function call and exactly 198,000 input tokens;
+that input limit is the approved exception to the ordinary 200,000-token floor.
+Use `npx usegrunt add millionseek` to connect it separately. Signup pauses and
+rate limits are honored; Grunt does not redeem reset vouchers or create accounts
+to bypass limits. The relay's stated privacy protections do not establish its
+unnamed upstream's retention or training practices.
+
+`freepi` pins `deepseek-v4.1-flash` and verifies the observed upstream model.
+Use `npx usegrunt add freepi` for its GitHub device signup after approving the
+material trace-sale disclosure. Every inference additionally requires
+`X-Grunt-Context: public`; worker, handoff and image requests are excluded.
+Ordinary Pi sessions do not add that header. All spendable wallets must be zero
+before and after inference, and the exact current free offer must remain valid.
+Synthetic qualification passed tools, 201,074 input tokens and actual Grunt
+attribution; it did not authorize submitting game or private-project content.
+See the [Free-Pi guide](providers/freepi.md) for account-dependent allowances,
+trace-sale terms and the limits of non-atomic wallet checks.
+
+Standard setup records a private `automatic-pool.json` receipt anchored to the
+managed service's existing source list. An ordinary update migrates a verified
+managed installation only when its private setup manifest matches that list.
+The daemon then considers newly curated sources even when the service file still
+contains an older list. Explicitly added supported sources are retained in a
+separate selection list, including the `freellmapi` router for custom API URLs;
+those additions do not promote an experimental source into the curated registry.
+Provider signup and current provider-specific consent
+remain required; this receipt records source selection, not account access.
+Manual daemons and explicit source overrides that differ from the anchor keep
+their selected list. Malformed, shared, unowned or symlinked receipts never
+expand it.
+
+Antseed Vikey remains an explicit experimental source while usable long-input
+qualification is incomplete. `npx usegrunt add antseed-vikey` installs its pinned
+private buyer on Linux x64 with glibc, Node22/24 and user systemd; unsupported
+platforms skip it while other sources remain usable. Existing different buyer
+units and occupied ports are preserved. See [buyer provisioning](antseed-vikey-provisioning.md).
+`GRUNT_OPT_IN_SOURCES=antseed-vikey` also remains supported for a daemon whose
+buyer and provider-specific approval are already present.
 
 - `antseed-vikey` uses a dedicated Antseed buyer listening on loopback port
   8381 by default. Set `GRUNT_ANTSEED_VIKEY_PORT` for a different local port.
@@ -1514,6 +1577,3 @@ The bundled automatic registry does not enroll these sources.
   live zero-price offer and verifies its attribution and pricing on replies.
   Seller rolling token limits can reject long prompts despite the advertised
   context window.
-- `reflection-beam` uses Kilo's anonymous `reflection/beam-free` route with
-  no account key. Grunt checks the exact free catalog entry before inference
-  and requires zero-cost usage on responses.

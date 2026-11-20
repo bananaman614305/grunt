@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { updateRuntime } from './update.js';
+import { AUTOMATIC_POOL_FILE, automaticPoolSources } from './automatic-pool.js';
 import type { UpdateRun, UpdateOptions } from './update.js';
 import { beginSetupSession } from './setup-session.js';
 
@@ -21,7 +22,7 @@ vi.mock('node:fs/promises', async original => {
 
 const execute = promisify(execFile), directories: string[] = [];
 afterEach(async () => { cleanup.fail = false; vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-type Settings = { brand?: 'grunt' | 'milo'; duplicate?: boolean; active?: boolean; platform?: 'linux' | 'darwin'; badReady?: boolean; stopError?: boolean; rollbackStopError?: boolean; portEnv?: string; envFile?: string; unsafeNames?: boolean; unsafeLink?: boolean; wrongExec?: boolean; corrupt?: boolean; abort?: AbortController; cancelNpm?: boolean; abortOnStop?: boolean; failBootstrap?: boolean; configMismatch?: boolean; configMissing?: boolean; legacyStatus?: boolean };
+type Settings = { brand?: 'grunt' | 'milo'; duplicate?: boolean; active?: boolean; platform?: 'linux' | 'darwin'; badReady?: boolean; stopError?: boolean; rollbackStopError?: boolean; portEnv?: string; envFile?: string; unsafeNames?: boolean; unsafeLink?: boolean; wrongExec?: boolean; corrupt?: boolean; abort?: AbortController; cancelNpm?: boolean; abortOnStop?: boolean; failBootstrap?: boolean; configMismatch?: boolean; configMissing?: boolean; legacyStatus?: boolean; automaticPool?: boolean };
 async function fixture(settings: Settings = {}) {
   const base = await mkdtemp(join(tmpdir(), 'grunt-update-test-')); directories.push(base);
   const brand = settings.brand ?? 'milo', prefix = brand.toUpperCase();
@@ -50,7 +51,7 @@ async function fixture(settings: Settings = {}) {
         const name = args[args.indexOf('-p') + 1];
         if (!args.includes(`${brand}.service`) && !settings.duplicate) return name === 'LoadState' ? 'not-found' : '';
         return ({ LoadState: 'loaded', ExecStart: `{ path=${process.execPath} ; argv[]=${process.execPath} ${settings.wrongExec ? '/unrelated/project/main.js' : join(runtime, 'dist/local/main.js')} ; ignore_errors=no ; }`,
-          Environment: (settings.portEnv ?? `${prefix}_PORT=18792 ${prefix}_SOURCES=freellmapi,perch ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3001/v1`) + (settings.configMissing ? '' : ` ${prefix}_CONFIG_DIR=${settings.configMismatch ? '/unrelated/configuration' : directory}`), EnvironmentFiles: settings.envFile ?? '', UnsetEnvironment: '', ActiveState: active ? 'active' : 'inactive' } as Record<string, string>)[name!] ?? '';
+          Environment: (settings.automaticPool ? `${prefix}_DAEMON=1 ` : '') + (settings.portEnv ?? `${prefix}_PORT=18792 ${prefix}_SOURCES=freellmapi,perch ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3001/v1`) + (settings.configMissing ? '' : ` ${prefix}_CONFIG_DIR=${settings.configMismatch ? '/unrelated/configuration' : directory}`), EnvironmentFiles: settings.envFile ?? '', UnsetEnvironment: '', ActiveState: active ? 'active' : 'inactive' } as Record<string, string>)[name!] ?? '';
       }
       if (args.includes('stop')) {
         stops++;
@@ -82,6 +83,8 @@ async function fixture(settings: Settings = {}) {
     }
     if (binary === 'plutil') {
       if (args.some(arg => arg.startsWith('EnvironmentVariables.') && !arg.startsWith(`EnvironmentVariables.${prefix}_`)) || args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) && settings.configMissing) throw new Error('Synthetic plist field missing');
+      if (args.includes(`EnvironmentVariables.${prefix}_DAEMON`)) return settings.automaticPool ? '1' : '';
+      if (args.includes(`EnvironmentVariables.${prefix}_SOURCES`)) return 'freellmapi,perch';
       return args.includes('ProgramArguments') ? JSON.stringify([process.execPath, join(runtime, 'dist/local/main.js')]) : args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) ? settings.configMismatch ? '/unrelated/configuration' : directory : '18792';
     }
     if (binary === 'npm') {
@@ -126,6 +129,22 @@ async function legacyPi(directory: string, port = 18792, contextWindow = 128000)
   await writeFile(path, JSON.stringify(saved), { mode: 0o600 });
   return { path, saved };
 }
+
+it.each(['linux', 'darwin'] as const)('enrolls verified setup-managed services in current curated defaults on update (%s)', async platform => {
+  const f = await fixture({ platform, automaticPool: true });
+  await updateRuntime(f.options);
+  expect(automaticPoolSources(f.directory, ['freellmapi', 'perch'], ['perch', 'reflection-beam'], true)).toEqual(['freellmapi', 'perch', 'reflection-beam']);
+  await f.preserved();
+});
+
+it('keeps manual source selection and removes a new automatic marker on failed activation', async () => {
+  const manual = await fixture(); await updateRuntime(manual.options);
+  await expect(readFile(join(manual.directory, AUTOMATIC_POOL_FILE))).rejects.toMatchObject({ code: 'ENOENT' });
+  const f = await fixture({ automaticPool: true, badReady: true });
+  await expect(updateRuntime(f.options)).rejects.toThrow('previous runtime and service were restored');
+  await expect(readFile(join(f.directory, AUTOMATIC_POOL_FILE))).rejects.toMatchObject({ code: 'ENOENT' });
+  await f.preserved();
+});
 
 it.each([true, false])('migrates the matching managed Pi window only after a successful update (active=%s)', async active => {
   const f = await fixture({ active }), pi = await legacyPi(f.piDirectory), lines: string[] = [];

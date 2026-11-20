@@ -79,7 +79,7 @@ export async function setupFallbacks(options: {
   const requested = [...new Set(options.adapters ?? ['opencode'])];
   // A registry may list account-based providers first. Keep their shared
   // browser login from occupying every worker before anonymous routes start.
-  const anonymous = ['kilo', 'opencode'];
+  const anonymous = ['kilo', 'opencode', 'reflection-beam'];
   const execution = [...anonymous.filter(id => requested.includes(id)), ...requested.filter(id => !anonymous.includes(id))];
   const unavailable = requested.filter(id => disabledAdapters.has(id));
   for (const id of unavailable) options.notify(`${id}: routing is disabled; other free services continue`);
@@ -179,6 +179,40 @@ export async function setupFallbacks(options: {
       } catch (error) {
         failedSetup('opencode', error);
         options.notify('OpenCode free model check failed or signup was refused. Rerun usegrunt setup after repairing OpenCode; other routes remain available.');
+      } },
+      'antseed-vikey': async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['antseed-vikey'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Antseed Vikey: private zero-price buyer connected; functional verification remains required');
+      } catch (error) {
+        failedSetup('antseed-vikey', error);
+        options.notify('Antseed Vikey setup unavailable on this platform or buyer configuration; other routes remain available.');
+      } },
+      millionseek: async () => { try {
+        if (!options.background) await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['millionseek'], { squire: squire as SetupSquire, directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('100milionseek: recurring free DeepSeek access connected');
+      } catch (error) {
+        failedSetup('millionseek', error);
+        options.notify('100milionseek setup needs attention; other free sources continue.');
+      } },
+      freepi: async () => { try {
+        if (!options.background) await connect();
+        await (options.setupProvider ?? setup)(options.notify, ['freepi'], { squire: squire as SetupSquire, directory: options.directory,
+          background: options.background ?? false, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Free-Pi: public-project free access connected under the approved data terms');
+      } catch (error) {
+        failedSetup('freepi', error);
+        options.notify('Free-Pi setup needs attention; other free sources continue.');
+      } },
+      'reflection-beam': async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['reflection-beam'], { squire: squire as SetupSquire, directory: options.directory,
+          dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+        options.notify('Reflection Beam: anonymous free access verified');
+      } catch (error) {
+        failedSetup('reflection-beam', error);
+        options.notify('Reflection Beam free check failed; other routes remain available.');
       } },
       kilo: async () => { try {
         if (options.kiloAccount) {

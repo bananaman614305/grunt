@@ -35,6 +35,69 @@ it('does not ask for providers without a known data-sharing requirement', async 
   expect(prompt).not.toHaveBeenCalled();
 });
 
+it('does not silently approve material trace-sale terms in default or unattended setup', async () => {
+  for (const interactive of [undefined, false]) {
+    const path = await directory(), prompt = vi.fn(async () => true);
+    expect(await approveDataSharing({ directory: path, providers: ['tokenharbor', 'freepi'], interactive, prompt }))
+      .toEqual({ approved: ['tokenharbor'], skipped: ['freepi'] });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(await readDataSharingConsent(path, ['tokenharbor', 'freepi'])).toEqual(['tokenharbor']);
+  }
+});
+
+it('groups new material terms once and records only an affirmative current-policy decision', async () => {
+  const path = await directory();
+  (DATA_SHARING_POLICIES as DataSharingPolicy[]).push({ provider: 'second-material', name: 'Second', version: '1', disclosure: 'Sells identifiable traces.', url: 'https://second.test/privacy', approval: 'material' });
+  const prompt = vi.fn(async (policies: readonly DataSharingPolicy[]) => {
+    expect(policies.map(policy => policy.provider)).toEqual(['freepi', 'second-material']);
+    expect(policies[0]!.disclosure).toMatch(/sell.*no ordinary opt-out/);
+    return true;
+  });
+  const providers = ['tokenharbor', 'freepi', 'second-material'];
+  expect(await approveDataSharing({ directory: path, providers, interactive: true, prompt })).toEqual({ approved: providers, skipped: [] });
+  expect(prompt).toHaveBeenCalledOnce();
+  expect(await readDataSharingConsent(path, providers)).toEqual(providers);
+  expect(await approveDataSharing({ directory: path, providers, interactive: false, prompt })).toEqual({ approved: providers, skipped: [] });
+  expect(prompt).toHaveBeenCalledOnce();
+});
+
+it.each([false, Symbol('cancel'), 'yes'])('keeps other providers available when a material decision is %s', async answer => {
+  const path = await directory();
+  expect(await approveDataSharing({ directory: path, providers: ['tokenharbor', 'freepi'], interactive: true, prompt: async () => answer }))
+    .toEqual({ approved: ['tokenharbor'], skipped: ['freepi'] });
+  expect(await readDataSharingConsent(path, ['freepi'])).toEqual([]);
+});
+
+it('handles a cancelled material prompt without aborting ordinary source setup', async () => {
+  const path = await directory();
+  expect(await approveDataSharing({ directory: path, providers: ['tokenharbor', 'freepi'], interactive: true, prompt: async () => { throw new Error('cancel'); } }))
+    .toEqual({ approved: ['tokenharbor'], skipped: ['freepi'] });
+});
+
+it('requires a fresh material decision after a policy change and revokes it on opt-out', async () => {
+  const path = await directory(), providers = ['tokenharbor', 'freepi'];
+  const prompt = vi.fn(async () => true);
+  await approveDataSharing({ directory: path, providers, interactive: true, prompt });
+  DATA_SHARING_POLICIES.find(policy => policy.provider === 'freepi')!.version = 'new-sale-terms';
+  expect(await readDataSharingConsent(path, ['freepi'])).toEqual([]);
+  expect(await approveDataSharing({ directory: path, providers, interactive: false, prompt }))
+    .toEqual({ approved: ['tokenharbor'], skipped: ['freepi'] });
+  expect(prompt).toHaveBeenCalledOnce();
+  await approveDataSharing({ directory: path, providers, interactive: true, prompt });
+  expect(prompt).toHaveBeenCalledTimes(2);
+  expect(await approveDataSharing({ directory: path, providers, interactive: true, prompt, env: { GRUNT_SETUP_NO_DATA_SHARING: '1' } }))
+    .toEqual({ approved: ['tokenharbor'], skipped: ['freepi'] });
+  expect(await readDataSharingConsent(path, ['freepi'])).toEqual([]);
+});
+
+it('does not treat acceptance of a displayed policy as acceptance of a concurrent policy change', async () => {
+  const path = await directory();
+  const prompt = async () => { DATA_SHARING_POLICIES.find(policy => policy.provider === 'freepi')!.disclosure = 'Changed sale conditions.'; return true; };
+  expect(await approveDataSharing({ directory: path, providers: ['freepi'], interactive: true, prompt }))
+    .toEqual({ approved: [], skipped: ['freepi'] });
+  expect(await readDataSharingConsent(path, ['freepi'])).toEqual([]);
+});
+
 it('groups the new native providers without renewing existing provider approvals', async () => {
   const path = await directory();
   await recordDataSharingConsent(path, sharingIds);

@@ -127,6 +127,40 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertFalse(self.root.is_relative_to(self.workspace))
 
+    def test_owner_exclusion_blocks_fresh_and_resumed_release(self):
+        p = self.make()
+        item = {**self.candidate, 'homepage': 'https://freeinference.org'}
+        self.assertEqual(p.process(item), {'status': 'blocked', 'reason': 'owner_excluded'})
+        self.assertEqual(self.calls, [])
+        self.promotion_status = 'deferred'
+        self.assertEqual(p.process(self.candidate)['status'], 'deferred')
+        checkpoint = pipeline._read(self.checkpoint())
+        checkpoint['candidate']['homepage'] = item['homepage']
+        pipeline._write(self.checkpoint(), checkpoint)
+        self.calls.clear()
+        resumed = p.resume_pending()
+        self.assertEqual(resumed[0]['reason'], 'owner_excluded')
+        self.assertEqual(self.calls, [])
+
+    def test_current_ledger_hold_stops_deferred_promotion_before_any_stage(self):
+        from scout import candidate_id, qualification_holds
+        self.candidate.update(homepage='https://synthetic.example', model='synthetic-flash')
+        self.promotion_status = 'deferred'
+        self.assertEqual(self.make().process(self.candidate)['status'], 'deferred')
+        # The saved checkpoint still contains yesterday's qualified candidate;
+        # the trusted ledger now has a newer approval/human-verification hold.
+        held = {**self.candidate, 'status': 'needs_approval',
+                'qualification_blocker': 'operator_approval_required'}
+        self.config['_qualification_holds'] = qualification_holds({
+            'candidates': {candidate_id(held): held}})
+        self.calls.clear()
+        results = self.make().resume_pending()
+        self.assertEqual(results[0].get('reason'), 'qualification_held')
+        self.assertEqual(self.calls, [])
+        fresh = self.make().process(self.candidate)
+        self.assertEqual(fresh, {'status': 'blocked', 'reason': 'qualification_held'})
+        self.assertEqual(self.calls, [])
+
     def test_released_head_is_idempotent(self):
         supervisor = self.make()
         first = supervisor.process(self.candidate)

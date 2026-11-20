@@ -45,6 +45,18 @@ it('validates OpenCode model pools without ambiguous scalar settings', () => {
   expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!, models: ['big-pickle'] }] })).toThrow();
 });
 
+it('publishes the anonymous Reflection route as an ordinary curated source', () => {
+  expect(knownAdapters.has('reflection-beam')).toBe(true);
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'reflection-beam')).toMatchObject({
+    kind: 'model', install: 'builtin:reflection-beam', model: 'reflection/beam-free', modalities: ['text']
+  });
+});
+
+it('supports explicit Antseed setup while withholding automatic enrollment until context qualifies', () => {
+  expect(knownAdapters.has('antseed-vikey')).toBe(true);
+  expect(bundledRegistry.adapters.some(adapter => adapter.id === 'antseed-vikey')).toBe(false);
+});
+
 it('gateway down keeps cached list and persists private cache', async () => {
   const path = await directory();
   const updated = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(), adapters: [bundledRegistry.adapters[1]] };

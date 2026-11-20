@@ -123,6 +123,196 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual(first['candidates'][key]['first_seen'], second['candidates'][key]['first_seen'])
         self.assertEqual(empty['candidates'], {})
 
+    def test_candidate_identity_matches_discovery_alias_normalization(self):
+        item = candidate(homepage='https://openrouter.ai')
+        for homepage in ['https://www.openrouter.ai', 'https://docs.openrouter.ai']:
+            self.assertEqual(scout.candidate_id(item), scout.candidate_id(candidate(homepage=homepage)))
+
+    def test_owner_exclusion_cannot_be_reopened_by_new_model_or_changed_terms(self):
+        item = candidate(homepage='https://freeinference.org', model='different-free-model')
+        key = scout.candidate_id(item)
+        ledger = {'candidates': {key: item}, 'discovery_pending': {key: item}}
+        self.assertEqual(scout.qualification_scope(ledger), {})
+        report = {'web_search_used': True, 'search_queries': ['one', 'two'], 'candidates': [item]}
+        errors = []
+        updated = scout.ingest(report, ledger, self.workspace, diagnostics=errors)
+        self.assertEqual(errors, [{'row': 0, 'code': 'owner_excluded'}])
+        self.assertEqual(updated['candidates'], ledger['candidates'])
+
+    def test_unfinished_qualification_stays_pending_with_bounded_retry(self):
+        item = candidate(status='researched', setup_status='not_attempted')
+        review = scout.review_id(item)
+        key = scout.candidate_id(item)
+        ledger = {'candidates': {key: item}, 'discovery_pending': {key: {**item, 'review_id': review}}}
+        report = {'candidates': [{**item, 'review_id': review}]}
+        with patch.object(scout, 'now', return_value='2026-11-20T00:00:00+00:00'):
+            scout.finish_reviews(ledger, report, {review: (key, item)}, [])
+            self.assertIn(key, ledger['discovery_pending'])
+            self.assertEqual(scout.qualification_scope(ledger), {})
+        with patch.object(scout, 'now', return_value='2026-11-20T12:00:00+00:00'):
+            self.assertIn(review, scout.qualification_scope(ledger))
+        self.assertEqual(ledger['discovery_pending'][key]['qualification_attempts'], 1)
+
+    def test_approval_pending_is_retained_without_automatic_retries(self):
+        item = candidate(status='needs_approval', setup_status='approval_needed')
+        review = scout.review_id(item); key = scout.candidate_id(item)
+        ledger = {'candidates': {key: item}, 'discovery_pending': {key: item}}
+        scout.finish_reviews(ledger, {'candidates': [{**item, 'review_id': review}]}, {review: (key, item)}, [])
+        self.assertIn(key, ledger['discovery_pending'])
+        self.assertEqual(scout.qualification_scope(ledger), {})
+
+    def test_owner_decisions_are_durable_and_do_not_mutate_research_facts(self):
+        item = candidate(homepage='https://www.freeinference.org')
+        key = scout.candidate_id(item)
+        scout.atomic(self.workspace / 'ledger.json', {'candidates': {key: item}, 'discovery_pending': {key: item}})
+        self.assertEqual(scout.owner_decision(self.workspace, item['homepage'], excluded=True,
+                                            reason='Owner opted out')['excluded'], True)
+        ledger = scout.load(self.workspace / 'ledger.json')
+        self.assertEqual(ledger['candidates'][key], item)
+        self.assertEqual(ledger['discovery_pending'], {})
+        scout.owner_decision(self.workspace, item['homepage'], excluded=False, reason='Owner explicitly reopened it')
+        ledger = scout.load(self.workspace / 'ledger.json')
+        self.assertIsNone(scout.owner_exclusion(item, ledger))
+        scout.canonicalize_ledger(ledger)
+        self.assertFalse(ledger['owner_exclusions']['freeinference.org']['excluded'])
+
+    def test_ledger_migration_merges_aliases_and_resolved_placeholder(self):
+        older = candidate(homepage='https://www.synthetic.example', model='unverified',
+                          status='researched', first_seen='2026-11-01', last_seen='2026-11-02')
+        exact = candidate(homepage='https://synthetic.example', status='needs_approval',
+                          first_seen='2026-11-03', last_seen='2026-11-04')
+        newer_alias = {**exact, 'homepage': 'https://www.synthetic.example', 'last_seen': '2026-11-05'}
+        ledger = {'candidates': {'legacy-unknown': older, 'legacy-exact': exact, 'legacy-alias': newer_alias},
+                  'discovery_pending': {}, 'reviewed_discoveries': {'a' * 64: {'candidate_id': 'legacy-unknown',
+                                                                          'at': '2026-11-05T00:00:00+00:00'}}}
+        scout.canonicalize_ledger(ledger)
+        key = scout.candidate_id(exact)
+        self.assertEqual(list(ledger['candidates']), [key])
+        self.assertEqual(ledger['candidates'][key]['first_seen'], '2026-11-01')
+        self.assertEqual(ledger['candidates'][key]['status'], 'needs_approval')
+        self.assertEqual(ledger['reviewed_discoveries']['a' * 64]['candidate_id'], key)
+        scout.resume_unfinished_reviews(ledger)
+        self.assertIn(key, ledger['discovery_pending'])
+        self.assertEqual(scout.qualification_scope(ledger), {})
+
+    def test_ledger_migration_preserves_promotion_and_distinct_exact_models(self):
+        released = candidate(pipeline_status='released', release_request={'head_sha': 'a' * 40}, last_seen='old')
+        alias = candidate(homepage='https://www.synthetic.example', last_seen='new')
+        different = candidate(model='another-model')
+        ledger = {'candidates': {'old': released, 'alias': alias, 'other': different}}
+        scout.canonicalize_ledger(ledger)
+        self.assertEqual(len(ledger['candidates']), 2)
+        self.assertEqual(ledger['candidates'][scout.candidate_id(released)]['release_request']['head_sha'], 'a' * 40)
+        self.assertEqual(ledger['candidates'][scout.candidate_id(released)]['pipeline_status'], 'released')
+
+    def test_placeholder_migration_preserves_holds_in_either_insertion_order(self):
+        for human in (False, True):
+            for reverse_candidates in (False, True):
+                for reverse_pending in (False, True):
+                    with self.subTest(human=human, candidates=reverse_candidates, pending=reverse_pending):
+                        exact = candidate(status='researched', setup_status='not_attempted',
+                                          last_seen='2026-11-19T00:00:00+00:00', reason='Older research')
+                        held = candidate(model='unverified', status='setup_blocked' if human else 'needs_approval',
+                                         setup_status='blocked' if human else 'approval_needed',
+                                         reason='human_verification_required' if human else 'New source-code sale condition',
+                                         last_seen='2026-11-20T00:00:00+00:00',
+                                         primary_sources=['https://synthetic.example/new-policy'])
+                        if human:
+                            held['qualification_blocker'] = 'human_verification_required'
+                        exact_key, held_key = scout.candidate_id(exact), scout.candidate_id(held)
+                        entries = [(exact_key, exact), (held_key, held)]
+                        pending = [(held_key, {**held, 'review_id': 'a' * 64, 'qualification_retry_at': None}),
+                                   (exact_key, {**exact, 'review_id': 'b' * 64,
+                                                'qualification_retry_at': '2026-11-19T12:00:00+00:00'})]
+                        ledger = {'candidates': dict(reversed(entries) if reverse_candidates else entries),
+                                  'discovery_pending': dict(reversed(pending) if reverse_pending else pending)}
+                        scout.canonicalize_ledger(ledger)
+                        current = ledger['candidates'][exact_key]
+                        self.assertEqual(current['model'], exact['model'])
+                        self.assertEqual(current['status'], held['status'])
+                        self.assertEqual(current['setup_status'], held['setup_status'])
+                        self.assertEqual(current['reason'], held['reason'])
+                        self.assertEqual(current['primary_sources'], held['primary_sources'])
+                        self.assertEqual(len(ledger['candidates']), 1)
+                        self.assertIsNone(ledger['discovery_pending'][exact_key]['qualification_retry_at'])
+                        self.assertEqual(ledger['discovery_pending'][exact_key]['reason'], held['reason'])
+                        self.assertEqual(scout.qualification_scope(ledger), {})
+                        before = json.loads(json.dumps(ledger))
+                        scout.canonicalize_ledger(ledger)
+                        self.assertEqual(ledger, before)
+
+    def test_alias_hold_preserves_release_identity_and_skips_legacy_held_scope(self):
+        released = candidate(pipeline_status='publication_pending', release_request={'head_sha': 'a' * 40},
+                             last_seen='2026-11-19T00:00:00+00:00')
+        held = candidate(homepage='https://www.synthetic.example', status='needs_approval',
+                         setup_status='approval_needed', reason='New material condition',
+                         last_seen='2026-11-20T00:00:00+00:00')
+        key = scout.candidate_id(released)
+        ledger = {'candidates': {'old': released, 'new': held},
+                  'discovery_pending': {'new': {**held, 'review_id': 'a' * 64}}}
+        scout.canonicalize_ledger(ledger)
+        self.assertEqual(ledger['candidates'][key]['release_request']['head_sha'], 'a' * 40)
+        self.assertEqual(ledger['candidates'][key]['pipeline_status'], 'publication_pending')
+        self.assertEqual(ledger['candidates'][key]['status'], 'needs_approval')
+        self.assertEqual(scout.qualification_scope(ledger), {})
+
+    def test_freeform_mentions_of_completed_or_absent_challenges_do_not_hold_work(self):
+        for reason in ['No CAPTCHA required; usable context still needs verification',
+                       'Human verification completed; SDK entitlement pending',
+                       'CAPTCHA solved; remaining SDK entitlement pending']:
+            with self.subTest(reason=reason):
+                item = candidate(status='researched', setup_status='not_attempted', reason=reason,
+                                 qualification_blocker=None)
+                self.assertEqual(scout.qualification_retry(item, 1, '2026-11-20T00:00:00+00:00'),
+                                 '2026-11-20T12:00:00+00:00')
+                key = scout.candidate_id(item)
+                # Migrate a null retry left by the former prose regex: the
+                # structured state, not an old null, determines the hold.
+                pending = {**item, 'review_id': 'a' * 64, 'qualification_retry_at': None}
+                ledger = {'candidates': {key: item}, 'discovery_pending': {key: pending}}
+                scout.canonicalize_ledger(ledger)
+                self.assertIn('a' * 64, scout.qualification_scope(ledger))
+
+    def test_structured_unresolved_gate_cannot_be_queued_for_release(self):
+        self.proof()
+        item = candidate(qualification_blocker='human_verification_required',
+                         release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40})
+        self.assertEqual(scout.qualify(item, self.workspace), 'needs_approval')
+        key = scout.candidate_id(item)
+        ledger = {'candidates': {key: {**item, 'pipeline_status': 'deferred'}}}
+        self.assertEqual(scout.queue_candidates(ledger, {'candidates': []}, {'candidates': []}, [], []), [])
+
+    def test_resume_uses_latest_review_and_human_gate_is_not_retried(self):
+        item = candidate(status='setup_blocked', setup_status='blocked', reason='human_verification_required',
+                         qualification_blocker='human_verification_required')
+        key = scout.candidate_id(item)
+        ledger = {'candidates': {key: item}, 'reviewed_discoveries': {
+            'a' * 64: {'candidate_id': key, 'at': '2026-11-01T00:00:00+00:00'},
+            'b' * 64: {'candidate_id': key, 'at': '2026-11-20T00:00:00+00:00'}}}
+        scout.resume_unfinished_reviews(ledger)
+        self.assertEqual(ledger['discovery_pending'][key]['review_id'], 'b' * 64)
+        self.assertIsNone(ledger['discovery_pending'][key]['qualification_retry_at'])
+        self.assertEqual(scout.qualification_scope(ledger), {})
+        self.assertEqual(scout.qualification_retry(candidate(status='researched'), 1000,
+                                                 '2026-11-20T00:00:00+00:00'), '2026-11-27T00:00:00+00:00')
+
+    def test_discovery_owner_exclusion_overrides_a_claimed_material_change(self):
+        directory = self.workspace / 'run'; scout.private_directory(directory)
+        old = candidate(homepage='https://freeinference.org', status='rejected')
+        changed = {**old, 'status': 'researched', 'change_evidence': {
+            'field': 'signup', 'before': 'academic-only', 'after': 'public signup',
+            'source': old['primary_sources'][0]}}
+        ledger = {'candidates': {scout.candidate_id(old): old}}
+        def worker(*_args):
+            return {'result': {'web_search_used': True, 'search_queries': ['one', 'two'], 'candidates': [changed]},
+                    'tool_counts': {'web_search': 2}}
+        with patch.object(scout, 'run_agent', side_effect=worker):
+            result = scout.discover_lanes(self.workspace, directory, self.workspace, {}, ledger, {}, {},
+                                          time.monotonic() + 10, 0)
+        self.assertEqual(result['candidates'], [])
+        self.assertEqual(scout.qualification_scope(ledger), {})
+        self.assertTrue(all(lane['owner_excluded_offers'] == 1 for lane in result['lanes'].values()))
+
     def test_supervisor_release_state_survives_worker_ingests(self):
         report = {'web_search_used': True, 'search_queries': ['one', 'two'], 'candidates': [candidate()]}
         key = scout.candidate_id(candidate())
@@ -361,7 +551,7 @@ class ScoutTests(unittest.TestCase):
         self.assertNotIn('secret', saved.read_text())
         self.assertEqual(scout.load(saved)['candidates'][0]['homepage'], fresh['homepage'])
 
-    def test_changed_offer_waits_for_review_and_is_consumed_even_when_unchanged(self):
+    def test_changed_offer_keeps_unfinished_work_without_immediate_research(self):
         self.worker_fixture()
         root = self.workspace
         old = candidate(context_tokens=210000)
@@ -393,7 +583,9 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual([[row['context_tokens'] for row in offers] for offers in supplied], [[500000], [500000]])
         self.assertEqual(supplied[0][0]['homepage'], old['homepage'])
         stored = scout.load(root / 'ledger.json')
-        self.assertEqual(stored['discovery_pending'], {})
+        self.assertEqual(stored['discovery_pending'][key]['status'], 'integration_pending')
+        self.assertEqual(stored['discovery_pending'][key]['qualification_attempts'], 1)
+        self.assertEqual(scout.qualification_scope(stored), {})
         self.assertIn(supplied[0][0]['review_id'], stored['reviewed_discoveries'])
         self.assertEqual(stored['candidates'][key]['context_tokens'], 210000)
         self.assertEqual(scout.load(root / 'last-run.json')['qualification'], 'skipped_no_pending_offers')
@@ -452,7 +644,8 @@ class ScoutTests(unittest.TestCase):
         updated = scout.ingest(report, ledger, self.workspace, diagnostics=errors, scope={review: pending})
         self.assertEqual(errors, [{'row': 1, 'code': 'outside_qualification_scope'}])
         scout.finish_reviews(updated, report, {review: (key, pending)}, errors)
-        self.assertEqual(updated['discovery_pending'], {})
+        self.assertIn(scout.candidate_id(rows[0]), updated['discovery_pending'])
+        self.assertNotIn(key, updated['discovery_pending'])
         self.assertNotIn('review_id', updated['candidates'][scout.candidate_id(rows[0])])
         self.assertEqual(len(updated['candidates']), 1)
 
@@ -526,6 +719,8 @@ class ScoutTests(unittest.TestCase):
             def __init__(self, supplied, root):
                 self.supplied = supplied
                 calls.append(('init', supplied, root))
+            def set_qualification_holds(self, holds):
+                self.supplied['_qualification_holds'] = dict(holds)
             def resume_pending(self, *, reserve_seconds):
                 self.reserve_seconds = reserve_seconds
                 calls.append(('resume',))

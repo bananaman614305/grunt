@@ -2,8 +2,10 @@
 
 On Chad, run `grunt-adventure live` for the terminal feed. It polls the runner's
 private Pi session and the read-only status endpoint of the dedicated game pool
-on loopback port 8793 every two seconds. That pool handles project requests
-without periodic provider health checks. Progress comes from completed, visible
+on loopback port 8793 every two seconds. The matching owner helper can use the
+[shared daily maintenance queue](../adventure-execution/MAINTENANCE.md), coordinated
+with the primary daemon; feed polling itself never starts those checks. Progress
+comes from completed, visible
 assistant text. The projector filters code fences, inline code, links, paths and common
 credential patterns. Tool entries contain the tool's name and outcome.
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-20
+
+- Add verified 100milionseek DeepSeek V4.1 Flash to standard Squire setup with a guarded recurring allowance and the approved 198,000-token input exception.
+- Offer Free-Pi DeepSeek for explicitly reviewed public requests after affirmative consent to its coding-trace sale terms. Keep maintenance metadata-only and reject paid wallets, unapproved models and unsupported tool histories.
+- Make anonymous Reflection Beam part of the ordinary pool, retain explicit provider additions across managed updates, and provide a pinned private Antseed installer for experimental opt-in use.
+- Coordinate staggered daily maintenance across sibling runtimes without overwriting another process's results or overlapping provider checks.
+- Keep unfinished scout qualification in the queue, preserve owner exclusions and approval holds, and deduplicate provider identities across repeated searches.
+
 ## [0.8.1] - 2026-11-20
 
 - Keep owner diagnostics uploading when Grunt skips a source that requires approved public context. Use the same bounded routing-reason vocabulary in the local recorder, collector and admin API while continuing to reject arbitrary text.

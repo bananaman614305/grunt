@@ -9,6 +9,8 @@ import { createLocalApp } from './api.js';
 import { positive } from './freebuff.js';
 import { Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
+import { MillionSeek } from './millionseek.js';
+import { FreePi } from './freepi.js';
 import { Nvidia } from './nvidia.js';
 import { Zro } from './zro.js';
 import { TokenHarbor } from './tokenharbor.js';
@@ -33,7 +35,7 @@ import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
-import { readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
+import { requiresDataSharing } from './data-sharing.js';
 import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
@@ -42,11 +44,12 @@ import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { RegistrySync } from './registry.js';
 import { configDir } from './wizard.js';
-import { DailyMaintenance } from './maintenance.js';
+import { createSourceMaintenance } from './runtime-maintenance.js';
 import { SourceRecovery } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 import { createWorkerRuntime } from './worker-runtime.js';
+import { automaticPoolSources } from './automatic-pool.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
   const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
@@ -73,10 +76,12 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
   const numesModel = gruntEnv('NUMES_MODEL', env);
   const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
-  const configured = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()) ?? registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Clixad({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
+  const curated = registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+  const configured = declared ? automaticPoolSources(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1') : curated;
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
-    .filter(id => localOptInAdapters.some(adapter => adapter.id === id));
+    .filter(id => localOptInAdapters.some(adapter => adapter.id === id) || id === 'reflection-beam');
   const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
   if (numesModel !== undefined && (!deepSeekFlash || ids.length !== 1 || ids[0] !== 'numes')) {
     throw new Error('The Numes qualification model requires the exact Numes-only source');
@@ -145,23 +150,7 @@ export function start(env = process.env) {
   const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
     changed: current => { registry = current; }, notify: console.error
   });
-  const maintenance = new DailyMaintenance({ directory,
-    providers: () => [...new Set([...registry.adapters, ...localOptInAdapters].filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
-      && sources.sources.some(source => source.id === adapter.id)).map(adapter => adapter.id))],
-    check: async (id, signal) => {
-      signal.throwIfAborted();
-      const session = await refreshSession();
-      if (session && (!session.owned.size || session.owned.has(id))) return { outcome: 'deferred', code: 'foreground' };
-      const approved = await readDataSharingConsent(directory, [id]);
-      signal.throwIfAborted();
-      if (requiresDataSharing(id) && !approved.includes(id)) return { outcome: 'deferred', code: 'consent' };
-      const current = await refreshSession();
-      signal.throwIfAborted();
-      if (current && (!current.owned.size || current.owned.has(id))) return { outcome: 'deferred', code: 'foreground' };
-      return sources.check(id, signal);
-    }
-  });
-  sources.setMaintenance(() => maintenance.snapshot());
+  const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
   // With no usable source, add providers by themselves (vault access, then signup).
   const recovery = new SourceRecovery({ directory,
     candidates: async () => {

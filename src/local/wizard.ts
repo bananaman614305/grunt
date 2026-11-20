@@ -14,8 +14,10 @@ import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
+import { writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
+import type { DataSharingPolicy } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
@@ -23,10 +25,19 @@ import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { SetupTable } from './setup-table.js';
 import { setupAttention, setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
-import { select, isCancel } from '@clack/prompts';
+import { select, confirm, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
 
 export const configDir = (env = process.env) => configRoot(env);
+export async function confirmMaterialDataSharing(policies: readonly DataSharingPolicy[]) {
+  return withTerminal(async () => {
+    const answer = await confirm({
+      message: `${policies.map(policy => `${policy.name}: ${policy.disclosure} Details: ${policy.url}`).join('\n\n')}\nAllow these providers to process your project under these terms?`,
+      initialValue: false
+    });
+    return !isCancel(answer) && answer === true;
+  });
+}
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal, env?: NodeJS.ProcessEnv) {
   signal?.throwIfAborted();
   const run = () => new Promise<void>((resolve, reject) => {
@@ -169,7 +180,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
   const opencodeConfig = join(directory, 'opencode-free.json');
   try { await stage(() => readFile(opencodeConfig)); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  const effectivePort = await stage(() => installBackgroundService('grunt', entry, env, options)) ?? port;
+  const effectivePort = await stage(() => installBackgroundService('grunt', entry, env, { ...options, automaticPool: true, selectedSources: selected })) ?? port;
   await stage(() => writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 }));
   const portStage = join(directory, `.installed-port-${randomUUID()}`);
   try {
@@ -177,7 +188,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
     await stage(() => rename(portStage, join(directory, 'installed-port.json')));
   } finally { await rm(portStage, { force: true }); }
 }
-export async function installBackgroundService(name: string, entry: string, env: Record<string, string>, options: { signal?: AbortSignal } = {}) {
+export async function installBackgroundService(name: string, entry: string, env: Record<string, string>, options: { signal?: AbortSignal; automaticPool?: boolean; selectedSources?: readonly string[] } = {}) {
   const stage = async <T>(operation: () => Promise<T>) => {
     options.signal?.throwIfAborted();
     const result = await operation();
@@ -207,21 +218,24 @@ export async function installBackgroundService(name: string, entry: string, env:
     if (installedService) {
       const { identity, file, contents } = installedService;
       if (!contents.includes(process.platform === 'linux' ? systemdQuote(entry) : xml(entry))) throw new Error('The existing Grunt service uses a different runtime; its configuration was not changed');
-      let port: string | undefined;
+      let port: string | undefined, serviceSources: string[] | undefined;
       if (name === 'grunt') {
         if (process.platform === 'linux') {
           const result = await stage(() => promisify(execFile)('systemctl', ['--user', 'show', `${identity}.service`, '-p', 'Environment', '--value'], { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) }));
           const installed = serviceEnvironment(result.stdout);
           if (gruntEnv('CONFIG_DIR', installed) !== env.GRUNT_CONFIG_DIR) throw new Error('The existing Grunt service uses a different configuration directory; its configuration was not changed');
           port = gruntEnv('PORT', installed);
+          serviceSources = gruntEnv('SOURCES', installed)?.split(',').map(id => id.trim()).filter(Boolean);
         } else {
           const value = async (setting: string) => stage(() => promisify(execFile)('plutil', ['-extract', `EnvironmentVariables.${setting}`, 'raw', '-o', '-', file], { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) })).then(result => result.stdout.replace(/\r?\n$/, ''));
           const directory = await value('GRUNT_CONFIG_DIR').catch(() => value('MILO_CONFIG_DIR'));
           if (directory !== env.GRUNT_CONFIG_DIR) throw new Error('The existing Grunt service uses a different configuration directory; its configuration was not changed');
           port = await value('GRUNT_PORT').catch(() => value('MILO_PORT'));
+          serviceSources = (await value('GRUNT_SOURCES').catch(() => value('MILO_SOURCES')).catch(() => ''))?.split(',').map(id => id.trim()).filter(Boolean);
         }
         if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
       }
+      if (name === 'grunt' && options.automaticPool && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources));
       if (process.platform === 'linux') await run('systemctl', ['--user', 'restart', `${identity}.service`]);
       else {
         const domain = `gui/${process.getuid!()}`;
@@ -232,6 +246,8 @@ export async function installBackgroundService(name: string, entry: string, env:
       return port;
     }
   }
+  const declaredSources = env.GRUNT_SOURCES;
+  if (name === 'grunt' && options.automaticPool && declaredSources) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, declaredSources.split(','), options.selectedSources));
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
     await stage(() => mkdir(units, { recursive: true }));
@@ -311,7 +327,7 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
         let preparing = false;
         try {
           const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', ...(source === 'goedel' ? { 'X-Grunt-Context': 'public' } : {}) },
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...(['goedel', 'freepi'].includes(source) ? { 'X-Grunt-Context': 'public' } : {}) },
             body: JSON.stringify({ model: source, cwd: directory, messages: [{ role: 'user', content: `Reply only: grunt is ready (${source}). Do not use tools or change files. Check ${attempt}.` }], stream: false, max_tokens: 256 }),
             signal: AbortSignal.any([AbortSignal.timeout(120000), ...(wait.signal ? [wait.signal] : [])])
           });
@@ -374,7 +390,7 @@ export class OperatorProbeFailure extends Error {}
 // with the reason otherwise, so setup can say why a source cannot drive.
 export async function probeSetupOperator(port: number, source: string, signal: AbortSignal) {
   const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(source === 'goedel' ? { 'X-Grunt-Context': 'public' } : {}) },
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(['goedel', 'freepi'].includes(source) ? { 'X-Grunt-Context': 'public' } : {}) },
     signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]),
     body: JSON.stringify({ model: source, max_tokens: 256, messages: [
       { role: 'user', content: `Call the setup_ready tool once with no arguments. Check ${randomUUID()}.` }
@@ -447,13 +463,15 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       ? [...new Set([...(previous.length ? previous : defaults), add])]
       : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
     let sharingNotice: string | undefined;
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources, notice: line => { sharingNotice = line; } });
-    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${DATA_SHARING_OPT_OUT})`
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources,
+      interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) && gruntEnv('SETUP_NO_HUMAN') !== '1',
+      prompt: confirmMaterialDataSharing, notice: line => { sharingNotice = line; } });
+    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${gruntEnv('SETUP_NO_DATA_SHARING') === '1' ? DATA_SHARING_OPT_OUT : 'approval not granted'})`
       : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');
     squire?.approveDataSharing?.(consent.approved);
     const skipped = new Set(consent.skipped);
     const ids = requested.filter(id => !skipped.has(id));
-    for (const id of requested) if (skipped.has(id)) table.set('source', id, 'off (data sharing opt-out)');
+    for (const id of requested) if (skipped.has(id)) table.set('source', id, 'off (data sharing not approved)');
     // Sources queue behind setup workers (one at a time with a harness), so a
     // row says waiting until its own setup starts.
     for (const id of ids) table.set('source', id, 'waiting');
@@ -461,7 +479,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const port = await setupPort();
     if (add) {
       table.set('source', add, 'connecting');
-      if (add !== 'nous') { await connect(); console.log('✓ Trusty Squire: signed in'); }
+      if (!['nous', 'reflection-beam', 'antseed-vikey'].includes(add)) { await connect(); console.log('✓ Trusty Squire: signed in'); }
       table.start();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved,

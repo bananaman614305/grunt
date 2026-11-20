@@ -153,12 +153,54 @@ case and spacing. Reports under `reports/` retain the evidence for each run.
 Missing web search, expired login, malformed output and timeouts are recorded
 as failures.
 
-Discovery compares offers against the full master record. Known aliases share
-one lookup. Revisiting an offer requires a first-party source and specific
+The ledger also stores trusted `owner_exclusions`. Explicit cancellations stay
+excluded across model, pricing and signup changes; research workers cannot
+reopen them. Existing owner exclusions for FreeInference, AxForge, CCode,
+Meldport and Packet.ai are initialized when an older ledger is loaded. An
+operator can explicitly record or revoke a decision without editing the ledger:
+
+```sh
+usegrunt-scout exclude --homepage https://provider.example --reason 'Owner opted out'
+usegrunt-scout allow --homepage https://provider.example --reason 'Owner explicitly reopened qualification'
+```
+
+These commands take the same exclusive lock as a scheduled run. `allow` only
+removes the owner exclusion: it grants no account, payment, model, privacy or
+release authority. Existing eligibility and promotion checks still apply.
+
+Discovery compares offers against the full master record. Discovery, ingestion,
+pending work and release bookkeeping share the same canonical provider/model
+identity. Historical `www`/known gateway aliases are merged; resolving a generic
+`unverified` model removes its stale placeholder without merging distinct exact
+models or replacing a protected release identity. Revisiting an offer requires a first-party source and specific
 before-and-after facts about allowance, usable context, quality, signup,
 permitted use, or supply. Qualification receives only new offers or documented
-changes. It records rejected and unchanged findings as reviewed, keeps
-unexamined offers queued, and skips qualification when the queue is empty.
+changes. Rejected findings are terminal until such a change. Unexamined work
+stays queued. Examined but unfinished research, setup and integration work also
+stays queued, with its last review and next retry time. Retryable qualification
+starts with a 12-hour delay (24 hours for blocked setup) and backs off to at most
+seven days between retries; there is no limit on the number of viable offers.
+The supervisor migrates older completed-review records that discarded this
+unfinished work. A retry resumes the remaining account/probe/integration step,
+rather than asking discovery to find the provider again. Approval-held and
+CAPTCHA/human-verification-held work has no automatic retry time. The status
+command distinguishes total pending work from currently due reviews.
+Unresolved human gates use the structured `qualification_blocker` code; a
+mention of a CAPTCHA in freeform notes does not hold work. Canonical migration
+preserves approval/human holds and their current evidence across aliases and
+generic-model resolution, independently of protected release identity and
+pending-map insertion order. A stale null retry without structured held state
+does not permanently suppress otherwise retryable qualification.
+The trusted controller also supplies current-ledger holds to the release
+pipeline. Both fresh processing and deferred checkpoint resumption check that
+map before reviews, checks, probes or promotion, so an older qualified
+checkpoint cannot bypass a newer approval or human-verification hold. The map
+is refreshed after qualification updates the ledger.
+
+The qualification worker can inspect free-account metadata and perform bounded
+synthetic verification through Squire when documented signup is eligible. An
+unpublished allowance is not itself a permanent rejection, but no inference or
+large-context probe can precede verified free access and zero-spend guards.
 
 Public source evidence can include known documentation selectors, such as
 `?section=models`, `?tab=pricing` or `?view=limits`. Homepages and proposal URLs

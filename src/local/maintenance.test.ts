@@ -2,6 +2,9 @@ import { chmod, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { setImmediate, setTimeout as realDelay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DailyMaintenance, MAINTENANCE_CHECK_TIMEOUT, MAINTENANCE_GAP, MAINTENANCE_INTERVAL, MAINTENANCE_JITTER } from './maintenance.js';
@@ -70,6 +73,79 @@ it('deduplicates start calls and preserves the quiet gap and checked providers a
   expect(nextCheck).toHaveBeenCalledWith('perch', expect.any(AbortSignal));
   expect(next.snapshot().kilo?.nextCheckAt).toBe(epoch + MAINTENANCE_INTERVAL);
   await completed(next, 'perch');
+});
+
+it('shares one check and completion gap across sibling daemons without dropping their provider history', async () => {
+  const path = await directory(); let finish!: (result: MaintenanceResult) => void;
+  const firstCheck = vi.fn(async () => new Promise<MaintenanceResult>(resolve => { finish = resolve; }));
+  const first = queue({ directory: path, providers: () => ['kilo'], check: firstCheck, random: () => 0 });
+  await first.start(); await vi.advanceTimersByTimeAsync(0); await until(() => Boolean(finish));
+  const secondCheck = vi.fn(async () => passed());
+  const second = queue({ directory: path, providers: () => ['kilo', 'perch'], check: secondCheck, random: () => 0 });
+  await second.start();
+  try {
+    // A slow native cleanup must retain ownership beyond a nominal crash lease.
+    await vi.advanceTimersByTimeAsync(10 * 60000);
+    expect(secondCheck).not.toHaveBeenCalled();
+  } finally { finish(passed()); }
+  await until(() => first.snapshot().kilo?.outcome === 'passed' && vi.getTimerCount() === 2);
+  await vi.advanceTimersByTimeAsync(59999); expect(secondCheck).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1); await until(() => second.snapshot().perch?.outcome === 'passed' && vi.getTimerCount() === 2);
+  expect(secondCheck).toHaveBeenCalledExactlyOnceWith('perch', expect.any(AbortSignal));
+  expect(second.snapshot().kilo?.outcome).toBe('passed');
+  const saved = JSON.parse(await readFile(join(path, 'maintenance.json'), 'utf8'));
+  expect(saved.entries.kilo.outcome).toBe('passed'); expect(saved.entries.perch.outcome).toBe('passed');
+});
+
+it('retains sibling schedules when a daemon starts with a different source subset', async () => {
+  const path = await directory();
+  const first = queue({ directory: path, providers: () => ['kilo'], check: async () => passed(), random: () => 0 });
+  await first.start(); await vi.advanceTimersByTimeAsync(0); await completed(first, 'kilo'); await first.close();
+  const second = queue({ directory: path, providers: () => ['perch'], check: async () => passed(), random: () => 0 });
+  await second.start();
+  expect(JSON.parse(await readFile(join(path, 'maintenance.json'), 'utf8')).entries.kilo.outcome).toBe('passed');
+  expect(second.snapshot().kilo).toBeUndefined();
+});
+
+it('releases ownership after a failed state write so a repaired sibling can resume safely', async () => {
+  const path = await directory(), notify = vi.fn();
+  const first = queue({ directory: path, providers: () => ['kilo'], check: async () => {
+    await chmod(path, 0o755); return passed();
+  }, random: () => 0, notify });
+  await first.start(); await vi.advanceTimersByTimeAsync(0); await until(() => notify.mock.calls.length === 1);
+  await chmod(path, 0o700);
+  const check = vi.fn(async () => passed());
+  const second = queue({ directory: path, providers: () => ['perch'], check, random: () => 0 }); await second.start();
+  await vi.advanceTimersByTimeAsync(MAINTENANCE_CHECK_TIMEOUT + MAINTENANCE_GAP + MAINTENANCE_JITTER);
+  await completed(second, 'perch');
+  expect(check).toHaveBeenCalledExactlyOnceWith('perch', expect.any(AbortSignal));
+});
+
+it('releases cross-process ownership after a crashed daemon without replaying during its live callback', async () => {
+  const path = await directory();
+  const script = `import { DailyMaintenance } from ${JSON.stringify(new URL('./maintenance.ts', import.meta.url).href)};
+    process.stdin.resume();
+    const queue = new DailyMaintenance({directory:process.env.MAINTENANCE_TEST_DIRECTORY,now:()=>${epoch},random:()=>0,
+      providers:()=>['kilo'],check:async()=>{process.stdout.write('checking\\n');await new Promise(()=>{});}});
+    await queue.start();`;
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    cwd: fileURLToPath(new URL('../../', import.meta.url)), env: { ...process.env, MAINTENANCE_TEST_DIRECTORY: path }, stdio: ['pipe', 'pipe', 'pipe']
+  });
+  let output = ''; child.stdout.on('data', chunk => { output += String(chunk); });
+  const exited = once(child, 'exit');
+  try {
+    await until(() => output.includes('checking'));
+    const check = vi.fn(async () => passed());
+    const item = queue({ directory: path, providers: () => ['kilo'], check, random: () => 0 });
+    await item.start(); await vi.advanceTimersByTimeAsync(10 * 60000);
+    expect(check).not.toHaveBeenCalled();
+    child.kill('SIGKILL'); await exited;
+    await vi.advanceTimersByTimeAsync(60000); await completed(item, 'kilo');
+    expect(check).toHaveBeenCalledOnce();
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await exited;
+  }
 });
 
 it('defers busy work without marking it checked or preventing another due provider from running', async () => {
@@ -225,4 +301,15 @@ it.each(['directory', 'file', 'symlink'] as const)('refuses unsafe %s state befo
   await expect(item.start()).rejects.toThrow('private local state');
   expect(check).not.toHaveBeenCalled();
   if (kind === 'symlink') expect(await readFile(join(path, 'protected.json'), 'utf8')).toBe('{"preserved":true}');
+});
+
+it.each(['permissions', 'symlink'] as const)('refuses unsafe coordination %s before running a provider', async kind => {
+  const path = await directory(), lock = join(path, 'maintenance-lock.db');
+  if (kind === 'permissions') await writeFile(lock, '', { mode: 0o644 });
+  else {
+    const target = join(path, 'protected.db'); await writeFile(target, 'preserved', { mode: 0o600 }); await symlink(target, lock);
+  }
+  const check = vi.fn(async () => passed()), item = queue({ directory: path, providers: () => ['kilo'], check });
+  await expect(item.start()).rejects.toThrow('private local state'); expect(check).not.toHaveBeenCalled();
+  if (kind === 'symlink') expect(await readFile(join(path, 'protected.db'), 'utf8')).toBe('preserved');
 });

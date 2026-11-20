@@ -95,6 +95,10 @@
               "approval_needed"
             ]
           },
+          "qualification_blocker": {
+            "type": ["string", "null"],
+            "enum": [null, "human_verification_required", "oauth_confirmation_required", "operator_approval_required"]
+          },
           "probe": {
             "type": "object",
             "additionalProperties": false,

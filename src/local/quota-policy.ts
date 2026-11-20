@@ -16,6 +16,7 @@ interface QuotaPolicy {
 // scopes, not a local counter or a promise about live upstream capacity.
 const kiloFreeLimit = { amount: 200, unit: 'requests', period: 'hour', scope: 'ip' } as const;
 const policies: Readonly<Record<string, QuotaPolicy>> = {
+  freepi: { refill: 'utc-daily', detail: 'The account-specific daily free allowance renews at the authenticated refill_at time. Amounts vary by account and may be promotional. Every paid, earned and bonus wallet must be verified empty before and after each request. One account request is admitted at a time; no automatic purchase is made. Public reviewed requests and explicit trace-sale consent are required.', documentation: 'https://freepi.ai/docs/models-and-limits' },
   opencode: { refill: 'unpublished', detail: 'Free models are promotional and change independently. The rotation tracks cooldowns per model. OpenCode lists GLM-5.3-Flash Free as retired on November 18, 2026.',
     documentation: 'https://opencode.ai/docs/console/models/' },
   kilo: { refill: 'provider-reported', limits: [kiloFreeLimit],
@@ -64,6 +65,9 @@ const policies: Readonly<Record<string, QuotaPolicy>> = {
     { amount: 150000, unit: 'tokens', period: 'day', scope: 'account' }],
     detail: 'Separate daily allowances are 600,000 uncached input tokens and 150,000 output tokens. They reset at 00:00 UTC. The free key also has a 100,000 uncached input token per minute refill rate and two concurrent requests.',
     documentation: 'https://inference.goedelmachines.com/docs' },
+  millionseek: { refill: 'utc-daily', limits: [{ amount: 100000000, unit: 'tokens', period: 'day', scope: 'account' }],
+    detail: '100M combined input/output tokens renew at 00:00 UTC, with five concurrent requests. Temporary bonus tokens are not the recurring allowance. Named daily_quota_exceeded errors report the midnight reset; session_limit_reached and capacity errors retain their own retry signals. The exact free alias has the owner-approved 198K usable input exception. No paid model or wallet fallback.',
+    documentation: 'https://100milionseek.top/docs' },
   numes: { refill: 'provider-reported', detail: 'Free routes have separate limits. A Numes traffic cap includes Retry-After. An upstream 429 without it signals congestion without a published reset.',
     documentation: 'https://numes.ai/docs/routing/fallbacks' },
   'antseed-vikey': { refill: 'provider-reported', detail: 'The pinned seller controls the sliding free window and its buyer/IP limits. The Antseed buyer can return the remaining wait when a window is exhausted.',

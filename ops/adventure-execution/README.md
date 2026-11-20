@@ -6,6 +6,10 @@ game files, run game tests, send model requests, change accounts, restart a
 service, or activate staged files. Regular `usegrunt` users get the tools from
 the package; this helper is only for the separately installed owner supervisor.
 
+For the coordinated daily provider queue and its separate staging helper, see
+[shared maintenance](MAINTENANCE.md). Both installed runtime packages must be
+upgraded before activating that owner-helper change.
+
 The baseline contains the reviewed infrastructure hashes from 2026-11-20. If a
 file has changed, staging stops before writing anything. Review the new file and
 its intended changes before updating that baseline; do not bypass the mismatch.
