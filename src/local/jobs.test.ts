@@ -24,6 +24,8 @@ beforeAll(async () => {
   const p = await directory(); helper = join(p, 'jobs.js'); await writeFile(join(p, 'package.json'), '{"type":"module"}');
   const source = await readFile(new URL('./jobs.ts', import.meta.url), 'utf8');
   await writeFile(helper, ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
+  const verification = await readFile(new URL('./verification.ts', import.meta.url), 'utf8');
+  await writeFile(join(p, 'verification.js'), ts.transpileModule(verification, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
 });
 afterEach(async () => { for (const s of stores.splice(0)) await s.close(); vi.useRealTimers(); });
 afterAll(async () => { await Promise.all(dirs.map(p => rm(p, { recursive: true, force: true }))); });

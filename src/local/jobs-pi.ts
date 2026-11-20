@@ -18,13 +18,19 @@ export interface JobPiExtension {
   on(event: 'session_shutdown', handler: () => Promise<void>): void;
   on(event: 'tool_call', handler: (event: { toolName: string; input?: unknown }) => { block: true; reason: string } | undefined): void;
 }
-export interface JobPiOptions { stateDirectory?: string; helperEntry?: string; scheduler?: (sessionId: string) => Promise<JobScheduler> }
+export interface VerificationBrokerClient {
+  start(input: { planId: string; checkId: string }, context: JobPiContext, signal?: AbortSignal): Promise<unknown>;
+  status(input: { id: string }, context: JobPiContext, signal?: AbortSignal): Promise<unknown>;
+  result(input: { id: string }, context: JobPiContext, signal?: AbortSignal): Promise<unknown>;
+}
+export interface JobPiOptions { verificationBroker?: VerificationBrokerClient; stateDirectory?: string; helperEntry?: string; scheduler?: (sessionId: string) => Promise<JobScheduler> }
 const noArgs = { type: 'object', additionalProperties: false, properties: {} };
 const idArgs = { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', description: 'The id returned by grunt_job_start.' } } };
 const waitArgs = { ...idArgs, properties: { ...idArgs.properties, timeoutSeconds: { type: 'integer', minimum: 1, maximum: 120 } } };
 const startArgs = { type: 'object', additionalProperties: false, required: ['command'], properties: {
   command: { type: 'string', minLength: 1, maxLength: 8192, description: 'A command in the current coding interface working directory.' },
-  category: { type: 'string', enum: JOB_CATEGORIES }, timeoutSeconds: { type: 'integer', minimum: 1, maximum: 1800 }
+  category: { type: 'string', enum: JOB_CATEGORIES }, timeoutSeconds: { type: 'integer', minimum: 1, maximum: 1800 },
+  verification: { type: 'object', additionalProperties: false, required: ['checkId', 'mode'], properties: { checkId: { type: 'string', minLength: 1, maxLength: 80 }, mode: { const: 'scoped' }, artifactPaths: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 1024 } } } }
 } };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 
@@ -41,6 +47,13 @@ export function blockingSleepSeconds(command: unknown): number | undefined {
     return;
   }
   return seconds > 10 && Number.isFinite(seconds) ? seconds : undefined;
+}
+
+
+/** Known long verification entry points only; never reinterpret quoted code or shell constructs. */
+export function blockingVerificationCommand(command: unknown) {
+  if (typeof command !== 'string' || command.length > 8192 || /["'`$\\{}()<>|]/.test(command)) return false;
+  return /^(?:cd [a-zA-Z0-9_./-]+\s*&&\s*)?(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test:browser|test:mobile|test:e2e)|(?:npx|bunx|pnpm exec)\s+playwright\s+test)(?:\s+[a-zA-Z0-9_:./=-]+)*\s*;?$/.test(command.trim());
 }
 
 /** Opt-in local tools. Their custom tool_call approval rules apply; they do not inherit bash-name-only approvals. */
@@ -67,7 +80,7 @@ export function registerJobTools(pi: JobPiExtension, options: JobPiOptions = {})
         signal?.throwIfAborted();
         if (!enabled()) throw new Error('Background jobs are disabled for this launch.');
         const details = await handle(input, context, signal);
-        if (signal?.aborted) { if (name === 'grunt_job_start') (await scheduler(context)).cancel({ id: record(details).id }); signal.throwIfAborted(); }
+        if (signal?.aborted) { if (name === 'grunt_job_start' && !record(details).reused) (await scheduler(context)).cancel({ id: record(details).id }); signal.throwIfAborted(); }
         return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
       }
     });
@@ -76,7 +89,7 @@ export function registerJobTools(pi: JobPiExtension, options: JobPiOptions = {})
     // Pi populates CLI flags after loading extension factories. Dynamic tool registration refreshes its tool set.
     if (!enabled() || registered) return;
     sessionId = context.sessionManager?.getSessionId() ?? sessionId;
-    register('grunt_job_start', 'Start background job', 'Start a bounded command job using the current interface working directory and permissions. This custom tool requires its own approval policy. Returns immediately so you can continue independent work. Never use this to change accounts or bypass permissions.', 'Start long tests, builds and renders in the background; continue other work', startArgs,
+    register('grunt_job_start', 'Start background job', 'Start a bounded command job using the current interface working directory and permissions. This custom tool requires its own approval policy. Returns immediately so you can continue independent work. Optional scoped verification deduplicates identical project inputs; its unsigned receipt cannot authorize release. Never use this to change accounts or bypass permissions.', 'Start long tests, builds and renders in the background; use scoped verification for identical-input deduplication; continue other work', startArgs,
       async (input, ctx) => (await scheduler(ctx)).start(input, ctx!.cwd));
     register('grunt_job_status', 'Background job status', 'Read safe queued, running and recent job metadata without waiting or retrieving command output.', 'Check background work without sleeping', noArgs,
       async (input, ctx) => { if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(record(input)).length) throw new Error('Job status accepts no arguments.'); return (await scheduler(ctx)).snapshot(); });
@@ -90,12 +103,30 @@ export function registerJobTools(pi: JobPiExtension, options: JobPiOptions = {})
       });
     register('grunt_job_cancel', 'Cancel background job', 'Cancel an owned session job and its process group without touching other sessions or processes.', 'Cancel background work that is no longer needed', idArgs,
       async (input, ctx) => (await scheduler(ctx)).cancel(input));
+    if (options.verificationBroker) {
+      const broker = options.verificationBroker;
+      const releaseArgs = { type: 'object', additionalProperties: false, required: ['planId', 'checkId'], properties: { planId: { type: 'string', minLength: 1, maxLength: 80 }, checkId: { type: 'string', minLength: 1, maxLength: 80 } } };
+      register('grunt_verify_release', 'Start required release verification', 'Queue one exact check from the trusted host release plan. The host authority, not model text or a worker-owned receipt, executes and authenticates required release proof. Continue independent work, then collect the result.', 'Run required release checks through the trusted host authority', releaseArgs,
+        async (input, ctx, signal) => {
+          const v = record(input);
+          if (Object.keys(v).length !== 2 || typeof v.planId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(v.planId) || typeof v.checkId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(v.checkId) || !ctx || !isAbsolute(ctx.cwd)) throw new Error('Choose a trusted plan/check id in the current project.');
+          return broker.start({ planId: v.planId, checkId: v.checkId }, ctx, signal);
+        });
+      for (const operation of ['status', 'result'] as const) register(`grunt_verify_release_${operation}`, `Release verification ${operation}`, 'Read the host-owned verification job. Worker/model claims cannot authorize publication.', `Collect trusted release verification ${operation}`, idArgs,
+        async (input, ctx, signal) => {
+          const v = record(input); if (Object.keys(v).length !== 1 || typeof v.id !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v.id) || !ctx || !isAbsolute(ctx.cwd)) throw new Error('Use an existing host verification id in the current project.');
+          return broker[operation]({ id: v.id }, ctx, signal);
+        });
+    }
     registered = true;
   });
   pi.on('tool_call', event => {
     if (!enabled() || !registered || event.toolName !== 'bash') return;
     const seconds = blockingSleepSeconds(record(event.input).command);
-    if (seconds === undefined) return;
+    if (seconds === undefined) {
+      if (blockingVerificationCommand(record(event.input).command)) return { block: true, reason: 'Run long browser/mobile/e2e verification with grunt_job_start (category:test, verification:{mode:scoped,checkId:...}) and continue independent work. Required release gates must use the trusted grunt_verify_release plan when configured.' };
+      return;
+    }
     return { block: true, reason: `This foreground command contains ${Math.round(seconds)} seconds of explicit waiting. Use grunt_job_start for background work and continue an independent task. If all useful work is blocked on quota, checkpoint and let the supervisor wait for the known reset instead.` };
   });
   pi.on('session_shutdown', async () => { const pending = [...schedulers.values()]; schedulers.clear(); await Promise.allSettled(pending.map(async store => (await store).close())); });
