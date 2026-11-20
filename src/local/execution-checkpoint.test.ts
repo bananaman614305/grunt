@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -106,4 +107,31 @@ it('only reads explicitly saved file evidence and known selected fact ids', asyn
   await expect(f.store.resume({ taskId: 'task-a', factIds: ['unknown'] })).rejects.toThrow();
   expect(checkpointStateDirectory({}, '/tmp/home')).toBe('/tmp/home/.cache/grunt/checkpoints');
   expect(() => checkpointStateDirectory({ GRUNT_CHECKPOINT_STATE_DIR: 'relative' }, '/tmp/home')).toThrow();
+});
+
+const credentialFiles = ['.npmrc', '.netrc', '.envrc', '.pypirc', 'auth.json', 'models.json', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+  'service-account.json', 'service-account-prod.json', 'nested/.NPMRC', 'nested/.NETRC', 'nested/.ENVRC', 'nested/Auth.JSON',
+  'nested/ID_RSA', 'nested/Service-Account-PROD.JSON', 'nested/.gcloud/application_default_credentials.json'];
+it.each(credentialFiles)('rejects credential checkpoint writes for %s', async file => {
+  const f = await fixture(); await mkdir(join(f.projectRoot, file, '..'), { recursive: true });
+  await writeFile(join(f.projectRoot, file), 'SYNTHETIC_PRIVATE_CREDENTIAL');
+  await expect(f.store.write({ ...input(), files: [file] })).rejects.toThrow('unsafe');
+});
+it.each(credentialFiles)('rejects credential excerpts from a legacy checkpoint on resume for %s', async file => {
+  const f = await fixture(); await f.store.write(input()); await mkdir(join(f.projectRoot, file, '..'), { recursive: true });
+  const credential = 'SYNTHETIC_PRIVATE_CREDENTIAL'; await writeFile(join(f.projectRoot, file), credential);
+  const identity = (await readdir(f.stateDirectory))[0]!, record = join(f.stateDirectory, identity, 'session-a/task-a/0000000000000001.json');
+  const legacy = JSON.parse(await readFile(record, 'utf8')); legacy.files = [file]; legacy.completed = [];
+  legacy.evidence = [{ path: file, sha256: createHash('sha256').update(credential).digest('hex') }];
+  await writeFile(record, JSON.stringify(legacy));
+  await expect(f.store.resume({ taskId: 'task-a', files: [{ path: file }] })).rejects.toThrow('unsafe');
+});
+it('rejects a synthetic credential reached through a harmless-looking file symlink on write and resume', async () => {
+  const f = await fixture(); await writeFile(join(f.projectRoot, 'auth.json'), 'SYNTHETIC_PRIVATE_CREDENTIAL');
+  await symlink(join(f.projectRoot, 'auth.json'), join(f.projectRoot, 'alias.txt'));
+  await expect(f.store.write({ ...input(), files: ['alias.txt'] })).rejects.toThrow();
+  await f.store.write(input()); await rm(join(f.projectRoot, 'source.txt')); await symlink(join(f.projectRoot, 'auth.json'), join(f.projectRoot, 'source.txt'));
+  const result = await f.store.resume({ taskId: 'task-a' }); expect(result).toMatchObject({ evidence: [{ current: false }] });
+  expect(JSON.stringify(result)).not.toContain('SYNTHETIC_PRIVATE_CREDENTIAL');
+  await expect(f.store.resume({ taskId: 'task-a', files: [{ path: 'source.txt' }] })).rejects.toThrow('stale');
 });
