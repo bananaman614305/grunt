@@ -1117,7 +1117,7 @@ The bundled registry has three stable adapters in relative proportions 6:8:5:
 OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
-Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes and
+Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes,
 Gödel Machines, Fikra and Openference forward function tool definitions and return
 tool calls for the harness to execute.
 Mistral Vibe uses a validated
