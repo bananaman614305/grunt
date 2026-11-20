@@ -3,7 +3,8 @@ import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execFile } from 'node:child_process';
+import { once } from 'node:events';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { RoutingHistory, MAX_ADAPTIVE_BACKOFF_SECONDS, ROUTING_HISTORY_TTL_MS, withRoutingWorkload } from './routing-history.js';
@@ -239,4 +240,21 @@ it('does not restore a persisted failure result after a newer reply finishes dur
   release(); expect((await pending).until).toBeLessThanOrEqual(now);
   expect(status.routingBackoff('kilo')).toBeUndefined();
   expect((await history.snapshot(now)).backoff).toEqual([]);
+});
+
+
+it('replaces a connection poisoned by a failed BEGIN without replaying observations', async () => {
+  const path = await directory(), history = await open(path);
+  const script = `import {createClient} from '@libsql/client'; const client=createClient({url:process.argv[1]}); const tx=await client.transaction('write'); console.log('locked'); for await (const chunk of process.stdin) {} await tx.rollback(); tx.close(); client.close();`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, pathToFileURL(join(path, 'routing-history.db')).href], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = once(child, 'exit');
+  try {
+    await once(child.stdout, 'data');
+    // Opening an existing schema must not demand a write lock or rerun DDL.
+    expect((await (await open(path)).snapshot(11000)).performance).toEqual([]);
+    const pending = history.record('kilo', 'interactive-text', true, 1000, 10000);
+    await new Promise(resolve => setTimeout(resolve, 20)); child.stdin.end();
+    await pending;
+    expect((await history.snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
+  } finally { child.stdin.end(); await exited; }
 });

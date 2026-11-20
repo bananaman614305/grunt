@@ -113,7 +113,7 @@ export class RoutingHistory {
       await client.execute('PRAGMA journal_mode=DELETE');
       const version = Number((await client.execute('PRAGMA user_version')).rows[0]?.user_version);
       if (version !== 0 && version !== 1) throw unsafe();
-      await client.batch([
+      if (version === 0) await client.batch([
         'CREATE TABLE IF NOT EXISTS routing_performance (source TEXT NOT NULL, profile TEXT NOT NULL, value TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(source,profile))',
         'CREATE TABLE IF NOT EXISTS routing_backoff (source TEXT PRIMARY KEY, value TEXT NOT NULL, at REAL NOT NULL)',
         'PRAGMA user_version=1'
@@ -133,6 +133,13 @@ export class RoutingHistory {
       try { tx = await this.client.transaction('write'); break; }
       catch (error) {
         if (attempt >= 7 || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+        // libsql can retain the failed BEGIN statement on this connection, so a
+        // later COMMIT reports statements in progress even after the lock ends.
+        // No work() has run: discard only the poisoned connection before retry.
+        this.client.close();
+        const { createClient } = await import('@libsql/client');
+        this.client = createClient({ url: pathToFileURL(this.path).href, concurrency: 1 });
+        await this.client.execute('PRAGMA busy_timeout=0');
         // Yield instead of blocking the event loop while a sibling commits.
         await new Promise(resolve => setTimeout(resolve, Math.min(25, 2 ** (attempt + 1))));
       }
