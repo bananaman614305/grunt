@@ -279,7 +279,11 @@ export class Clixad implements Source {
       }
       wallet(await abortable(this.runner(paths.entry, 'wallet', { cwd: paths.work, env: clixadEnvironment(), signal }), signal), true);
       const match = native.stdout.match(/^assistant ([\s\S]*?)\n\s*\[0 credits · balance 0\]\s*$/);
-      if (!match || Buffer.byteLength(match[1]!) > 65536) throw new SourceError('upstream', 'Clixad returned invalid native answer framing', undefined, undefined, { failureReason: 'completion_protocol' });
+      if (!match || Buffer.byteLength(match[1]!) > 65536) throw new SourceError('upstream', 'Clixad returned invalid native answer framing', undefined, undefined, { failureReason: 'response_body' });
+      // Keep native framing, JSON syntax and caller-envelope failures distinct.
+      // No response content or parser exception crosses the diagnostic boundary.
+      try { JSON.parse(match[1]!); }
+      catch { throw new SourceError('upstream', 'Clixad returned invalid caller JSON', undefined, undefined, { failureReason: 'response_json' }); }
       try { return { ...bridge.parse(match[1]!), inputTokens: observed.inputTokens as number, outputTokens: observed.outputTokens as number }; }
       catch { throw new SourceError('upstream', 'Clixad JSON function protocol failed validation', undefined, undefined, { failureReason: 'completion_protocol' }); }
     } catch (error) {
