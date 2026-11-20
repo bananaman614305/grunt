@@ -53,9 +53,16 @@ function parseWorkerStatus(input: unknown): WorkerStatus {
   const { id, state, createdAt, startedAt, finishedAt, source, code, activity } = row;
   if (typeof id !== 'string' || !uuid.test(id) || typeof state !== 'string' || !workerStates.has(state) || !timestamp(createdAt)) throw new Error('Invalid Grunt worker status');
   const workerActivity = workerActivities.find(value => value === activity);
+  const candidate = record(row.capabilities);
+  const capabilities = typeof candidate.filesystem === 'boolean' && typeof candidate.commands === 'boolean'
+    ? { filesystem: candidate.filesystem, commands: candidate.commands, ...(candidate.sandbox === 'bubblewrap' || candidate.sandbox === 'filesystem' ? { sandbox: candidate.sandbox as 'bubblewrap' | 'filesystem' } : {}) } : undefined;
+  const dependency = record(row.dependencyStatus);
+  const dependencyStatus = typeof dependency.available === 'boolean' ? { available: dependency.available,
+    ...(typeof dependency.reason === 'string' && dependency.reason.length <= 256 && /^[a-zA-Z0-9 .,;:-]+$/.test(dependency.reason) ? { reason: dependency.reason } : {}) } : undefined;
   return { id, state: state as WorkerStatus['state'], createdAt, ...(timestamp(startedAt) ? { startedAt } : {}),
     ...(timestamp(finishedAt) ? { finishedAt } : {}), ...(typeof source === 'string' && providerId.test(source) ? { source } : {}),
     ...(isFailureCode(code) ? { code } : {}), ...(workerActivity ? { activity: workerActivity } : {}),
+    ...(capabilities ? { capabilities } : {}), ...(dependencyStatus ? { dependencyStatus } : {}),
     ...(row.mode === 'agent' || row.mode === 'proposal' ? { mode: row.mode } : {}),
     ...(timestamp(row.turns) ? { turns: row.turns } : {}), ...(timestamp(row.toolCalls) ? { toolCalls: row.toolCalls } : {}),
     ...(timestamp(row.updatedAt) ? { updatedAt: row.updatedAt } : {}), ...(timestamp(row.nextAttemptAt) ? { nextAttemptAt: row.nextAttemptAt } : {}),

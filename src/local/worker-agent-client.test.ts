@@ -86,3 +86,51 @@ it('bounds tool result context and omits all retained file contents', () => {
   expect(result.artifact).toMatchObject({ view: 'summary', fileCount: 1000, omittedFiles: expect.any(Number), complete: true, truncated: false });
   expect(artifact.files[0]?.content).toBe(secretContent);
 });
+
+it.each([['quota', 429], ['timeout', 504], ['cancelled', 409], ['unavailable', 503], ['busy', 429]] as const)('preserves structured %s responses, identifiers, retry times and partial artifacts', async (code, status) => {
+  const id = randomUUID(), artifact = { id: randomUUID(), complete: true, truncated: false, files: [{ path: 'src/a', beforeSha256: null, afterSha256: 'a'.repeat(64), content: 'retained' }] };
+  const { client, requests } = fixture(async () => Response.json({ ok: false, code, id, retryAfter: 123, reason: 'turn_limit', artifact }, { status }));
+  const batch = await client.start({ tasks: [{ task: 'Edit', ownedPaths: ['src'] }] });
+  const result = await client.wait({ batchId: batch.batchId }, new AbortController().signal);
+  expect(result.results?.[0]).toMatchObject({ ok: false, code, id, retryAfter: 123, reason: 'turn_limit', artifact: { id: artifact.id, fileCount: 1 } });
+  expect(requests.filter(item => item.path === '/run')).toHaveLength(1);
+  expect(requests.filter(item => item.path === '/projects/register')).toHaveLength(1);
+  await client.close();
+});
+
+it('reproves a forgotten daemon lease once before submitting an unaccepted job', async () => {
+  let calls = 0;
+  const { client, requests } = fixture(async () => ++calls === 1 ? Response.json({ ok: false, code: 'invalid_scope' }, { status: 403 }) : Response.json({ ok: true, id: randomUUID(), source: 'kilo', text: 'Complete' }));
+  const batch = await client.start({ tasks: [{ task: 'Edit', ownedPaths: ['src'] }] });
+  expect((await client.wait({ batchId: batch.batchId }, new AbortController().signal)).results?.[0]).toMatchObject({ ok: true });
+  expect(calls).toBe(2); expect(requests.filter(item => item.path === '/projects/register')).toHaveLength(2);
+  await client.close();
+});
+
+it('recovers an artifact after daemon restart without submitting any work', async () => {
+  const base = fixture(); let rejectOnce = false;
+  const fetcher = vi.fn(async (url: string | URL | Request, request?: RequestInit) => {
+    if (String(url).includes(`/artifacts/${base.jobId}`) && !rejectOnce) { rejectOnce = true; return Response.json({ ok: false, code: 'invalid_scope' }, { status: 403 }); }
+    return base.fetcher(url, request);
+  });
+  const client = new AgentWorkerBatches(8793, directory, fetcher as typeof fetch);
+  await client.retained();
+  expect(await client.artifact(base.jobId)).toMatchObject({ artifact: base.artifact, ownedPaths: ['src'] });
+  expect(base.requests.filter(item => item.path === '/projects/register')).toHaveLength(2);
+  expect(base.requests.filter(item => item.path === '/run')).toHaveLength(0);
+  await client.close();
+});
+
+it.each(['network', 'forbidden', 'repeated-invalid-scope'] as const)('does not replay ambiguous or repeatedly rejected runs: %s', async mode => {
+  let calls = 0;
+  const { client, requests } = fixture(async () => {
+    calls++;
+    if (mode === 'network') throw new Error('Connection lost after acceptance may have occurred');
+    return Response.json({ ok: false, code: mode === 'forbidden' ? 'permission_denied' : 'invalid_scope' }, { status: 403 });
+  });
+  const batch = await client.start({ tasks: [{ task: 'Edit', ownedPaths: ['src'] }] });
+  expect((await client.wait({ batchId: batch.batchId }, new AbortController().signal)).results?.[0]).toMatchObject({ ok: false, code: 'unavailable' });
+  expect(calls).toBe(mode === 'repeated-invalid-scope' ? 2 : 1);
+  expect(requests.filter(item => item.path === '/projects/register')).toHaveLength(mode === 'repeated-invalid-scope' ? 2 : 1);
+  await client.close();
+});

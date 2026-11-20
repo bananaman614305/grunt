@@ -75,6 +75,7 @@ export function workerResultView(result: WorkerResult) {
     inspect: `usegrunt workers artifact ${result.id ?? '<job-id>'} --project <current-project>`,
     integration: 'Review the full retained artifact and use the approved workers apply command; discard only after integration or deliberate abandonment.' } };
 }
+class InvalidWorkerScope extends Error {}
 interface AgentBatch { controller: AbortController; results?: WorkerResult[]; done?: Promise<void>; }
 /** A trusted frontend instance binds exactly one harness-supplied project. Tokens never enter tool arguments or output. */
 export class AgentWorkerBatches {
@@ -88,15 +89,40 @@ export class AgentWorkerBatches {
   private async json(path: string, options: { method?: string; body?: unknown; token?: string; signal?: AbortSignal } = {}): Promise<unknown> {
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
     if (body && Buffer.byteLength(body) > 8 * 1024 * 1024) throw new Error('Worker request is too large.');
-    const response = await this.fetcher(`http://127.0.0.1:${this.port}/v1/workers${path}`, { redirect: 'error', signal: options.signal ?? AbortSignal.timeout(10000), method: options.method ?? 'GET', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}) }, ...(body ? { body } : {}) });
+    const signal = options.signal ?? AbortSignal.timeout(10000);
+    signal.throwIfAborted();
+    const response = await this.fetcher(`http://127.0.0.1:${this.port}/v1/workers${path}`, { redirect: 'error', signal, method: options.method ?? 'GET', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}) }, ...(body ? { body } : {}) });
     const reader = response.body?.getReader();
     if (!reader) throw new Error('Empty Grunt worker response');
     const chunks: Uint8Array[] = []; let bytes = 0;
     try {
       for (;;) { const { done, value } = await reader.read(); if (done) break; bytes += value.byteLength; if (bytes > maxResponse) throw new Error('Worker response is too large.'); chunks.push(value); }
-      if (!response.ok) throw new Error(`Grunt worker request failed (${response.status}).`);
-      return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+      const payload: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const row = record(payload);
+      if (response.status === 403 && row.ok === false && row.code === 'invalid_scope' && Object.keys(row).every(key => key === 'ok' || key === 'code')) throw new InvalidWorkerScope('The daemon no longer recognizes this project authorization.');
+      if (!response.ok) {
+        if (path === '/run') {
+          const result = resultOf(payload);
+          const status = { invalid_task: 400, busy: 429, cancelled: 409, timeout: 504, quota: 429, unavailable: 503 };
+          if (!result.ok && status[result.code] === response.status) return result;
+        }
+        throw new Error(`Grunt worker request failed (${response.status}).`);
+      }
+      return payload;
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  }
+  private async scopedJson(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}) {
+    const original = await this.scope();
+    try { return await this.json(path, { ...options, token: original.token }); }
+    catch (error) {
+      // Only this explicit pre-admission rejection proves that no job was accepted.
+      // Network errors, timeouts and structured job failures must never replay work.
+      if (!(error instanceof InvalidWorkerScope) || this.closed || options.signal?.aborted) throw error;
+      const cached = this.lease, lease = await cached?.catch(() => undefined);
+      if (this.lease === cached && lease?.token === original.token) this.lease = undefined;
+      const renewed = await this.scope();
+      return this.json(path, { ...options, token: renewed.token });
+    }
   }
   private scope(): Promise<{ token: string; root: string; expiresAt: number }> {
     if (this.closed) throw new Error('This worker session is closed.');
@@ -150,8 +176,9 @@ export class AgentWorkerBatches {
     const batchId = randomUUID(), batch: AgentBatch = { controller: new AbortController() };
     this.batches.set(batchId, batch);
     batch.done = Promise.all(tasks.map(async task => {
-      try { return resultOf(await this.json('/run', { method: 'POST', body: { ...task, ...(initialSnapshot ? { initialSnapshot } : {}) }, token: scope.token, signal: AbortSignal.any([batch.controller.signal, AbortSignal.timeout(330000)]) })); }
-      catch { return { ok: false as const, code: batch.controller.signal.aborted ? 'cancelled' as const : 'unavailable' as const }; }
+      const deadline = AbortSignal.timeout(330000);
+      try { return resultOf(await this.scopedJson('/run', { method: 'POST', body: { ...task, ...(initialSnapshot ? { initialSnapshot } : {}) }, signal: AbortSignal.any([batch.controller.signal, deadline]) })); }
+      catch { return { ok: false as const, code: batch.controller.signal.aborted ? 'cancelled' as const : deadline.aborted ? 'timeout' as const : 'unavailable' as const }; }
     })).then(results => { batch.results = results; });
     return { batchId, state: 'running' as const };
     } finally { this.starting--; }
@@ -178,18 +205,17 @@ export class AgentWorkerBatches {
     batch.controller.abort();
     return { batchId, state: 'cancelled' as const, artifactsRetained: true };
   }
-  async retained() { const scope = await this.scope(); return this.json('/retained', { token: scope.token }); }
+  async retained() { return this.scopedJson('/retained'); }
   async artifact(id: string) {
     if (!uuid.test(id)) throw new Error('Provide a worker job UUID.');
-    const scope = await this.scope();
-    const payload = record(await this.json(`/artifacts/${id}`, { token: scope.token }));
+    const payload = record(await this.scopedJson(`/artifacts/${id}`));
     const ownedPaths = payload.ownedPaths;
     if (!Array.isArray(ownedPaths) || !ownedPaths.length || ownedPaths.length > 32 || ownedPaths.some(path => typeof path !== 'string')) throw new Error('Missing original worker ownership; update Grunt before integrating.');
     return { artifact: artifactOf(payload.artifact), ownedPaths: ownedPaths as string[] };
   }
   async discard(id: string) {
     if (!uuid.test(id)) throw new Error('Provide a worker job UUID.');
-    const scope = await this.scope(); return this.json(`/artifacts/${id}/discard`, { method: 'POST', body: {}, token: scope.token });
+    return this.scopedJson(`/artifacts/${id}/discard`, { method: 'POST', body: {} });
   }
   async apply(id: string, signal?: AbortSignal) {
     const scope = await this.scope(), retained = await this.artifact(id);

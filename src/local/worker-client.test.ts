@@ -166,3 +166,13 @@ it('does not let the legacy proposal tool opt into agent mode', async () => {
   await expect(delegateWorkers(8788, { tasks: [{ task: 'Edit', mode: 'agent', ownedPaths: ['src'] }] }, signal(), fetcher)).rejects.toThrow();
   expect(fetcher).not.toHaveBeenCalled();
 });
+
+it('preserves allowlisted worker capabilities and safe dependency status without arbitrary fields', async () => {
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ active: [{ id: workerId, state: 'running', createdAt: 42,
+    capabilities: { filesystem: true, commands: false, sandbox: 'filesystem', path: '/private' },
+    dependencyStatus: { available: false, reason: 'No safe bounded dependency snapshot is available.', password: 'private' } }], queued: [], recent: [] }));
+  const output = new PassThrough(); let stdout = ''; output.on('data', chunk => { stdout += String(chunk); });
+  await workerCommand(['status', '--port', '8793'], { fetcher, output });
+  expect(JSON.parse(stdout).active[0]).toMatchObject({ capabilities: { filesystem: true, commands: false, sandbox: 'filesystem' }, dependencyStatus: { available: false, reason: 'No safe bounded dependency snapshot is available.' } });
+  expect(stdout).not.toContain('private');
+});
