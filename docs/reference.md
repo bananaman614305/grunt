@@ -466,9 +466,10 @@ An existing dependency tree may be available as a sanitized, bounded private
 copy; it is never a live mount of host `node_modules`. Secret and special files
 are omitted, and internal links are kept only when they resolve to copied
 content. Dependency preparation has limits of 20,000 entries, 256 MiB total,
-16 MiB per file and fifteen seconds. Check `dependencyStatus` and command
-capabilities before assuming tests can run. If dependencies or commands are
-unavailable, the main agent can review retained edits and run checks through its
+16 MiB per file and fifteen seconds. Check command capabilities and any
+`dependencyWarning` returned by a failed worker command before assuming tests
+can run. If dependencies or commands are unavailable, the main agent can review
+retained edits and run checks through its
 own approved [background jobs](#background-command-jobs).
 
 ### Background command jobs
