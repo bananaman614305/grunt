@@ -486,7 +486,8 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari, Numes and Gödel Machines in the experimental tier.
+Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Fikra and Openference in the
+experimental tier. Fikra and Openference are temporary offers with expiry guards.
 Free-account eligibility still applies.
 
 The wizard enables free sources by default and connects every supported coding
@@ -866,9 +867,8 @@ FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
 provider keys appear in Pi's config or terminal output. Never share backend state.
 Existing routers with keys are preserved if their local admin state is missing.
 
-Fresh setup offers the bundled OpenCode, Kilo, Zro, Token Harbor, Runcrate,
-Mistral Vibe Free, LiveKit, Pollinations, BeatAPI, Clixad and Perch pool, enabling providers only after their
-required data-sharing approval.
+Fresh setup offers the bundled vetted pool listed above, enabling providers only
+after their required data-sharing approval.
 It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
@@ -1118,7 +1118,8 @@ OpenCode at `0.25263157894736843`, Kilo at `0.3368421052631579`, and Zro at
 `0.21052631578947367`. Stable weights total 0.8. Experimental sources share the
 remaining 0.2 equally. All bundled adapters accept text input.
 Kilo, Zro, Token Harbor, Runcrate, LiveKit, BeatAPI, Nous, Kenari, Numes and
-Gödel Machines forward function tool definitions and return tool calls for the harness to execute.
+Gödel Machines, Fikra and Openference forward function tool definitions and return
+tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
 Pollinations, Clixad and Perch also use validated JSON tool bridges for their fixed routes. Providers
