@@ -122,3 +122,5 @@
   .provider-usage-table th:last-child { width: 31%; }
   .provider-usage-table th.number, .provider-usage-table td.number { white-space: normal; }
 }
+
+.home-performance-table thead th, .home-performance-table thead th.number { white-space: normal; }
