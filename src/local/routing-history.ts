@@ -155,11 +155,11 @@ export class RoutingHistory {
   }
   private async transaction<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
     let tx: Transaction | undefined;
-    const deadline = Date.now() + CONTENTION_RETRY_MS;
+    const deadline = performance.now() + CONTENTION_RETRY_MS;
     for (let attempt = 0; ; attempt++) {
       try { tx = await this.client.transaction('write'); break; }
       catch (error) {
-        if (Date.now() >= deadline || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+        if (performance.now() >= deadline || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
         // libsql can retain the failed BEGIN statement on this connection, so a
         // later COMMIT reports statements in progress even after the lock ends.
         // No work() has run: discard only the poisoned connection before retry.
@@ -171,8 +171,26 @@ export class RoutingHistory {
         await new Promise(resolve => setTimeout(resolve, Math.min(25, 2 ** (attempt + 1))));
       }
     }
-    try { const result = await work(tx); await tx.commit(); return result; }
-    finally { try { await tx.rollback(); } finally { tx.close(); } }
+    try {
+      const result = await work(tx);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          // libsql's commit() settles even on SQLITE_BUSY. Its prepared COMMIT
+          // can also remain attached after failure. exec keeps this transaction
+          // owned and cleans the failed statement so only COMMIT is retried.
+          await tx.executeMultiple('COMMIT');
+          return result;
+        } catch (error) {
+          if (performance.now() >= deadline || !['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(String((error as { code?: unknown }).code))) throw error;
+          // DELETE-journal readers may outlive BEGIN IMMEDIATE and block only
+          // the final exclusive lock. Never replay the completed observations.
+          await new Promise(resolve => setTimeout(resolve, Math.min(25, 2 ** (attempt + 1))));
+        }
+      }
+    } finally {
+      try { if (!tx.closed) await tx.executeMultiple('ROLLBACK'); }
+      finally { tx.close(); }
+    }
   }
   snapshot(now = Date.now()): Promise<RoutingHistorySnapshot> {
     return this.run(async () => {

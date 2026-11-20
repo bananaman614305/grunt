@@ -205,7 +205,11 @@ export function start(env = process.env) {
         ? signupHarness(harness, port) : undefined;
     },
     notify: console.error });
-  sources.setRecovery(() => recovery.trigger());
+  // Account acquisition is distinct from registry refresh, dispatch and daily
+  // access maintenance. Read the explicit operator policy once at startup.
+  const acquireAccounts = gruntEnv('BACKGROUND_ACCOUNT_ACQUISITION', env) !== '0';
+  const triggerRecovery = () => { if (acquireAccounts) recovery.trigger(); };
+  sources.setRecovery(triggerRecovery);
   let published: string | undefined;
   const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
     changed: current => {
@@ -215,7 +219,7 @@ export function start(env = process.env) {
       registry = current;
       sources.adopt(current);
     },
-    synced: () => recovery.trigger(), notify: console.error
+    synced: triggerRecovery, notify: console.error
   });
   const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
   // Registry downloads and access maintenance are independent. Only the route

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-20
+
+- Retry routing-history commits within a bounded wait when a sibling reader holds the database, preserving atomic observations without replaying writes.
+- Show restored quota and backoff deadlines for mixed legacy and registry source pools without changing legacy fallback order.
+- Allow operators to disable background account acquisition while keeping registry refresh, existing sources and access maintenance active.
 - Open routes from the registry in the daemon ([router](docs/router.md)): a background pass after every six-hourly registry sync signs up recommended routes best-first, one at a time, until six are open, with the first open tool-capable route driving the rest. Add adaptive back-off and retirement for repeatedly failing routes. Accept the scout's optional `fit`, `status` and `expires` registry fields, and hot-add newly listed shipped adapters in the automatic pool.
 - Let the fallback signup operator type and pass the values Grunt supplies (plan, key or project name, and the Squire-connected email into email fields). After Squire reports a signup complete, answer the operator with a final stop instead of replaying the stale page.
 - Fail fast on OpenCode's free usage limit, in both the serve and CLI paths, and cool down the whole OpenCode model pool until its reset. Upgrade the anonymous OpenCode setup operator to the first account route that passes the tool-call probe.

@@ -12,6 +12,7 @@ import { SourceStatus } from './source-status.js';
 import { RETIRE_AFTER_FAILURES, StickyRouter } from './routing.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
+import type { Client } from '@libsql/client';
 import { bundledRegistry } from '../registry.js';
 
 const roots: string[] = [], stores: RoutingHistory[] = [], routers: StickyRouter[] = [];
@@ -495,4 +496,79 @@ it.each([false, true])('clears a recovered upstream cooldown while preserving th
     for (const turn of admitted) turn.reject(new SourceError('cancelled', 'Test cleanup'));
     await Promise.all(turns);
   }
+});
+
+
+it('retries a real COMMIT reader lock without duplicating samples or shortening quota', async () => {
+  const path = await directory(), history = await open(path);
+  const quota = await history.failure('kilo', new SourceError('quota', 'PRIVATE'), 86400, false, 10000);
+  // A shared reader allows BEGIN IMMEDIATE and the writes, but blocks COMMIT's
+  // exclusive lock in DELETE journal mode. Hold it until COMMIT actually fails.
+  const script = `import {createRequire} from 'node:module'; const require=createRequire(import.meta.resolve('@libsql/client')); const Database=require('libsql'); const db=new Database(process.argv[1]); db.exec('BEGIN'); db.prepare('SELECT * FROM routing_backoff').all(); console.log('reading'); for await(const chunk of process.stdin) {} db.exec('ROLLBACK'); db.close();`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, join(path, 'routing-history.db')], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = once(child, 'exit');
+  let busy!: (value: unknown) => void;
+  const commitBlocked = new Promise<unknown>(resolve => { busy = resolve; });
+  const client = (history as unknown as { client: Client }).client, transaction = client.transaction.bind(client);
+  const begin = vi.spyOn(client, 'transaction').mockImplementation(async mode => {
+    const tx = await transaction(mode), executeMultiple = tx.executeMultiple.bind(tx), commit = tx.commit.bind(tx);
+    // Observe either implementation so this fixture also fails promptly on the
+    // old settling commit() API, rather than depending on a test timeout.
+    vi.spyOn(tx, 'commit').mockImplementation(async () => { try { await commit(); } catch (error) { busy(error); throw error; } });
+    vi.spyOn(tx, 'executeMultiple').mockImplementation(async sql => { try { await executeMultiple(sql); } catch (error) { busy(error); throw error; } });
+    return tx;
+  });
+  try {
+    await once(child.stdout, 'data');
+    const outcome = history.record('kilo', 'interactive-text', true, 1000, 11000).then(value => ({ value }), error => ({ error }));
+    expect(await commitBlocked).toMatchObject({ code: 'SQLITE_BUSY' });
+    child.stdin.end(); await exited;
+    const result = await outcome; if ('error' in result) throw result.error;
+    expect(begin).toHaveBeenCalledTimes(1); // Retrying COMMIT must keep ownership and never replay the SQL unit.
+    const snapshot = await history.snapshot(12000);
+    expect(snapshot.performance.map(row => row.value.samples)).toEqual([1, 1]);
+    expect(snapshot.backoff[0]!.value).toMatchObject({ code: 'quota', until: quota.until });
+    await history.record('kilo', 'interactive-text', true, 1000, 12000);
+    expect((await history.snapshot(13000)).performance.map(row => row.value.samples)).toEqual([2, 2]);
+  } finally { child.stdin.end(); await exited; }
+});
+
+it('bounds COMMIT reader retries and rolls back all uncommitted observations', async () => {
+  const path = await directory(), history = await open(path);
+  const quota = await history.failure('kilo', new SourceError('quota', 'PRIVATE'), 86400, false, 10000);
+  const script = `import {createRequire} from 'node:module'; const require=createRequire(import.meta.resolve('@libsql/client')); const Database=require('libsql'); const db=new Database(process.argv[1]); db.exec('BEGIN'); db.prepare('SELECT * FROM routing_backoff').all(); console.log('reading'); for await(const chunk of process.stdin) {} db.exec('ROLLBACK'); db.close();`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, join(path, 'routing-history.db')], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = once(child, 'exit');
+  try {
+    await once(child.stdout, 'data');
+    // Advance only the bounded retry clock, without waiting two real seconds.
+    const clock = vi.spyOn(performance, 'now').mockReturnValueOnce(1000).mockReturnValue(4000);
+    await expect(history.record('kilo', 'interactive-text', true, 1000, 11000)).rejects.toMatchObject({ code: 'SQLITE_BUSY' });
+    clock.mockRestore(); child.stdin.end(); await exited;
+    const snapshot = await history.snapshot(12000);
+    expect(snapshot.performance).toEqual([]); expect(snapshot.backoff[0]!.value).toEqual(quota);
+    await history.record('kilo', 'interactive-text', true, 1000, 12000);
+    expect((await history.snapshot(13000)).performance.map(row => row.value.samples)).toEqual([1, 1]);
+  } finally { child.stdin.end(); await exited; }
+});
+
+
+it('does not retry non-contention COMMIT failures or keep their uncommitted samples', async () => {
+  const history = await open(await directory()), client = (history as unknown as { client: Client }).client;
+  const transaction = client.transaction.bind(client), failure = Object.assign(new Error('synthetic disk failure'), { code: 'SQLITE_IOERR' });
+  let commits = 0;
+  const begin = vi.spyOn(client, 'transaction').mockImplementation(async mode => {
+    const tx = await transaction(mode), executeMultiple = tx.executeMultiple.bind(tx);
+    vi.spyOn(tx, 'executeMultiple').mockImplementation(async sql => {
+      if (sql === 'COMMIT') { commits++; throw failure; }
+      await executeMultiple(sql);
+    });
+    return tx;
+  });
+  await expect(history.record('kilo', 'interactive-text', true, 1000, 10000)).rejects.toBe(failure);
+  expect(begin).toHaveBeenCalledTimes(1); expect(commits).toBe(1);
+  expect((await history.snapshot(11000)).performance).toEqual([]);
+  begin.mockRestore();
+  await history.record('kilo', 'interactive-text', true, 1000, 12000);
+  expect((await history.snapshot(13000)).performance.map(row => row.value.samples)).toEqual([1, 1]);
 });

@@ -142,9 +142,11 @@ export class Sources {
   diagnosticStore() { return this.diagnostics; }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
   status(): PoolSnapshot {
+    const router = this.registeredRouter;
     const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
       retired: id => this.retired(id), pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
-      ...(this.router ? { listed: (id: string) => this.router!.listed(id), cooldown: (id: string) => this.router!.cooldown(id) } : {}),
+      ...(this.router ? { listed: (id: string) => this.router!.listed(id) } : {}),
+      ...(router ? { cooldown: (id: string) => router.cooldown(id) } : {}),
       model: id => {
         const adapter = this.routing?.registry().adapters.find(adapter => adapter.id === id);
         // A rotation is a configured set, not an assertion about which model
