@@ -8,10 +8,9 @@ import { BrowserSquire } from './setup.js';
 import { SourceError, Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { createLocalApp } from './api.js';
-import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
+import { parallelMap } from './parallel.js';
 import { VerificationQueue } from './verification-queue.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
-import { RegistrySync } from './registry.js';
 
 const dirs: string[] = [];
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
@@ -115,16 +114,6 @@ it('does not cache failed grants', async () => {
   expect(call).toHaveBeenCalledTimes(2);
 });
 
-it('runs registry background provisioning concurrently too', async () => {
-  const hold = deferred(), started: string[] = [];
-  const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }),
-    ensure: async adapter => { started.push(adapter.id); await hold.promise; } });
-  const pending = sync.sync();
-  const ids = sync.enabled.map(adapter => adapter.id);
-  await vi.waitFor(() => expect(started).toEqual(ids.slice(0, SETUP_CONCURRENCY)));
-  hold.resolve(); await pending; expect(started).toEqual(ids); await sync.close();
-});
-
 it('pins Kilo installer and capabilities instead of accepting executable registry data', () => {
   const kilo = bundledRegistry.adapters.find(a => a.id === 'kilo')!;
   for (const change of [{ install: 'npm:untrusted' }, { install: 'builtin:other' }, { kind: 'agent' }, { modalities: ['image'] }]) {
@@ -156,13 +145,4 @@ it('shares terminal ownership between privileged installers and provider confirm
   expect(order).toEqual(['sudo']);
   hold.resolve(); await Promise.all([installer, verification]);
   expect(order).toEqual(['sudo', 'sudo done', 'confirm kilo']);
-});
-it('closes each registry setup session after all jobs settle and starts a fresh session on retry', async () => {
-  let session = 0, active = 0;
-  const finish = vi.fn(async () => { expect(active).toBe(0); session++; });
-  const attempts: number[] = [];
-  const sync = new RegistrySync({ directory: await directory(), fetcher: async () => new Response(null, { status: 304 }), afterEnsure: finish,
-    ensure: async adapter => { active++; attempts.push(session); await new Promise(resolve => setImmediate(resolve)); active--; if (adapter.id === 'kilo') throw new Error('retry later'); } });
-  await sync.sync(); await sync.sync(); await sync.close();
-  expect(finish).toHaveBeenCalledTimes(2); expect(attempts).toEqual([...sync.enabled.map(() => 0), ...sync.enabled.map(() => 1)]);
 });

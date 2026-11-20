@@ -122,6 +122,11 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
+  retired(id: string) { return this.registeredRouter?.retired(id) ?? false; }
+  // A newer registry publication that still lists a retired route gives it a fresh try.
+  unretire(ids: readonly string[]) { for (const id of ids) if (this.retired(id)) this.registeredRouter?.verified(id); }
+  // Hot-add a source for a newly listed adapter; the routers share this array.
+  add(source: Source) { this.sources.push(source); }
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; this.observation.setDiagnostics(store); }
   setRoutingHistory(store: RoutingHistory) { return this.observation.setRoutingHistory(store); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }

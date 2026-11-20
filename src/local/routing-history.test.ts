@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { RoutingHistory, MAX_ADAPTIVE_BACKOFF_SECONDS, ROUTING_HISTORY_TTL_MS, withRoutingWorkload } from './routing-history.js';
 import { SourceStatus } from './source-status.js';
-import { StickyRouter } from './routing.js';
+import { RETIRE_AFTER_FAILURES, StickyRouter } from './routing.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -64,7 +64,8 @@ it('uses finite escalating cooldowns for repeated identical failures and resets 
   let now = 10000; const path = await directory(), history = await open(path), status = new SourceStatus(['kilo', 'livekit'], () => now); await status.setRoutingHistory(history);
   const failing = source('kilo'), fallback = source('livekit'); failing.complete.mockRejectedValue(new SourceError('upstream', 'PRIVATE_ERROR', undefined, undefined, { failureReason: 'response_json' }));
   let value = router([failing, fallback], status, () => now);
-  for (let i = 0; i < 6; i++) {
+  // The fifth identical failure reaches the ceiling and retires the route (docs/router.md).
+  for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
     await value.complete({ ...request, userMessages: ['task-' + i] }, AbortSignal.timeout(1000));
     const delay = value.cooldown('kilo')!.until - now;
     expect(delay).toBe(Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, 900 * 2 ** i) * 1000);

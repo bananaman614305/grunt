@@ -34,12 +34,12 @@ it.each([-1000, 0])('an npm upgrade ignores an older or conflicting saved pool w
 });
 
 it('keeps the bundled release when every mirror offers an older pool', async () => {
-  const path = await directory(), notify = vi.fn(), ensure = vi.fn(async () => {});
+  const path = await directory(), notify = vi.fn(), synced = vi.fn();
   const fetcher = vi.fn<typeof fetch>(async () => Response.json(published(-1000), { headers: { ETag: '"stale"' } }));
-  const sync = new RegistrySync({ directory: path, fetcher, notify, ensure });
+  const sync = new RegistrySync({ directory: path, fetcher, notify, synced });
   await sync.sync();
   expect(sync.current).toEqual(bundledRegistry);
-  expect(ensure.mock.calls).toHaveLength(bundledRegistry.adapters.length);
+  expect(synced).toHaveBeenCalledOnce();
   expect(fetcher).toHaveBeenCalledTimes(2);
   expect(notify).toHaveBeenCalledWith('Registry update unavailable; keeping the last good list');
   await expect(stat(join(path, 'registry.json'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -91,13 +91,13 @@ it('accepts identical same-time publications regardless of object-key order or I
 });
 
 it('accepts a later revocation and persists it through an offline restart', async () => {
-  const path = await directory(), fresh = published(1000), changed = vi.fn(), ensure = vi.fn(async () => {});
-  const sync = new RegistrySync({ directory: path, changed, ensure,
+  const path = await directory(), fresh = published(1000), changed = vi.fn(), synced = vi.fn();
+  const sync = new RegistrySync({ directory: path, changed, synced,
     fetcher: async () => Response.json(fresh, { headers: { ETag: '"revoked"' } }) });
   await sync.sync();
   expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
   expect(changed).toHaveBeenCalledWith(fresh);
-  expect(ensure).toHaveBeenCalledTimes(1);
+  expect(synced).toHaveBeenCalledTimes(1);
   expect((await stat(join(path, 'registry.json'))).mode & 0o777).toBe(0o600);
   const fetcher = vi.fn<typeof fetch>(async () => { throw new Error('offline'); });
   const restarted = new RegistrySync({ directory: path, fetcher });

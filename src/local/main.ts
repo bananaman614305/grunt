@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { gruntEnv } from '../brand.js';
-import { disabledAdapters, knownAdapters, localOptInAdapters } from '../registry.js';
+import { disabledAdapters, knownAdapters, localOptInAdapterIds, localOptInAdapters } from '../registry.js';
+import { recommendedAdapters, scoutRetired } from './routing.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { basename, join } from 'node:path';
@@ -40,6 +41,7 @@ import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
 import type { Source } from './source.js';
+import { toolCapable } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { RegistrySync } from './registry.js';
@@ -107,14 +109,25 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   };
   const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))
     ? { registry: routingRegistry, localOptIns } : undefined;
-  const sources = new Sources(ids.map(id => {
+  const build = (id: string) => {
     const source = registered.find(source => source.id === id);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
     return !routing && knownAdapters.has(id) ? new RegistrySource(consent, routingRegistry) : consent;
-  }), routing, disabledAdapters);
+  };
+  const sources = new Sources(ids.map(build), routing, disabledAdapters);
   sources.setWorkerRegistry(routingRegistry, localOptIns);
-  return sources;
+  // Hot-add (docs/router.md): an automatic pool routes a newly listed shipped
+  // adapter without a restart. A manual GRUNT_SOURCES list stays fixed.
+  const automatic = routing && (!declared || curated.every(id => configured.includes(id)));
+  const adopt = (current: Registry) => {
+    if (!automatic) return;
+    for (const adapter of current.adapters) {
+      if (knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id) && !localOptInAdapterIds.has(adapter.id)
+        && registered.some(source => source.id === adapter.id) && !sources.sources.some(source => source.id === adapter.id)) sources.add(build(adapter.id));
+    }
+  };
+  return Object.assign(sources, { adopt });
 }
 export function start(env = process.env) {
   let registry = structuredClone(bundledRegistry);
@@ -149,29 +162,55 @@ export function start(env = process.env) {
     sessionRead = result.catch(() => {});
     return result;
   };
-  const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
-    changed: current => { registry = current; }, notify: console.error
-  });
-  const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
-  // With no usable source, add providers by themselves (vault access, then signup).
+  const port = positive(gruntEnv('PORT', env), 8788);
+  if (port > 65535) throw new Error('GRUNT_PORT must be at most 65535');
+  // Open routes (docs/router.md): listed, not scout-retired or router-retired, and configured.
+  const routable = (id: string) => {
+    const adapter = registry.adapters.find(adapter => adapter.id === id);
+    return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
+  };
+  const live = (source: Source) => routable(source.id) && source.available().catch(() => false);
   const recovery = new SourceRecovery({ directory,
     candidates: async () => {
       const ids: string[] = [];
-      for (const source of sources.sources) {
-        if (!knownAdapters.has(source.id) || disabledAdapters.has(source.id) || sources.pending.has(source.id)) continue;
-        if (!await source.available().catch(() => false)) ids.push(source.id);
+      for (const adapter of recommendedAdapters(registry)) {
+        const source = sources.sources.find(source => source.id === adapter.id);
+        if (source && routable(source.id) && !await live(source)) ids.push(source.id);
       }
       return ids;
-    }, notify: console.error });
+    },
+    open: async () => (await Promise.all(sources.sources.map(live))).filter(Boolean).length,
+    // The driver is a coding harness on model grunt, so the router sends each of
+    // its turns to the best open tool-capable route.
+    driver: async () => {
+      const drivable = await Promise.all(sources.sources.filter(toolCapable).map(live));
+      if (!drivable.some(Boolean)) return;
+      // Loaded on demand: the daemon's model API never needs harness code.
+      const { detectHarnesses, signupHarness } = await import('./harnesses.js');
+      const [harness] = await detectHarnesses();
+      return harness ? signupHarness(harness, port) : undefined;
+    },
+    busy: async () => !!await readSetupSession(directory).catch(() => undefined),
+    notify: console.error });
   sources.setRecovery(() => recovery.trigger());
-  // Registry downloads and access maintenance are independent. No daemon
-  // maintenance path provisions accounts or starts an interactive browser; only the
-  // recovery below does, and only when no source can answer.
+  let published: string | undefined;
+  const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
+    changed: current => {
+      // A newer publication that still lists a retired route gives it a fresh try.
+      if (published !== undefined && Date.parse(current.published) > Date.parse(published)) sources.unretire(current.adapters.map(adapter => adapter.id));
+      published = current.published;
+      registry = current;
+      sources.adopt(current);
+    },
+    synced: () => recovery.trigger(), notify: console.error
+  });
+  const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
+  // Registry downloads and access maintenance are independent. Only the route
+  // pass above provisions accounts, in the background, after each registry sync
+  // and when no source can answer. It never hands a browser to a person.
   const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready]).then(refreshSession);
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
-  const port = positive(gruntEnv('PORT', env), 8788);
-  if (port > 65535) throw new Error('GRUNT_PORT must be at most 65535');
   const workerRuntime = createWorkerRuntime(sources, { directory });
   const { workers, scopes: workerScopes } = workerRuntime;
   const app = createLocalApp(sources, { port, workers, workerScopes, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });

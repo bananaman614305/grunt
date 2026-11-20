@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from './registry.js';
+import { recommendedAdapters, scoutRetired } from './local/routing.js';
 import { RegistrySync, REGISTRY_INTERVAL } from './local/registry.js';
 import { registryRoutes } from './registry-routes.js';
 
@@ -70,7 +71,7 @@ it('gateway down keeps cached list and persists private cache', async () => {
   await restarted.load(); await restarted.sync(); expect(restarted.current).toEqual(updated);
   expect(fetcher.mock.calls[1]![1]?.headers).toMatchObject({ 'If-None-Match': '"published"' });
 });
-it('syncs at startup and each UTC midnight, and stops syncing on close', async () => {
+it('syncs at startup and every six hours from UTC midnight, and stops syncing on close', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-15T22:00:00Z'));
   const fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 304 }));
   const sync = new RegistrySync({ directory: await directory(), fetcher });
@@ -82,11 +83,11 @@ it('syncs at startup and each UTC midnight, and stops syncing on close', async (
     await sync.close(); await vi.advanceTimersByTimeAsync(REGISTRY_INTERVAL); expect(fetcher).toHaveBeenCalledTimes(3);
   } finally { await sync.close(); vi.useRealTimers(); }
 });
-it('keeps daily provisioning scheduled when cleanup fails after a background run', async () => {
+it('keeps the route loop scheduled when a route pass fails to start', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-15T23:00:00Z'));
-  const notify = vi.fn(), afterEnsure = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('Squire close failed')).mockResolvedValue(undefined);
+  const notify = vi.fn(), synced = vi.fn().mockReturnValueOnce(undefined).mockImplementationOnce(() => { throw new Error('pass failed'); }).mockReturnValue(undefined);
   const fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 304 }));
-  const sync = new RegistrySync({ directory: await directory(), fetcher, afterEnsure, notify });
+  const sync = new RegistrySync({ directory: await directory(), fetcher, synced, notify });
   try {
     await sync.start();
     await vi.advanceTimersByTimeAsync(3600000); expect(fetcher).toHaveBeenCalledTimes(2);
@@ -99,15 +100,15 @@ it.each([new Response('bad json'), Response.json({ version: 9 }), new Response(n
   const sync = new RegistrySync({ directory: await directory(), fetcher: async () => response });
   await sync.load(); await sync.sync(); expect(sync.current).toEqual(bundledRegistry);
 });
-it('ignores unknown adapter code and retries provisioning known additions without removing installed adapters', async () => {
-  const ensure = vi.fn().mockRejectedValueOnce(new Error('needs human')).mockResolvedValue(undefined);
+it('ignores unknown adapter code and starts a route pass after every sync, changed or not', async () => {
+  const synced = vi.fn();
   const unknown = { ...bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!, id: 'unknown', install: 'npm:unknown' };
   const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(), adapters: [bundledRegistry.adapters[0], unknown] }, { headers: { ETag: '"first"' } }))
     .mockResolvedValueOnce(new Response(null, { status: 304 }))
     .mockResolvedValueOnce(Response.json({ ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 2000).toISOString(), adapters: [bundledRegistry.adapters[1]] }));
-  const sync = new RegistrySync({ directory: await directory(), fetcher, ensure });
+  const sync = new RegistrySync({ directory: await directory(), fetcher, synced });
   await sync.load(); await sync.sync(); await sync.sync();
-  expect(ensure.mock.calls.map(([adapter]) => adapter.id)).toEqual(['opencode', 'opencode']);
+  expect(synced).toHaveBeenCalledTimes(2);
   expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
   await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
 });
@@ -146,4 +147,26 @@ it('never sends an explicit registry override to another host', async () => {
   await sync.sync();
   expect(fetcher).toHaveBeenCalledOnce();
   expect(fetcher.mock.calls[0]![0]).toBe('https://custom.test/v1/registry');
+});
+
+it('accepts the scout fields and ranks great before possible before weight, never poor or retired', () => {
+  const base = bundledRegistry.adapters.find(adapter => adapter.id === 'zro')!;
+  const at = (id: string, extra: Record<string, unknown>) => ({ ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, ...extra });
+  const registry = validateRegistry({ ...bundledRegistry, adapters: bundledRegistry.adapters.map(adapter =>
+    adapter.id === 'tokenharbor' ? at('tokenharbor', { fit: 'great', status: 'active', expires: '2027-01-31' })
+      : adapter.id === 'runcrate' ? at('runcrate', { fit: 'poor' })
+        : adapter.id === 'kilo' ? at('kilo', { status: 'expiring' })
+          : adapter.id === 'beatapi' ? at('beatapi', { status: 'inactive' }) : adapter) });
+  const ranked = recommendedAdapters(registry, Date.parse('2026-11-20T00:00:00Z')).map(adapter => adapter.id);
+  expect(ranked[0]).toBe('tokenharbor');
+  // Unrated routes count as possible and follow by weight; Kilo is expiring.
+  expect(ranked.slice(1, 3)).toEqual(['opencode', 'zro']);
+  expect(ranked).not.toContain('runcrate');
+  expect(ranked).not.toContain('kilo');
+  expect(ranked).not.toContain('beatapi');
+  expect(scoutRetired({ ...base, expires: '2026-11-19' }, Date.parse('2026-11-19T23:59:59Z'))).toBe(false);
+  expect(scoutRetired({ ...base, expires: '2026-11-19' }, Date.parse('2026-11-20T00:00:00Z'))).toBe(true);
+  for (const bad of [{ fit: 'ok' }, { status: 'soon' }, { expires: '19 Nov' }, { expires: 20261119 }]) {
+    expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...base, ...bad }] })).toThrow('Invalid adapter registry');
+  }
 });

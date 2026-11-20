@@ -566,7 +566,8 @@ export class BrowserSquire implements SetupSquire {
       if (turns >= 8) return dropped('browser recovery limit reached');
       this.retries.set(provider, turns + 1);
       if (retry) { await delay(3000, undefined, { signal }); answer = 'WAIT'; continue; }
-      if (this.options.agent && !this.options.background && url) {
+      // Background signups use the router's driver too; it cannot hand off to a person.
+      if (this.options.agent && url) {
         let agentResult = result;
         try {
           agentResult = await this.harnessSignup(provider, url, instruction, result, active, signal);

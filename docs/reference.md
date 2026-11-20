@@ -1438,7 +1438,10 @@ wallet confirms the daily free allowance is exhausted. Kenari uses its
 documented midnight reset when the response identifies daily exhaustion and
 omits Retry-After. Nous and Vikey also consume documented reset metadata.
 In registry routing, other upstream failures, timeouts and provider refusals
-switch immediately and bar the adapter for fifteen minutes. A missing installation or expired login
+switch immediately and bar the adapter for fifteen minutes, doubling for each
+identical repeat within six hours up to two hours. The fifth identical failure in
+a row retires the route until a successful reply, a passing daily check or a
+newer registry publication. A missing installation or expired login
 bars it until a successful health check. Caller cancellation stops the chain.
 When no eligible adapter remains, the API returns HTTP 429 and, when known,
 the earliest Retry-After. Agent adapters return final text, so streaming headers
@@ -1461,7 +1464,7 @@ survives deploys and has an ETag. Stable weights total (0.8) and experimental
 weights total (0.2) when both tiers are present. Unknown adapter identifiers
 are ignored locally and cannot install new code.
 
-The daemon synchronizes on startup and at midnight UTC with
+The daemon synchronizes on startup and every six hours from midnight UTC with
 If-None-Match. It tries `https://api.grunt.run/v1/registry` first and falls back
 to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
 unreachable, invalid or older than the retained registry. An explicit
@@ -1472,9 +1475,10 @@ The bundled publication is the minimum revision: older cached or remote lists
 cannot hide providers shipped with that package. An existing publication
 timestamp is immutable; changed entries require a strictly newer `published`
 timestamp, including revocations. Identical same-time data may refresh the ETag.
-Registry sync only refreshes the provider directory. A separate persistent queue
-checks configured curated sources one at a time with 60–90-second gaps; it does
-not run provisioning helpers. The foreground wizard still installs providers
+Each sync then starts one background route pass (see [router](router.md)) that
+signs up recommended routes, one at a time, until six are open. A separate
+persistent queue checks configured curated sources one at a time with
+60–90-second gaps; it does not run provisioning helpers. The foreground wizard still installs providers
 with up to six concurrent jobs and a shared Squire connection. During that setup, a private session
 lease owns all providers selected for that session, including providers already
 verified. Daily maintenance defers those providers. Pending

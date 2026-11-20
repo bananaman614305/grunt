@@ -17,6 +17,21 @@ const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
 const BAD_SAMPLE_COOLDOWN_SECONDS = 30;
 const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
+// The 5th consecutive identical failure, each within the routing-history window
+// of the last, retires a route (docs/router.md). Quota is availability, not failure.
+export const RETIRE_AFTER_FAILURES = 5;
+// The scout marks an offering expiring or inactive, or its expiry day has passed.
+export function scoutRetired(adapter: Adapter, now = Date.now()) {
+  return adapter.status === 'expiring' || adapter.status === 'inactive'
+    || adapter.expires !== undefined && now >= Date.parse(adapter.expires) + 24 * 60 * 60 * 1000;
+}
+// Routes worth opening, best first: great before possible, then by weight.
+export function recommendedAdapters(registry: Registry, now = Date.now()) {
+  const rank = (adapter: Adapter) => adapter.fit === 'great' ? 0 : 1;
+  return registry.adapters.filter(adapter => adapter.fit !== 'poor' && !scoutRetired(adapter, now))
+    .sort((a, b) => rank(a) - rank(b) || b.weight - a.weight);
+}
+
 export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
@@ -32,6 +47,10 @@ export class StickyRouter {
     this.availability = new SourceAvailability(this.observation);
   }
   private now() { return (this.options.now ?? Date.now)(); }
+  retired(id: string) {
+    const backoff = this.observation.routingBackoff(id);
+    return !!backoff && backoff.code !== 'quota' && backoff.streak >= RETIRE_AFTER_FAILURES;
+  }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id); }
@@ -127,7 +146,7 @@ export class StickyRouter {
           signal.throwIfAborted();
           const adapter = adapters.find(a => a.id === source.id);
           if (!worker && !task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
-          if (!adapter || this.options.disabled?.has(source.id) || worker && !this.workerAdapter(adapter)) {
+          if (!adapter || this.options.disabled?.has(source.id) || scoutRetired(adapter, this.now()) || worker && !this.workerAdapter(adapter)) {
             skip(source.id, 'not_listed');
             continue;
           }
@@ -138,6 +157,8 @@ export class StickyRouter {
           }
           if (this.options.pending?.has(source.id)) { skip(source.id, 'pending_setup'); continue; }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
+          // A caller that names a retired route explicitly may still try it.
+          if (this.retired(source.id) && source.id !== request.model) { skip(source.id, 'cooldown'); continue; }
           const until = this.cooldown(source.id)?.until;
           if (until !== undefined && until > this.now()) {
             if (Number.isFinite(until)) retryTimes.push(until);

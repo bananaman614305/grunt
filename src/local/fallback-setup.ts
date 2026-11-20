@@ -4,6 +4,7 @@ import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { bootstrapKilo, BrowserSquire, setup } from './setup.js';
 import type { SetupSquire } from './setup.js';
+import type { SignupAgent } from './signup-mcp.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 import { disabledAdapters } from '../registry.js';
 import { OpenCode } from './opencode.js';
@@ -73,8 +74,10 @@ export async function setupFallbacks(options: {
   dataSharingApproved?: readonly string[];
   onSettled?: (id: string, available: boolean, reason?: string) => void | Promise<void>;
   onStarted?: (id: string) => void;
+  // Fallback operator for an owned background browser (the router's driver).
+  agent?: SignupAgent;
 }) {
-  const squire = options.squire ?? new BrowserSquire({ background: options.background, dataSharingApproved: options.dataSharingApproved ?? [] });
+  const squire = options.squire ?? new BrowserSquire({ background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}) });
   const owned = squire instanceof BrowserSquire && !options.squire;
   const requested = [...new Set(options.adapters ?? ['opencode'])];
   // A registry may list account-based providers first. Keep their shared
