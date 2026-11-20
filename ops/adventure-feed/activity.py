@@ -252,7 +252,9 @@ def snapshot(state=STATE, *, include_project=False):
             continue
         provider = {'source': source}
         model = row.get('model')
-        if isinstance(model, str) and MODEL.fullmatch(model) and '://' not in model:
+        # Match the receiver's secret filter: omit only the optional label,
+        # so one secret-shaped model name cannot reject the whole live feed.
+        if isinstance(model, str) and MODEL.fullmatch(model) and not SENSITIVE.search(model):
             provider['model'] = model
         if row.get('state') == 'answering' and row.get('active', 0) > 0:
             result['active'].append(provider)
