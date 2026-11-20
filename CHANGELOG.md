@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-20
+
+- Let the execution host use an existing pinned Git configuration with hooks disabled at `/dev/null`. Continue rejecting custom hooks, included configuration and changed configuration bytes.
+
 ## [0.9.0] - 2026-11-20
 
 - Coordinate a main coding agent and two independent workers with explicit ownership, dependency deferral and local capacity awareness. Preserve completed coordination summaries after shared batch eviction.
