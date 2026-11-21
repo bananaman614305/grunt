@@ -56,8 +56,8 @@ function status(response: Response) {
 }
 /** Nonbillable public metadata only. No account, API key, or paid fallback is used.
  * Returns the verified free models this route may use, in try order. Kilo rotates
- * across every exact `:free` model: Particle, then Reflection Beam, then the rest,
- * with small models last. Reflection Beam's own route keeps its single model.
+ * across every exact `:free` model: Particle, then Reflection Beam, then the rest.
+ * Reflection Beam's own route keeps its single model.
  * Router aliases such as kilo-auto/free are never used because their completions
  * cannot be verified as one exact model. */
 export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal?: AbortSignal; reflectionBeam?: boolean } = {}): Promise<string[]> {
@@ -78,10 +78,7 @@ export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal
     const eligible = (id: unknown): id is string => typeof id === 'string' && (options.reflectionBeam ? id === KILO_BEAM : id === KILO_BEAM || id.endsWith(':free'));
     const ids = rows.map(row => row.id).filter(eligible), unique = ids.filter(id => ids.indexOf(id) === ids.lastIndexOf(id));
     const models = unique.filter(id => verified(rows.find(row => row.id === id)!));
-    // Small models (under about 10B parameters, as named in the id, such as
-    // liquid/lfm-3-1.7b) answer tool calls least reliably, so they go last.
-    const size = (id: string) => Number(/(?:^|[-/_])(\d+(?:\.\d+)?)b(?=$|[-_:])/i.exec(id)?.[1] ?? Infinity);
-    const order = (id: string) => id === KILO_PARTICLE ? 0 : id === KILO_BEAM ? 1 : size(id) < 10 ? 3 : 2;
+    const order = (id: string) => id === KILO_PARTICLE ? 0 : id === KILO_BEAM ? 1 : 2;
     if (!models.length) throw new SourceError('refused', options.reflectionBeam ? `${KILO_BEAM} is not currently a verified free model with at least 200K context`
       : 'No Kilo :free model is currently verified free with at least 200K context');
     return models.sort((a, b) => order(a) - order(b));
@@ -197,12 +194,11 @@ export class Kilo implements Source {
           const reported = error instanceof SourceError && (error.code === 'quota' || error.diagnostics?.failureReason === 'completion_model'
             || error.code === 'upstream' && (error.diagnostics?.httpStatus ?? 0) >= 500);
           if (!reported || signal.aborted) throw error;
-          last = error;
-          // Report the earliest refill among the exhausted models to the shared cooldown.
-          if (error.code === 'quota' && (!quota || (error.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity))) quota = error;
+          if (error.code !== 'quota') last = error;
+          else if (!quota || (error.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity)) quota = error;
         }
       }
-      throw quota ?? last!;
+      throw last ?? quota!;
     } catch (error) {
       if (caller.aborted || this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Kilo request cancelled');
       if (signal.aborted) throw new SourceError('timeout', 'Kilo request timed out');

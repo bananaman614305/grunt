@@ -244,12 +244,12 @@ it('asks once more when Particle samples an invalid function call, then reports 
 });
 const rotation = () => [model('kilo-auto/free'), model('nvidia/nemotron-3.5-lightning:free'), { ...model('vendor/paid:free'), isFree: false }, model(KILO_BEAM), model(), model('openrouter/free')];
 const sentModel = (init?: RequestInit) => JSON.parse(String(init?.body)).model as string;
-it('lists exact free models with Particle, then Reflection Beam, small models last, and no router aliases', async () => {
+it('lists exact free models with Particle, then Reflection Beam, then catalog order, and no router aliases', async () => {
   const fetcher = async () => Response.json({ data: rotation() });
   expect(await verifyKiloAccess({ fetcher })).toEqual([KILO_PARTICLE, KILO_BEAM, 'nvidia/nemotron-3.5-lightning:free']);
   const sized = ['liquid/lfm-3-1.7b:free', 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', 'vendor/tiny-8b:free', 'nvidia/nemotron-3-ultra-550b-a55b:free', KILO_BEAM, KILO_PARTICLE];
   expect(await verifyKiloAccess({ fetcher: async () => Response.json({ data: sized.map(id => model(id)) }) })).toEqual([KILO_PARTICLE, KILO_BEAM,
-    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', 'nvidia/nemotron-3-ultra-550b-a55b:free', 'liquid/lfm-3-1.7b:free', 'vendor/tiny-8b:free']);
+    'liquid/lfm-3-1.7b:free', 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', 'vendor/tiny-8b:free', 'nvidia/nemotron-3-ultra-550b-a55b:free']);
   expect(await verifyKiloAccess({ fetcher, reflectionBeam: true })).toEqual([KILO_BEAM]);
   expect(await verifyKiloAccess({ fetcher: async () => Response.json({ data: [model('nvidia/nemotron-3.5-lightning:free')] }) })).toEqual(['nvidia/nemotron-3.5-lightning:free']);
 });
@@ -294,6 +294,23 @@ it('reports quota with the earliest refill once every free Kilo model returns 42
   const pool = new Sources([f.source, next]);
   await expect(pool.complete({ ...request(), model: 'grunt' }, new AbortController().signal)).resolves.toMatchObject({ text: 'fallback' });
   expect(pool.status().sources.find(source => source.id === 'kilo')).toMatchObject({ errorCode: 'quota' });
+});
+it.each([
+  [[429, 503, 503], 'upstream', { httpStatus: 503 }],
+  [[503, 429, 429], 'upstream', { httpStatus: 503 }],
+  [[429, 200, 429], 'refused', { failureReason: 'completion_model' }],
+  [[503, 200, 429], 'refused', { failureReason: 'completion_model' }],
+  [[200, 502, 429], 'upstream', { httpStatus: 502 }]
+] as const)('reports the last non-quota failure for mixed rotation results %j', async (statuses, code, diagnostics) => {
+  let attempt = 0;
+  const f = fixture({ catalogRows: rotation(), infer: () => {
+    const status = statuses[attempt++]!;
+    return status === 200 ? Response.json(result({ model: 'unverified' }))
+      : new Response(null, { status, headers: { 'retry-after': '28800' } });
+  } });
+  const completion = f.source.complete(request(), new AbortController().signal);
+  await expect(completion).rejects.toMatchObject({ code, diagnostics, retryAfter: undefined });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, 'nvidia/nemotron-3.5-lightning:free']);
 });
 it('keeps the Reflection Beam route on its single model', async () => {
   await recordDataSharingConsent(directory, ['reflection-beam']);
