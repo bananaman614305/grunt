@@ -56,7 +56,8 @@ function status(response: Response) {
 }
 /** Nonbillable public metadata only. No account, API key, or paid fallback is used.
  * Returns the verified free models this route may use, in try order. Kilo rotates
- * across every exact `:free` model: Particle, then Reflection Beam, then the rest.
+ * across verified exact `:free` models and Reflection Beam: Particle first,
+ * then Reflection Beam, then the rest in catalog order.
  * Reflection Beam's own route keeps its single model.
  * Router aliases such as kilo-auto/free are never used because their completions
  * cannot be verified as one exact model. */

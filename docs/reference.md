@@ -1253,9 +1253,9 @@ tokens and $1.20 per million output tokens, with no free standard DeepSeek ID.
 The separately listed free Particle route does not make either standard route free.
 See [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free).
 Grunt-owned Freebuff fallback rows are disabled, and the port-8789 bridge no
-longer starts. Fresh Kilo Particle setup needs no legacy router. FreeLLMAPI
-continues priority routing for eligible configured providers; custom user rows
-retain their own flags and priorities.
+longer starts. Fresh setup of the [direct Kilo source](#kilo-free-models) needs
+no legacy router. FreeLLMAPI continues priority routing for eligible configured
+providers; custom user rows retain their own flags and priorities.
 
 FreeLLMAPI's signed catalog handles model and quota updates. Free installations
 receive its delayed monthly snapshot; live catalog access is a separate upstream
