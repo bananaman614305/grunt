@@ -100,3 +100,36 @@ it.each([
 ])('rejects an invalid hints or capture field: %j', fields => {
   expect(() => validateRegistry(synced('zro', fields))).toThrow('Invalid adapter registry');
 });
+
+function vaultedSquire(label: string, status: string) {
+  const entry = bundledRegistry.adapters.find(a => a.id === 'goedel')!;
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'list_credentials'
+    ? { credentials: [{ service: entry.capture!.service, label, reference: 'vault://goedel-existing', field_names: ['value'] }] }
+    : name === 'operate_drive' ? { status, session_id: 'goedel-session' } : {});
+  return { entry, squire, call };
+}
+
+it('still runs the drive when a saved key with the right label is in the vault', async () => {
+  const { entry, squire, call } = vaultedSquire(bundledRegistry.adapters.find(a => a.id === 'goedel')!.capture!.label!, 'complete');
+  await squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.');
+  expect(call.mock.calls.some(([name]) => name === 'operate_drive')).toBe(true);
+});
+
+it('counts a stopped drive as success when the vault holds the key under the shipped label', async () => {
+  const { entry, squire } = vaultedSquire(bundledRegistry.adapters.find(a => a.id === 'goedel')!.capture!.label!, 'blocked');
+  await expect(squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.')).resolves.toBeUndefined();
+});
+
+it('still fails a stopped drive when the vault holds that service only under another label', async () => {
+  const { entry, squire } = vaultedSquire('something else', 'blocked');
+  await expect(squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.')).rejects.toThrow();
+});
+
+it('looks up synced hints by registry id only, never by signup host', async () => {
+  const registry = synced('millionseek', { hints: 'Synced millionseek hint.' });
+  const [byHost] = await driveCalls('100milionseek', 'https://100milionseek.top/signup', { registry });
+  expect(String(byHost!.goal)).not.toContain('Synced millionseek hint.');
+  const [byId] = await driveCalls('millionseek', 'https://100milionseek.top/signup', { registry });
+  expect(String(byId!.goal)).toContain('Synced millionseek hint.');
+});

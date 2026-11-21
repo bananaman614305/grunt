@@ -106,7 +106,7 @@
       "install": "builtin:livekit",
       "signup": "https://cloud.livekit.io/",
       "model": "deepseek-ai/deepseek-v4.1-flash",
-      "hints": "Open the existing project from 'Switch project', then 'Settings' in the project sidebar. Project Settings has no Agent observability switch; Agent observability, when present, is under the agents area. If the project exists and no Agent observability switch is offered, finish; there is nothing else to change."
+      "hints": "The account's project named grunt is the owned project. Open it, then 'Settings' in the project sidebar. When no Agent observability switch is offered there, the project is ready and this task is complete."
     },
     {
       "id": "pollinations",
@@ -119,7 +119,7 @@
       "install": "builtin:pollinations",
       "signup": "https://enter.pollinations.ai/",
       "model": "community/morriszdweck/glm-5.3-flash-free",
-      "hints": "On /keys the Grunt key grunt-free-pollinations is listed. Press its 'Edit secret key', check Budget is 0, 'Quest balance only' is checked and only 'Generate' is on, then press 'Save'. If this vault already holds pollinations grunt-free-pollinations, finish after Save; otherwise press 'Create', type grunt-free-pollinations in Name, 0 in Budget, check 'Quest balance only' and press 'Create'; the shown secret is stored automatically.",
+      "hints": "On /keys the Grunt key grunt-free-pollinations is listed. Press its 'Edit secret key', confirm Budget is 0, 'Quest balance only' is checked and only 'Generate' is on, then press 'Save'. Saving those settings completes this task. Only if no grunt-free-pollinations key is listed, press 'Create', type grunt-free-pollinations in Name and 0 in Budget, check 'Quest balance only' and press 'Create'; the new secret is then shown.",
       "capture": {
         "service": "pollinations",
         "label": "grunt-free-pollinations",
@@ -230,7 +230,7 @@
       "install": "builtin:goedel",
       "signup": "https://inference.goedelmachines.com/keys",
       "model": "deepseek/deepseek-v4.1-flash",
-      "hints": "On /keys type grunt in 'Key name', keep 'Free · prompts kept' selected, check the 'I agree to the Terms' checkbox, press 'Create key'. The new key (prefix sk-gm-free-) is shown with 'Copy key': press 'Copy key' so it is stored, then finish.",
+      "hints": "On /keys type grunt in 'Key name'. Keep 'Free · prompts kept' selected. Scroll down to the 'I agree to the Terms' checkbox if it is below, check it, then press 'Create key'. The new key (prefix sk-gm-free-) appears with a 'Copy key' button: press 'Copy key'.",
       "capture": {
         "service": "goedel",
         "label": "Grunt Free",
@@ -251,7 +251,7 @@
       "install": "builtin:fikra",
       "signup": "https://fikraapi.co.ke/account/signup",
       "model": "deepseek-v4-1-flash-economy-free",
-      "hints": "On /account/signup type the Squire email in the email field and a new password in the password field, choose 'Google Search' in the 'Select an option' list, press 'Create Account with $0.50 free-model credit', then complete the emailed verification and create one key named grunt; press its copy button so it is stored.",
+      "hints": "On /account/signup type the Squire email in the email field and a new password in the password field, choose 'Google Search' in 'Select an option', then press 'Create Account with $0.50 free-model credit'. A verification email arrives at the Squire email: open its link or type its code. Then create one key named grunt and press its copy button.",
       "capture": {
         "service": "fikra",
         "label": "Grunt Free",
@@ -284,7 +284,7 @@
       "install": "builtin:darus",
       "signup": "https://gateway.darusalfatah.id/",
       "model": "darus/deepseek-v4.1-flash-1017-FREE",
-      "hints": "On the home page press 'Mulai Gratis' (start free). On /masuk?mode=register type grunt in 'Nama Anda' (name), the Squire email in the email field, press 'Kirim OTP' (send code) and type the emailed code, type grunt in 'username', a new password in 'Min. 12 karakter', leave the referral field empty, press 'Daftar sekarang' (register). Then create one key named grunt.",
+      "hints": "On the home page press 'Mulai Gratis' (start free). The register form at /masuk?mode=register asks, top to bottom: 'Nama Anda' (name: type grunt), email (type the Squire email, then press 'Kirim OTP' and type the code from the email that arrives), 'username' (type grunt), password 'Min. 12 karakter' (a new password), and an optional referral field (leave it empty). Press 'Daftar sekarang' (register). Then create one key named grunt.",
       "capture": {
         "service": "darus",
         "label": "Grunt Free",
@@ -337,7 +337,7 @@
       "install": "builtin:millionseek",
       "signup": "https://100milionseek.top/signup",
       "model": "deepseek-v4.1-flash-free",
-      "hints": "On /signup wait for the 'Email' field to appear, type the Squire email, complete the Cloudflare checkbox, press 'Create my key', then press its 'Copy key' button so the key is stored, and finish.",
+      "hints": "On /signup the 'Email' field appears after the page loads. Type the Squire email in it, check the Cloudflare checkbox below it, press 'Create my key', then press the new key's 'Copy key' button.",
       "capture": {
         "service": "100milionseek",
         "label": "Grunt Free",
