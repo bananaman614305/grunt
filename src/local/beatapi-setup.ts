@@ -23,7 +23,7 @@ const ownedKey = (c: Credential) => typeof c?.service === 'string' && c.service.
   && c.label === 'grunt' && typeof c.reference === 'string' && Boolean(c.reference)
   && (c.auth_strategy == null || c.auth_strategy === 'api_key')
   && Array.isArray(c.field_names) && c.field_names.some(f => typeof f === 'string' && ['value', 'apikey', 'key', 'token', 'secret'].includes(f.toLowerCase().replace(/[^a-z]/g, '')))
-  && Array.isArray(c.allowed_hosts) && c.allowed_hosts.length === 1 && c.allowed_hosts[0] === 'api.beatapi.io';
+  && Array.isArray(c.allowed_hosts) && c.allowed_hosts[0] === 'api.beatapi.io' && c.allowed_hosts.every((host: string) => host === 'beatapi.io' || host === '*.beatapi.io' || host.endsWith('.beatapi.io'));
 export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> {
   // The caller may carry approvals already recorded by this wizard turn, but
   // an unknown or changed policy cannot silently inherit another provider's.

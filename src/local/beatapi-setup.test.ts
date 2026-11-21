@@ -63,6 +63,14 @@ it('rejects changed account usage and removes an old receipt', async () => {
 it('cancels a stalled signup and leaves no eligible receipt', async () => {
   const f = fixture(), controller = new AbortController(); f.squire.signup.mockImplementationOnce(async () => new Promise(() => {})); const pending = setupBeatAPI({ directory, ...f, signal: controller.signal }); await vi.waitFor(() => expect(f.squire.signup).toHaveBeenCalled()); controller.abort('sk-cancel-secret'); await expect(pending).rejects.toThrow('verification did not complete'); await expect(readBeatAPIGrant(directory)).rejects.toBeDefined();
 });
+it('accepts the provider-domain hosts Squire adds when the drive stores the key', async () => {
+  const f = fixture(); f.squire.call.mockResolvedValue({ credentials: [{ ...credential, allowed_hosts: ['api.beatapi.io', 'beatapi.io', '*.beatapi.io'] }] });
+  await setupBeatAPI({ directory, ...f }); expect(f.squire.credentials.grant).toHaveBeenCalledWith(credential.reference);
+});
+it('refuses a stored key that also allows a host outside the provider domain', async () => {
+  const f = fixture(); f.squire.call.mockResolvedValue({ credentials: [{ ...credential, allowed_hosts: ['api.beatapi.io', 'unrelated.example'] }] });
+  await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('verification did not complete'); expect(f.squire.credentials.grant).not.toHaveBeenCalled();
+});
 it('refuses a key whose first allowed host could route the grant elsewhere', async () => {
   const f = fixture(); f.squire.call.mockResolvedValue({ credentials: [{ ...credential, allowed_hosts: ['beatapi.io', 'api.beatapi.io'] }] }); await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('verification did not complete'); expect(f.squire.credentials.grant).not.toHaveBeenCalled();
 });

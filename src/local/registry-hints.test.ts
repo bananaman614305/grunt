@@ -100,3 +100,31 @@ it.each([
 ])('rejects an invalid hints or capture field: %j', fields => {
   expect(() => validateRegistry(synced('zro', fields))).toThrow('Invalid adapter registry');
 });
+
+it('treats an existing vaulted key under the shipped capture service and label as done, without driving', async () => {
+  const entry = bundledRegistry.adapters.find(a => a.id === 'goedel')!;
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'list_credentials'
+    ? { credentials: [{ service: entry.capture!.service, label: entry.capture!.label, reference: 'vault://goedel-existing', field_names: ['value'] }] }
+    : name === 'operate_drive' ? { status: 'complete', session_id: 'goedel-session' } : {});
+  await squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.');
+  expect(call.mock.calls.some(([name]) => name === 'operate_drive')).toBe(false);
+});
+
+it('still drives when the vault holds that service only under another label', async () => {
+  const entry = bundledRegistry.adapters.find(a => a.id === 'goedel')!;
+  const squire = new BrowserSquire();
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'list_credentials'
+    ? { credentials: [{ service: entry.capture!.service, label: 'something else', reference: 'vault://goedel-other', field_names: ['value'] }] }
+    : name === 'operate_drive' ? { status: 'complete', session_id: 'goedel-session' } : {});
+  await squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.');
+  expect(call.mock.calls.some(([name]) => name === 'operate_drive')).toBe(true);
+});
+
+it('looks up synced hints by registry id only, never by signup host', async () => {
+  const registry = synced('millionseek', { hints: 'Synced millionseek hint.' });
+  const [byHost] = await driveCalls('100milionseek', 'https://100milionseek.top/signup', { registry });
+  expect(String(byHost!.goal)).not.toContain('Synced millionseek hint.');
+  const [byId] = await driveCalls('millionseek', 'https://100milionseek.top/signup', { registry });
+  expect(String(byId!.goal)).toContain('Synced millionseek hint.');
+});

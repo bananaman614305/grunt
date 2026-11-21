@@ -93,7 +93,7 @@ async function verifyAccount(options: SetupOptions) {
   const timeout = setTimeout(() => deadline.abort(), 600000);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal;
   try {
-    await awaitBrowser(Promise.resolve().then(() => options.squire.signup('livekit', 'https://cloud.livekit.io', 'Use the personal Google identity already connected to Squire to sign up for LiveKit Cloud, or reuse its existing account. Do not open billing pages to audit the plan. Reuse the owned empty grunt-free project, or create that one ordinary empty free project if absent. Turn off optional Agent observability on this owned grunt-free project, leaving unrelated projects unchanged. Do not create rooms, deploy agents, enable hosting or billing, buy credits, inspect API secrets, switch accounts or alter other projects. Finish once the free project is ready; native CLI pairing follows separately if needed. Required human verification needs browser handoff; stop on refusal.')), signal, 'LiveKit free Build account verification did not complete; rerun usegrunt setup');
+    await awaitBrowser(Promise.resolve().then(() => options.squire.signup('livekit', 'https://cloud.livekit.io', 'Use the personal Google identity already connected to Squire to sign up for LiveKit Cloud, or reuse its existing account. Do not open billing pages to audit the plan. Reuse the owned empty project named grunt, or create that one ordinary empty free project named grunt if absent. Turn off optional Agent observability on this owned grunt project, leaving unrelated projects unchanged. Do not create rooms, deploy agents, enable hosting or billing, buy credits, inspect API secrets, switch accounts or alter other projects. Finish once the free project is ready; native CLI pairing follows separately if needed. Required human verification needs browser handoff; stop on refusal.')), signal, 'LiveKit free Build account verification did not complete; rerun usegrunt setup');
   } finally { clearTimeout(timeout); }
 }
 async function verifyProject(binary: string, selector: string, work: string, signal?: AbortSignal) {
@@ -133,7 +133,7 @@ async function authenticate(binary: string, options: SetupOptions, work: string)
       const url = new URL(match[0]);
       if (!url.searchParams.get('t') || url.username || url.password || url.hash) { failure = new Error('LiveKit returned an invalid native pairing URL'); abort(); return; }
       paired = true;
-      pairing = awaitBrowser(Promise.resolve().then(() => options.squire.signup('livekit', url.href, 'Approve only the LiveKit native CLI pairing started by Grunt. Select exactly the owned grunt-free project. Do not select another existing or paid project. Keep the $2.50 monthly inference hard stop and no payment method, paid credits or automatic billing. Never view, copy or reveal an API secret. Do not enable agent hosting, create rooms, buy credits, change another project, or switch accounts. Report any human verification for browser handoff; stop on refusal.')), signal, 'LiveKit browser pairing did not complete; rerun usegrunt setup');
+      pairing = awaitBrowser(Promise.resolve().then(() => options.squire.signup('livekit', url.href, 'Approve only the LiveKit native CLI pairing started by Grunt. Select exactly the owned grunt project. Do not select another existing or paid project. Keep the $2.50 monthly inference hard stop and no payment method, paid credits or automatic billing. Never view, copy or reveal an API secret. Do not enable agent hosting, create rooms, buy credits, change another project, or switch accounts. Report any human verification for browser handoff; stop on refusal.')), signal, 'LiveKit browser pairing did not complete; rerun usegrunt setup');
       void pairing.catch(() => { failure = new Error('LiveKit browser pairing did not complete; rerun usegrunt setup'); abort(); });
     }
   };
@@ -171,7 +171,7 @@ export async function setupLiveKit(options: SetupOptions) {
     // A fresh browser check replaces any previous billing approval immediately.
     await rm(paths.receipt, { force: true });
     await verifyAccount(options);
-    const existing = before.filter(project => /^wss:\/\/grunt-free-[a-z0-9-]+\.livekit\.cloud$/.test(project.url));
+    const existing = before.filter(project => /^wss:\/\/grunt(?:-free)?-[a-z0-9-]+\.livekit\.cloud$/.test(project.url));
     if (existing.length && existing.some(project => project.id !== existing[0]!.id || project.url !== existing[0]!.url)) throw new Error('Multiple LiveKit grunt-free projects need an explicit selection before setup can continue');
     if (existing.length) {
       const project = existing[0]!;
@@ -193,7 +193,7 @@ export async function setupLiveKit(options: SetupOptions) {
     const added = after.filter(project => !before.some(old => old.selector === project.selector));
     if (added.length !== 1) throw new Error('LiveKit native login did not identify exactly one newly authorized free project');
     const project = added[0]!;
-    if (!/^wss:\/\/grunt-free-[a-z0-9-]+\.livekit\.cloud$/.test(project.url)) throw new Error('LiveKit authorized a different project than the verified grunt-free project');
+    if (!/^wss:\/\/grunt(?:-free)?-[a-z0-9-]+\.livekit\.cloud$/.test(project.url)) throw new Error('LiveKit authorized a different project than the verified grunt-free project');
     await verifyProject(binary, project.selector, work, options.signal);
     await writeLiveKitFreeBuildReceipt(options.directory, { version: 1, plan: 'Build', payAsYouGo: false, paymentMethodPresent: false, purchasedCredits: 0, projectSelector: project.selector, projectId: project.id, projectURL: project.url, checkedAt: new Date().toISOString() });
     options.notify?.('LiveKit: native free Build project connected for DeepSeek V4.1 Flash');

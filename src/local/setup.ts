@@ -198,9 +198,10 @@ function oauthRetry(result: Record<string, unknown>) {
 type ObjectValue = Record<string, unknown>;
 // The registry entry for a drive: by id, else by its signup host (a setup may
 // drive under a vault service name that differs from the registry id).
-function registryEntry(registry: Registry, provider: string, url: string | undefined) {
+function registryEntry(registry: Registry, provider: string, url: string | undefined, byHost = true) {
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
-  return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
+  return registry.adapters.find(a => a.id === provider)
+    ?? (byHost ? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url)) : undefined);
 }
 // operate_drive rejects a longer goal.
 const DRIVE_GOAL_LIMIT = 4000;
@@ -460,6 +461,13 @@ export class BrowserSquire implements SetupSquire {
   async signup(service: string, url: string, goal: string, facts?: Record<string, string>): Promise<void> {
     const deadline = Date.now() + 600000;
     if (facts) this.signupFacts.set(service, facts);
+    // An existing account whose key this signup would store is already in the vault: done.
+    const shipped = registryEntry(bundledRegistry, service, url)?.capture;
+    if (shipped?.service === service) {
+      this.metadata = undefined;
+      const stored = await this.credentials.list().catch(() => []);
+      if (stored.some(credential => credential.service === shipped.service && (shipped.label === undefined || ('label' in credential && credential.label === shipped.label)))) return;
+    }
     try {
       while (Date.now() < deadline) {
         this.serviceSignal(service).throwIfAborted();
@@ -483,7 +491,8 @@ export class BrowserSquire implements SetupSquire {
     catch (error) { await this.finishSession(provider); throw error; }
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
-    const hinted = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.hints;
+    // A synced entry is trusted for hints only under its own registry id.
+    const hinted = this.options.registry ? registryEntry(this.options.registry(), provider, url, false)?.hints : registryEntry(bundledRegistry, provider, url)?.hints;
     const shipped = registryEntry(bundledRegistry, provider, url)?.capture;
     // A shipped capture stores only under the vault service this signup checks.
     const store = shipped?.service === provider ? shipped : undefined;

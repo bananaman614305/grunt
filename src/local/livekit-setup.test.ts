@@ -72,7 +72,7 @@ it('uses ordinary native pairing, preserves existing profiles/defaults, and reus
   vi.stubEnv('LiveKit_Url', 'https://wrong.invalid'); vi.stubEnv('LK_PROJECT', 'paid-project');
   vi.stubEnv('GRUNT_TEST_MARKER', join(directory, 'DO_NOT_CREATE'));
   const signup = vi.fn(async (_service: string, url: string, goal: string) => {
-    expect(goal).toMatch(/grunt-free project/);
+    expect(goal).toMatch(/grunt project/);
     expect(goal).not.toMatch(/Verify the Build free plan/);
     expect(planSteps(goal)).toEqual([]);
     expect(goal).not.toContain('API secret:');
