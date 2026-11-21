@@ -281,7 +281,7 @@ pnpm install --frozen-lockfile
 pnpm build
 node dist/local/main.js setup
 # Published package: npx usegrunt setup; installed bin: usegrunt.
-# Anonymous Kilo Particle only, after current sharing approval:
+# Anonymous Kilo free models only, after current sharing approval:
 # GRUNT_SOURCES=kilo node dist/local/main.js
 ```
 
@@ -765,7 +765,7 @@ first copied to `<file>.grunt-backup-<time>`. Each tool is reported connected
 only after it answers one real request through grunt.
 
 OpenCode first tries its free model without an account and requests sign-in only
-if that model requires it. Kilo verifies its anonymous Particle 1 free route
+if that model requires it. Kilo verifies its anonymous free model route
 without a sharing question; it needs no account, API key or signup.
 Squire handles supported verification automatically. An uncertain result with a
 captured key proceeds to a local test request; missing or failing access is
@@ -779,7 +779,10 @@ review or train on prompts. It records current provider policies in a private
 receipt for the existing runtime guards without prompting, including material
 terms such as Free-Pi’s trace sale, in interactive and unattended setup. Setup
 refreshes changed policies and also records OpenCode’s policy for the CLI signup
-driver when the registry omits its route. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
+driver when the registry omits its route. The daemon also renews, at start, any
+saved approval whose provider policy has since changed, so an update does not
+turn a route off, and logs `Data sharing on: ...` for the renewed providers;
+providers never approved stay off. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
 sources with explicit or material policies off and revokes their saved receipts. Retired Freebuff and APInex records do not authorize routing.
 Daily maintenance does not provision accounts; rerun setup to retry a skipped
 source. Provider-specific data policies remain documented below and in
@@ -788,22 +791,39 @@ source. Provider-specific data policies remain documented below and in
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
 
-Kilo's default in 0.6.6 is `particle-ai/particle-1:free`, a distinct model
+<a id="kilo-free-models"></a>
+
+Kilo initially prefers `particle-ai/particle-1:free`, a distinct model
 post-trained from DeepSeek V4.1 Flash, with a listed 1M-token context and native
 function calls. It calls the public `https://ai-gateway.kilo.ai/api/v1` endpoint
 without an account or API key. Before inference, grunt checks that the exact
 catalog entry is free, has at least 200K context and supports tools and output
 limits. It accepts only that exact returned model with zero reported inference
 cost and valid correlated function calls. A fallback model cannot pass as Particle.
+When a model returns HTTP 429, a server error (HTTP 5xx) or a reply naming a
+different model, the Kilo source tries another verified free model from the
+same live catalog: exact `:free` models and `reflection/beam-free` are eligible.
+A timeout or any other failure does not move on. The initial order is Particle,
+then Reflection Beam, then the rest in catalog order. Router aliases
+such as `kilo-auto/free` and `openrouter/free` are never used. The model that
+answered last is tried first on the next request. When every listed model fails
+this way, Kilo reports quota with the earliest reported refill only if every model
+returned 429; otherwise it reports the last non-quota failure. The pool moves to
+its next route. The separate Reflection Beam
+route keeps its one model.
 The [documented anonymous limit](https://kilo.ai/docs/gateway/models-and-providers)
 is 200 requests per hour per IP, subject to upstream capacity. This is ongoing
 rate-limited zero-cost access rather than a one-time credit balance.
 
-The catalog permits training on Particle prompts. Retention and staff-review
-guarantees are unestablished. The Kilo consent policy is now
-`2026-11-15-particle`; an earlier Auto Free approval does not authorize this
-route. Setup records the current policy without asking, and existing runtime
-guards continue checking the receipt.
+Prompts, code and tool results pass through Kilo and the upstream serving the
+selected model. Free models may train on prompts; retention, staff review and
+training practices vary by upstream and are not established. Do not submit
+personal or confidential data. The current Kilo policy in
+`src/local/data-sharing.ts` covers every free model the source may rotate to.
+It is an explicit policy: setup and the daemon accept it by default without a
+prompt, and `GRUNT_SETUP_NO_DATA_SHARING=1` keeps Kilo off.
+The receipt and renewal rules are described in
+[free API and account setup](#free-api-and-account-setup).
 
 CrowLLM is available as an optional local source through `npx usegrunt add crowllm`.
 It is outside the default registry while context capacity and live tools remain
@@ -1118,8 +1138,8 @@ currently available chat models through that grant before registering one.
 `usegrunt add https://host/api/v1` adds an OpenAI-compatible endpoint with a hidden key prompt and discovered model choice. `usegrunt add` prompts for a name or URL.
 `usegrunt add groq` or `usegrunt add cerebras` connects another provider through
 the same flow, then restarts grunt with the API sources enabled. `usegrunt add kilo`
-checks the anonymous Particle free route after current approval; it does not
-create an account or capture a provider key.
+checks the [anonymous Kilo free-model catalog](#kilo-free-models) after current
+approval; it does not create an account or capture a provider key.
 
 When the first account-dependent job needs Squire and no session exists, setup
 runs Squire's own connect installer with the OpenCode target. Parallel jobs share
@@ -1159,7 +1179,7 @@ config directory. `GRUNT_FREELLMAPI_URL` chooses its numeric loopback address an
 is saved in grunt's service configuration. The router's database is created under
 umask `0077`. `GRUNT_ROUTER_RUNTIME=docker` retains the older Docker installer for
 existing installations and offline regression checks.
-The default Kilo Particle source calls the public gateway directly and does not
+The default Kilo source calls the public gateway directly and does not
 need this separate router service.
 
 `GRUNT_SQUIRE_HOME` and `GRUNT_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
@@ -1209,13 +1229,13 @@ provider failover. There is no direct OpenRouter free API route. An already
 configured install can provide `GRUNT_FREELLMAPI_KEY` in its process environment;
 `GRUNT_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
 cap is (4096) tokens. Select `freellmapi` for a previously configured legacy
-chain; select `kilo` for the direct Particle 1 free source. Grunt-owned backend
+chain; select `kilo` for the [direct free-model source](#kilo-free-models). Grunt-owned backend
 rows require current sharing approval; custom backend rows retain their own flags
 and priorities. Legacy requests reconcile owned rows from the existing private
 admin file before forwarding and fail closed if that state cannot be checked.
 The 0.6.6 migration retires Grunt-owned Auto, Nemotron and other non-Particle
 rows labeled `Kilo Free` or `Grunt kilo (Squire)`, even when an older approval
-exists. With current Particle-specific consent and a verified catalog entry,
+exists. With current Kilo consent and a verified catalog entry,
 the runtime guard can add Particle to an existing Grunt-owned backend key using
 backend-held credentials. It preserves a previously disabled Particle row and
 its priority, and leaves user custom keys, rows,
@@ -1235,9 +1255,9 @@ tokens and $1.20 per million output tokens, with no free standard DeepSeek ID.
 The separately listed free Particle route does not make either standard route free.
 See [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free).
 Grunt-owned Freebuff fallback rows are disabled, and the port-8789 bridge no
-longer starts. Fresh Kilo Particle setup needs no legacy router. FreeLLMAPI
-continues priority routing for eligible configured providers; custom user rows
-retain their own flags and priorities.
+longer starts. Fresh setup of the [direct Kilo source](#kilo-free-models) needs
+no legacy router. FreeLLMAPI continues priority routing for eligible configured
+providers; custom user rows retain their own flags and priorities.
 
 FreeLLMAPI's signed catalog handles model and quota updates. Free installations
 receive its delayed monthly snapshot; live catalog access is a separate upstream
@@ -1287,10 +1307,9 @@ Avoid configuring that OpenCode server to call grunt, which would create a loop.
 See the [server API](https://opencode.ai/v1/docs/server/).
 
 [OpenCode's free models](https://opencode.ai/docs/zen) may be free only for a
-limited time, and some retain prompts for training. Kilo's Particle free catalog
-permits training on prompts, with unestablished retention and staff-review
-guarantees; [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free)
-also describes its free access. Do not send confidential data through these free routes.
+limited time, and some retain prompts for training. See the
+[Kilo reference](#kilo-free-models) for its free-model data-sharing terms.
+Do not send confidential data through these free routes.
 
 ### opencode
 

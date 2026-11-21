@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { approveDataSharing, DATA_SHARING_POLICIES, NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
+import { approveDataSharing, DATA_SHARING_POLICIES, NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent, recordDataSharingConsent, refreshDataSharingConsent } from './data-sharing.js';
 import type { DataSharingPolicy } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), isCancel: (value: unknown) => typeof value === 'symbol' }));
@@ -105,6 +105,31 @@ it('enables Nous and Kenari in an interactive terminal without asking and prints
   expect(notice.mock.calls[0]![0]).toMatch(/^Data sharing on: nous, kenari\. Off: GRUNT_SETUP_NO_DATA_SHARING=1$/);
   await approveDataSharing({ directory: path, providers, env: {}, notice });
   expect(notice).toHaveBeenCalledOnce();
+});
+
+it('renews approvals for changed policies without setup, leaving unapproved providers off', async () => {
+  const path = await directory();
+  await recordDataSharingConsent(path, ['kilo', 'tokenharbor']);
+  DATA_SHARING_POLICIES.find(policy => policy.provider === 'kilo')!.version = 'changed';
+  expect(await readDataSharingConsent(path, ['kilo', 'tokenharbor', 'runcrate'])).toEqual(['tokenharbor']);
+  expect(await refreshDataSharingConsent(path, {})).toEqual(['kilo']);
+  expect(await readDataSharingConsent(path, ['kilo', 'tokenharbor', 'runcrate'])).toEqual(['kilo', 'tokenharbor']);
+  expect(await refreshDataSharingConsent(path, {})).toEqual([]);
+});
+
+it('does not renew a changed explicit policy, including Kilo, under the setup opt-out', async () => {
+  const path = await directory();
+  await recordDataSharingConsent(path, ['kilo', 'tokenharbor', 'nous']);
+  for (const policy of DATA_SHARING_POLICIES) if (['kilo', 'tokenharbor', 'nous'].includes(policy.provider)) policy.version = 'changed';
+  expect(await refreshDataSharingConsent(path, { GRUNT_SETUP_NO_DATA_SHARING: '1' })).toEqual(['tokenharbor']);
+  expect(await readDataSharingConsent(path, ['kilo', 'tokenharbor', 'nous'])).toEqual(['tokenharbor']);
+});
+
+it('keeps the Kilo policy on by default and off under the setup opt-out', async () => {
+  const path = await directory();
+  expect(await approveDataSharing({ directory: path, providers: ['kilo'], env: {}, notice: () => {} })).toEqual({ approved: ['kilo'], skipped: [] });
+  expect(await approveDataSharing({ directory: path, providers: ['kilo'], env: { GRUNT_SETUP_NO_DATA_SHARING: '1' }, notice: () => {} })).toEqual({ approved: [], skipped: ['kilo'] });
+  expect(await readDataSharingConsent(path, ['kilo'])).toEqual([]);
 });
 
 it('re-enables only a changed explicit policy and says so again', async () => {

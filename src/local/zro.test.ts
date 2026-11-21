@@ -86,7 +86,8 @@ it('overlaps all three API signup jobs on one Squire connection', async () => {
   const started: string[] = [];
   const squire = { signup: vi.fn(), runs: { start: vi.fn(), get: vi.fn() }, credentials: { list: vi.fn(), grant: vi.fn() } };
   const connect = vi.fn(async () => {});
-  const work = setupFallbacks({ directory: await directory(), adapters: ['kilo', 'zro', 'tokenharbor'], squire, connect,
+  const path = await directory(); await recordDataSharingConsent(path, ['kilo']);
+  const work = setupFallbacks({ directory: path, adapters: ['kilo', 'zro', 'tokenharbor'], squire, connect,
     run: async () => {}, notify: () => {}, dataSharingApproved: ['kilo', 'tokenharbor'],
     setupProvider: async (_notify, ids) => { started.push(...ids); await held; return {}; } });
   await vi.waitFor(() => expect(started).toEqual(['kilo', 'zro', 'tokenharbor']));

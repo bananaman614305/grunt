@@ -230,7 +230,7 @@ export async function setupFallbacks(options: {
           return;
         }
         await (options.setupProvider ?? setup)(options.notify, ['kilo'], { squire: squire as SetupSquire, directory: options.directory, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
-        options.notify('Kilo: free Particle-1 access verified without signup');
+        options.notify('Kilo: free model access verified without signup');
       } catch (error) {
         failedSetup('kilo', error);
         options.notify('Kilo setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');

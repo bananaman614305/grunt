@@ -30,9 +30,10 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   disclosure: 'DeepSeek and GLM free routes have zero-retention and no-training policies. The pool also includes Big Pickle, whose collected data may be used for model improvement.',
   url: 'https://opencode.ai/docs/console/models/#privacy'
 }, {
-  provider: 'kilo', name: 'Kilo Particle-1 Free', version: '2026-11-15-particle',
-  disclosure: 'Particle-1 prompts and outputs pass through Kilo and Particle AI. The live catalog permits training on prompts; retention and staff-review guarantees are not established. Do not submit personal or confidential data.',
-  url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free'
+  provider: 'kilo', name: 'Kilo free models', version: '2026-11-21-free-models',
+  disclosure: 'Prompts, code and tool results pass through Kilo Gateway and the upstream hosting whichever listed free model answers: Particle AI by default, or another free model such as Reflection Beam, NVIDIA Nemotron or Baidu ERNIE when Particle is rate-limited. Free models may train on prompts; retention, staff-review and training practices vary by upstream and are not established. Do not submit personal or confidential data.',
+  url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
+  approval: 'explicit'
 }, {
   provider: 'tokenharbor', name: 'Token Harbor', version: '2026-11-15',
   disclosure: 'Prompts and responses may be retained, read by staff, and used by upstream providers for training.',
@@ -171,8 +172,6 @@ async function writeReceipt(directory: string, saved: Receipt) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-// Trusted setup/probe callers record the policies actually approved for this
-// private configuration. Background setup only reads receipts.
 export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
   const policies = dataSharingPolicies(providers);
   if (!policies.length) return;
@@ -188,6 +187,18 @@ async function revokeDataSharingConsent(directory: string, providers: readonly s
   if (!present.length) return;
   for (const provider of present) delete saved.approved[provider];
   await writeReceipt(directory, saved);
+}
+
+// The daemon renews saved approvals the way setup does, without prompting: an
+// approval recorded for an earlier version of a provider's policy is recorded
+// again for the current one. The setup opt-out still keeps explicit and
+// material policies off; providers never approved stay off.
+export async function refreshDataSharingConsent(directory: string, env?: NodeJS.ProcessEnv): Promise<string[]> {
+  const saved = await receipt(directory), optOut = gruntEnv('SETUP_NO_DATA_SHARING', env) === '1';
+  const stale = DATA_SHARING_POLICIES.filter(policy => Object.hasOwn(saved.approved, policy.provider)
+    && saved.approved[policy.provider]!.policy !== fingerprint(policy) && !(optOut && policy.approval !== undefined)).map(policy => policy.provider);
+  await recordDataSharingConsent(directory, stale);
+  return stale;
 }
 
 export const DATA_SHARING_OPT_OUT = 'GRUNT_SETUP_NO_DATA_SHARING=1';
