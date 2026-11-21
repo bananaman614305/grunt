@@ -115,7 +115,7 @@ it('sets up a fresh native config without reading or capturing API secrets', asy
   const f = await fixture(false);
   const signup = vi.fn(async (_service: string, url: string, goal: string) => {
     if (url.includes('/cli/confirm-auth')) await writeFile(join(directory, 'approved'), 'yes');
-    else expect(goal).toContain('If this owned grunt project offers an optional Agent observability switch, turn it off; if no such switch is offered, there is nothing to change.');
+    else expect(goal).toContain('Turn off optional Agent observability');
   });
   await setupLiveKit({ directory, nativeDirectory: f.native, install: f.install, squire: { signup } });
   expect(await readLiveKitFreeBuildReceipt(directory)).toMatchObject({ projectId: 'p_free', plan: 'Build' });

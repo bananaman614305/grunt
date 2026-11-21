@@ -217,16 +217,7 @@
       ],
       "install": "builtin:numes",
       "signup": "https://numes.ai/dashboard",
-      "model": "z-ai/glm-5.3-flash:free",
-      "hints": "On /dashboard press 'Create a key' (for your coding agent or team), then 'Create key'. In the dialog type grunt in 'Name', keep 'Inference' and 'USD' selected, type 0 in 'Spend limit' and leave 'Limit resets' unset, then press 'Create key'. The new key is shown once: press its copy button.",
-      "capture": {
-        "service": "numes",
-        "label": "Grunt Free",
-        "api_hosts": [
-          "api.numes.ai"
-        ],
-        "auth_shape": "bearer"
-      }
+      "model": "z-ai/glm-5.3-flash:free"
     },
     {
       "id": "goedel",

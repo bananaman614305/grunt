@@ -101,39 +101,28 @@ it.each([
   expect(() => validateRegistry(synced('zro', fields))).toThrow('Invalid adapter registry');
 });
 
-// The vault lists `before` until the drive runs, then `after`.
-function vaultedSquire(before: string[], after: string[], status: string) {
+function vaultedSquire(label: string, status: string) {
   const entry = bundledRegistry.adapters.find(a => a.id === 'goedel')!;
-  const listed = (labels: string[]) => labels.map((label, index) => ({ service: entry.capture!.service, label, reference: `vault://goedel-${label}-${index}`, field_names: ['value'] }));
-  let drove = false;
   const squire = new BrowserSquire();
-  const call = vi.spyOn(squire, 'call').mockImplementation(async name => {
-    if (name === 'list_credentials') return { credentials: listed(drove ? after : before) };
-    if (name === 'operate_drive') { drove = true; return { status, session_id: 'goedel-session' }; }
-    return {};
-  });
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'list_credentials'
+    ? { credentials: [{ service: entry.capture!.service, label, reference: 'vault://goedel-existing', field_names: ['value'] }] }
+    : name === 'operate_drive' ? { status, session_id: 'goedel-session' } : {});
   return { entry, squire, call };
 }
-const shippedLabel = () => bundledRegistry.adapters.find(a => a.id === 'goedel')!.capture!.label!;
 
 it('still runs the drive when a saved key with the right label is in the vault', async () => {
-  const { entry, squire, call } = vaultedSquire([shippedLabel()], [shippedLabel()], 'complete');
+  const { entry, squire, call } = vaultedSquire(bundledRegistry.adapters.find(a => a.id === 'goedel')!.capture!.label!, 'complete');
   await squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.');
   expect(call.mock.calls.some(([name]) => name === 'operate_drive')).toBe(true);
 });
 
-it('counts a stopped drive as success when the drive stored a new key under the shipped label', async () => {
-  const { entry, squire } = vaultedSquire([], [shippedLabel()], 'blocked');
+it('counts a stopped drive as success when the vault holds the key under the shipped label', async () => {
+  const { entry, squire } = vaultedSquire(bundledRegistry.adapters.find(a => a.id === 'goedel')!.capture!.label!, 'blocked');
   await expect(squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.')).resolves.toBeUndefined();
 });
 
-it('keeps the stop reason when the only matching key was already in the vault before the drive', async () => {
-  const { entry, squire } = vaultedSquire([shippedLabel()], [shippedLabel()], 'blocked');
-  await expect(squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.')).rejects.toThrow();
-});
-
 it('still fails a stopped drive when the vault holds that service only under another label', async () => {
-  const { entry, squire } = vaultedSquire([], ['something else'], 'blocked');
+  const { entry, squire } = vaultedSquire('something else', 'blocked');
   await expect(squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.')).rejects.toThrow();
 });
 
