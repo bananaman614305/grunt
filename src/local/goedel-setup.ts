@@ -39,7 +39,7 @@ export async function setupGoedel({ directory, squire, notify, connect, signal, 
     return (result.credentials as SummaryCredential[]).filter(item => item
       && (item.service === id && item.label === 'Grunt Free' || item.service === 'goedel machines' && item.label === 'Grunt free diagnostics')
       && item.reference?.startsWith('vault://')
-      && item.allowed_hosts?.length === 1 && item.allowed_hosts[0] === 'api.goedelmachines.com'
+      && Array.isArray(item.allowed_hosts) && item.allowed_hosts[0] === 'api.goedelmachines.com' && item.allowed_hosts.every((host: unknown) => typeof host === 'string' && (host === 'goedelmachines.com' || host === '*.goedelmachines.com' || host.endsWith('.goedelmachines.com')))
       && (item.auth_strategy === undefined || item.auth_strategy === 'api_key')
       && item.field_names?.length === 1 && /^(value|api_?key|token|key)$/i.test(item.field_names[0]!));
   };
