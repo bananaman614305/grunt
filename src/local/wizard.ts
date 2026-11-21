@@ -584,7 +584,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       // harness; it drives through its own CLI whichever harness was chosen.
       let openCodeFree: Promise<boolean> | undefined;
       const freeOpenCode = () => openCodeFree ??= (async () => {
-        if (!harness || skipAnonymous || !await onPath('opencode')) return false;
+        if (!harness || skipAnonymous || !consent.approved.includes('opencode') || !await onPath('opencode')) return false;
         try {
           await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
           return true;

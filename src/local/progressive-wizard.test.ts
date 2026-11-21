@@ -524,7 +524,7 @@ it('keeps sources queued behind the browser limit on waiting until a browser slo
   expect(Object.fromEntries(rows)).toEqual(Object.fromEntries(ids.map(id => [id, '✓ ready'])));
 });
 
-it('upgrades the anonymous OpenCode operator to the first account route that passes the tool probe', async () => {
+it.each([true, false])('uses an anonymous OpenCode operator before upgrading only with approval: %s', async approved => {
   const bin = await mkdtemp(join(tmpdir(), 'grunt-opencode-bin-'));
   try {
     const { chmod } = await import('node:fs/promises');
@@ -537,6 +537,7 @@ it('upgrades the anonymous OpenCode operator to the first account route that pas
     vi.spyOn(squire, 'useSignupAgent').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const stub = actions(['zro', 'tokenharbor']);
+    if (approved) stub.approveDataSharing.mockResolvedValue({ approved: ['zro', 'tokenharbor', 'opencode'], skipped: [] });
     stub.setupFallbacks.mockImplementation(async options => {
       await options.onSettled?.(options.adapters![0]!, true);
       return { unavailable: [] };
@@ -545,13 +546,12 @@ it('upgrades the anonymous OpenCode operator to the first account route that pas
     const probeOperator = vi.fn(async () => true);
     await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES.find(harness => harness.id === 'opencode'),
       connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })), signupHarness, probeOperator, createSquire: () => squire });
-    // Anonymous first, then the grunt-routed operator once zro is ready; no further switches.
-    expect(signupHarness.mock.calls.map(call => call[3] === true)).toEqual([true, false]);
+    expect(signupHarness.mock.calls.map(call => call[3] === true)).toEqual(approved ? [true, false] : [false]);
     expect(probeOperator).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'zro', expect.any(AbortSignal));
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
 
-it('hands signups to the OpenCode CLI when the Pi operator runs out of model', async () => {
+it.each([true, false])('hands signups from an exhausted Pi operator to OpenCode only with approval: %s', async approved => {
   const bin = await mkdtemp(join(tmpdir(), 'grunt-opencode-bin-'));
   try {
     const { chmod } = await import('node:fs/promises');
@@ -566,9 +566,10 @@ it('hands signups to the OpenCode CLI when the Pi operator runs out of model', a
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const drivers: string[] = [];
     const stub = actions(['kilo', 'pollinations', 'zro']);
+    if (approved) stub.approveDataSharing.mockResolvedValue({ approved: ['kilo', 'pollinations', 'zro', 'opencode'], skipped: [] });
     stub.setupFallbacks.mockImplementation(async options => {
       const id = options.adapters![0]!;
-      if (id !== 'kilo') await driver!({ service: id, url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) }).catch(() => {});
+      if (id !== 'kilo') await driver?.({ service: id, url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) }).catch(() => {});
       await options.onSettled?.(id, id === 'kilo');
       return { unavailable: id === 'kilo' ? [] : [id] };
     });
@@ -578,8 +579,7 @@ it('hands signups to the OpenCode CLI when the Pi operator runs out of model', a
     });
     await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, signupHarness,
       probeOperator: vi.fn(async () => true), connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })) });
-    // Kilo drives Pollinations through Pi and runs out; OpenCode's CLI drives the rest, including the retry.
-    expect(drivers).toEqual(['pi', 'opencode:free', 'opencode:free']);
+    expect(drivers).toEqual(approved ? ['pi', 'opencode:free', 'opencode:free'] : ['pi']);
     expect(log.mock.calls.map(call => String(call[0]))).not.toContain('… operator: no working anonymous model; using Squire');
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
