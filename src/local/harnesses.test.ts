@@ -259,3 +259,17 @@ it('stops a harness at once when OpenCode logs its free usage limit', async () =
   await expect(runHarness(opencode, [], {}, 30000)).rejects.toThrow(/quota exhausted/);
   expect(Date.now() - started).toBeLessThan(5000);
 });
+
+it('drives a signup through the OpenCode CLI on its free model, and hands over only when a driver has no model', async () => {
+  const { nextDriver, openCodeSignup } = await import('./harnesses.js');
+  const input = { service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal, tools: [], call: vi.fn(async () => ({})) };
+  const runs: string[][] = [];
+  await openCodeSignup(19878, async (binary, args) => { runs.push([binary, ...args]); return 'done'; })(input);
+  expect(runs[0]!.slice(0, 6)).toEqual(['opencode', 'run', '--pure', '--print-logs', '-m', 'opencode/big-pickle']);
+  const next = vi.fn(async () => {});
+  await nextDriver(async () => { throw new Error('No tool-capable adapter is available'); }, next)(input);
+  expect(next).toHaveBeenCalledExactlyOnceWith(input);
+  next.mockClear();
+  await expect(nextDriver(async () => { throw new Error('provider refused'); }, next)(input)).rejects.toThrow('provider refused');
+  expect(next).not.toHaveBeenCalled();
+});

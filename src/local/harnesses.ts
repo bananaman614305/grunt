@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { signupMcp } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
-import { setupFailureReason } from './setup-failure.js';
+import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
 
 // Writes a whole config file only when its text changes, after copying the old
 // file aside. Repeated setup runs therefore leave files and backups untouched.
@@ -340,5 +340,17 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
   } finally {
     endpoint.close();
     await rm(directory, { recursive: true, force: true });
+  }
+};
+// OpenCode runs its own tools, so the router cannot send it an operator's tool
+// calls (toolCapable is false). It drives signups through its own CLI instead.
+export const openCodeSignup = (port: number, run = runHarness) => signupHarness(HARNESSES.find(harness => harness.id === 'opencode')!, port, run, true);
+// Hands the same signup to the next driver when the first has no model to run on.
+export const nextDriver = (first: SignupAgent, next: SignupAgent): SignupAgent => async input => {
+  try { await first(input); }
+  catch (error) {
+    input.signal.throwIfAborted();
+    if (!signupOperatorUnavailable(setupFailureReason(error))) throw error;
+    await next(input);
   }
 };

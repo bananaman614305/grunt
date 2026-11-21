@@ -330,6 +330,7 @@ it.each([true, false])('checks anonymous access before Squire and signups (harne
 });
 
 it('says why the anonymous Kilo model cannot drive signups', async () => {
+  vi.stubEnv('PATH', '');
   const stub = actions(['kilo', 'zro']);
   const { HARNESSES } = await import('./harnesses.js');
   const { BrowserSquire } = await import('./setup.js');
@@ -547,5 +548,38 @@ it('upgrades the anonymous OpenCode operator to the first account route that pas
     // Anonymous first, then the grunt-routed operator once zro is ready; no further switches.
     expect(signupHarness.mock.calls.map(call => call[3] === true)).toEqual([true, false]);
     expect(probeOperator).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'zro', expect.any(AbortSignal));
+  } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
+it('hands signups to the OpenCode CLI when the Pi operator runs out of model', async () => {
+  const bin = await mkdtemp(join(tmpdir(), 'grunt-opencode-bin-'));
+  try {
+    const { chmod } = await import('node:fs/promises');
+    await writeFile(join(bin, 'opencode'), `#!${process.execPath}\nconsole.log('grunt is ready.');\n`);
+    await chmod(join(bin, 'opencode'), 0o755);
+    vi.stubEnv('PATH', bin);
+    const { HARNESSES } = await import('./harnesses.js');
+    const { BrowserSquire } = await import('./setup.js');
+    const squire = new BrowserSquire();
+    let driver: Parameters<BrowserSquire['useSignupAgent']>[0];
+    vi.spyOn(squire, 'useSignupAgent').mockImplementation(agent => { driver = agent; });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const drivers: string[] = [];
+    const stub = actions(['kilo', 'pollinations', 'zro']);
+    stub.setupFallbacks.mockImplementation(async options => {
+      const id = options.adapters![0]!;
+      if (id !== 'kilo') await driver!({ service: id, url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) }).catch(() => {});
+      await options.onSettled?.(id, id === 'kilo');
+      return { unavailable: id === 'kilo' ? [] : [id] };
+    });
+    const signupHarness = vi.fn((harness: { id: string }, _port: number, _run?: unknown, anonymous?: boolean) => async () => {
+      drivers.push(`${harness.id}${anonymous ? ':free' : ''}`);
+      if (harness.id === 'pi') throw new Error('No tool-capable adapter is available');
+    });
+    await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, signupHarness,
+      probeOperator: vi.fn(async () => true), connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })) });
+    // Kilo drives Pollinations through Pi and runs out; OpenCode's CLI drives the rest, including the retry.
+    expect(drivers).toEqual(['pi', 'opencode:free', 'opencode:free']);
+    expect(log.mock.calls.map(call => String(call[0]))).not.toContain('… operator: no working anonymous model; using Squire');
   } finally { await rm(bin, { recursive: true, force: true }); }
 });

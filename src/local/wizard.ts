@@ -18,7 +18,7 @@ import { writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
 import type { DataSharingPolicy } from './data-sharing.js';
-import { configurePi, connectHarness, detectHarnesses, HARNESSES, signupHarness, runHarness } from './harnesses.js';
+import { configurePi, connectHarness, detectHarnesses, HARNESSES, onPath, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
 import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
@@ -580,16 +580,35 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const deferred: string[] = [];
       const configure = () => (actions.connectHarness ?? connectHarness)(harness!, port,
         (binary, args, env) => runHarness(binary, args, env, 45000, { signal: session!.signal }));
+      // OpenCode runs its own tools, so the router cannot reach it from another
+      // harness; it drives through its own CLI whichever harness was chosen.
+      let openCodeFree: Promise<boolean> | undefined;
+      const freeOpenCode = () => openCodeFree ??= (async () => {
+        if (!harness || skipAnonymous || !await onPath('opencode')) return false;
+        try {
+          await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
+          return true;
+        } catch { session!.signal.throwIfAborted(); return false; }
+      })();
       const useOperator = (anonymousOpenCode = false) => {
-        const agent = (actions.signupHarness ?? signupHarness)(harness!, port, undefined, anonymousOpenCode);
+        const agent = (actions.signupHarness ?? signupHarness)(anonymousOpenCode ? HARNESSES.find(each => each.id === 'opencode')! : harness!, port, undefined, anonymousOpenCode);
         squire?.useSignupAgent(async input => {
           try { await agent(input); }
           catch (error) {
             const reason = setupFailureReason(error);
-            if (signupOperatorUnavailable(reason)) operatorFailure = reason;
+            if (signupOperatorUnavailable(reason)) {
+              operatorFailure = reason;
+              if (anonymousOpenCode) openCodeFree = Promise.resolve(false);
+            }
             throw error;
           }
         });
+      };
+      const useOpenCode = () => {
+        useOperator(true);
+        driving = Boolean(squire);
+        anonymousDriver = driving;
+        table.step('✓ model: OpenCode free');
       };
       const activate = async (source: string, bootstrap: boolean) => {
         if (!harness || !squire || unavailable.includes(source)) return false;
@@ -629,15 +648,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await session.useKiloAccount();
         }
       }
-      if (harness?.id === 'opencode' && !driving && !skipAnonymous) {
-        try {
-          await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
-          useOperator(true);
-          driving = Boolean(squire);
-          anonymousDriver = driving;
-          table.step('✓ model: OpenCode free');
-        } catch { session.signal.throwIfAborted(); }
-      }
+      if (!driving && await freeOpenCode()) useOpenCode();
       if (!driving && harness) console.log(skipAnonymous ? `– operator: anonymous Kilo off (GRUNT_SETUP_NO_ANONYMOUS=1); using Squire`
         : '… operator: no working anonymous model; using Squire');
       if (remaining.length) {
@@ -647,21 +658,23 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         } catch (error) { console.log(`✗ Trusty Squire: ${setupFailureReason(error)}`); }
       }
       table.start();
-      const checkOperator = () => {
+      const checkOperator = async () => {
         if (!operatorFailure) return;
         driving = false;
         squire?.useSignupAgent(undefined);
         if (operator && !unavailable.includes(operator)) table.set('source', operator, '✓ ready');
         operator = undefined;
-        table.step(`… operator: ${operatorFailure}; using Squire`);
+        const failure = operatorFailure;
         operatorFailure = undefined;
+        if (await freeOpenCode()) { table.step(`… operator: ${failure}; using OpenCode free`); useOpenCode(); }
+        else table.step(`… operator: ${failure}; using Squire`);
       };
       // With a harness, a Jev-only bootstrap tries every provider before it
       // hands a browser to the person; the second pass allows that handoff.
       const retryable = new Set(['browser could not continue', 'needs human verification', 'needs Terms of Service acceptance']);
       if (harness) squire?.deferHandoff?.(true);
       for (const id of remaining) {
-        checkOperator();
+        await checkOperator();
         if (!driving && harness && id !== 'opencode') table.step(`… bootstrap: ${id} via Squire`);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
@@ -673,7 +686,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       }
       squire?.deferHandoff?.(false);
       for (const id of deferred) {
-        checkOperator();
+        await checkOperator();
         settled.delete(id);
         failedReasons.delete(id);
         const failed = unavailable.indexOf(id);
