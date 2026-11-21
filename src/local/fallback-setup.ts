@@ -113,7 +113,8 @@ export async function setupFallbacks(options: {
     failures.set(id, reason);
     if (process.env.GRUNT_SETUP_DEBUG === '1') {
       const detail = squire instanceof BrowserSquire ? squire.signupFailureDetail(id) : undefined;
-      console.error(`grunt setup: ${id}: ${reason}${detail ? ` (squire ${detail})` : ''}`);
+      const cause = error instanceof Error && error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : undefined;
+      console.error(`grunt setup: ${id}: ${reason}${detail ? ` (squire ${detail})` : ''}${cause ? ` (cause ${cause})` : ''}`);
     }
   };
   const onSettled = (id: string, available: boolean) => {
