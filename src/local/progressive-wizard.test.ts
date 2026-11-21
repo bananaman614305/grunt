@@ -530,7 +530,7 @@ it.each([true, false])('uses an anonymous OpenCode operator before upgrading onl
     const { chmod } = await import('node:fs/promises');
     await writeFile(join(bin, 'opencode'), `#!${process.execPath}\nconsole.log('grunt is ready.');\n`);
     await chmod(join(bin, 'opencode'), 0o755);
-    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    vi.stubEnv('PATH', bin);
     const { HARNESSES } = await import('./harnesses.js');
     const { BrowserSquire } = await import('./setup.js');
     const squire = new BrowserSquire();
@@ -542,11 +542,11 @@ it.each([true, false])('uses an anonymous OpenCode operator before upgrading onl
       await options.onSettled?.(options.adapters![0]!, true);
       return { unavailable: [] };
     });
-    const signupHarness = vi.fn((_harness: unknown, _port: number, _run?: unknown, _anonymous?: boolean) => async () => {});
+    const signupHarness = vi.fn((_harness: unknown, _port: number, _run?: unknown, _model?: string) => async () => {});
     const probeOperator = vi.fn(async () => true);
     await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES.find(harness => harness.id === 'opencode'),
       connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })), signupHarness, probeOperator, createSquire: () => squire });
-    expect(signupHarness.mock.calls.map(call => call[3] === true)).toEqual(approved ? [true, false] : [false]);
+    expect(signupHarness.mock.calls.map(call => call[3])).toEqual(approved ? ['opencode/big-pickle', undefined] : [undefined]);
     expect(probeOperator).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'zro', expect.any(AbortSignal));
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
@@ -573,7 +573,7 @@ it.each([true, false])('hands signups from an exhausted Pi operator to OpenCode 
       await options.onSettled?.(id, id === 'kilo');
       return { unavailable: id === 'kilo' ? [] : [id] };
     });
-    const signupHarness = vi.fn((harness: { id: string }, _port: number, _run?: unknown, anonymous?: boolean) => async () => {
+    const signupHarness = vi.fn((harness: { id: string }, _port: number, _run?: unknown, anonymous?: string) => async () => {
       drivers.push(`${harness.id}${anonymous ? ':free' : ''}`);
       if (harness.id === 'pi') throw new Error('No tool-capable adapter is available');
     });
@@ -628,4 +628,43 @@ it.each([
   });
   expect(driven).toEqual(approved ? ['reflection-beam:opencode:free'] : []);
   expect(attempts.get('opencode')).toBe(initial === 'deferred' ? 2 : 1);
+});
+
+it.each([true, false])('walks every free harness model before Squire drives alone, with a Pi model answering: %s', async piAnswers => {
+  const bin = join(directory, 'bin'), pi = join(directory, 'pi-agent');
+  await mkdir(bin);
+  await mkdir(pi, { mode: 0o700 });
+  vi.stubEnv('PATH', bin);
+  vi.stubEnv('PI_CODING_AGENT_DIR', pi);
+  // OpenCode's free allowance is exhausted for every model; Pi's own provider answers or fails upstream.
+  const probes = join(directory, 'probes.log');
+  const record = `require('node:fs').appendFileSync(${JSON.stringify(probes)}, require('node:path').basename(process.argv[1]) + ' ' + process.argv.slice(2).filter(arg => /\\//.test(arg) || /free/.test(arg)).join(' ') + '\\n');`;
+  await writeFile(join(bin, 'opencode'), `#!${process.execPath}\n${record}\nconsole.error('AI_APICallError: Free usage limit reached'); setTimeout(() => {}, 60000);\n`, { mode: 0o755 });
+  await writeFile(join(bin, 'pi'), `#!${process.execPath}\n${record}\n${piAnswers ? "console.log('grunt is ready.');" : "console.error('upstream error'); process.exit(1);"}\n`, { mode: 0o755 });
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  let driver: Parameters<BrowserSquire['useSignupAgent']>[0];
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(agent => { driver = agent; });
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const stub = actions(['zro']);
+  stub.approveDataSharing.mockResolvedValue({ approved: ['zro', 'opencode'], skipped: [] });
+  const driven: string[] = [];
+  stub.setupFallbacks.mockImplementation(async options => {
+    await driver?.({ service: 'zro', url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) });
+    await options.onSettled?.('zro', true);
+    return { unavailable: [] };
+  });
+  const listFreeModels = vi.fn(async (reach: { openCode: boolean; pi: boolean }) => {
+    expect(reach).toEqual({ openCode: true, pi: true });
+    return [{ harness: 'opencode' as const, model: 'opencode/big-pickle' }, { harness: 'opencode' as const, model: 'opencode/glm-free' },
+      { harness: 'pi' as const, model: 'openrouter/vendor/model:free' }];
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, listFreeModels,
+    probeOperator: vi.fn(async () => false),
+    signupHarness: (harness, _port, _run, model) => async () => { driven.push(`${harness.id}:${model ?? 'grunt'}`); } });
+  const lines = log.mock.calls.map(call => String(call[0]));
+  expect((await readFile(probes, 'utf8')).trim().split('\n')).toEqual(['opencode opencode/big-pickle', 'opencode opencode/glm-free', 'pi vendor/model:free']);
+  expect(driven).toEqual(piAnswers ? ['pi:openrouter/vendor/model:free'] : []);
+  expect(lines).toContain(piAnswers ? '✓ model: openrouter/vendor/model:free (free)' : '… operator: no working anonymous model; using Squire');
 });

@@ -296,7 +296,74 @@ export async function connectHarness(harness: Harness, port: number, run = runHa
   return { change, answer };
 }
 
-export const signupHarness = (harness: Harness, port: number, run = runHarness, openCodeAnonymous = false): SignupAgent => async input => {
+// A free model an installed harness CLI reaches on its own, as `provider/id`.
+export interface FreeModel { harness: 'opencode' | 'pi'; model: string }
+const splitModel = (model: string) => { const slash = model.indexOf('/'); return [model.slice(0, slash), model.slice(slash + 1)] as const; };
+const loopbackURL = (value: unknown) => {
+  try { return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(String(value)).hostname); } catch { return false; }
+};
+// The person's own Pi providers, copied into a private temporary agent directory
+// so Pi runs without their extensions, sessions or MCP servers. OAuth entries stay
+// behind: Pi may rotate a refresh token, which must happen only in the real file.
+// Read as Pi itself reads them; Grunt never writes these files here.
+async function ownPiConfig(directory: string) {
+  const agent = resolve(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'));
+  const read = async (name: string) => {
+    try { return objectOrEmpty(JSON.parse(await readFile(join(agent, name), 'utf8')), `Pi ${name}`); } catch { return {}; }
+  };
+  const [models, auth] = await Promise.all([read('models.json'), read('auth.json')]);
+  const keys = Object.fromEntries(Object.entries(auth).filter(([, value]) => (value as { type?: unknown } | null)?.type === 'api_key'));
+  await writeFile(join(directory, 'models.json'), JSON.stringify(models), { mode: 0o600 });
+  await writeFile(join(directory, 'auth.json'), JSON.stringify(keys), { mode: 0o600 });
+  const providers = models.providers;
+  return providers && typeof providers === 'object' && !Array.isArray(providers) ? providers as Record<string, unknown> : {};
+}
+// Anonymous OpenCode: the signup driver's own config and data stay in this directory.
+const openCodeAlone = (directory: string) => ({ OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined, XDG_CONFIG_HOME: directory, XDG_DATA_HOME: directory, XDG_STATE_HOME: directory });
+const piArgs = (model: string) => { const [provider, id] = splitModel(model); return ['-p', '--provider', provider, '--model', id, '--no-session', '--no-builtin-tools', '--no-skills', '--no-context-files']; };
+async function inTemporary<T>(use: (directory: string) => Promise<T>) {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-free-model-'));
+  try { return await use(directory); } finally { await rm(directory, { recursive: true, force: true }); }
+}
+/**
+ * Lists the free models installed harness CLIs reach on their own (docs/router.md):
+ * OpenCode's anonymous free models, then the free models of the person's Pi providers.
+ */
+export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, run = runHarness): Promise<FreeModel[]> {
+  const found: FreeModel[] = [];
+  if (reach.openCode) {
+    // Anonymous OpenCode lists only the free models it can reach.
+    const text = await inTemporary(directory => run('opencode', ['models', 'opencode'], openCodeAlone(directory), 45000, { cwd: directory })).catch(() => '');
+    const models = text.split('\n').map(line => line.trim()).filter(line => /^opencode\/\S+$/.test(line));
+    // Big Pickle is OpenCode's long-standing anonymous model: first, and the
+    // fallback when the CLI cannot list its catalog.
+    const ordered = ['opencode/big-pickle', ...models.filter(model => model !== 'opencode/big-pickle')];
+    found.push(...ordered.map(model => ({ harness: 'opencode' as const, model })));
+  }
+  if (reach.pi) {
+    await inTemporary(async directory => {
+      const providers = await ownPiConfig(directory);
+      const text = await run('pi', ['--offline', '--list-models'], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory });
+      for (const line of text.split('\n').slice(1)) {
+        const [provider, id] = line.trim().split(/\s+/);
+        if (!provider || !id || !/[:-]free$/.test(id)) continue;
+        // A provider on this machine (Grunt itself) is not a model of Pi's own.
+        if (loopbackURL((providers[provider] as { baseUrl?: unknown } | undefined)?.baseUrl)) continue;
+        found.push({ harness: 'pi', model: `${provider}/${id}` });
+      }
+    }).catch(() => {});
+  }
+  return found;
+}
+// One short request on a free model, in the same isolated configuration a signup uses.
+export const probeFreeModel = (free: FreeModel, signal?: AbortSignal, run = runHarness) => inTemporary(async directory => {
+  if (free.harness === 'opencode') return run('opencode', ['run', '--pure', '--print-logs', '-m', free.model, prompt('OpenCode')], openCodeAlone(directory), 45000, { cwd: directory, ...(signal ? { signal } : {}) });
+  await ownPiConfig(directory);
+  return run('pi', [...piArgs(free.model), prompt('Pi')], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory, ...(signal ? { signal } : {}) });
+});
+
+// `model` runs OpenCode or Pi on a free model it reaches on its own instead of on model grunt.
+export const signupHarness = (harness: Harness, port: number, run = runHarness, model?: string): SignupAgent => async input => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-signup-'));
   const endpoint = await signupMcp(input);
   try {
@@ -317,10 +384,11 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
     let args: string[];
     switch (harness.id) {
       case 'pi':
-        await write('models.json', { providers: { grunt: piProvider(port) } });
+        if (model) await ownPiConfig(directory);
+        else await write('models.json', { providers: { grunt: piProvider(port) } });
         await write('mcp.json', { mcpServers: { squire: { ...config, exposure: 'direct' } } });
         env.PI_CODING_AGENT_DIR = directory;
-        args = ['-p', '--provider', 'grunt', '--model', 'grunt', '--no-session', '--no-builtin-tools', '--no-skills', '--no-context-files', prompt];
+        args = [...piArgs(model ?? 'grunt/grunt'), prompt];
         break;
       case 'claude':
         await write('mcp.json', { mcpServers: { squire: { type: 'http', ...config } } });
@@ -351,7 +419,7 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
         env.XDG_DATA_HOME = directory;
         env.XDG_STATE_HOME = directory;
         // --print-logs puts OpenCode's free-limit error on stderr, so runHarness can stop at once.
-        args = ['run', '--pure', '--print-logs', '-m', openCodeAnonymous ? 'opencode/big-pickle' : 'grunt/grunt', prompt];
+        args = ['run', '--pure', '--print-logs', '-m', model ?? 'grunt/grunt', prompt];
         break;
     }
     await run(harness.binary, args, env, 240000, { cwd: directory, signal: input.signal });
@@ -360,15 +428,32 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
     await rm(directory, { recursive: true, force: true });
   }
 };
-// OpenCode runs its own tools, so the router cannot send it an operator's tool
-// calls (toolCapable is false). It drives signups through its own CLI instead.
-export const openCodeSignup = (port: number, run = runHarness) => signupHarness(HARNESSES.find(harness => harness.id === 'opencode')!, port, run, true);
-// Hands the same signup to the next driver when the first has no model to run on.
-export const nextDriver = (first: SignupAgent, next: SignupAgent): SignupAgent => async input => {
-  try { await first(input); }
-  catch (error) {
-    input.signal.throwIfAborted();
-    if (!signupOperatorUnavailable(setupFailureReason(error))) throw error;
-    await next(input);
+const freeModelSignup = (free: FreeModel, port: number, run = runHarness) => signupHarness(HARNESSES.find(harness => harness.id === free.harness)!, port, run, free.model);
+// Hands the same signup to the next driver when one cannot run (no model, quota,
+// upstream failure, unavailable CLI); the last driver's failure is returned.
+export const nextDriver = (first: SignupAgent, ...rest: SignupAgent[]): SignupAgent => async input => {
+  for (const [index, driver] of [first, ...rest].entries()) {
+    try { return await driver(input); }
+    catch (error) {
+      input.signal.throwIfAborted();
+      if (index === rest.length || !signupOperatorUnavailable(setupFailureReason(error))) throw error;
+    }
   }
 };
+/**
+ * The daemon's signup driver (docs/router.md): the first harness on model grunt
+ * while an open tool-capable route can take it, then every free model an
+ * installed harness CLI reaches on its own. Undefined means Squire drives alone.
+ */
+export async function signupDriver(port: number, options: { routed: boolean; openCode: boolean; list?: typeof listFreeModels; run?: typeof runHarness }): Promise<SignupAgent | undefined> {
+  const [harness] = options.routed ? await detectHarnesses() : [];
+  const routed = harness ? signupHarness(harness, port, options.run) : undefined;
+  const reach = { openCode: options.openCode && await onPath('opencode'), pi: await onPath('pi') };
+  // Listed when a signup needs it, so a pass with a working route never runs the CLIs.
+  const free: SignupAgent | undefined = reach.openCode || reach.pi ? async input => {
+    const [first, ...rest] = (await (options.list ?? listFreeModels)(reach, options.run)).map(model => freeModelSignup(model, port, options.run));
+    if (!first) throw new Error('Free harness model pool unavailable');
+    await nextDriver(first, ...rest)(input);
+  } : undefined;
+  return routed && free ? nextDriver(routed, free) : routed ?? free;
+}

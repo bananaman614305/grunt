@@ -277,15 +277,15 @@ it('reaps a CLI that ignores termination before returning cancellation', async (
 });
 
 it('drives a signup through the OpenCode CLI on its free model, and hands over only when a driver has no model', async () => {
-  const { nextDriver, openCodeSignup } = await import('./harnesses.js');
+  const { nextDriver, signupHarness } = await import('./harnesses.js');
   const input = { service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal, tools: [], call: vi.fn(async () => ({})) };
   const runs: string[][] = [];
   let permission: unknown;
-  await openCodeSignup(19878, async (binary, args, env) => {
+  await signupHarness(HARNESSES.find(harness => harness.id === 'opencode')!, 19878, async (binary, args, env) => {
     runs.push([binary, ...args]);
     permission = JSON.parse(await readFile(env.OPENCODE_CONFIG!, 'utf8')).permission;
     return 'done';
-  })(input);
+  }, 'opencode/big-pickle')(input);
   expect(runs[0]!.slice(0, 6)).toEqual(['opencode', 'run', '--pure', '--print-logs', '-m', 'opencode/big-pickle']);
   // OpenCode's free tier refuses a request with none of its own tools; read stays inside the signup directory.
   expect(permission).toEqual({ '*': 'deny', read: 'allow', 'squire_*': 'allow' });
@@ -295,4 +295,70 @@ it('drives a signup through the OpenCode CLI on its free model, and hands over o
   next.mockClear();
   await expect(nextDriver(async () => { throw new Error('provider refused'); }, next)(input)).rejects.toThrow('provider refused');
   expect(next).not.toHaveBeenCalled();
+});
+
+it('lists OpenCode free models and the free models of Pi providers, from private copies of Pi config', async () => {
+  const { listFreeModels } = await import('./harnesses.js');
+  const { path } = await piFixture({ ...managedPi(), apiKey: 'local' });
+  await writeFile(path, JSON.stringify({ providers: { grunt: managedPi(), openrouter: { baseUrl: 'https://openrouter.test/api/v1', apiKey: 'synthetic-router-key' } } }), { mode: 0o600 });
+  await writeFile(join(dir, 'auth.json'), JSON.stringify({ keyed: { type: 'api_key', key: 'synthetic-keyed' }, signed: { type: 'oauth', access: 'a', refresh: 'r', expires: 1 } }), { mode: 0o600 });
+  const copies: { models: unknown; auth: unknown }[] = [];
+  const models = await listFreeModels({ openCode: true, pi: true }, async (binary, args, env) => {
+    if (binary === 'opencode') {
+      expect(args).toEqual(['models', 'opencode']);
+      expect(env).toMatchObject({ OPENCODE_CONFIG: undefined, XDG_CONFIG_HOME: expect.any(String) });
+      return 'opencode/glm-5.3-flash-free\nopencode/big-pickle\nnot a model line';
+    }
+    const agent = env.PI_CODING_AGENT_DIR!;
+    expect(agent).not.toBe(dir);
+    copies.push({ models: JSON.parse(await readFile(join(agent, 'models.json'), 'utf8')), auth: JSON.parse(await readFile(join(agent, 'auth.json'), 'utf8')) });
+    expect((await stat(join(agent, 'auth.json'))).mode & 0o777).toBe(0o600);
+    return ['provider    model                 context', 'grunt       grunt-free            65K', 'openrouter  vendor/model:free     128K',
+      'openrouter  vendor/paid           128K', 'keyed       coder-free            32K'].join('\n');
+  });
+  expect(models).toEqual([
+    { harness: 'opencode', model: 'opencode/big-pickle' }, { harness: 'opencode', model: 'opencode/glm-5.3-flash-free' },
+    { harness: 'pi', model: 'openrouter/vendor/model:free' }, { harness: 'pi', model: 'keyed/coder-free' }
+  ]);
+  // OAuth entries stay in the person's own file, where Pi may rotate them.
+  expect(copies).toEqual([{ models: JSON.parse(await readFile(path, 'utf8')), auth: { keyed: { type: 'api_key', key: 'synthetic-keyed' } } }]);
+  // A CLI that cannot list its catalog still leaves OpenCode's anonymous model.
+  expect(await listFreeModels({ openCode: true, pi: false }, async () => { throw new Error('Could not run opencode'); })).toEqual([{ harness: 'opencode', model: 'opencode/big-pickle' }]);
+});
+
+it.each([true, false])('daemon driver: when OpenCode is unavailable the next candidate drives, or every candidate fails: %s', async piAnswers => {
+  const { signupDriver } = await import('./harnesses.js');
+  dir = await mkdtemp(join(tmpdir(), 'grunt-driver-walk-'));
+  for (const binary of ['pi', 'opencode']) await writeFile(join(dir, binary), '#!/bin/sh\n', { mode: 0o755 });
+  vi.stubEnv('PATH', dir);
+  vi.stubEnv('PI_CODING_AGENT_DIR', join(dir, 'pi-agent'));
+  const input = { service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal, tools: [], call: vi.fn(async () => ({})) };
+  const tried: string[] = [];
+  const list = vi.fn(async () => [{ harness: 'opencode' as const, model: 'opencode/big-pickle' }, { harness: 'opencode' as const, model: 'opencode/glm-free' },
+    { harness: 'pi' as const, model: 'openrouter/vendor/model:free' }]);
+  const driver = await signupDriver(19878, { routed: true, openCode: true, list, run: async (binary, args) => {
+    const model = binary === 'pi' ? `${args[2]}/${args[4]}` : args[4]!;
+    tried.push(`${binary}:${model}`);
+    if (model === 'grunt/grunt') throw new Error('No tool-capable adapter is available');
+    if (binary === 'opencode') throw new Error('quota exhausted: free usage limit reached');
+    if (!piAnswers) throw new Error('pi exited with code 1');
+    return 'done';
+  } });
+  const run = driver!(input);
+  if (piAnswers) await run;
+  else await expect(run).rejects.toThrow('pi exited with code 1');
+  expect(tried).toEqual(['pi:grunt/grunt', 'opencode:opencode/big-pickle', 'opencode:opencode/glm-free', 'pi:openrouter/vendor/model:free']);
+  expect(list).toHaveBeenCalledExactlyOnceWith({ openCode: true, pi: true }, expect.any(Function));
+});
+
+it('daemon driver: Squire drives alone when no harness CLI can drive', async () => {
+  const { signupDriver } = await import('./harnesses.js');
+  dir = await mkdtemp(join(tmpdir(), 'grunt-driver-none-'));
+  vi.stubEnv('PATH', dir);
+  const list = vi.fn(async () => []);
+  expect(await signupDriver(19878, { routed: false, openCode: true, list })).toBeUndefined();
+  await writeFile(join(dir, 'opencode'), '#!/bin/sh\n', { mode: 0o755 });
+  // OpenCode without its data-sharing approval is not a candidate.
+  expect(await signupDriver(19878, { routed: false, openCode: false, list })).toBeUndefined();
+  expect(list).not.toHaveBeenCalled();
 });
