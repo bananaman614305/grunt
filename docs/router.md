@@ -72,11 +72,16 @@ accepted, with `GRUNT_*` taking precedence.
   [setup reference](reference.md#free-api-and-account-setup).
 - **Driver failure.** If the driver's route is benched or retired mid-signup,
   the sticky router hands the same task to the next eligible tool-capable
-  route, with the usual handoff prompt. If a driver reports exhausted quota,
-  no available model, an upstream or CLI request failure, a timeout, an
-  unavailable CLI or a required sign-in, the same signup moves to the next
-  candidate in the order above. Other errors and cancellation do not move it. If no candidate
-  succeeds, that attempt fails and driver selection runs again before the next
+  route, with the usual handoff prompt. If a driver's model reports an error
+  (exhausted quota or a rate limit such as 429 or 402, no available model, a
+  provider 5xx or another failed request, including OpenCode's logged stream
+  error), an unavailable CLI or a required sign-in, the same signup moves to
+  the next candidate in the order above. A driver that made no tool call is
+  replaced by a fresh start. Once one has acted, the next continues the same
+  Squire browser session and is told not to start over. A driver that hangs
+  until its timeout fails that signup and does not switch drivers; other
+  errors and cancellation do not move it either. If no candidate succeeds,
+  that attempt fails and driver selection runs again before the next
   signup. Foreground setup tries the remaining free-model drivers on the same
   signup. An unavailable routed driver or exhausted free-model chain instead
   defers the failed signup, switching drivers before subsequent signups and the

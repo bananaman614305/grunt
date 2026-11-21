@@ -291,7 +291,7 @@ it('drives a signup through the OpenCode CLI on its free model, and hands over o
   expect(permission).toEqual({ '*': 'deny', read: 'allow', 'squire_*': 'allow' });
   const next = vi.fn(async () => {});
   await nextDriver(async () => { throw new Error('No tool-capable adapter is available'); }, next)(input);
-  expect(next).toHaveBeenCalledExactlyOnceWith(input);
+  expect(next).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ service: input.service, goal: input.goal, signal: input.signal }));
   next.mockClear();
   await expect(nextDriver(async () => { throw new Error('provider refused'); }, next)(input)).rejects.toThrow('provider refused');
   expect(next).not.toHaveBeenCalled();
@@ -308,6 +308,44 @@ it('stops driver handoff on explicit cancellation even when the CLI reports a ti
   }, next);
   await expect(driver(input)).rejects.toThrow('signup cancelled');
   expect(next).not.toHaveBeenCalled();
+});
+
+it('hands off when OpenCode logs a failed main-model request instead of waiting through its retries', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-stream-error-'));
+  const opencode = join(dir, 'opencode');
+  await writeFile(opencode, `#!${process.execPath}\nconsole.error('level=ERROR message="stream error" providerID=opencode small=true agent=title error.error="title failed"');\nsetTimeout(() => console.error('level=ERROR message="stream error" providerID=opencode small=false agent=build error.error.code=504'), 50);\nsetTimeout(() => {}, 60000);\n`);
+  await chmod(opencode, 0o755);
+  const started = Date.now();
+  const { setupFailureReason } = await import('./setup-failure.js');
+  const failure = await runHarness(opencode, [], {}, 30000).catch((error: unknown) => error);
+  expect(setupFailureReason(failure)).toBe('provider request failed');
+  expect(Date.now() - started).toBeLessThan(5000);
+});
+
+it.each([
+  ['402 Payment Required', 'quota exhausted', true], ['Error: rate limited, retry later', 'quota exhausted', true],
+  ['503 Service Unavailable', 'provider request failed', true], ['TypeError: cannot read properties', 'CLI request failed', false]
+])('names the model error a failed CLI exit reports: %s', async (text, reason, switches) => {
+  const { setupFailureReason, signupOperatorUnavailable } = await import('./setup-failure.js');
+  const failure = await runHarness(process.execPath, ['-e', `console.error(${JSON.stringify(text)}); process.exit(1)`], {}, 10000).catch((error: unknown) => error);
+  expect(setupFailureReason(failure)).toBe(reason);
+  // Only an error the model reports switches drivers; a crash or a timeout does not.
+  expect(signupOperatorUnavailable(setupFailureReason(failure))).toBe(switches);
+  expect(signupOperatorUnavailable('timed out')).toBe(false);
+});
+
+it('starts the next driver fresh only when the failed one made no tool call, otherwise continues the same session', async () => {
+  const { nextDriver } = await import('./harnesses.js');
+  const call = vi.fn(async () => ({ status: 'low_confidence' }));
+  const input = { service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal, tools: [], call };
+  const goals: string[] = [];
+  const idle = async (turn: typeof input) => { goals.push(turn.goal); throw new Error('quota exhausted'); };
+  const acted = async (turn: typeof input) => { goals.push(turn.goal); await turn.call('operate_drive', {}); throw new Error('No tool-capable adapter is available'); };
+  const last = async (turn: typeof input) => { goals.push(turn.goal); };
+  await nextDriver(idle, acted, last)(input);
+  expect(goals.slice(0, 2)).toEqual(['Free access', 'Free access']);
+  expect(goals[2]).toMatch(/^Free access\n.*same Squire browser session.*never start the signup over/);
+  expect(call).toHaveBeenCalledExactlyOnceWith('operate_drive', {});
 });
 
 it('lists OpenCode free models and excludes Google models from Pi providers, from private copies of Pi config', async () => {
@@ -343,8 +381,8 @@ it('lists OpenCode free models and excludes Google models from Pi providers, fro
 
 it.each([
   [true, 'quota exhausted: free usage limit reached'], [false, 'quota exhausted: free usage limit reached'],
-  [true, 'opencode did not answer within 240 seconds'], [false, 'opencode did not answer within 240 seconds']
-] as const)('daemon driver: Pi answers %s after %s', async (piAnswers, failure) => {
+  [true, 'opencode did not answer within 240 seconds']
+] as const)('daemon driver: Pi answers %s after %s, but a timeout never switches drivers', async (piAnswers, failure) => {
   const { signupDriver } = await import('./harnesses.js');
   dir = await mkdtemp(join(tmpdir(), 'grunt-driver-walk-'));
   for (const binary of ['pi', 'opencode']) await writeFile(join(dir, binary), '#!/bin/sh\n', { mode: 0o755 });
@@ -363,9 +401,12 @@ it.each([
     return 'done';
   } });
   const run = driver!(input);
-  if (piAnswers) await run;
+  const timeout = failure.includes('did not answer');
+  if (timeout) await expect(run).rejects.toThrow(failure);
+  else if (piAnswers) await run;
   else await expect(run).rejects.toThrow('pi exited with code 1');
-  expect(tried).toEqual(['pi:grunt/grunt', 'opencode:opencode/big-pickle', 'opencode:opencode/glm-free', 'pi:openrouter/vendor/model:free']);
+  expect(tried).toEqual(timeout ? ['pi:grunt/grunt', 'opencode:opencode/big-pickle']
+    : ['pi:grunt/grunt', 'opencode:opencode/big-pickle', 'opencode:opencode/glm-free', 'pi:openrouter/vendor/model:free']);
   expect(list).toHaveBeenCalledExactlyOnceWith({ openCode: true, pi: true }, expect.any(Function));
 });
 

@@ -8,6 +8,7 @@ import { applyEdits, modify, parse } from 'jsonc-parser';
 import { signupMcp } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
+import { SourceError } from './source.js';
 
 // Writes a whole config file only when its text changes, after copying the old
 // file aside. Repeated setup runs therefore leave files and backups untouched.
@@ -244,6 +245,9 @@ export async function detectHarnesses(harnesses = HARNESSES) {
   return harnesses.filter((_, index) => found[index]);
 }
 const FREE_LIMIT = /FreeUsageLimitError|Free usage limit reached|free_tier_limit/;
+// OpenCode's --print-logs line for a failed main-model request, which it then
+// retries: the driver has stopped making progress, so hand off now.
+const STREAM_ERROR = /level=ERROR\b(?![^\n]*\bsmall=true)[^\n]*message="stream error"/;
 export async function runHarness(binary: string, args: string[], env: Record<string, string | undefined> = {}, timeoutMs = 240000, options: { cwd?: string; signal?: AbortSignal } = {}) {
   const cwd = options.cwd ?? await mkdtemp(join(tmpdir(), 'grunt-harness-check-'));
   const timeout = AbortSignal.timeout(timeoutMs);
@@ -258,19 +262,28 @@ export async function runHarness(binary: string, args: string[], env: Record<str
       child = running;
       closed = new Promise<void>(done => running.once('close', () => done()));
       let stdout = '', stderr = '', limited = false;
-      // OpenCode retries its free limit until the next UTC day; fail fast instead.
+      // OpenCode retries its free limit until the next UTC day, and other failed
+      // model requests with backoff; fail fast instead.
       const watch = (text: string) => {
-        if (limited || !FREE_LIMIT.test(text)) return;
+        const quota = FREE_LIMIT.test(text);
+        if (limited || (!quota && !STREAM_ERROR.test(text))) return;
         limited = true;
         running.kill();
-        reject(new Error('quota exhausted: free usage limit reached'));
+        reject(quota ? new Error('quota exhausted: free usage limit reached') : new SourceError('upstream', `${binary} model request failed`));
       };
       running.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
       running.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
       running.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
       running.once('close', code => {
         const reason = setupFailureReason(new Error(stdout + '\n' + stderr));
-        if (code !== 0 || /^\s*(?:error|api error).*?(?:quota|429)/im.test(stdout)) reject(new Error(reason === 'setup failed' ? `${binary} exited with code ${code}` : reason));
+        // A failed exit that prints the model's own error names it: a rate limit
+        // or payment wall is quota, and a provider 5xx is a failed request.
+        const reported = reason !== 'setup failed' ? reason
+          : /\b(?:402|payment required|rate.?limit(?:ed)?|too many requests)\b/i.test(stderr + stdout) ? 'quota exhausted'
+            : /\b(?:50[0-4]|bad gateway|service unavailable|internal server error|overloaded)\b/i.test(stderr + stdout) ? 'provider request failed' : undefined;
+        if (code !== 0 || /^\s*(?:error|api error).*?(?:quota|429)/im.test(stdout)) {
+          reject(reported === 'provider request failed' ? new SourceError('upstream', `${binary} model request failed`) : new Error(reported ?? `${binary} exited with code ${code}`));
+        }
         else if (!stdout.trim()) reject(new Error(`${binary} printed no answer`));
         else resolve(stdout.trim());
       });
@@ -431,9 +444,14 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
 const freeModelSignup = (free: FreeModel, port: number, run = runHarness) => signupHarness(HARNESSES.find(harness => harness.id === free.harness)!, port, run, free.model);
 // Hands the same signup to the next driver when one cannot run (no model, quota,
 // upstream failure, unavailable CLI); the last driver's failure is returned.
+// A driver that made no tool call is replaced by a fresh start. Once one has
+// acted, the next continues the same Squire signup session and never starts over.
+const SIGNUP_HANDOFF = 'Another driver already worked on this signup in the same Squire browser session. Continue it from the current page with operate_drive; never start the signup over or create another account.';
 export const nextDriver = (first: SignupAgent, ...rest: SignupAgent[]): SignupAgent => async input => {
+  let acted = false;
+  const tracked = { ...input, call: (name: string, args: Parameters<typeof input.call>[1]) => { acted = true; return input.call(name, args); } };
   for (const [index, driver] of [first, ...rest].entries()) {
-    try { return await driver(input); }
+    try { return await driver(acted ? { ...tracked, goal: `${input.goal}\n${SIGNUP_HANDOFF}` } : tracked); }
     catch (error) {
       input.signal.throwIfAborted();
       if (index === rest.length || !signupOperatorUnavailable(setupFailureReason(error))) throw error;

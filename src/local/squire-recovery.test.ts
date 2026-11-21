@@ -361,6 +361,8 @@ it.each([
   ['Edit secret key', true],
   ['Complete the captcha', true],
   ['Delete secret key', false],
+  ['Regenerate secret key', false],
+  ['Roll API key', false],
   ['Grant permission', false],
   ['Enter password', false]
 ])('lets the operator choose provider key and captcha controls: %s', (label, allowed) => {
@@ -574,5 +576,43 @@ it('answers every call after a complete drive with a final stop, not the stale p
   expect(after).toEqual([0, 1].map(() => expect.objectContaining({ status: 'complete', reason: expect.stringMatching(/stored any requested key.*stop calling tools/) })));
   expect(after[0]).not.toHaveProperty('observation');
   expect(call.mock.calls.filter(([name]) => name !== 'operate_drive' && name !== 'operate_finish').map(([name]) => name)).not.toContain('operate_extract');
+  await squire.close();
+});
+
+it.each(['acted', 'timeout'] as const)('a failed driver hands its Squire session on, or a timeout fails the signup: %s', async kind => {
+  const { setupProviders } = await import('./setup.js');
+  const { nextDriver } = await import('./harnesses.js');
+  const squire = harnessSquire();
+  let drives = 0;
+  const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name !== 'operate_drive') return {};
+    drives++;
+    return args.answer === 'WAIT' ? { status: 'complete', session_id: 'zro-tab' } : { status: 'low_confidence', session_id: 'zro-tab', options: {} };
+  });
+  const goals: string[] = [];
+  const next = vi.fn(async (agent: Parameters<Parameters<BrowserSquire['useSignupAgent']>[0]>[0]) => {
+    goals.push(agent.goal);
+    await agent.call('operate_drive', { answer: 'WAIT' });
+  });
+  squire.useSignupAgent(nextDriver(async agent => {
+    goals.push(agent.goal);
+    await agent.call('operate_drive', {});
+    await agent.call('operate_drive', {});
+    throw new Error(kind === 'acted' ? 'quota exhausted: free usage limit reached' : 'opencode did not answer within 240 seconds');
+  }, next));
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  const startedDrives = drives;
+  if (kind === 'acted') {
+    // The next driver continues the same browser session; it is told not to start over.
+    expect(goals).toHaveLength(2);
+    expect(goals[1]).toContain('never start the signup over');
+    expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'zro-tab', answer: 'WAIT' }));
+    expect(call.mock.calls.filter(([name, args]) => name === 'operate_drive' && object(args).session_id !== 'zro-tab')).toHaveLength(1);
+  } else {
+    expect(next).not.toHaveBeenCalled();
+    expect(result.dropped).toEqual(['zro']);
+  }
+  expect(startedDrives).toBeGreaterThan(1);
   await squire.close();
 });
