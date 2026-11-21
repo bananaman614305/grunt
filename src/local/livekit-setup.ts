@@ -35,6 +35,8 @@ async function command(binary: string, args: string[], cwd: string, signal?: Abo
     return (await exec(binary, args, { cwd, env: livekitEnvironment(), signal, timeout: 30000, maxBuffer: 262144 })).stdout;
   } catch { signal?.throwIfAborted(); throw new Error('LiveKit native CLI command failed; rerun usegrunt setup'); }
 }
+// The Grunt-owned LiveKit project: grunt or grunt-free, plus LiveKit's generated suffix.
+export const LIVEKIT_GRUNT_PROJECT_URL = /^wss:\/\/grunt(?:-free)?-[a-z0-9]+\.livekit\.cloud$/;
 export async function installLiveKit(directory: string, options: { signal?: AbortSignal; fetcher?: typeof fetch; platform?: string; arch?: string } = {}) {
   const platform = options.platform ?? process.platform;
   const arch = (options.arch ?? process.arch) === 'x64' ? 'amd64' : options.arch ?? process.arch;
@@ -171,8 +173,8 @@ export async function setupLiveKit(options: SetupOptions) {
     // A fresh browser check replaces any previous billing approval immediately.
     await rm(paths.receipt, { force: true });
     await verifyAccount(options);
-    const existing = before.filter(project => /^wss:\/\/grunt(?:-free)?-[a-z0-9-]+\.livekit\.cloud$/.test(project.url));
-    if (existing.length && existing.some(project => project.id !== existing[0]!.id || project.url !== existing[0]!.url)) throw new Error('Multiple LiveKit grunt-free projects need an explicit selection before setup can continue');
+    const existing = before.filter(project => LIVEKIT_GRUNT_PROJECT_URL.test(project.url));
+    if (existing.length && existing.some(project => project.id !== existing[0]!.id || project.url !== existing[0]!.url)) throw new Error('Multiple LiveKit grunt projects need an explicit selection before setup can continue');
     if (existing.length) {
       const project = existing[0]!;
       let usable = false;
@@ -193,7 +195,7 @@ export async function setupLiveKit(options: SetupOptions) {
     const added = after.filter(project => !before.some(old => old.selector === project.selector));
     if (added.length !== 1) throw new Error('LiveKit native login did not identify exactly one newly authorized free project');
     const project = added[0]!;
-    if (!/^wss:\/\/grunt(?:-free)?-[a-z0-9-]+\.livekit\.cloud$/.test(project.url)) throw new Error('LiveKit authorized a different project than the verified grunt-free project');
+    if (!LIVEKIT_GRUNT_PROJECT_URL.test(project.url)) throw new Error('LiveKit authorized a different project than the verified grunt project');
     await verifyProject(binary, project.selector, work, options.signal);
     await writeLiveKitFreeBuildReceipt(options.directory, { version: 1, plan: 'Build', payAsYouGo: false, paymentMethodPresent: false, purchasedCredits: 0, projectSelector: project.selector, projectId: project.id, projectURL: project.url, checkedAt: new Date().toISOString() });
     options.notify?.('LiveKit: native free Build project connected for DeepSeek V4.1 Flash');

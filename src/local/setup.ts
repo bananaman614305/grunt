@@ -461,22 +461,29 @@ export class BrowserSquire implements SetupSquire {
   async signup(service: string, url: string, goal: string, facts?: Record<string, string>): Promise<void> {
     const deadline = Date.now() + 600000;
     if (facts) this.signupFacts.set(service, facts);
-    // An existing account whose key this signup would store is already in the vault: done.
-    const shipped = registryEntry(bundledRegistry, service, url)?.capture;
-    if (shipped?.service === service) {
-      this.metadata = undefined;
-      const stored = await this.credentials.list().catch(() => []);
-      if (stored.some(credential => credential.service === shipped.service && (shipped.label === undefined || ('label' in credential && credential.label === shipped.label)))) return;
-    }
     try {
       while (Date.now() < deadline) {
         this.serviceSignal(service).throwIfAborted();
         const result = await this.drive(service, url, goal);
         if (result.run.state === 'completed') return;
-        if (result.run.state !== 'running') throw new SetupFailure(result.reason ?? 'browser could not continue');
+        if (result.run.state !== 'running') {
+          // A stopped drive still succeeds when the vault holds this signup's key;
+          // the provider module's own check then decides whether that key is valid.
+          if (await this.vaultedCapture(service, url)) return;
+          throw new SetupFailure(result.reason ?? 'browser could not continue');
+        }
       }
+      if (await this.vaultedCapture(service, url)) return;
       throw new Error(`${service}: signup timed out; rerun setup to resume`);
     } finally { this.signupFacts.delete(service); await this.finishSession(service); }
+  }
+  // Whether the vault holds a key under the shipped capture's service and label.
+  private async vaultedCapture(service: string, url: string) {
+    const shipped = registryEntry(bundledRegistry, service, url)?.capture;
+    if (shipped?.service !== service) return false;
+    this.metadata = undefined;
+    const stored = await this.credentials.list().catch(() => []);
+    return stored.some(credential => credential.service === shipped.service && (shipped.label === undefined || ('label' in credential && credential.label === shipped.label)));
   }
   private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
     if (this.closed) throw new Error('Squire setup is closed');
