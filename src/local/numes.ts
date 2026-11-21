@@ -1,10 +1,12 @@
 import { configRoot } from '../brand.js';
+import { createHash } from 'node:crypto';
 import { NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent } from './data-sharing.js';
 import { diagnosticFetch } from './diagnostics.js';
 import { FreeApi, FREE_API_PROVIDERS, readFreeApiGrant } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
+import { MetadataFlights } from './metadata-flight.js';
 
 const { model, prefix } = FREE_API_PROVIDERS.numes;
 export const NUMES_DEEPSEEK_FLASH_MODEL = 'deepseek/deepseek-v4.1-flash:free';
@@ -42,6 +44,7 @@ export class Numes implements Source {
   private client: FreeApi;
   private fetcher: typeof fetch;
   private deepSeekRetryAt = 0;
+  private metadata = new MetadataFlights();
 
   constructor(private options: NumesOptions = {}) {
     this.directory = options.directory ?? configRoot();
@@ -57,6 +60,9 @@ export class Numes implements Source {
     return readDataSharingConsent(this.directory, [policy]).then(ids => ids.includes(policy));
   }
   private grant() { return this.options.loadGrant?.() ?? readFreeApiGrant(this.id, this.directory); }
+  private metadataKey(base: string, headers: Headers, path: string) {
+    return createHash('sha256').update(JSON.stringify([base, headers.get('Authorization'), path])).digest('hex');
+  }
 
   private async deepSeekAvailable(base: string, headers: Headers, signal?: AbortSignal | null) {
     if (Date.now() < this.deepSeekRetryAt
@@ -64,7 +70,10 @@ export class Numes implements Source {
     return this.hasDeepSeekOffer(base, headers, signal).catch(() => false);
   }
 
-  private async zeroSpendKey(base: string, headers: Headers, signal?: AbortSignal | null) {
+  private zeroSpendKey(base: string, headers: Headers, caller?: AbortSignal | null) {
+    return this.metadata.run(this.metadataKey(base, headers, 'key'), signal => this.readZeroSpendKey(base, headers, signal), caller);
+  }
+  private async readZeroSpendKey(base: string, headers: Headers, signal: AbortSignal) {
     const response = await diagnosticFetch(this.fetcher, this.id, 'account')(`${base}${prefix}/key`, {
       headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
     });
@@ -74,7 +83,10 @@ export class Numes implements Source {
     return undefined;
   }
 
-  private async hasDeepSeekOffer(base: string, headers: Headers, signal?: AbortSignal | null) {
+  private hasDeepSeekOffer(base: string, headers: Headers, caller?: AbortSignal | null) {
+    return this.metadata.run(this.metadataKey(base, headers, NUMES_DEEPSEEK_FLASH_MODEL), signal => this.readDeepSeekOffer(base, headers, signal), caller);
+  }
+  private async readDeepSeekOffer(base: string, headers: Headers, signal: AbortSignal) {
     const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models/${NUMES_DEEPSEEK_FLASH_MODEL}/endpoints`, {
       headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
     });
@@ -90,22 +102,32 @@ export class Numes implements Source {
       && freeOffer(endpoint) && Array.isArray(endpoint.supported_parameters) && endpoint.supported_parameters.includes('max_tokens'));
   }
 
-  async available() {
+  private offers(base: string, headers: Headers, caller?: AbortSignal) {
+    return this.metadata.run(this.metadataKey(base, headers, 'models'), async signal => {
+      const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models`, {
+        headers, redirect: 'error', signal
+      });
+      if (!response.ok) { await response.body?.cancel(); return undefined; }
+      const { data } = await response.json() as { data?: Offer[] };
+      return Array.isArray(data) ? data : [];
+    }, caller);
+  }
+
+  async available(signal?: AbortSignal) {
+    if (signal?.aborted) return false;
     if (!await this.approved()) return false;
     try {
+      signal?.throwIfAborted();
       const grant = await this.grant();
       const base = grant.base_url;
       const headers = new Headers({ Authorization: `Bearer ${grant.token}` });
-      const key = await this.zeroSpendKey(base, headers);
+      const key = await this.zeroSpendKey(base, headers, signal);
       if (!key) return false;
-      if (this.options.deepSeekFlash) return deepSeekKey(key) && await this.hasDeepSeekOffer(base, headers);
-      const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models`, {
-        headers, redirect: 'error', signal: AbortSignal.timeout(5000)
-      });
-      if (!response.ok) { await response.body?.cancel(); return false; }
-      const { data } = await response.json() as { data?: Offer[] };
-      return (Array.isArray(data) && data.some(entry => entry.id === model && freeOffer(entry)))
-        || (deepSeekKey(key) && await this.deepSeekAvailable(base, headers));
+      if (this.options.deepSeekFlash) return deepSeekKey(key) && await this.hasDeepSeekOffer(base, headers, signal);
+      const data = await this.offers(base, headers, signal);
+      if (!data) return false;
+      return data.some(entry => entry.id === model && freeOffer(entry))
+        || (deepSeekKey(key) && await this.deepSeekAvailable(base, headers, signal));
     } catch { return false; }
   }
 
@@ -146,5 +168,5 @@ export class Numes implements Source {
     return this.client.complete({ ...request, model: this.id }, signal);
   }
 
-  async close() { await this.client.close(); }
+  async close() { this.metadata.close(); await this.client.close(); }
 }

@@ -11,6 +11,7 @@ import { disabledAdapters, knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import type { DiagnosticEvent } from './diagnostics.js';
+import type { RoutingWorkload } from './routing-history.js';
 import { RETIRE_AFTER_FAILURES, routingWorkload, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
@@ -33,7 +34,12 @@ export function recommendedAdapters(registry: Registry, now = Date.now()) {
 }
 
 export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; dropped?: (source: string) => void }
-interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
+interface Task {
+  source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean;
+  reassessment?: { from: string; source: string; samples: number; at: number };
+  lastPerformanceSwitchAt?: number;
+}
+interface Candidate { source: Source; weight: number }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
   private bars = new Map<string, number>();
@@ -130,6 +136,39 @@ export class StickyRouter {
     const seconds = Number.isFinite(next) && next > now ? Math.ceil((next - now) / 1000) : undefined;
     return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
   }
+  private fasterContinuation(task: Task, request: ModelRequest, candidates: Candidate[], adapters: Adapter[], workload: RoutingWorkload) {
+    const reset = () => { delete task.reassessment; return undefined; };
+    // Native agents retain private tool/session state. Only Pi tool routes carry
+    // the complete continuation transcript across this safe request boundary.
+    if (request.worker || !needsFunctionTools(request) || this.sources.some(source => source.id === request.model)
+      || task.lastPerformanceSwitchAt !== undefined && this.now() - task.lastPerformanceSwitchAt < 5 * 60 * 1000) return reset();
+    const current = candidates.find(candidate => candidate.source.id === task.source);
+    if (!current || !toolCapable(current.source) || this.observation.isBusy(current.source.id)) return reset();
+    const currentAdapter = adapters.find(adapter => adapter.id === current.source.id);
+    const estimate = this.observation.routingContinuationEstimate(current.source.id, workload);
+    if (!estimate || currentAdapter?.kind !== 'model') return reset();
+    // Budget twenty seconds for handoff/setup, plus one second per 4 KiB of
+    // retransmitted context/cache loss. Require a 2x win even after this cost.
+    const contextBytes = Buffer.byteLength(JSON.stringify([request.messages, request.tools]));
+    const switchingMs = 20000 + Math.ceil(contextBytes / 4096) * 1000;
+    let best: Candidate | undefined, bestMs = estimate.expectedMs / 2;
+    for (const candidate of candidates) {
+      const adapter = adapters.find(adapter => adapter.id === candidate.source.id);
+      if (candidate === current || !toolCapable(candidate.source) || this.observation.isBusy(candidate.source.id)
+        || adapter?.kind !== 'model' || adapter.fit === 'poor' || currentAdapter.fit === 'great' && adapter.fit !== 'great') continue;
+      const alternate = this.observation.routingContinuationEstimate(candidate.source.id, workload);
+      if (!alternate || alternate.reliability < .95 || alternate.reliability < estimate.reliability) continue;
+      const expectedMs = alternate.expectedMs + switchingMs;
+      if (expectedMs < bestMs) { best = candidate; bestMs = expectedMs; }
+    }
+    if (!best) return reset();
+    const previous = task.reassessment;
+    task.reassessment = { from: current.source.id, source: best.source.id, samples: estimate.samples, at: estimate.at };
+    // Two separate successful-turn boundaries must support the same candidate.
+    // Repeated routing-loop passes over unchanged observations are not evidence.
+    if (!previous || previous.from !== current.source.id || previous.source !== best.source.id || estimate.samples < previous.samples || estimate.at <= previous.at) return;
+    return best;
+  }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal = AbortSignal.any([signal, this.shutdown.signal]);
     signal.throwIfAborted();
@@ -138,7 +177,10 @@ export class StickyRouter {
     const { worker, ...adapterRequest } = request;
     const workload = routingWorkload(request, !!worker);
     const cwd = worker ? request.cwd : await realpath(request.cwd);
-    const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, userTurns(request), request.publicContext])).digest('hex');
+    // An explicit source selection cannot inherit an automatic binding with the
+    // same user turns (or another explicitly selected source's continuation).
+    const explicit = !worker && this.sources.some(source => source.id === request.model);
+    const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, userTurns(request), request.publicContext, explicit ? request.model : null])).digest('hex');
     let task = this.tasks.get(key);
     if (!task) {
       // Reserve the task before asynchronous checkpoint creation to avoid two bindings.
@@ -166,7 +208,7 @@ export class StickyRouter {
       for (;;) {
         signal.throwIfAborted();
         const adapters = this.options.registry().adapters.filter(a => this.registered(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
-        const eligible: { source: Source; weight: number }[] = [];
+        const eligible: Candidate[] = [];
         const unknown: Source[] = [];
         const retryTimes: number[] = [];
         for (const source of this.sources) {
@@ -233,7 +275,12 @@ export class StickyRouter {
           continue;
         }
         let selected = ready.find(candidate => candidate.source.id === task.source);
-        const bound = !!selected;
+        let performanceSwitch = false;
+        if (selected && !attempted.size) {
+          const faster = this.fasterContinuation(task, request, ready, adapters, workload);
+          if (faster) { selected = faster; performanceSwitch = true; }
+        }
+        const bound = selected?.source.id === task.source;
         if (!selected) {
           let draw = (this.options.random ?? Math.random)() * ready.reduce((total, a) => total + a.weight, 0);
           selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;
@@ -256,9 +303,11 @@ export class StickyRouter {
           const liveAdapter = this.options.registry().adapters.find(adapter => adapter.id === selected.source.id
             && this.registered(adapter.id) && adapter.modalities.includes('text') && (!request.imageInput || adapter.modalities.includes('image')));
           if (!liveAdapter || scoutRetired(liveAdapter, this.now()) || this.retired(selected.source.id) || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
+            || performanceSwitch && observation.isBusy(selected.source.id)
             || worker && (observation.isBusy(selected.source.id) || !this.workerAdapter(liveAdapter))) continue;
           task.source = selected.source.id;
           task.switched = switched;
+          if (performanceSwitch) { task.lastPerformanceSwitchAt = this.now(); delete task.reassessment; }
           attempted.add(selected.source.id);
           this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
           try { worker?.onSource(selected.source.id); } catch { /* Status callbacks cannot change routing. */ }

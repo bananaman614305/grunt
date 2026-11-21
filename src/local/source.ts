@@ -37,6 +37,12 @@ export interface Source {
   // A source that calls output() when it first produces output gets the
   // first-output deadline. Other sources keep only their own timeouts.
   reportsOutput?: boolean;
+  // Streaming adapters may report every meaningful content, reasoning or tool
+  // delta. They also receive an idle deadline after output has started.
+  // Headers, role-only events and transport keepalives are not progress.
+  // This inference-stream capability opts into prompt cancellation settlement;
+  // its reader cleanup must remain abort-safe after the caller has returned.
+  reportsProgress?: boolean;
   available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;
@@ -110,20 +116,51 @@ export class Sources {
     }
   };
   private firstOutput(source: Source, request: ModelRequest, caller: AbortSignal): Promise<Completion> {
-    if (!source.reportsOutput) return source.complete(request, caller);
+    if (!source.reportsOutput && !source.reportsProgress) return source.complete(request, caller);
+    caller.throwIfAborted();
     const deadline = new AbortController();
     const signal = AbortSignal.any([caller, deadline.signal]);
     let timer: NodeJS.Timeout | undefined;
-    const work = source.complete(request, signal, () => { clearTimeout(timer); timer = undefined; });
+    let finished = false, outputStarted = false;
+    let rejectCutoff: (reason: unknown) => void;
     const cutoff = new Promise<never>((_, reject) => {
+      rejectCutoff = reject;
+    });
+    const arm = () => {
+      clearTimeout(timer);
       timer = setTimeout(() => {
-        const error = new SourceError('timeout', `${source.id} produced no output within ${this.firstOutputMs / 1000} seconds`);
-        cutoffs.add(error); deadline.abort(error); reject(error);
+        finished = true;
+        const error = new SourceError('timeout', `${source.id} produced no ${outputStarted ? 'further ' : ''}output within ${this.firstOutputMs / 1000} seconds`);
+        cutoffs.add(error); rejectCutoff(error); deadline.abort(error);
       }, this.firstOutputMs);
+    };
+    const progress = () => {
+      if (finished) return;
+      outputStarted = true;
+      clearTimeout(timer); timer = undefined;
+      if (source.reportsProgress) arm();
+    };
+    const cancel = () => {
+      finished = true;
+      // Legacy native-tool adapters own process/bridge cleanup. Let their
+      // cancelled promise settle, preserving their existing initial watchdog.
+      if (source.reportsProgress) { clearTimeout(timer); rejectCutoff(caller.reason); }
+    };
+    caller.addEventListener('abort', cancel, { once: true });
+    // Arm before invoking adapters: an adapter may synchronously report its
+    // first output, or throw before returning its promise.
+    arm();
+    const work = Promise.resolve().then(() => {
+      signal.throwIfAborted();
+      return source.complete(request, signal, progress);
     });
     // Do not wait for a hung source to clean up; it settles on its own.
     work.catch(() => {});
-    return Promise.race([work, cutoff]).finally(() => clearTimeout(timer));
+    return Promise.race([work, cutoff]).finally(() => {
+      finished = true;
+      clearTimeout(timer);
+      caller.removeEventListener('abort', cancel);
+    });
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }

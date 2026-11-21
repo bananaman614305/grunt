@@ -38,6 +38,7 @@ export async function fikraFreeWindow(fetcher: typeof fetch = fetch, now = Date.
 // use a wallet when a promotion ends. Both exact aliases passed live qualification.
 export class PromotionalApi implements Source {
   readonly supportsFunctionTools = true;
+  get reportsProgress() { return this.id === 'openference'; }
   private shutdown = new AbortController();
   constructor(readonly id: PromotionalProvider, private options: {
     directory?: string; fetcher?: typeof fetch; now?: () => number; loadGrant?: () => Promise<FreeApiGrant>;
@@ -87,7 +88,7 @@ export class PromotionalApi implements Source {
     return grant;
   }
   async available() { try { return !!await this.freeGrant(); } catch { return false; } }
-  async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
+  async complete(request: ModelRequest, caller: AbortSignal, progress?: () => void): Promise<Completion> {
     caller.throwIfAborted();
     if (![this.id, 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported promotional request');
     const grant = await this.freeGrant(caller).catch(() => undefined);
@@ -108,7 +109,7 @@ export class PromotionalApi implements Source {
         throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
           `${this.id} returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
       }
-      if (this.id === 'openference') return await readPromotionalStream(response, this.spec.model, signal, { failure: reason => { completionFailure = reason; }, cleanup: () => {
+      if (this.id === 'openference') return await readPromotionalStream(response, this.spec.model, signal, { ...(progress ? { progress } : {}), failure: reason => { completionFailure = reason; }, cleanup: () => {
         recordTransport({ source: this.id, outcome: 'failed', transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions',
           httpStatus: response.status, failureReason: 'stream_cleanup' });
       } });
@@ -148,7 +149,7 @@ function completion(text: string, calls: ToolCall[], usage: Record<string, unkno
 // SSE is transport even when the harness requests a non-streamed completion.
 // Bound memory, assemble indexed function fragments, require an explicit finish,
 // and reject errors/truncated streams instead of passing partial output as success.
-export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void }): Promise<Completion> {
+export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void }): Promise<Completion> {
   // Observers receive fixed reason codes only. Preserve thrown values (even
   // non-Error values), cancellation priority and all existing acceptance rules.
   const tagged = (error: unknown, reason: FailureReason) => {
@@ -175,14 +176,19 @@ export async function readPromotionalStream(response: Response, model: string, s
     if (chunk.model !== undefined) { if (chunk.model !== model) throw invalid('completion_model', 'Unexpected model'); seenModel = true; }
     if (chunk.usage) usage = object(chunk.usage);
     if (!Array.isArray(chunk.choices)) throw invalid('response_choices', 'Invalid stream choices');
+    let progressing = false;
     for (const value of chunk.choices) {
       const choice = object(value);
       if (choice.index !== 0) throw invalid('response_choices', 'Unexpected stream choice');
       const delta = object(choice.delta);
       if (delta.refusal) throw new SourceError('refused', 'Promotional request refused');
+      // Providers may stream reasoning before visible answer text. Preserve
+      // healthy thinking without counting comments, role events or whitespace.
+      if (!finished && ['reasoning_content', 'reasoning'].some(field => typeof delta[field] === 'string' && delta[field].trim().length > 0)) progressing = true;
       if (delta.content !== undefined && delta.content !== null) {
         if (finished || typeof delta.content !== 'string') throw invalid('response_content', 'Invalid stream content');
         text += delta.content;
+        if (delta.content.trim()) progressing = true;
       }
       if (delta.tool_calls !== undefined) {
         if (finished || !Array.isArray(delta.tool_calls)) throw invalid('response_tools', 'Invalid tool fragments');
@@ -193,6 +199,7 @@ export async function readPromotionalStream(response: Response, model: string, s
           for (const field of ['id'] as const) if (part[field] !== undefined) { if (typeof part[field] !== 'string') throw invalid('response_tools', 'Invalid tool id'); call[field] += part[field]; }
           for (const field of ['name', 'arguments'] as const) if (fn[field] !== undefined) { if (typeof fn[field] !== 'string') throw invalid('response_tools', 'Invalid tool function'); call.function[field] += fn[field]; }
           calls.set(index, call);
+          if ([part.id, fn.name, fn.arguments].some(value => typeof value === 'string' && value.trim().length > 0)) progressing = true;
         }
       }
       if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
@@ -201,6 +208,7 @@ export async function readPromotionalStream(response: Response, model: string, s
         finished = true;
       }
     }
+    if (seenModel && progressing) { try { observe?.progress?.(); } catch { /* Observation cannot alter stream validation. */ } }
   };
   const cleanupFailed = () => { try { observe?.cleanup(); } catch { /* Observation cannot change cleanup. */ } };
   const abort = () => { void reader.cancel().catch(cleanupFailed); };

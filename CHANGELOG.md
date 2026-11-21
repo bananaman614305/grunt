@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-21
+
+- Detect stalled Openference streams using meaningful content, reasoning and tool-fragment progress, while retaining complete-response validation and existing nonstreaming deadlines.
+- Share overlapping Numes and Pollinations access checks with independent caller cancellation and fresh evidence for later dispatches.
+- Reclaim idle Grunt-owned OpenCode servers and their owned process groups without interrupting active requests, clearing model cooldowns or recycling external servers.
+- Reconsider slow automatic Pi-tool continuations only when repeated recent observations support a substantial improvement after context-transfer costs. Preserve explicit provider choices and native agent sessions.
+- Reduce verification overhead with bounded parallel file hashing, within-capture artifact deduplication and one fresh capture per distinct release-plan artifact set.
+- Persist private project/session coordination plans and admission intent across frontend restarts, requiring reconciliation of uncertain work before further dispatch.
+- Add offline, result-checked runtime and verification benchmarks for matched local comparisons.
+
 ## [0.9.5] - 2026-11-21
 
 - When a Kilo model is rate-limited (HTTP 429), returns a server error (5xx) or answers as another model, try Kilo's other free models from its live catalog: Particle-1 first, then Reflection Beam, then the rest in catalog order. An anonymous Kilo model can now drive signups whenever any of them has headroom. Router aliases are never used, the model that answered last goes first, and a timeout still ends the turn without switching. When rotation exhausts the free models, report quota with the earliest refill only if all returned 429; otherwise report the last non-quota failure and hand over to the next route.

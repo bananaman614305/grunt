@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,8 +9,12 @@ import { JobScheduler } from './jobs.js';
 import type { JobRunner } from './jobs.js';
 import { assertVerificationArtifactContents, authenticVerificationReceipt, captureVerificationState, readVerificationReceipt, sameVerificationState, signVerificationReceipt, verificationBinding, verificationCommandDigest, verificationPlanDigest, verifyReleaseReceipts, writeVerificationReceipt } from './verification.js';
 import type { VerificationPlan, VerificationReceipt } from './verification.js';
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 const roots: string[] = [], stores: JobScheduler[] = [];
-afterEach(async () => { await Promise.all(stores.splice(0).map(s => s.close())); await Promise.all(roots.splice(0).map(r => rm(r, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(stores.splice(0).map(s => s.close())); await Promise.all(roots.splice(0).map(r => rm(r, { recursive: true, force: true }))); });
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'grunt-verification-')); roots.push(root);
   const project = join(root, 'project'); await mkdir(project);
@@ -21,6 +26,60 @@ async function fixture() {
   return { root, project, git, scheduler };
 }
 const scoped = { checkId: 'unit', mode: 'scoped' as const, artifactPaths: ['dist'] };
+it('hashes a tracked artifact once per capture and reads its bytes again on the next capture', async () => {
+  const f = await fixture();
+  const observed = vi.spyOn(fs, 'open');
+  const count = () => observed.mock.calls.filter(([path]) => path === join(f.project, 'source.txt')).length;
+  const first = await captureVerificationState(f.project, ['source.txt']);
+  expect(count()).toBe(1);
+  await writeFile(join(f.project, 'source.txt'), 'new bytes');
+  const second = await captureVerificationState(f.project, ['source.txt']);
+  expect(count()).toBe(2); expect(second.treeDigest).not.toBe(first.treeDigest); expect(second.artifactDigest).not.toBe(first.artifactDigest);
+});
+it('bounds concurrent input reads and closes every started file before a capture failure returns', async () => {
+  const f = await fixture();
+  for (let i = 0; i < 8; i++) await writeFile(join(f.project, `parallel-${i}.txt`), 'synthetic');
+  const actual = await vi.importActual<typeof fs>('node:fs/promises');
+  let active = 0, maximum = 0, started = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const timer = setTimeout(release, 100);
+  vi.spyOn(fs, 'open').mockImplementation(async (path, flags, mode) => {
+    const file = await actual.open(path, flags, mode);
+    active++; maximum = Math.max(maximum, active); if (++started === 4) release();
+    const close = file.close.bind(file);
+    vi.spyOn(file, 'close').mockImplementation(async () => { try { await close(); } finally { active--; } });
+    await gate;
+    if (String(path).endsWith('parallel-0.txt')) {
+      vi.spyOn(file, 'read').mockRejectedValue(new Error('synthetic read failure'));
+    }
+    return file;
+  });
+  try {
+    await expect(captureVerificationState(f.project)).rejects.toThrow('synthetic read failure');
+    expect(maximum).toBeGreaterThan(1); expect(maximum).toBeLessThanOrEqual(4); expect(active).toBe(0);
+  } finally { clearTimeout(timer); release(); }
+});
+it('keeps the full content budget when several files are read concurrently', async () => {
+  const f = await fixture();
+  // Sparse files keep fixture setup cheap while capture reads every byte.
+  for (let i = 0; i < 9; i++) {
+    const file = await fs.open(join(f.project, `large-${i}`), 'w');
+    try { await file.truncate(30 * 1024 * 1024); } finally { await file.close(); }
+  }
+  await expect(captureVerificationState(f.project)).rejects.toThrow('content budget');
+});
+it('rejects a tracked artifact changed after its shared hash was computed', async () => {
+  const f = await fixture(), actual = await vi.importActual<typeof fs>('node:fs/promises');
+  vi.spyOn(fs, 'open').mockImplementation(async (path, flags, mode) => {
+    const file = await actual.open(path, flags, mode), close = file.close.bind(file);
+    if (path === join(f.project, 'source.txt')) vi.spyOn(file, 'close').mockImplementation(async () => {
+      await close(); await writeFile(join(f.project, 'source.txt'), 'changed after hashing');
+    });
+    return file;
+  });
+  await expect(captureVerificationState(f.project, ['source.txt'])).rejects.toThrow('changed while hashing');
+});
 it('fingerprints tracked/untracked contents, revision and ignored artifacts without treating identical rewrites as changes', async () => {
   const f = await fixture(), first = await captureVerificationState(f.project, ['dist']);
   expect(first.clean).toBe(true); expect(first.artifactFiles).toEqual([{ path: 'dist/index.html', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
@@ -90,6 +149,17 @@ it('requires every exact required command, authenticated success and unchanged c
   await expect(verifyReleaseReceipts([{ ...receipts[0]!, mode: 'scoped' }, receipts[1]!], plan, f.project, key)).rejects.toThrow('scoped');
   expect(authenticVerificationReceipt({ ...receipts[0]!, exitCode: 7 }, key)).toBe(false);
   await writeFile(join(f.project, 'dist/index.html'), 'changed'); await expect(verifyReleaseReceipts(receipts, plan, f.project, key)).rejects.toThrow('changed');
+});
+it('revalidates shared release input bytes once per distinct artifact set and never across calls', async () => {
+  const f = await fixture(), key = randomBytes(32), state = await captureVerificationState(f.project, ['dist']);
+  const plan: VerificationPlan = { version: 1, id: 'publish', mode: 'release', checks: ['unit', 'browser', 'lint'].map(id => ({ id, command: `synthetic-${id}`, artifactPaths: ['dist'] })) };
+  const receipts = plan.checks.map((check, index) => signVerificationReceipt({ version: 1, id: `synthetic-${index}`, mode: 'release', checkId: check.id, planDigest: verificationPlanDigest(plan), commandDigest: verificationCommandDigest(check.command), state: 'completed', exitCode: 0, completedAt: Date.now() - 100, unchanged: true, before: state, after: state, environmentDigest: 'a'.repeat(64) } as VerificationReceipt, key));
+  const observed = vi.spyOn(fs, 'open'), count = () => observed.mock.calls.filter(([path]) => path === join(f.project, 'source.txt')).length;
+  expect((await verifyReleaseReceipts(receipts, plan, f.project, key)).checkIds).toEqual(['unit', 'browser', 'lint']);
+  expect(count()).toBe(1);
+  await writeFile(join(f.project, 'dist/index.html'), 'changed');
+  await expect(verifyReleaseReceipts(receipts, plan, f.project, key)).rejects.toThrow('changed');
+  expect(count()).toBe(2);
 });
 it('binds upload byte buffers to the signed artifact manifest, rejecting omissions, substitutions and duplicates', async () => {
   const f = await fixture(), state = await captureVerificationState(f.project, ['dist']);

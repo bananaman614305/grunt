@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -22,7 +22,8 @@ function fixture() {
   const capacity = vi.fn(async () => ({ workerSlots: 2, idleToolSources: 3, dispatchSlots: 2 }));
   return { store: new WorkerCoordinator({ batches, capacity }), batches, capacity, snapshots };
 }
-afterEach(() => { vi.unstubAllGlobals(); });
+const privateRoots: string[] = [];
+afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(privateRoots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 it('dispatches independent disjoint work nonblockingly while leaving main work and dependent review to the caller', async () => {
   const f = fixture();
@@ -207,6 +208,11 @@ it('registers coordination only for trusted worker launches and preserves system
 });
 
 it('keeps coordination plans separate when a harness switches sessions in the same project', async () => {
+  const privateRoot = await mkdtemp(join(tmpdir(), 'grunt-coordination-harness-'));
+  privateRoots.push(privateRoot);
+  const project = join(privateRoot, 'project');
+  await mkdir(project);
+  vi.stubEnv('GRUNT_COORDINATION_STATE_DIR', join(privateRoot, 'state'));
   const tools: Parameters<Parameters<typeof gruntWorkerExtension>[0]['registerTool']>[0][] = [];
   const handlers = new Map<string, ((...args: unknown[]) => unknown)[]>();
   gruntWorkerExtension({ registerFlag: vi.fn(), registerTool: tool => tools.push(tool), exec: vi.fn(),
@@ -215,11 +221,31 @@ it('keeps coordination plans separate when a harness switches sessions in the sa
   const fetcher = vi.fn<typeof fetch>(); vi.stubGlobal('fetch', fetcher);
   for (const handler of handlers.get('session_start') ?? []) await handler({}, { cwd: '/tmp' });
   const tool = tools.find(tool => tool.name === 'grunt_coordinate')!;
-  const context = (id: string) => ({ cwd: '/tmp', sessionManager: { getSessionId: () => id } });
+  const context = (id: string) => ({ cwd: project, sessionManager: { getSessionId: () => id } });
   const first = await tool.execute('one', plan(), signal(), undefined, context('one'));
   const second = await tool.execute('two', plan(), signal(), undefined, context('two'));
   expect((first.details as { planId: string }).planId).not.toBe((second.details as { planId: string }).planId);
   expect((await tool.execute('status', { operation: 'status' }, signal(), undefined, context('one'))).details).toMatchObject({ planId: (first.details as { planId: string }).planId });
   expect(fetcher).not.toHaveBeenCalled();
   for (const handler of handlers.get('session_shutdown') ?? []) await handler();
+});
+
+it('restores the same harness project/session plan across fresh frontend instances without provider calls', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'grunt-coordination-frontend-restart-')); privateRoots.push(root);
+  const project = join(root, 'project'); await mkdir(project); vi.stubEnv('GRUNT_COORDINATION_STATE_DIR', join(root, 'state'));
+  const fetcher = vi.fn<typeof fetch>(); vi.stubGlobal('fetch', fetcher);
+  const context = { cwd: project, sessionManager: { getSessionId: () => 'resumed-session' } };
+  const frontend = async () => {
+    const tools: Parameters<Parameters<typeof gruntWorkerExtension>[0]['registerTool']>[0][] = [];
+    const handlers = new Map<string, ((...args: unknown[]) => unknown)[]>();
+    gruntWorkerExtension({ registerFlag: vi.fn(), registerTool: tool => tools.push(tool), exec: vi.fn(),
+      getFlag: name => name === 'grunt-agent-workers' ? true : name === 'grunt-worker-port' ? '8793' : false,
+      on: ((name: string, handler: (...args: unknown[]) => unknown) => handlers.set(name, [...handlers.get(name) ?? [], handler])) as Parameters<typeof gruntWorkerExtension>[0]['on'] });
+    for (const handler of handlers.get('session_start') ?? []) await handler({}, context);
+    return { coordinate: tools.find(tool => tool.name === 'grunt_coordinate')!, close: async () => { for (const handler of handlers.get('session_shutdown') ?? []) await handler(); } };
+  };
+  const first = await frontend(), planned = await first.coordinate.execute('plan', plan(), signal(), undefined, context); await first.close();
+  const second = await frontend();
+  expect((await second.coordinate.execute('status', { operation: 'status' }, signal(), undefined, context)).details).toMatchObject({ planId: (planned.details as { planId: string }).planId, authority: 'advisory-coordination-only', tasks: [{ state: 'pending' }, { state: 'pending' }, { state: 'pending' }] });
+  await second.close(); expect(fetcher).not.toHaveBeenCalled();
 });

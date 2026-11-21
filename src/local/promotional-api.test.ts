@@ -133,6 +133,82 @@ it('aborts a stalled SSE reader', async () => {
   controller.abort();
   await expect(pending).rejects.toBeDefined();
 });
+
+it('reports meaningful reasoning, content and tool fragments, excluding heartbeats and role-only events', async () => {
+  const progress = vi.fn();
+  const body = ': heartbeat\n\n' + sse([
+    { model: PROMOTIONAL_PROVIDERS.openference.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: { reasoning_content: 'Working through the question' }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: { content: 'Answer' }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'ready', arguments: '{}' } }] }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: { content: '', reasoning_content: '' }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+  ]);
+  const observe = { failure: vi.fn(), cleanup: vi.fn(), progress };
+  await expect(readPromotionalStream(streamResponse(body), PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(1000), observe))
+    .resolves.toMatchObject({ text: 'Answer', calls: [{ id: 'call_1' }] });
+  expect(progress).toHaveBeenCalledTimes(3);
+});
+
+it('falls back from an Openference stream that starts reasoning then stalls, cancelling its reader once', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const cancel = vi.fn(), normal = transport('openference');
+  const fetcher = vi.fn<typeof fetch>((url, init) => String(url).endsWith('/chat/completions')
+    ? Promise.resolve(new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model,
+        choices: [{ index: 0, delta: { reasoning_content: 'Reasoning started' }, finish_reason: null }] }], false)));
+    }, cancel }), { headers: { 'Content-Type': 'text/event-stream' } })) : normal(url, init));
+  const fallback = { id: 'fikra', available: async () => true, complete: vi.fn(async () => ({ text: 'fallback' })) };
+  const sources = new Sources([source('openference', fetcher), fallback], undefined, new Set(), 50);
+  try {
+    await expect(sources.complete({ ...request('openference'), model: 'grunt' }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'fallback' });
+    expect(fallback.complete).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
+  } finally { await sources.close(); }
+});
+
+it('retains a healthy Openference reasoning stream longer than the first-output deadline', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const normal = transport('openference');
+  const fetcher = vi.fn<typeof fetch>((url, init) => String(url).endsWith('/chat/completions')
+    ? Promise.resolve(new Response(new ReadableStream({ async start(controller) {
+      for (let i = 0; i < 5; i++) {
+        controller.enqueue(new TextEncoder().encode(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model,
+          choices: [{ index: 0, delta: { reasoning_content: `Reasoning step ${i}` }, finish_reason: null }] }], false)));
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      controller.enqueue(new TextEncoder().encode(sse(frames()))); controller.close();
+    } }), { headers: { 'Content-Type': 'text/event-stream' } })) : normal(url, init));
+  const fallback = { id: 'fikra', available: async () => true, complete: vi.fn(async () => ({ text: 'fallback' })) };
+  const sources = new Sources([source('openference', fetcher), fallback], undefined, new Set(), 60);
+  try {
+    await expect(sources.complete({ ...request('openference'), model: 'grunt' }, AbortSignal.timeout(1000))).resolves.toMatchObject({ text: 'Hello' });
+    expect(fallback.complete).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
+  } finally { await sources.close(); }
+});
+
+it('does not let transport heartbeats or role-only events postpone the first-output deadline', async () => {
+  await recordDataSharingConsent(directory, ['openference']);
+  const normal = transport('openference');
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const cancel = vi.fn(() => clearInterval(heartbeat));
+  const fetcher = vi.fn<typeof fetch>((url, init) => String(url).endsWith('/chat/completions')
+    ? Promise.resolve(new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model,
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }], false)));
+      heartbeat = setInterval(() => controller.enqueue(new TextEncoder().encode(': heartbeat\n\n')), 10);
+    }, cancel }), { headers: { 'Content-Type': 'text/event-stream' } })) : normal(url, init));
+  const fallback = { id: 'fikra', available: async () => true, complete: vi.fn(async () => ({ text: 'fallback' })) };
+  const sources = new Sources([source('openference', fetcher), fallback], undefined, new Set(), 50);
+  try {
+    await expect(sources.complete({ ...request('openference'), model: 'grunt' }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'fallback' });
+    expect(fallback.complete).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
+  } finally { clearInterval(heartbeat); await sources.close(); }
+});
 it.each(['fikra', 'openference'] as const)('includes qualified %s in automatic onboarding with the exact free alias', id => {
   expect(bundledRegistry.adapters.find(adapter => adapter.id === id)?.model).toBe(PROMOTIONAL_PROVIDERS[id].model);
   expect(localOptInAdapters.some(adapter => adapter.id === id)).toBe(false);

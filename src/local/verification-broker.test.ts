@@ -1,4 +1,5 @@
 import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -11,6 +12,10 @@ import type { VerificationBrokerRunner, VerificationBrokerRequest } from './veri
 import { createVerificationBrokerFileClient, tickVerificationBroker } from './verification-broker-client.js';
 import { captureVerificationState, signVerificationReceipt, verificationEnvironmentDigest } from './verification.js';
 import type { VerificationPlan } from './verification.js';
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 const exec = promisify(execFile);
 let root: string, project: string, authority: string;
@@ -22,7 +27,7 @@ beforeEach(async () => {
   await exec('git', ['init', '-q'], { cwd: project }); await exec('git', ['add', '.'], { cwd: project });
   await exec('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture'], { cwd: project });
 });
-afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
 async function fixture(runner: VerificationBrokerRunner = async r => {
   expect(await readFile(join(r.workspaceRoot, 'input.txt'), 'utf8')).toBe('original');
   expect(r.command).toBe(plan.checks[0]!.command); expect(r.workspaceRoot).not.toBe(project);
@@ -40,6 +45,21 @@ it('executes a policy-pinned check against a private exact-head snapshot and sig
   expect((await f.broker.verifyPlan('publish', [f.request.id])).checkIds).toEqual(['unit']);
   expect(await readFile(join(project, 'input.txt'), 'utf8')).toBe('original');
   await expect(readFile(join(project, 'authority.key'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+it('captures a shared plan once after authenticating every receipt and rejects later artifact edits', async () => {
+  const multi: VerificationPlan = { ...plan, checks: [...plan.checks, { ...plan.checks[0]!, id: 'browser', command: 'trusted browser fixture' }] };
+  const broker = await VerificationBroker.open({ projectRoot: project, authorityDirectory: authority, plans: [multi], runner: async () => ({ exitCode: 0 }), environmentDigest });
+  const state = await captureVerificationState(project), ids: string[] = [];
+  for (const check of multi.checks) {
+    const id = randomUUID(); ids.push(id);
+    expect((await broker.run({ version: 1, id, planId: multi.id, checkId: check.id, expectedHead: state.head, expectedTreeDigest: state.treeDigest })).state).toBe('completed');
+  }
+  const observed = vi.spyOn(fs, 'open'), count = () => observed.mock.calls.filter(([path]) => path === join(project, 'input.txt')).length;
+  expect((await broker.verifyPlan(multi.id, ids)).checkIds).toEqual(['unit', 'browser']);
+  expect(count()).toBe(1);
+  await writeFile(join(project, 'dist/play.txt'), 'edited artifact');
+  await expect(broker.verifyPlan(multi.id, ids)).rejects.toThrow('changed');
+  expect(count()).toBe(2);
 });
 it('never accepts model commands, unknown plans, or a different expected head/tree', async () => {
   const f = await fixture();

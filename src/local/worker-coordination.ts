@@ -3,6 +3,7 @@ import type { AgentWorkerBatches } from './worker-agent-client.js';
 import { parseWorkerTask, workerActivities } from './worker-pool.js';
 import type { WorkerTask } from './worker-pool.js';
 import { workerRelativePath } from './worker-tool-helper.js';
+import { CoordinationStore } from './coordination-store.js';
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const exact = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
@@ -81,19 +82,81 @@ function parsePlan(input: Record<string, unknown>): Plan {
   return { id: randomUUID(), mainPaths, tasks, batches: [] };
 }
 
+function restoredPlan(value: unknown): Plan {
+  const input = object(value), uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+  const fail = () => new Error('Invalid saved coordination plan; inspect private state before replanning.');
+  if (!exact(input, ['id', 'mainPaths', 'tasks', 'batches']) || typeof input.id !== 'string' || !uuid.test(input.id) || !Array.isArray(input.tasks) || !Array.isArray(input.batches) || input.batches.length > 8) throw fail();
+  const rows = input.tasks.map(object);
+  for (const row of rows) {
+    const task = object(row.input);
+    if (!exact(row, ['id', 'input', 'dependsOn', 'state', 'batchId', 'workerId', 'artifactId', 'requiresIntegration']) || !exact(task, ['mode', 'task', 'context', 'activity', 'ownedPaths']) || task.mode !== 'agent'
+      || !['pending', 'running', 'completed', 'failed', 'unresolved'].includes(String(row.state)) || row.requiresIntegration !== undefined && typeof row.requiresIntegration !== 'boolean') throw fail();
+    for (const key of ['batchId', 'workerId', 'artifactId']) if (row[key] !== undefined && (typeof row[key] !== 'string' || !uuid.test(row[key]))) throw fail();
+    if (row.state === 'pending' && (row.batchId || row.workerId || row.artifactId || row.requiresIntegration) || row.state === 'running' && !row.batchId) throw fail();
+  }
+  const result = parsePlan({ operation: 'plan', main: { task: 'Resume declared main work', ownedPaths: input.mainPaths }, tasks: rows.map(row => {
+    const { mode: _mode, ...task } = object(row.input); return { id: row.id, ...task, dependsOn: row.dependsOn };
+  }) });
+  result.id = input.id;
+  result.tasks = result.tasks.map((task, i) => ({ ...task, state: rows[i]!.state as PlannedTask['state'], ...Object.fromEntries(['batchId', 'workerId', 'artifactId', 'requiresIntegration'].filter(key => rows[i]![key] !== undefined).map(key => [key, rows[i]![key]])) }));
+  const seen = new Set<string>(), assigned = new Set<string>();
+  result.batches = input.batches.map(value => {
+    const row = object(value);
+    if (!exact(row, ['id', 'tasks', 'terminal']) || typeof row.id !== 'string' || !uuid.test(row.id) || seen.has(row.id) || !Array.isArray(row.tasks) || row.tasks.length < 1 || row.tasks.length > 2 || row.terminal !== undefined && typeof row.terminal !== 'boolean') throw fail();
+    seen.add(row.id);
+    const ids = row.tasks.map(id => {
+      const task = result.tasks.find(task => task.id === id);
+      if (!task || assigned.has(task.id) || task.batchId !== row.id || task.state === 'pending') throw fail();
+      assigned.add(task.id); return task.id;
+    });
+    return { id: row.id, tasks: ids, ...(row.terminal === undefined ? {} : { terminal: row.terminal }) };
+  });
+  if (result.tasks.some(task => task.batchId && !assigned.has(task.id))) throw fail();
+  return result;
+}
+
 /** The model chooses project work; this coordinator enforces bounded safe dispatch. */
 export class WorkerCoordinator {
   private plan: Plan | undefined;
   private dispatching = false;
   private capacity: CoordinationCapacity | undefined;
-  constructor(private options: { batches: Pick<AgentWorkerBatches, 'start' | 'result'>; capacity(signal: AbortSignal): Promise<CoordinationCapacity> }) {}
+  private revision = 0;
+  private saved = '';
+  private saving: Promise<void> = Promise.resolve();
+  constructor(private options: { batches: Pick<AgentWorkerBatches, 'start' | 'result'>; capacity(signal: AbortSignal): Promise<CoordinationCapacity>; persistence?: CoordinationStore }) {}
+  static async open(options: { batches: Pick<AgentWorkerBatches, 'start' | 'result'>; capacity(signal: AbortSignal): Promise<CoordinationCapacity>; projectRoot: string; sessionId: string; stateDirectory?: string }) {
+    const persistence = await CoordinationStore.open(options), coordinator = new WorkerCoordinator({ batches: options.batches, capacity: options.capacity, persistence });
+    await coordinator.restore(); return coordinator;
+  }
+  private async restore() {
+    await this.saving;
+    if (!this.options.persistence) return;
+    const record = await this.options.persistence.read();
+    // A concurrent status call must not swap the plan captured by an in-flight
+    // dispatch. Its pending admission must either save against that revision or
+    // conflict, rather than submit old task references under a newer plan.
+    if (record && record.revision > this.revision && !this.dispatching) {
+      this.plan = restoredPlan(record.plan); this.revision = record.revision;
+      this.saved = JSON.stringify(this.plan); this.capacity = undefined;
+    }
+  }
+  private save() {
+    if (!this.options.persistence || !this.plan) return Promise.resolve();
+    const value = JSON.stringify(this.plan);
+    const write = this.saving.then(async () => {
+      if (value === this.saved) return;
+      this.revision = await this.options.persistence!.write(JSON.parse(value), this.revision); this.saved = value;
+    });
+    // A conflict stops this action; status can subsequently restore the winning revision.
+    this.saving = write.catch(() => {}); return write;
+  }
   private refresh() {
     for (const batch of this.plan?.batches ?? []) {
       // The shared frontend client evicts old completed batches. Once consumed,
       // our bounded task summaries must not depend on that cache's lifetime.
       if (batch.terminal) continue;
       let result: ReturnType<AgentWorkerBatches['result']>;
-      try { result = this.options.batches.result({ batchId: batch.id }); }
+      try { result = this.options.batches.result({ batchId: batch.id }); if (!result) throw new Error('Missing batch'); }
       catch {
         // A lost result is not proof that a task never ran. Preserve its ID,
         // stop automatic dispatch, and ask the caller to inspect retention.
@@ -116,41 +179,50 @@ export class WorkerCoordinator {
     this.refresh(); const plan = this.plan;
     const paths = (values: string[]) => ({ ownedPathCount: values.length, ownedPaths: values.slice(0, 4).map(value => Buffer.byteLength(value) <= 128 ? value : Buffer.from(value).subarray(0, 124).toString('utf8') + '…'), omittedOwnedPaths: Math.max(0, values.length - 4) });
     const reconciliationRequired = !!plan?.tasks.some(task => task.state === 'unresolved');
-    return { state: plan ? 'planned' : 'unplanned', ...(plan ? { planId: plan.id, main: paths(plan.mainPaths), reconciliationRequired,
+    return { state: plan ? 'planned' : 'unplanned', ...(this.options.persistence ? { authority: 'advisory-coordination-only', savedRevision: this.revision } : {}), ...(plan ? { planId: plan.id, main: paths(plan.mainPaths), reconciliationRequired,
       tasks: plan.tasks.map(task => ({ id: task.id, state: task.state, ...paths(task.input.ownedPaths!), dependsOn: task.dependsOn,
         ...(task.batchId ? { batchId: task.batchId } : {}), ...(task.workerId ? { workerId: task.workerId } : {}), ...(task.artifactId ? { artifactId: task.artifactId } : {}), ...(task.requiresIntegration ? { requiresIntegration: true } : {}),
         ...(task.state === 'unresolved' ? { reconciliation: 'inspect_retained_artifacts' } : {}),
         ...(task.dependsOn.length ? { deferredReason: 'Review and integrate dependencies, then create a new plan.' } : {}) })) } : {}),
       ...(this.capacity ? { capacity: this.capacity } : {}),
       nextAction: !plan ? 'Declare a main task and independent worker tasks. Empty tasks are valid when no independent work exists.'
-        : reconciliationRequired ? 'Inspect retained artifacts for the unresolved batch IDs before explicitly replanning. Do not repeat work based on a missing frontend result.'
+        : reconciliationRequired ? 'Inspect retained artifacts for unresolved admission or batch IDs before explicitly replanning. Do not repeat work based on a missing frontend result.'
         : plan.tasks.some(task => task.state === 'running') ? 'Continue the main task; collect completed artifacts with grunt_worker_result before review/integration.'
           : 'Dispatch ready tasks when capacity permits. Review and integrate results before replanning dependent work. After frontend batch expiry, inspect retained artifacts using workerId.' };
   }
   async execute(raw: unknown, signal: AbortSignal) {
-    signal.throwIfAborted(); const input = object(raw);
+    signal.throwIfAborted(); await this.restore(); signal.throwIfAborted(); const input = object(raw);
     if (input.operation === 'plan') {
       this.refresh();
       if (this.dispatching || this.plan?.tasks.some(task => task.state === 'running')) throw new Error('Collect or cancel the running coordination batch before replacing its plan.');
-      this.plan = parsePlan(input); this.capacity = undefined; return this.snapshot();
+      this.plan = parsePlan(input); this.capacity = undefined; await this.save(); return this.snapshot();
     }
     if (!exact(input, ['operation']) || !['status', 'dispatch'].includes(String(input.operation))) throw new Error('Use plan, status or dispatch. Project and provider overrides are not accepted.');
-    this.refresh();
+    this.refresh(); await this.save();
     if (input.operation === 'status') return this.snapshot();
     if (!this.plan) throw new Error('Create a coordination plan before dispatch.');
     if (this.plan.tasks.some(task => task.state === 'unresolved')) return { ...this.snapshot(), dispatch: 'reconciliation_required' };
     if (this.dispatching || this.plan.tasks.some(task => task.state === 'running')) return { ...this.snapshot(), dispatch: 'already_running' };
-    const ready = this.plan.tasks.filter(task => task.state === 'pending' && !task.dependsOn.length);
+    const plan = this.plan, ready = plan.tasks.filter(task => task.state === 'pending' && !task.dependsOn.length);
     if (!ready.length) return { ...this.snapshot(), dispatch: 'no_independent_tasks' };
     this.dispatching = true;
     try {
       this.capacity = await this.options.capacity(signal); signal.throwIfAborted();
+      if (this.plan !== plan) throw new Error('Coordination plan changed; read status before dispatching.');
       const slots = this.capacity.dispatchSlots;
       if (!Number.isSafeInteger(slots) || slots < 0 || slots > 2) throw new Error('Invalid coordination capacity.');
       if (!slots) return { ...this.snapshot(), dispatch: 'capacity_unavailable', nextAction: 'Continue the main task. Wait for natural capacity recovery; do not reset quotas or probe providers.' };
-      const selected = ready.slice(0, slots), batch = await this.options.batches.start({ tasks: selected.map(task => task.input).map(({ mode: _mode, ...task }) => task) }, signal);
+      const selected = ready.slice(0, slots);
+      // Write admission intent before submission. A crash or ambiguous start failure
+      // cannot prove no work ran, so a resumed frontend must reconcile, never replay.
+      if (this.options.persistence) {
+        for (const task of selected) task.state = 'unresolved';
+        await this.save(); signal.throwIfAborted();
+      }
+      const batch = await this.options.batches.start({ tasks: selected.map(task => task.input).map(({ mode: _mode, ...task }) => task) }, signal);
       this.plan.batches.push({ id: batch.batchId, tasks: selected.map(task => task.id) });
       for (const task of selected) { task.state = 'running'; task.batchId = batch.batchId; }
+      this.refresh(); await this.save();
       return { ...this.snapshot(), dispatch: 'started', batchId: batch.batchId, dispatchedTasks: selected.map(task => task.id) };
     } finally { this.dispatching = false; }
   }
@@ -161,7 +233,7 @@ const taskProperties = { id: { type: 'string', pattern: '^[a-z][a-z0-9_-]{0,47}$
   ownedPaths: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string' } }, dependsOn: { type: 'array', maxItems: 8, items: { type: 'string' } } };
 export const gruntCoordinateTool = {
   name: 'grunt_coordinate', label: 'Coordinate independent Grunt work',
-  description: 'Plan main-agent work plus up to eight scoped tasks, inspect status, then dispatch at most two independent tasks through existing isolated workers when local metadata leaves capacity for the main agent. Declare disjoint ownership. Dependent tasks stay deferred until their changes are reviewed/integrated and you create a new plan. Never applies artifacts, selects providers, changes quotas or creates project work on its own.',
+  description: 'Plan main-agent work plus up to eight scoped tasks, inspect status, then dispatch at most two independent tasks through existing isolated workers when local metadata leaves capacity for the main agent. Declare disjoint ownership. Dependent tasks stay deferred until their changes are reviewed/integrated and you create a new plan. Private project/session plans survive frontend restarts; lost in-flight results require reconciliation before any further dispatch. Never applies artifacts, selects providers, changes quotas or creates project work on its own.',
   promptSnippet: 'Plan independent scoped work, dispatch when capacity permits, and continue the main task',
   parameters: { type: 'object', additionalProperties: false, required: ['operation'], properties: {
     operation: { type: 'string', enum: ['plan', 'status', 'dispatch'] }, main: { type: 'object', additionalProperties: false, required: ['task', 'ownedPaths'], properties: { task: taskProperties.task, ownedPaths: { ...taskProperties.ownedPaths, minItems: 0 } } },
@@ -169,4 +241,4 @@ export const gruntCoordinateTool = {
   } }
 };
 
-export const COORDINATION_POLICY = '\n\nGrunt execution coordination: At each new work chunk, call grunt_coordinate with operation plan to declare your main task and any genuinely independent scoped tasks. Use an empty tasks list when decomposition would duplicate or conflict with main work. Call dispatch once, then continue your disjoint main task while workers run. Status is nonblocking; collect each completed batch through grunt_worker_result, inspect and integrate retained artifacts before replanning dependent work. Use managed background jobs for long independent verification when enabled. Do not sleep or repeatedly poll to simulate parallel work. Local capacity advice does not authorize provider selection, paid usage, quota resets, account changes, or permission bypasses. Checkpoint pending batch/artifact IDs before ending a work chunk.';
+export const COORDINATION_POLICY = '\n\nGrunt execution coordination: At each new work chunk, call grunt_coordinate with operation plan to declare your main task and any genuinely independent scoped tasks. Use an empty tasks list when decomposition would duplicate or conflict with main work. Call dispatch once, then continue your disjoint main task while workers run. Status is nonblocking; collect each completed batch through grunt_worker_result, inspect and integrate retained artifacts before replanning dependent work. Use managed background jobs for long independent verification when enabled. Do not sleep or repeatedly poll to simulate parallel work. Local capacity advice does not authorize provider selection, paid usage, quota resets, account changes, or permission bypasses. At resumption, read coordination status before replanning. Persisted summaries are advisory; reconcile unresolved admission or batch IDs with retained artifacts instead of repeating work. Checkpoint pending batch/artifact IDs before ending a work chunk.';

@@ -26,13 +26,23 @@ grunt_coordinate({operation: "status"})
 
 `plan` records work; only `dispatch` starts it. An empty `tasks` list is valid
 when no independent work exists. Coordination plans belong to the current Pi
-session/project and are not restored after a frontend restart.
+session/project. Plans and completed summaries survive frontend restart when
+the coding interface restores the same Pi session identity and canonical project.
+They are stored in private `~/.cache/grunt/coordination` state; the trusted launch
+setting `GRUNT_COORDINATION_STATE_DIR` can select another absolute directory outside
+the project. Without a stable session identity, a new launch starts a separate plan.
 
 The main agent continues its own task, collects completed batches through
 `grunt_worker_result`, inspects artifacts and explicitly integrates their changes.
 Dependencies remain deferred until integration and a new plan. Failed, cancelled
 or unresolved batches are never replayed automatically. Completed summaries remain
 usable after the shared batch cache evicts their detailed results.
+
+Restored running batches whose live results cannot be recovered become unresolved.
+Grunt must inspect their retained IDs and artifacts before explicitly replanning.
+Dispatch records its intent before starting a batch, so an interrupted or concurrent
+frontend cannot silently repeat it. Saved summaries are advisory context, not proof
+of integration, passing checks or independent review.
 
 ## Retain routing observations
 
@@ -46,6 +56,41 @@ across sibling runtime writes.
 History never grants access or marks a source ready. Fresh free-access, consent,
 billing and eligibility checks still run. If this optional store cannot open, the
 daemon uses current-session observations and emits a fixed advisory message.
+
+Automatic foreground continuations with Pi function tools can reconsider a sticky
+provider at a turn boundary. Migration requires sufficient recent observations of
+the same workload, at least equal reliability and registry fit, a substantial
+estimated advantage after context-transfer costs, repeated confirmation and a
+minimum dwell time. Explicit provider choices and native coding-agent sessions are
+not proactively migrated. This uses observed traffic, never additional inference
+probes, and every selected adapter still enforces current dispatch guards.
+
+## Avoid stalled streams and repeated metadata reads
+
+Openference already streams its responses. Its adapter now reports meaningful
+content, reasoning and tool-fragment progress: the router allows sixty seconds for
+first output and sixty seconds between subsequent progress events. Headers,
+heartbeats and whitespace do not extend the deadline. The adapter's overall
+response deadline and complete-response/tool validation still apply; partial tool
+calls are never returned early. Other sources that report only first output keep
+their existing behavior. Opaque nonstreaming sources retain their existing response
+deadlines because hidden reasoning cannot be distinguished from a stalled request.
+
+Numes and Pollinations share overlapping read-only metadata checks within each
+adapter instance. Cancelling one caller does not cancel other waiters. Completed
+checks are not cached for later dispatch: a later call reads fresh access evidence,
+and consent is checked for each caller. Cancellation and bounded check deadlines
+prevent replacement storms when a transport has not finished cleaning up.
+
+Grunt-owned OpenCode servers shut down after five idle minutes and restart on
+demand. On POSIX, cleanup also terminates descendants in the server's owned process
+group; Windows cleanup targets the owned server process. Descendants that detach
+into separate process groups remain outside this cleanup. Active requests and
+externally supplied server URLs are excluded. Deliberate idle recycling retains
+native session identifiers and model cooldowns while preparing the replacement
+process afresh. This bounds
+idle resource retention; it does not prevent memory growth during an active native
+request or disable inherited user MCP configuration.
 
 ## Reuse scoped verification
 
@@ -70,6 +115,33 @@ to force a fresh scoped check.
 Long browser/mobile/e2e checks use managed jobs so the main agent can continue
 independent work. Scoped job receipts do not authorize a release. Required release
 checks run through the separately configured host authority below.
+
+Verification reads at most four source files concurrently and avoids rereading a
+file named both by Git and an artifact root within one capture. Release-plan
+validation captures each distinct artifact set once per validation. These are
+within-operation optimizations: every later validation rereads current bytes,
+retains mutation/symlink checks and authenticates the required receipts.
+
+## Measure changes offline
+
+From a development checkout with dependencies installed, run:
+
+```bash
+pnpm benchmark:efficiency --baseline /absolute/baseline-checkout --iterations 7
+node --import tsx scripts/verification-benchmark.ts --baseline /absolute/baseline-checkout/src/local/verification.ts
+```
+
+The first command verifies the result of repeated synthetic tasks after a simulated
+stream stall and reports attempts plus median/tail completion times. It uses
+scaled fixture deadlines. The second compares full content capture and validation
+of six authenticated synthetic checks sharing an artifact set; baseline/current
+digests must match. Both commands run offline without provider or account traffic.
+The baseline must be a trusted local checkout with dependencies installed.
+
+These measurements isolate runtime overhead. They do not establish a general
+coding-task speedup. For that, compare equivalent tasks and provider conditions,
+count only correctly completed and verified work, and include retries, rework,
+tokens and memory in the result.
 
 ## Resume focused context
 

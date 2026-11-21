@@ -2,7 +2,7 @@ import { diagnosticFetch } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { Ajv } from 'ajv';
 import type { AnySchema } from 'ajv';
@@ -10,6 +10,7 @@ import { FreebuffTools } from './freebuff-tools.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
+import { MetadataFlights } from './metadata-flight.js';
 
 export const POLLINATIONS_MODEL = 'community/morriszdweck/glm-5.3-flash-free';
 // An explicit one-item candidate list replaces provider-configured fallbacks.
@@ -187,16 +188,24 @@ export class Pollinations implements Source {
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
   private pending = new Set<Promise<unknown>>();
+  private metadata = new MetadataFlights();
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<PollinationsGrant> } = {}) {}
   private grant() { return (this.options.loadGrant?.() ?? readPollinationsGrant(this.options.directory)).then(validateGrant); }
   private async approved() { return (await readDataSharingConsent(this.options.directory ?? directory(), [this.id])).includes(this.id); }
   private async track<T>(task: Promise<T>): Promise<T> { this.pending.add(task); try { return await task; } finally { this.pending.delete(task); } }
-  async available() {
+  private verifyAccess(grant: PollinationsGrant, signal: AbortSignal) {
+    const key = createHash('sha256').update(JSON.stringify([grant.base_url, grant.token])).digest('hex');
+    return this.metadata.run(key, shared => verifyPollinationsAccess(grant, { fetcher: this.options.fetcher ?? fetch, signal: shared }), signal);
+  }
+  async available(caller?: AbortSignal) {
     return this.track((async () => {
       try {
+        const signal = caller ? AbortSignal.any([caller, this.shutdown.signal]) : this.shutdown.signal;
+        signal.throwIfAborted();
         if (this.shutdown.signal.aborted || !await this.approved()) return false;
-        await verifyPollinationsAccess(await this.grant(), { fetcher: this.options.fetcher ?? fetch, signal: this.shutdown.signal });
-        return !this.shutdown.signal.aborted;
+        await this.verifyAccess(await this.grant(), signal);
+        signal.throwIfAborted();
+        return true;
       } catch { return false; }
     })());
   }
@@ -216,7 +225,7 @@ export class Pollinations implements Source {
       for (let attempt = 0; attempt < 2; attempt++) {
         signal.throwIfAborted();
         const grant = await this.grant();
-        await verifyPollinationsAccess(grant, { fetcher: this.options.fetcher ?? fetch, signal });
+        await this.verifyAccess(grant, signal);
         const response = await diagnosticFetch(this.options.fetcher ?? fetch, 'pollinations', 'chat.completions')(`${grant.base_url}/v1/chat/completions`, {
           method: 'POST', redirect: 'error', signal,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
@@ -259,5 +268,5 @@ export class Pollinations implements Source {
       throw new SourceError('upstream', 'Pollinations request failed');
     }
   }
-  async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
+  async close() { this.shutdown.abort(); this.metadata.close(); await Promise.allSettled([...this.pending]); }
 }
