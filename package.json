@@ -16,6 +16,7 @@
     "build": "tsc && cp src/chat.html dist/chat.html && mkdir -p dist/registry dist/admin-public && cp registry/adapters.json dist/registry/adapters.json && cp site/admin/index.html site/admin/admin.css site/admin/admin.js dist/admin-public/ && cp site/grunt.svg dist/grunt.svg && cp site/favicon.svg dist/favicon.svg",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "benchmark:efficiency": "tsx src/local/efficiency-benchmark.ts",
     "lint": "eslint src && tsc --noEmit",
     "local": "tsx src/local/main.ts",
     "admin:collector": "tsx src/admin/collector.ts"

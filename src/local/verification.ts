@@ -76,7 +76,8 @@ export async function captureVerificationState(cwd: string, artifactPaths: reado
   let bytes = 0, files = 0;
   const witnesses: { name: string; stamp?: string; children?: string[] }[] = [];
   const stamp = (st: { ino: bigint; dev: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }) => [st.ino, st.dev, st.size, st.mtimeNs, st.ctimeNs].join(':');
-  const read = async (name: string) => {
+  const reads = new Map<string, Promise<string[]>>();
+  const readOnce = async (name: string) => {
     if (isAbsolute(name) || name.includes('\0') || name.split('/').some(p => p === '..' || p === '.git')) throw new Error('Unsafe verification input path.');
     const path = join(root, name);
     // Reject symlinked ancestors as well as symlinked leaf files.
@@ -98,8 +99,26 @@ export async function captureVerificationState(cwd: string, artifactPaths: reado
       return [name, contentHash.digest('hex'), String(after.mode & 0o111n)];
     } finally { await file.close(); }
   };
-  const source = [];
-  for (const name of names) source.push(await read(name));
+  // One capture can name the same file through Git and explicit artifact roots.
+  // Reuse only this capture's bytes; the final witnesses still revalidate every
+  // file before returning, and no hash survives into another capture.
+  const read = (name: string) => {
+    let pending = reads.get(name);
+    if (!pending) { pending = readOnce(name); reads.set(name, pending); }
+    return pending;
+  };
+  const source: string[][] = new Array(names.length);
+  let next = 0, failed = false, failure: unknown;
+  // Bound open descriptors and buffers. Drain started reads on failure so no
+  // background capture work outlives a rejected verification request.
+  await Promise.all(Array.from({ length: Math.min(4, names.length) }, async () => {
+    while (!failed) {
+      const index = next++; if (index >= names.length) return;
+      try { source[index] = await read(names[index]!); }
+      catch (error) { if (!failed) failure = error; failed = true; }
+    }
+  }));
+  if (failed) throw failure;
   const artifactFiles: VerificationArtifact[] = [], missingArtifacts: string[] = []; let artifactNodes = 0;
   const walk = async (name: string, depth: number) => {
     if (++artifactNodes > 10000 || depth > 32) throw new Error('Verification artifact nesting exceeds its limit.');
@@ -175,7 +194,17 @@ export async function verifyReleaseReceipts(receipts: readonly VerificationRecei
     if (ids.has(r.id) || r.mode !== 'release' || r.planDigest !== planDigest || r.commandDigest !== digest(check.command) || r.state !== 'completed' || r.exitCode !== 0 || !r.unchanged
       || !r.before.clean || !r.after.clean || r.after.missingArtifacts.length > 0 || !sameVerificationState(r.before, r.after) || r.completedAt > now || !authenticVerificationReceipt(r, key)) throw new Error('Release verification is stale, failed, scoped or unauthenticated.');
     ids.add(r.id);
-    const current = await captureVerificationState(cwd, check.artifactPaths ?? []);
+  }
+  // Checks with the same artifact roots authorize the same full input snapshot.
+  // Capture it once for this validation only, after authenticating every receipt.
+  // A later validation always reads current bytes again.
+  const captures = new Map<string, VerificationState>();
+  for (const check of plan.checks) {
+    const r = receipts.find(receipt => receipt.checkId === check.id)!;
+    const roots = parseVerificationInput({ checkId: check.id, mode: 'scoped', artifactPaths: check.artifactPaths ?? [] }).artifactPaths;
+    const key = canonical(roots);
+    let current = captures.get(key);
+    if (!current) { current = await captureVerificationState(cwd, roots); captures.set(key, current); }
     if (!sameVerificationState(current, r.after)) throw new Error('Release inputs or artifacts changed after verification.');
   }
   return { planDigest, head: receipts[0]!.after.head, checkIds: plan.checks.map(c => c.id), verifiedAt: now };

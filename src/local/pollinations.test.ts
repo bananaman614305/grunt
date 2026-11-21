@@ -57,6 +57,51 @@ it('stores only a private Squire grant and supplied fresh verification receipt, 
   for (const [, init] of fetcher.mock.calls) { expect(init?.redirect).toBe('error'); expect(init?.headers).toMatchObject({ Authorization: `Bearer ${access.token}` }); }
 });
 
+it('shares overlapping access checks across admission and inference without sharing caller cancellation or caching settled evidence', async () => {
+  const path = await directory(); let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), ordinary = mock();
+  const metadataSignals: AbortSignal[] = [];
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    if (init?.method !== 'POST') { metadataSignals.push(init!.signal!); await gate; }
+    return ordinary(url, init);
+  });
+  const item = source({ directory: path, fetcher }), caller = new AbortController();
+  const admission = item.available(caller.signal), inference = item.complete(request, AbortSignal.timeout(10000));
+  try {
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    caller.abort(); expect(await admission).toBe(false); expect(metadataSignals.every(signal => !signal.aborted)).toBe(true);
+    release(); expect(await inference).toMatchObject({ text: 'Hello' });
+    expect(fetcher).toHaveBeenCalledTimes(4); expect(posts(fetcher)).toHaveLength(1);
+    expect(await item.available()).toBe(true); expect(fetcher).toHaveBeenCalledTimes(7);
+  } finally { release(); await Promise.allSettled([admission, inference]); }
+});
+
+it('revalidates changed funding after shared metadata finishes', async () => {
+  const path = await directory(); let funded = false;
+  const ordinary = mock(), fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    if (funded && String(url).endsWith('/account/balance')) return Response.json({ balance: 1, accountBalance: { paid: 1, tier: 1 } });
+    return ordinary(url, init);
+  });
+  const item = source({ directory: path, fetcher }); expect(await item.available()).toBe(true); funded = true;
+  await expect(item.complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'quota' });
+  expect(posts(fetcher)).toHaveLength(0); expect(fetcher).toHaveBeenCalledTimes(6);
+});
+
+it('does not share in-flight verification across rotated private grants', async () => {
+  const path = await directory(); let token = 'first-grant', release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), ordinary = mock();
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => { await gate; return ordinary(url, init); });
+  const item = source({ directory: path, fetcher, loadGrant: async () => ({ ...receipt(), token }) });
+  const first = item.available(); let second: Promise<boolean> | undefined;
+  try {
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3)); token = 'second-grant'; second = item.available();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(6)); release();
+    expect(await Promise.all([first, second])).toEqual([true, true]);
+    expect(fetcher.mock.calls.slice(0, 3).map(([, init]) => new Headers(init?.headers).get('Authorization'))).toEqual(Array(3).fill('Bearer first-grant'));
+    expect(fetcher.mock.calls.slice(3).map(([, init]) => new Headers(init?.headers).get('Authorization'))).toEqual(Array(3).fill('Bearer second-grant'));
+  } finally { release(); await Promise.allSettled([first, ...(second ? [second] : [])]); }
+});
+
 it('routes a Grunt request through the explicit singleton candidate with capped output and a complete role-preserving JSON protocol', async () => {
   const path = await directory(), fetcher = mock(), item = source({ directory: path, fetcher });
   const app = createLocalApp(new Sources([item]));

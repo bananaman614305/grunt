@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { AgentWorkerBatches, gruntSpawnTool } from './worker-agent-client.js';
 import { registerJobTools } from './jobs-pi.js';
 import type { JobPiContext, JobPiExtension } from './jobs-pi.js';
@@ -48,6 +49,7 @@ export default function gruntWorkerExtension(pi: PiWorkerExtension) {
   pi.registerFlag(AGENT_WORKERS_FLAG, { type: 'boolean', default: false, description: 'Enable isolated tool-using workers scoped to the current project. Review custom tool approval rules for grunt_spawn.' });
   const agentBatches = new Map<string, Promise<AgentWorkerBatches>>();
   const coordinators = new Map<string, Promise<WorkerCoordinator>>();
+  const fallbackSession = randomUUID();
   const agentStore = (ctx?: JobPiContext) => {
     if (pi.getFlag(AGENT_WORKERS_FLAG) !== true || !ctx) throw new Error('Scoped workers require --grunt-agent-workers and a harness project directory.');
     let store = agentBatches.get(ctx.cwd);
@@ -67,10 +69,10 @@ export default function gruntWorkerExtension(pi: PiWorkerExtension) {
       async execute(_id, input, signal = new AbortController().signal, _update, ctx) {
         signal.throwIfAborted();
         if (!ctx || pi.getFlag(AGENT_WORKERS_FLAG) !== true) throw new Error('Coordination requires the trusted agent-workers launch flag and project directory.');
-        const key = JSON.stringify([ctx.sessionManager?.getSessionId() ?? 'frontend', ctx.cwd]);
+        const sessionId = ctx.sessionManager?.getSessionId() ?? fallbackSession, key = JSON.stringify([sessionId, ctx.cwd]);
         let coordinator = coordinators.get(key);
         if (!coordinator) {
-          coordinator = agentStore(ctx).then(batches => new WorkerCoordinator({ batches,
+          coordinator = agentStore(ctx).then(batches => WorkerCoordinator.open({ batches, projectRoot: ctx.cwd, sessionId,
             capacity: async current => readCoordinationCapacity(await port(), current) })).catch((error: unknown) => { coordinators.delete(key); throw error; });
           coordinators.set(key, coordinator);
         }
@@ -99,7 +101,10 @@ export default function gruntWorkerExtension(pi: PiWorkerExtension) {
     throw error;
   });
   pi.on('session_shutdown', async () => {
+    const saveCoordination = () => Promise.allSettled([...coordinators.values()].map(async current => (await current).execute({ operation: 'status' }, new AbortController().signal)));
+    await saveCoordination();
     await Promise.allSettled([...agentBatches.values()].map(async store => (await store).close()));
+    await saveCoordination();
     agentBatches.clear();
     coordinators.clear();
     const old = pending;

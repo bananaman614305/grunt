@@ -192,3 +192,43 @@ it.each([{ billing_currency: 'BTC' }, { limit_reset: 'daily' }])('blocks DeepSee
   ]);
   expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)).model).toBe(model);
 });
+
+it('shares overlapping account and catalog reads while preserving independent admission cancellation', async () => {
+  await recordDataSharingConsent(directory, ['numes']); let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }); let accountSignal!: AbortSignal;
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    if (String(url).endsWith('/key')) { accountSignal = init!.signal!; await gate; return Response.json({ data: zeroCap }); }
+    return Response.json({ data: [offer] });
+  });
+  const numes = source(fetcher), cancelled = new AbortController();
+  const first = numes.available(cancelled.signal), second = numes.available();
+  try {
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    cancelled.abort(); expect(await first).toBe(false); expect(accountSignal.aborted).toBe(false);
+    release(); expect(await second).toBe(true); expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(await numes.available()).toBe(true); expect(fetcher).toHaveBeenCalledTimes(4);
+  } finally { release(); await Promise.allSettled([first, second]); await numes.close(); }
+});
+
+it('does not cache a completed zero-spend check when the next completion sees a changed spending cap', async () => {
+  await recordDataSharingConsent(directory, ['numes']); let allowed = true;
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (String(url).endsWith('/key')) return Response.json({ data: { ...zeroCap, limit: allowed ? 0 : null } });
+    if (String(url).endsWith('/models')) return Response.json({ data: [offer] });
+    throw new Error('Inference must not run');
+  });
+  const numes = source(fetcher); expect(await numes.available()).toBe(true); allowed = false;
+  await expect(numes.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/key'))).toHaveLength(2);
+  expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/chat/completions'))).toBe(false);
+  await numes.close();
+});
+
+it('keeps failed main catalog admission closed even when optional Flash consent exists', async () => {
+  await recordDataSharingConsent(directory, ['numes', NUMES_DEEPSEEK_FLASH_CONSENT]);
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(new Response(null, { status: 503 }));
+  const numes = source(fetcher); expect(await numes.available()).toBe(false);
+  expect(fetcher).toHaveBeenCalledTimes(2); await numes.close();
+});

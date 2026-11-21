@@ -184,6 +184,15 @@ export class SourceStatus {
     const speed = background ? sample.latencyMs / 10000 : 10000 / sample.latencyMs;
     return Math.max(.05, sample.reliability * Math.max(.25, Math.min(background ? 2 : 4, speed)) / penalty);
   }
+  // Switching an established task needs stronger evidence than a new-task draw.
+  // Use only the matching workload, never a sparse or stale aggregate profile.
+  routingContinuationEstimate(id: string, workload: RoutingWorkload) {
+    const sample = this.entry(id).profiles?.[workload], now = this.now();
+    if (!sample || sample.samples < 5 || sample.reliability <= 0 || now < sample.at || now - sample.at > 10 * 60 * 1000
+      || sample.lastSuccessAt === undefined || now < sample.lastSuccessAt || now - sample.lastSuccessAt > 10 * 60 * 1000) return;
+    return { samples: sample.samples, at: sample.at, reliability: sample.reliability,
+      expectedMs: (sample.latencyMs + sample.failureCostMs) / sample.reliability };
+  }
   private async performance(id: string, success: boolean, latencyMs: number, request: ModelRequest) {
     const entry = this.entry(id), profile = currentRoutingWorkload(request), at = this.now(), revision = entry.revision;
     entry.performance = nextRoutingPerformance(entry.performance, success, latencyMs, at);

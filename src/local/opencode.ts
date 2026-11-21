@@ -7,11 +7,13 @@ import { lstat, realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
 import { loopback } from './freellmapi.js';
+import { ManagedOpenCodeProcess } from './managed-opencode-process.js';
 import { SourceError } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
 export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle'] as const;
 const MODEL_QUOTA_COOLDOWN_MS = 60000;
+const MANAGED_IDLE_MS = 5 * 60000;
 class UnavailableModel extends SourceError {
   constructor() { super('upstream', 'OpenCode free model is unavailable'); }
 }
@@ -53,7 +55,12 @@ export class OpenCode implements Source {
   readonly id = 'opencode';
   // OpenCode runs its own coding tools and never returns Pi's tool calls.
   readonly supportsFunctionTools = false;
-  private child?: ChildProcess;
+  private child: ChildProcess | undefined;
+  private managed: ManagedOpenCodeProcess | undefined;
+  private activeRequests = 0;
+  private idleTimer: NodeJS.Timeout | undefined;
+  private recycling: Promise<void> | undefined;
+  private idleRetiring = new WeakSet<ChildProcess>();
   private starting: Promise<string> | undefined;
   private sessions = new Map<string, string>();
   private sessionModels = new Map<string, string>();
@@ -63,8 +70,9 @@ export class OpenCode implements Source {
   private prepared = new Map<string, Promise<void>>();
   private busy = new Set<string>();
   private shutdown = new AbortController();
-  constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); models?: readonly string[] | (() => readonly string[]); timeout?: number; configFile?: string } = {}) {
+  constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); models?: readonly string[] | (() => readonly string[]); timeout?: number; configFile?: string; idleTimeoutMs?: number } = {}) {
     if (options.url) loopback(options.url);
+    if (options.idleTimeoutMs !== undefined && (!Number.isFinite(options.idleTimeoutMs) || options.idleTimeoutMs < 0)) throw new Error('Invalid managed OpenCode idle timeout');
   }
   private get fetcher() { return diagnosticFetch(this.options.fetcher ?? fetch, 'opencode', 'local.opencode'); }
   async available() { if (this.options.url) return true; try { await executable('opencode'); return true; } catch { return false; } }
@@ -77,6 +85,8 @@ export class OpenCode implements Source {
   }
   private async server(): Promise<string> {
     if (this.options.url) return this.options.url.replace(/\/$/, '');
+    if (this.recycling) await this.recycling;
+    this.shutdown.signal.throwIfAborted();
     if (this.starting) return this.starting;
     const starting = (async () => {
       const binary = await executable('opencode');
@@ -99,16 +109,31 @@ export class OpenCode implements Source {
       }
       this.shutdown.signal.throwIfAborted();
       return new Promise<string>((resolve, reject) => {
-        const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { stdio: ['ignore', 'pipe', 'ignore'], env });
+        const grouped = process.platform !== 'win32';
+        const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { stdio: ['ignore', 'pipe', 'ignore'], env, detached: grouped });
         this.child = child;
-        const timer = setTimeout(() => { child.kill(); reject(new SourceError('timeout', 'OpenCode server startup timed out')); }, 30000);
+        const managed = new ManagedOpenCodeProcess(child, grouped);
+        this.managed = managed;
+        const timer = setTimeout(() => { this.retire(managed); reject(new SourceError('timeout', 'OpenCode server startup timed out')); }, 30000);
+        timer.unref();
         let output = '';
         child.stdout.on('data', (chunk: Buffer) => {
           output = (output + chunk.toString()).slice(-8192);
           const address = output.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
           if (address) { clearTimeout(timer); resolve(address); }
         });
-        const failed = () => { clearTimeout(timer); this.starting = undefined; this.sessions.clear(); this.sessionModels.clear(); this.sessionParents.clear(); this.prepared.clear(); reject(new SourceError('upstream', 'OpenCode server stopped; run opencode serve to check installation')); };
+        const failed = () => {
+          clearTimeout(timer);
+          if (this.child === child) {
+            this.child = undefined; this.managed = undefined;
+            if (this.starting === starting) this.starting = undefined;
+            this.prepared.clear();
+            // Deliberate idle cleanup preserves native, disk-backed session
+            // identifiers and all model cooldowns for the next turn.
+            if (!this.idleRetiring.has(child)) { this.sessions.clear(); this.sessionModels.clear(); this.sessionParents.clear(); }
+          }
+          reject(new SourceError('upstream', 'OpenCode server stopped; run opencode serve to check installation'));
+        };
         child.once('error', failed); child.once('exit', failed);
       });
     })();
@@ -117,6 +142,31 @@ export class OpenCode implements Source {
     return starting;
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
+    this.activeRequests++;
+    clearTimeout(this.idleTimer); this.idleTimer = undefined;
+    try { return await this.completeOnce(request, caller); }
+    finally { this.activeRequests--; this.scheduleIdle(); }
+  }
+  private retire(managed: ManagedOpenCodeProcess) {
+    const recycling = managed.stop();
+    this.recycling = recycling;
+    // A failed cleanup must not admit another managed server beside a process
+    // whose termination could not be confirmed, including startup timeouts.
+    void recycling.then(() => { if (this.recycling === recycling) this.recycling = undefined; }, () => {});
+  }
+  private scheduleIdle() {
+    if (this.options.url || this.shutdown.signal.aborted || this.activeRequests || !this.child || !this.managed) return;
+    clearTimeout(this.idleTimer);
+    const child = this.child, managed = this.managed;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      if (this.activeRequests || this.shutdown.signal.aborted || this.child !== child) return;
+      this.idleRetiring.add(child);
+      this.retire(managed);
+    }, this.options.idleTimeoutMs ?? MANAGED_IDLE_MS);
+    this.idleTimer.unref();
+  }
+  private async completeOnce(request: ModelRequest, caller: AbortSignal) {
     const signal = AbortSignal.any([caller, this.shutdown.signal, ...(this.options.timeout ? [AbortSignal.timeout(this.options.timeout)] : [])]);
     signal.throwIfAborted();
     const scalar = typeof this.options.model === 'function' ? this.options.model() : this.options.model;
@@ -315,14 +365,8 @@ export class OpenCode implements Source {
   }
   async close() {
     this.shutdown.abort();
-    const child = this.child;
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    await new Promise<void>(resolve => {
-      // Some CLI versions keep their idle server alive after SIGTERM. Setup
-      // must release its probe process before it can exit or try sign-in again.
-      const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
-      child.once('exit', () => { clearTimeout(timer); resolve(); });
-      child.kill();
-    });
+    clearTimeout(this.idleTimer); this.idleTimer = undefined;
+    await this.managed?.stop();
+    await this.recycling;
   }
 }

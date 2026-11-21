@@ -177,12 +177,17 @@ export class VerificationBroker {
       await atomic(join(path, 'status.json'), result); return result;
     } finally { await rm(workspace, { recursive: true, force: true }); }
   }
-  /** Publication calls this on the host; a model-supplied `verified:true` is never accepted. */
-  async verifiedReceipt(id: string) {
+  private async authenticatedReceipt(id: string) {
     const status = await this.status(id), receipt = status?.receipt;
     if (!receipt || status.state !== 'completed' || receipt.state !== 'completed' || receipt.exitCode !== 0 || !receipt.unchanged || !receipt.before.clean || !receipt.after.clean || receipt.before.missingArtifacts.length > 0 || receipt.after.missingArtifacts.length > 0 || !sameVerificationState(receipt.before, receipt.after) || receipt.environmentDigest !== this.options.environmentDigest || receipt.completedAt > (this.options.now ?? Date.now)()) throw safeError();
     const plan = this.plans.find(p => verificationPlanDigest(p) === receipt.planDigest), check = plan?.checks.find(c => c.id === receipt.checkId);
-    if (!check || receipt.commandDigest !== verificationCommandDigest(check.command) || !sameVerificationState(await captureVerificationState(this.project, check.artifactPaths ?? []), receipt.after)) throw safeError();
+    if (!check || receipt.commandDigest !== verificationCommandDigest(check.command)) throw safeError();
+    return { receipt, check };
+  }
+  /** Publication calls this on the host; a model-supplied `verified:true` is never accepted. */
+  async verifiedReceipt(id: string) {
+    const { receipt, check } = await this.authenticatedReceipt(id);
+    if (!sameVerificationState(await captureVerificationState(this.project, check.artifactPaths ?? []), receipt.after)) throw safeError();
     return { id: receipt.id, projectRoot: this.project, head: receipt.after.head, treeDigest: receipt.after.treeDigest, artifactDigest: receipt.after.artifactDigest, checkId: receipt.checkId, mode: 'release' as const, state: 'completed' as const, exitCode: 0 as const, unchanged: true as const, verified: true as const, receipt };
   }
   /** Host housekeeping must supply IDs still referenced by pending publication. Recent and active evidence is preserved. */
@@ -201,7 +206,9 @@ export class VerificationBroker {
   }
   async verifyPlan(planId: string, receiptIds: readonly string[]) {
     const plan = this.plans.find(p => p.id === planId); if (!plan) throw safeError();
-    const receipts = await Promise.all(receiptIds.map(async id => (await this.verifiedReceipt(id)).receipt));
+    // The plan validator captures each distinct artifact set once after checking
+    // all signatures. Avoid an additional full capture for every receipt here.
+    const receipts = await Promise.all(receiptIds.map(async id => (await this.authenticatedReceipt(id)).receipt));
     return verifyReleaseReceipts(receipts, plan, this.project, this.key, (this.options.now ?? Date.now)());
   }
 }
