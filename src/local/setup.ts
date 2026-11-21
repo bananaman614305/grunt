@@ -198,10 +198,9 @@ function oauthRetry(result: Record<string, unknown>) {
 type ObjectValue = Record<string, unknown>;
 // The registry entry for a drive: by id, else by its signup host (a setup may
 // drive under a vault service name that differs from the registry id).
-function registryEntry(registry: Registry, provider: string, url: string | undefined, byHost = true) {
+function registryEntry(registry: Registry, provider: string, url: string | undefined) {
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
-  return registry.adapters.find(a => a.id === provider)
-    ?? (byHost ? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url)) : undefined);
+  return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
 }
 // operate_drive rejects a longer goal.
 const DRIVE_GOAL_LIMIT = 4000;
@@ -466,24 +465,10 @@ export class BrowserSquire implements SetupSquire {
         this.serviceSignal(service).throwIfAborted();
         const result = await this.drive(service, url, goal);
         if (result.run.state === 'completed') return;
-        if (result.run.state !== 'running') {
-          // A stopped drive still succeeds when the vault holds this signup's key;
-          // the provider module's own check then decides whether that key is valid.
-          if (await this.vaultedCapture(service, url)) return;
-          throw new SetupFailure(result.reason ?? 'browser could not continue');
-        }
+        if (result.run.state !== 'running') throw new SetupFailure(result.reason ?? 'browser could not continue');
       }
-      if (await this.vaultedCapture(service, url)) return;
       throw new Error(`${service}: signup timed out; rerun setup to resume`);
     } finally { this.signupFacts.delete(service); await this.finishSession(service); }
-  }
-  // Whether the vault holds a key under the shipped capture's service and label.
-  private async vaultedCapture(service: string, url: string) {
-    const shipped = registryEntry(bundledRegistry, service, url)?.capture;
-    if (shipped?.service !== service) return false;
-    this.metadata = undefined;
-    const stored = await this.credentials.list().catch(() => []);
-    return stored.some(credential => credential.service === shipped.service && (shipped.label === undefined || ('label' in credential && credential.label === shipped.label)));
   }
   private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
     if (this.closed) throw new Error('Squire setup is closed');
@@ -498,8 +483,7 @@ export class BrowserSquire implements SetupSquire {
     catch (error) { await this.finishSession(provider); throw error; }
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
-    // A synced entry is trusted for hints only under its own registry id.
-    const hinted = this.options.registry ? registryEntry(this.options.registry(), provider, url, false)?.hints : registryEntry(bundledRegistry, provider, url)?.hints;
+    const hinted = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.hints;
     const shipped = registryEntry(bundledRegistry, provider, url)?.capture;
     // A shipped capture stores only under the vault service this signup checks.
     const store = shipped?.service === provider ? shipped : undefined;
