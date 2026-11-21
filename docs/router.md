@@ -43,13 +43,17 @@ accepted, with `GRUNT_*` taking precedence.
   reach on their own, bypassing the router:
   - OpenCode, with current data-sharing approval and `opencode` on `PATH`, even
     when its route is not open: each free model the anonymous CLI lists
-    (`opencode models opencode`), Big Pickle first. OpenCode executes its own
-    tools rather than returning tool calls to another harness.
+    (`opencode models opencode`), Big Pickle first and still tried if catalog
+    listing fails. OpenCode executes its own tools rather than returning tool
+    calls to another harness.
   - Pi, with `pi` on `PATH`: each `:free` or `-free` model of the person's own
-    Pi providers, except providers on this machine. Pi runs from a private
-    temporary copy of their Pi models file and API-key entries, without their
-    extensions, sessions or MCP servers.
-  If none of these candidates exists, Squire's drive runs alone.
+    Pi providers, except loopback providers and Google models (including
+    Gemini and Gemma). Pi runs from a private temporary copy of their Pi models
+    file and API-key entries, without their
+    extensions, sessions or MCP servers. OAuth entries are not copied, so the
+    temporary driver cannot rotate their refresh tokens.
+  Without a routed driver or an eligible installed harness CLI, Squire's drive
+  runs alone.
   Public-only routes cannot drive private signup traffic.
 - **Driver routing.** The routed driver asks for model `grunt` and carries tools.
   The router draws an eligible tool-capable route using its weights and
@@ -69,13 +73,14 @@ accepted, with `GRUNT_*` taking precedence.
 - **Driver failure.** If the driver's route is benched or retired mid-signup,
   the sticky router hands the same task to the next eligible tool-capable
   route, with the usual handoff prompt. If a driver reports exhausted quota,
-  no available model, an upstream or CLI request failure, an unavailable CLI or
-  a required sign-in, the same signup moves to the next candidate in the order
-  above. Other errors and cancellation do not move it. If no candidate
+  no available model, an upstream or CLI request failure, a timeout, an
+  unavailable CLI or a required sign-in, the same signup moves to the next
+  candidate in the order above. Other errors and cancellation do not move it. If no candidate
   succeeds, that attempt fails and driver selection runs again before the next
-  signup. Foreground setup instead defers the
-  failed signup, switching drivers before subsequent signups and the deferred
-  retry pass.
+  signup. Foreground setup tries the remaining free-model drivers on the same
+  signup. An unavailable routed driver or exhausted free-model chain instead
+  defers the failed signup, switching drivers before subsequent signups and the
+  deferred retry pass.
 
 ## 2. Score, back-off, retirement
 
