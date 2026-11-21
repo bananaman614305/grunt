@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-21
+
+- When Kilo's Particle-1 is rate-limited (HTTP 429), try Kilo's other free models from its live catalog, Reflection Beam first, so an anonymous Kilo model can drive signups whenever any of them has headroom. Router aliases are never used, the model that answered last goes first, and only when every free model returns 429 does Kilo hand over to the next route.
+- Extend the Kilo data-sharing policy to every free Kilo model, and have the daemon renew changed policy approvals at start without prompting, so updating keeps already-approved routes on.
 - Add optional registry `hints` (synced with the registry) and `capture` (shipped only) fields. Setup places a provider's hints in Squire's drive goal before the safety rules and passes its capture as the drive's `store`, so the drive can store a revealed key without a driver model. Pass a one-time device code to the drive as a supplied value (Free-Pi).
 
 ## [0.9.4] - 2026-11-21
