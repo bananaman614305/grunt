@@ -297,7 +297,20 @@ it('drives a signup through the OpenCode CLI on its free model, and hands over o
   expect(next).not.toHaveBeenCalled();
 });
 
-it('lists OpenCode free models and the free models of Pi providers, from private copies of Pi config', async () => {
+it('stops driver handoff on explicit cancellation even when the CLI reports a timeout', async () => {
+  const { nextDriver } = await import('./harnesses.js');
+  const controller = new AbortController();
+  const input = { service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: controller.signal, tools: [], call: vi.fn(async () => ({})) };
+  const next = vi.fn(async () => {});
+  const driver = nextDriver(async () => {
+    controller.abort(new Error('signup cancelled'));
+    throw new Error('opencode did not answer within 240 seconds');
+  }, next);
+  await expect(driver(input)).rejects.toThrow('signup cancelled');
+  expect(next).not.toHaveBeenCalled();
+});
+
+it('lists OpenCode free models and excludes Google models from Pi providers, from private copies of Pi config', async () => {
   const { listFreeModels } = await import('./harnesses.js');
   const { path } = await piFixture({ ...managedPi(), apiKey: 'local' });
   await writeFile(path, JSON.stringify({ providers: { grunt: managedPi(), openrouter: { baseUrl: 'https://openrouter.test/api/v1', apiKey: 'synthetic-router-key' } } }), { mode: 0o600 });
@@ -314,7 +327,9 @@ it('lists OpenCode free models and the free models of Pi providers, from private
     copies.push({ models: JSON.parse(await readFile(join(agent, 'models.json'), 'utf8')), auth: JSON.parse(await readFile(join(agent, 'auth.json'), 'utf8')) });
     expect((await stat(join(agent, 'auth.json'))).mode & 0o777).toBe(0o600);
     return ['provider    model                 context', 'grunt       grunt-free            65K', 'openrouter  vendor/model:free     128K',
-      'openrouter  vendor/paid           128K', 'keyed       coder-free            32K'].join('\n');
+      'openrouter  vendor/paid           128K', 'keyed       coder-free            32K',
+      'openrouter  google/gemma-3-27b-it:free 128K', 'google  custom-free 128K',
+      'google-vertex  custom-free 128K', 'keyed  gemini-2.5-flash-free 128K', 'keyed  gemma-3-free 128K'].join('\n');
   });
   expect(models).toEqual([
     { harness: 'opencode', model: 'opencode/big-pickle' }, { harness: 'opencode', model: 'opencode/glm-5.3-flash-free' },
@@ -326,7 +341,10 @@ it('lists OpenCode free models and the free models of Pi providers, from private
   expect(await listFreeModels({ openCode: true, pi: false }, async () => { throw new Error('Could not run opencode'); })).toEqual([{ harness: 'opencode', model: 'opencode/big-pickle' }]);
 });
 
-it.each([true, false])('daemon driver: when OpenCode is unavailable the next candidate drives, or every candidate fails: %s', async piAnswers => {
+it.each([
+  [true, 'quota exhausted: free usage limit reached'], [false, 'quota exhausted: free usage limit reached'],
+  [true, 'opencode did not answer within 240 seconds'], [false, 'opencode did not answer within 240 seconds']
+] as const)('daemon driver: Pi answers %s after %s', async (piAnswers, failure) => {
   const { signupDriver } = await import('./harnesses.js');
   dir = await mkdtemp(join(tmpdir(), 'grunt-driver-walk-'));
   for (const binary of ['pi', 'opencode']) await writeFile(join(dir, binary), '#!/bin/sh\n', { mode: 0o755 });
@@ -340,7 +358,7 @@ it.each([true, false])('daemon driver: when OpenCode is unavailable the next can
     const model = binary === 'pi' ? `${args[2]}/${args[4]}` : args[4]!;
     tried.push(`${binary}:${model}`);
     if (model === 'grunt/grunt') throw new Error('No tool-capable adapter is available');
-    if (binary === 'opencode') throw new Error('quota exhausted: free usage limit reached');
+    if (binary === 'opencode') throw new Error(failure);
     if (!piAnswers) throw new Error('pi exited with code 1');
     return 'done';
   } });

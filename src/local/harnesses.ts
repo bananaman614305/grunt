@@ -346,7 +346,7 @@ export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, 
       const text = await run('pi', ['--offline', '--list-models'], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory });
       for (const line of text.split('\n').slice(1)) {
         const [provider, id] = line.trim().split(/\s+/);
-        if (!provider || !id || !/[:-]free$/.test(id)) continue;
+        if (!provider || !id || !/[:-]free$/.test(id) || /google|gemini|gemma/i.test(`${provider}/${id}`)) continue;
         // A provider on this machine (Grunt itself) is not a model of Pi's own.
         if (loopbackURL((providers[provider] as { baseUrl?: unknown } | undefined)?.baseUrl)) continue;
         found.push({ harness: 'pi', model: `${provider}/${id}` });
