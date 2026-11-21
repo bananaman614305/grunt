@@ -16,8 +16,7 @@ A default install spends no money and no paid allowance.
 Every source that can cost money or plan quota is off until the person names it.
 grunt never buys credits, never upgrades a plan, and never switches to a paid model on its own.
 When a free source carries a hidden price, such as prompt retention or terms risk, grunt says so in plain words.
-Setup records ordinary provider policies and remembers current approvals. Material terms such as Free-Pi's sale of coding-session traces require a foreground, default-No decision; unattended setup cannot supply it. Retired Freebuff and APInex receipts do not authorize routing.
-Declining a material policy skips that source while other eligible sources continue; changed material terms require fresh approval. Public-only providers also require review of each full request. LiveKit documents zero retention and no training for inference, so it adds no sharing policy.
+See the [setup reference](docs/reference.md#free-api-and-account-setup) for policy receipts and the data-sharing opt-out. Public-only providers also require review of each full request. LiveKit documents zero retention and no training for inference, so it adds no sharing policy.
 
 ## Free tokens are personal
 
@@ -35,7 +34,7 @@ The 0.8.2 curated registry has 22 sources, subject to individual signup, consent
 A weight is the chance that an adapter is picked for a new task.
 Stable adapters share 0.8 of the weight and experimental adapters share 0.2.
 The bundled starting pool has three stable adapters in relative proportions 6:8:5: OpenCode at about 0.252632, Kilo at about 0.336842 and Zro at about 0.210526.
-Kilo selects the anonymous free `particle-ai/particle-1:free` route, a distinct model post-trained from DeepSeek V4.1 Flash with a listed one-million-token context. It supports native function calls and ongoing rate-limited access without one-time credits. Its catalog permits training, so the changed Kilo policy requires approval again before setup or routing. Kilo Auto Free is no longer the default.
+Kilo's model selection and data-sharing terms are documented in the [Kilo reference](docs/reference.md#kilo-free-models).
 Nineteen experimental sources share the remaining 0.2 equally. Each joins after its required data-sharing approval and free-account checks; see the [current provider reference](docs/reference.md#curated-sources-and-explicit-selections). LiveKit uses the free Build plan's included inference allowance with a hard stop, no card and no paid fallback. Pollinations requires a hard zero-budget Quest-only key, a positive unused Quest balance and the fixed vetted community model; BeatAPI uses only its free model without spending welcome credit. Clixad requires a zero wallet balance, and Perch requires active Starter access with optional data sharing and both memory switches off. Native local output checks do not hard-cap upstream generation or allowance use.
 Cloudflare Qwen is excluded from this pool by the owner's choice; NVIDIA remains optional while its account verification is unvetted.
 New sources enter by pull request, are tested, and reach people only when the owner publishes the registry.

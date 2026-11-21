@@ -29,8 +29,10 @@ export function setupFailureReason(error: unknown): string {
   return 'setup failed';
 }
 
+// A signup driver whose model reports one of these errors cannot run; the next
+// candidate drives. A hang or timeout is not one of them: it fails the signup.
 export function signupOperatorUnavailable(reason: string) {
-  return ['quota exhausted', 'model pool unavailable', 'CLI unavailable', 'sign-in required'].includes(reason);
+  return ['quota exhausted', 'model pool unavailable', 'provider request failed', 'CLI unavailable', 'sign-in required'].includes(reason);
 }
 
 export function setupAttention(reason: string) {

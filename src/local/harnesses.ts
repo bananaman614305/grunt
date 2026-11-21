@@ -7,7 +7,8 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { signupMcp } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
-import { setupFailureReason } from './setup-failure.js';
+import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
+import { SourceError } from './source.js';
 
 // Writes a whole config file only when its text changes, after copying the old
 // file aside. Repeated setup runs therefore leave files and backups untouched.
@@ -244,34 +245,63 @@ export async function detectHarnesses(harnesses = HARNESSES) {
   return harnesses.filter((_, index) => found[index]);
 }
 const FREE_LIMIT = /FreeUsageLimitError|Free usage limit reached|free_tier_limit/;
+// OpenCode's --print-logs line for a failed main-model request, which it then
+// retries: the driver has stopped making progress, so hand off now.
+const STREAM_ERROR = /level=ERROR\b(?![^\n]*\bsmall=true)[^\n]*message="stream error"/;
 export async function runHarness(binary: string, args: string[], env: Record<string, string | undefined> = {}, timeoutMs = 240000, options: { cwd?: string; signal?: AbortSignal } = {}) {
   const cwd = options.cwd ?? await mkdtemp(join(tmpdir(), 'grunt-harness-check-'));
   const timeout = AbortSignal.timeout(timeoutMs);
   const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
   const merged: NodeJS.ProcessEnv = { ...process.env };
   for (const [key, value] of Object.entries(env)) { if (value === undefined) delete merged[key]; else merged[key] = value; }
+  let child: ReturnType<typeof spawn> | undefined;
+  let closed: Promise<void> | undefined;
   try {
     return await new Promise<string>((resolve, reject) => {
-      const child = spawn(binary, args, { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'], signal });
+      const running = spawn(binary, args, { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'], signal });
+      child = running;
+      closed = new Promise<void>(done => running.once('close', () => done()));
       let stdout = '', stderr = '', limited = false;
-      // OpenCode retries its free limit until the next UTC day; fail fast instead.
+      // OpenCode retries its free limit until the next UTC day, and other failed
+      // model requests with backoff; fail fast instead.
       const watch = (text: string) => {
-        if (limited || !FREE_LIMIT.test(text)) return;
+        const quota = FREE_LIMIT.test(text);
+        if (limited || (!quota && !STREAM_ERROR.test(text))) return;
         limited = true;
-        child.kill();
-        reject(new Error('quota exhausted: free usage limit reached'));
+        running.kill();
+        reject(quota ? new Error('quota exhausted: free usage limit reached') : new SourceError('upstream', `${binary} model request failed`));
       };
-      child.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
-      child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
-      child.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
-      child.once('close', code => {
+      running.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
+      running.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
+      running.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
+      running.once('close', code => {
         const reason = setupFailureReason(new Error(stdout + '\n' + stderr));
-        if (code !== 0 || /^\s*(?:error|api error).*?(?:quota|429)/im.test(stdout)) reject(new Error(reason === 'setup failed' ? `${binary} exited with code ${code}` : reason));
+        // A failed exit that prints the model's own error names it: a rate limit
+        // or payment wall is quota, and a provider 5xx is a failed request.
+        const reported = reason !== 'setup failed' ? reason
+          : /\b(?:ModelNotFoundError|ProviderModelNotFoundError|model_not_found)\b/.test(stderr + stdout) ? 'model pool unavailable'
+          : /\b(?:402|payment required|rate.?limit(?:ed)?|too many requests)\b/i.test(stderr + stdout) ? 'quota exhausted'
+            : /\b(?:50[0-4]|bad gateway|service unavailable|internal server error|overloaded)\b/i.test(stderr + stdout) ? 'provider request failed' : undefined;
+        if (code !== 0 || /^\s*(?:error|api error).*?(?:quota|429)/im.test(stdout)) {
+          reject(reported === 'provider request failed' ? new SourceError('upstream', `${binary} model request failed`) : new Error(reported ?? `${binary} exited with code ${code}`));
+        }
         else if (!stdout.trim()) reject(new Error(`${binary} printed no answer`));
         else resolve(stdout.trim());
       });
     });
-  } finally { if (!options.cwd) await rm(cwd, { recursive: true, force: true }); }
+  } finally {
+    // Abort and quota detection can reject before a CLI exits. OpenCode may
+    // ignore SIGTERM; reap it before removing its temporary configuration.
+    if (child && closed) {
+      const running = child;
+      const timer = setTimeout(() => running.kill('SIGKILL'), 2000);
+      try {
+        if (running.exitCode === null && running.signalCode === null) running.kill();
+        await closed;
+      } finally { clearTimeout(timer); }
+    }
+    if (!options.cwd) await rm(cwd, { recursive: true, force: true });
+  }
 }
 export async function connectHarness(harness: Harness, port: number, run = runHarness) {
   const change = await harness.configure(port);
@@ -280,7 +310,81 @@ export async function connectHarness(harness: Harness, port: number, run = runHa
   return { change, answer };
 }
 
-export const signupHarness = (harness: Harness, port: number, run = runHarness, openCodeAnonymous = false): SignupAgent => async input => {
+// A free model an installed harness CLI reaches on its own, as `provider/id`.
+export interface FreeModel { harness: 'opencode' | 'pi'; model: string }
+const splitModel = (model: string) => { const slash = model.indexOf('/'); return [model.slice(0, slash), model.slice(slash + 1)] as const; };
+const loopbackURL = (value: unknown) => {
+  try { return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(String(value)).hostname); } catch { return false; }
+};
+// The person's own Pi providers, copied into a private temporary agent directory
+// so Pi runs without their extensions, sessions or MCP servers. OAuth entries stay
+// behind: Pi may rotate a refresh token, which must happen only in the real file.
+// Read as Pi itself reads them; Grunt never writes these files here.
+async function ownPiConfig(directory: string) {
+  const agent = resolve(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'));
+  const read = async (name: string) => {
+    try { return objectOrEmpty(JSON.parse(await readFile(join(agent, name), 'utf8')), `Pi ${name}`); } catch { return {}; }
+  };
+  const [models, auth] = await Promise.all([read('models.json'), read('auth.json')]);
+  const keys = Object.fromEntries(Object.entries(auth).filter(([, value]) => (value as { type?: unknown } | null)?.type === 'api_key'));
+  await writeFile(join(directory, 'models.json'), JSON.stringify(models), { mode: 0o600 });
+  await writeFile(join(directory, 'auth.json'), JSON.stringify(keys), { mode: 0o600 });
+  const providers = models.providers;
+  return providers && typeof providers === 'object' && !Array.isArray(providers) ? providers as Record<string, unknown> : {};
+}
+// Anonymous OpenCode: the signup driver's own config and data stay in this directory.
+const openCodeAlone = (directory: string) => ({ OPENCODE_API_KEY: undefined, OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined, XDG_CONFIG_HOME: directory, XDG_DATA_HOME: directory, XDG_STATE_HOME: directory });
+const piArgs = (model: string) => { const [provider, id] = splitModel(model); return ['-p', '--provider', provider, '--model', id, '--no-session', '--no-builtin-tools', '--no-skills', '--no-context-files']; };
+async function inTemporary<T>(use: (directory: string) => Promise<T>) {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-free-model-'));
+  try { return await use(directory); } finally { await rm(directory, { recursive: true, force: true }); }
+}
+/**
+ * Lists the free models installed harness CLIs reach on their own (docs/router.md):
+ * OpenCode's anonymous free models, then the free models of the person's Pi providers.
+ */
+export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, run = runHarness, signal?: AbortSignal): Promise<FreeModel[]> {
+  signal?.throwIfAborted();
+  const found: FreeModel[] = [];
+  if (reach.openCode) {
+    // Anonymous OpenCode lists only the free models it can reach.
+    const text = await inTemporary(directory => {
+      signal?.throwIfAborted();
+      return run('opencode', ['models', 'opencode'], openCodeAlone(directory), 45000, { cwd: directory, ...(signal ? { signal } : {}) });
+    }).catch(() => { signal?.throwIfAborted(); return ''; });
+    const models = text.split('\n').map(line => line.trim()).filter(line => /^opencode\/\S+$/.test(line) && !/google|gemini|gemma/i.test(line));
+    // Big Pickle is OpenCode's long-standing anonymous model: first, and the
+    // fallback when the CLI cannot list its catalog.
+    const ordered = ['opencode/big-pickle', ...models.filter(model => model !== 'opencode/big-pickle')];
+    found.push(...ordered.map(model => ({ harness: 'opencode' as const, model })));
+  }
+  signal?.throwIfAborted();
+  if (reach.pi) {
+    await inTemporary(async directory => {
+      const providers = await ownPiConfig(directory);
+      signal?.throwIfAborted();
+      const text = await run('pi', ['--offline', '--list-models'], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory, ...(signal ? { signal } : {}) });
+      for (const line of text.split('\n').slice(1)) {
+        const [provider, id] = line.trim().split(/\s+/);
+        if (!provider || !id || !/[:-]free$/.test(id) || /google|gemini|gemma/i.test(`${provider}/${id}`)) continue;
+        // A provider on this machine (Grunt itself) is not a model of Pi's own.
+        if (loopbackURL((providers[provider] as { baseUrl?: unknown } | undefined)?.baseUrl)) continue;
+        found.push({ harness: 'pi', model: `${provider}/${id}` });
+      }
+    }).catch(() => { signal?.throwIfAborted(); });
+  }
+  signal?.throwIfAborted();
+  return found;
+}
+// One short request on a free model, in the same isolated configuration a signup uses.
+export const probeFreeModel = (free: FreeModel, signal?: AbortSignal, run = runHarness) => inTemporary(async directory => {
+  if (free.harness === 'opencode') return run('opencode', ['run', '--pure', '--print-logs', '-m', free.model, prompt('OpenCode')], openCodeAlone(directory), 45000, { cwd: directory, ...(signal ? { signal } : {}) });
+  await ownPiConfig(directory);
+  return run('pi', [...piArgs(free.model), prompt('Pi')], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory, ...(signal ? { signal } : {}) });
+});
+
+// `model` runs OpenCode or Pi on a free model it reaches on its own instead of on model grunt.
+export const signupHarness = (harness: Harness, port: number, run = runHarness, model?: string): SignupAgent => async input => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-signup-'));
   const endpoint = await signupMcp(input);
   try {
@@ -301,10 +405,11 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
     let args: string[];
     switch (harness.id) {
       case 'pi':
-        await write('models.json', { providers: { grunt: piProvider(port) } });
+        if (model) await ownPiConfig(directory);
+        else await write('models.json', { providers: { grunt: piProvider(port) } });
         await write('mcp.json', { mcpServers: { squire: { ...config, exposure: 'direct' } } });
         env.PI_CODING_AGENT_DIR = directory;
-        args = ['-p', '--provider', 'grunt', '--model', 'grunt', '--no-session', '--no-builtin-tools', '--no-skills', '--no-context-files', prompt];
+        args = [...piArgs(model ?? 'grunt/grunt'), prompt];
         break;
       case 'claude':
         await write('mcp.json', { mcpServers: { squire: { type: 'http', ...config } } });
@@ -326,14 +431,13 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
         break;
       case 'opencode':
         await write('opencode.json', { provider: { grunt: openCodeProvider(port) }, mcp: { squire: { type: 'remote', ...config } },
-          permission: { '*': 'deny', 'squire_*': 'allow' }, share: 'disabled' });
+          // OpenCode's free tier refuses requests that carry none of its own tools,
+          // so keep read; outside this temporary directory it stays denied.
+          permission: { '*': 'deny', read: 'allow', 'squire_*': 'allow' }, share: 'disabled' });
+        Object.assign(env, openCodeAlone(directory));
         env.OPENCODE_CONFIG = join(directory, 'opencode.json');
-        env.OPENCODE_CONFIG_CONTENT = undefined;
-        env.XDG_CONFIG_HOME = directory;
-        env.XDG_DATA_HOME = directory;
-        env.XDG_STATE_HOME = directory;
         // --print-logs puts OpenCode's free-limit error on stderr, so runHarness can stop at once.
-        args = ['run', '--pure', '--print-logs', '-m', openCodeAnonymous ? 'opencode/big-pickle' : 'grunt/grunt', prompt];
+        args = ['run', '--pure', '--print-logs', '-m', model ?? 'grunt/grunt', prompt];
         break;
     }
     await run(harness.binary, args, env, 240000, { cwd: directory, signal: input.signal });
@@ -342,3 +446,37 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
     await rm(directory, { recursive: true, force: true });
   }
 };
+const freeModelSignup = (free: FreeModel, port: number, run = runHarness) => signupHarness(HARNESSES.find(harness => harness.id === free.harness)!, port, run, free.model);
+// Hands the same signup to the next driver when one cannot run (no model, quota,
+// upstream failure, unavailable CLI); the last driver's failure is returned.
+// A driver that made no tool call is replaced by a fresh start. Once one has
+// acted, the next continues the same Squire signup session and never starts over.
+const SIGNUP_HANDOFF = 'Another driver already worked on this signup in the same Squire browser session. Continue it from the current page with operate_drive; never start the signup over or create another account.';
+export const nextDriver = (first: SignupAgent, ...rest: SignupAgent[]): SignupAgent => async input => {
+  let acted = false;
+  const tracked = { ...input, call: (name: string, args: Parameters<typeof input.call>[1]) => { acted = true; return input.call(name, args); } };
+  for (const [index, driver] of [first, ...rest].entries()) {
+    try { return await driver(acted ? { ...tracked, goal: `${input.goal}\n${SIGNUP_HANDOFF}` } : tracked); }
+    catch (error) {
+      input.signal.throwIfAborted();
+      if (index === rest.length || !signupOperatorUnavailable(setupFailureReason(error))) throw error;
+    }
+  }
+};
+/**
+ * The daemon's signup driver (docs/router.md): the first harness on model grunt
+ * while an open tool-capable route can take it, then every free model an
+ * installed harness CLI reaches on its own. Undefined means Squire drives alone.
+ */
+export async function signupDriver(port: number, options: { routed: boolean; openCode: boolean; list?: typeof listFreeModels; run?: typeof runHarness }): Promise<SignupAgent | undefined> {
+  const [harness] = options.routed ? await detectHarnesses() : [];
+  const routed = harness ? signupHarness(harness, port, options.run) : undefined;
+  const reach = { openCode: options.openCode && await onPath('opencode'), pi: await onPath('pi') };
+  // Listed when a signup needs it, so a pass with a working route never runs the CLIs.
+  const free: SignupAgent | undefined = reach.openCode || reach.pi ? async input => {
+    const [first, ...rest] = (await (options.list ?? listFreeModels)(reach, options.run, input.signal)).map(model => freeModelSignup(model, port, options.run));
+    if (!first) throw new Error('Free harness model pool unavailable');
+    await nextDriver(first, ...rest)(input);
+  } : undefined;
+  return routed && free ? nextDriver(routed, free) : routed ?? free;
+}

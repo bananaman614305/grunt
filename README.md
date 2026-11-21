@@ -17,8 +17,8 @@ usegrunt installs grunt on this machine. It pools free AI quota and serves local
 Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
 
 Setup plays the miner animation, connects every supported coding tool it finds,
-shows one live table of tools and sources, and ends with `Ready`. Material
-data terms require a foreground approval; provider verification may also need
+shows one live table of tools and sources, and ends with `Ready`. Setup accepts
+current data-sharing policies automatically; provider verification may still need
 your confirmation. Grunt is added as an extra named model; existing defaults stay intact.
 Sources that cannot finish signup or pass a test request are skipped while working
 sources remain usable. Rerun setup to retry them.
@@ -129,9 +129,8 @@ streak claims. Free-Pi checks also use metadata, avoiding a new coding-session
 trace. Both are recorded as metadata evidence rather than a fresh reply.
 The queue defers checks during user requests, setup and cooldowns. Maintenance
 does not install tools, create accounts or open sign-in flows. Separately, the
-daemon uses the registry to acquire recommended routes with current consent,
-including after registry refreshes and when no source can answer. See the
-[router guide](docs/router.md) for acquisition limits, refresh timing and automatic
+daemon uses the registry to acquire recommended routes with current consent. See the
+[router guide](docs/router.md) for acquisition triggers, limits, refresh timing and automatic
 pool updates. The dashboard's source details show the last check, its outcome
 and the next due time. First-time onboarding stays parallel.
 
@@ -168,23 +167,23 @@ that have yet to complete a successful publish after two days.
 
 Maintainers can use the [provider scouting guide](https://github.com/bananaman614305/grunt/blob/main/ops/provider-scout/README.md) for Chad's 09:00/21:00 Eastern search job. It researches recurring free offers, uses Squire for eligible signups and, when release is enabled, requires two independent reviews, sandboxed checks and trusted exact-provider hello/tool probes before merging and publishing a new npm release. Human authentication and approval blockers remain pending. New users receive released additions through `npx usegrunt`; existing installations use `npx usegrunt update`. Scouting is separate from user maintenance and is not installed on users' machines.
 
-Setup records ordinary source policies and groups material terms into one foreground, default-No prompt. Background setup cannot supply that approval. Supported providers can reuse the person's Google or GitHub identity and may still require their own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. The default `kilo` source selects `particle-ai/particle-1:free`. Repeat setup preserves eligible previously connected API sources.
+Setup automatically records current source policies, including material terms, without a data-sharing prompt. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps sources with explicit or material policies off. Supported providers can reuse the person's Google or GitHub identity and may still require their own verification. `usegrunt add <provider>` remains available for supported providers. Runcrate needs a GitHub account at least 30 days old. Mistral uses its native Vibe Free coding allowance, not ordinary API credit. NVIDIA stays optional while account verification is unvetted; Cloudflare Qwen is excluded by choice. Kilo model selection follows the [Kilo reference](docs/reference.md#kilo-free-models). Repeat setup preserves eligible previously connected API sources.
 
 The same curated pool is offered to every installation. Anonymous Reflection
 Beam and 100milionseek are included in standard onboarding. 100milionseek pins
 DeepSeek V4.1 Flash Free and checks its permanent 100-million-token daily
 allowance, resetting at midnight UTC; its qualified input limit is the approved
-198,000-token exception. Free-Pi is offered only after explicit consent to sale
-of coding-session traces and requires a reviewed-public-context attestation on
+198,000-token exception. Free-Pi can sell coding-session traces; setup records its policy automatically.
+It requires a reviewed-public-context attestation on
 every request; ordinary Pi and subworker requests do not supply it. See the
 [provider reference](docs/reference.md#curated-sources-and-explicit-selections)
 and [Free-Pi's restrictions](docs/providers/freepi.md). Antseed remains an
 [explicit experimental installation](docs/antseed-vikey-provisioning.md), with
 large-input qualification still incomplete.
 
-Nous uses `qwen/qwen4-max:free` on the Nous Portal Free plan. After the grouped consent prompt, open the Hermes device link and approve inference. Other sources can start serving requests while you finish that step.
+Nous uses `qwen/qwen4-max:free` on the Nous Portal Free plan. During setup, open the Hermes device link and approve inference. Other sources can start serving requests while you finish that step.
 
-Kenari uses `ernie-5-5-flash-preview:free`. After grouped data-sharing approval, Squire connects a dedicated Grunt Free key scoped to `kenari.id` and hands off to you if Kenari requires browser verification. You can also connect it with `npx usegrunt add kenari`. [Kenari free-model limits](https://kenari.id/en/docs/free-models)
+Kenari uses `ernie-5-5-flash-preview:free`. During setup, Squire connects a dedicated Grunt Free key scoped to `kenari.id` and hands off to you if Kenari requires browser verification. You can also connect it with `npx usegrunt add kenari`. [Kenari free-model limits](https://kenari.id/en/docs/free-models)
 
 Numes uses `z-ai/glm-5.3-flash:free` and a dedicated Squire key with a $0 spending cap. Grunt checks the cap before each request and verifies the model and charge in each reply. Free capacity can vary. Use `npx usegrunt add numes` to connect it separately or resume setup. [Numes free routes](https://numes.ai/docs/models#free-models)
 
@@ -212,6 +211,6 @@ Zro setup confirms the Free plan, no purchased usage balance and no payment meth
 
 Freebuff and APInex are retired from all grunt routing in 0.6.6. Freebuff's native application is preserved; its saved source selection and legacy fallback no longer enable routing, and no port-8789 bridge starts. APInex changed its recurring daily entitlement to require a $5 top-up; grunt makes no purchase, and a one-time Telegram reward is excluded. Old sharing receipts cannot reactivate either source.
 
-Kilo Particle 1 is post-trained from DeepSeek V4.1 Flash; it is a distinct model with a listed one-million-token context. Its free route requires no account or API key and supports native function calls. Anonymous access is limited to 200 requests per hour per IP and upstream capacity; it uses no one-time credits. The catalog permits training on prompts, and setup enables it by default. Standard DeepSeek routes remain paid; Auto Free is a changing pool and is no longer the default in 0.6.6.
+Kilo can try other verified free models when its preferred model is rate-limited. See the [Kilo reference](docs/reference.md#kilo-free-models) for model selection, anonymous limits and data-sharing terms.
 
-API-provider keys stay in Squire. The anonymous Kilo Particle route uses no credential; grunt verifies the exact model and zero reported cost before accepting its answer.
+API-provider keys stay in Squire. Anonymous Kilo access uses no credential; its verification rules are in the [Kilo reference](docs/reference.md#kilo-free-models).

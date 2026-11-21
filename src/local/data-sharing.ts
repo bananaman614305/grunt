@@ -30,9 +30,10 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   disclosure: 'DeepSeek and GLM free routes have zero-retention and no-training policies. The pool also includes Big Pickle, whose collected data may be used for model improvement.',
   url: 'https://opencode.ai/docs/console/models/#privacy'
 }, {
-  provider: 'kilo', name: 'Kilo Particle-1 Free', version: '2026-11-15-particle',
-  disclosure: 'Particle-1 prompts and outputs pass through Kilo and Particle AI. The live catalog permits training on prompts; retention and staff-review guarantees are not established. Do not submit personal or confidential data.',
-  url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free'
+  provider: 'kilo', name: 'Kilo free models', version: '2026-11-21-free-models',
+  disclosure: 'Prompts, code and tool results pass through Kilo Gateway and the upstream hosting whichever listed free model answers: Particle AI by default, or another free model such as Reflection Beam, NVIDIA Nemotron or Baidu ERNIE when Particle is rate-limited. Free models may train on prompts; retention, staff-review and training practices vary by upstream and are not established. Do not submit personal or confidential data.',
+  url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
+  approval: 'explicit'
 }, {
   provider: 'tokenharbor', name: 'Token Harbor', version: '2026-11-15',
   disclosure: 'Prompts and responses may be retained, read by staff, and used by upstream providers for training.',
@@ -171,8 +172,6 @@ async function writeReceipt(directory: string, saved: Receipt) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-// Trusted setup/probe callers record the policies actually approved for this
-// private configuration. Background setup only reads receipts.
 export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
   const policies = dataSharingPolicies(providers);
   if (!policies.length) return;
@@ -190,22 +189,28 @@ async function revokeDataSharingConsent(directory: string, providers: readonly s
   await writeReceipt(directory, saved);
 }
 
+// The daemon renews saved approvals the way setup does, without prompting: an
+// approval recorded for an earlier version of a provider's policy is recorded
+// again for the current one. The setup opt-out still keeps explicit and
+// material policies off; providers never approved stay off.
+export async function refreshDataSharingConsent(directory: string, env?: NodeJS.ProcessEnv): Promise<string[]> {
+  const saved = await receipt(directory), optOut = gruntEnv('SETUP_NO_DATA_SHARING', env) === '1';
+  const stale = DATA_SHARING_POLICIES.filter(policy => Object.hasOwn(saved.approved, policy.provider)
+    && saved.approved[policy.provider]!.policy !== fingerprint(policy) && !(optOut && policy.approval !== undefined)).map(policy => policy.provider);
+  await recordDataSharingConsent(directory, stale);
+  return stale;
+}
+
 export const DATA_SHARING_OPT_OUT = 'GRUNT_SETUP_NO_DATA_SHARING=1';
 
 export interface DataSharingApprovalOptions {
   directory: string;
   providers: readonly string[];
-  // Only the foreground wizard supplies a prompt for material conditions.
-  // Background and unattended callers never synthesize consent.
-  interactive?: boolean;
-  prompt?: (policies: readonly DataSharingPolicy[]) => Promise<unknown>;
   env?: NodeJS.ProcessEnv;
   notice?: (line: string) => void;
 }
 
-// Ordinary free-source sharing retains the existing grouped default. Material
-// conditions (for example sale of project traces) require a separate human
-// decision covering the displayed policy; an ordinary setup flag is not assent.
+// Setup records current policies automatically unless the existing opt-out applies.
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
   const providers = options.providers.includes('numes') ? [...options.providers, NUMES_DEEPSEEK_FLASH_CONSENT] : options.providers;
   const policies = dataSharingPolicies(providers);
@@ -213,22 +218,10 @@ export async function approveDataSharing(options: DataSharingApprovalOptions): P
   const optOut = gruntEnv('SETUP_NO_DATA_SHARING', options.env) === '1';
   const skipped = optOut ? policies.filter(policy => policy.approval !== undefined).map(policy => policy.provider) : [];
   if (skipped.length) await revokeDataSharingConsent(options.directory, skipped);
-  const pendingMaterial = policies.filter(policy => policy.approval === 'material' && !saved.has(policy.provider) && !skipped.includes(policy.provider));
-  if (pendingMaterial.length) {
-    const displayed = pendingMaterial.map(policy => ({ ...policy }));
-    let accepted = false;
-    if (options.interactive === true && options.prompt) {
-      try { accepted = await options.prompt(displayed) === true; } catch { /* Cancellation keeps other providers available. */ }
-    }
-    for (const policy of displayed) {
-      const current = dataSharingPolicies([policy.provider])[0];
-      if (!accepted || !current || fingerprint(current) !== fingerprint(policy)) skipped.push(policy.provider);
-    }
-  }
   const approved = policies.map(policy => policy.provider).filter(provider => !skipped.includes(provider));
   const added = approved.filter(provider => !saved.has(provider));
   await recordDataSharingConsent(options.directory, added);
-  const explicit = policies.filter(policy => policy.approval === 'explicit' && added.includes(policy.provider));
+  const explicit = policies.filter(policy => policy.approval !== undefined && added.includes(policy.provider));
   if (explicit.length) {
     (options.notice ?? console.log)(`Data sharing on: ${explicit.map(policy => policy.provider).join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);
   }

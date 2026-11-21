@@ -2,7 +2,7 @@
 
 exports[`runs the whole setup with zero prompts and enabled sharing sources (TTY: false, key works: false) 1`] = `
 "grunt — free AI inference, pooled on your machine
-✓ data sharing: on, no new sources
+✓ data sharing: on for kilo. Off: GRUNT_SETUP_NO_DATA_SHARING=1
 ✓ local service: running on port 8788
 type    name                  status
 source  opencode              ✓ ready
@@ -20,7 +20,7 @@ Ready
 
 exports[`runs the whole setup with zero prompts and enabled sharing sources (TTY: false, key works: true) 1`] = `
 "grunt — free AI inference, pooled on your machine
-✓ data sharing: on, no new sources
+✓ data sharing: on for kilo. Off: GRUNT_SETUP_NO_DATA_SHARING=1
 ✓ local service: running on port 8788
 type    name                  status
 source  opencode              ✓ ready

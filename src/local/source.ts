@@ -78,7 +78,9 @@ export class Sources {
   readonly approvals = new Set<string>();
   constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs = FIRST_OUTPUT_MS) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
-    this.observation = new SourceStatus(sources.map(source => source.id), routing?.now);
+    this.observation = new SourceStatus(sources.map(source => source.id), routing?.now, {
+      open: id => this.dispatchEligible(id), dropped: id => this.dropped?.(id),
+    });
     if (routing) this.router = this.createRouter(routing);
   }
   setWorkerRegistry(registry: RoutingOptions['registry'], localOptIns?: RoutingOptions['localOptIns']) {
@@ -89,6 +91,7 @@ export class Sources {
   private get registeredRouter() { return this.router ?? this.workerRouter; }
   private createRouter(routing: RoutingOptions) {
     return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
+      dropped: id => { if (this.observation.observedAvailable(id) !== false) this.dropped?.(id); },
       observe: (source, reason, skipped) => {
         const context = currentDiagnosticContext();
         if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
@@ -154,6 +157,8 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
+  available(source: Source) { return this.observation.available(source); }
+  openRoute(id: string) { return this.observation.observedAvailable(id) !== false && this.dispatchEligible(id); }
   dispatchEligible(id: string, request?: ModelRequest) {
     const router = this.registeredRouter;
     const source = this.sources.find(source => source.id === id);
@@ -301,6 +306,9 @@ export class Sources {
   // When no source can answer, start background recovery so the next request has one.
   setRecovery(recover: () => void) { this.recover = recover; }
   private recover: (() => void) | undefined;
+  // A route left the open set, including an observed availability loss.
+  setRouteDropped(dropped: (id: string) => void) { this.dropped = dropped; }
+  private dropped: ((id: string) => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const parent = currentDiagnosticContext();
     const actor = request.worker ? { actor: 'worker' as const, workerId: request.worker.id }

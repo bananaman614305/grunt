@@ -36,7 +36,7 @@ import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
-import { requiresDataSharing } from './data-sharing.js';
+import { DATA_SHARING_OPT_OUT, readDataSharingConsent, refreshDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
@@ -178,9 +178,9 @@ export function start(env = process.env) {
     const adapter = registry.adapters.find(adapter => adapter.id === id);
     return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
   };
-  const configuredAccess = (source: Source) => routable(source.id) && source.available().catch(() => false);
-  const live = async (source: Source) => await configuredAccess(source) && sources.dispatchEligible(source.id);
-  const recovery = new SourceRecovery({ directory,
+  const configuredAccess = (source: Source) => routable(source.id) && sources.available(source).catch(() => false);
+  const live = async (source: Source) => await configuredAccess(source) && sources.openRoute(source.id);
+  const recovery = new SourceRecovery({ directory, registry: () => registry,
     eligible: id => routable(id) && recommendedAdapters(registry).some(adapter => adapter.id === id),
     candidates: async () => {
       const ids: string[] = [];
@@ -191,18 +191,15 @@ export function start(env = process.env) {
       return ids;
     },
     open: async () => (await Promise.all(sources.sources.map(live))).filter(Boolean).length,
-    // The driver is a coding harness on model grunt, so the router sends each of
-    // its turns to the best open tool-capable route.
+    // Driver candidates follow docs/router.md: a coding harness on model grunt,
+    // which the router sends to the best open tool-capable route, then each free
+    // model an installed harness CLI reaches on its own.
     driver: async () => {
       const request = { model: 'grunt', cwd: directory, messages: [], tools: [], stream: false };
-      const drivable = await Promise.all(sources.sources.filter(toolCapable).map(async source =>
-        await live(source) && sources.dispatchEligible(source.id, request) ? source : undefined));
-      if (!drivable.some(Boolean)) return;
+      const drivable = await Promise.all(sources.sources.filter(toolCapable).map(async source => await live(source) && sources.dispatchEligible(source.id, request)));
       // Loaded on demand: the daemon's model API never needs harness code.
-      const { detectHarnesses, signupHarness } = await import('./harnesses.js');
-      const [harness] = await detectHarnesses();
-      return harness && drivable.some(source => source && sources.dispatchEligible(source.id, request))
-        ? signupHarness(harness, port) : undefined;
+      const { signupDriver } = await import('./harnesses.js');
+      return signupDriver(port, { routed: drivable.some(Boolean), openCode: (await readDataSharingConsent(directory, ['opencode'])).includes('opencode') });
     },
     notify: console.error });
   // Account acquisition is distinct from registry refresh, dispatch and daily
@@ -210,6 +207,7 @@ export function start(env = process.env) {
   const acquireAccounts = gruntEnv('BACKGROUND_ACCOUNT_ACQUISITION', env) !== '0';
   const triggerRecovery = () => { if (acquireAccounts) recovery.trigger(); };
   sources.setRecovery(triggerRecovery);
+  sources.setRouteDropped(() => { if (acquireAccounts) void recovery.lowRoutes(); });
   let published: string | undefined;
   const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
     changed: current => {
@@ -219,13 +217,17 @@ export function start(env = process.env) {
       registry = current;
       sources.adopt(current);
     },
-    synced: triggerRecovery, notify: console.error
+    synced: () => { if (acquireAccounts) recovery.synced(); }, notify: console.error
   });
   const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
   // Registry downloads and access maintenance are independent. Only the route
   // pass above provisions accounts, in the background, after each registry sync
   // and when no source can answer. It never hands a browser to a person.
-  const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready]).then(refreshSession);
+  // Renew approvals for changed provider policies before serving, so an update never turns a route off.
+  const consent = refreshDataSharingConsent(directory, env).then(renewed => {
+    if (renewed.length) console.error(`Data sharing on: ${renewed.join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);
+  }).catch(() => console.error('Data-sharing approvals could not be renewed; rerun usegrunt setup'));
+  const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready, consent]).then(refreshSession);
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
   const workerRuntime = createWorkerRuntime(sources, { directory });

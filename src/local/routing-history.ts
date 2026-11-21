@@ -138,11 +138,12 @@ export class RoutingHistory {
         }
       })();
       if (journalMode !== 'delete') await client.execute('PRAGMA journal_mode=DELETE');
-      if (version !== 0 && version !== 1) throw unsafe();
-      if (version === 0) await client.batch([
+      if (version !== 0 && version !== 1 && version !== 2) throw unsafe();
+      if (version < 2) await client.batch([
         'CREATE TABLE IF NOT EXISTS routing_performance (source TEXT NOT NULL, profile TEXT NOT NULL, value TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(source,profile))',
         'CREATE TABLE IF NOT EXISTS routing_backoff (source TEXT PRIMARY KEY, value TEXT NOT NULL, at REAL NOT NULL)',
-        'PRAGMA user_version=1'
+        "DELETE FROM routing_backoff WHERE source='kilo' AND json_valid(value) AND json_extract(value,'$.code')='quota' AND (SELECT user_version FROM pragma_user_version)<2",
+        'PRAGMA user_version=2'
       ], 'write');
       return new RoutingHistory(client, path);
     } catch (error) { client.close(); throw error; }

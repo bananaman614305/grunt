@@ -17,6 +17,8 @@ import { bundledRegistry, validateRegistry } from '../registry.js';
 const dirs: string[] = [];
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-onboarding-')); dirs.push(path); return path; }
+// Kilo's explicit policy needs the receipt setup saves before fallback setup runs.
+async function kiloDirectory() { const path = await directory(); await recordDataSharingConsent(path, ['kilo']); return path; }
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 it('overlaps agent setup with anonymous Kilo and shares one Squire connection for OpenCode and Zro', async () => {
@@ -29,7 +31,7 @@ it('overlaps agent setup with anonymous Kilo and shares one Squire connection fo
   let checked = false;
   const connect = vi.fn(async () => { await release.promise; });
   const provider = vi.fn(async (_notify: (line: string) => void, providers?: string[]) => { started.add(providers![0]!); await release.promise; return {}; });
-  const pending = setupFallbacks({ dataSharingApproved: ['opencode', 'kilo'], directory: await directory(), adapters: ['opencode', 'kilo', 'zro'], squire, connect,
+  const pending = setupFallbacks({ dataSharingApproved: ['opencode', 'kilo'], directory: await kiloDirectory(), adapters: ['opencode', 'kilo', 'zro'], squire, connect,
     run: async () => {}, notify: () => {},
     verify: async () => { started.add('opencode'); if (!checked) { checked = true; throw new SourceError('logged_out', 'sign in'); } },
     setupProvider: provider });
@@ -45,7 +47,7 @@ it('overlaps agent setup with anonymous Kilo and shares one Squire connection fo
 it('isolates a Kilo refusal and completes the other free routes', async () => {
   const verify = vi.fn(async () => {});
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
-  const result = await setupFallbacks({ dataSharingApproved: ['opencode', 'kilo'], directory: await directory(), adapters: ['opencode', 'kilo', 'zro'], squire,
+  const result = await setupFallbacks({ dataSharingApproved: ['opencode', 'kilo'], directory: await kiloDirectory(), adapters: ['opencode', 'kilo', 'zro'], squire,
     run: async () => {}, notify: () => {}, verify,
     setupProvider: async (_notify, providers) => { if (providers?.includes('kilo')) throw new Error('refused'); return {}; } });
   expect(result).toEqual({ unavailable: ['kilo'] }); expect(verify).toHaveBeenCalledOnce();

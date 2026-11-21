@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile, writeFile, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, chmod, rm, readFile, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -330,6 +330,7 @@ it.each([true, false])('checks anonymous access before Squire and signups (harne
 });
 
 it('says why the anonymous Kilo model cannot drive signups', async () => {
+  vi.stubEnv('PATH', '');
   const stub = actions(['kilo', 'zro']);
   const { HARNESSES } = await import('./harnesses.js');
   const { BrowserSquire } = await import('./setup.js');
@@ -523,29 +524,148 @@ it('keeps sources queued behind the browser limit on waiting until a browser slo
   expect(Object.fromEntries(rows)).toEqual(Object.fromEntries(ids.map(id => [id, '✓ ready'])));
 });
 
-it('upgrades the anonymous OpenCode operator to the first account route that passes the tool probe', async () => {
+it.each([true, false])('uses an anonymous OpenCode operator before upgrading only with approval: %s', async approved => {
   const bin = await mkdtemp(join(tmpdir(), 'grunt-opencode-bin-'));
   try {
     const { chmod } = await import('node:fs/promises');
     await writeFile(join(bin, 'opencode'), `#!${process.execPath}\nconsole.log('grunt is ready.');\n`);
     await chmod(join(bin, 'opencode'), 0o755);
-    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    vi.stubEnv('PATH', bin);
     const { HARNESSES } = await import('./harnesses.js');
     const { BrowserSquire } = await import('./setup.js');
     const squire = new BrowserSquire();
     vi.spyOn(squire, 'useSignupAgent').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const stub = actions(['zro', 'tokenharbor']);
+    if (approved) stub.approveDataSharing.mockResolvedValue({ approved: ['zro', 'tokenharbor', 'opencode'], skipped: [] });
     stub.setupFallbacks.mockImplementation(async options => {
       await options.onSettled?.(options.adapters![0]!, true);
       return { unavailable: [] };
     });
-    const signupHarness = vi.fn((_harness: unknown, _port: number, _run?: unknown, _anonymous?: boolean) => async () => {});
+    const signupHarness = vi.fn((_harness: unknown, _port: number, _run?: unknown, _model?: string) => async () => {});
     const probeOperator = vi.fn(async () => true);
     await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES.find(harness => harness.id === 'opencode'),
       connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })), signupHarness, probeOperator, createSquire: () => squire });
-    // Anonymous first, then the grunt-routed operator once zro is ready; no further switches.
-    expect(signupHarness.mock.calls.map(call => call[3] === true)).toEqual([true, false]);
+    expect(signupHarness.mock.calls.map(call => call[3])).toEqual(approved ? ['opencode/big-pickle', undefined] : [undefined]);
     expect(probeOperator).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'zro', expect.any(AbortSignal));
   } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
+it.each([true, false])('hands signups from an exhausted Pi operator to OpenCode only with approval: %s', async approved => {
+  const bin = await mkdtemp(join(tmpdir(), 'grunt-opencode-bin-'));
+  try {
+    const { chmod } = await import('node:fs/promises');
+    await writeFile(join(bin, 'opencode'), `#!${process.execPath}\nconsole.log('grunt is ready.');\n`);
+    await chmod(join(bin, 'opencode'), 0o755);
+    vi.stubEnv('PATH', bin);
+    const { HARNESSES } = await import('./harnesses.js');
+    const { BrowserSquire } = await import('./setup.js');
+    const squire = new BrowserSquire();
+    let driver: Parameters<BrowserSquire['useSignupAgent']>[0];
+    vi.spyOn(squire, 'useSignupAgent').mockImplementation(agent => { driver = agent; });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const drivers: string[] = [];
+    const stub = actions(['kilo', 'pollinations', 'zro']);
+    if (approved) stub.approveDataSharing.mockResolvedValue({ approved: ['kilo', 'pollinations', 'zro', 'opencode'], skipped: [] });
+    stub.setupFallbacks.mockImplementation(async options => {
+      const id = options.adapters![0]!;
+      if (id !== 'kilo') await driver?.({ service: id, url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) }).catch(() => {});
+      await options.onSettled?.(id, id === 'kilo');
+      return { unavailable: id === 'kilo' ? [] : [id] };
+    });
+    const signupHarness = vi.fn((harness: { id: string }, _port: number, _run?: unknown, anonymous?: string) => async () => {
+      drivers.push(`${harness.id}${anonymous ? ':free' : ''}`);
+      if (harness.id === 'pi') throw new Error('No tool-capable adapter is available');
+    });
+    await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, signupHarness,
+      probeOperator: vi.fn(async () => true), connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })) });
+    expect(drivers).toEqual(approved ? ['pi', 'opencode:free', 'opencode:free'] : ['pi']);
+    expect(log.mock.calls.map(call => String(call[0]))).not.toContain('… operator: no working anonymous model; using Squire');
+  } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
+it.each([
+  ['missing', true], ['failed probe', true], ['deferred', true],
+  ['missing', false], ['failed probe', false], ['deferred', false]
+] as const)('selects OpenCode after provisioning from %s only with approval: %s', async (initial, approved) => {
+  const bin = join(directory, 'bin');
+  await mkdir(bin);
+  vi.stubEnv('PATH', bin);
+  const executable = join(bin, 'opencode');
+  const install = async (works: boolean) => {
+    await writeFile(executable, `#!${process.execPath}\n${works ? "console.log('grunt is ready.');" : 'process.exit(1);'}\n`);
+    await chmod(executable, 0o755);
+  };
+  if (initial === 'failed probe') await install(false);
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  let driver: Parameters<BrowserSquire['useSignupAgent']>[0];
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(agent => { driver = agent; });
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  const stub = actions(['opencode', 'reflection-beam']);
+  if (!approved) stub.approveDataSharing.mockResolvedValue({ approved: ['reflection-beam'], skipped: [] });
+  const attempts = new Map<string, number>();
+  const driven: string[] = [];
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    const attempt = (attempts.get(id) ?? 0) + 1;
+    attempts.set(id, attempt);
+    if (initial === 'deferred' && attempt === 1) {
+      await options.onSettled?.(id, false, 'browser could not continue');
+      return { unavailable: [id] };
+    }
+    if (id === 'opencode') await install(true);
+    else await driver?.({ service: id, url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) });
+    await options.onSettled?.(id, true);
+    return { unavailable: [] };
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire,
+    probeOperator: vi.fn(async () => false),
+    signupHarness: (harness, _port, _run, anonymous) => async input => {
+      driven.push(`${input.service}:${harness.id}:${anonymous ? 'free' : 'router'}`);
+    }
+  });
+  expect(driven).toEqual(approved ? ['reflection-beam:opencode:free'] : []);
+  expect(attempts.get('opencode')).toBe(initial === 'deferred' ? 2 : 1);
+});
+
+it.each([true, false])('walks every free harness model before Squire drives alone, with a Pi model answering: %s', async piAnswers => {
+  const bin = join(directory, 'bin'), pi = join(directory, 'pi-agent');
+  await mkdir(bin);
+  await mkdir(pi, { mode: 0o700 });
+  vi.stubEnv('PATH', bin);
+  vi.stubEnv('PI_CODING_AGENT_DIR', pi);
+  // OpenCode's free allowance is exhausted for every model; Pi's own provider answers or fails upstream.
+  const probes = join(directory, 'probes.log');
+  const record = `require('node:fs').appendFileSync(${JSON.stringify(probes)}, require('node:path').basename(process.argv[1]) + ' ' + process.argv.slice(2).filter(arg => /\\//.test(arg) || /free/.test(arg)).join(' ') + '\\n');`;
+  await writeFile(join(bin, 'opencode'), `#!${process.execPath}\n${record}\nconsole.error('AI_APICallError: Free usage limit reached'); setTimeout(() => {}, 60000);\n`, { mode: 0o755 });
+  await writeFile(join(bin, 'pi'), `#!${process.execPath}\n${record}\n${piAnswers ? "console.log('grunt is ready.');" : "console.error('upstream error'); process.exit(1);"}\n`, { mode: 0o755 });
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  let driver: Parameters<BrowserSquire['useSignupAgent']>[0];
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(agent => { driver = agent; });
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const stub = actions(['zro']);
+  stub.approveDataSharing.mockResolvedValue({ approved: ['zro', 'opencode'], skipped: [] });
+  const driven: string[] = [];
+  stub.setupFallbacks.mockImplementation(async options => {
+    await driver?.({ service: 'zro', url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) });
+    await options.onSettled?.('zro', true);
+    return { unavailable: [] };
+  });
+  const listFreeModels = vi.fn(async (reach: { openCode: boolean; pi: boolean }) => {
+    expect(reach).toEqual({ openCode: true, pi: true });
+    return [{ harness: 'opencode' as const, model: 'opencode/big-pickle' }, { harness: 'opencode' as const, model: 'opencode/glm-free' },
+      { harness: 'pi' as const, model: 'openrouter/vendor/model:free' }];
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, listFreeModels,
+    probeOperator: vi.fn(async () => false),
+    signupHarness: (harness, _port, _run, model) => async () => { driven.push(`${harness.id}:${model ?? 'grunt'}`); } });
+  const lines = log.mock.calls.map(call => String(call[0]));
+  expect(listFreeModels).toHaveBeenCalledExactlyOnceWith({ openCode: true, pi: true }, undefined, expect.any(AbortSignal));
+  expect((await readFile(probes, 'utf8')).trim().split('\n')).toEqual(['opencode opencode/big-pickle', 'opencode opencode/glm-free', 'pi vendor/model:free']);
+  expect(driven).toEqual(piAnswers ? ['pi:openrouter/vendor/model:free'] : []);
+  expect(lines).toContain(piAnswers ? '✓ model: openrouter/vendor/model:free (free)' : '… operator: no working anonymous model; using Squire');
 });

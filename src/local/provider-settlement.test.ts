@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
 import { setupFallbacks } from './fallback-setup.js';
 import { BrowserSquire } from './setup.js';
-import { DATA_SHARING_POLICIES } from './data-sharing.js';
+import { DATA_SHARING_POLICIES, recordDataSharingConsent } from './data-sharing.js';
 import { SETUP_CONCURRENCY } from './parallel.js';
 
 type Options = Parameters<typeof setupFallbacks>[0];
@@ -17,6 +17,8 @@ const deferred = () => {
 async function fixture(overrides: Partial<Options> = {}): Promise<Options> {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-provider-settlement-'));
   directories.push(directory);
+  // Kilo's explicit policy needs the receipt setup saves before fallback setup runs.
+  await recordDataSharingConsent(directory, ['kilo']);
   return {
     directory, run: async () => {}, notify: () => {}, verify: async () => {},
     dataSharingApproved: DATA_SHARING_POLICIES.map(policy => policy.provider),

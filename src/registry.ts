@@ -15,6 +15,22 @@ export interface Adapter {
   fit?: 'great' | 'possible' | 'poor';
   status?: 'active' | 'expiring' | 'inactive';
   expires?: string;
+  // Optional page-by-page notes for the free signup: the controls to press and
+  // the Grunt-supplied values to type, in order. Appended to Squire's drive goal.
+  hints?: string;
+  // Where Squire's drive stores the key it reveals (operate_drive `store`).
+  capture?: AdapterCapture;
+}
+export interface AdapterCapture { service: string; label?: string; api_hosts?: string[]; auth_shape?: string }
+// Mirrors operate_drive's store shape so a published entry cannot make the call invalid.
+function validCapture(value: unknown): value is AdapterCapture {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const c = value as Record<string, unknown>;
+  return Object.keys(c).every(key => ['service', 'label', 'api_hosts', 'auth_shape'].includes(key))
+    && typeof c.service === 'string' && c.service.length >= 1 && c.service.length <= 120
+    && (c.label === undefined || typeof c.label === 'string' && c.label.length >= 1 && c.label.length <= 60)
+    && (c.api_hosts === undefined || Array.isArray(c.api_hosts) && c.api_hosts.length <= 10 && c.api_hosts.every(host => typeof host === 'string' && host.length >= 1 && host.length <= 253))
+    && (c.auth_shape === undefined || typeof c.auth_shape === 'string' && c.auth_shape.length <= 120 && /^(bearer|header:.+|query:.+)$/.test(c.auth_shape));
 }
 export interface Registry { version: 1; published: string; adapters: Adapter[] }
 const installers = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', clixad: 'builtin:clixad', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes', goedel: 'builtin:goedel', crowllm: 'builtin:crowllm', fikra: 'builtin:fikra', openference: 'builtin:openference', darus: 'builtin:darus', 'aperture-ai': 'builtin:aperture-ai', 'reflection-beam': 'builtin:reflection-beam', 'antseed-vikey': 'builtin:antseed-vikey', millionseek: 'builtin:millionseek', freepi: 'builtin:freepi' };
@@ -48,6 +64,8 @@ export function validateRegistry(value: unknown): Registry {
         || a.models.some(model => typeof model !== 'string' || !model.trim()) || new Set(a.models).size !== a.models.length))) return fail();
     if (a.fit !== undefined && (typeof a.fit !== 'string' || !['great', 'possible', 'poor'].includes(a.fit))
       || a.status !== undefined && (typeof a.status !== 'string' || !['active', 'expiring', 'inactive'].includes(a.status))
+      || a.hints !== undefined && (typeof a.hints !== 'string' || !a.hints.trim() || a.hints.length > 2000)
+      || a.capture !== undefined && !validCapture(a.capture)
       || a.expires !== undefined && (typeof a.expires !== 'string' || !/^\d{4}-\d\d-\d\d$/.test(a.expires) || !Number.isFinite(Date.parse(a.expires)))) return fail();
     if (a.signup !== undefined) {
       if (typeof a.signup !== 'string') return fail();

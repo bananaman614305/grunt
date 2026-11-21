@@ -38,7 +38,16 @@
       ],
       "install": "builtin:zro",
       "signup": "https://zro.moonmath.ai/overview",
-      "model": "deepseek-v4.1-flash"
+      "model": "deepseek-v4.1-flash",
+      "hints": "On /overview press 'API Keys'. On /api-keys press 'Create key', type grunt in 'Alias', leave 'Spend limit' and 'Expiration date' empty, press 'Create'. The new key is shown once in the dialog; press its 'Copy' button so it is stored, then finish. Never press a 'Revoke' button.",
+      "capture": {
+        "service": "zro",
+        "label": "grunt",
+        "api_hosts": [
+          "zro.moonmath.ai"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "tokenharbor",
@@ -50,7 +59,16 @@
       ],
       "install": "builtin:tokenharbor",
       "signup": "https://tokenharbor.ai/dashboard",
-      "model": "deepseek-v4.1-flash:free"
+      "model": "deepseek-v4.1-flash:free",
+      "hints": "On /dashboard press 'API keys … Manage keys'. On /dashboard/api-keys press 'Show plaintext key'. A dialog asks for a code sent by email: press 'Send code', open the verification email that arrives in the Squire email's inbox, type its code, press 'Verify'; the key is then shown. Do not press '+ New key', 'Edit' or 'Revoke'.",
+      "capture": {
+        "service": "tokenharbor",
+        "label": "grunt",
+        "api_hosts": [
+          "tokenharbor.ai"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "runcrate",
@@ -74,7 +92,8 @@
       ],
       "install": "builtin:mistral-vibe",
       "signup": "https://console.mistral.ai/",
-      "model": "zai-glm-5-3-flash-vibe-free"
+      "model": "zai-glm-5-3-flash-vibe-free",
+      "hints": "On console.mistral.ai/codestral/cli/authenticate press 'Authorize'. When the page then shows no controls, the CLI pairing is done: finish."
     },
     {
       "id": "livekit",
@@ -86,7 +105,8 @@
       ],
       "install": "builtin:livekit",
       "signup": "https://cloud.livekit.io/",
-      "model": "deepseek-ai/deepseek-v4.1-flash"
+      "model": "deepseek-ai/deepseek-v4.1-flash",
+      "hints": "Open the existing project from 'Switch project', then 'Settings' in the project sidebar. Project Settings has no Agent observability switch; Agent observability, when present, is under the agents area. If the project exists and no Agent observability switch is offered, finish; there is nothing else to change."
     },
     {
       "id": "pollinations",
@@ -98,7 +118,16 @@
       ],
       "install": "builtin:pollinations",
       "signup": "https://enter.pollinations.ai/",
-      "model": "community/morriszdweck/glm-5.3-flash-free"
+      "model": "community/morriszdweck/glm-5.3-flash-free",
+      "hints": "On /keys the Grunt key grunt-free-pollinations is listed. Press its 'Edit secret key', check Budget is 0, 'Quest balance only' is checked and only 'Generate' is on, then press 'Save'. If this vault already holds pollinations grunt-free-pollinations, finish after Save; otherwise press 'Create', type grunt-free-pollinations in Name, 0 in Budget, check 'Quest balance only' and press 'Create'; the shown secret is stored automatically.",
+      "capture": {
+        "service": "pollinations",
+        "label": "grunt-free-pollinations",
+        "api_hosts": [
+          "gen.pollinations.ai"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "beatapi",
@@ -110,7 +139,16 @@
       ],
       "install": "builtin:beatapi",
       "signup": "https://beatapi.io/",
-      "model": "deepseek-v4.1-flash-free"
+      "model": "deepseek-v4.1-flash-free",
+      "hints": "On /sign-in press 'Continue with Google' and choose the Squire-connected Google account. Leave 'Username or email' and 'Password' empty; they belong to password login, not to Google sign-in. After sign-in open /dashboard/apikeys and create one key named grunt; the shown key is stored automatically.",
+      "capture": {
+        "service": "beatapi",
+        "label": "grunt",
+        "api_hosts": [
+          "api.beatapi.io"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "clixad",
@@ -158,7 +196,16 @@
       ],
       "install": "builtin:kenari",
       "signup": "https://kenari.id/login",
-      "model": "ernie-5-5-flash-preview:free"
+      "model": "ernie-5-5-flash-preview:free",
+      "hints": "On /overview open 'API Keys' (/keys). Press 'Buat API Key' (create), open 'Pengaturan lanjutan' (advanced), choose 'Model tertentu' (specific model) and the model this goal names, type grunt as the name, press the create button. The new key is shown once: press its copy button so it is stored, then finish. Never press 'Ganti key' (rotate) or 'Cabut key' (revoke).",
+      "capture": {
+        "service": "kenari",
+        "label": "Grunt Free",
+        "api_hosts": [
+          "kenari.id"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "numes",
@@ -182,7 +229,16 @@
       ],
       "install": "builtin:goedel",
       "signup": "https://inference.goedelmachines.com/keys",
-      "model": "deepseek/deepseek-v4.1-flash"
+      "model": "deepseek/deepseek-v4.1-flash",
+      "hints": "On /keys type grunt in 'Key name', keep 'Free · prompts kept' selected, check the 'I agree to the Terms' checkbox, press 'Create key'. The new key (prefix sk-gm-free-) is shown with 'Copy key': press 'Copy key' so it is stored, then finish.",
+      "capture": {
+        "service": "goedel",
+        "label": "Grunt Free",
+        "api_hosts": [
+          "api.goedelmachines.com"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "fikra",
@@ -194,7 +250,16 @@
       ],
       "install": "builtin:fikra",
       "signup": "https://fikraapi.co.ke/account/signup",
-      "model": "deepseek-v4-1-flash-economy-free"
+      "model": "deepseek-v4-1-flash-economy-free",
+      "hints": "On /account/signup type the Squire email in the email field and a new password in the password field, choose 'Google Search' in the 'Select an option' list, press 'Create Account with $0.50 free-model credit', then complete the emailed verification and create one key named grunt; press its copy button so it is stored.",
+      "capture": {
+        "service": "fikra",
+        "label": "Grunt Free",
+        "api_hosts": [
+          "api.fikraapi.co.ke"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "openference",
@@ -218,7 +283,16 @@
       ],
       "install": "builtin:darus",
       "signup": "https://gateway.darusalfatah.id/",
-      "model": "darus/deepseek-v4.1-flash-1017-FREE"
+      "model": "darus/deepseek-v4.1-flash-1017-FREE",
+      "hints": "On the home page press 'Mulai Gratis' (start free). On /masuk?mode=register type grunt in 'Nama Anda' (name), the Squire email in the email field, press 'Kirim OTP' (send code) and type the emailed code, type grunt in 'username', a new password in 'Min. 12 karakter', leave the referral field empty, press 'Daftar sekarang' (register). Then create one key named grunt.",
+      "capture": {
+        "service": "darus",
+        "label": "Grunt Free",
+        "api_hosts": [
+          "gateway.darusalfatah.id"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "aperture-ai",
@@ -230,7 +304,16 @@
       ],
       "install": "builtin:aperture-ai",
       "signup": "https://www.aperture-ai.run/login.html",
-      "model": "baidu/ernie-5.5-flash-preview:free"
+      "model": "baidu/ernie-5.5-flash-preview:free",
+      "hints": "On /login.html press 'Continue with Google' and choose the Squire-connected account. Then open 'Chat' (/chat-app/) and press 'Dashboard': the account API key is shown there with a 'Copy' button. Press 'Copy' so it is stored, then finish; there is no create step.",
+      "capture": {
+        "service": "aperture-ai",
+        "label": "Grunt Free",
+        "api_hosts": [
+          "www.aperture-ai.run"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "reflection-beam",
@@ -253,7 +336,16 @@
       ],
       "install": "builtin:millionseek",
       "signup": "https://100milionseek.top/signup",
-      "model": "deepseek-v4.1-flash-free"
+      "model": "deepseek-v4.1-flash-free",
+      "hints": "On /signup wait for the 'Email' field to appear, type the Squire email, complete the Cloudflare checkbox, press 'Create my key', then press its 'Copy key' button so the key is stored, and finish.",
+      "capture": {
+        "service": "100milionseek",
+        "label": "Grunt Free",
+        "api_hosts": [
+          "100milionseek.top"
+        ],
+        "auth_shape": "bearer"
+      }
     },
     {
       "id": "freepi",
@@ -265,7 +357,8 @@
       ],
       "install": "builtin:freepi",
       "signup": "https://freepi.ai",
-      "model": "deepseek-v4.1-flash"
+      "model": "deepseek-v4.1-flash",
+      "hints": "On github.com/login/device/select_account press 'Continue as' the account Squire uses for GitHub. On /login/device type the device code from this goal into the 'User code' boxes (one character each), press 'Continue', then 'Authorize'."
     }
   ]
 }

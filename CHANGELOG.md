@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-21
+
+- When a Kilo model is rate-limited (HTTP 429), returns a server error (5xx) or answers as another model, try Kilo's other free models from its live catalog: Particle-1 first, then Reflection Beam, then the rest in catalog order. An anonymous Kilo model can now drive signups whenever any of them has headroom. Router aliases are never used, the model that answered last goes first, and a timeout still ends the turn without switching. When rotation exhausts the free models, report quota with the earliest refill only if all returned 429; otherwise report the last non-quota failure and hand over to the next route.
+- Extend the Kilo data-sharing policy to every free Kilo model. It is now an explicit policy, still accepted by default without a prompt, so `GRUNT_SETUP_NO_DATA_SHARING=1` turns Kilo off.
+- Have the daemon renew changed policy approvals at start without prompting, logging `Data sharing on: ...` for the renewed providers, so updating keeps already-approved routes on.
+- Clear Kilo quota cooldowns saved by earlier releases once, so rotation can run right after the upgrade. This moves the routing-history database to version 2; 0.9.4 and earlier cannot open it after the upgrade.
+- Add optional registry `hints` (synced with the registry) and `capture` (shipped only) fields. Setup places a provider's hints in Squire's drive goal before the safety rules and passes its capture as the drive's `store`, so the drive can store a revealed key without a driver model. Pass a one-time device code to the drive as a supplied value (Free-Pi).
+
+## [0.9.4] - 2026-11-21
+
+- When the routed signup driver has no model, try every OpenCode free model, then Pi's free models, before Squire's drive runs alone. A driver that already acted hands the same signup session to the next one; a timeout fails that signup without switching.
+- Block signup buttons that regenerate or roll an existing key.
+- Start the signup pass immediately when fewer than two routes stay open and an untried recommended route remains.
+
+## [0.9.3] - 2026-11-21
+
+- Let the OpenCode CLI drive signups when no routed driver has a model, in setup and in the daemon, including mid-signup takeover.
+- Accept provider data-sharing policies by default during setup without prompting; `GRUNT_SETUP_NO_DATA_SHARING=1` still opts out.
+- Make signup refusals name what is allowed (offered option keys, Grunt-supplied values, refs from the latest observation), and stop blocking providers' own "secret" key controls.
+
 ## [0.9.2] - 2026-11-20
 
 - Retry routing-history commits within a bounded wait when a sibling reader holds the database, preserving atomic observations without replaying writes.

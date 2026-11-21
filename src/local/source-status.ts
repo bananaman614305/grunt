@@ -64,7 +64,7 @@ export class SourceStatus {
   private history: RoutingHistory | undefined;
   private backoffs = new Map<string, RoutingBackoff>();
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
-  constructor(ids: readonly string[], private now: () => number = Date.now) {
+  constructor(ids: readonly string[], private now: () => number = Date.now, private routes?: { open: (id: string) => boolean; dropped: (id: string) => void }) {
     for (const id of ids) this.observations.set(id, { state: 'unknown', active: 0, revision: 0 });
   }
   private entry(id: string) {
@@ -91,16 +91,25 @@ export class SourceStatus {
     if (entry.state !== 'ready') entry.state = 'available';
     entry.available = true; entry.availabilityCheckedAt = this.now();
   }
+  observedAvailable(id: string) { return this.entry(id).available; }
+  private routeOpen(id: string) { return (this.observedAvailable(id) ?? this.entry(id).active > 0) && !!this.routes?.open(id); }
+  private notifyClosed(id: string, wasOpen: boolean) {
+    if (this.routes && wasOpen && !this.routeOpen(id)) {
+      try { this.routes.dropped(id); } catch { return; }
+    }
+  }
   failed(id: string, code: ErrorCode, retryAfter?: number) {
+    const wasOpen = this.routeOpen(id);
     const entry = this.entry(id);
     entry.revision++;
     entry.failure = code;
     delete entry.availabilityQuota;
-    delete entry.availabilityCheckedAt; delete entry.available;
+    delete entry.availabilityCheckedAt; entry.available = false;
     entry.state = code === 'quota' ? 'limited' : code === 'logged_out' || code === 'not_installed' ? 'unavailable' : 'error';
     const seconds = code === 'quota' && typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined;
     const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
     if (until !== undefined && Number.isFinite(until)) entry.retryAt = until; else delete entry.retryAt;
+    this.notifyClosed(id, wasOpen);
   }
   quotaRetryAt(id: string) { return this.observations.get(id)?.retryAt; }
   routingAvailability(id: string, positiveAgeMs: number, negativeAgeMs: number): boolean | undefined {
@@ -237,12 +246,14 @@ export class SourceStatus {
       // A reply or explicit recovery observed after this probe started is
       // newer evidence. The caller still receives the actual probe result.
       if (entry.revision === revision) {
+        const wasOpen = this.routeOpen(source.id);
         if (!result) {
           if (entry.availabilityQuota) this.healthy(source.id);
           entry.revision++; entry.state = 'unavailable';
         } else if (healthCheck || entry.availabilityQuota) this.healthy(source.id);
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
         entry.available = result; entry.availabilityCheckedAt = this.now();
+        this.notifyClosed(source.id, wasOpen);
       }
       return result;
     } catch (error) {
@@ -251,11 +262,15 @@ export class SourceStatus {
         if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota || (entry.retryAt ?? 0) <= this.now())) {
           this.failed(source.id, 'quota', error.retryAfter);
           entry.availabilityQuota = true;
-          entry.available = false; entry.availabilityCheckedAt = this.now();
+          entry.availabilityCheckedAt = this.now();
         }
         return false;
       }
-      if (entry.revision === revision) { entry.revision++; entry.state = 'unavailable'; entry.available = false; entry.availabilityCheckedAt = this.now(); }
+      if (entry.revision === revision) {
+        const wasOpen = this.routeOpen(source.id);
+        entry.revision++; entry.state = 'unavailable'; entry.available = false; entry.availabilityCheckedAt = this.now();
+        this.notifyClosed(source.id, wasOpen);
+      }
       throw error;
     }
   }
