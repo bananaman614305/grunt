@@ -178,7 +178,7 @@ export function start(env = process.env) {
     const adapter = registry.adapters.find(adapter => adapter.id === id);
     return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
   };
-  const configuredAccess = (source: Source) => routable(source.id) && source.available().catch(() => false);
+  const configuredAccess = (source: Source) => routable(source.id) && sources.available(source).catch(() => false);
   const live = async (source: Source) => await configuredAccess(source) && sources.openRoute(source.id);
   const recovery = new SourceRecovery({ directory,
     eligible: id => routable(id) && recommendedAdapters(registry).some(adapter => adapter.id === id),

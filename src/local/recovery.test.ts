@@ -217,12 +217,13 @@ describe('low open routes', () => {
 
   it('starts acquisition after a maintenance loss leaves one open route', async () => {
     const dir = await directory();
-    const lost: Source = { id: 'zro', available: async () => true, complete: async () => { throw new SourceError('logged_out', 'Credentials rejected'); } };
+    let available = true;
+    const lost: Source = { id: 'zro', available: async () => available, complete: async () => { available = false; throw new SourceError('logged_out', 'Credentials rejected'); } };
     const healthy: Source = { id: 'opencode', available: async () => true, complete: async () => ({ text: 'ok' }) };
     const sources = new Sources([lost, healthy], { registry: () => bundledRegistry });
     const setup = vi.fn(async () => ({ unavailable: ['livekit'] }));
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['livekit'],
-      open: async () => (await Promise.all(sources.sources.map(async source => await source.available() && sources.openRoute(source.id)))).filter(Boolean).length,
+      open: async () => (await Promise.all(sources.sources.map(async source => await sources.available(source) && sources.openRoute(source.id)))).filter(Boolean).length,
       notify: () => {}, setup });
     sources.setRouteDropped(() => { void recovery.lowRoutes(); });
     try {
@@ -230,6 +231,53 @@ describe('low open routes', () => {
       await sources.check('zro', AbortSignal.timeout(1000));
       await vi.waitFor(() => expect(adapters(setup)).toEqual(['livekit']));
     } finally { await recovery.close(); await sources.close(); }
+  });
+
+  it.each([[0, 5, 1], [120001, 6, 0]])('counts fresh access after a quota hold advances %i ms', async (elapsed, expectedOpen, expectedSignups) => {
+    const dir = await directory();
+    let now = 1000;
+    const providers: Source[] = ['zro', 'kilo', 'opencode', 'runcrate', 'tokenharbor', 'pollinations'].map(id => ({
+      id, supportsFunctionTools: true, available: async () => true,
+      complete: async () => { if (id === 'zro') throw new SourceError('quota', 'Quota exhausted', 120); return { text: 'ok' }; },
+    }));
+    const sources = new Sources(providers, { registry: () => bundledRegistry, now: () => now });
+    const setup = vi.fn(async () => ({ unavailable: ['livekit'] }));
+    const live = async (source: Source) => await sources.available(source) && sources.openRoute(source.id);
+    const open = async () => (await Promise.all(providers.map(live))).filter(Boolean).length;
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['livekit'], open, notify: () => {}, setup });
+    const dropped = vi.fn();
+    sources.setRouteDropped(dropped);
+    try {
+      expect(await open()).toBe(6);
+      expect(await sources.check('zro', AbortSignal.timeout(1000))).toMatchObject({ outcome: 'failed', code: 'quota' });
+      expect(sources.openRoute('zro')).toBe(false);
+      now += elapsed;
+      expect(await open()).toBe(expectedOpen);
+      expect(await live(providers[0]!)).toBe(elapsed > 120000);
+      recovery.synced();
+      await settle();
+      await recovery.close();
+      expect(setup).toHaveBeenCalledTimes(expectedSignups);
+      expect(dropped.mock.calls).toEqual([['zro']]);
+    } finally { await recovery.close(); await sources.close(); }
+  });
+
+  it.each(['upstream', 'quota'] as const)('preserves a newer maintenance failure during an access check (%s)', async code => {
+    let release!: (available: boolean) => void;
+    const source: Source = { id: 'zro', available: vi.fn(async () => true), complete: async () => { throw new SourceError(code, 'Maintenance failed', code === 'quota' ? 120 : undefined); } };
+    const sources = new Sources([source], { registry: () => bundledRegistry });
+    const dropped = vi.fn();
+    sources.setRouteDropped(dropped);
+    try {
+      await sources.models();
+      vi.mocked(source.available).mockImplementationOnce(() => new Promise<boolean>(resolve => { release = resolve; }));
+      const checking = sources.available(source);
+      expect(await sources.check('zro', AbortSignal.timeout(1000))).toMatchObject({ outcome: 'failed', code });
+      release(true);
+      expect(await checking).toBe(true);
+      expect(sources.openRoute('zro')).toBe(false);
+      expect(dropped.mock.calls).toEqual([['zro']]);
+    } finally { await sources.close(); }
   });
 });
 

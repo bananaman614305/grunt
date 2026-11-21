@@ -127,6 +127,7 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
+  available(source: Source) { return this.observation.available(source); }
   openRoute(id: string) { return this.observation.observedAvailable(id) !== false && this.dispatchEligible(id); }
   dispatchEligible(id: string, request?: ModelRequest) {
     const router = this.registeredRouter;
