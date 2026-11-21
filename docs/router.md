@@ -101,6 +101,9 @@ accepted, with `GRUNT_*` taking precedence.
   to 1 second–24 hours. Quota failures use the provider's reset time instead;
   successful recovery preserves that quota deadline. Missing installations
   and expired logins stay barred until a successful health check.
+  On the first upgrade to Kilo's free-model rotation, routing history clears
+  the legacy Particle-only Kilo quota hold so other free models can be tried.
+  Other holds and subsequent quota holds from exhausting the pool persist.
 - **Retirement.** On the **5th consecutive identical failure**, each within
   6 hours of the last, the route is retired. Quota failures never count
   toward this; identical non-quota failures still count during a quota hold
