@@ -132,7 +132,10 @@ export class WorkerCoordinator {
     await this.saving;
     if (!this.options.persistence) return;
     const record = await this.options.persistence.read();
-    if (record && record.revision > this.revision) {
+    // A concurrent status call must not swap the plan captured by an in-flight
+    // dispatch. Its pending admission must either save against that revision or
+    // conflict, rather than submit old task references under a newer plan.
+    if (record && record.revision > this.revision && !this.dispatching) {
       this.plan = restoredPlan(record.plan); this.revision = record.revision;
       this.saved = JSON.stringify(this.plan); this.capacity = undefined;
     }
@@ -200,11 +203,12 @@ export class WorkerCoordinator {
     if (!this.plan) throw new Error('Create a coordination plan before dispatch.');
     if (this.plan.tasks.some(task => task.state === 'unresolved')) return { ...this.snapshot(), dispatch: 'reconciliation_required' };
     if (this.dispatching || this.plan.tasks.some(task => task.state === 'running')) return { ...this.snapshot(), dispatch: 'already_running' };
-    const ready = this.plan.tasks.filter(task => task.state === 'pending' && !task.dependsOn.length);
+    const plan = this.plan, ready = plan.tasks.filter(task => task.state === 'pending' && !task.dependsOn.length);
     if (!ready.length) return { ...this.snapshot(), dispatch: 'no_independent_tasks' };
     this.dispatching = true;
     try {
       this.capacity = await this.options.capacity(signal); signal.throwIfAborted();
+      if (this.plan !== plan) throw new Error('Coordination plan changed; read status before dispatching.');
       const slots = this.capacity.dispatchSlots;
       if (!Number.isSafeInteger(slots) || slots < 0 || slots > 2) throw new Error('Invalid coordination capacity.');
       if (!slots) return { ...this.snapshot(), dispatch: 'capacity_unavailable', nextAction: 'Continue the main task. Wait for natural capacity recovery; do not reset quotas or probe providers.' };

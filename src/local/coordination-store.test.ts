@@ -131,3 +131,35 @@ it('refuses symlinked state parents, corrupt JSON and replacement project identi
   const store = await CoordinationStore.open(f); await rm(f.projectRoot, { recursive: true }); await mkdir(f.projectRoot);
   await expect(store.read()).rejects.toThrow('coordination');
 });
+
+it('rejects a suspended writer after a newer head prunes and frees its exclusive revision name', async () => {
+  const f = await fixture(), older = await CoordinationStore.open(f), newer = await CoordinationStore.open(f);
+  await older.write({ label: 'initial' }, 0);
+  let release!: () => void, arrived!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), captured = new Promise<void>(resolve => { arrived = resolve; });
+  const read = older.read.bind(older);
+  vi.spyOn(older, 'read').mockImplementationOnce(async () => { const value = await read(); arrived(); await gate; return value; });
+  const stale = older.write({ label: 'stale-admission' }, 1);
+  await captured;
+  for (let revision = 1; revision < 10; revision++) await newer.write({ label: 'newer-plan' }, revision);
+  expect((await f.records()).files).not.toContain('0000000000000002.json');
+  release();
+  await expect(stale).rejects.toThrow('revision conflict');
+  expect(await newer.read()).toMatchObject({ revision: 10, plan: { label: 'newer-plan' } });
+});
+
+it('never replaces an in-flight dispatch plan with a newer status restore before recording admission', async () => {
+  const f = await fixture(), first = await f.open(); await first.execute(input, signal());
+  const second = await f.open();
+  let release!: () => void, arrived!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), capacityStarted = new Promise<void>(resolve => { arrived = resolve; });
+  f.capacity.mockImplementationOnce(async () => { arrived(); await gate; return { workerSlots: 2, idleToolSources: 2, dispatchSlots: 1 }; });
+  const dispatch = first.execute({ operation: 'dispatch' }, signal());
+  await capacityStarted;
+  await second.execute({ operation: 'plan', main: { task: 'New owner-selected work', ownedPaths: [] }, tasks: [{ id: 'new', task: 'Different work', ownedPaths: ['new.ts'] }] }, signal());
+  await first.execute({ operation: 'status' }, signal());
+  release();
+  await expect(dispatch).rejects.toThrow('revision conflict');
+  expect(f.batches.start).not.toHaveBeenCalled();
+  expect(await (await f.open()).execute({ operation: 'status' }, signal())).toMatchObject({ tasks: [{ id: 'new', state: 'pending' }] });
+});

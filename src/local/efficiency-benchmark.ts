@@ -1,8 +1,9 @@
 import { performance } from 'node:perf_hooks';
 import { realpath } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Completion, ModelRequest, Source } from './source.js';
+import { Sources, SourceError } from './source.js';
 
 interface BenchmarkRuntime {
   Sources: new (sources: Source[], routing?: undefined, disabled?: ReadonlySet<string>, firstOutputMs?: number) => {
@@ -82,9 +83,8 @@ export async function runEfficiencyBenchmark(args: string[]) {
     else throw new Error('Unknown benchmark argument.');
   }
   if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 100) throw new Error('Use 1–100 benchmark iterations.');
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
   const before = baseline ? await measureFallbackTasks(await loadRuntime(baseline), iterations) : undefined;
-  const current = await measureFallbackTasks(await loadRuntime(root), iterations);
+  const current = await measureFallbackTasks({ Sources, SourceError }, iterations);
   return {
     version: 1, kind: 'synthetic-runtime-benchmark', iterations,
     fixture: { firstOutputDeadlineMs: 30, stoppedStreamFailureMs: 160, firstProgressMs: 5, fallbackAnswerMs: 5 },

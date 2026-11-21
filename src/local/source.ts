@@ -40,6 +40,8 @@ export interface Source {
   // Streaming adapters may report every meaningful content, reasoning or tool
   // delta. They also receive an idle deadline after output has started.
   // Headers, role-only events and transport keepalives are not progress.
+  // This inference-stream capability opts into prompt cancellation settlement;
+  // its reader cleanup must remain abort-safe after the caller has returned.
   reportsProgress?: boolean;
   available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
@@ -138,7 +140,12 @@ export class Sources {
       clearTimeout(timer); timer = undefined;
       if (source.reportsProgress) arm();
     };
-    const cancel = () => { finished = true; rejectCutoff(caller.reason); };
+    const cancel = () => {
+      finished = true;
+      // Legacy native-tool adapters own process/bridge cleanup. Let their
+      // cancelled promise settle, preserving their existing initial watchdog.
+      if (source.reportsProgress) { clearTimeout(timer); rejectCutoff(caller.reason); }
+    };
     caller.addEventListener('abort', cancel, { once: true });
     // Arm before invoking adapters: an adapter may synchronously report its
     // first output, or throw before returning its promise.

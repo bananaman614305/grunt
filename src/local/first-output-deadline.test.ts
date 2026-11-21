@@ -118,14 +118,46 @@ it('keeps a slow reasoning stream alive while meaningful progress continues', as
   expect(after.complete).not.toHaveBeenCalled();
 });
 
-it('caller cancellation promptly settles even a source that ignores its signal without retrying', async () => {
+it('caller cancellation promptly settles a progress source that ignores its signal without retrying', async () => {
   const after = next(), failed = vi.fn(), controller = new AbortController();
   const complete = vi.fn<Source['complete']>(() => new Promise<Completion>(() => {}));
-  const source: Source = { id: 'freebuff', reportsOutput: true, available: async () => true, complete, failed };
+  const source: Source = { id: 'freebuff', reportsProgress: true, available: async () => true, complete, failed };
   const pending = chain([source, after], false, 1000).complete(request, controller.signal);
   await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
   controller.abort(new Error('caller stopped'));
   await expect(Promise.race([pending, new Promise(resolve => setTimeout(() => resolve('still pending'), 80))])).rejects.toThrow('caller stopped');
+  expect(failed).not.toHaveBeenCalled();
+  expect(after.complete).not.toHaveBeenCalled();
+});
+
+it('awaits legacy native-adapter cancellation cleanup before settling without fallback', async () => {
+  const after = next(), failed = vi.fn(), controller = new AbortController();
+  let finishCleanup!: () => void, cleaned = false, settled = false;
+  const cleanup = new Promise<void>(resolve => { finishCleanup = resolve; });
+  const complete = vi.fn<Source['complete']>((_request, signal) => new Promise<Completion>((_resolve, reject) => {
+    signal.addEventListener('abort', () => { void cleanup.then(() => { cleaned = true; reject(signal.reason); }); }, { once: true });
+  }));
+  const source: Source = { id: 'freebuff', reportsOutput: true, available: async () => true, complete, failed };
+  const pending = chain([source, after], false, 1000).complete(request, controller.signal).catch(error => { settled = true; return error; });
+  await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
+  const reason = new Error('caller stopped'); controller.abort(reason);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(settled).toBe(false); expect(cleaned).toBe(false);
+  finishCleanup();
+  expect(await pending).toBe(reason); expect(cleaned).toBe(true);
+  expect(failed).not.toHaveBeenCalled();
+  expect(after.complete).not.toHaveBeenCalled();
+});
+
+it('retains the initial watchdog when a legacy adapter ignores caller cancellation before output', async () => {
+  const after = next(), failed = vi.fn(), controller = new AbortController();
+  const complete = vi.fn<Source['complete']>(() => new Promise<Completion>(() => {}));
+  const source: Source = { id: 'freebuff', reportsOutput: true, available: async () => true, complete, failed };
+  const pending = chain([source, after], false, 80).complete(request, controller.signal);
+  const rejection = expect(pending).rejects.toThrow();
+  await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
+  controller.abort();
+  await rejection;
   expect(failed).not.toHaveBeenCalled();
   expect(after.complete).not.toHaveBeenCalled();
 });

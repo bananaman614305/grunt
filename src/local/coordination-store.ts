@@ -99,6 +99,11 @@ export class CoordinationStore {
       const directory = await open(this.options.directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       try { await directory.sync(); } finally { await directory.close(); }
     }
+    // Retention can free an old exclusive name while a suspended writer still
+    // holds the previous head. Publishing that name is not admission: the head
+    // must still be our revision after the directory entry is durable. Normal
+    // pruning never removes the highest revision, so an ABA cannot pass here.
+    if (Number((await this.revisions()).at(-1)?.slice(0, 16)) !== revision) throw conflict();
     // Bound disk use. Never delete the current revision or another writer's newer entry.
     const old = (await this.revisions()).filter(name => Number(name.slice(0, 16)) <= revision - KEEP_REVISIONS);
     await Promise.all(old.map(name => unlink(join(this.options.directory, name)).catch(() => {})));
