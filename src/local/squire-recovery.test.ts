@@ -282,8 +282,11 @@ it.each([true, false])('Reproduction zro: lets a harness recover Jev and require
   const agent = vi.fn(async (input: Parameters<Parameters<BrowserSquire['useSignupAgent']>[0]>[0]) => {
     expect(input.tools.map(tool => tool.name)).not.toContain('fetch_credential');
     expect(await input.call('operate_drive', {})).toMatchObject({ status: 'low_confidence' });
-    expect(await input.call('operate_drive', { answer: 'billing' })).toMatchObject({ status: 'invalid_answer' });
+    // A refusal names what is allowed, so the operator does not spend turns guessing.
+    expect(await input.call('operate_drive', { answer: 'billing' })).toMatchObject({ status: 'invalid_answer', allowed_answers: ['github', 'WAIT'] });
     expect(await input.call('operate_drive', { answer: 'mixed' })).toMatchObject({ status: 'invalid_answer' });
+    expect(await input.call('operate_type', { ref: 'name', text: 'grunt-squire' })).toMatchObject({ status: 'stopped', allowed_text: ['grunt', 'free'] });
+    expect(await input.call('operate_click', { ref: 'unobserved' })).toMatchObject({ status: 'stopped', reason: expect.stringContaining('latest operate_observe') });
     expect(await input.call('operate_drive', { answer: 'github' })).toMatchObject({ status: 'complete' });
   });
   squire.useSignupAgent(agent);
@@ -349,6 +352,19 @@ it.each([
   ['Accept all cookies', false]
 ])('allows only required free signup terms: %s', (label, allowed) => {
   expect(guardedSignupChoice('terms', label)).toBe(allowed);
+});
+
+// Provider key pages call API keys "secret keys" (Pollinations) and sign-up
+// pages show a captcha; neither is a payment, account or consent choice.
+it.each([
+  ['Secret', true],
+  ['Edit secret key', true],
+  ['Complete the captcha', true],
+  ['Delete secret key', false],
+  ['Grant permission', false],
+  ['Enter password', false]
+])('lets the operator choose provider key and captcha controls: %s', (label, allowed) => {
+  expect(guardedSignupChoice('control', label)).toBe(allowed);
 });
 
 it.each([
