@@ -32,7 +32,7 @@ export function recommendedAdapters(registry: Registry, now = Date.now()) {
     .sort((a, b) => rank(a) - rank(b) || b.weight - a.weight);
 }
 
-export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void }
+export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; dropped?: (source: string) => void }
 interface Task { source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
@@ -67,8 +67,10 @@ export class StickyRouter {
     if (persisted && (until === undefined || persisted.until >= until)) return { until: persisted.until, code: persisted.code };
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
+  private benched(id: string) { return this.retired(id) || (this.cooldown(id)?.until ?? 0) > this.now(); }
   async recordFailure(id: string, failure: SourceError) {
     if (!this.registered(id) || failure.code === 'cancelled') return;
+    const wasBenched = this.benched(id);
     let until: number;
     if (failure.code === 'quota') {
       const seconds = failure.retryAfter ?? 3600;
@@ -89,6 +91,7 @@ export class StickyRouter {
     }
     this.barAt.set(id, this.observation.routingBackoff(id)?.at ?? this.now());
     this.bars.set(id, until); this.barFailures.set(id, this.observation.routingBackoff(id)?.code ?? failure.code);
+    if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 
   private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }

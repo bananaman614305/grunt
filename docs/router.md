@@ -120,9 +120,13 @@ accepted, with `GRUNT_*` taking precedence.
 - **Loop.** `RegistrySync` fetches the registry every `REGISTRY_INTERVAL`
   (6 h, aligned to UTC midnight), keeping the ETag and the newer-publication
   rule. After each fetch it starts one acquisition pass. So do the earlier
-  recovery triggers: quota, logged-out and not-installed failures. Only one
-  pass runs at a time, and none runs while foreground `usegrunt setup` holds
-  its session.
+  recovery triggers: quota, logged-out and not-installed failures. So does a
+  route leaving the open set (a bench, quota hold, retirement or bar) when
+  fewer than 2 routes remain open, if a candidate remains that no pass has
+  tried since the last registry fetch. A pass never starts another, so a
+  failed pass or a flapping route waits for the next fetch. Only one
+  pass runs at a time, a trigger during a pass joins it, and none runs while
+  foreground `usegrunt setup` holds its session.
 - **Hot-add.** In the automatic pool, a newly listed adapter that Grunt ships
   becomes a routable source at once, with no restart. A manual `GRUNT_SOURCES`
   list stays fixed.

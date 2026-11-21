@@ -6,6 +6,7 @@ import { recordDataSharingConsent } from './data-sharing.js';
 import { beginSetupSession } from './setup-session.js';
 import { SourceRecovery } from './recovery.js';
 import { SourceError, Sources } from './source.js';
+import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
 
 const dirs: string[] = [];
@@ -50,6 +51,66 @@ describe('source recovery', () => {
     recovery.trigger(); await settle();
     expect(setup).toHaveBeenCalledTimes(2);
     quiet.mockRestore();
+  });
+});
+
+describe('low open routes', () => {
+  const adapters = (setup: ReturnType<typeof vi.fn>) => setup.mock.calls.map(call => (call as unknown as [{ adapters: string[] }])[0].adapters[0]);
+
+  it('starts a pass when a drop leaves fewer than two routes open', async () => {
+    const dir = await directory();
+    let open = 2;
+    const setup = vi.fn(async () => { open++; return { unavailable: [] }; });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['zro'], open: async () => open, notify: () => {}, setup });
+    await recovery.lowRoutes(); await settle();
+    expect(setup).not.toHaveBeenCalled();
+    open = 1;
+    await recovery.lowRoutes(); await settle();
+    expect(adapters(setup)).toEqual(['zro']);
+    await recovery.close();
+  });
+
+  it('joins a running pass instead of starting a second one', async () => {
+    const dir = await directory();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const setup = vi.fn(async () => { await gate; return { unavailable: [] }; });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['zro', 'livekit'], open: async () => 0, notify: () => {}, setup });
+    recovery.synced(); await settle();
+    await recovery.lowRoutes(); await recovery.lowRoutes();
+    release(); await settle();
+    expect(adapters(setup)).toEqual(['zro', 'livekit']);
+    await recovery.close();
+  });
+
+  it('does not repeat a failed pass, even for a flapping route, until the next registry sync', async () => {
+    const dir = await directory();
+    const setup = vi.fn(async () => ({ unavailable: ['zro'] }));
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['zro'], open: async () => 0, notify: () => {}, setup });
+    await recovery.lowRoutes(); await settle();
+    expect(setup).toHaveBeenCalledTimes(1);
+    for (let flap = 0; flap < 3; flap++) { await recovery.lowRoutes(); await settle(); }
+    expect(setup).toHaveBeenCalledTimes(1);
+    // The 6 h registry pass is unchanged: it retries the failed signup.
+    recovery.synced(); await settle();
+    expect(setup).toHaveBeenCalledTimes(2);
+    // Request-failure triggers keep their behavior too.
+    recovery.trigger(); await settle();
+    expect(setup).toHaveBeenCalledTimes(3);
+    await recovery.close();
+  });
+
+  it('reports a route once when a failure benches it', async () => {
+    const registry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(id => ({ ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5 })) };
+    const quota = (id: string): Source => ({ id, available: async () => true, complete: async () => { throw new SourceError('quota', `${id} is out of quota`); } });
+    const sources = new Sources([quota('opencode'), quota('kilo')], { registry: () => registry, random: () => 0 });
+    const dropped = vi.fn();
+    sources.setRouteDropped(dropped);
+    const request = { model: 'grunt', cwd: '/tmp', messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false };
+    await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toThrow();
+    await expect(sources.complete(request, AbortSignal.timeout(1000))).rejects.toThrow();
+    expect(dropped.mock.calls.map(([id]) => id).sort()).toEqual(['kilo', 'opencode']);
+    await sources.close();
   });
 });
 

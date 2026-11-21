@@ -207,6 +207,7 @@ export function start(env = process.env) {
   const acquireAccounts = gruntEnv('BACKGROUND_ACCOUNT_ACQUISITION', env) !== '0';
   const triggerRecovery = () => { if (acquireAccounts) recovery.trigger(); };
   sources.setRecovery(triggerRecovery);
+  sources.setRouteDropped(() => { if (acquireAccounts) void recovery.lowRoutes(); });
   let published: string | undefined;
   const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
     changed: current => {
@@ -216,7 +217,7 @@ export function start(env = process.env) {
       registry = current;
       sources.adopt(current);
     },
-    synced: triggerRecovery, notify: console.error
+    synced: () => { if (acquireAccounts) recovery.synced(); }, notify: console.error
   });
   const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
   // Registry downloads and access maintenance are independent. Only the route

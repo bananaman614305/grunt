@@ -84,7 +84,7 @@ export class Sources {
   }
   private get registeredRouter() { return this.router ?? this.workerRouter; }
   private createRouter(routing: RoutingOptions) {
-    return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
+    return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt, dropped: id => this.dropped?.(id),
       observe: (source, reason, skipped) => {
         const context = currentDiagnosticContext();
         if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
@@ -252,7 +252,9 @@ export class Sources {
         : error instanceof SourceError ? error : new SourceError('upstream', 'Maintenance request failed');
       if (failure.code === 'cancelled') return { outcome: 'deferred', code: 'cancelled' };
       const retryAfter = failure.code === 'quota' ? (typeof failure.retryAfter === 'number' && Number.isFinite(failure.retryAfter) && failure.retryAfter >= 0 ? failure.retryAfter : 3600) : undefined;
+      const wasOpen = this.dispatchEligible(id);
       this.observation.failed(id, failure.code, retryAfter);
+      if (wasOpen && !this.dispatchEligible(id)) this.dropped?.(id);
       const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
       return { outcome: 'failed', code: failure.code, ...(id === 'clixad' ? { evidence: 'metadata' } : {}), ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
     } finally {
@@ -271,6 +273,9 @@ export class Sources {
   // When no source can answer, start background recovery so the next request has one.
   setRecovery(recover: () => void) { this.recover = recover; }
   private recover: (() => void) | undefined;
+  // A route left the open set: a bench, quota hold, retirement or bar began.
+  setRouteDropped(dropped: (id: string) => void) { this.dropped = dropped; }
+  private dropped: ((id: string) => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const parent = currentDiagnosticContext();
     const actor = request.worker ? { actor: 'worker' as const, workerId: request.worker.id }
