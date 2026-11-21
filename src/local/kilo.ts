@@ -183,22 +183,18 @@ export class Kilo implements Source {
       const grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();
       const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
       const order = this.preferred && models.includes(this.preferred) ? [this.preferred, ...models.filter(id => id !== this.preferred)] : models;
-      let quota: SourceError | undefined, last: SourceError | undefined;
+      let quota: SourceError | undefined;
       for (const model of order) {
         try {
           const completion = await this.ask(model, wire(model), origin, grant, request, messages, validators, limit, signal);
           this.preferred = model; return completion;
         } catch (error) {
-          // Move on when this model reports quota (429), a server error (5xx) or
-          // answers as another model. A timeout or any other failure ends the turn.
-          const reported = error instanceof SourceError && (error.code === 'quota' || error.diagnostics?.failureReason === 'completion_model'
-            || error.code === 'upstream' && (error.diagnostics?.httpStatus ?? 0) >= 500);
-          if (!reported || signal.aborted) throw error;
-          if (error.code !== 'quota') last = error;
-          else if (!quota || (error.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity)) quota = error;
+          // Only quota errors move on to another verified free model.
+          if (!(error instanceof SourceError) || error.code !== 'quota' || signal.aborted) throw error;
+          if (!quota || (error.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity)) quota = error;
         }
       }
-      throw last ?? quota!;
+      throw quota!;
     } catch (error) {
       if (caller.aborted || this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Kilo request cancelled');
       if (signal.aborted) throw new SourceError('timeout', 'Kilo request timed out');
