@@ -64,7 +64,7 @@ export class SourceStatus {
   private history: RoutingHistory | undefined;
   private backoffs = new Map<string, RoutingBackoff>();
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
-  constructor(ids: readonly string[], private now: () => number = Date.now) {
+  constructor(ids: readonly string[], private now: () => number = Date.now, private routes?: { open: (id: string) => boolean; dropped: (id: string) => void }) {
     for (const id of ids) this.observations.set(id, { state: 'unknown', active: 0, revision: 0 });
   }
   private entry(id: string) {
@@ -92,6 +92,7 @@ export class SourceStatus {
     entry.available = true; entry.availabilityCheckedAt = this.now();
   }
   failed(id: string, code: ErrorCode, retryAfter?: number) {
+    const wasOpen = this.routes?.open(id);
     const entry = this.entry(id);
     entry.revision++;
     entry.failure = code;
@@ -101,6 +102,9 @@ export class SourceStatus {
     const seconds = code === 'quota' && typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined;
     const until = seconds === undefined ? undefined : this.now() + seconds * 1000;
     if (until !== undefined && Number.isFinite(until)) entry.retryAt = until; else delete entry.retryAt;
+    if (this.routes && wasOpen && !this.routes.open(id)) {
+      try { this.routes.dropped(id); } catch { return; }
+    }
   }
   quotaRetryAt(id: string) { return this.observations.get(id)?.retryAt; }
   routingAvailability(id: string, positiveAgeMs: number, negativeAgeMs: number): boolean | undefined {

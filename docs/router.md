@@ -122,9 +122,10 @@ accepted, with `GRUNT_*` taking precedence.
   rule. After each fetch it starts one acquisition pass. So do the earlier
   recovery triggers: quota, logged-out and not-installed failures. So does a
   route leaving the open set (a bench, quota hold, retirement or bar) when
-  fewer than 2 routes remain open, if a candidate remains that no pass has
-  tried since the last registry fetch. A pass never starts another, so a
-  failed pass or a flapping route waits for the next fetch. Only one
+  fewer than 2 routes remain open, if a candidate remains whose signup has
+  not failed since the last registry fetch. Successful signups remain eligible
+  for reacquisition. A pass never starts another; failed signups wait for the
+  next fetch unless a request-failure trigger retries them. Only one
   pass runs at a time, a trigger during a pass joins it, and none runs while
   foreground `usegrunt setup` holds its session.
 - **Hot-add.** In the automatic pool, a newly listed adapter that Grunt ships

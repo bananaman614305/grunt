@@ -74,7 +74,9 @@ export class Sources {
   readonly approvals = new Set<string>();
   constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs = FIRST_OUTPUT_MS) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
-    this.observation = new SourceStatus(sources.map(source => source.id), routing?.now);
+    this.observation = new SourceStatus(sources.map(source => source.id), routing?.now, {
+      open: id => this.dispatchEligible(id), dropped: id => this.dropped?.(id),
+    });
     if (routing) this.router = this.createRouter(routing);
   }
   setWorkerRegistry(registry: RoutingOptions['registry'], localOptIns?: RoutingOptions['localOptIns']) {
@@ -252,9 +254,7 @@ export class Sources {
         : error instanceof SourceError ? error : new SourceError('upstream', 'Maintenance request failed');
       if (failure.code === 'cancelled') return { outcome: 'deferred', code: 'cancelled' };
       const retryAfter = failure.code === 'quota' ? (typeof failure.retryAfter === 'number' && Number.isFinite(failure.retryAfter) && failure.retryAfter >= 0 ? failure.retryAfter : 3600) : undefined;
-      const wasOpen = this.dispatchEligible(id);
       this.observation.failed(id, failure.code, retryAfter);
-      if (wasOpen && !this.dispatchEligible(id)) this.dropped?.(id);
       const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
       return { outcome: 'failed', code: failure.code, ...(id === 'clixad' ? { evidence: 'metadata' } : {}), ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
     } finally {

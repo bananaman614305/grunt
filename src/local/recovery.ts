@@ -33,15 +33,14 @@ export class SourceRecovery {
   private running: Promise<void> | undefined;
   private readonly abort = new AbortController();
   private failed = new Set<string>();
-  // Signups tried since the last registry sync; a low-route pass skips them.
-  private tried = new Set<string>();
+  private failedSinceSync = new Set<string>();
   constructor(private options: RecoveryOptions) {}
   trigger(): void { this.start(false); }
-  // After each registry sync: a full pass, and earlier signups may be tried again.
-  synced(): void { this.tried.clear(); this.trigger(); }
+  // After each registry sync: a full pass, and failed signups may be tried again.
+  synced(): void { this.failedSinceSync.clear(); this.trigger(); }
   // A route left the open set. With fewer than LOW_OPEN_ROUTES open, start the
-  // pass now over candidates not tried since the last registry sync. A pass
-  // never starts another, so a failed pass or a flapping route cannot loop.
+  // pass now over candidates that have not failed since the last registry sync.
+  // A pass never starts another, so failed signups cannot loop.
   async lowRoutes(): Promise<void> {
     if (this.running || this.abort.signal.aborted) return;
     try {
@@ -57,7 +56,7 @@ export class SourceRecovery {
     }).finally(() => { this.running = undefined; });
   }
   private async eligible(low: boolean): Promise<string[]> {
-    const candidates = [...await this.options.candidates()].filter(id => !low || !this.tried.has(id));
+    const candidates = [...await this.options.candidates()].filter(id => !low || !this.failedSinceSync.has(id));
     const approved = new Set(await readDataSharingConsent(this.options.directory, candidates.filter(requiresDataSharing)));
     return candidates.filter(id => (!requiresDataSharing(id) || approved.has(id)) && (!low || !this.options.eligible || this.options.eligible(id)));
   }
@@ -83,7 +82,6 @@ export class SourceRecovery {
         signal.throwIfAborted();
         if (this.options.eligible && !this.options.eligible(id)) continue;
         attempts++;
-        this.tried.add(id);
         notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
         const outcome = await (this.options.setup ?? setupFallbacks)({
           directory: this.options.directory, adapters: [id], background: true, acquire: true, notify, signal,
@@ -94,7 +92,11 @@ export class SourceRecovery {
           },
         }).catch(() => ({ unavailable: [id] }));
         this.failed.delete(id);
-        if (outcome.unavailable.includes(id)) this.failed.add(id);
+        this.failedSinceSync.delete(id);
+        if (outcome.unavailable.includes(id)) {
+          this.failed.add(id);
+          this.failedSinceSync.add(id);
+        }
       }
     } finally { await session.close(); }
   }

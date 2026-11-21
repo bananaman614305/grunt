@@ -83,9 +83,12 @@ describe('low open routes', () => {
     await recovery.close();
   });
 
-  it('does not repeat a failed pass, even for a flapping route, until the next registry sync', async () => {
+  it.each(['unavailable', 'throw'])('skips a failed signup (%s) until the next registry sync', async failure => {
     const dir = await directory();
-    const setup = vi.fn(async () => ({ unavailable: ['zro'] }));
+    const setup = vi.fn(async () => {
+      if (failure === 'throw') throw new Error('signup failed');
+      return { unavailable: ['zro'] };
+    });
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['zro'], open: async () => 0, notify: () => {}, setup });
     await recovery.lowRoutes(); await settle();
     expect(setup).toHaveBeenCalledTimes(1);
@@ -98,6 +101,47 @@ describe('low open routes', () => {
     recovery.trigger(); await settle();
     expect(setup).toHaveBeenCalledTimes(3);
     await recovery.close();
+  });
+
+  it('reacquires a successful signup after it becomes a candidate again', async () => {
+    const dir = await directory();
+    let open = 1;
+    const setup = vi.fn(async () => { open++; return { unavailable: [] }; });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => open < 2 ? ['zro'] : [], open: async () => open, notify: () => {}, setup });
+    await recovery.lowRoutes();
+    await vi.waitFor(() => expect(open).toBe(2));
+    await settle();
+    expect(adapters(setup)).toEqual(['zro']);
+    open = 1;
+    await recovery.lowRoutes();
+    await vi.waitFor(() => expect(open).toBe(2));
+    expect(adapters(setup)).toEqual(['zro', 'zro']);
+    await recovery.close();
+  });
+
+  it.each(['primary', 'worker', 'fixed', 'maintenance'])('reports one quota hold before backoff in %s routing', async mode => {
+    const ids = mode === 'primary' ? ['opencode', 'kilo'] : ['zro', 'livekit'];
+    const registry = { ...bundledRegistry, adapters: ids.map(id => ({ ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5 })) };
+    const limited: Source = { id: ids[0]!, available: async () => true, complete: async () => { throw new SourceError('quota', 'Quota exhausted', 120); } };
+    const healthy: Source = { id: ids[1]!, available: async () => true, complete: async () => ({ text: 'ok' }) };
+    const fixed = mode === 'fixed';
+    const sources = new Sources([limited, healthy], fixed ? undefined : { registry: () => registry, random: () => 0 });
+    if (fixed) sources.setWorkerRegistry(() => registry);
+    const dropped = vi.fn();
+    sources.setRouteDropped(dropped);
+    const request = { model: 'grunt', cwd: process.cwd(), messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false,
+      ...(mode === 'worker' ? { worker: { id: 'quota-worker', onSource: () => {} } } : {}) };
+    try {
+      if (mode === 'maintenance') {
+        expect(await sources.check(limited.id, AbortSignal.timeout(1000))).toMatchObject({ outcome: 'failed', code: 'quota' });
+        expect(await sources.check(limited.id, AbortSignal.timeout(1000))).toMatchObject({ outcome: 'deferred', code: 'quota' });
+      }
+      expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'ok' });
+      expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'ok' });
+      expect(sources.dispatchEligible(limited.id)).toBe(false);
+      expect(sources.dispatchEligible(healthy.id)).toBe(true);
+      expect(dropped.mock.calls).toEqual([[limited.id]]);
+    } finally { await sources.close(); }
   });
 
   it('reports a route once when a failure benches it', async () => {
