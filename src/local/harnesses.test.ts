@@ -264,8 +264,15 @@ it('drives a signup through the OpenCode CLI on its free model, and hands over o
   const { nextDriver, openCodeSignup } = await import('./harnesses.js');
   const input = { service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal, tools: [], call: vi.fn(async () => ({})) };
   const runs: string[][] = [];
-  await openCodeSignup(19878, async (binary, args) => { runs.push([binary, ...args]); return 'done'; })(input);
+  let permission: unknown;
+  await openCodeSignup(19878, async (binary, args, env) => {
+    runs.push([binary, ...args]);
+    permission = JSON.parse(await readFile(env.OPENCODE_CONFIG!, 'utf8')).permission;
+    return 'done';
+  })(input);
   expect(runs[0]!.slice(0, 6)).toEqual(['opencode', 'run', '--pure', '--print-logs', '-m', 'opencode/big-pickle']);
+  // OpenCode's free tier refuses a request with none of its own tools; read stays inside the signup directory.
+  expect(permission).toEqual({ '*': 'deny', read: 'allow', 'squire_*': 'allow' });
   const next = vi.fn(async () => {});
   await nextDriver(async () => { throw new Error('No tool-capable adapter is available'); }, next)(input);
   expect(next).toHaveBeenCalledExactlyOnceWith(input);

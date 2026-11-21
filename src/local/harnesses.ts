@@ -326,7 +326,9 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
         break;
       case 'opencode':
         await write('opencode.json', { provider: { grunt: openCodeProvider(port) }, mcp: { squire: { type: 'remote', ...config } },
-          permission: { '*': 'deny', 'squire_*': 'allow' }, share: 'disabled' });
+          // OpenCode's free tier refuses requests that carry none of its own tools,
+          // so keep read; outside this temporary directory it stays denied.
+          permission: { '*': 'deny', read: 'allow', 'squire_*': 'allow' }, share: 'disabled' });
         env.OPENCODE_CONFIG = join(directory, 'opencode.json');
         env.OPENCODE_CONFIG_CONTENT = undefined;
         env.XDG_CONFIG_HOME = directory;
