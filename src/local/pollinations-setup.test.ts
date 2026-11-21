@@ -206,3 +206,10 @@ it('does not inherit stale passed approval or contact Squire when background sto
   await expect(setupPollinations({ directory, squire: browser, fetcher, background: true, dataSharingApproved: ['pollinations'] })).rejects.toThrow('needs foreground setup');
   expect(await readFile(pollinationsGrantPath(directory))).toEqual(before); expect(fetcher).not.toHaveBeenCalled(); expect(browser.approveDataSharing).not.toHaveBeenCalled(); expect(browser.signup).not.toHaveBeenCalled(); expect(browser.credentials.list).not.toHaveBeenCalled(); expect(browser.credentials.grant).not.toHaveBeenCalled();
 });
+
+it('accepts the value field name Squire uses when the drive stores the key', async () => {
+  const browser = squire(true);
+  browser.credentials.list.mockResolvedValue([{ ...credential, field_names: ['value'] }] as typeof credential[]);
+  await setupPollinations({ directory, squire: browser, dataSharingApproved: ['pollinations'], fetcher: metadata() });
+  expect(browser.credentials.grant).toHaveBeenCalledWith(credential.reference);
+});

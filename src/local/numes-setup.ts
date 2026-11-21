@@ -47,7 +47,7 @@ export async function setupNumes(options: {
     if (!squire.signup) throw new Error('Numes setup requires a browser-capable Trusty Squire');
     signal?.throwIfAborted();
     await squire.signup(id, 'https://numes.ai/dashboard',
-      `Reuse this user's Numes account with the Google identity already connected to Squire, or create one ordinary free account if none exists. Stop for normal human verification when required. No duplicate account, payment method, top-up, or paid plan. Reuse or create one dedicated Grunt Free USD inference key with a numeric 0 spending limit and no reset. Verify the saved spending cap is exactly zero and keep it there. Capture the key directly into Squire under service numes, label Grunt Free, auth_shape bearer and api_hosts ["api.numes.ai"]. Never show, return or fetch the key.`);
+      `Reuse this user's Numes account with the Google identity already connected to Squire, or create one ordinary free account if none exists. Stop for normal human verification when required. No duplicate account, payment method, top-up, or paid plan. Reuse or create one dedicated Grunt Free USD inference key with a numeric 0 spending limit and no reset. Verify the saved spending cap is exactly zero and keep it there. Capture the key directly into Squire under service numes, label Grunt Free, auth_shape bearer and api_hosts ["api.numes.ai"]. Never show, return or fetch the key.`, { spend_limit: '0' });
     matches = await select();
   }
   const [credential] = matches;

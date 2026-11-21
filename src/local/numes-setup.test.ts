@@ -62,7 +62,8 @@ it('provisions once on the ordinary cold-start flow and grants only after scoped
   squire.call.mockResolvedValueOnce({ credentials: [] });
   await recordDataSharingConsent(directory, ['numes']);
   await setupNumes({ directory, squire, notify });
-  expect(squire.signup).toHaveBeenCalledExactlyOnceWith('numes', 'https://numes.ai/dashboard', expect.stringContaining('numeric 0 spending limit'));
+  // The drive types only supplied values, so the zero spend limit is supplied, not only described.
+  expect(squire.signup).toHaveBeenCalledExactlyOnceWith('numes', 'https://numes.ai/dashboard', expect.stringContaining('numeric 0 spending limit'), { spend_limit: '0' });
   expect(planSteps(String((squire.signup.mock.calls[0] as unknown[])[2]))).toEqual([]);
   expect(squire.call).toHaveBeenCalledTimes(2);
   expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
