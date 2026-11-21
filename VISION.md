@@ -16,8 +16,7 @@ A default install spends no money and no paid allowance.
 Every source that can cost money or plan quota is off until the person names it.
 grunt never buys credits, never upgrades a plan, and never switches to a paid model on its own.
 When a free source carries a hidden price, such as prompt retention or terms risk, grunt says so in plain words.
-Setup records ordinary provider policies and remembers current approvals. Material terms such as Free-Pi's sale of coding-session traces require a foreground, default-No decision; unattended setup cannot supply it. Retired Freebuff and APInex receipts do not authorize routing.
-Declining a material policy skips that source while other eligible sources continue; changed material terms require fresh approval. Public-only providers also require review of each full request. LiveKit documents zero retention and no training for inference, so it adds no sharing policy.
+See the [setup reference](docs/reference.md#free-api-and-account-setup) for policy receipts and the data-sharing opt-out. Public-only providers also require review of each full request. LiveKit documents zero retention and no training for inference, so it adds no sharing policy.
 
 ## Free tokens are personal
 

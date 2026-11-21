@@ -2,8 +2,8 @@
 
 The registry lists free routes Grunt knows and accepts ratings from the daily scout.
 The daemon opens routes greedily from that list, best-rated first, until it has
-`MAX_OPEN_ROUTES` (N = 6) open. An eligible tool-capable route can drive
-the signups for the rest through an installed coding harness. Every request records success, failure and latency
+`MAX_OPEN_ROUTES` (N = 6) open. The signup driver selection and handoff rules
+are described below. Every request records success, failure and latency
 per route. The router turns that record into a score and a back-off, and
 retires a route that keeps failing. Every six hours the daemon re-reads the
 registry and runs the same pass again. This reuses `StickyRouter`,
@@ -37,22 +37,38 @@ accepted, with `GRUNT_*` taking precedence.
   route eligible for the signup request. When a coding harness is installed,
   it hands Squire a fallback operator: the first harness found on `PATH`
   (Pi, Codex, OpenCode, Claude Code), pointed at the local `grunt` model.
-  Otherwise Squire's drive runs alone. So the first route
-  that signs up and is eligible for the private, tool-capable signup request
+  The first route that signs up and is eligible for the private, tool-capable signup request
   can drive the rest. An eligible route already open can drive from the start.
+  An open OpenCode route with current data-sharing approval and `opencode` on
+  `PATH` can also drive, even when no tool-capable route is available. It uses
+  its own CLI on `opencode/big-pickle`, bypassing the router: OpenCode executes
+  its own tools rather than returning tool calls to another harness.
+  If neither driver is available, Squire's drive runs alone.
   Public-only routes cannot drive private signup traffic.
-- **Driver routing.** The driver asks for model `grunt` and carries tools.
+- **Driver routing.** The routed driver asks for model `grunt` and carries tools.
   The router draws an eligible tool-capable route using its weights and
   observations, then keeps that task bound until a handoff is needed. Newly
-  opened routes participate in later task draws. In setup, the anonymous
-  OpenCode operator is replaced as soon as an account route passes the
-  tool-call probe.
+  opened routes participate in later task draws.
+- **Foreground setup.** With a coding harness selected, setup can use the
+  installed OpenCode CLI even if a different harness was chosen. It probes
+  anonymous Big Pickle access when no operator is driving, including after
+  an operator becomes unavailable or setup provisions OpenCode successfully.
+  A missing CLI or failed probe can be reconsidered at these later checks.
+  This requires OpenCode's current
+  data-sharing approval and is disabled by `GRUNT_SETUP_NO_ANONYMOUS=1`.
+  The anonymous operator is replaced as soon as an account route passes the
+  tool-call probe. Policy receipts follow the
+  [setup reference](reference.md#free-api-and-account-setup).
 - **Driver failure.** If the driver's route is benched or retired mid-signup,
   the sticky router hands the same task to the next eligible tool-capable
-  route, with the usual handoff prompt. If none is left, the harness fails with
-  `quota exhausted`, that signup drops, and the next signup in the pass runs
-  without a driver (test: "hands the driver's task to the next tool-capable
-  route when its bound route is retired").
+  route, with the usual handoff prompt. If the harness reports exhausted quota,
+  no available model, an unavailable CLI or a required sign-in, the daemon
+  retries the same signup through the OpenCode CLI when that driver was
+  available at selection time. Other errors and cancellation do not trigger
+  this retry. If no driver succeeds, that attempt fails and driver selection
+  runs again before the next signup. Foreground setup instead defers the
+  failed signup, switching drivers before subsequent signups and the deferred
+  retry pass.
 
 ## 2. Score, back-off, retirement
 

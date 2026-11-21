@@ -192,17 +192,22 @@ export function start(env = process.env) {
     },
     open: async () => (await Promise.all(sources.sources.map(live))).filter(Boolean).length,
     // The driver is a coding harness on model grunt, so the router sends each of
-    // its turns to the best open tool-capable route.
+    // its turns to the best open tool-capable route. An open OpenCode route
+    // drives through its own CLI, alone or when those routes have no model left.
     driver: async () => {
       const request = { model: 'grunt', cwd: directory, messages: [], tools: [], stream: false };
       const drivable = await Promise.all(sources.sources.filter(toolCapable).map(async source =>
         await live(source) && sources.dispatchEligible(source.id, request) ? source : undefined));
-      if (!drivable.some(Boolean)) return;
+      const opencode = sources.sources.find(source => source.id === 'opencode');
+      const openCode = opencode !== undefined && await live(opencode);
+      if (!drivable.some(Boolean) && !openCode) return;
       // Loaded on demand: the daemon's model API never needs harness code.
-      const { detectHarnesses, signupHarness } = await import('./harnesses.js');
+      const { detectHarnesses, nextDriver, onPath, openCodeSignup, signupHarness } = await import('./harnesses.js');
       const [harness] = await detectHarnesses();
-      return harness && drivable.some(source => source && sources.dispatchEligible(source.id, request))
+      const routed = harness && drivable.some(source => source && sources.dispatchEligible(source.id, request))
         ? signupHarness(harness, port) : undefined;
+      const own = openCode && await onPath('opencode') ? openCodeSignup(port) : undefined;
+      return routed && own ? nextDriver(routed, own) : routed ?? own;
     },
     notify: console.error });
   // Account acquisition is distinct from registry refresh, dispatch and daily

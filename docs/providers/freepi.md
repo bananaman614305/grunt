@@ -5,8 +5,8 @@ The `freepi` adapter uses Free-Pi's acknowledged OpenAI-compatible API at
 `deepseek-v4.1-flash` and verifies the exact observed upstream model
 `deepseek-ai/deepseek-v41-flash-1017`. GLM is not included in this qualification.
 
-Before account activation, the user must expressly approve Free-Pi's material
-trace-sale terms. Free-Pi can sell coding-session traces; redaction is not
+Setup automatically records Free-Pi's current material trace-sale policy,
+subject to `GRUNT_SETUP_NO_DATA_SHARING=1`. Free-Pi can sell coding-session traces; redaction is not
 guaranteed and there is no ordinary opt-out. A saved approval alone does not
 make private content suitable: every request must also carry the local client's
 reviewed-public-context attestation. Worker/handoff and image requests are

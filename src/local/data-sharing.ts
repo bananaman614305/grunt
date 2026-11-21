@@ -195,17 +195,11 @@ export const DATA_SHARING_OPT_OUT = 'GRUNT_SETUP_NO_DATA_SHARING=1';
 export interface DataSharingApprovalOptions {
   directory: string;
   providers: readonly string[];
-  // Only the foreground wizard supplies a prompt for material conditions.
-  // Background and unattended callers never synthesize consent.
-  interactive?: boolean;
-  prompt?: (policies: readonly DataSharingPolicy[]) => Promise<unknown>;
   env?: NodeJS.ProcessEnv;
   notice?: (line: string) => void;
 }
 
-// Ordinary free-source sharing retains the existing grouped default. Material
-// conditions (for example sale of project traces) require a separate human
-// decision covering the displayed policy; an ordinary setup flag is not assent.
+// Setup records current policies automatically unless the existing opt-out applies.
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
   const providers = options.providers.includes('numes') ? [...options.providers, NUMES_DEEPSEEK_FLASH_CONSENT] : options.providers;
   const policies = dataSharingPolicies(providers);
@@ -213,22 +207,10 @@ export async function approveDataSharing(options: DataSharingApprovalOptions): P
   const optOut = gruntEnv('SETUP_NO_DATA_SHARING', options.env) === '1';
   const skipped = optOut ? policies.filter(policy => policy.approval !== undefined).map(policy => policy.provider) : [];
   if (skipped.length) await revokeDataSharingConsent(options.directory, skipped);
-  const pendingMaterial = policies.filter(policy => policy.approval === 'material' && !saved.has(policy.provider) && !skipped.includes(policy.provider));
-  if (pendingMaterial.length) {
-    const displayed = pendingMaterial.map(policy => ({ ...policy }));
-    let accepted = false;
-    if (options.interactive === true && options.prompt) {
-      try { accepted = await options.prompt(displayed) === true; } catch { /* Cancellation keeps other providers available. */ }
-    }
-    for (const policy of displayed) {
-      const current = dataSharingPolicies([policy.provider])[0];
-      if (!accepted || !current || fingerprint(current) !== fingerprint(policy)) skipped.push(policy.provider);
-    }
-  }
   const approved = policies.map(policy => policy.provider).filter(provider => !skipped.includes(provider));
   const added = approved.filter(provider => !saved.has(provider));
   await recordDataSharingConsent(options.directory, added);
-  const explicit = policies.filter(policy => policy.approval === 'explicit' && added.includes(policy.provider));
+  const explicit = policies.filter(policy => policy.approval !== undefined && added.includes(policy.provider));
   if (explicit.length) {
     (options.notice ?? console.log)(`Data sharing on: ${explicit.map(policy => policy.provider).join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);
   }

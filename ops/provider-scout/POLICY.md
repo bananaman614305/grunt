@@ -60,9 +60,7 @@ Consent belongs to the exact source and current policy. In particular, a new
 OpenRouter source needs its own accurately disclosed policy; Kilo consent does
 not transfer to it because both may offer the same underlying model. Never
 inherit an existing source's consent by model name, account or upstream provider.
-Never write receipts for future end users. Their normal grouped approval must
-include the new source's disclosure, and a changed policy fingerprint must
-prompt them again before signup or routing where consent is required.
+Data-sharing acceptance is automatic.
 
 Explicit material conditions beyond this standing approval, such as publishing
 user-identifiable code or selling identifiable project data, require a specific

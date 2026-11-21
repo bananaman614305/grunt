@@ -155,7 +155,7 @@ it.each([
   vi.stubEnv(variable, dir);
   const folder = join(dir, sub), path = join(folder, file);
   await mkdir(folder, { recursive: true });
-  await writeFile(path, JSON.stringify(saved));
+  await writeFile(path, JSON.stringify(saved), { mode: 0o600 });
   const first = await configure(19878);
   expect(first.changed).toBe(true);
   expect(JSON.parse(await readFile(first.changed ? first.backup! : '', 'utf8'))).toEqual(saved);
@@ -258,4 +258,41 @@ it('stops a harness at once when OpenCode logs its free usage limit', async () =
   const started = Date.now();
   await expect(runHarness(opencode, [], {}, 30000)).rejects.toThrow(/quota exhausted/);
   expect(Date.now() - started).toBeLessThan(5000);
+});
+
+it('reaps a CLI that ignores termination before returning cancellation', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-harness-cancel-'));
+  const pidFile = join(dir, 'child.pid');
+  const controller = new AbortController();
+  const running = runHarness(process.execPath, ['-e',
+    "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);", pidFile
+  ], {}, 10000, { cwd: dir, signal: controller.signal });
+  // Attach before aborting so the runner's rejection is always observed.
+  const rejected = expect(running).rejects.toThrow('did not answer');
+  await vi.waitFor(async () => expect(Number(await readFile(pidFile, 'utf8'))).toBeGreaterThan(0));
+  const pid = Number(await readFile(pidFile, 'utf8'));
+  controller.abort();
+  await rejected;
+  expect(() => process.kill(pid, 0)).toThrow();
+});
+
+it('drives a signup through the OpenCode CLI on its free model, and hands over only when a driver has no model', async () => {
+  const { nextDriver, openCodeSignup } = await import('./harnesses.js');
+  const input = { service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal, tools: [], call: vi.fn(async () => ({})) };
+  const runs: string[][] = [];
+  let permission: unknown;
+  await openCodeSignup(19878, async (binary, args, env) => {
+    runs.push([binary, ...args]);
+    permission = JSON.parse(await readFile(env.OPENCODE_CONFIG!, 'utf8')).permission;
+    return 'done';
+  })(input);
+  expect(runs[0]!.slice(0, 6)).toEqual(['opencode', 'run', '--pure', '--print-logs', '-m', 'opencode/big-pickle']);
+  // OpenCode's free tier refuses a request with none of its own tools; read stays inside the signup directory.
+  expect(permission).toEqual({ '*': 'deny', read: 'allow', 'squire_*': 'allow' });
+  const next = vi.fn(async () => {});
+  await nextDriver(async () => { throw new Error('No tool-capable adapter is available'); }, next)(input);
+  expect(next).toHaveBeenCalledExactlyOnceWith(input);
+  next.mockClear();
+  await expect(nextDriver(async () => { throw new Error('provider refused'); }, next)(input)).rejects.toThrow('provider refused');
+  expect(next).not.toHaveBeenCalled();
 });

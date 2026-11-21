@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { signupMcp } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
-import { setupFailureReason } from './setup-failure.js';
+import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
 
 // Writes a whole config file only when its text changes, after copying the old
 // file aside. Repeated setup runs therefore leave files and backups untouched.
@@ -250,28 +250,44 @@ export async function runHarness(binary: string, args: string[], env: Record<str
   const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
   const merged: NodeJS.ProcessEnv = { ...process.env };
   for (const [key, value] of Object.entries(env)) { if (value === undefined) delete merged[key]; else merged[key] = value; }
+  let child: ReturnType<typeof spawn> | undefined;
+  let closed: Promise<void> | undefined;
   try {
     return await new Promise<string>((resolve, reject) => {
-      const child = spawn(binary, args, { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'], signal });
+      const running = spawn(binary, args, { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'], signal });
+      child = running;
+      closed = new Promise<void>(done => running.once('close', () => done()));
       let stdout = '', stderr = '', limited = false;
       // OpenCode retries its free limit until the next UTC day; fail fast instead.
       const watch = (text: string) => {
         if (limited || !FREE_LIMIT.test(text)) return;
         limited = true;
-        child.kill();
+        running.kill();
         reject(new Error('quota exhausted: free usage limit reached'));
       };
-      child.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
-      child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
-      child.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
-      child.once('close', code => {
+      running.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
+      running.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
+      running.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
+      running.once('close', code => {
         const reason = setupFailureReason(new Error(stdout + '\n' + stderr));
         if (code !== 0 || /^\s*(?:error|api error).*?(?:quota|429)/im.test(stdout)) reject(new Error(reason === 'setup failed' ? `${binary} exited with code ${code}` : reason));
         else if (!stdout.trim()) reject(new Error(`${binary} printed no answer`));
         else resolve(stdout.trim());
       });
     });
-  } finally { if (!options.cwd) await rm(cwd, { recursive: true, force: true }); }
+  } finally {
+    // Abort and quota detection can reject before a CLI exits. OpenCode may
+    // ignore SIGTERM; reap it before removing its temporary configuration.
+    if (child && closed) {
+      const running = child;
+      const timer = setTimeout(() => running.kill('SIGKILL'), 2000);
+      try {
+        if (running.exitCode === null && running.signalCode === null) running.kill();
+        await closed;
+      } finally { clearTimeout(timer); }
+    }
+    if (!options.cwd) await rm(cwd, { recursive: true, force: true });
+  }
 }
 export async function connectHarness(harness: Harness, port: number, run = runHarness) {
   const change = await harness.configure(port);
@@ -326,7 +342,9 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
         break;
       case 'opencode':
         await write('opencode.json', { provider: { grunt: openCodeProvider(port) }, mcp: { squire: { type: 'remote', ...config } },
-          permission: { '*': 'deny', 'squire_*': 'allow' }, share: 'disabled' });
+          // OpenCode's free tier refuses requests that carry none of its own tools,
+          // so keep read; outside this temporary directory it stays denied.
+          permission: { '*': 'deny', read: 'allow', 'squire_*': 'allow' }, share: 'disabled' });
         env.OPENCODE_CONFIG = join(directory, 'opencode.json');
         env.OPENCODE_CONFIG_CONTENT = undefined;
         env.XDG_CONFIG_HOME = directory;
@@ -340,5 +358,17 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
   } finally {
     endpoint.close();
     await rm(directory, { recursive: true, force: true });
+  }
+};
+// OpenCode runs its own tools, so the router cannot send it an operator's tool
+// calls (toolCapable is false). It drives signups through its own CLI instead.
+export const openCodeSignup = (port: number, run = runHarness) => signupHarness(HARNESSES.find(harness => harness.id === 'opencode')!, port, run, true);
+// Hands the same signup to the next driver when the first has no model to run on.
+export const nextDriver = (first: SignupAgent, next: SignupAgent): SignupAgent => async input => {
+  try { await first(input); }
+  catch (error) {
+    input.signal.throwIfAborted();
+    if (!signupOperatorUnavailable(setupFailureReason(error))) throw error;
+    await next(input);
   }
 };

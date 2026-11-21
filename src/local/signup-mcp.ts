@@ -114,7 +114,7 @@ export function guardedSignupChoice(key: string, label: unknown) {
   if (typeof label !== 'string' || !label.trim()) return false;
   const text = label.replace(/[_|-]/g, ' ');
   const choice = `${key} ${text}`.replace(/[_-]/g, ' ');
-  if (/\b(?:billing|payment|credit card|upgrade|premium|subscription|paid|purchase|buy|top up|switch (?:an? )?account|another account|password|passcode|secret|sms|phone|captcha|passkey|revoke|rotate|reset|delete|done|blocked)\b/i.test(choice)) return false;
+  if (/\b(?:billing|payment|credit card|upgrade|premium|subscription|paid|purchase|buy|top up|switch (?:an? )?account|another account|password|passcode|sms|phone|passkey|revoke|rotate|reset|delete|done|blocked)\b/i.test(choice)) return false;
   if (/\b(?:reject|decline) (?:all|optional)(?: cookies)?\b/i.test(text)) return true;
   const requiredTerms = /\b(?:accept|agree)\b/i.test(text)
     && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(text)

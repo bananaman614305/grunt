@@ -17,27 +17,17 @@ import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js
 import { writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
-import type { DataSharingPolicy } from './data-sharing.js';
-import { configurePi, connectHarness, detectHarnesses, HARNESSES, signupHarness, runHarness } from './harnesses.js';
+import { configurePi, connectHarness, detectHarnesses, HARNESSES, onPath, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import { beginSetupSession } from './setup-session.js';
 import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { SetupTable } from './setup-table.js';
 import { setupAttention, setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
-import { select, confirm, isCancel } from '@clack/prompts';
+import { select, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
 
 export const configDir = (env = process.env) => configRoot(env);
-export async function confirmMaterialDataSharing(policies: readonly DataSharingPolicy[]) {
-  return withTerminal(async () => {
-    const answer = await confirm({
-      message: `${policies.map(policy => `${policy.name}: ${policy.disclosure} Details: ${policy.url}`).join('\n\n')}\nAllow these providers to process your project under these terms?`,
-      initialValue: false
-    });
-    return !isCancel(answer) && answer === true;
-  });
-}
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal, env?: NodeJS.ProcessEnv) {
   signal?.throwIfAborted();
   const run = () => new Promise<void>((resolve, reject) => {
@@ -463,10 +453,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       ? [...new Set([...(previous.length ? previous : defaults), add])]
       : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
     let sharingNotice: string | undefined;
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: sources,
-      interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) && gruntEnv('SETUP_NO_HUMAN') !== '1',
-      prompt: confirmMaterialDataSharing, notice: line => { sharingNotice = line; } });
-    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${gruntEnv('SETUP_NO_DATA_SHARING') === '1' ? DATA_SHARING_OPT_OUT : 'approval not granted'})`
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: [...new Set([...sources, 'opencode'])], notice: line => { sharingNotice = line; } });
+    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${DATA_SHARING_OPT_OUT})`
       : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');
     squire?.approveDataSharing?.(consent.approved);
     const skipped = new Set(consent.skipped);
@@ -580,16 +568,37 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const deferred: string[] = [];
       const configure = () => (actions.connectHarness ?? connectHarness)(harness!, port,
         (binary, args, env) => runHarness(binary, args, env, 45000, { signal: session!.signal }));
+      // OpenCode runs its own tools, so the router cannot reach it from another
+      // harness; it drives through its own CLI whichever harness was chosen.
+      let openCodeFree = false;
+      const freeOpenCode = async () => {
+        if (!harness || skipAnonymous || !consent.approved.includes('opencode') || !await onPath('opencode')) return false;
+        if (openCodeFree) return true;
+        try {
+          await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
+          openCodeFree = true;
+          return true;
+        } catch { session!.signal.throwIfAborted(); return false; }
+      };
       const useOperator = (anonymousOpenCode = false) => {
-        const agent = (actions.signupHarness ?? signupHarness)(harness!, port, undefined, anonymousOpenCode);
+        const agent = (actions.signupHarness ?? signupHarness)(anonymousOpenCode ? HARNESSES.find(each => each.id === 'opencode')! : harness!, port, undefined, anonymousOpenCode);
         squire?.useSignupAgent(async input => {
           try { await agent(input); }
           catch (error) {
             const reason = setupFailureReason(error);
-            if (signupOperatorUnavailable(reason)) operatorFailure = reason;
+            if (signupOperatorUnavailable(reason)) {
+              operatorFailure = reason;
+              if (anonymousOpenCode) openCodeFree = false;
+            }
             throw error;
           }
         });
+      };
+      const useOpenCode = () => {
+        useOperator(true);
+        driving = Boolean(squire);
+        anonymousDriver = driving;
+        table.step('✓ model: OpenCode free');
       };
       const activate = async (source: string, bootstrap: boolean) => {
         if (!harness || !squire || unavailable.includes(source)) return false;
@@ -629,15 +638,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await session.useKiloAccount();
         }
       }
-      if (harness?.id === 'opencode' && !driving && !skipAnonymous) {
-        try {
-          await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
-          useOperator(true);
-          driving = Boolean(squire);
-          anonymousDriver = driving;
-          table.step('✓ model: OpenCode free');
-        } catch { session.signal.throwIfAborted(); }
-      }
+      if (!driving && await freeOpenCode()) useOpenCode();
       if (!driving && harness) console.log(skipAnonymous ? `– operator: anonymous Kilo off (GRUNT_SETUP_NO_ANONYMOUS=1); using Squire`
         : '… operator: no working anonymous model; using Squire');
       if (remaining.length) {
@@ -647,24 +648,27 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         } catch (error) { console.log(`✗ Trusty Squire: ${setupFailureReason(error)}`); }
       }
       table.start();
-      const checkOperator = () => {
+      const checkOperator = async () => {
         if (!operatorFailure) return;
         driving = false;
         squire?.useSignupAgent(undefined);
         if (operator && !unavailable.includes(operator)) table.set('source', operator, '✓ ready');
         operator = undefined;
-        table.step(`… operator: ${operatorFailure}; using Squire`);
+        const failure = operatorFailure;
         operatorFailure = undefined;
+        if (await freeOpenCode()) { table.step(`… operator: ${failure}; using OpenCode free`); useOpenCode(); }
+        else table.step(`… operator: ${failure}; using Squire`);
       };
       // With a harness, a Jev-only bootstrap tries every provider before it
       // hands a browser to the person; the second pass allows that handoff.
       const retryable = new Set(['browser could not continue', 'needs human verification', 'needs Terms of Service acceptance']);
       if (harness) squire?.deferHandoff?.(true);
       for (const id of remaining) {
-        checkOperator();
+        await checkOperator();
         if (!driving && harness && id !== 'opencode') table.step(`… bootstrap: ${id} via Squire`);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
+        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeOpenCode()) useOpenCode();
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
         if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) {
           deferred.push(id);
@@ -673,13 +677,14 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       }
       squire?.deferHandoff?.(false);
       for (const id of deferred) {
-        checkOperator();
+        await checkOperator();
         settled.delete(id);
         failedReasons.delete(id);
         const failed = unavailable.indexOf(id);
         if (failed !== -1) unavailable.splice(failed, 1);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
+        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeOpenCode()) useOpenCode();
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
       }
     }
