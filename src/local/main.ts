@@ -36,7 +36,7 @@ import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
-import { requiresDataSharing } from './data-sharing.js';
+import { readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
@@ -191,23 +191,15 @@ export function start(env = process.env) {
       return ids;
     },
     open: async () => (await Promise.all(sources.sources.map(live))).filter(Boolean).length,
-    // The driver is a coding harness on model grunt, so the router sends each of
-    // its turns to the best open tool-capable route. An open OpenCode route
-    // drives through its own CLI, alone or when those routes have no model left.
+    // Driver candidates follow docs/router.md: a coding harness on model grunt,
+    // which the router sends to the best open tool-capable route, then each free
+    // model an installed harness CLI reaches on its own.
     driver: async () => {
       const request = { model: 'grunt', cwd: directory, messages: [], tools: [], stream: false };
-      const drivable = await Promise.all(sources.sources.filter(toolCapable).map(async source =>
-        await live(source) && sources.dispatchEligible(source.id, request) ? source : undefined));
-      const opencode = sources.sources.find(source => source.id === 'opencode');
-      const openCode = opencode !== undefined && await live(opencode);
-      if (!drivable.some(Boolean) && !openCode) return;
+      const drivable = await Promise.all(sources.sources.filter(toolCapable).map(async source => await live(source) && sources.dispatchEligible(source.id, request)));
       // Loaded on demand: the daemon's model API never needs harness code.
-      const { detectHarnesses, nextDriver, onPath, openCodeSignup, signupHarness } = await import('./harnesses.js');
-      const [harness] = await detectHarnesses();
-      const routed = harness && drivable.some(source => source && sources.dispatchEligible(source.id, request))
-        ? signupHarness(harness, port) : undefined;
-      const own = openCode && await onPath('opencode') ? openCodeSignup(port) : undefined;
-      return routed && own ? nextDriver(routed, own) : routed ?? own;
+      const { signupDriver } = await import('./harnesses.js');
+      return signupDriver(port, { routed: drivable.some(Boolean), openCode: (await readDataSharingConsent(directory, ['opencode'])).includes('opencode') });
     },
     notify: console.error });
   // Account acquisition is distinct from registry refresh, dispatch and daily

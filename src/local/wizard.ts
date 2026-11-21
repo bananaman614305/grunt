@@ -17,8 +17,9 @@ import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js
 import { writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
-import { configurePi, connectHarness, detectHarnesses, HARNESSES, onPath, signupHarness, runHarness } from './harnesses.js';
+import { configurePi, connectHarness, detectHarnesses, HARNESSES, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
+import type { SignupAgent } from './signup-mcp.js';
 import { beginSetupSession } from './setup-session.js';
 import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
 import { configRoot, gruntEnv } from '../brand.js';
@@ -419,8 +420,8 @@ export async function prepareHarnesses(port: number, options: HarnessOptions = {
 export async function connectHarnesses(port: number, options: HarnessOptions = {}) {
   return (await prepareHarnesses(port, options))();
 }
-const wizardActions = { probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing, startDashboard: startSetupDashboard, watchDashboard: watchSetupDashboard };
-type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing' | 'startDashboard' | 'watchDashboard';
+const wizardActions = { probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing, startDashboard: startSetupDashboard, watchDashboard: watchSetupDashboard };
+type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'listFreeModels' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing' | 'startDashboard' | 'watchDashboard';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add === '') throw new Error('Specify a provider name or base URL');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
@@ -569,36 +570,46 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       const configure = () => (actions.connectHarness ?? connectHarness)(harness!, port,
         (binary, args, env) => runHarness(binary, args, env, 45000, { signal: session!.signal }));
       // OpenCode runs its own tools, so the router cannot reach it from another
-      // harness; it drives through its own CLI whichever harness was chosen.
-      let openCodeFree = false;
-      const freeOpenCode = async () => {
-        if (!harness || skipAnonymous || !consent.approved.includes('opencode') || !await onPath('opencode')) return false;
-        if (openCodeFree) return true;
-        try {
-          await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
-          openCodeFree = true;
+      // harness. It and Pi's own providers drive through their own CLIs on free
+      // models, whichever harness was chosen. The first that answers drives; the
+      // rest follow it in order when it cannot run (docs/router.md).
+      let freeAgent: SignupAgent | undefined;
+      let freeLabel = '';
+      const freeDriver = async () => {
+        if (!harness || skipAnonymous) return false;
+        if (freeAgent) return true;
+        const reach = { openCode: consent.approved.includes('opencode') && await onPath('opencode'), pi: await onPath('pi') };
+        if (!reach.openCode && !reach.pi) return false;
+        const models = await (actions.listFreeModels ?? listFreeModels)(reach, undefined, session!.signal);
+        for (const [index, model] of models.entries()) {
+          try { await probeFreeModel(model, session!.signal); }
+          catch { session!.signal.throwIfAborted(); continue; }
+          const [first, ...rest] = models.slice(index).map(each => (actions.signupHarness ?? signupHarness)(HARNESSES.find(item => item.id === each.harness)!, port, undefined, each.model));
+          freeAgent = nextDriver(first!, ...rest);
+          freeLabel = model.model;
           return true;
-        } catch { session!.signal.throwIfAborted(); return false; }
+        }
+        return false;
       };
-      const useOperator = (anonymousOpenCode = false) => {
-        const agent = (actions.signupHarness ?? signupHarness)(anonymousOpenCode ? HARNESSES.find(each => each.id === 'opencode')! : harness!, port, undefined, anonymousOpenCode);
+      const useOperator = (free = false) => {
+        const agent = free ? freeAgent! : (actions.signupHarness ?? signupHarness)(harness!, port);
         squire?.useSignupAgent(async input => {
           try { await agent(input); }
           catch (error) {
             const reason = setupFailureReason(error);
             if (signupOperatorUnavailable(reason)) {
               operatorFailure = reason;
-              if (anonymousOpenCode) openCodeFree = false;
+              if (free) freeAgent = undefined;
             }
             throw error;
           }
         });
       };
-      const useOpenCode = () => {
+      const useFree = () => {
         useOperator(true);
         driving = Boolean(squire);
         anonymousDriver = driving;
-        table.step('✓ model: OpenCode free');
+        table.step(`✓ model: ${freeLabel} (free)`);
       };
       const activate = async (source: string, bootstrap: boolean) => {
         if (!harness || !squire || unavailable.includes(source)) return false;
@@ -638,7 +649,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await session.useKiloAccount();
         }
       }
-      if (!driving && await freeOpenCode()) useOpenCode();
+      if (!driving && await freeDriver()) useFree();
       if (!driving && harness) console.log(skipAnonymous ? `– operator: anonymous Kilo off (GRUNT_SETUP_NO_ANONYMOUS=1); using Squire`
         : '… operator: no working anonymous model; using Squire');
       if (remaining.length) {
@@ -656,7 +667,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         operator = undefined;
         const failure = operatorFailure;
         operatorFailure = undefined;
-        if (await freeOpenCode()) { table.step(`… operator: ${failure}; using OpenCode free`); useOpenCode(); }
+        if (await freeDriver()) { table.step(`… operator: ${failure}; using ${freeLabel} (free)`); useFree(); }
         else table.step(`… operator: ${failure}; using Squire`);
       };
       // With a harness, a Jev-only bootstrap tries every provider before it
@@ -668,7 +679,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (!driving && harness && id !== 'opencode') table.step(`… bootstrap: ${id} via Squire`);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
-        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeOpenCode()) useOpenCode();
+        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeDriver()) useFree();
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
         if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) {
           deferred.push(id);
@@ -684,7 +695,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (failed !== -1) unavailable.splice(failed, 1);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
-        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeOpenCode()) useOpenCode();
+        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeDriver()) useFree();
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
       }
     }

@@ -574,7 +574,8 @@ export class BrowserSquire implements SetupSquire {
         } catch (error) {
           signal.throwIfAborted();
           const failure = setupFailureReason(error);
-          if (signupOperatorUnavailable(failure)) return dropped(failure);
+          // A driver that hangs until its timeout fails this signup; it never switches drivers.
+          if (signupOperatorUnavailable(failure) || failure === 'timed out') return dropped(failure);
         }
         if (['refused', 'rejected', 'denied', 'forbidden'].includes(String(agentResult.status))) return dropped('provider refused');
         if (agentResult.status === 'complete') {
