@@ -10,8 +10,7 @@ export interface BeatAPISetupSquire {
   approveDataSharing?(providers: readonly string[]): void;
 }
 export interface BeatAPISetupOptions { directory: string; squire: BeatAPISetupSquire; signal?: AbortSignal; dataSharingApproved?: readonly string[]; notify?(line: string): void; fetcher?: typeof fetch; background?: boolean; upgradeExisting?: boolean }
-// The inner error stays as the cause so setup debugging can name the check that failed.
-const failure = (cause?: unknown) => new Error('BeatAPI free account or key verification did not complete; rerun usegrunt setup', cause === undefined ? undefined : { cause });
+const failure = () => new Error('BeatAPI free account or key verification did not complete; rerun usegrunt setup');
 const connected = 'BeatAPI: free-only DeepSeek V4.1 Flash and GLM 5.3 Flash connected; one successful request per minute across both models';
 const deepseekOnly = 'BeatAPI: free DeepSeek V4.1 Flash connected; GLM 5.3 Flash is unavailable on this key';
 async function bounded<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
@@ -24,7 +23,7 @@ const ownedKey = (c: Credential) => typeof c?.service === 'string' && c.service.
   && c.label === 'grunt' && typeof c.reference === 'string' && Boolean(c.reference)
   && (c.auth_strategy == null || c.auth_strategy === 'api_key')
   && Array.isArray(c.field_names) && c.field_names.some(f => typeof f === 'string' && ['value', 'apikey', 'key', 'token', 'secret'].includes(f.toLowerCase().replace(/[^a-z]/g, '')))
-  && Array.isArray(c.allowed_hosts) && c.allowed_hosts[0] === 'api.beatapi.io' && c.allowed_hosts.every((host: unknown) => typeof host === 'string' && (host === 'beatapi.io' || host === '*.beatapi.io' || host.endsWith('.beatapi.io')));
+  && Array.isArray(c.allowed_hosts) && c.allowed_hosts.length === 1 && c.allowed_hosts[0] === 'api.beatapi.io';
 export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> {
   // The caller may carry approvals already recorded by this wizard turn, but
   // an unknown or changed policy cannot silently inherit another provider's.
@@ -88,5 +87,5 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
       await writeBeatAPIGrant(hasGLM ? { ...verified, version: 2, models: BEATAPI_MODELS } : { ...verified, version: 1 }, options.directory);
     }
     options.notify?.(hasGLM ? connected : deepseekOnly);
-  } catch (error) { await invalidate().catch(() => {}); throw failure(error); }
+  } catch { await invalidate().catch(() => {}); throw failure(); }
 }

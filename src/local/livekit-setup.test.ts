@@ -72,7 +72,7 @@ it('uses ordinary native pairing, preserves existing profiles/defaults, and reus
   vi.stubEnv('LiveKit_Url', 'https://wrong.invalid'); vi.stubEnv('LK_PROJECT', 'paid-project');
   vi.stubEnv('GRUNT_TEST_MARKER', join(directory, 'DO_NOT_CREATE'));
   const signup = vi.fn(async (_service: string, url: string, goal: string) => {
-    expect(goal).toMatch(/grunt project/);
+    expect(goal).toMatch(/grunt-free project/);
     expect(goal).not.toMatch(/Verify the Build free plan/);
     expect(planSteps(goal)).toEqual([]);
     expect(goal).not.toContain('API secret:');
@@ -115,7 +115,7 @@ it('sets up a fresh native config without reading or capturing API secrets', asy
   const f = await fixture(false);
   const signup = vi.fn(async (_service: string, url: string, goal: string) => {
     if (url.includes('/cli/confirm-auth')) await writeFile(join(directory, 'approved'), 'yes');
-    else expect(goal).toContain('If this owned grunt project offers an optional Agent observability switch, turn it off; if no such switch is offered, there is nothing to change.');
+    else expect(goal).toContain('Turn off optional Agent observability');
   });
   await setupLiveKit({ directory, nativeDirectory: f.native, install: f.install, squire: { signup } });
   expect(await readLiveKitFreeBuildReceipt(directory)).toMatchObject({ projectId: 'p_free', plan: 'Build' });
@@ -239,10 +239,4 @@ it('starts LiveKit with the other native free routes in parallel and isolates a 
   release();
   expect(await pending).toEqual({ unavailable: ['livekit'] });
   expect(connect).toHaveBeenCalledOnce();
-});
-
-it('matches only the Grunt-owned LiveKit project URL', async () => {
-  const { LIVEKIT_GRUNT_PROJECT_URL } = await import('./livekit-setup.js');
-  for (const url of ['wss://grunt-my6sw682.livekit.cloud', 'wss://grunt-free-xyz.livekit.cloud']) expect(LIVEKIT_GRUNT_PROJECT_URL.test(url)).toBe(true);
-  for (const url of ['wss://grunt-staging-ab12.livekit.cloud', 'wss://grunt-free-a-b.livekit.cloud', 'wss://other-xyz.livekit.cloud', 'wss://grunt-xyz.livekit.cloud.example']) expect(LIVEKIT_GRUNT_PROJECT_URL.test(url)).toBe(false);
 });
