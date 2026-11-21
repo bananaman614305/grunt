@@ -39,6 +39,30 @@ it('restores completed-call weights across restart without granting availability
   expect(JSON.stringify(restarted.snapshot({ ids: ['kilo'], disabled: new Set(), pending: new Set(), verifying: new Set(), approvals: new Set(), preparing: new Set() }))).not.toContain('lastSuccessAt');
 });
 
+it.each(['quota', 'upstream'] as const)('migrates legacy Kilo %s holds once and preserves subsequent pool exhaustion', async code => {
+  const path = await directory(), now = 10000, store = await open(path);
+  await store.record('kilo', 'interactive-tools', true, 1000, now);
+  await store.failure('kilo', new SourceError(code, 'legacy', 28800), 28800, false, now);
+  await store.failure('reflection-beam', new SourceError('quota', 'legacy', 28800), 28800, false, now);
+  await store.close();
+  const { createClient } = await import('@libsql/client');
+  const client = createClient({ url: pathToFileURL(join(path, 'routing-history.db')).href });
+  try { await client.execute('PRAGMA user_version=1'); } finally { client.close(); }
+  const migrated = await open(path), snapshot = await migrated.snapshot(now);
+  expect(snapshot.backoff.map(row => row.source).sort()).toEqual(code === 'quota' ? ['reflection-beam'] : ['kilo', 'reflection-beam']);
+  expect(snapshot.performance.find(row => row.profile === 'interactive-tools')?.value.samples).toBe(1);
+  if (code === 'quota') {
+    const status = new SourceStatus(['kilo'], () => now); await status.setRoutingHistory(migrated);
+    const kilo = source('kilo');
+    await expect(router([kilo], status, () => now).complete({ ...request, model: 'kilo' }, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'PRIVATE_ANSWER' });
+    expect(kilo.complete).toHaveBeenCalledOnce();
+  }
+  const exhausted = await migrated.failure('kilo', new SourceError('quota', 'pool exhausted', 3600), 3600, false, now + 1);
+  await migrated.close();
+  const restarted = await open(path);
+  expect((await restarted.snapshot(now + 1)).backoff.find(row => row.source === 'kilo')?.value).toEqual(exhausted);
+});
+
 it('serializes sibling writers without losing observations and projects only allowlisted numeric metadata', async () => {
   const path = await directory(), first = await open(path), second = await open(path);
   await Promise.all(Array.from({ length: 20 }, (_, i) => (i % 2 ? first : second).record('kilo', 'interactive-text', true, 1200, 10000 + i)));
