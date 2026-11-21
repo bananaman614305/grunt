@@ -829,8 +829,8 @@ or inconsistent entitlement metadata, checks a conservative remaining request
 budget, and waits until the next UTC reset after daily exhaustion. It never
 claims check-in or referral rewards, changes to a paid model, or continues
 through a wallet. Unexpected model identity or a model-failover response header
-is rejected. Retention, training and review guarantees remain unknown and are
-included in source-specific grouped consent. Grunt requests complete JSON responses,
+is rejected. Retention, training and review guarantees remain unknown; see
+`src/local/data-sharing.ts` for the source-specific disclosure. Grunt requests complete JSON responses,
 as in the provider’s OpenAI SDK quickstart, with native function calls and usage.
 
 [Darus API documentation](https://gateway.darusalfatah.id/dokumentasi).
@@ -859,7 +859,7 @@ reset when present, otherwise the documented UTC cadence. Generic or upstream
 429s retain their explicit retry signals and do not imply daily exhaustion.
 Token-per-minute and concurrency limits are unpublished. Content passes through
 Aperture, OpenRouter and the selected model provider; upstream retention,
-review and training guarantees are unverified. The grouped consent disclosure
+review and training guarantees are unverified. The source-specific policy
 belongs to Aperture independently of Kenari, which offers the same checkpoint.
 See [Aperture's API documentation](https://www.aperture-ai.run/developers/docs.html)
 and [privacy policy](https://www.aperture-ai.run/privacy.html).

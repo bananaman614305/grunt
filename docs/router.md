@@ -52,11 +52,13 @@ accepted, with `GRUNT_*` taking precedence.
 - **Foreground setup.** With a coding harness selected, setup can use the
   installed OpenCode CLI even if a different harness was chosen. It probes
   anonymous Big Pickle access when no operator is driving, including after
-  the routed operator becomes unavailable. This requires OpenCode's current
+  an operator becomes unavailable or setup provisions OpenCode successfully.
+  A missing CLI or failed probe can be reconsidered at these later checks.
+  This requires OpenCode's current
   data-sharing approval and is disabled by `GRUNT_SETUP_NO_ANONYMOUS=1`.
   The anonymous operator is replaced as soon as an account route passes the
-  tool-call probe. An unavailable OpenCode operator is not retried during
-  that setup run.
+  tool-call probe. Policy receipts follow the
+  [setup reference](reference.md#free-api-and-account-setup).
 - **Driver failure.** If the driver's route is benched or retired mid-signup,
   the sticky router hands the same task to the next eligible tool-capable
   route, with the usual handoff prompt. If the harness reports exhausted quota,
