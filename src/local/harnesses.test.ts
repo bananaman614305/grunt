@@ -324,6 +324,8 @@ it('hands off when OpenCode logs a failed main-model request instead of waiting 
 
 it.each([
   ['402 Payment Required', 'quota exhausted', true], ['Error: rate limited, retry later', 'quota exhausted', true],
+  ['ModelNotFoundError', 'model pool unavailable', true], ['ProviderModelNotFoundError', 'model pool unavailable', true],
+  ['model_not_found', 'model pool unavailable', true],
   ['503 Service Unavailable', 'provider request failed', true], ['TypeError: cannot read properties', 'CLI request failed', false]
 ])('names the model error a failed CLI exit reports: %s', async (text, reason, switches) => {
   const { setupFailureReason, signupOperatorUnavailable } = await import('./setup-failure.js');
@@ -379,6 +381,26 @@ it('lists OpenCode free models and excludes Google models from Pi providers, fro
   expect(await listFreeModels({ openCode: true, pi: false }, async () => { throw new Error('Could not run opencode'); })).toEqual([{ harness: 'opencode', model: 'opencode/big-pickle' }]);
 });
 
+it.each(['before discovery', 'opencode resolves', 'opencode rejects', 'pi resolves', 'pi rejects'])('catalog discovery preserves cancellation: %s', async stage => {
+  const { listFreeModels } = await import('./harnesses.js');
+  dir = await mkdtemp(join(tmpdir(), 'grunt-catalog-cancel-'));
+  vi.stubEnv('PI_CODING_AGENT_DIR', join(dir, 'pi-agent'));
+  const controller = new AbortController(), cancelled = new Error('signup cancelled');
+  const called: string[] = [];
+  if (stage === 'before discovery') controller.abort(cancelled);
+  const run: typeof runHarness = async (binary, _args, _env, _timeout, options) => {
+    called.push(binary);
+    expect(options?.signal).toBe(controller.signal);
+    if (stage.startsWith(binary)) {
+      controller.abort(cancelled);
+      if (stage.endsWith('rejects')) throw new Error('CLI aborted');
+    }
+    return binary === 'opencode' ? 'opencode/big-pickle' : 'provider model context\nkeyed coder-free 32K';
+  };
+  await expect(listFreeModels({ openCode: true, pi: true }, run, controller.signal)).rejects.toBe(cancelled);
+  expect(called).toEqual(stage === 'before discovery' ? [] : stage.startsWith('opencode') ? ['opencode'] : ['opencode', 'pi']);
+});
+
 it.each([
   [true, 'quota exhausted: free usage limit reached'], [false, 'quota exhausted: free usage limit reached'],
   [true, 'opencode did not answer within 240 seconds']
@@ -407,7 +429,7 @@ it.each([
   else await expect(run).rejects.toThrow('pi exited with code 1');
   expect(tried).toEqual(timeout ? ['pi:grunt/grunt', 'opencode:opencode/big-pickle']
     : ['pi:grunt/grunt', 'opencode:opencode/big-pickle', 'opencode:opencode/glm-free', 'pi:openrouter/vendor/model:free']);
-  expect(list).toHaveBeenCalledExactlyOnceWith({ openCode: true, pi: true }, expect.any(Function));
+  expect(list).toHaveBeenCalledExactlyOnceWith({ openCode: true, pi: true }, expect.any(Function), input.signal);
 });
 
 it('daemon driver: Squire drives alone when no harness CLI can drive', async () => {

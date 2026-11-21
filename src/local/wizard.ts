@@ -580,7 +580,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (freeAgent) return true;
         const reach = { openCode: consent.approved.includes('opencode') && await onPath('opencode'), pi: await onPath('pi') };
         if (!reach.openCode && !reach.pi) return false;
-        const models = await (actions.listFreeModels ?? listFreeModels)(reach);
+        const models = await (actions.listFreeModels ?? listFreeModels)(reach, undefined, session!.signal);
         for (const [index, model] of models.entries()) {
           try { await probeFreeModel(model, session!.signal); }
           catch { session!.signal.throwIfAborted(); continue; }

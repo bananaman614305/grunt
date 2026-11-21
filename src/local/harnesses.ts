@@ -279,6 +279,7 @@ export async function runHarness(binary: string, args: string[], env: Record<str
         // A failed exit that prints the model's own error names it: a rate limit
         // or payment wall is quota, and a provider 5xx is a failed request.
         const reported = reason !== 'setup failed' ? reason
+          : /\b(?:ModelNotFoundError|ProviderModelNotFoundError|model_not_found)\b/.test(stderr + stdout) ? 'model pool unavailable'
           : /\b(?:402|payment required|rate.?limit(?:ed)?|too many requests)\b/i.test(stderr + stdout) ? 'quota exhausted'
             : /\b(?:50[0-4]|bad gateway|service unavailable|internal server error|overloaded)\b/i.test(stderr + stdout) ? 'provider request failed' : undefined;
         if (code !== 0 || /^\s*(?:error|api error).*?(?:quota|429)/im.test(stdout)) {
@@ -342,21 +343,27 @@ async function inTemporary<T>(use: (directory: string) => Promise<T>) {
  * Lists the free models installed harness CLIs reach on their own (docs/router.md):
  * OpenCode's anonymous free models, then the free models of the person's Pi providers.
  */
-export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, run = runHarness): Promise<FreeModel[]> {
+export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, run = runHarness, signal?: AbortSignal): Promise<FreeModel[]> {
+  signal?.throwIfAborted();
   const found: FreeModel[] = [];
   if (reach.openCode) {
     // Anonymous OpenCode lists only the free models it can reach.
-    const text = await inTemporary(directory => run('opencode', ['models', 'opencode'], openCodeAlone(directory), 45000, { cwd: directory })).catch(() => '');
+    const text = await inTemporary(directory => {
+      signal?.throwIfAborted();
+      return run('opencode', ['models', 'opencode'], openCodeAlone(directory), 45000, { cwd: directory, signal });
+    }).catch(() => { signal?.throwIfAborted(); return ''; });
     const models = text.split('\n').map(line => line.trim()).filter(line => /^opencode\/\S+$/.test(line));
     // Big Pickle is OpenCode's long-standing anonymous model: first, and the
     // fallback when the CLI cannot list its catalog.
     const ordered = ['opencode/big-pickle', ...models.filter(model => model !== 'opencode/big-pickle')];
     found.push(...ordered.map(model => ({ harness: 'opencode' as const, model })));
   }
+  signal?.throwIfAborted();
   if (reach.pi) {
     await inTemporary(async directory => {
       const providers = await ownPiConfig(directory);
-      const text = await run('pi', ['--offline', '--list-models'], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory });
+      signal?.throwIfAborted();
+      const text = await run('pi', ['--offline', '--list-models'], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory, signal });
       for (const line of text.split('\n').slice(1)) {
         const [provider, id] = line.trim().split(/\s+/);
         if (!provider || !id || !/[:-]free$/.test(id) || /google|gemini|gemma/i.test(`${provider}/${id}`)) continue;
@@ -364,8 +371,9 @@ export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, 
         if (loopbackURL((providers[provider] as { baseUrl?: unknown } | undefined)?.baseUrl)) continue;
         found.push({ harness: 'pi', model: `${provider}/${id}` });
       }
-    }).catch(() => {});
+    }).catch(() => { signal?.throwIfAborted(); });
   }
+  signal?.throwIfAborted();
   return found;
 }
 // One short request on a free model, in the same isolated configuration a signup uses.
@@ -469,7 +477,7 @@ export async function signupDriver(port: number, options: { routed: boolean; ope
   const reach = { openCode: options.openCode && await onPath('opencode'), pi: await onPath('pi') };
   // Listed when a signup needs it, so a pass with a working route never runs the CLIs.
   const free: SignupAgent | undefined = reach.openCode || reach.pi ? async input => {
-    const [first, ...rest] = (await (options.list ?? listFreeModels)(reach, options.run)).map(model => freeModelSignup(model, port, options.run));
+    const [first, ...rest] = (await (options.list ?? listFreeModels)(reach, options.run, input.signal)).map(model => freeModelSignup(model, port, options.run));
     if (!first) throw new Error('Free harness model pool unavailable');
     await nextDriver(first, ...rest)(input);
   } : undefined;

@@ -664,6 +664,7 @@ it.each([true, false])('walks every free harness model before Squire drives alon
     probeOperator: vi.fn(async () => false),
     signupHarness: (harness, _port, _run, model) => async () => { driven.push(`${harness.id}:${model ?? 'grunt'}`); } });
   const lines = log.mock.calls.map(call => String(call[0]));
+  expect(listFreeModels).toHaveBeenCalledExactlyOnceWith({ openCode: true, pi: true }, undefined, expect.any(AbortSignal));
   expect((await readFile(probes, 'utf8')).trim().split('\n')).toEqual(['opencode opencode/big-pickle', 'opencode opencode/glm-free', 'pi vendor/model:free']);
   expect(driven).toEqual(piAnswers ? ['pi:openrouter/vendor/model:free'] : []);
   expect(lines).toContain(piAnswers ? '✓ model: openrouter/vendor/model:free (free)' : '… operator: no working anonymous model; using Squire');
