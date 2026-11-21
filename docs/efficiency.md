@@ -82,10 +82,13 @@ checks are not cached for later dispatch: a later call reads fresh access eviden
 and consent is checked for each caller. Cancellation and bounded check deadlines
 prevent replacement storms when a transport has not finished cleaning up.
 
-Grunt-owned OpenCode servers shut down with their owned process group after five
-idle minutes and restart on demand. Active requests and externally supplied server
-URLs are excluded. Deliberate idle recycling retains native session identifiers
-and model cooldowns while preparing the replacement process afresh. This bounds
+Grunt-owned OpenCode servers shut down after five idle minutes and restart on
+demand. On POSIX, cleanup also terminates descendants in the server's owned process
+group; Windows cleanup targets the owned server process. Descendants that detach
+into separate process groups remain outside this cleanup. Active requests and
+externally supplied server URLs are excluded. Deliberate idle recycling retains
+native session identifiers and model cooldowns while preparing the replacement
+process afresh. This bounds
 idle resource retention; it does not prevent memory growth during an active native
 request or disable inherited user MCP configuration.
 
