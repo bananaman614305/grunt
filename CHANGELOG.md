@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-21
+
+- Let the OpenCode CLI drive signups when no routed driver has a model, in setup and in the daemon, including mid-signup takeover.
+- Accept provider data-sharing policies by default during setup without prompting; `GRUNT_SETUP_NO_DATA_SHARING=1` still opts out.
+- Make signup refusals name what is allowed (offered option keys, Grunt-supplied values, refs from the latest observation), and stop blocking providers' own "secret" key controls.
+
 ## [0.9.2] - 2026-11-20
 
 - Retry routing-history commits within a bounded wait when a sibling reader holds the database, preserving atomic observations without replaying writes.
