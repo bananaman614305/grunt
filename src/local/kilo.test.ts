@@ -261,6 +261,16 @@ it('moves to the next free Kilo model when Particle returns 429, and keeps the m
   await f.source.complete(request(), new AbortController().signal);
   expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, KILO_BEAM]);
 });
+it('moves on when a model reports a server error or answers as another model', async () => {
+  const lightning = 'nvidia/nemotron-3.5-lightning:free';
+  const f = fixture({ catalogRows: rotation(), infer: init => sentModel(init) === KILO_PARTICLE ? new Response('private upstream body', { status: 503 })
+    : sentModel(init) === KILO_BEAM ? Response.json(result()) : Response.json(result({ model: lightning })) });
+  await expect(f.source.complete(request(), new AbortController().signal)).resolves.toMatchObject({ text: 'Hello.' });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, lightning]);
+  const refused = fixture({ catalogRows: rotation(), infer: () => Response.json(result({ model: 'unverified' })) });
+  await expect(refused.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'completion_model' } });
+  expect(refused.posts()).toHaveLength(3);
+});
 it.each([
   ['a client error', () => new Response(null, { status: 400 })],
   ['an invalid completion', () => Response.json(result({ choices: [] }))],
@@ -285,22 +295,22 @@ it('reports quota with the earliest refill once every free Kilo model returns 42
   await expect(pool.complete({ ...request(), model: 'grunt' }, new AbortController().signal)).resolves.toMatchObject({ text: 'fallback' });
   expect(pool.status().sources.find(source => source.id === 'kilo')).toMatchObject({ errorCode: 'quota' });
 });
-// The quota-only rotation contract requires the first non-quota failure to end
-// the turn, even when an earlier model reported an eight-hour quota.
 it.each([
-  [false, 'upstream', { httpStatus: 503 }, () => new Response(null, { status: 503 })],
-  [true, 'upstream', { httpStatus: 503 }, () => new Response(null, { status: 503 })],
-  [false, 'refused', { failureReason: 'completion_model' }, () => Response.json(result({ model: 'unverified' }))],
-  [true, 'refused', { failureReason: 'completion_model' }, () => Response.json(result({ model: 'unverified' }))]
-] as const)('stops quota rotation on %s preceding quota, then %s %j', async (precedingQuota, code, diagnostics, failure) => {
-  const f = fixture({ catalogRows: rotation(), infer: init => {
-    const current = sentModel(init);
-    if (precedingQuota && current === KILO_PARTICLE) return new Response(null, { status: 429, headers: { 'retry-after': '28800' } });
-    if (current === (precedingQuota ? KILO_BEAM : KILO_PARTICLE)) return failure();
-    return Response.json(result({ model: current }));
+  [[429, 503, 503], 'upstream', { httpStatus: 503 }],
+  [[503, 429, 429], 'upstream', { httpStatus: 503 }],
+  [[429, 200, 429], 'refused', { failureReason: 'completion_model' }],
+  [[503, 200, 429], 'refused', { failureReason: 'completion_model' }],
+  [[200, 502, 429], 'upstream', { httpStatus: 502 }]
+] as const)('reports the last non-quota failure for mixed rotation results %j', async (statuses, code, diagnostics) => {
+  let attempt = 0;
+  const f = fixture({ catalogRows: rotation(), infer: () => {
+    const status = statuses[attempt++]!;
+    return status === 200 ? Response.json(result({ model: 'unverified' }))
+      : new Response(null, { status, headers: { 'retry-after': '28800' } });
   } });
-  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code, diagnostics, retryAfter: undefined });
-  expect(f.posts().map(([, init]) => sentModel(init))).toEqual(precedingQuota ? [KILO_PARTICLE, KILO_BEAM] : [KILO_PARTICLE]);
+  const completion = f.source.complete(request(), new AbortController().signal);
+  await expect(completion).rejects.toMatchObject({ code, diagnostics, retryAfter: undefined });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, 'nvidia/nemotron-3.5-lightning:free']);
 });
 it('keeps the Reflection Beam route on its single model', async () => {
   await recordDataSharingConsent(directory, ['reflection-beam']);

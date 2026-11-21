@@ -800,14 +800,16 @@ without an account or API key. Before inference, grunt checks that the exact
 catalog entry is free, has at least 200K context and supports tools and output
 limits. It accepts only that exact returned model with zero reported inference
 cost and valid correlated function calls. A fallback model cannot pass as Particle.
-When a model returns HTTP 429, the Kilo source tries another verified free model
-from the same live catalog: exact `:free` models and `reflection/beam-free` are
-eligible. A server error, model identity mismatch, timeout or any other failure
-ends rotation. The initial order is Particle, then Reflection Beam, then the rest
-in catalog order. Router aliases such as `kilo-auto/free` and `openrouter/free`
-are never used. The model that answered last is tried first on the next request.
-When every listed model returns 429, Kilo reports quota with the earliest reported
-refill. The pool moves to its next route. The separate Reflection Beam
+When a model returns HTTP 429, a server error (HTTP 5xx) or a reply naming a
+different model, the Kilo source tries another verified free model from the
+same live catalog: exact `:free` models and `reflection/beam-free` are eligible.
+A timeout or any other failure does not move on. The initial order is Particle,
+then Reflection Beam, then the rest in catalog order. Router aliases
+such as `kilo-auto/free` and `openrouter/free` are never used. The model that
+answered last is tried first on the next request. When every listed model fails
+this way, Kilo reports quota with the earliest reported refill only if every model
+returned 429; otherwise it reports the last non-quota failure. The pool moves to
+its next route. The separate Reflection Beam
 route keeps its one model.
 The [documented anonymous limit](https://kilo.ai/docs/gateway/models-and-providers)
 is 200 requests per hour per IP, subject to upstream capacity. This is ongoing
