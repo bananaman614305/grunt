@@ -36,7 +36,7 @@ import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
-import { readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
+import { readDataSharingConsent, refreshDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
@@ -223,7 +223,9 @@ export function start(env = process.env) {
   // Registry downloads and access maintenance are independent. Only the route
   // pass above provisions accounts, in the background, after each registry sync
   // and when no source can answer. It never hands a browser to a person.
-  const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready]).then(refreshSession);
+  // Renew approvals for changed provider policies before serving, so an update never turns a route off.
+  const consent = refreshDataSharingConsent(directory, env).catch(() => console.error('Data-sharing approvals could not be renewed; rerun usegrunt setup'));
+  const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready, consent]).then(refreshSession);
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
   const workerRuntime = createWorkerRuntime(sources, { directory });

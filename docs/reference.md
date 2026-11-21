@@ -779,7 +779,9 @@ review or train on prompts. It records current provider policies in a private
 receipt for the existing runtime guards without prompting, including material
 terms such as Free-Pi’s trace sale, in interactive and unattended setup. Setup
 refreshes changed policies and also records OpenCode’s policy for the CLI signup
-driver when the registry omits its route. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
+driver when the registry omits its route. The daemon also renews, at start, any
+saved approval whose provider policy has since changed, so an update does not
+turn a route off; providers never approved stay off. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
 sources with explicit or material policies off and revokes their saved receipts. Retired Freebuff and APInex records do not authorize routing.
 Daily maintenance does not provision accounts; rerun setup to retry a skipped
 source. Provider-specific data policies remain documented below and in
@@ -808,9 +810,10 @@ rate-limited zero-cost access rather than a one-time credit balance.
 
 The catalog permits training on Particle prompts. Retention and staff-review
 guarantees are unestablished. The Kilo consent policy is now
-`2026-11-15-particle`; an earlier Auto Free approval does not authorize this
-route. Setup records the current policy without asking, and existing runtime
-guards continue checking the receipt.
+`2026-11-21-free-models` and covers every free Kilo model the source may
+rotate to; an earlier Auto Free approval does not authorize this route. Setup
+records the current policy without asking, the daemon renews a saved earlier
+Kilo approval at start, and existing runtime guards continue checking the receipt.
 
 CrowLLM is available as an optional local source through `npx usegrunt add crowllm`.
 It is outside the default registry while context capacity and live tools remain
