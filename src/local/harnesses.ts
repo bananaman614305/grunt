@@ -250,28 +250,44 @@ export async function runHarness(binary: string, args: string[], env: Record<str
   const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
   const merged: NodeJS.ProcessEnv = { ...process.env };
   for (const [key, value] of Object.entries(env)) { if (value === undefined) delete merged[key]; else merged[key] = value; }
+  let child: ReturnType<typeof spawn> | undefined;
+  let closed: Promise<void> | undefined;
   try {
     return await new Promise<string>((resolve, reject) => {
-      const child = spawn(binary, args, { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'], signal });
+      const running = spawn(binary, args, { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'], signal });
+      child = running;
+      closed = new Promise<void>(done => running.once('close', () => done()));
       let stdout = '', stderr = '', limited = false;
       // OpenCode retries its free limit until the next UTC day; fail fast instead.
       const watch = (text: string) => {
         if (limited || !FREE_LIMIT.test(text)) return;
         limited = true;
-        child.kill();
+        running.kill();
         reject(new Error('quota exhausted: free usage limit reached'));
       };
-      child.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
-      child.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
-      child.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
-      child.once('close', code => {
+      running.stdout.on('data', (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(-65536); watch(stdout); });
+      running.stderr.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-65536); watch(stderr); });
+      running.once('error', error => reject(new Error(error.name === 'AbortError' ? `${binary} did not answer within ${Math.round(timeoutMs / 1000)} seconds` : `Could not run ${binary}`)));
+      running.once('close', code => {
         const reason = setupFailureReason(new Error(stdout + '\n' + stderr));
         if (code !== 0 || /^\s*(?:error|api error).*?(?:quota|429)/im.test(stdout)) reject(new Error(reason === 'setup failed' ? `${binary} exited with code ${code}` : reason));
         else if (!stdout.trim()) reject(new Error(`${binary} printed no answer`));
         else resolve(stdout.trim());
       });
     });
-  } finally { if (!options.cwd) await rm(cwd, { recursive: true, force: true }); }
+  } finally {
+    // Abort and quota detection can reject before a CLI exits. OpenCode may
+    // ignore SIGTERM; reap it before removing its temporary configuration.
+    if (child && closed) {
+      const running = child;
+      const timer = setTimeout(() => running.kill('SIGKILL'), 2000);
+      try {
+        if (running.exitCode === null && running.signalCode === null) running.kill();
+        await closed;
+      } finally { clearTimeout(timer); }
+    }
+    if (!options.cwd) await rm(cwd, { recursive: true, force: true });
+  }
 }
 export async function connectHarness(harness: Harness, port: number, run = runHarness) {
   const change = await harness.configure(port);

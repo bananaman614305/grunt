@@ -294,7 +294,7 @@ entry point. Keep this endpoint on your own machine.
 The local chat, messages and responses endpoints accept the request header
 `X-Grunt-Context: public`. It enables eligible Gödel Machines and Free-Pi requests through
 model `grunt` or their explicit source IDs, subject to each source's consent and
-request restrictions. Free-Pi additionally requires affirmative trace-sale consent.
+request restrictions. Setup automatically records Free-Pi’s current trace-sale policy.
 Set it only when the full text and tool
 payload can be retained, reviewed by staff and used for training, and contains
 no secrets, confidential business information or other people’s personal data.
@@ -564,7 +564,7 @@ on a custom port can pass `--port` until setup records it. For example, Chad use
 `usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
 
 Setup shows one live table of tools and sources, then `Ready`, and exits.
-It asks for material data terms when required and does not open the status dashboard. Run
+It automatically records current data-sharing policies and does not open the status dashboard. Run
 `usegrunt status --watch` separately to open that view. Closing setup before
 completion pauses unfinished signups; verified daemon routes remain usable.
 
@@ -703,8 +703,8 @@ Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
 Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra,
 Openference, Reflection Beam, 100milionseek and Free-Pi in the
 experimental tier. Fikra and Openference are temporary offers with expiry guards.
-Free-account eligibility still applies. Free-Pi requires affirmative material
-consent and reviewed public context; registry membership alone does not enable it.
+Free-account eligibility still applies. Setup automatically records Free-Pi’s material policy. Free-Pi still requires
+reviewed public context on every request.
 
 The wizard enables free sources by default and connects every supported coding
 tool it detects. It installs the persistent daemon once before provider jobs.
@@ -776,10 +776,11 @@ Zro setup prefers Google login through Squire. Before connecting a new local gra
 
 Setup enables the free sources by default, including sources that may retain,
 review or train on prompts. It records current provider policies in a private
-receipt for the existing runtime guards. Material terms such as Free-Pi's trace
-sale are displayed in a foreground, default-No prompt. Noninteractive or
-background setup skips an unapproved material policy; a changed policy requires
-fresh approval. Retired Freebuff and APInex records do not authorize routing.
+receipt for the existing runtime guards without prompting, including material
+terms such as Free-Pi’s trace sale, in interactive and unattended setup. Setup
+refreshes changed policies and also records OpenCode’s policy for the CLI signup
+driver when the registry omits its route. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
+sources with explicit or material policies off and revokes their saved receipts. Retired Freebuff and APInex records do not authorize routing.
 Daily maintenance does not provision accounts; rerun setup to retry a skipped
 source. Provider-specific data policies remain documented below and in
 `src/local/data-sharing.ts`.
@@ -921,7 +922,7 @@ The additional experimental routes have these requirements:
 | Numes | `deepseek/deepseek-v4.1-flash:free`, `z-ai/glm-5.3-flash:free` | Free Google sign-in through Squire and a dedicated inference key with a $0 spending cap. Free capacity can vary, with no guaranteed fixed allowance. [Numes free routes](https://numes.ai/docs/models#free-models) |
 | Gödel Machines | `deepseek/deepseek-v4.1-flash` | Current sharing approval and a dedicated Free Key through Squire. Grunt verifies the key's Free tier before inference. The free allowance is 600,000 uncached input tokens and 150,000 output tokens per day, renewing at midnight UTC. [Gödel free-tier terms](https://inference.goedelmachines.com/legal#free-tier) |
 
-For Nous, approve its data policy in the grouped setup prompt and open the
+For Nous, setup records its current data policy automatically. Open the
 Hermes device link on your phone or computer. Sign in or create the Free account
 yourself, and approve inference access. Grunt uses an installed official Hermes
 Agent or installs a pinned Hermes copy in its private configuration directory
@@ -933,7 +934,7 @@ Use `npx usegrunt add nous` to connect Nous separately or repeat device approval
 path. Grunt skips Nous if it cannot confirm the Free plan, zero paid balances,
 and zero prices for the pinned model.
 
-For Kenari, approve data sharing in the grouped setup prompt and complete
+For Kenari, setup records data sharing automatically. Complete
 browser verification if Kenari asks. Squire reuses the dedicated Grunt Free
 key scoped to `kenari.id`, or creates one when needed. Use
 `npx usegrunt add kenari` to connect it separately or resume setup. Grunt
@@ -941,7 +942,7 @@ checks that the exact ERNIE route is still free and supports native tool calls.
 When that route is rate-limited, automatic routing can continue on another
 free source.
 
-For Numes, approve data sharing in the grouped setup prompt and let Squire
+For Numes, setup records data sharing automatically. Let Squire
 connect your Google account. Use `npx usegrunt add numes` to connect it separately
 or refresh setup to enable the DeepSeek disclosure. Grunt checks the key's $0
 cap before each request. It prefers DeepSeek when the approved Amazee endpoint
@@ -1565,8 +1566,8 @@ to bypass limits. The relay's stated privacy protections do not establish its
 unnamed upstream's retention or training practices.
 
 `freepi` pins `deepseek-v4.1-flash` and verifies the observed upstream model.
-Use `npx usegrunt add freepi` for its GitHub device signup after approving the
-material trace-sale disclosure. Every inference additionally requires
+Use `npx usegrunt add freepi` for its GitHub device signup; setup automatically
+records the current material trace-sale policy. Every inference additionally requires
 `X-Grunt-Context: public`; worker, handoff and image requests are excluded.
 Ordinary Pi sessions do not add that header. All spendable wallets must be zero
 before and after inference, and the exact current free offer must remain valid.
