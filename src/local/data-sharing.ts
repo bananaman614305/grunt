@@ -32,7 +32,8 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
 }, {
   provider: 'kilo', name: 'Kilo free models', version: '2026-11-21-free-models',
   disclosure: 'Prompts, code and tool results pass through Kilo Gateway and the upstream hosting whichever listed free model answers: Particle AI by default, or another free model such as Reflection Beam, NVIDIA Nemotron or Baidu ERNIE when Particle is rate-limited. Free models may train on prompts; retention, staff-review and training practices vary by upstream and are not established. Do not submit personal or confidential data.',
-  url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free'
+  url: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
+  approval: 'explicit'
 }, {
   provider: 'tokenharbor', name: 'Token Harbor', version: '2026-11-15',
   disclosure: 'Prompts and responses may be retained, read by staff, and used by upstream providers for training.',

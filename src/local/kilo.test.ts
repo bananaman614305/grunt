@@ -244,9 +244,12 @@ it('asks once more when Particle samples an invalid function call, then reports 
 });
 const rotation = () => [model('kilo-auto/free'), model('nvidia/nemotron-3.5-lightning:free'), { ...model('vendor/paid:free'), isFree: false }, model(KILO_BEAM), model(), model('openrouter/free')];
 const sentModel = (init?: RequestInit) => JSON.parse(String(init?.body)).model as string;
-it('lists exact free models with Particle and Reflection Beam first, and no router aliases', async () => {
+it('lists exact free models with Particle, then Reflection Beam, small models last, and no router aliases', async () => {
   const fetcher = async () => Response.json({ data: rotation() });
   expect(await verifyKiloAccess({ fetcher })).toEqual([KILO_PARTICLE, KILO_BEAM, 'nvidia/nemotron-3.5-lightning:free']);
+  const sized = ['liquid/lfm-3-1.7b:free', 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', 'vendor/tiny-8b:free', 'nvidia/nemotron-3-ultra-550b-a55b:free', KILO_BEAM, KILO_PARTICLE];
+  expect(await verifyKiloAccess({ fetcher: async () => Response.json({ data: sized.map(id => model(id)) }) })).toEqual([KILO_PARTICLE, KILO_BEAM,
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', 'nvidia/nemotron-3-ultra-550b-a55b:free', 'liquid/lfm-3-1.7b:free', 'vendor/tiny-8b:free']);
   expect(await verifyKiloAccess({ fetcher, reflectionBeam: true })).toEqual([KILO_BEAM]);
   expect(await verifyKiloAccess({ fetcher: async () => Response.json({ data: [model('nvidia/nemotron-3.5-lightning:free')] }) })).toEqual(['nvidia/nemotron-3.5-lightning:free']);
 });
@@ -258,10 +261,29 @@ it('moves to the next free Kilo model when Particle returns 429, and keeps the m
   await f.source.complete(request(), new AbortController().signal);
   expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, KILO_BEAM]);
 });
-it('still refuses a reply from a model other than the one asked after rotating', async () => {
-  const f = fixture({ catalogRows: rotation(), infer: init => sentModel(init) === KILO_PARTICLE ? new Response(null, { status: 429 }) : Response.json(result()) });
-  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'completion_model' } });
-  expect(f.posts()).toHaveLength(2);
+it('moves on when a model reports a server error or answers as another model', async () => {
+  const lightning = 'nvidia/nemotron-3.5-lightning:free';
+  const f = fixture({ catalogRows: rotation(), infer: init => sentModel(init) === KILO_PARTICLE ? new Response('private upstream body', { status: 503 })
+    : sentModel(init) === KILO_BEAM ? Response.json(result()) : Response.json(result({ model: lightning })) });
+  await expect(f.source.complete(request(), new AbortController().signal)).resolves.toMatchObject({ text: 'Hello.' });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, lightning]);
+  const refused = fixture({ catalogRows: rotation(), infer: () => Response.json(result({ model: 'unverified' })) });
+  await expect(refused.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'completion_model' } });
+  expect(refused.posts()).toHaveLength(3);
+});
+it.each([
+  ['a client error', () => new Response(null, { status: 400 })],
+  ['an invalid completion', () => Response.json(result({ choices: [] }))],
+  ['a billed completion', () => Response.json(result({ usage: { ...usage(), cost: 1 } }))]
+] as const)('does not move on after %s', async (_name, infer) => {
+  const f = fixture({ catalogRows: rotation(), infer });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toThrow(); expect(f.posts()).toHaveLength(1);
+});
+it('does not move on after a request timeout', async () => {
+  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/models') ? Response.json({ data: rotation() }) : new Promise<Response>(() => {}));
+  const source = new Kilo({ directory, fetcher, timeout: 5 }); sources.push(source);
+  await expect(source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 });
 it('reports quota with the earliest refill once every free Kilo model returns 429, and the pool falls back', async () => {
   const waits: Record<string, string> = { [KILO_PARTICLE]: '600', [KILO_BEAM]: '90', 'nvidia/nemotron-3.5-lightning:free': '300' };

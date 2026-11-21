@@ -56,9 +56,10 @@ function status(response: Response) {
 }
 /** Nonbillable public metadata only. No account, API key, or paid fallback is used.
  * Returns the verified free models this route may use, in try order. Kilo rotates
- * across every exact `:free` model, Particle and Reflection Beam first; Reflection
- * Beam's own route keeps its single model. Router aliases such as kilo-auto/free
- * are never used because their completions cannot be verified as one exact model. */
+ * across every exact `:free` model: Particle, then Reflection Beam, then the rest,
+ * with small models last. Reflection Beam's own route keeps its single model.
+ * Router aliases such as kilo-auto/free are never used because their completions
+ * cannot be verified as one exact model. */
 export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal?: AbortSignal; reflectionBeam?: boolean } = {}): Promise<string[]> {
   const name = options.reflectionBeam ? 'reflection-beam' : 'kilo';
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(5000)]);
@@ -77,7 +78,10 @@ export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal
     const eligible = (id: unknown): id is string => typeof id === 'string' && (options.reflectionBeam ? id === KILO_BEAM : id === KILO_BEAM || id.endsWith(':free'));
     const ids = rows.map(row => row.id).filter(eligible), unique = ids.filter(id => ids.indexOf(id) === ids.lastIndexOf(id));
     const models = unique.filter(id => verified(rows.find(row => row.id === id)!));
-    const order = (id: string) => id === KILO_PARTICLE ? 0 : id === KILO_BEAM ? 1 : 2;
+    // Small models (under about 10B parameters, as named in the id, such as
+    // liquid/lfm-3-1.7b) answer tool calls least reliably, so they go last.
+    const size = (id: string) => Number(/(?:^|[-/_])(\d+(?:\.\d+)?)b(?=$|[-_:])/i.exec(id)?.[1] ?? Infinity);
+    const order = (id: string) => id === KILO_PARTICLE ? 0 : id === KILO_BEAM ? 1 : size(id) < 10 ? 3 : 2;
     if (!models.length) throw new SourceError('refused', options.reflectionBeam ? `${KILO_BEAM} is not currently a verified free model with at least 200K context`
       : 'No Kilo :free model is currently verified free with at least 200K context');
     return models.sort((a, b) => order(a) - order(b));
@@ -182,18 +186,23 @@ export class Kilo implements Source {
       const grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();
       const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
       const order = this.preferred && models.includes(this.preferred) ? [this.preferred, ...models.filter(id => id !== this.preferred)] : models;
-      let quota: SourceError | undefined;
+      let quota: SourceError | undefined, last: SourceError | undefined;
       for (const model of order) {
         try {
           const completion = await this.ask(model, wire(model), origin, grant, request, messages, validators, limit, signal);
           this.preferred = model; return completion;
         } catch (error) {
-          if (!(error instanceof SourceError) || error.code !== 'quota' || signal.aborted) throw error;
+          // Move on when this model reports quota (429), a server error (5xx) or
+          // answers as another model. A timeout or any other failure ends the turn.
+          const reported = error instanceof SourceError && (error.code === 'quota' || error.diagnostics?.failureReason === 'completion_model'
+            || error.code === 'upstream' && (error.diagnostics?.httpStatus ?? 0) >= 500);
+          if (!reported || signal.aborted) throw error;
+          last = error;
           // Report the earliest refill among the exhausted models to the shared cooldown.
-          if (!quota || (error.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity)) quota = error;
+          if (error.code === 'quota' && (!quota || (error.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity))) quota = error;
         }
       }
-      throw quota!;
+      throw quota ?? last!;
     } catch (error) {
       if (caller.aborted || this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Kilo request cancelled');
       if (signal.aborted) throw new SourceError('timeout', 'Kilo request timed out');

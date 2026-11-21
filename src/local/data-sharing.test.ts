@@ -117,12 +117,19 @@ it('renews approvals for changed policies without setup, leaving unapproved prov
   expect(await refreshDataSharingConsent(path, {})).toEqual([]);
 });
 
-it('does not renew a changed explicit policy under the setup opt-out', async () => {
+it('does not renew a changed explicit policy, including Kilo, under the setup opt-out', async () => {
   const path = await directory();
-  await recordDataSharingConsent(path, ['kilo', 'nous']);
-  for (const policy of DATA_SHARING_POLICIES) if (['kilo', 'nous'].includes(policy.provider)) policy.version = 'changed';
-  expect(await refreshDataSharingConsent(path, { GRUNT_SETUP_NO_DATA_SHARING: '1' })).toEqual(['kilo']);
-  expect(await readDataSharingConsent(path, ['kilo', 'nous'])).toEqual(['kilo']);
+  await recordDataSharingConsent(path, ['kilo', 'tokenharbor', 'nous']);
+  for (const policy of DATA_SHARING_POLICIES) if (['kilo', 'tokenharbor', 'nous'].includes(policy.provider)) policy.version = 'changed';
+  expect(await refreshDataSharingConsent(path, { GRUNT_SETUP_NO_DATA_SHARING: '1' })).toEqual(['tokenharbor']);
+  expect(await readDataSharingConsent(path, ['kilo', 'tokenharbor', 'nous'])).toEqual(['tokenharbor']);
+});
+
+it('keeps the Kilo policy on by default and off under the setup opt-out', async () => {
+  const path = await directory();
+  expect(await approveDataSharing({ directory: path, providers: ['kilo'], env: {}, notice: () => {} })).toEqual({ approved: ['kilo'], skipped: [] });
+  expect(await approveDataSharing({ directory: path, providers: ['kilo'], env: { GRUNT_SETUP_NO_DATA_SHARING: '1' }, notice: () => {} })).toEqual({ approved: [], skipped: ['kilo'] });
+  expect(await readDataSharingConsent(path, ['kilo'])).toEqual([]);
 });
 
 it('re-enables only a changed explicit policy and says so again', async () => {

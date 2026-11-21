@@ -781,7 +781,8 @@ terms such as Free-Pi’s trace sale, in interactive and unattended setup. Setup
 refreshes changed policies and also records OpenCode’s policy for the CLI signup
 driver when the registry omits its route. The daemon also renews, at start, any
 saved approval whose provider policy has since changed, so an update does not
-turn a route off; providers never approved stay off. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
+turn a route off, and logs `Data sharing on: ...` for the renewed providers;
+providers never approved stay off. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
 sources with explicit or material policies off and revokes their saved receipts. Retired Freebuff and APInex records do not authorize routing.
 Daily maintenance does not provision accounts; rerun setup to retry a skipped
 source. Provider-specific data policies remain documented below and in
@@ -799,14 +800,17 @@ without an account or API key. Before inference, grunt checks that the exact
 catalog entry is free, has at least 200K context and supports tools and output
 limits. It accepts only that exact returned model with zero reported inference
 cost and valid correlated function calls. A fallback model cannot pass as Particle.
-When a model returns HTTP 429, the Kilo source tries another verified free
-model from the same live catalog: exact `:free` models and `reflection/beam-free`
-are eligible. The initial order is Particle, Reflection Beam, then the rest in
-catalog order. Router aliases such as
-`kilo-auto/free` and `openrouter/free` are never used. The model that answered
-last is tried first on the next request. Only when every listed model returns
-429 does Kilo report quota, with the earliest reported refill, and the pool
-moves to its next route. The separate Reflection Beam route keeps its one model.
+When a model returns HTTP 429, a server error (HTTP 5xx) or a reply naming a
+different model, the Kilo source tries another verified free model from the
+same live catalog: exact `:free` models and `reflection/beam-free` are eligible.
+A timeout or any other failure does not move on. The initial order is Particle,
+then Reflection Beam, then the rest in catalog order, with models whose id names
+fewer than 10B parameters (such as `liquid/lfm-3-1.7b:free`) last. Router aliases
+such as `kilo-auto/free` and `openrouter/free` are never used. The model that
+answered last is tried first on the next request. When every listed model fails
+this way, Kilo reports quota with the earliest reported refill if any model
+returned 429, and the pool moves to its next route. The separate Reflection Beam
+route keeps its one model.
 The [documented anonymous limit](https://kilo.ai/docs/gateway/models-and-providers)
 is 200 requests per hour per IP, subject to upstream capacity. This is ongoing
 rate-limited zero-cost access rather than a one-time credit balance.
@@ -816,6 +820,8 @@ selected model. Free models may train on prompts; retention, staff review and
 training practices vary by upstream and are not established. Do not submit
 personal or confidential data. The current Kilo policy in
 `src/local/data-sharing.ts` covers every free model the source may rotate to.
+It is an explicit policy: setup and the daemon accept it by default without a
+prompt, and `GRUNT_SETUP_NO_DATA_SHARING=1` keeps Kilo off.
 The receipt and renewal rules are described in
 [free API and account setup](#free-api-and-account-setup).
 
