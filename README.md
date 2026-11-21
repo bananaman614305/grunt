@@ -129,9 +129,8 @@ streak claims. Free-Pi checks also use metadata, avoiding a new coding-session
 trace. Both are recorded as metadata evidence rather than a fresh reply.
 The queue defers checks during user requests, setup and cooldowns. Maintenance
 does not install tools, create accounts or open sign-in flows. Separately, the
-daemon uses the registry to acquire recommended routes with current consent,
-including after registry refreshes and when no source can answer. See the
-[router guide](docs/router.md) for acquisition limits, refresh timing and automatic
+daemon uses the registry to acquire recommended routes with current consent. See the
+[router guide](docs/router.md) for acquisition triggers, limits, refresh timing and automatic
 pool updates. The dashboard's source details show the last check, its outcome
 and the next due time. First-time onboarding stays parallel.
 

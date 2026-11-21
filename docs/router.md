@@ -11,8 +11,8 @@ registry and runs the same pass again. This reuses `StickyRouter`,
 no new service.
 
 Set `GRUNT_BACKGROUND_ACCOUNT_ACQUISITION=0` before starting the daemon to
-disable background account acquisition after registry syncs and request
-failures. Registry refresh, automatic source discovery, routing, existing
+disable background account acquisition for all [acquisition triggers](#3-slow-loop-hot-add-and-scout-mapping).
+Registry refresh, automatic source discovery, routing, existing
 provider access and daily health checks continue. Explicit foreground
 `usegrunt setup` and `usegrunt add` keep their normal behavior. The default
 enables acquisition; the legacy `MILO_BACKGROUND_ACCOUNT_ACQUISITION` alias is
@@ -120,9 +120,15 @@ accepted, with `GRUNT_*` taking precedence.
 - **Loop.** `RegistrySync` fetches the registry every `REGISTRY_INTERVAL`
   (6 h, aligned to UTC midnight), keeping the ETag and the newer-publication
   rule. After each fetch it starts one acquisition pass. So do the earlier
-  recovery triggers: quota, logged-out and not-installed failures. Only one
-  pass runs at a time, and none runs while foreground `usegrunt setup` holds
-  its session.
+  recovery triggers: quota, logged-out and not-installed failures. So does a
+  route leaving the open set (an observed availability loss, bench, quota hold,
+  retirement or bar) when
+  fewer than 2 routes remain open, if a candidate remains whose signup has
+  not failed since the last registry fetch. Successful signups remain eligible
+  for reacquisition. A pass never starts another; failed signups wait for the
+  next fetch unless a request-failure trigger retries them. Only one
+  pass runs at a time, a trigger during a pass joins it, and none runs while
+  foreground `usegrunt setup` holds its session.
 - **Hot-add.** In the automatic pool, a newly listed adapter that Grunt ships
   becomes a routable source at once, with no restart. A manual `GRUNT_SOURCES`
   list stays fixed.
