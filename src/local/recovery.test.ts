@@ -156,6 +156,81 @@ describe('low open routes', () => {
     expect(dropped.mock.calls.map(([id]) => id).sort()).toEqual(['kilo', 'opencode']);
     await sources.close();
   });
+
+  it.each(['false', 'throw', 'quota', 'quota-with-retry'])('reports an availability loss once per transition (%s)', async mode => {
+    let available = true;
+    let now = 1000;
+    const lost: Source = { id: 'zro', available: async () => {
+      if (available) return true;
+      if (mode === 'throw') throw new SourceError('logged_out', 'Credentials revoked');
+      if (mode.startsWith('quota')) throw new SourceError('quota', 'Quota exhausted', mode === 'quota-with-retry' ? 120 : undefined);
+      return false;
+    }, complete: async () => ({ text: 'zro' }) };
+    const healthy: Source = { id: 'opencode', available: async () => true, complete: async () => ({ text: 'ok' }) };
+    const sources = new Sources([lost, healthy], { registry: () => bundledRegistry, random: () => 0, now: () => now });
+    const dropped = vi.fn();
+    sources.setRouteDropped(dropped);
+    const probe = async () => {
+      if (!available && mode === 'throw') await expect(sources.models()).rejects.toThrow('Credentials revoked');
+      else await sources.models();
+    };
+    try {
+      await probe();
+      expect(dropped).not.toHaveBeenCalled();
+      expect(sources.openRoute('zro')).toBe(true);
+      available = false;
+      await probe();
+      await probe();
+      expect(dropped.mock.calls).toEqual([['zro']]);
+      expect(sources.openRoute('zro')).toBe(false);
+      expect(sources.openRoute('opencode')).toBe(true);
+      expect(await sources.complete({ model: 'grunt', cwd: process.cwd(), messages: [{ role: 'user', content: 'hi' }], tools: [], stream: false }, AbortSignal.timeout(1000))).toEqual({ text: 'ok' });
+      expect(dropped).toHaveBeenCalledTimes(1);
+      available = true;
+      now += 121000;
+      await probe();
+      expect(sources.openRoute('zro')).toBe(true);
+      available = false;
+      await probe();
+      await probe();
+      expect(dropped.mock.calls).toEqual([['zro'], ['zro']]);
+    } finally { await sources.close(); }
+  });
+
+  it.each(['logged_out', 'not_installed', 'upstream', 'timeout'] as const)('reports non-quota maintenance loss once (%s)', async code => {
+    const lost: Source = { id: 'zro', available: async () => true, complete: async () => { throw new SourceError(code, 'Maintenance failed'); } };
+    const sources = new Sources([lost], { registry: () => bundledRegistry });
+    const dropped = vi.fn();
+    sources.setRouteDropped(dropped);
+    try {
+      await sources.models();
+      await sources.check('zro', AbortSignal.timeout(1000));
+      await sources.check('zro', AbortSignal.timeout(1000));
+      expect(dropped.mock.calls).toEqual([['zro']]);
+      expect(sources.openRoute('zro')).toBe(false);
+      await sources.models();
+      expect(sources.openRoute('zro')).toBe(true);
+      await sources.check('zro', AbortSignal.timeout(1000));
+      expect(dropped.mock.calls).toEqual([['zro'], ['zro']]);
+    } finally { await sources.close(); }
+  });
+
+  it('starts acquisition after a maintenance loss leaves one open route', async () => {
+    const dir = await directory();
+    const lost: Source = { id: 'zro', available: async () => true, complete: async () => { throw new SourceError('logged_out', 'Credentials rejected'); } };
+    const healthy: Source = { id: 'opencode', available: async () => true, complete: async () => ({ text: 'ok' }) };
+    const sources = new Sources([lost, healthy], { registry: () => bundledRegistry });
+    const setup = vi.fn(async () => ({ unavailable: ['livekit'] }));
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['livekit'],
+      open: async () => (await Promise.all(sources.sources.map(async source => await source.available() && sources.openRoute(source.id)))).filter(Boolean).length,
+      notify: () => {}, setup });
+    sources.setRouteDropped(() => { void recovery.lowRoutes(); });
+    try {
+      await sources.models();
+      await sources.check('zro', AbortSignal.timeout(1000));
+      await vi.waitFor(() => expect(adapters(setup)).toEqual(['livekit']));
+    } finally { await recovery.close(); await sources.close(); }
+  });
 });
 
 describe('Sources recovery trigger', () => {

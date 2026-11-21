@@ -121,7 +121,8 @@ accepted, with `GRUNT_*` taking precedence.
   (6 h, aligned to UTC midnight), keeping the ETag and the newer-publication
   rule. After each fetch it starts one acquisition pass. So do the earlier
   recovery triggers: quota, logged-out and not-installed failures. So does a
-  route leaving the open set (a bench, quota hold, retirement or bar) when
+  route leaving the open set (an observed availability loss, bench, quota hold,
+  retirement or bar) when
   fewer than 2 routes remain open, if a candidate remains whose signup has
   not failed since the last registry fetch. Successful signups remain eligible
   for reacquisition. A pass never starts another; failed signups wait for the

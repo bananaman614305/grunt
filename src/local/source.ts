@@ -86,7 +86,8 @@ export class Sources {
   }
   private get registeredRouter() { return this.router ?? this.workerRouter; }
   private createRouter(routing: RoutingOptions) {
-    return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt, dropped: id => this.dropped?.(id),
+    return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
+      dropped: id => { if (this.observation.observedAvailable(id) !== false) this.dropped?.(id); },
       observe: (source, reason, skipped) => {
         const context = currentDiagnosticContext();
         if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
@@ -126,6 +127,7 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
+  openRoute(id: string) { return this.observation.observedAvailable(id) !== false && this.dispatchEligible(id); }
   dispatchEligible(id: string, request?: ModelRequest) {
     const router = this.registeredRouter;
     const source = this.sources.find(source => source.id === id);
