@@ -42,10 +42,12 @@ accepted, with `GRUNT_*` taking precedence.
   After the routed driver come the free models that installed harness CLIs
   reach on their own, bypassing the router:
   - OpenCode, with current data-sharing approval and `opencode` on `PATH`, even
-    when its route is not open: each free model the anonymous CLI lists
+    when its route is not open: each non-Google free model the anonymous CLI lists
     (`opencode models opencode`), Big Pickle first and still tried if catalog
-    listing fails. OpenCode executes its own tools rather than returning tool
-    calls to another harness.
+    listing fails. Discovery, probes and signups use private temporary config,
+    data and state directories, with inherited `OPENCODE_API_KEY` and config
+    overrides cleared. OpenCode executes its own tools rather than returning
+    tool calls to another harness.
   - Pi, with `pi` on `PATH`: each `:free` or `-free` model of the person's own
     Pi providers, except loopback providers and Google models (including
     Gemini and Gemma). Pi runs from a private temporary copy of their Pi models

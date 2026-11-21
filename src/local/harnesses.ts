@@ -350,7 +350,7 @@ export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, 
     // Anonymous OpenCode lists only the free models it can reach.
     const text = await inTemporary(directory => {
       signal?.throwIfAborted();
-      return run('opencode', ['models', 'opencode'], openCodeAlone(directory), 45000, { cwd: directory, signal });
+      return run('opencode', ['models', 'opencode'], openCodeAlone(directory), 45000, { cwd: directory, ...(signal ? { signal } : {}) });
     }).catch(() => { signal?.throwIfAborted(); return ''; });
     const models = text.split('\n').map(line => line.trim()).filter(line => /^opencode\/\S+$/.test(line) && !/google|gemini|gemma/i.test(line));
     // Big Pickle is OpenCode's long-standing anonymous model: first, and the
@@ -363,7 +363,7 @@ export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, 
     await inTemporary(async directory => {
       const providers = await ownPiConfig(directory);
       signal?.throwIfAborted();
-      const text = await run('pi', ['--offline', '--list-models'], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory, signal });
+      const text = await run('pi', ['--offline', '--list-models'], { PI_CODING_AGENT_DIR: directory }, 45000, { cwd: directory, ...(signal ? { signal } : {}) });
       for (const line of text.split('\n').slice(1)) {
         const [provider, id] = line.trim().split(/\s+/);
         if (!provider || !id || !/[:-]free$/.test(id) || /google|gemini|gemma/i.test(`${provider}/${id}`)) continue;

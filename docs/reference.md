@@ -1274,9 +1274,9 @@ model and session. A model that returns a quota error cools down while another
 pool member is tried; the other Grunt sources remain available when the pool
 is exhausted. OpenCode's shared per-IP free-limit signal stops the request
 immediately and cools down every model in the pool until its reported reset
-(or one minute when no reset is reported). The CLI signup operator also stops
-on that signal rather than waiting through OpenCode's internal retries. The
-pool does not provide independent credit balances.
+(or one minute when no reset is reported). The pool does not provide independent
+credit balances. CLI signup driver selection and failure handling follow the
+[router rules](router.md#1-greedy-first-pass-driver-cap).
 
 `GRUNT_OPENCODE_MODEL` overrides the pool with one explicit model.
 Use a currently free model from your OpenCode catalog; grunt does not buy credits
