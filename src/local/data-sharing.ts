@@ -172,8 +172,6 @@ async function writeReceipt(directory: string, saved: Receipt) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-// Trusted setup/probe callers record the policies actually approved for this
-// private configuration. Background setup only reads receipts.
 export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
   const policies = dataSharingPolicies(providers);
   if (!policies.length) return;
