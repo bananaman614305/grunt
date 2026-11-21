@@ -17,7 +17,7 @@ export interface RecoveryOptions {
   // How many routes are open (available and not retired).
   open: () => Promise<number>;
   eligible?: (id: string) => boolean;
-  // A fallback operator when an open tool-capable route can drive signups.
+  // Signup driver selection follows docs/router.md.
   driver?: () => Promise<SignupAgent | undefined>;
   notify?: (line: string) => void;
   setup?: typeof setupFallbacks;
