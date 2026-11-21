@@ -463,6 +463,8 @@ export class BrowserSquire implements SetupSquire {
     if (facts) this.signupFacts.set(service, facts);
     // Keys already in the vault before this drive never turn a stopped drive into a success,
     // so the drive's own stop reason is kept for them.
+    // Undefined when the vault cannot be listed: then no key can be proven new and the
+    // vault fallback is skipped.
     const before = await this.vaultedCaptures(service, url);
     try {
       while (Date.now() < deadline) {
@@ -472,20 +474,26 @@ export class BrowserSquire implements SetupSquire {
         if (result.run.state !== 'running') {
           // A stopped drive still succeeds when the vault holds this signup's key;
           // the provider module's own check then decides whether that key is valid.
-          if ((await this.vaultedCaptures(service, url)).some(reference => !before.includes(reference))) return;
+          if (await this.storedDuringDrive(service, url, before)) return;
           throw new SetupFailure(result.reason ?? 'browser could not continue');
         }
       }
-      if ((await this.vaultedCaptures(service, url)).some(reference => !before.includes(reference))) return;
+      if (await this.storedDuringDrive(service, url, before)) return;
       throw new Error(`${service}: signup timed out; rerun setup to resume`);
     } finally { this.signupFacts.delete(service); await this.finishSession(service); }
   }
   // Vault references held under the shipped capture's service and label.
-  private async vaultedCaptures(service: string, url: string): Promise<string[]> {
+  private async storedDuringDrive(service: string, url: string, before: string[] | undefined) {
+    if (before === undefined) return false;
+    const after = await this.vaultedCaptures(service, url);
+    return after !== undefined && after.some(reference => !before.includes(reference));
+  }
+  private async vaultedCaptures(service: string, url: string): Promise<string[] | undefined> {
     const shipped = registryEntry(bundledRegistry, service, url)?.capture;
     if (shipped?.service !== service) return [];
     this.metadata = undefined;
-    const stored = await this.credentials.list().catch(() => []);
+    const stored = await this.credentials.list().catch(() => undefined);
+    if (stored === undefined) return undefined;
     return stored.filter(credential => credential.service === shipped.service && (shipped.label === undefined || ('label' in credential && credential.label === shipped.label)))
       .map(credential => credential.reference);
   }

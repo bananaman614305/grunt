@@ -144,3 +144,17 @@ it('looks up synced hints by registry id only, never by signup host', async () =
   const [byId] = await driveCalls('millionseek', 'https://100milionseek.top/signup', { registry });
   expect(String(byId!.goal)).toContain('Synced millionseek hint.');
 });
+
+it('skips the vault fallback when the first vault listing fails, keeping the stop reason', async () => {
+  const entry = bundledRegistry.adapters.find(a => a.id === 'goedel')!;
+  let listings = 0;
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'call').mockImplementation(async name => {
+    if (name === 'list_credentials') {
+      if (listings++ === 0) throw new Error('vault unavailable');
+      return { credentials: [{ service: entry.capture!.service, label: entry.capture!.label, reference: 'vault://goedel-later', field_names: ['value'] }] };
+    }
+    return name === 'operate_drive' ? { status: 'blocked', session_id: 'goedel-session' } : {};
+  });
+  await expect(squire.signup('goedel', entry.signup!, 'Sign in and capture one API key.')).rejects.toThrow();
+});
