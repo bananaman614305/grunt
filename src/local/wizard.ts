@@ -582,14 +582,16 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         (binary, args, env) => runHarness(binary, args, env, 45000, { signal: session!.signal }));
       // OpenCode runs its own tools, so the router cannot reach it from another
       // harness; it drives through its own CLI whichever harness was chosen.
-      let openCodeFree: Promise<boolean> | undefined;
-      const freeOpenCode = () => openCodeFree ??= (async () => {
+      let openCodeFree = false;
+      const freeOpenCode = async () => {
         if (!harness || skipAnonymous || !consent.approved.includes('opencode') || !await onPath('opencode')) return false;
+        if (openCodeFree) return true;
         try {
           await runHarness('opencode', ['run', '--pure', '--print-logs', '-m', 'opencode/big-pickle', 'Reply only: grunt is ready.'], { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined }, 45000);
+          openCodeFree = true;
           return true;
         } catch { session!.signal.throwIfAborted(); return false; }
-      })();
+      };
       const useOperator = (anonymousOpenCode = false) => {
         const agent = (actions.signupHarness ?? signupHarness)(anonymousOpenCode ? HARNESSES.find(each => each.id === 'opencode')! : harness!, port, undefined, anonymousOpenCode);
         squire?.useSignupAgent(async input => {
@@ -598,7 +600,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
             const reason = setupFailureReason(error);
             if (signupOperatorUnavailable(reason)) {
               operatorFailure = reason;
-              if (anonymousOpenCode) openCodeFree = Promise.resolve(false);
+              if (anonymousOpenCode) openCodeFree = false;
             }
             throw error;
           }
@@ -678,6 +680,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (!driving && harness && id !== 'opencode') table.step(`… bootstrap: ${id} via Squire`);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
+        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeOpenCode()) useOpenCode();
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
         if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) {
           deferred.push(id);
@@ -693,6 +696,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (failed !== -1) unavailable.splice(failed, 1);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
+        if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeOpenCode()) useOpenCode();
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
       }
     }

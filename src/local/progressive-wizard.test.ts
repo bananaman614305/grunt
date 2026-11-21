@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile, writeFile, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, chmod, rm, readFile, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -582,4 +582,50 @@ it.each([true, false])('hands signups from an exhausted Pi operator to OpenCode 
     expect(drivers).toEqual(approved ? ['pi', 'opencode:free', 'opencode:free'] : ['pi']);
     expect(log.mock.calls.map(call => String(call[0]))).not.toContain('… operator: no working anonymous model; using Squire');
   } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
+it.each([
+  ['missing', true], ['failed probe', true], ['deferred', true],
+  ['missing', false], ['failed probe', false], ['deferred', false]
+] as const)('selects OpenCode after provisioning from %s only with approval: %s', async (initial, approved) => {
+  const bin = join(directory, 'bin');
+  await mkdir(bin);
+  vi.stubEnv('PATH', bin);
+  const executable = join(bin, 'opencode');
+  const install = async (works: boolean) => {
+    await writeFile(executable, `#!${process.execPath}\n${works ? "console.log('grunt is ready.');" : 'process.exit(1);'}\n`);
+    await chmod(executable, 0o755);
+  };
+  if (initial === 'failed probe') await install(false);
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const squire = new BrowserSquire();
+  let driver: Parameters<BrowserSquire['useSignupAgent']>[0];
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(agent => { driver = agent; });
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  const stub = actions(['opencode', 'reflection-beam']);
+  if (!approved) stub.approveDataSharing.mockResolvedValue({ approved: ['reflection-beam'], skipped: [] });
+  const attempts = new Map<string, number>();
+  const driven: string[] = [];
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    const attempt = (attempts.get(id) ?? 0) + 1;
+    attempts.set(id, attempt);
+    if (initial === 'deferred' && attempt === 1) {
+      await options.onSettled?.(id, false, 'browser could not continue');
+      return { unavailable: [id] };
+    }
+    if (id === 'opencode') await install(true);
+    else await driver?.({ service: id, url: 'https://test.invalid', goal: 'test', tools: [], signal: new AbortController().signal, call: async () => ({}) });
+    await options.onSettled?.(id, true);
+    return { unavailable: [] };
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire,
+    probeOperator: vi.fn(async () => false),
+    signupHarness: (harness, _port, _run, anonymous) => async input => {
+      driven.push(`${input.service}:${harness.id}:${anonymous ? 'free' : 'router'}`);
+    }
+  });
+  expect(driven).toEqual(approved ? ['reflection-beam:opencode:free'] : []);
+  expect(attempts.get('opencode')).toBe(initial === 'deferred' ? 2 : 1);
 });
