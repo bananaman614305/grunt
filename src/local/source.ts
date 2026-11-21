@@ -276,7 +276,7 @@ export class Sources {
   // When no source can answer, start background recovery so the next request has one.
   setRecovery(recover: () => void) { this.recover = recover; }
   private recover: (() => void) | undefined;
-  // A route left the open set: a bench, quota hold, retirement or bar began.
+  // A route left the open set, including an observed availability loss.
   setRouteDropped(dropped: (id: string) => void) { this.dropped = dropped; }
   private dropped: ((id: string) => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
