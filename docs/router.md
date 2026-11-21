@@ -147,18 +147,25 @@ release pipeline (`ops/provider-scout`). Adapters still ship by release. The
 router ignores registry ids that no shipped adapter matches, so the daemon
 skips them.
 
-Two more optional adapter fields help Squire's drive finish a signup without
-a driver model. Setup reads both from the registry shipped with Grunt:
+Two more optional adapter fields raise the chance that Squire's drive finishes a
+signup alone. They are an add-on: the signup driver model stays the fallback.
 
-- `hints` (up to 2000 characters): the provider's signup pages, the controls
-  to press and the Grunt-supplied values to type (`grunt`, `free`, the
-  Squire email), in order. Grunt appends them to the `operate_drive` goal.
-- `capture` (`service`, optional `label`, `api_hosts`, `auth_shape`): passed
-  as `operate_drive`'s `store`, so the drive saves a key it reveals straight
-  into the vault. Without `store`, only a fallback operator's
-  `operate_extract` can capture it.
+- `hints` (up to 2000 characters): what the user sees on the provider's signup
+  pages, the controls to press and the Grunt-supplied values to type (`grunt`,
+  `free`, the Squire email), in order. Setup reads hints from the synced
+  registry, the same source as the provider routes, so a registry publication
+  updates them for every user without a release. Grunt places them in the
+  `operate_drive` goal before the shared safety rules (data sharing, no paid
+  plan, terms), which stay last. If the full goal would exceed the drive's
+  4000-character limit, the hints are dropped for that call.
+- `capture` (`service`, optional `label`, `api_hosts`, `auth_shape`): passed as
+  `operate_drive`'s `store`, so the drive saves a key it reveals straight into
+  the vault. Without `store`, only a fallback operator's `operate_extract` can
+  capture it. Capture is read only from the registry shipped with Grunt: a
+  synced publication cannot add or change it. It is used only when its
+  `service` is the vault service that signup checks.
 
-The drive matches an entry by id, or by the entry's `signup` host when a setup
+Both match an entry by id, or by the entry's `signup` host when a setup
 drives under a different vault service name.
 
 ## Operator fixes in this change

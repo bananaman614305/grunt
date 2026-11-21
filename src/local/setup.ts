@@ -13,6 +13,7 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ProvisionInput } from '@trusty-squire/sdk';
 import { freeConfig, loopback } from './freellmapi.js';
 import { bundledRegistry } from '../registry.js';
+import type { Registry } from '../registry.js';
 import { proxyApproval } from './approval-proxy.js';
 import { VerificationQueue } from './verification-queue.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
@@ -197,10 +198,12 @@ function oauthRetry(result: Record<string, unknown>) {
 type ObjectValue = Record<string, unknown>;
 // The registry entry for a drive: by id, else by its signup host (a setup may
 // drive under a vault service name that differs from the registry id).
-function registryEntry(provider: string, url: string | undefined) {
+function registryEntry(registry: Registry, provider: string, url: string | undefined) {
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
-  return bundledRegistry.adapters.find(a => a.id === provider) ?? bundledRegistry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
+  return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
 }
+// operate_drive rejects a longer goal.
+const DRIVE_GOAL_LIMIT = 4000;
 // Squire's explicit capture stores one revealed textbox/code value, or retries
 // an unresolved write by write_id. Only this provider's vault entry is allowed.
 // Returns undefined when absent and null when it is not acceptable.
@@ -228,7 +231,10 @@ export function squireEnvironment() {
   };
 }
 export class BrowserSquire implements SetupSquire {
-  constructor(private options: { background?: boolean | undefined; signal?: AbortSignal; dataSharingApproved?: readonly string[]; agent?: SignupAgent } = {}) {}
+  constructor(private options: { background?: boolean | undefined; signal?: AbortSignal; dataSharingApproved?: readonly string[]; agent?: SignupAgent; registry?: () => Registry } = {}) {}
+  // Hints follow the synced registry, as provider routes do; capture is read only
+  // from the registry shipped with this release.
+  useRegistry(registry: () => Registry) { this.options.registry = registry; }
   useSignupAgent(agent: SignupAgent | undefined) { if (agent) this.options.agent = agent; else delete this.options.agent; }
   useBatchSignup() { this.batchSignup = true; }
   // Bootstrap tries other providers before handing a browser to the person.
@@ -260,6 +266,9 @@ export class BrowserSquire implements SetupSquire {
   private finishing = new Map<string, Promise<void>>();
   private failures = new Map<string, string>();
   private failureDetails = new Map<string, string>();
+  // Per-signup values the drive may type, such as a one-time device code. Squire's
+  // drive types only supplied facts, never values that appear only in goal text.
+  private signupFacts = new Map<string, Record<string, string>>();
   private recoveryChoices = new Map<string, Set<string>>();
   private retries = new Map<string, number>();
   private pending = new Set<Promise<Run>>();
@@ -448,8 +457,9 @@ export class BrowserSquire implements SetupSquire {
     try { await pending; }
     finally { this.finishing.delete(id); }
   }
-  async signup(service: string, url: string, goal: string): Promise<void> {
+  async signup(service: string, url: string, goal: string, facts?: Record<string, string>): Promise<void> {
     const deadline = Date.now() + 600000;
+    if (facts) this.signupFacts.set(service, facts);
     try {
       while (Date.now() < deadline) {
         this.serviceSignal(service).throwIfAborted();
@@ -458,7 +468,7 @@ export class BrowserSquire implements SetupSquire {
         if (result.run.state !== 'running') throw new SetupFailure(result.reason ?? 'browser could not continue');
       }
       throw new Error(`${service}: signup timed out; rerun setup to resume`);
-    } finally { await this.finishSession(service); }
+    } finally { this.signupFacts.delete(service); await this.finishSession(service); }
   }
   private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
     if (this.closed) throw new Error('Squire setup is closed');
@@ -473,11 +483,19 @@ export class BrowserSquire implements SetupSquire {
     catch (error) { await this.finishSession(provider); throw error; }
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
-    const entry = registryEntry(provider, url);
+    const hinted = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.hints;
+    const shipped = registryEntry(bundledRegistry, provider, url)?.capture;
+    // A shipped capture stores only under the vault service this signup checks.
+    const store = shipped?.service === provider ? shipped : undefined;
     const termsInstruction = ' Accept required provider Terms of Service for this free signup. Never accept a terms control that also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.';
-    const customGoal = goal === undefined ? undefined : `${goal}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required data-sharing disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
-    const instruction = (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ' Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key.' : ''}${provider === 'tokenharbor' ? ' Go straight to the API keys page. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. Use ordinary email verification only when supported by Squire. Stop for human CAPTCHA, passkey or other human verification. Do not bypass verification. Stop on provider refusal.`) + termsInstruction
-      + (entry?.hints ? ` Provider hints (page, control, value, in order): ${entry.hints}` : '');
+    // Hints precede the shared safety rules (data sharing, no paid plan, terms), which stay last.
+    const compose = (hints: string) => {
+    const customGoal = goal === undefined ? undefined : `${goal}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required data-sharing disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
+    return (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ' Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key.' : ''}${provider === 'tokenharbor' ? ' Go straight to the API keys page. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. Use ordinary email verification only when supported by Squire. Stop for human CAPTCHA, passkey or other human verification. Do not bypass verification. Stop on provider refusal.`) + termsInstruction;
+    };
+    const withHints = hinted ? compose(` Provider hints (page, control, value, in order): ${hinted}`) : undefined;
+    // Hints are optional; drop them rather than exceed the drive's goal limit.
+    const instruction = withHints !== undefined && withHints.length <= DRIVE_GOAL_LIMIT ? withHints : compose('');
     const signal = this.serviceSignal(provider);
     // The last Squire result, so a drop can report Squire's own stop reason.
     let last: ObjectValue | undefined;
@@ -496,14 +514,14 @@ export class BrowserSquire implements SetupSquire {
     const checkCaptured = !goal && !['zro', 'tokenharbor', 'runcrate', 'apinex'].includes(provider);
     let answer: string | undefined;
     let waits = 0;
-    const facts = { plan: 'free', project_name: 'grunt' };
+    const facts = { ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
     while (true) {
       this.serviceSignal(provider).throwIfAborted();
       const session = this.sessions.get(provider);
       const result = await this.serviceCall(provider, 'operate_drive', {
         ...(session ? { session_id: session } : { url }), goal: instruction,
         facts, max_seconds: 45, max_steps: 60,
-        ...(entry?.capture ? { store: entry.capture } : {}),
+        ...(store ? { store } : {}),
         ...(answer ? { answer } : {})
       });
       if (typeof result.session_id === 'string') this.sessions.set(provider, result.session_id);
@@ -660,7 +678,7 @@ export class BrowserSquire implements SetupSquire {
     let email: string | undefined;
     let observation = object(initial.observation);
     // Values Grunt itself supplies for this signup; the operator may type or pass only these.
-    const supplied = () => ['grunt', 'free', ...(email ? [email] : [])];
+    const supplied = () => ['grunt', 'free', ...(email ? [email] : []), ...Object.values(this.signupFacts.get(provider) ?? {})];
     const terminal = () => ['complete', 'needs_sms', 'refused', 'rejected', 'denied', 'forbidden'].includes(String(latest.status));
     // After a terminal result, answer every further call with a final stop instead
     // of replaying the stale page, which reads as unfinished work.
@@ -689,7 +707,7 @@ export class BrowserSquire implements SetupSquire {
             if (oauthRetry(latest)) await delay(3000, undefined, { signal });
             // Forward any fact the operator names whose value Grunt supplies (e.g. "Key Name": "grunt").
             const facts = Object.fromEntries(Object.entries(object(args.facts)).filter(([, value]) => typeof value === 'string' && supplied().includes(value)));
-            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { ...facts, plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 30,
+            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { ...this.signupFacts.get(provider), ...facts, plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 30,
               ...(answer ? { answer } : {}) });
             observation = object(latest.observation);
             const browserWall = object(latest.needs_user);

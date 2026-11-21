@@ -180,7 +180,7 @@ export function start(env = process.env) {
   };
   const configuredAccess = (source: Source) => routable(source.id) && sources.available(source).catch(() => false);
   const live = async (source: Source) => await configuredAccess(source) && sources.openRoute(source.id);
-  const recovery = new SourceRecovery({ directory,
+  const recovery = new SourceRecovery({ directory, registry: () => registry,
     eligible: id => routable(id) && recommendedAdapters(registry).some(adapter => adapter.id === id),
     candidates: async () => {
       const ids: string[] = [];

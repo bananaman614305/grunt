@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Add optional registry `hints` and `capture` fields. Setup appends a provider's hints to Squire's drive goal and passes its capture as the drive's `store`, so the drive can store a revealed key without a driver model.
+- Add optional registry `hints` (synced with the registry) and `capture` (shipped only) fields. Setup places a provider's hints in Squire's drive goal before the safety rules and passes its capture as the drive's `store`, so the drive can store a revealed key without a driver model. Pass a one-time device code to the drive as a supplied value (Free-Pi).
 
 ## [0.9.4] - 2026-11-21
 

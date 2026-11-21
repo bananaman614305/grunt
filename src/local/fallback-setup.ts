@@ -7,6 +7,7 @@ import type { SetupSquire } from './setup.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 import { disabledAdapters } from '../registry.js';
+import type { Registry } from '../registry.js';
 import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
@@ -73,12 +74,15 @@ export async function setupFallbacks(options: {
   acquire?: boolean;
   kiloAccount?: boolean;
   dataSharingApproved?: readonly string[];
+  // The synced registry; signup hints follow it.
+  registry?: () => Registry;
   onSettled?: (id: string, available: boolean, reason?: string) => void | Promise<void>;
   onStarted?: (id: string) => void;
   // Fallback operator for an owned background browser (the router's driver).
   agent?: SignupAgent;
 }) {
-  const squire = options.squire ?? new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}) });
+  const squire = options.squire ?? new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}), ...(options.registry ? { registry: options.registry } : {}) });
+  if (options.registry && options.squire instanceof BrowserSquire) options.squire.useRegistry(options.registry);
   const owned = squire instanceof BrowserSquire && !options.squire;
   const reuseOnly = options.background === true && options.acquire !== true;
   const requested = [...new Set(options.adapters ?? ['opencode'])];

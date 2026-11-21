@@ -60,7 +60,7 @@
       "install": "builtin:tokenharbor",
       "signup": "https://tokenharbor.ai/dashboard",
       "model": "deepseek-v4.1-flash:free",
-      "hints": "On /dashboard press 'API keys … Manage keys'. On /dashboard/api-keys press 'Show plaintext key'. A dialog asks for an emailed code: press 'Send code', then read the code from the inbox (choose INBOX, not WAIT), type it, press 'Verify'; the shown key is stored automatically. Do not press '+ New key', 'Edit' or 'Revoke'.",
+      "hints": "On /dashboard press 'API keys … Manage keys'. On /dashboard/api-keys press 'Show plaintext key'. A dialog asks for a code sent by email: press 'Send code', open the verification email that arrives in the Squire email's inbox, type its code, press 'Verify'; the key is then shown. Do not press '+ New key', 'Edit' or 'Revoke'.",
       "capture": {
         "service": "tokenharbor",
         "label": "grunt",
