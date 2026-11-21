@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add optional registry `hints` and `capture` fields. Setup appends a provider's hints to Squire's drive goal and passes its capture as the drive's `store`, so the drive can store a revealed key without a driver model.
+
 ## [0.9.4] - 2026-11-21
 
 - When the routed signup driver has no model, try every OpenCode free model, then Pi's free models, before Squire's drive runs alone. A driver that already acted hands the same signup session to the next one; a timeout fails that signup without switching.

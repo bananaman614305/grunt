@@ -147,6 +147,20 @@ release pipeline (`ops/provider-scout`). Adapters still ship by release. The
 router ignores registry ids that no shipped adapter matches, so the daemon
 skips them.
 
+Two more optional adapter fields help Squire's drive finish a signup without
+a driver model. Setup reads both from the registry shipped with Grunt:
+
+- `hints` (up to 2000 characters): the provider's signup pages, the controls
+  to press and the Grunt-supplied values to type (`grunt`, `free`, the
+  Squire email), in order. Grunt appends them to the `operate_drive` goal.
+- `capture` (`service`, optional `label`, `api_hosts`, `auth_shape`): passed
+  as `operate_drive`'s `store`, so the drive saves a key it reveals straight
+  into the vault. Without `store`, only a fallback operator's
+  `operate_extract` can capture it.
+
+The drive matches an entry by id, or by the entry's `signup` host when a setup
+drives under a different vault service name.
+
 ## Operator fixes in this change
 
 - The fallback operator may type or pass only values Grunt supplies: the plan
