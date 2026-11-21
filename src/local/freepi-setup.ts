@@ -8,7 +8,7 @@ import { FreePi, FREEPI_BASE, FREEPI_CLIENT_VERSION, FREEPI_CONSENT_VERSION, rea
 // The provider's pinned official device OAuth protocol (free-pi-cli 0.6.25).
 // No guest credentials, browser cookie extraction, third-party proxy or paid plan.
 export async function setupFreePi({ directory, squire, signal: caller, background, notify, fetcher = fetch }: {
-  directory: string; squire: { signup(service: string, url: string, instructions: string): Promise<void> };
+  directory: string; squire: { signup(service: string, url: string, instructions: string, facts?: Record<string, string>): Promise<void> };
   signal?: AbortSignal; background: boolean; notify(line: string): void; fetcher?: typeof fetch;
 }) {
   if (!(await readDataSharingConsent(directory, ['freepi'])).includes('freepi')) throw new Error('Free-Pi requires its explicit material trace-sale approval');
@@ -31,7 +31,7 @@ export async function setupFreePi({ directory, squire, signal: caller, backgroun
   await post('/auth/consent', { session_id: device.session_id, consent_version: FREEPI_CONSENT_VERSION, readFreePiJson });
   const deadline = Date.now() + device.expires_in * 1000;
   await squire.signup('freepi', device.verification_uri,
-    `Complete the official Free-Pi GitHub device sign-in for this user's existing GitHub identity. Enter the current device code ${device.user_code}. Confirm the visible app is Free-Pi and asks only for read-only email scope. Use normal Squire OAuth controls and any required human approval. Do not create duplicate accounts, add cards, buy/earn credits, enable subscriptions, referrals or rewards, or change account settings. Free-Pi trace-sale terms have been separately approved by this user. Stop if different permissions or payment are requested. Do not expose a token or device authorization URL outside this private sign-in flow.`);
+    `Complete the official Free-Pi GitHub device sign-in for this user's existing GitHub identity. Enter the current device code ${device.user_code}. Confirm the visible app is Free-Pi and asks only for read-only email scope. Use normal Squire OAuth controls and any required human approval. Do not create duplicate accounts, add cards, buy/earn credits, enable subscriptions, referrals or rewards, or change account settings. Free-Pi trace-sale terms have been separately approved by this user. Stop if different permissions or payment are requested. Do not expose a token or device authorization URL outside this private sign-in flow.`, { user_code: device.user_code });
   let token: string | undefined, interval = device.interval;
   while (Date.now() < deadline) {
     signal.throwIfAborted();

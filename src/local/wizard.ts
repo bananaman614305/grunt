@@ -448,6 +448,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     if (revised) console.log(harness ? `✓ harness: ${harness.id}` : '… harness: Squire with human handoff');
     const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     const { registry } = !add && actions.loadRegistry ? await actions.loadRegistry() : { registry: bundledRegistry };
+    squire?.useRegistry?.(() => registry);
     const requested = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
     const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
     const sources = add ? knownAdapters.has(add) || add === 'nvidia'

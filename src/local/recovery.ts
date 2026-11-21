@@ -4,6 +4,7 @@ import { beginSetupSession } from './setup-session.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
 import type { SignupAgent } from './signup-mcp.js';
+import type { Registry } from '../registry.js';
 
 const exec = promisify(execFile);
 const RUN_TIMEOUT_MS = 10 * 60000;
@@ -23,6 +24,8 @@ export interface RecoveryOptions {
   driver?: () => Promise<SignupAgent | undefined>;
   notify?: (line: string) => void;
   setup?: typeof setupFallbacks;
+  // The synced registry; signup hints follow it.
+  registry?: () => Registry;
 }
 
 // One greedy pass over the registry's recommended routes (docs/router.md): sign
@@ -85,7 +88,7 @@ export class SourceRecovery {
         notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
         const outcome = await (this.options.setup ?? setupFallbacks)({
           directory: this.options.directory, adapters: [id], background: true, acquire: true, notify, signal,
-          ...(agent ? { agent } : {}),
+          ...(agent ? { agent } : {}), ...(this.options.registry ? { registry: this.options.registry } : {}),
           run: async (binary, args, interactive) => {
             if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
             await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal });
