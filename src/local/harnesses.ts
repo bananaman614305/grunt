@@ -333,7 +333,7 @@ async function ownPiConfig(directory: string) {
   return providers && typeof providers === 'object' && !Array.isArray(providers) ? providers as Record<string, unknown> : {};
 }
 // Anonymous OpenCode: the signup driver's own config and data stay in this directory.
-const openCodeAlone = (directory: string) => ({ OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined, XDG_CONFIG_HOME: directory, XDG_DATA_HOME: directory, XDG_STATE_HOME: directory });
+const openCodeAlone = (directory: string) => ({ OPENCODE_API_KEY: undefined, OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined, XDG_CONFIG_HOME: directory, XDG_DATA_HOME: directory, XDG_STATE_HOME: directory });
 const piArgs = (model: string) => { const [provider, id] = splitModel(model); return ['-p', '--provider', provider, '--model', id, '--no-session', '--no-builtin-tools', '--no-skills', '--no-context-files']; };
 async function inTemporary<T>(use: (directory: string) => Promise<T>) {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-free-model-'));
@@ -352,7 +352,7 @@ export async function listFreeModels(reach: { openCode: boolean; pi: boolean }, 
       signal?.throwIfAborted();
       return run('opencode', ['models', 'opencode'], openCodeAlone(directory), 45000, { cwd: directory, signal });
     }).catch(() => { signal?.throwIfAborted(); return ''; });
-    const models = text.split('\n').map(line => line.trim()).filter(line => /^opencode\/\S+$/.test(line));
+    const models = text.split('\n').map(line => line.trim()).filter(line => /^opencode\/\S+$/.test(line) && !/google|gemini|gemma/i.test(line));
     // Big Pickle is OpenCode's long-standing anonymous model: first, and the
     // fallback when the CLI cannot list its catalog.
     const ordered = ['opencode/big-pickle', ...models.filter(model => model !== 'opencode/big-pickle')];
@@ -434,11 +434,8 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
           // OpenCode's free tier refuses requests that carry none of its own tools,
           // so keep read; outside this temporary directory it stays denied.
           permission: { '*': 'deny', read: 'allow', 'squire_*': 'allow' }, share: 'disabled' });
+        Object.assign(env, openCodeAlone(directory));
         env.OPENCODE_CONFIG = join(directory, 'opencode.json');
-        env.OPENCODE_CONFIG_CONTENT = undefined;
-        env.XDG_CONFIG_HOME = directory;
-        env.XDG_DATA_HOME = directory;
-        env.XDG_STATE_HOME = directory;
         // --print-logs puts OpenCode's free-limit error on stderr, so runHarness can stop at once.
         args = ['run', '--pure', '--print-logs', '-m', model ?? 'grunt/grunt', prompt];
         break;

@@ -350,7 +350,7 @@ it('starts the next driver fresh only when the failed one made no tool call, oth
   expect(call).toHaveBeenCalledExactlyOnceWith('operate_drive', {});
 });
 
-it('lists OpenCode free models and excludes Google models from Pi providers, from private copies of Pi config', async () => {
+it('lists free models and excludes Google models from both harnesses, from private copies of Pi config', async () => {
   const { listFreeModels } = await import('./harnesses.js');
   const { path } = await piFixture({ ...managedPi(), apiKey: 'local' });
   await writeFile(path, JSON.stringify({ providers: { grunt: managedPi(), openrouter: { baseUrl: 'https://openrouter.test/api/v1', apiKey: 'synthetic-router-key' } } }), { mode: 0o600 });
@@ -360,7 +360,7 @@ it('lists OpenCode free models and excludes Google models from Pi providers, fro
     if (binary === 'opencode') {
       expect(args).toEqual(['models', 'opencode']);
       expect(env).toMatchObject({ OPENCODE_CONFIG: undefined, XDG_CONFIG_HOME: expect.any(String) });
-      return 'opencode/glm-5.3-flash-free\nopencode/big-pickle\nnot a model line';
+      return 'opencode/glm-5.3-flash-free\nopencode/big-pickle\nopencode/gemini-free\nopencode/google/model-free\nopencode/gemma-free\nnot a model line';
     }
     const agent = env.PI_CODING_AGENT_DIR!;
     expect(agent).not.toBe(dir);
@@ -379,6 +379,24 @@ it('lists OpenCode free models and excludes Google models from Pi providers, fro
   expect(copies).toEqual([{ models: JSON.parse(await readFile(path, 'utf8')), auth: { keyed: { type: 'api_key', key: 'synthetic-keyed' } } }]);
   // A CLI that cannot list its catalog still leaves OpenCode's anonymous model.
   expect(await listFreeModels({ openCode: true, pi: false }, async () => { throw new Error('Could not run opencode'); })).toEqual([{ harness: 'opencode', model: 'opencode/big-pickle' }]);
+});
+
+it('keeps inherited OpenCode credentials out of anonymous discovery, probes and signups', async () => {
+  const { listFreeModels, probeFreeModel, signupHarness } = await import('./harnesses.js');
+  dir = await mkdtemp(join(tmpdir(), 'grunt-anonymous-key-'));
+  const binary = join(dir, 'opencode');
+  await writeFile(binary, `#!${process.execPath}\nif (process.env.OPENCODE_API_KEY !== undefined) { console.error('credential inherited'); process.exit(1); }\nconsole.log(process.argv[2] === 'models' ? 'opencode/anonymous-free' : 'anonymous ready');\n`, { mode: 0o755 });
+  vi.stubEnv('OPENCODE_API_KEY', 'synthetic-paid-key');
+  const run: typeof runHarness = (_binary, args, env, timeout, options) => runHarness(binary, args, env, timeout, options);
+  expect(await listFreeModels({ openCode: true, pi: false }, run)).toEqual([
+    { harness: 'opencode', model: 'opencode/big-pickle' }, { harness: 'opencode', model: 'opencode/anonymous-free' }
+  ]);
+  const model = { harness: 'opencode' as const, model: 'opencode/big-pickle' };
+  await expect(probeFreeModel(model, undefined, run)).resolves.toBe('anonymous ready');
+  await expect(signupHarness(HARNESSES.find(harness => harness.id === 'opencode')!, 19878, run, model.model)({
+    service: 'zro', url: 'https://zro.test', goal: 'Free access', signal: new AbortController().signal, tools: [], call: async () => ({})
+  })).resolves.toBeUndefined();
+  expect(process.env.OPENCODE_API_KEY).toBe('synthetic-paid-key');
 });
 
 it.each(['before discovery', 'opencode resolves', 'opencode rejects', 'pi resolves', 'pi rejects'])('catalog discovery preserves cancellation: %s', async stage => {
