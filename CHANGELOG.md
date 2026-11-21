@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-11-21
+
+- When the routed signup driver has no model, try every OpenCode free model, then Pi's free models, before Squire's drive runs alone. A driver that already acted hands the same signup session to the next one; a timeout fails that signup without switching.
+- Block signup buttons that regenerate or roll an existing key.
+- Start the signup pass immediately when fewer than two routes stay open and an untried recommended route remains.
+
 ## [0.9.3] - 2026-11-21
 
 - Let the OpenCode CLI drive signups when no routed driver has a model, in setup and in the daemon, including mid-signup takeover.
