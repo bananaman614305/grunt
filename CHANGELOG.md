@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-21
+
+- Let an open OpenCode route drive signups through its own CLI on its free model when no tool-capable route can, in setup and in the daemon's route pass. A signup whose operator runs out of model moves to OpenCode in the same browser session, and setup picks up OpenCode once it installs it.
+- Keep OpenCode's read tool in the signup operator's configuration, because OpenCode's free tier refuses requests that carry none of its own tools. Reads outside the temporary signup directory stay denied.
+- Tell the signup operator what is allowed when Grunt refuses a step: the offered answers and WAIT, the values Grunt supplies, or a ref from the latest observation. Stop refusing provider secret-key and captcha controls.
+- Accept every provider's data-sharing policy automatically at setup, with no prompt, interactive or not. The GRUNT_SETUP_NO_DATA_SHARING=1 opt-out is unchanged.
+
 ## [0.9.2] - 2026-11-20
 
 - Retry routing-history commits within a bounded wait when a sibling reader holds the database, preserving atomic observations without replaying writes.
