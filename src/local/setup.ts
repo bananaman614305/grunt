@@ -1121,7 +1121,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
     }
     if (providers.includes('kilo')) {
       await verifyKiloAccess({ ...(options.signal ? { signal: options.signal } : {}) });
-      notify('Kilo: free Particle-1 access verified; no account or API key required');
+      notify('Kilo: free model access verified; no account or API key required');
       providers = providers.filter(provider => provider !== 'kilo');
     }
     if (providers.includes('millionseek')) {

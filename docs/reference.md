@@ -765,7 +765,7 @@ first copied to `<file>.grunt-backup-<time>`. Each tool is reported connected
 only after it answers one real request through grunt.
 
 OpenCode first tries its free model without an account and requests sign-in only
-if that model requires it. Kilo verifies its anonymous Particle 1 free route
+if that model requires it. Kilo verifies its anonymous free model route
 without a sharing question; it needs no account, API key or signup.
 Squire handles supported verification automatically. An uncertain result with a
 captured key proceeds to a local test request; missing or failing access is
@@ -795,6 +795,13 @@ without an account or API key. Before inference, grunt checks that the exact
 catalog entry is free, has at least 200K context and supports tools and output
 limits. It accepts only that exact returned model with zero reported inference
 cost and valid correlated function calls. A fallback model cannot pass as Particle.
+When a model returns HTTP 429, the Kilo source tries the next exact `:free`
+model from the same live catalog that passes those checks: Particle first, then
+`reflection/beam-free`, then the rest in catalog order. Router aliases such as
+`kilo-auto/free` and `openrouter/free` are never used. The model that answered
+last is tried first on the next request. Only when every listed model returns
+429 does Kilo report quota, with the earliest reported refill, and the pool
+moves to its next route. The separate Reflection Beam route keeps its one model.
 The [documented anonymous limit](https://kilo.ai/docs/gateway/models-and-providers)
 is 200 requests per hour per IP, subject to upstream capacity. This is ongoing
 rate-limited zero-cost access rather than a one-time credit balance.

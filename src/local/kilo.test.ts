@@ -2,30 +2,30 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Kilo, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
+import { Kilo, KILO_BEAM, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
 import { createLocalApp } from './api.js';
 import { Sources } from './source.js';
-import type { ModelRequest, ToolCall } from './source.js';
+import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 let directory: string;
 const sources: Kilo[] = [];
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-kilo-')); await recordDataSharingConsent(directory, ['kilo']); });
 afterEach(async () => { await Promise.all(sources.splice(0).map(source => source.close())); vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); });
 const request = (): ModelRequest => ({ model: 'kilo', messages: [{ role: 'user', content: 'Hello' }], tools: [], cwd: '/tmp', stream: false });
-const model = () => ({ id: KILO_PARTICLE, isFree: true, pricing: { prompt: '0', completion: '0' }, context_length: 1048576, supported_parameters: ['tools', 'max_tokens'] });
+const model = (id: string = KILO_PARTICLE) => ({ id, isFree: true, pricing: { prompt: '0', completion: '0' }, context_length: 1048576, supported_parameters: ['tools', 'max_tokens'] });
 const usage = () => ({ prompt_tokens: 20, completion_tokens: 5, cost: 0, cost_details: { upstream_inference_cost: 0, upstream_inference_prompt_cost: 0, upstream_inference_completions_cost: 0 } });
 const result = (patch: Record<string, unknown> = {}) => ({ model: KILO_PARTICLE, choices: [{ message: { role: 'assistant', content: 'Hello.' } }], usage: usage(), ...patch });
 const tool = { type: 'function', function: { name: 'nonce', parameters: { type: 'object', properties: { nonce: { type: 'string', const: 'synthetic' } }, required: ['nonce'], additionalProperties: false } } };
 const call: ToolCall = { id: 'native_call', type: 'function', function: { name: 'nonce', arguments: '{"nonce":"synthetic"}' } };
-function fixture(options: { catalog?: unknown; infer?: (init?: RequestInit) => Response | Promise<Response>; timeout?: number; anonymous?: () => boolean } = {}) {
+function fixture(options: { catalog?: unknown; catalogRows?: unknown[]; reflectionBeam?: boolean; infer?: (init?: RequestInit) => Response | Promise<Response>; timeout?: number; anonymous?: () => boolean } = {}) {
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
-    if (String(url) === `${KILO_ORIGIN}/models`) return Response.json({ data: [options.catalog ?? model()] });
+    if (String(url) === `${KILO_ORIGIN}/models`) return Response.json({ data: options.catalogRows ?? [options.catalog ?? model()] });
     if (String(url) === `${KILO_ORIGIN}/chat/completions`) return options.infer?.(init) ?? Response.json(result());
     throw new Error('Unexpected endpoint');
   });
-  const source = new Kilo({ directory, fetcher, ...(options.timeout ? { timeout: options.timeout } : {}), ...(options.anonymous ? { anonymous: options.anonymous } : {}) }); sources.push(source);
+  const source = new Kilo({ directory, fetcher, ...(options.reflectionBeam ? { reflectionBeam: true } : {}), ...(options.timeout ? { timeout: options.timeout } : {}), ...(options.anonymous ? { anonymous: options.anonymous } : {}) }); sources.push(source);
   return { source, fetcher, posts: () => fetcher.mock.calls.filter(([, init]) => init?.method === 'POST') };
 }
 it('uses only fixed anonymous Particle with no inherited key, and checks live free metadata before inference', async () => {
@@ -187,7 +187,7 @@ it.each([
   await expect(f.source.complete({ ...request(), messages }, new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_tools' } });
   expect(f.fetcher).not.toHaveBeenCalled();
 });
-it('maps free rate limits to a bounded retry without trying another model or endpoint', async () => {
+it('maps free rate limits to a bounded retry without trying another endpoint', async () => {
   const f = fixture({ infer: () => new Response('private upstream body', { status: 429, headers: { 'retry-after': '13' } }) });
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 13 }); expect(f.posts()).toHaveLength(1);
 });
@@ -241,4 +241,41 @@ it('asks once more when Particle samples an invalid function call, then reports 
   await expect(repeated.source.complete({ ...request(), tools: [tool] }, new AbortController().signal))
     .rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_tools' } });
   expect(repeated.posts()).toHaveLength(2);
+});
+const rotation = () => [model('kilo-auto/free'), model('nvidia/nemotron-3.5-lightning:free'), { ...model('vendor/paid:free'), isFree: false }, model(KILO_BEAM), model(), model('openrouter/free')];
+const sentModel = (init?: RequestInit) => JSON.parse(String(init?.body)).model as string;
+it('lists exact free models with Particle and Reflection Beam first, and no router aliases', async () => {
+  const fetcher = async () => Response.json({ data: rotation() });
+  expect(await verifyKiloAccess({ fetcher })).toEqual([KILO_PARTICLE, KILO_BEAM, 'nvidia/nemotron-3.5-lightning:free']);
+  expect(await verifyKiloAccess({ fetcher, reflectionBeam: true })).toEqual([KILO_BEAM]);
+  expect(await verifyKiloAccess({ fetcher: async () => Response.json({ data: [model('nvidia/nemotron-3.5-lightning:free')] }) })).toEqual(['nvidia/nemotron-3.5-lightning:free']);
+});
+it('moves to the next free Kilo model when Particle returns 429, and keeps the model that answered first', async () => {
+  const f = fixture({ catalogRows: rotation(), infer: init => sentModel(init) === KILO_PARTICLE
+    ? new Response('private upstream body', { status: 429, headers: { 'retry-after': '60' } }) : Response.json(result({ model: sentModel(init) })) });
+  await expect(f.source.complete(request(), new AbortController().signal)).resolves.toMatchObject({ text: 'Hello.' });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM]);
+  await f.source.complete(request(), new AbortController().signal);
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, KILO_BEAM]);
+});
+it('still refuses a reply from a model other than the one asked after rotating', async () => {
+  const f = fixture({ catalogRows: rotation(), infer: init => sentModel(init) === KILO_PARTICLE ? new Response(null, { status: 429 }) : Response.json(result()) });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'completion_model' } });
+  expect(f.posts()).toHaveLength(2);
+});
+it('reports quota with the earliest refill once every free Kilo model returns 429, and the pool falls back', async () => {
+  const waits: Record<string, string> = { [KILO_PARTICLE]: '600', [KILO_BEAM]: '90', 'nvidia/nemotron-3.5-lightning:free': '300' };
+  const f = fixture({ catalogRows: rotation(), infer: init => new Response(null, { status: 429, headers: { 'retry-after': waits[sentModel(init)]! } }) });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 90 });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, KILO_BEAM, 'nvidia/nemotron-3.5-lightning:free']);
+  const next: Source = { id: 'next', supportsFunctionTools: true, available: async () => true, complete: async (): Promise<Completion> => ({ text: 'fallback' }) };
+  const pool = new Sources([f.source, next]);
+  await expect(pool.complete({ ...request(), model: 'grunt' }, new AbortController().signal)).resolves.toMatchObject({ text: 'fallback' });
+  expect(pool.status().sources.find(source => source.id === 'kilo')).toMatchObject({ errorCode: 'quota' });
+});
+it('keeps the Reflection Beam route on its single model', async () => {
+  await recordDataSharingConsent(directory, ['reflection-beam']);
+  const f = fixture({ reflectionBeam: true, catalogRows: rotation(), infer: () => new Response(null, { status: 429 }) });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota' });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_BEAM]);
 });
