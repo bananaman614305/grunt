@@ -60,7 +60,7 @@
       "install": "builtin:tokenharbor",
       "signup": "https://tokenharbor.ai/dashboard",
       "model": "deepseek-v4.1-flash:free",
-      "hints": "On /dashboard press 'API keys … Manage keys'. On /dashboard/api-keys press 'Show plaintext key'. A dialog asks for a code sent by email: press 'Send code', open the verification email that arrives in the Squire email's inbox, type its code, press 'Verify'; the key is then shown. Do not press '+ New key', 'Edit' or 'Revoke'.",
+      "hints": "On /dashboard press 'API keys … Manage keys'. On /dashboard/api-keys press 'Show plaintext key'. In its dialog press 'Send code'. After 'Send code' the code is already on its way: read the inbox now (never wait) for the Token Harbor verification email, type its code in 'Verification code' and press 'Verify'. When the plaintext key is shown, the next action is to press 'Copy plaintext key' (never wait, never finish first); it stores the key. Then finish. Do not press '+ New key', 'Edit', 'Revoke' or 'Hide plaintext key'.",
       "capture": {
         "service": "tokenharbor",
         "label": "grunt",
@@ -119,7 +119,7 @@
       "install": "builtin:pollinations",
       "signup": "https://enter.pollinations.ai/",
       "model": "community/morriszdweck/glm-5.3-flash-free",
-      "hints": "On /keys, if a key named grunt-free-pollinations is listed, press its 'Edit secret key', set Budget to 0, check 'Quest balance only', leave only 'Generate' on, press 'Save', then finish; one Save is enough, so do not press 'Edit secret key' again. If no key named grunt-free-pollinations is listed, press 'Create', type the key name grunt-free-pollinations in Name, 0 in Budget, check 'Quest balance only' and press 'Create'; the shown secret is stored automatically.",
+      "hints": "On /keys: if 'Save' has not been pressed yet in this drive, press 'Edit secret key', set Budget to 0, check 'Quest balance only', leave only 'Generate' on, and press 'Save'. If 'Save' has already been pressed in this drive, the goal is complete: choose DONE now. The key list shown after Save is the confirmation of the saved settings, so no further click is needed. Never press 'Create', 'Delete secret key' or a second 'Edit secret key'.",
       "capture": {
         "service": "pollinations",
         "label": "grunt-free-pollinations",
@@ -140,7 +140,7 @@
       "install": "builtin:beatapi",
       "signup": "https://beatapi.io/",
       "model": "deepseek-v4.1-flash-free",
-      "hints": "On /sign-in press 'Continue with Google' and choose the Squire-connected Google account. Leave 'Username or email' and 'Password' empty; they belong to password login, not to Google sign-in. After sign-in open /dashboard/apikeys and create one key named grunt; the shown key is stored automatically.",
+      "hints": "On /sign-in press 'Continue with Google' and choose the Squire-connected Google account. Leave 'Username or email' and 'Password' empty; they belong to password login, not to Google sign-in. After Google returns, /oauth/google can show only 'Back to sign in' while it signs in: wait there; do not press 'Back to sign in'. After sign-in open /dashboard/apikeys and create one key named grunt; the shown key is stored automatically.",
       "capture": {
         "service": "beatapi",
         "label": "grunt",
@@ -284,7 +284,7 @@
       "install": "builtin:darus",
       "signup": "https://gateway.darusalfatah.id/",
       "model": "darus/deepseek-v4.1-flash-1017-FREE",
-      "hints": "On the home page press 'Mulai Gratis' (start free). On /masuk?mode=register type grunt in 'Nama Anda' (name), the Squire email in the email field, press 'Kirim OTP' (send code) and type the emailed code, type grunt in 'username', a new password in 'Min. 12 karakter', leave the referral field empty, press 'Daftar sekarang' (register). Then create one key named grunt.",
+      "hints": "On the home page press 'Mulai Gratis' (start free). On /masuk?mode=register type grunt in 'Nama Anda' (name), the Squire email in the email field and press 'Kirim OTP' (send code). After 'Kirim OTP' read the inbox now, never type first: the six-digit Darus OTP is in the email, and reading the inbox fills the code field '______'. Then type grunt in 'username', a new password in 'Min. 12 karakter, kuat', leave the referral field 'Mis. 5UHRWNL8' empty, and press 'Daftar sekarang' (register). Then create one key named grunt.",
       "capture": {
         "service": "darus",
         "label": "Grunt Free",
@@ -337,7 +337,7 @@
       "install": "builtin:millionseek",
       "signup": "https://100milionseek.top/signup",
       "model": "deepseek-v4.1-flash-free",
-      "hints": "On /signup wait for the 'Email' field to appear, type the Squire email, complete the Cloudflare checkbox, press 'Create my key', then press its 'Copy key' button so the key is stored, and finish.",
+      "hints": "On /signup, when the page lists neither an Email field nor 'Create my key', the signup form is still loading: choose WAIT (never press 'Get started', 'Sign in' or 'Refresh availability'). When the Email field shows the Squire email, complete the Cloudflare check and press 'Create my key'. While 'Create my key' is disabled after the press, wait. The new key is shown once with a 'Copy key' button: press 'Copy key' so it is stored, then finish. On /dashboard never press 'Copy' (it copies the invite link, not the key), 'Rotate key' or 'Delete account'.",
       "capture": {
         "service": "100milionseek",
         "label": "Grunt Free",
