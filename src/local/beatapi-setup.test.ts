@@ -52,11 +52,12 @@ it('refuses a new receipt if the captured key can reach another model', async ()
 it('blocks before signup without current consent', async () => {
   const f = fixture(); await rm(join(directory, 'data-sharing-consent.json')); await expect(setupBeatAPI({ directory, ...f, dataSharingApproved: ['beatapi'] })).rejects.toThrow('current grouped'); expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled();
 });
-it('invalidates old eligibility when fresh signup is refused and never leaks browser errors', async () => {
-  const f = fixture(); await writeFile(beatapiGrantPath(directory), 'old-receipt', { mode: 0o600 }); f.squire.signup.mockRejectedValueOnce(new Error('sk-browser-secret'));
-  await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('BeatAPI free account or key verification did not complete'); await expect(readBeatAPIGrant(directory)).rejects.toBeDefined(); expect(f.squire.credentials.grant).not.toHaveBeenCalled();
+it.each([false, true])('preserves an earlier receipt when fresh signup is refused (background=%s)', async background => {
+  const before = await savedReceipt(), f = fixture();
+  f.fetcher.mockRejectedValueOnce(new Error('temporarily unavailable')); f.squire.signup.mockRejectedValueOnce(new Error('sk-browser-secret'));
+  await expect(setupBeatAPI({ directory, ...f, background })).rejects.toThrow('BeatAPI free account or key verification did not complete'); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(before); expect(f.squire.credentials.grant).not.toHaveBeenCalled();
 });
-it('rejects changed account usage and removes an old receipt', async () => {
+it('rejects changed account usage without issuing a receipt', async () => {
   const f = fixture(); f.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ data: { object: 'usage', credit_balance: 12, credits_settled: 0 } })));
   await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('verification did not complete'); await expect(readBeatAPIGrant(directory)).rejects.toBeDefined();
 });

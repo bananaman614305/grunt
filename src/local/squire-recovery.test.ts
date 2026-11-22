@@ -685,3 +685,44 @@ it.each(['acted', 'timeout'] as const)('a failed driver hands its Squire session
   expect(startedDrives).toBeGreaterThan(1);
   await squire.close();
 });
+
+it.each(['return', 'timeout'] as const)('drains in-flight and queued operator calls before resuming after %s', async outcome => {
+  const squire = harnessSquire();
+  const entered = deferred<void>(), release = deferred<void>(), ended = deferred<void>();
+  let drives = 0;
+  const events: string[] = [];
+  vi.spyOn(squire, 'call').mockImplementation(async name => {
+    if (name === 'operate_drive') {
+      events.push('drive');
+      return ++drives === 1
+        ? { status: 'low_confidence', session_id: 'zro-tab', options: {} }
+        : { status: 'complete', session_id: 'zro-tab' };
+    }
+    if (name === 'operate_observe') {
+      events.push('observe started');
+      entered.resolve();
+      await release.promise;
+      events.push('observe finished');
+    }
+    return {};
+  });
+  const pending: Promise<unknown>[] = [];
+  squire.useSignupAgent(async agent => {
+    await agent.call('operate_drive', {});
+    pending.push(agent.call('operate_observe', {}), agent.call('operate_observe', {}));
+    await entered.promise;
+    ended.resolve();
+    if (outcome === 'timeout') throw new Error('opencode did not answer within 240 seconds');
+  });
+  const operation = squire.signup('zro', 'https://zro.moonmath.ai/sign-up', 'Create a free key');
+  try {
+    await ended.promise;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(events).toEqual(['drive', 'observe started']);
+  } finally { release.resolve(); }
+  try {
+    await operation;
+    await Promise.all(pending);
+    expect(events).toEqual(['drive', 'observe started', 'observe finished', 'observe started', 'observe finished', 'drive']);
+  } finally { await squire.close(); }
+});

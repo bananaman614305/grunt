@@ -23,11 +23,11 @@ accepted, with `GRUNT_*` taking precedence.
 - **Order.** Each pass takes the registry's adapters that Grunt ships, sorted
   by `fit` (`great`, then `possible`), then by `weight`. It skips adapters
   that are disabled, retired, already open, or rated `poor`.
-- **Consent.** A provider whose data-sharing policy setup approves by default
-  gets that approval recorded, as setup does, and is attempted. A provider with
-  an explicit or material policy is attempted only when its consent receipt is
-  already recorded, because a missing receipt can be the person's opt-out. The
-  pass adds no other approval step. The registry is the vetted list.
+- **Consent.** The daemon applies setup's default data-sharing approval before
+  acquiring providers, including explicit and material policies. It honors
+  `GRUNT_SETUP_NO_DATA_SHARING=1`, which skips those policies and revokes their
+  saved approval. A receipt write failure does not stop the recovery pass.
+  The registry is the vetted list.
 - **Cap.** A route is *open* when its source reports `available()` and the
   router permits dispatch (including registry, setup and cooldown checks).
   The pass runs signups one at a time and stops as soon as N routes are open;

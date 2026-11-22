@@ -763,7 +763,7 @@ export class BrowserSquire implements SetupSquire {
     }); } catch (error) {
       signal.throwIfAborted();
       if (!terminal() && latest.status !== 'needs_human') throw error;
-    }
+    } finally { await queue; }
     return latest;
   }
   async humanHandoff(session: string) {

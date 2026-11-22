@@ -1,6 +1,5 @@
-import { rm } from 'node:fs/promises';
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
-import { BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, verifyBeatAPIAccess, verifyBeatAPIModelAccess, writeBeatAPIGrant } from './beatapi.js';
+import { BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, readBeatAPIGrant, verifyBeatAPIAccess, verifyBeatAPIModelAccess, writeBeatAPIGrant } from './beatapi.js';
 import type { BeatAPIGrant } from './beatapi.js';
 interface Credential { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null; label?: string; allowed_hosts?: string[] }
 export interface BeatAPISetupSquire {
@@ -47,11 +46,6 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
     }
     verifiedLegacy = grant;
   } catch { if (signal.aborted) throw failure(); }
-  // Preserve a still-valid v1 route while attempting to add a second model. Background
-  // setup keeps the earlier receipt until a new one replaces it.
-  const invalidate = async () => {
-    if (!verifiedLegacy && !options.background) await rm(beatapiGrantPath(options.directory), { force: true });
-  };
   try {
     if (verifiedLegacy) {
       // The authenticated catalog reports effective access for the already
@@ -63,7 +57,7 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
         return;
       }
     }
-    signal.throwIfAborted(); await invalidate(); signal.throwIfAborted(); options.squire.approveDataSharing?.(saved);
+    signal.throwIfAborted(); options.squire.approveDataSharing?.(saved);
     const fresh = async () => {
       const result = await bounded(() => options.squire.call('list_credentials', { service: 'beatapi', fields: 'summary' }), signal);
       if (!Array.isArray(result.credentials)) throw failure(); return (result.credentials as Credential[]).filter(ownedKey);
@@ -87,5 +81,5 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
       await writeBeatAPIGrant(hasGLM ? { ...verified, version: 2, models: BEATAPI_MODELS } : { ...verified, version: 1 }, options.directory);
     }
     options.notify?.(hasGLM ? connected : deepseekOnly);
-  } catch { await invalidate().catch(() => {}); throw failure(); }
+  } catch { throw failure(); }
 }

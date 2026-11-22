@@ -25,8 +25,12 @@ export async function firstWorkingGrant(references: readonly string[], grant: (r
   works: (grant: FreeApiGrant) => Promise<boolean>, signal?: AbortSignal): Promise<FreeApiGrant | undefined> {
   for (const reference of references) {
     signal?.throwIfAborted();
-    const candidate = validateProviderGrant(await grant(reference));
-    if (await works(candidate)) return candidate;
+    try {
+      const candidate = validateProviderGrant(await grant(reference));
+      const available = await works(candidate);
+      signal?.throwIfAborted();
+      if (available) return candidate;
+    } catch { signal?.throwIfAborted(); }
   }
   return undefined;
 }
