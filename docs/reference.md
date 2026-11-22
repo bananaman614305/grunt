@@ -587,6 +587,7 @@ dropped events instead of presenting incomplete history as complete.
 | --- | --- | --- |
 | GET | `/v1/diagnostics/events` | Oldest-first events; supports `after` cursor, `source`, `requestId` and `limit` (1–500). |
 | GET | `/v1/diagnostics/summary` | Request/attempt and reported-usage totals, unknown-usage counts, storage health and stream identity; optional `since` timestamp in milliseconds. |
+| GET | `/v1/diagnostics/metrics` | Durable hourly aggregates independent of raw-event retention; optional `since`/`until` Unix milliseconds, aligned window, histograms, limits and ingestion/coverage health. |
 | GET | `/v1/diagnostics/traces/:id` | Retained events correlated to one request ID. |
 
 These endpoints retain the daemon's loopback Host/Origin checks and return
@@ -594,6 +595,13 @@ These endpoints retain the daemon's loopback Host/Origin checks and return
 durable stream identity; replacing the database creates a new identity. These
 routes are separate from `/admin/api/*` and do not accept owner or ingestion
 credentials as a way to bypass loopback protections.
+
+`usegrunt efficiency metrics` reads the hourly endpoint. Its histogram percentiles
+are bounds, and its whole-hour buckets are not exact arbitrary-window totals.
+See [measurement commands and coverage limits](efficiency.md#retain-a-usable-beforeafter-baseline).
+Older runtimes need activation of the updated package to expose this endpoint;
+the [separate passive collector](passive-efficiency.md) can preserve their existing
+events without a restart.
 
 Local inference responses include `X-Grunt-Request-Id`, including rejected JSON
 and content-type requests, so failures can be found in the journal. Logical

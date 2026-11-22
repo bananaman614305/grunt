@@ -32,6 +32,8 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm lint
       - run: pnpm test
+      - name: Check passive efficiency collection
+        run: python3 -m unittest discover -s scripts -p test_passive_efficiency_collector.py
       - id: build
         if: ${{ !cancelled() }}
         run: pnpm build

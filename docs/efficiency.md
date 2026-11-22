@@ -156,11 +156,22 @@ give ranges, not exact medians or percentiles. Whole-hour query alignment and
 coverage boundaries appear in the report; partial windows must not be presented
 as precise release comparisons.
 
+The runtime caps history at 50,000 aggregate rows, 256 series per hour (including
+overflow) and 200,000 retained event IDs. Inspect `limits`, `ingestionHealth` and
+`coverage` before comparing windows: `persistentDroppedEvents` survives restart,
+`droppedEvents` also includes pending losses, and `droppedLateEvents` and
+`overflowEvents` describe additional coverage limits. `retainedFrom`, `startedAt`
+and `deduplicationFloor` bound usable history; missing data is not zero activity.
+
 ```bash
+usegrunt efficiency metrics
 usegrunt efficiency metrics --port 8792
 usegrunt efficiency metrics --port 8792 --since 1795363200000 --until 1795366800000
 ```
 
+Without `--port`, the command uses `GRUNT_PORT` (or the compatibility `MILO_PORT`),
+then the saved installed port, then 8788. It defaults to the last 24 hours;
+`--since` and `--until` accept Unix milliseconds and cannot request future data.
 This only reads local `/v1/diagnostics/metrics`; it never probes providers. Runtime
 version is read from the trusted installed package, not a model-supplied field.
 An observed version transition records a release marker, not proof that all
@@ -173,6 +184,11 @@ from an existing runtime using a read-only SQLite connection, without installing
 new Grunt version or restarting a worker. It stores its own cursor, coverage gaps,
 histograms and markers in separate private state. Use that collector when the raw
 journal turns over faster than the intended comparison period.
+
+The new runtime command, aggregates and managed-work spans require the updated
+daemon or coding-interface process to be active. Installing a new CLI alone does
+not replace a running runtime. The separate passive collector can preserve older
+runtime events before that activation; it cannot add spans those events lack.
 
 ### Attribute time to actual work
 
@@ -206,6 +222,21 @@ pnpm benchmark:workload --baseline /absolute/trusted-baseline \
 pnpm benchmark:efficiency --replay --baseline /absolute/trusted-baseline --iterations 5
 pnpm benchmark:metadata --baseline /absolute/trusted-baseline
 ```
+
+The workload benchmark also runs from a compiled, source-free package:
+
+```bash
+node /trusted/candidate/dist/local/workload-benchmark.js \
+  --baseline /trusted/built-baseline --repetitions 5 --tasks 20 --concurrency 1,2,4
+```
+
+The compiled harness requires a built baseline (`dist/local/source.js`); build a
+source-only baseline first, or run the source harness with
+`node --import tsx src/local/workload-benchmark.ts`. The source harness can load either format.
+Public `usegrunt` and managed `grunt-runtime`/`milo-runtime` packages are accepted.
+Git metadata is optional: source-free packages report a null commit and bounded
+code fingerprints. Fallback-replay and metadata comparison commands above remain
+development-source tools and require trusted source checkouts.
 
 The workload benchmark resets isolated synthetic fixtures, verifies results against
 fixed acceptance cases and alternates baseline/candidate order. Incorrect answers
