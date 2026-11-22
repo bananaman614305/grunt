@@ -24,14 +24,14 @@ it('distinguishes earlier errors from active cooldowns in the source overview', 
     activity: {phase: 'working', issues: [
       {source: 'kilo', state: 'available', error: 'upstream'},
       {source: 'zro', state: 'limited', error: 'quota'},
-      {source: 'clixad', state: 'error', error: 'refused'},
+      {source: 'perch', state: 'error', error: 'refused'},
       {source: 'runcrate', error: 'timeout'}
     ], active: [{source: 'opencode'}]}
   }]}, {sources: [{source: 'kilo', lastReplyAt: 1000}]}, 1000)
     .map(({id, state, error}) => [id, state, error])`)).toEqual([
     ['opencode', 'answering', null],
     ['zro', 'limited', 'quota'],
-    ['clixad', 'error', 'refused'],
+    ['perch', 'error', 'refused'],
     ['runcrate', 'error', 'timeout'],
     ['kilo', 'retryable', 'upstream']
   ]);

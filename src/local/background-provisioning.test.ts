@@ -2,24 +2,22 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type * as ClixadSetup from './clixad-setup.js';
 import type * as LocalRegistry from './registry.js';
 
 const daemon = vi.hoisted(() => ({
   serve: vi.fn(), serverClose: vi.fn(), syncClose: vi.fn(), finished: vi.fn(),
-  pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(),
+  pollinations: vi.fn(), beatapi: vi.fn(), perch: vi.fn(),
   options: undefined as undefined | { changed?: (registry: unknown) => void; synced?: () => void }
 }));
 vi.mock('@hono/node-server', () => ({ serve: daemon.serve }));
 vi.mock('./pollinations-setup.js', () => ({ setupPollinations: daemon.pollinations }));
 vi.mock('./beatapi-setup.js', () => ({ setupBeatAPI: daemon.beatapi }));
-vi.mock('./clixad-setup.js', async importOriginal => ({ ...await importOriginal<typeof ClixadSetup>(), setupClixad: daemon.clixad }));
 vi.mock('./perch-setup.js', () => ({ setupPerch: daemon.perch }));
 vi.mock('./registry.js', async importOriginal => {
   const actual = await importOriginal<typeof LocalRegistry>();
   const { bundledRegistry } = await import('../registry.js');
   return { ...actual, RegistrySync: class {
-    enabled = bundledRegistry.adapters.filter(adapter => ['pollinations', 'beatapi', 'clixad', 'perch'].includes(adapter.id));
+    enabled = bundledRegistry.adapters.filter(adapter => ['pollinations', 'beatapi', 'perch'].includes(adapter.id));
     constructor(options: { ensure?: unknown; afterEnsure?: unknown; changed?: (registry: unknown) => void; synced?: () => void }) {
       if (options.ensure || options.afterEnsure) throw new Error('Registry downloads must not provision providers');
       daemon.options = options;
@@ -48,7 +46,7 @@ afterEach(async () => {
 it('restarts registry downloads independently from serial checks without provisioning helpers or Squire', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-background-provisioning-'));
   directories.push(directory);
-  const providers = ['pollinations', 'beatapi', 'clixad', 'perch'] as const;
+  const providers = ['pollinations', 'beatapi', 'perch'] as const;
   await recordDataSharingConsent(directory, providers);
   const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('Daemon restart must not connect a browser'));
   const signup = vi.spyOn(BrowserSquire.prototype, 'signup').mockRejectedValue(new Error('Daemon restart must not sign up'));

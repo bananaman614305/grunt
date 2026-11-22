@@ -657,14 +657,11 @@ apply. A different provider cannot answer that probe through failover. Checks
 consume free inference allowance when a fresh reply is needed; the output cap
 does not cap native CLI input/context overhead.
 
-Idle Clixad checks use its existing read-only local checks and public free-model
-catalog instead of inference. Explicit setup and user requests read the wallet
-through the pinned native client without claiming rewards.
+Free-Pi's idle check uses its metadata-only health check, without creating a session
+trace. Its idle check still requires current source-specific consent.
 The maintenance result records `metadata` evidence, which does not establish a
 fresh generated reply or clear an inference cooldown. A recent successful user
 reply still satisfies its daily check as `reply` evidence.
-Free-Pi also uses its metadata-only health check, without creating a session
-trace. Its idle check still requires current source-specific consent.
 
 Foreground-owned sources, current user requests and routing cooldowns defer the
 check. An update pauses the queue while existing routes remain usable until the
@@ -708,7 +705,7 @@ setup pulls the free service list from the grunt registry, falling back to the
 saved or bundled list silently. The bundled
 vetted pool contains OpenCode, Kilo and Zro in the stable tier, plus
 Token Harbor, Runcrate, Mistral Vibe Free, LiveKit, Pollinations, BeatAPI,
-Clixad, Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra,
+Perch, Nous, Kenari, Numes, Gödel Machines, Darus, Aperture, Fikra,
 Openference, Reflection Beam, 100milionseek and Free-Pi in the
 experimental tier. Fikra and Openference are temporary offers with expiry guards.
 Free-account eligibility still applies. Setup automatically records Free-Pi’s material policy. Free-Pi still requires
@@ -951,7 +948,6 @@ The additional experimental routes have these requirements:
 | LiveKit | `deepseek-ai/deepseek-v4.1-flash` | Build plan at $0 per month, no card, and one free project. The documented $2.50 monthly included inference allowance resets at the start of each calendar month and has a hard stop; no paid fallback. |
 | BeatAPI | `deepseek-v4.1-flash-free` | Personal Google login through Squire; no paid funds, card, subscription or automatic recharge. One successful request per minute. The ordinary one-time $2 welcome credit is separate from this continuous free route and is not spent by it. No numeric daily or token-per-minute limit is promised. |
 | Pollinations | `community/morriszdweck/glm-5.3-flash-free` | Google login through Squire, a hard numeric zero-budget key with Quest Pollen Only enabled, usage-only account permissions, and a positive unused Quest balance. No paid funds or billing. Community availability is best effort, with no promised daily quota or fixed reset. |
-| Clixad | Native `glm-5.3-flash` | Existing or ordinary free GitHub account pairing, positive free allowance and a wallet balance of exactly zero. No deposit or paid credits. Model selection and native free/zero-charge metadata are checked. |
 | Perch | Native `deepseek-flash-starter` | Active Starter plan with 20,000 Perch Tokens per month and no surprise overages. Optional Starter Data Program, Use memory and Learn new memories must all be off. Keep the account on Starter. |
 | Nous | `qwen/qwen4-max:free` | Nous Portal Free plan and one Hermes device approval. Checks that the Free plan and zero-priced model are still available before sending an inference request. |
 | Kenari | `ernie-5-5-flash-preview:free` | Free Google sign-in through Squire. Kenari lists 50 successful free-model requests per day and five requests per minute for new accounts. Limits are per account and can change. [Kenari free-model limits](https://kenari.id/en/docs/free-models) |
@@ -1061,26 +1057,6 @@ Verification receipts expire after 30 days. Failed BeatAPI setup preserves its
 earlier receipt until fresh verification succeeds. Neither setup displays or
 stores a plaintext provider key in grunt's files, harness configuration or logs.
 
-Clixad uses the official Node CLI `0.0.1-beta.51`, installed privately with pinned
-package integrity, and its ordinary GitHub device login with read-only identity
-and email scopes. The native CLI owns `~/.clixad/config.json`; grunt checks private
-file metadata without reading auth contents. Its `ask` command dispatches the
-pinned `glm-5.3-flash` model through a validated JSON tool bridge. Native actions
-are blocked and each request gets a private working directory. The documented
-headless sponsor opt-out is used; grunt does not submit ratings, offers or feedback.
-
-Clixad requires wallet balance zero, positive free allowance and native metadata
-showing `free: true`, zero charged credits and balance zero. Explicit setup and
-user calls read the wallet through the pinned native client without claiming
-rewards; reward endpoints are blocked. Idle availability checks use only local
-metadata and the public catalog, and never call the wallet or streak endpoints.
-Grunt checks wallet state
-before and after user inference. There is no atomic free-only switch: an external
-deposit during a request can defeat a pre-request zero-wallet check before the
-post-check rejects the answer. Keep that account unfunded. The native SSE omits
-the served model; the wire pin and official aggregate usage ledger support the
-route selection, without independent physical-model attestation.
-
 Perch uses the pinned official `perchai-cli` `2.4.132`, a private native login and
 the active Starter plan. A placeholder Starter label before activation is
 insufficient; setup uses the ordinary free activation flow when needed. The
@@ -1097,9 +1073,9 @@ The Perch backend pins `deepseek-flash-starter`, the official
 identifier. These are aliases for the same provider-selected route, rather than
 independent physical-model attestation. Each request uses a private, checked
 context and a validated JSON tool bridge; native actions are denied. Owned
-PTY/process cleanup runs on completion, cancellation and timeout. Clixad and Perch
-are backend sources: Pi, Codex, OpenCode and Claude Code remain the frontend choices.
-Existing installations can run `usegrunt add clixad` or `usegrunt add perch` to
+PTY/process cleanup runs on completion, cancellation and timeout. Perch
+is a backend source: Pi, Codex, OpenCode and Claude Code remain the frontend choices.
+Existing installations can run `usegrunt add perch` to
 perform the same signup and native eligibility checks.
 
 Both native backends validate returned output and reported usage against a local
@@ -1118,10 +1094,7 @@ training without separate notice and consent where required; upstream guarantees
 remain unestablished. [Pollinations](https://pollinations.ai/privacy) sends context
 through its OSAII community operator and Poe/Together processing, whose retention,
 staff review and training guarantees are unestablished. Setup enables both by default and records the current policies.
-[Clixad](https://clixad.io/privacy.html) sends prompts, code and tool results through
-Clixad, OpenRouter and model providers. It records usage metadata and says content
-is stored when an answer is rated. It excludes training/public-dataset endpoints
-but does not require zero upstream retention. [Perch](https://www.perchai.app/privacy#starter-data-program)
+[Perch](https://www.perchai.app/privacy#starter-data-program)
 processes task and tool context for service delivery, security, debugging and
 metering even with the optional Data Program off. Retention, review limits and
 zero-retention coverage have not been independently verified. Setup enables both by default and records their current policies.
@@ -1149,7 +1122,7 @@ NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the 
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
 API-provider keys stay in Squire; no provider reveal approval is requested.
-Mistral Vibe, LiveKit, Clixad, Perch and Nous use native clients that own their
+Mistral Vibe, LiveKit, Perch and Nous use native clients that own their
 local credential exchanges and storage.
 Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
 currently available chat models through that grant before registering one.
@@ -1452,7 +1425,7 @@ Gödel Machines, Darus, Aperture, Fikra, Openference, Reflection Beam,
 tool calls for the harness to execute.
 Mistral Vibe uses a validated
 text bridge for harness tool calls while its native tools remain disabled.
-Pollinations, Clixad and Perch also use validated JSON tool bridges for their fixed routes. Providers
+Pollinations and Perch also use validated JSON tool bridges for their fixed routes. Providers
 with data-sharing policies require current approval before they can be selected.
 LiveKit's [inference data-retention policy](https://docs.livekit.io/agents/models/inference/)
 states zero retention and no training by LiveKit or its underlying providers on
@@ -1484,8 +1457,7 @@ retry time, with a one-hour fallback when the adapter has no stronger evidence.
 Token Harbor's account allowance API supplies the current window start and
 reset. Grunt uses that reset when the weekly free allowance is exhausted, and
 checks the allowance again at the reset before routing. Short request limits
-still use the provider's Retry-After. Clixad retries at midnight UTC when its
-wallet confirms the daily free allowance is exhausted. Kenari uses its
+still use the provider's Retry-After. Kenari uses its
 documented midnight reset when the response identifies daily exhaustion and
 omits Retry-After. Nous and Vikey also consume documented reset metadata.
 In registry routing, other upstream failures, timeouts and provider refusals

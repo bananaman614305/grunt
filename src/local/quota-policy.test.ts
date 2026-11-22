@@ -14,7 +14,6 @@ it('covers each default and optional free route with first-party quota documenta
 
 it('computes exact UTC refills only for schedules with a published UTC cutoff', () => {
   const now = Date.parse('2026-11-30T23:59:59.950Z');
-  expect(calendarQuotaDelay('clixad', now)).toBe(1);
   expect(calendarQuotaDelay('perch', now)).toBe(1);
   expect(calendarQuotaDelay('perch', now + 50)).toBe(31 * 86400);
   for (const id of ['runcrate', 'zro', 'livekit', 'tokenharbor', 'numes']) expect(calendarQuotaDelay(id, now)).toBeUndefined();

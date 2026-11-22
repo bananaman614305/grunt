@@ -19,12 +19,12 @@ afterEach(async () => {
 async function restarted(now: number, until: number) {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-mixed-cooldown-')); roots.push(directory);
   const seed = await RoutingHistory.open(directory);
-  await seed.failure('clixad', new SourceError('quota', 'Preserved runtime cooldown'), (until - now) / 1000, false, now);
+  await seed.failure('perch', new SourceError('quota', 'Preserved runtime cooldown'), (until - now) / 1000, false, now);
   await seed.close();
   const store = await RoutingHistory.open(directory); stores.push(store);
-  const legacy = fake('freellmapi'), held = fake('clixad'), fallback = fake('kilo');
+  const legacy = fake('freellmapi'), held = fake('perch'), fallback = fake('kilo');
   const pool = new Sources([legacy, held, fallback]); pools.push(pool);
-  pool.setWorkerRegistry(() => ({ ...bundledRegistry, adapters: bundledRegistry.adapters.filter(row => ['clixad', 'kilo'].includes(row.id)) }));
+  pool.setWorkerRegistry(() => ({ ...bundledRegistry, adapters: bundledRegistry.adapters.filter(row => ['perch', 'kilo'].includes(row.id)) }));
   await pool.setRoutingHistory(store);
   return { pool, legacy, held, fallback, store };
 }
@@ -33,7 +33,7 @@ it('exposes exact cold-restored quota deadlines in a mixed fixed-chain status wi
   const now = 1795213386458, until = 1795219200875;
   vi.spyOn(Date, 'now').mockReturnValue(now);
   const { pool, legacy, held, fallback, store } = await restarted(now, until);
-  expect(pool.status().sources.find(row => row.id === 'clixad')).toMatchObject({ state: 'limited', errorCode: 'quota', retryAt: until });
+  expect(pool.status().sources.find(row => row.id === 'perch')).toMatchObject({ state: 'limited', errorCode: 'quota', retryAt: until });
   expect(pool.status().sources.find(row => row.id === 'freellmapi')?.state).not.toBe('disabled');
   for (const source of [legacy, held, fallback]) {
     expect(source.available).not.toHaveBeenCalled(); expect(source.complete).not.toHaveBeenCalled();
@@ -47,13 +47,13 @@ it('honors restored quota before a mixed foreground attempt and resumes the same
   const { pool, legacy, held, fallback } = await restarted(now, until);
   const order: string[] = [];
   vi.mocked(legacy.complete).mockImplementation(async () => { order.push('freellmapi'); throw new SourceError('upstream', 'synthetic'); });
-  vi.mocked(held.complete).mockImplementation(async () => { order.push('clixad'); return { text: 'clixad' }; });
+  vi.mocked(held.complete).mockImplementation(async () => { order.push('perch'); return { text: 'perch' }; });
   vi.mocked(fallback.complete).mockImplementation(async () => { order.push('kilo'); return { text: 'kilo' }; });
-  await expect(pool.complete({ ...request, model: 'clixad' }, new AbortController().signal)).rejects.toBeInstanceOf(SourceError);
+  await expect(pool.complete({ ...request, model: 'perch' }, new AbortController().signal)).rejects.toBeInstanceOf(SourceError);
   expect(held.available).not.toHaveBeenCalled(); expect(held.complete).not.toHaveBeenCalled();
   expect((await pool.complete(request, new AbortController().signal)).text).toBe('kilo');
   expect(order).toEqual(['freellmapi', 'kilo']);
   now = until + 1; order.length = 0;
-  expect((await pool.complete(request, new AbortController().signal)).text).toBe('clixad');
-  expect(order).toEqual(['freellmapi', 'clixad']);
+  expect((await pool.complete(request, new AbortController().signal)).text).toBe('perch');
+  expect(order).toEqual(['freellmapi', 'perch']);
 });

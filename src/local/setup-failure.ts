@@ -22,7 +22,6 @@ export function setupFailureReason(error: unknown): string {
   if (/release checksum|package integrity/i.test(error.message)) return 'download failed integrity check';
   if (/release download|package download/i.test(error.message)) return 'download failed';
   if (/native .*pairing|native login/i.test(error.message)) return 'native CLI pairing incomplete';
-  if (/Clixad free native setup did not complete/i.test(error.message)) return 'free native setup incomplete';
   if (/printed no answer/i.test(error.message)) return 'empty reply';
   if (/Could not run/i.test(error.message)) return 'CLI unavailable';
   if (/exited with code/i.test(error.message)) return 'CLI request failed';
