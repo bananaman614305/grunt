@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { Sources, SourceError } from './source.js';
+import { currentReplayRuntime, fallbackReplayScenarios, runFallbackReplay } from './fallback-replay.js';
+import type { ReplayRuntime } from './fallback-replay.js';
 
 interface BenchmarkRuntime {
   Sources: new (sources: Source[], routing?: undefined, disabled?: ReadonlySet<string>, firstOutputMs?: number) => {
@@ -73,16 +75,43 @@ async function loadRuntime(root: string): Promise<BenchmarkRuntime> {
   // Running this developer command authorizes execution of that local checkout.
   return import(pathToFileURL(resolve(path, 'src/local/source.ts')).href) as Promise<BenchmarkRuntime>;
 }
+async function replayComparison(baseline: string | undefined, iterations: number) {
+  const beforeRuntime = baseline ? await loadRuntime(baseline) as ReplayRuntime : undefined;
+  const before: Awaited<ReturnType<typeof runFallbackReplay>>[] = [], current: Awaited<ReturnType<typeof runFallbackReplay>>[] = [];
+  for (let index = 0; index < iterations; index++) {
+    // Interleave order rather than letting warmup/load systematically favor one checkout.
+    if (beforeRuntime && index % 2 === 0) before.push(await runFallbackReplay(beforeRuntime, fallbackReplayScenarios));
+    current.push(await runFallbackReplay(currentReplayRuntime, fallbackReplayScenarios));
+    if (beforeRuntime && index % 2 === 1) before.push(await runFallbackReplay(beforeRuntime, fallbackReplayScenarios));
+  }
+  const summarize = (runs: typeof current) => {
+    const tasks = runs.flatMap(run => run.tasks), elapsedMs = runs.reduce((n, run) => n + run.elapsedMs, 0);
+    const completedTasks = tasks.filter(task => task.outcome === 'passed').length;
+    return { totalTasks: tasks.length, completedTasks, completionRate: completedTasks / tasks.length,
+      elapsedMs, medianBatchMs: percentile(runs.map(run => run.elapsedMs), .5), p90BatchMs: percentile(runs.map(run => run.elapsedMs), .9),
+      verifiedTasksPerHour: elapsedMs ? completedTasks * 3600000 / elapsedMs : 0,
+      attempts: tasks.reduce((n, task) => n + task.attempts, 0),
+      failedAttemptMs: tasks.reduce((n, task) => n + task.failedAttemptMs, 0),
+      quotaAttempts: tasks.reduce((n, task) => n + task.quotaAttempts, 0),
+      advertisedQuotaWaitSeconds: tasks.reduce((n, task) => n + task.advertisedQuotaWaitSeconds, 0),
+      cleanupComplete: tasks.every(task => task.cleanupComplete), runs };
+  };
+  return { version: 1, kind: 'offline-fallback-replay-comparison', iterations, ...(beforeRuntime ? { baseline: summarize(before) } : {}), current: summarize(current),
+    limitation: 'Scaled synthetic replay fixtures only, including incorrect/failed/timed-out tasks in the denominator. Alternating checkout order. No provider calls; quota hints are not slept or reset. No general coding-task speedup is inferred.' };
+}
 export async function runEfficiencyBenchmark(args: string[]) {
-  let baseline: string | undefined, iterations = 7;
+  let baseline: string | undefined, iterations = 7, replay = false;
   for (let i = 0; i < args.length; i++) {
-    const flag = args[i], value = args[++i];
-    if (!value) throw new Error('Usage: benchmark:efficiency [--baseline CHECKOUT] [--iterations 1–100]');
+    const flag = args[i];
+    if (flag === '--replay') { replay = true; continue; }
+    const value = args[++i];
+    if (!value) throw new Error('Usage: benchmark:efficiency [--replay] [--baseline CHECKOUT] [--iterations 1–100]');
     if (flag === '--baseline') baseline = value;
     else if (flag === '--iterations') iterations = Number(value);
     else throw new Error('Unknown benchmark argument.');
   }
   if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 100) throw new Error('Use 1–100 benchmark iterations.');
+  if (replay) return replayComparison(baseline, iterations);
   const before = baseline ? await measureFallbackTasks(await loadRuntime(baseline), iterations) : undefined;
   const current = await measureFallbackTasks({ Sources, SourceError }, iterations);
   return {

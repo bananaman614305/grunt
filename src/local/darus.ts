@@ -1,10 +1,12 @@
 import { configRoot } from '../brand.js';
+import { createHash } from 'node:crypto';
 import { readDataSharingConsent } from './data-sharing.js';
 import { diagnosticFetch } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { readPromotionalStream } from './promotional-api.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
+import { MetadataFlights } from './metadata-flight.js';
 import { SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -40,19 +42,28 @@ export class Darus implements Source {
   readonly id = 'darus';
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();
+  private readonly metadata = new MetadataFlights();
   private window: { startedAt: number; resetAt: number } | undefined;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; now?: () => number; loadGrant?: () => Promise<FreeApiGrant> } = {}) {}
   private get now() { return (this.options.now ?? Date.now)(); }
   quotaWindow() { return this.window ? { ...this.window } : undefined; }
 
   private async freeGrant(caller?: AbortSignal) {
+    const signal = AbortSignal.any([this.shutdown.signal, ...(caller ? [caller] : [])]);
+    signal.throwIfAborted();
     const directory = this.options.directory ?? configRoot();
     if (!(await readDataSharingConsent(directory, [this.id])).includes(this.id)) return;
     const grant = validateProviderGrant(await (this.options.loadGrant?.() ?? readPrivateProviderGrant(this.id, directory)));
     const url = new URL(grant.base_url);
     if (grant.base_url !== `https://${DARUS_HOST}` && !(url.origin === 'https://trusty-squire-api.fly.dev'
       && /^\/v1\/egress\/g_[A-Za-z0-9_-]+$/.test(url.pathname))) return;
-    const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(5000), ...(caller ? [caller] : [])]);
+    const key = createHash('sha256').update(JSON.stringify([grant.base_url, grant.token])).digest('hex');
+    const checked = await this.metadata.run(key, shared => this.readFreeGrant(grant, shared), signal);
+    signal.throwIfAborted();
+    return checked;
+  }
+
+  private async readFreeGrant(grant: FreeApiGrant, signal: AbortSignal) {
     const catalog = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'models')(`${grant.base_url}/v1/models`, {
       redirect: 'error', signal, headers: { Authorization: `Bearer ${grant.token}` }
     });
@@ -77,8 +88,8 @@ export class Darus implements Source {
     return { grant, day, remaining: status.remaining };
   }
 
-  async available() {
-    try { return !!await this.freeGrant(); }
+  async available(caller?: AbortSignal) {
+    try { return !!await this.freeGrant(caller); }
     catch (error) { if (error instanceof SourceError && error.code === 'quota') throw error; return false; }
   }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
@@ -135,7 +146,7 @@ export class Darus implements Source {
       throw new SourceError('upstream', 'Darus returned an invalid completion');
     }
   }
-  async close() { this.shutdown.abort(); }
+  async close() { this.shutdown.abort(); this.metadata.close(); }
 }
 
 function validCalls(value: unknown): value is ToolCall[] {

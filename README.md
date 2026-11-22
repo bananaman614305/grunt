@@ -105,6 +105,15 @@ Pages publication. Its `--grunt-publication` flag and read-only channel manifest
 are explicit launch configuration; credentials and signing authority stay outside
 the coding interface. See [execution efficiency](docs/efficiency.md).
 
+`usegrunt efficiency metrics` reads durable hourly runtime measurements without
+probing providers. Managed job, checkpoint and host verification timings distinguish
+execution from waiting and reuse. Offline fixed-workload, fallback-replay and
+metadata benchmarks compare trusted local checkouts with correctness checks and
+failures included. See [measurement commands and limits](docs/efficiency.md#measure-changes-offline)
+and the [read-only passive collector](docs/passive-efficiency.md). The
+[round-three results](docs/efficiency-round3-results.md) report measured savings
+and the limits of the controlled experiments.
+
 The [private owner console](docs/reference.md#private-owner-admin) opens on
 Grunt's current work, subworker activity and per-source daily, weekly and lifetime usage.
 Separate views show request and fallback traces, maintenance and scout progress.

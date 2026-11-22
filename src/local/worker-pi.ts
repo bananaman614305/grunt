@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { jobsStateDirectory } from './jobs.js';
+import { runtimeWorkTiming } from './work-timing-store.js';
 import { AgentWorkerBatches, gruntSpawnTool } from './worker-agent-client.js';
 import { registerJobTools } from './jobs-pi.js';
 import type { JobPiContext, JobPiExtension } from './jobs-pi.js';
@@ -31,18 +34,19 @@ export const AGENT_WORKERS_FLAG = 'grunt-agent-workers';
 const portFlag = 'grunt-worker-port';
 
 export default function gruntWorkerExtension(pi: PiWorkerExtension) {
+  const measurements = runtimeWorkTiming(join(jobsStateDirectory(), 'efficiency'));
   const channelFile = process.env.GRUNT_EXECUTION_CHANNEL_FILE;
   let channels: ReturnType<typeof loadExecutionHostChannels> | undefined;
   const hostChannels = () => {
     if (!channelFile) throw new Error('The trusted launcher must configure an execution-host channel manifest.');
     return channels ??= loadExecutionHostChannels(channelFile).catch((error: unknown) => { channels = undefined; throw error; });
   };
-  registerJobTools(pi, channelFile ? { verificationBroker: {
+  registerJobTools(pi, { timing: measurements.timing, closeTiming: () => measurements.close(), ...(channelFile ? { verificationBroker: {
     start: async (...args) => (await hostChannels()).verificationBroker.start(...args),
     status: async (...args) => (await hostChannels()).verificationBroker.status(...args),
     result: async (...args) => (await hostChannels()).verificationBroker.result(...args)
-  } } : {});
-  registerCheckpointTools(pi);
+  } } : {}) });
+  registerCheckpointTools(pi, { timing: measurements.timing });
   registerPublicationTools(pi, channelFile ? { channel: {
     request: async (...args) => (await hostChannels()).publicationChannel.request(...args)
   } } : {});

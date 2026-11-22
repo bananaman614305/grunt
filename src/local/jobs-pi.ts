@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { createPiJobRunner, JOB_CATEGORIES, JobScheduler, jobsStateDirectory } from './jobs.js';
 import type { JobExec } from './jobs.js';
+import type { WorkTimingObserver } from './work-timing.js';
 
 export const BACKGROUND_JOBS_FLAG = 'grunt-background-jobs';
 export interface JobPiContext { cwd: string; sessionManager?: { getSessionId(): string } }
@@ -23,7 +24,7 @@ export interface VerificationBrokerClient {
   status(input: { id: string }, context: JobPiContext, signal?: AbortSignal): Promise<unknown>;
   result(input: { id: string }, context: JobPiContext, signal?: AbortSignal): Promise<unknown>;
 }
-export interface JobPiOptions { verificationBroker?: VerificationBrokerClient; stateDirectory?: string; helperEntry?: string; scheduler?: (sessionId: string) => Promise<JobScheduler> }
+export interface JobPiOptions { verificationBroker?: VerificationBrokerClient; stateDirectory?: string; helperEntry?: string; scheduler?: (sessionId: string) => Promise<JobScheduler>; timing?: WorkTimingObserver; closeTiming?: () => Promise<void> }
 const noArgs = { type: 'object', additionalProperties: false, properties: {} };
 const idArgs = { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', description: 'The id returned by grunt_job_start.' } } };
 const waitArgs = { ...idArgs, properties: { ...idArgs.properties, timeoutSeconds: { type: 'integer', minimum: 1, maximum: 120 } } };
@@ -68,7 +69,7 @@ export function registerJobTools(pi: JobPiExtension, options: JobPiOptions = {})
     const id = context.sessionManager?.getSessionId() ?? sessionId;
     let pending = schedulers.get(id);
     if (!pending) {
-      pending = options.scheduler?.(id) ?? JobScheduler.open({ sessionId: id, stateDirectory: options.stateDirectory ?? jobsStateDirectory(), runner: createPiJobRunner(pi.exec.bind(pi), options.helperEntry ? { helperEntry: options.helperEntry } : {}) });
+      pending = options.scheduler?.(id) ?? JobScheduler.open({ sessionId: id, stateDirectory: options.stateDirectory ?? jobsStateDirectory(), runner: createPiJobRunner(pi.exec.bind(pi), options.helperEntry ? { helperEntry: options.helperEntry } : {}), ...(options.timing ? { timing: options.timing } : {}) });
       schedulers.set(id, pending);
       void pending.catch(() => { schedulers.delete(id); });
     }
@@ -129,5 +130,9 @@ export function registerJobTools(pi: JobPiExtension, options: JobPiOptions = {})
     }
     return { block: true, reason: `This foreground command contains ${Math.round(seconds)} seconds of explicit waiting. Use grunt_job_start for background work and continue an independent task. If all useful work is blocked on quota, checkpoint and let the supervisor wait for the known reset instead.` };
   });
-  pi.on('session_shutdown', async () => { const pending = [...schedulers.values()]; schedulers.clear(); await Promise.allSettled(pending.map(async store => (await store).close())); });
+  pi.on('session_shutdown', async () => {
+    const pending = [...schedulers.values()]; schedulers.clear();
+    await Promise.allSettled(pending.map(async store => (await store).close()));
+    await options.closeTiming?.().catch(() => {});
+  });
 }

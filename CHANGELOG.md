@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-11-22
+
+- Preserve hourly runtime measurements beyond raw-event pruning, with explicit coverage, loss counts, latency histogram bounds and trusted runtime-version attribution.
+- Measure managed job, checkpoint and host verification stages without recording commands, prompts or output, while distinguishing waiting, reuse and duplicate work.
+- Coalesce overlapping BeatAPI and Darus access checks with independent cancellation and fresh subsequent validation; keep BeatAPI post-inference balance checks separate.
+- Add reproducible offline workload, fallback-replay and metadata benchmarks with acceptance checks, failure-inclusive throughput, bounded concurrency and implementation fingerprints. Support source-free installed runtime packages.
+- Add a separately scheduled read-only efficiency collector for existing runtimes and safe failure-stage diagnostics for Mistral Vibe and Pollinations.
+
 - Remove signup stops that blocked no payment, key change or secret. The fallback operator's calls queue instead of stopping at 24, and it may answer with Squire's fixed answers, type into any observed field except a password, pass its own facts, solve CAPTCHAs, navigate web pages, press keys and sign in with Google or GitHub OAuth. Consent, terms, account, done and phone words no longer block a choice; payment and key-change words still do.
 - A provider refusal drops only that provider. CAPTCHA, email-verification and phone mentions, Zro's terms page and an operator timeout no longer end a signup, and background signups drive again instead of dropping. Squire's drive is told to use its own verification tools.
 - BeatAPI, CrowLLM, Kenari and Numes accept keys with extra hosts after their API host. The daemon applies setup's default data-sharing approval before acquiring a provider, honoring the GRUNT_SETUP_NO_DATA_SHARING opt-out. Promotional signup no longer pre-checks the promotion window; the live free check still gates the saved grant.

@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { registerCheckpointTools, CHECKPOINTS_FLAG } from './execution-checkpoint-pi.js';
 import type { CheckpointPiExtension } from './execution-checkpoint-pi.js';
 import type { PiJobTool } from './jobs-pi.js';
+import { createWorkTimingObserver } from './work-timing.js';
+import type { DiagnosticEvent } from './diagnostics.js';
 const paths: string[] = [];
 afterEach(async () => { await Promise.all(paths.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
 function fake(enabled = true) {
@@ -25,7 +27,8 @@ it('registers three custom tools only after trusted flag/session_start, never ch
 });
 it('uses only harness cwd/session, returns private write metadata and focused tool-result data on explicit resume', async () => {
   const root = await mkdtemp(join(tmpdir(), 'grunt-checkpoint-pi-')); paths.push(root); const cwd = join(root, 'project'); await mkdir(cwd); await writeFile(join(cwd, 'src.txt'), 'existing source');
-  const f = fake(); registerCheckpointTools(f.pi, { stateDirectory: join(root, 'state') }); const context = { cwd, sessionManager: { getSessionId: () => 'fixture' } };
+  const events: DiagnosticEvent[] = [], timing = createWorkTimingObserver({ sink: { record: e => events.push(e) } });
+  const f = fake(); registerCheckpointTools(f.pi, { stateDirectory: join(root, 'state'), timing }); const context = { cwd, sessionManager: { getSessionId: () => 'fixture' } };
   f.handlers.get('session_start')!({}, context);
   const value = { taskId: 'work', expectedRevision: 0, goal: 'Synthetic task', requirements: ['preserve A'], nextAction: 'collect', files: ['src.txt'], facts: [{ id: 'detail', text: 'private selected fact' }] };
   const saved = await f.tools.get('grunt_checkpoint_write')!.execute('call', value, undefined, undefined, context); expect(saved.details).toMatchObject({ revision: 1, testsOrReviewAttested: false }); expect(JSON.stringify(saved)).not.toContain('private selected fact');
@@ -35,6 +38,9 @@ it('uses only harness cwd/session, returns private write metadata and focused to
   await expect(f.tools.get('grunt_checkpoint_write')!.execute('call', { ...value, cwd: '/unauthorized' }, undefined, undefined, context)).rejects.toThrow();
   await expect(f.tools.get('grunt_checkpoint_read')!.execute('call', { taskId: 'work' })).rejects.toThrow('current coding-interface');
   f.setFlag(false); await expect(f.tools.get('grunt_checkpoint_read')!.execute('call', { taskId: 'work' }, undefined, undefined, context)).rejects.toThrow();
+  expect(events.filter(e => e.type === 'work.finish' && e.stage === 'checkpoint').map(e => [e.workOperation, e.outcome])).toEqual([['checkpoint_write', 'passed'], ['checkpoint_read', 'passed'], ['checkpoint_read', 'passed'], ['checkpoint_resume', 'passed'], ['checkpoint_write', 'failed']]);
+  expect(JSON.stringify(events)).not.toContain('private selected fact'); expect(JSON.stringify(events)).not.toContain(cwd);
+  expect(events.some(e => e.stage === 'task')).toBe(false);
 });
 it('does no state work when the tool was cancelled before execution', async () => {
   const f = fake(), store = vi.fn(); registerCheckpointTools(f.pi, { store }); f.handlers.get('session_start')!({}, { cwd: '/tmp' });

@@ -87,6 +87,19 @@ it('allows one protocol repair and accounts for both native calls', async () => 
   } finally { await f.source.close(); }
 });
 
+it.each([
+  ['wrong-model', 'completion_model'], ['malformed', 'response_json'], ['native-tool', 'response_tools'], ['badtool', 'completion_protocol']
+])('identifies %s failure stages without retaining rejected native content', async (mode, failureReason) => {
+  const f = await fixture(mode);
+  try {
+    const tools = mode === 'badtool' ? [{ type: 'function' as const, function: { name: 'read_file', parameters: { type: 'object' } } }] : [];
+    const failure = await f.source.complete({ ...request(), tools }, AbortSignal.timeout(5000)).catch(error => error);
+    expect(failure.diagnostics).toEqual({ transport: 'cli', endpointLabel: 'cli', failureReason });
+    expect(JSON.stringify(failure.diagnostics)).not.toContain('unavailable_tool');
+    expect(failure.output).toBeUndefined();
+  } finally { await f.source.close(); }
+});
+
 it('bridges completed historical ID reuse without changing tool results or native safety limits', async () => {
   const f = await fixture('tools');
   try {

@@ -10,6 +10,7 @@ afterEach(async () => { await Promise.all(dirs.splice(0).map(p => rm(p, { recurs
 it('executes only an explicit local run and exposes status/result without a daemon command API', async () => {
   const root = await mkdtemp(join(tmpdir(), 'grunt-jobs-cli-')); dirs.push(root); const helper = join(root, 'helper.js'); await writeFile(join(root, 'package.json'), '{"type":"module"}');
   await writeFile(helper, ts.transpileModule(await readFile(new URL('./jobs.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
+  await writeFile(join(root, 'work-timing.js'), ts.transpileModule(await readFile(new URL('./work-timing.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
   await writeFile(join(root, 'verification.js'), ts.transpileModule(await readFile(new URL('./verification.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
   const results: string[] = [], options = { cwd: root, env: { GRUNT_JOBS_STATE_DIR: join(root, 'state') }, notify: (text: string) => { results.push(text); }, helperEntry: helper };
   expect(await jobsCommand(['run', '--category', 'test', '--timeout', '2', '--', process.execPath, '-e', 'process.stdout.write("cli-ok")'], options)).toBe(0);
@@ -26,7 +27,7 @@ it('returns a scoped content/artifact receipt from a real managed CLI command', 
   await writeFile(join(project, '.gitignore'), 'dist/\n'); await writeFile(join(project, 'input'), 'synthetic'); git('add', '.'); git('commit', '-qm', 'fixture');
   await mkdir(join(project, 'dist')); await writeFile(join(project, 'dist/index.html'), 'verified');
   const helper = join(root, 'helper.js'); await writeFile(join(root, 'package.json'), '{"type":"module"}');
-  for (const [source, target] of [['jobs.ts', 'helper.js'], ['verification.ts', 'verification.js']]) await writeFile(join(root, target!), ts.transpileModule(await readFile(new URL('./' + source, import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
+  for (const [source, target] of [['jobs.ts', 'helper.js'], ['verification.ts', 'verification.js'], ['work-timing.ts', 'work-timing.js']]) await writeFile(join(root, target!), ts.transpileModule(await readFile(new URL('./' + source, import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
   const results: string[] = [], options = { cwd: project, env: { GRUNT_JOBS_STATE_DIR: join(root, 'state') }, notify: (text: string) => { results.push(text); }, helperEntry: helper };
   expect(await jobsCommand(['run', '--check', 'unit', '--artifact', 'dist', '--', process.execPath, '-e', 'process.stdout.write("verified")'], options)).toBe(0);
   const result = JSON.parse(results.at(-1)!); expect(result.verification).toMatchObject({ mode: 'scoped', checkId: 'unit', state: 'completed', unchanged: true, after: { clean: true, artifactFiles: [{ path: 'dist/index.html' }] } });

@@ -15,6 +15,9 @@ import type { AdminBatch } from './types.js';
 const MAX_BYTES = 1024 * 1024;
 const MAX_EVENTS = 200;
 const POLL_MS = 25000;
+// These measurements stay local until the independently deployed admin wire
+// contract supports them. Source-page progress must still include their IDs.
+const localOnlyEvents = new Set<DiagnosticEvent['type']>(['work.start', 'work.finish', 'release.marker']);
 const ids = new Set([...knownAdapters, ...localOptInAdapterIds, 'freellmapi', 'codex', 'dots']);
 const states = new Set(['unknown', 'available', 'ready', 'answering', 'connecting', 'verifying', 'approval', 'limited', 'error', 'disabled', 'unavailable']);
 const errors = new Set(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
@@ -251,10 +254,11 @@ export class AdminCollector {
       const event = sanitizeDiagnosticEvent(input);
       if (!event || !count(event.seq) || event.seq <= previous || event.source && !ids.has(event.source)) throw new CollectorError('invalid_local_data');
       if (event.model !== undefined && !safeModel(event.model)) delete event.model;
-      previous = event.seq; projected.push(event);
+      previous = event.seq;
+      if (!localOnlyEvents.has(event.type)) projected.push(event);
     }
-    if (projected.length && raw.nextCursor !== String(previous)) throw new CollectorError('invalid_local_data');
-    if (!projected.length && raw.nextCursor !== after) throw new CollectorError('invalid_local_data');
+    if (raw.events.length && raw.nextCursor !== String(previous)) throw new CollectorError('invalid_local_data');
+    if (!raw.events.length && raw.nextCursor !== after) throw new CollectorError('invalid_local_data');
     return { events: projected, nextCursor: raw.nextCursor as string | null, streamId: raw.streamId };
   }
   private async system(daemonReachable: boolean, diagnosticsAvailable: boolean, collectorErrors: CollectorIssue[]) {

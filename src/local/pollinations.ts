@@ -1,4 +1,5 @@
 import { diagnosticFetch } from './diagnostics.js';
+import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
@@ -33,6 +34,8 @@ export interface PollinationsGrant extends AccessGrant {
   quest_pollen_only: true;
 }
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const invalidCompletion = (message: string, failureReason: SafeDiagnosticMetadata['failureReason']) =>
+  new SourceError('upstream', message, undefined, undefined, { transport: 'http', endpointLabel: 'chat.completions', ...(failureReason ? { failureReason } : {}) });
 const rejected = () => new SourceError('logged_out', 'Pollinations private free-access verification is missing or expired; rerun usegrunt setup');
 function accessGrant(value: unknown): AccessGrant {
   const grant = object(value);
@@ -235,29 +238,31 @@ export class Pollinations implements Source {
         status(response);
         if (response.headers.get('x-model-requested') !== POLLINATIONS_MODEL || response.headers.get('x-model-used') !== POLLINATIONS_MODEL) {
           void response.body?.cancel().catch(() => {});
-          throw new SourceError('upstream', 'Pollinations did not acknowledge the pinned community route');
+          throw invalidCompletion('Pollinations did not acknowledge the pinned community route', 'completion_model');
         }
         const body = object(await readJSON(response, signal, 2 * 1024 * 1024));
         signal.throwIfAborted();
-        if (body.model !== POLLINATIONS_RETURNED_MODEL) throw new SourceError('upstream', 'Pollinations returned an unverified model identity');
+        if (body.model !== POLLINATIONS_RETURNED_MODEL) throw invalidCompletion('Pollinations returned an unverified model identity', 'completion_model');
         const choices = body.choices, message = object(Array.isArray(choices) && choices.length === 1 ? object(choices[0]).message : undefined);
         if (message.refusal) throw new SourceError('refused', 'Pollinations refused the request');
         if (message.function_call !== undefined || (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length))) {
-          throw new SourceError('refused', 'Pollinations attempted unsupported native API tools');
+          throw new SourceError('refused', 'Pollinations attempted unsupported native API tools', undefined, undefined,
+            { transport: 'http', endpointLabel: 'chat.completions', failureReason: 'response_tools' });
         }
         const usage = object(body.usage);
-        if (typeof message.content !== 'string' || !Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 0
+        if (typeof message.content !== 'string') throw invalidCompletion('Pollinations returned an invalid completion or usage', 'response_content');
+        if (!Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 0
           || !Number.isSafeInteger(usage.completion_tokens) || Number(usage.completion_tokens) < 0) {
-          throw new SourceError('upstream', 'Pollinations returned an invalid completion or usage');
+          throw invalidCompletion('Pollinations returned an invalid completion or usage', 'completion_usage');
         }
         inputTokens += usage.prompt_tokens as number; outputTokens += usage.completion_tokens as number;
-        if (!Number.isSafeInteger(inputTokens) || !Number.isSafeInteger(outputTokens)) throw new SourceError('upstream', 'Pollinations returned invalid usage');
+        if (!Number.isSafeInteger(inputTokens) || !Number.isSafeInteger(outputTokens)) throw invalidCompletion('Pollinations returned invalid usage', 'completion_usage');
         try {
           const result = bridge.parse(stripPollinationsThinking(message.content));
           if (!result.text.trim() && !result.calls?.length) throw new Error('Empty answer');
           return { ...result, inputTokens, outputTokens };
         }
-        catch { if (attempt === 1) throw new SourceError('upstream', 'Pollinations tool response failed validation after one repair attempt'); }
+        catch { if (attempt === 1) throw invalidCompletion('Pollinations tool response failed validation after one repair attempt', 'completion_protocol'); }
       }
       throw new SourceError('upstream', 'Pollinations tool protocol failed');
     } catch (error) {

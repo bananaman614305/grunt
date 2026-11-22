@@ -27,3 +27,13 @@ it('fails the benchmark rather than counting an incorrect fast answer', async ()
   }
   await expect(measureFallbackTasks({ Sources: IncorrectRuntime, SourceError }, 1)).rejects.toThrow('verification failed');
 });
+
+it('offers a bounded replay batch with unsuccessful tasks retained in its reported score', async () => {
+  vi.useFakeTimers(); const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const work = runEfficiencyBenchmark(['--replay', '--iterations', '2']);
+    await vi.runAllTimersAsync(); const result = await work;
+    expect(result).toMatchObject({ kind: 'offline-fallback-replay-comparison', iterations: 2,
+      current: { totalTasks: 12, completedTasks: 8, completionRate: 2 / 3, cleanupComplete: true, quotaAttempts: 2, advertisedQuotaWaitSeconds: 7200 } });
+  } finally { vi.useRealTimers(); log.mockRestore(); }
+});

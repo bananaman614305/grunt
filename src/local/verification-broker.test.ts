@@ -12,6 +12,8 @@ import type { VerificationBrokerRunner, VerificationBrokerRequest } from './veri
 import { createVerificationBrokerFileClient, tickVerificationBroker } from './verification-broker-client.js';
 import { captureVerificationState, signVerificationReceipt, verificationEnvironmentDigest } from './verification.js';
 import type { VerificationPlan } from './verification.js';
+import { createWorkTimingObserver } from './work-timing.js';
+import type { DiagnosticEvent } from './diagnostics.js';
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof fs>();
   return { ...actual, open: vi.fn(actual.open) };
@@ -32,8 +34,8 @@ async function fixture(runner: VerificationBrokerRunner = async r => {
   expect(await readFile(join(r.workspaceRoot, 'input.txt'), 'utf8')).toBe('original');
   expect(r.command).toBe(plan.checks[0]!.command); expect(r.workspaceRoot).not.toBe(project);
   return { exitCode: 0 };
-}) {
-  const run = vi.fn(runner), broker = await VerificationBroker.open({ projectRoot: project, authorityDirectory: authority, plans: [plan], runner: run, environmentDigest });
+}, options: Partial<Parameters<typeof VerificationBroker.open>[0]> = {}) {
+  const run = vi.fn(runner), broker = await VerificationBroker.open({ projectRoot: project, authorityDirectory: authority, plans: [plan], runner: run, environmentDigest, ...options });
   const state = await captureVerificationState(project);
   const request: VerificationBrokerRequest = { version: 1, id: randomUUID(), planId: plan.id, checkId: 'unit', expectedHead: state.head, expectedTreeDigest: state.treeDigest };
   return { broker, request, run };
@@ -45,6 +47,31 @@ it('executes a policy-pinned check against a private exact-head snapshot and sig
   expect((await f.broker.verifyPlan('publish', [f.request.id])).checkIds).toEqual(['unit']);
   expect(await readFile(join(project, 'input.txt'), 'utf8')).toBe('original');
   await expect(readFile(join(project, 'authority.key'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+it('records setup, queue, capture and verification stages without replacing authenticated outcomes', async () => {
+  const events: DiagnosticEvent[] = [], timing = createWorkTimingObserver({ sink: { record: e => events.push(e) } });
+  const f = await fixture(async () => ({ exitCode: 0 }), { timing });
+  expect((await f.broker.run(f.request)).state).toBe('completed');
+  expect((await f.broker.run(f.request)).state).toBe('completed'); expect(f.run).toHaveBeenCalledTimes(1);
+  const finished = events.filter(e => e.type === 'work.finish');
+  expect(finished).toEqual(expect.arrayContaining([
+    expect.objectContaining({ stage: 'queue', parentId: f.request.id, outcome: 'passed' }),
+    expect.objectContaining({ stage: 'verification', parentId: f.request.id, outcome: 'passed' }),
+    expect.objectContaining({ stage: 'verification', workDisposition: 'reused', outcome: 'passed' }),
+    expect.objectContaining({ stage: 'tool', outcome: 'passed', workDisposition: 'fresh' }),
+    expect.objectContaining({ stage: 'capture', outcome: 'passed' })
+  ]));
+  const verification = events.find(e => e.type === 'work.start' && e.stage === 'verification')!;
+  expect(finished.find(e => e.stage === 'capture')?.parentId).toBe(verification.requestId);
+  expect(JSON.stringify(events)).not.toContain(project); expect(JSON.stringify(events)).not.toContain(plan.checks[0]!.command);
+  expect(finished.some(e => e.stage === 'task')).toBe(false);
+});
+it('records failed verification and tool results even when a command returns normally', async () => {
+  const events: DiagnosticEvent[] = [], timing = createWorkTimingObserver({ sink: { record: e => events.push(e) } });
+  const f = await fixture(async () => ({ exitCode: 7 }), { timing }); expect((await f.broker.run(f.request)).state).toBe('failed');
+  const finished = events.filter(e => e.type === 'work.finish');
+  expect(finished).toEqual(expect.arrayContaining([expect.objectContaining({ stage: 'tool', outcome: 'failed' }), expect.objectContaining({ stage: 'verification', outcome: 'failed' })]));
+  await expect(f.broker.verifiedReceipt(f.request.id)).rejects.toThrow();
 });
 it('captures a shared plan once after authenticating every receipt and rejects later artifact edits', async () => {
   const multi: VerificationPlan = { ...plan, checks: [...plan.checks, { ...plan.checks[0]!, id: 'browser', command: 'trusted browser fixture' }] };

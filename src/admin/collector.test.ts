@@ -45,6 +45,52 @@ async function fixture(options: { failUpload?: boolean; rejectAck?: boolean; una
 }
 afterEach(async () => { vi.useRealTimers(); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
+it.each(['mixed', 'local-only'] as const)('advances acknowledged %s pages past local measurements without extending the admin wire schema', async mode => {
+  const f = await fixture(), original = f.fetcher.getMockImplementation()!;
+  const measurement = (seq: number, type: DiagnosticEvent['type']) => ({ ...event(seq),
+    id: `60163cdf-3325-4fa9-8c57-${String(seq).padStart(12, '0')}`, type,
+    kind: 'diagnostic', actor: 'worker', runtimeVersion: '0.9.7', stage: 'task', workDisposition: 'fresh',
+    prompt: 'synthetic private prompt', task: 'synthetic private task', command: 'synthetic private command', path: '/synthetic/private', authorization: 'synthetic token' });
+  const measurements = [measurement(1, 'release.marker'), measurement(3, 'work.start'), measurement(4, 'work.finish')];
+  for (const local of measurements) expect(() => validateAdminEvent(local, now)).toThrow('invalid_admin_batch');
+  const normal = { ...event(2), runtimeVersion: '0.9.7', prompt: 'synthetic private prompt', command: 'synthetic private command' };
+  const page = mode === 'mixed' ? [measurements[0]!, normal, ...measurements.slice(1)] : measurements;
+  let rejectUpload = true;
+  f.fetcher.mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/v1/diagnostics/events') {
+      f.gets.push(url.pathname + url.search);
+      const after = url.searchParams.get('after');
+      return Response.json({ streamId: stream, events: after === '4' ? [] : page, nextCursor: '4' });
+    }
+    if (url.hostname === '127.0.0.1') return original(input, init);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const accepted = validateAdminBatch(body, now);
+    f.uploads.push({ body, authorization: new Headers(init?.headers).get('Authorization') });
+    if (rejectUpload) return new Response('synthetic sensitive upstream error', { status: 503 });
+    return Response.json({ accepted: true, acceptedEvents: accepted.events.length,
+      ...(accepted.events.length ? { lastEventId: accepted.events.at(-1)!.id } : {}) });
+  });
+  const statePath = join(f.directory, 'admin-collector-state.json');
+  await expect(f.collector.cycle()).rejects.toThrow('upload_failed');
+  await expect(stat(statePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  rejectUpload = false;
+  await expect(f.collector.cycle()).resolves.toEqual({ uploadedEvents: mode === 'mixed' ? 1 : 0, daemonReachable: true });
+  expect(f.uploads[0]!.body.events).toEqual(f.uploads[1]!.body.events);
+  expect(f.uploads[1]!.body.events).toEqual(mode === 'mixed' ? [event(2)] : []);
+  expect(f.uploads[1]!.body.system).toMatchObject({ diagnosticsAvailable: true });
+  expect(JSON.stringify(f.uploads)).not.toMatch(/synthetic private|synthetic token|synthetic\/private|work\.start|work\.finish|release\.marker|runtimeVersion|workDisposition/);
+  expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({ cursor: '4', streamId: stream });
+  const restarted = new AdminCollector({ url: 'https://api.grunt.run/admin/ingest', ingestKey: 'synthetic-machine-key', instanceId: 'chad',
+    directory: f.directory, daemonPort: 8792, scoutDirectory: join(f.directory, 'missing-scout'), fetcher: f.fetcher, now: () => now });
+  await expect(restarted.cycle()).resolves.toEqual({ uploadedEvents: 0, daemonReachable: true });
+  expect(f.gets.filter(path => path.startsWith('/v1/diagnostics/events'))).toEqual([
+    '/v1/diagnostics/events?limit=200', '/v1/diagnostics/events?limit=200', '/v1/diagnostics/events?limit=200&after=4'
+  ]);
+  expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({ cursor: '4', streamId: stream });
+  f.collector.stop(); restarted.stop();
+});
+
 it('uploads a public-context skip and advances past it without exposing private fields', async () => {
   const f = await fixture(), original = f.fetcher.getMockImplementation()!;
   f.fetcher.mockImplementation(async (input, init) => {
@@ -285,10 +331,14 @@ it('leaves unexecuted checks and probes unknown and refuses old-head evidence fo
 });
 
 it('moves actual durable journal events into the owner store exactly once across collector restarts', async () => {
-  const local = await directory(), journal = await DiagnosticsStore.open({ directory: local, now: () => now });
+  const local = await directory(), journal = await DiagnosticsStore.open({ directory: local, now: () => now, runtimeVersion: '0.9.7' });
   const client = createClient({ url: 'file::memory:' }), remote = new AdminStore(client, { now: () => now }); await remote.init();
   try {
-    journal.record(event() as DiagnosticEvent); await journal.flush();
+    journal.record({ ...event(), id: 'b45a32dd-b630-4dba-95c8-8fab8c97d2cd', type: 'work.start', kind: 'diagnostic', actor: 'worker', stage: 'tool' } as DiagnosticEvent);
+    journal.record(event() as DiagnosticEvent);
+    journal.record({ ...event(), id: 'fc30da2a-0755-458c-ac63-32375505dce1', type: 'work.finish', kind: 'diagnostic', actor: 'worker', stage: 'tool' } as DiagnosticEvent);
+    await journal.flush();
+    expect((await journal.list()).events.map(row => row.type)).toEqual(['release.marker', 'work.start', 'attempt.finish', 'work.finish']);
     const fetcher = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input));
       if (url.hostname === '127.0.0.1') {
@@ -306,5 +356,6 @@ it('moves actual durable journal events into the owner store exactly once across
     expect(exported.events).toHaveLength(1);
     expect(exported.events[0]).toMatchObject({ id: event().id, inputTokens: 0 });
     expect(exported.events[0]).not.toHaveProperty('outputTokens');
+    expect(exported.events[0]).not.toHaveProperty('runtimeVersion');
   } finally { await journal.close(); client.close(); }
 });

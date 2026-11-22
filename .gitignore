@@ -12,3 +12,4 @@ proof/manifest.txt
 .local-proof/
 proof/validation.txt
 .cgstack/
+__pycache__/
