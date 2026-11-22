@@ -7,6 +7,8 @@ import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
 import { JobScheduler, createLocalJobRunner, jobEnvironment, jobsStateDirectory, parseJobInput, readJobResult, requestJobCancel } from './jobs.js';
 import type { JobRunner, JobExecution } from './jobs.js';
+import { createWorkTimingObserver } from './work-timing.js';
+import type { DiagnosticEvent } from './diagnostics.js';
 const dirs: string[] = [], stores: JobScheduler[] = [];
 let helper = '';
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
@@ -24,6 +26,8 @@ beforeAll(async () => {
   const p = await directory(); helper = join(p, 'jobs.js'); await writeFile(join(p, 'package.json'), '{"type":"module"}');
   const source = await readFile(new URL('./jobs.ts', import.meta.url), 'utf8');
   await writeFile(helper, ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
+  const timing = await readFile(new URL('./work-timing.ts', import.meta.url), 'utf8');
+  await writeFile(join(p, 'work-timing.js'), ts.transpileModule(timing, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
   const verification = await readFile(new URL('./verification.ts', import.meta.url), 'utf8');
   await writeFile(join(p, 'verification.js'), ts.transpileModule(verification, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, { mode: 0o600 });
 });
@@ -127,6 +131,45 @@ it('waits on completion events, records only bounded wait metadata, and aborts w
 it('a bounded wait timeout returns running status without cancelling the job', async () => {
   const d = delayed(), { store, root } = await make(d.runner), job = await store.start({ command: 'hold' }, root);
   expect(await store.wait(job.id, { timeoutMs: 10, track: true })).toMatchObject({ state: 'running' }); expect(store.snapshot().waiting).toEqual([]);
+});
+
+it('measures queue, tool and collection outcomes without changing execution or retaining commands', async () => {
+  const events: DiagnosticEvent[] = [], timing = createWorkTimingObserver({ sink: { record: event => events.push(event) } });
+  const d = delayed(), { store, root } = await make(d.runner, { maxActive: 1, timing });
+  const first = await store.start({ command: 'private-actual-command' }, root), cancelled = await store.start({ command: 'must-not-run' }, root);
+  await eventually(() => d.started.length === 1);
+  const waiting = store.wait(first.id, { timeoutMs: 1000, track: true });
+  store.cancel(cancelled.id); d.releases.get(first.id)!();
+  expect((await waiting).state).toBe('completed'); expect(d.started).toEqual([first.id]);
+  const finished = events.filter(e => e.type === 'work.finish');
+  expect(finished).toEqual(expect.arrayContaining([
+    expect.objectContaining({ stage: 'queue', parentId: first.id, outcome: 'passed' }),
+    expect.objectContaining({ stage: 'queue', parentId: cancelled.id, outcome: 'cancelled' }),
+    expect.objectContaining({ stage: 'tool', parentId: first.id, outcome: 'passed', workDisposition: 'fresh' }),
+    expect.objectContaining({ stage: 'collection', parentId: first.id, outcome: 'passed' })
+  ]));
+  expect(finished.some(e => e.stage === 'task')).toBe(false);
+  expect(JSON.stringify(events)).not.toContain('private-actual-command'); expect(JSON.stringify(events)).not.toContain(root);
+});
+
+it('measures a nonzero runner result as a failed tool operation', async () => {
+  const events: DiagnosticEvent[] = [], timing = createWorkTimingObserver({ sink: { record: e => events.push(e) } });
+  const { store, root } = await make(async () => ({ stdout: '', stderr: '', exitCode: 7 }), { timing });
+  const job = await store.start({ command: 'private-failure' }, root); expect((await store.wait(job.id)).state).toBe('failed');
+  expect(events.filter(e => e.type === 'work.finish' && e.stage === 'tool')).toEqual([expect.objectContaining({ parentId: job.id, outcome: 'failed' })]);
+});
+
+it('distinguishes in-flight verification deduplication and completed receipt reuse', async () => {
+  const events: DiagnosticEvent[] = [], timing = createWorkTimingObserver({ sink: { record: e => events.push(e) } });
+  const d = delayed(), { store, root } = await make(d.runner, { timing }), project = join(root, 'project'); await mkdir(project);
+  const git = (...args: string[]) => { const r = spawnSync('git', args, { cwd: project, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } }); expect(r.status).toBe(0); };
+  git('init', '-q'); await writeFile(join(project, 'source.txt'), 'synthetic'); git('add', '.'); git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture');
+  const input = { command: 'synthetic check', verification: { mode: 'scoped', checkId: 'unit', artifactPaths: [] } };
+  const job = await store.start(input, project); await eventually(() => d.started.length === 1);
+  expect(await store.start(input, project)).toMatchObject({ id: job.id, reused: true });
+  d.releases.get(job.id)!(); await store.wait(job.id);
+  expect(await store.start(input, project)).toMatchObject({ id: job.id, reused: true }); expect(d.started).toEqual([job.id]);
+  expect(events.filter(e => e.type === 'work.finish' && e.stage === 'verification').map(e => e.workDisposition)).toEqual(['deduplicated', 'reused']);
 });
 it('keeps a long-lived session accepting jobs after collected results are archived', async () => {
   const { store, root } = await make(async () => ({ stdout: 'done', stderr: '', exitCode: 0 }));

@@ -1,13 +1,14 @@
 import { diagnosticFetch } from './diagnostics.js';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { Ajv } from 'ajv';
 import type { AnySchema, ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
+import { MetadataFlights } from './metadata-flight.js';
 import { SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -166,17 +167,36 @@ function tools(request: ModelRequest) {
 export class BeatAPI implements Source {
   readonly id = 'beatapi'; readonly supportsFunctionTools = true;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>(); private next = 0; private busy = false;
+  private metadata = new MetadataFlights();
   private nextModel: 0 | 1 = 0;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<BeatAPIGrant>; now?: () => number } = {}) {}
   private now() { return (this.options.now ?? Date.now)(); }
   private grant() { return (this.options.loadGrant?.() ?? readBeatAPIGrant(this.options.directory)).then(validate); }
   private async approved() { return (await readDataSharingConsent(this.options.directory ?? providerGrantDirectory(), [this.id])).includes(this.id); }
   private async track<T>(task: Promise<T>) { this.pending.add(task); try { return await task; } finally { this.pending.delete(task); } }
-  async available() {
+  private preflightUsage(grant: BeatAPIGrant, signal: AbortSignal) {
+    const key = createHash('sha256').update(JSON.stringify([grant.base_url, grant.token])).digest('hex');
+    return this.metadata.run(key, async shared => {
+      // The account helper races cancellation to bound callers. Keep the flight
+      // occupied until its actual transport settles, even if fetch ignores abort.
+      const pending = new Set<Promise<Response>>();
+      const fetcher: typeof fetch = (...args) => {
+        const response = (this.options.fetcher ?? fetch)(...args); pending.add(response);
+        void response.then(() => pending.delete(response), () => pending.delete(response));
+        return response;
+      };
+      try { return await verifyBeatAPIAccess(grant, { fetcher, signal: shared }); }
+      finally { await Promise.allSettled([...pending]); }
+    }, signal);
+  }
+  async available(caller?: AbortSignal) {
     return this.track((async () => { try {
-      if (this.shutdown.signal.aborted || this.busy || this.now() < this.next || !await this.approved()) return false;
-      const grant = await this.grant(), usage = await verifyBeatAPIAccess(grant, { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal: this.shutdown.signal });
-      return !this.shutdown.signal.aborted && usage.credit_balance === grant.baseline_balance;
+      const signal = caller ? AbortSignal.any([caller, this.shutdown.signal]) : this.shutdown.signal;
+      signal.throwIfAborted();
+      if (this.busy || this.now() < this.next || !await this.approved()) return false;
+      const grant = await this.grant(), usage = await this.preflightUsage(grant, signal);
+      signal.throwIfAborted();
+      return usage.credit_balance === grant.baseline_balance;
     } catch { return false; } })());
   }
   async healthCheck() { return this.available(); }
@@ -191,7 +211,7 @@ export class BeatAPI implements Source {
       signal.throwIfAborted(); if (![this.id, 'grunt', 'milo'].includes(request.model) || request.imageInput) throw new SourceError('refused', 'BeatAPI requires its pinned text-only free route');
       const { validators, messages } = tools(request); if (!await this.approved()) throw new SourceError('refused', 'BeatAPI data sharing is not approved; rerun usegrunt setup');
       const grant = await this.grant(), guards = { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal };
-      const before = await verifyBeatAPIAccess(grant, guards); if (before.credit_balance !== grant.baseline_balance) throw new SourceError('refused', 'BeatAPI account balance changed; rerun usegrunt setup');
+      const before = await this.preflightUsage(grant, signal); if (before.credit_balance !== grant.baseline_balance) throw new SourceError('refused', 'BeatAPI account balance changed; rerun usegrunt setup');
       const model = grant.version === 2 ? grant.models[this.nextModel] : BEATAPI_MODEL;
       signal.throwIfAborted();
       awaitingInferenceResponse = true;
@@ -204,6 +224,8 @@ export class BeatAPI implements Source {
         this.nextModel = model === BEATAPI_MODEL ? 1 : 0;
       }
       status(response);
+      // This read must be fresh and separate from overlapping availability checks:
+      // sharing pre-inference evidence would defeat the balance-change guard.
       const body = await json(response, signal, 2 * 1024 * 1024), after = await verifyBeatAPIAccess(grant, guards);
       if (after.credit_balance !== before.credit_balance) throw new SourceError('refused', 'BeatAPI free request changed the account balance; routing stopped');
       if (body.model !== model) throw new SourceError('upstream', 'BeatAPI returned an unverified free model identity');
@@ -237,5 +259,5 @@ export class BeatAPI implements Source {
       throw new SourceError('upstream', 'BeatAPI request failed');
     }
   }
-  async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
+  async close() { this.shutdown.abort(); this.metadata.close(); await Promise.allSettled([...this.pending]); }
 }

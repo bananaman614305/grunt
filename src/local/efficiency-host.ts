@@ -14,6 +14,8 @@ import type { PublicationPolicy, PublicationRecord, PublicationRequest } from '.
 import { GithubPublicationTransport, readPublicationArtifacts } from './publication-github.js';
 import type { PublicationGithubExec } from './publication-github.js';
 import { createPublicationReviewer } from './publication-review.js';
+import { runtimeWorkTiming } from './work-timing-store.js';
+import type { WorkTimingObserver } from './work-timing.js';
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const sha = /^[a-f0-9]{40}$/;
@@ -171,6 +173,7 @@ export const executionHostExec: HostExec = async (argv, options) => new Promise(
   child.stdin!.on('error', () => {}); child.stdin!.end(options.input);
 });
 export interface ExecutionHostDependencies {
+  timing?: WorkTimingObserver;
   exec?: HostExec;
   /** Dependency seams are programmatic, never accepted in JSON policy or worker intent. */
   runner?: VerificationBrokerRunner;
@@ -227,6 +230,7 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
     } finally { await Promise.all(handles.map(handle => handle.close())); }
   });
   const broker = await VerificationBroker.open({ projectRoot: policy.projectRoot, authorityDirectory: join(policy.stateDirectory, 'verification'), plans: policy.plans, runner,
+    ...(dependencies.timing ? { timing: dependencies.timing } : {}),
     environmentDigest: verificationEnvironmentDigest({ ...minimalEnvironment, GRUNT_EXECUTION_POLICY: digest(policy) }) });
   const github: PublicationGithubExec = (args, input, signal) => exec(['/usr/bin/gh', ...args], { environment: hostEnvironment, ...(input !== undefined ? { input } : {}), ...(signal ? { signal } : {}), timeoutMs: 120000 });
   const screenedCommits = new Set<string>(), screenedRanges = new Set<string>();
@@ -446,10 +450,11 @@ export async function executionHostCommand(args: string[]) {
     process.stdout.write(JSON.stringify(status) + '\n'); return;
   }
   const release = await acquireExecutionHostLease(policy.stateDirectory);
+  const measurements = runtimeWorkTiming(join(policy.stateDirectory, 'efficiency'));
   const controller = new AbortController(), stop = () => controller.abort();
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
-  try { const host = await openExecutionHost(policy); if (once) await host.tick(controller.signal); else await host.serve(controller.signal); }
-  finally { process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop); await release(); }
+  try { const host = await openExecutionHost(policy, { timing: measurements.timing }); if (once) await host.tick(controller.signal); else await host.serve(controller.signal); }
+  finally { process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop); await measurements.close(); await release(); }
 }
 
 export type { PublicationRequest, PublicationRecord };

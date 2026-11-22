@@ -50,6 +50,7 @@ import { createSourceMaintenance } from './runtime-maintenance.js';
 import { SourceRecovery } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
+import { installedRuntimeVersion } from './runtime-version.js';
 import { createWorkerRuntime } from './worker-runtime.js';
 import { automaticPoolSelection } from './automatic-pool.js';
 import { createRuntimeRoutingHistory } from './runtime-routing.js';
@@ -144,7 +145,8 @@ export function start(env = process.env) {
   const sources = configure(env, () => registry, () => anonymousKilo);
   const directory = configDir(env);
   let diagnostics: DiagnosticsStore | undefined;
-  const diagnosticReady = DiagnosticsStore.open({ directory }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
+  const runtimeVersion = installedRuntimeVersion();
+  const diagnosticReady = DiagnosticsStore.open({ directory, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
   const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
 
   const reconcile = () => {
@@ -251,6 +253,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const { statusCommand } = await import('./dashboard.js');
     try { await statusCommand(process.argv.slice(3)); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'efficiency') {
+    try { const { efficiencyCommand } = await import('./efficiency-cli.js'); await efficiencyCommand(process.argv.slice(3)); }
+    catch { console.error('Grunt efficiency command failed; check arguments and local measurement availability.'); process.exitCode = 1; }
   } else if (process.argv[2] === 'jobs') {
     try { const { jobsCommand } = await import('./jobs-cli.js'); process.exitCode = await jobsCommand(process.argv.slice(3)); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Grunt jobs command failed'); process.exitCode = 1; }
@@ -271,7 +276,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'Grunt workers command failed'); process.exitCode = 1; }
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | workers <run|status|retained|artifact|apply|discard|connect|mcp> | jobs <run|status|result|cancel> | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool, or workers to delegate independent tasks.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | workers <run|status|retained|artifact|apply|discard|connect|mcp> | jobs <run|status|result|cancel> | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool, or workers to delegate independent tasks.');
   } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }

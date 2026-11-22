@@ -1,4 +1,5 @@
 import { recordTransport } from './diagnostics.js';
+import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
@@ -103,6 +104,8 @@ export async function runMistralVibeProcess(binary: string, args: string[], opti
 }
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
+const invalidCompletion = (message: string, failureReason: SafeDiagnosticMetadata['failureReason']) =>
+  new SourceError('upstream', message, undefined, undefined, { transport: 'cli', endpointLabel: 'cli', ...(failureReason ? { failureReason } : {}) });
 // These outcomes map to exit 3 in the pinned Vibe export. Provider messages
 // can inform routing but must never become diagnostic metadata.
 const nativeStopOutcomes = ['turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'] as const;
@@ -126,22 +129,23 @@ export function parseMistralVibeCompletion(stdout: string, exported: unknown): C
   if (config.active_model !== MISTRAL_VIBE_MODEL || selected.name !== MISTRAL_VIBE_WIRE_MODEL || selected.provider !== 'mistral'
       || selected.max_context_length !== 262144 || selected.auto_compact_threshold !== 202144
       || object(config.compaction_model).name !== MISTRAL_VIBE_WIRE_MODEL || object(config.compaction_model).provider !== 'mistral'
-      || provider?.api_base !== 'https://api.mistral.ai/v1') throw new SourceError('upstream', 'Mistral Vibe did not use the vetted Free GLM model');
+      || provider?.api_base !== 'https://api.mistral.ai/v1') throw invalidCompletion('Mistral Vibe did not use the vetted Free GLM model', 'completion_model');
   if (run.outcome !== 'finished' || run.exit_code !== 0 || run.error) throw nativeFailure(run);
   let history: unknown;
-  try { history = JSON.parse(stdout); } catch { throw new SourceError('upstream', 'Mistral Vibe returned invalid completion JSON'); }
-  if (!Array.isArray(history)) throw new SourceError('upstream', 'Mistral Vibe returned invalid completion history');
+  try { history = JSON.parse(stdout); } catch { throw invalidCompletion('Mistral Vibe returned invalid completion JSON', 'response_json'); }
+  if (!Array.isArray(history)) throw invalidCompletion('Mistral Vibe returned invalid completion history', 'response_body');
   const entries = history.map(object);
   if (entries.some(entry => entry.type === 'effect' || (Array.isArray(entry.content) && entry.content.some(part => /tool_call|tool_use/.test(String(object(part).type)))))) {
-    throw new SourceError('refused', 'Mistral Vibe attempted native tools during a text-only completion');
+    throw new SourceError('refused', 'Mistral Vibe attempted native tools during a text-only completion', undefined, undefined,
+      { transport: 'cli', endpointLabel: 'cli', failureReason: 'response_tools' });
   }
   const answer = [...entries].reverse().find(entry => entry.type === 'message' && entry.role === 'assistant' && entry.generationStatus === 'completed'
     && object(entry.outcome).type !== 'discarded' && Array.isArray(entry.content));
   const text = Array.isArray(answer?.content) ? answer.content.map(object).filter(part => part.type === 'text' && typeof part.text === 'string').map(part => part.text).join('\n\n') : '';
   const usage = object(run.usage);
-  if (!text.trim() || !Number.isSafeInteger(usage.input_tokens) || Number(usage.input_tokens) < 0 || !Number.isSafeInteger(usage.output_tokens) || Number(usage.output_tokens) < 0) {
-    throw new SourceError('upstream', 'Mistral Vibe returned no complete answer or valid native usage');
-  }
+  if (!text.trim()) throw invalidCompletion('Mistral Vibe returned no complete answer or valid native usage', 'response_content');
+  if (!Number.isSafeInteger(usage.input_tokens) || Number(usage.input_tokens) < 0 || !Number.isSafeInteger(usage.output_tokens) || Number(usage.output_tokens) < 0)
+    throw invalidCompletion('Mistral Vibe returned no complete answer or valid native usage', 'completion_usage');
   return { text, inputTokens: usage.input_tokens as number, outputTokens: usage.output_tokens as number };
 }
 export class MistralVibe implements Source {
@@ -192,7 +196,7 @@ export class MistralVibe implements Source {
       const result = await this.completeText({ ...request, handoffPrompt }, signal);
       inputTokens += result.inputTokens ?? 0; outputTokens += result.outputTokens ?? 0;
       try { return { ...bridge.parse(result.text), inputTokens, outputTokens }; }
-      catch { if (attempt === 1) throw new SourceError('upstream', 'Mistral Vibe tool response failed validation after one repair attempt'); }
+      catch { if (attempt === 1) throw invalidCompletion('Mistral Vibe tool response failed validation after one repair attempt', 'completion_protocol'); }
     }
     throw new SourceError('upstream', 'Mistral Vibe tool protocol failed');
   }

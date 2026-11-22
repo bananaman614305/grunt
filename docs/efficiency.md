@@ -143,6 +143,108 @@ coding-task speedup. For that, compare equivalent tasks and provider conditions,
 count only correctly completed and verified work, and include retries, rework,
 tokens and memory in the result.
 
+### Retain a usable before/after baseline
+
+New diagnostics stores maintain hourly aggregate counts, duration sums, maxima and
+explicit latency histograms independently of the bounded raw event journal.
+Aggregates retain up to thirty days, subject to documented row and series limits.
+They distinguish runtime version, client requests, helper/worker work, providers,
+failure classes and stages. Repeated event IDs are counted once within the retained
+deduplication horizon; older events are rejected with a coverage counter rather
+than silently counted again. High-cardinality overflow is explicit. Histograms
+give ranges, not exact medians or percentiles. Whole-hour query alignment and
+coverage boundaries appear in the report; partial windows must not be presented
+as precise release comparisons.
+
+```bash
+usegrunt efficiency metrics --port 8792
+usegrunt efficiency metrics --port 8792 --since 1795363200000 --until 1795366800000
+```
+
+This only reads local `/v1/diagnostics/metrics`; it never probes providers. Runtime
+version is read from the trusted installed package, not a model-supplied field.
+An observed version transition records a release marker, not proof that all
+in-flight work used the new version. Old data is not backfilled with an invented
+version or reconstructed after pruning. Route-skip trace events remain intact;
+hourly counters survive their eviction from raw history.
+
+The [passive collector](passive-efficiency.md) can preserve allowlisted summaries
+from an existing runtime using a read-only SQLite connection, without installing a
+new Grunt version or restarting a worker. It stores its own cursor, coverage gaps,
+histograms and markers in separate private state. Use that collector when the raw
+journal turns over faster than the intended comparison period.
+
+### Attribute time to actual work
+
+Background jobs emit correlated setup, queue, capture, tool and collection spans.
+Host verification emits setup, queue, capture, tool and verification spans;
+checkpoint tools distinguish write, read and resume operations. Scoped verification
+marks fresh execution, reused results and deduplicated active work separately.
+Tool duration includes helper startup; unmanaged foreground tools and the supervisor's
+checkpoint lifecycle remain outside these spans. These observations never include commands, output, file paths, prompts or checkpoint
+content, and an observer failure cannot change execution or verification authority.
+
+Pi observations are stored privately under the jobs state directory's `efficiency`
+subdirectory. Host verification observations use the host state directory's
+`efficiency` subdirectory. Their stores are lazy and drained after work settles at
+shutdown. They are separate from daemon request metrics; the passive collector may
+read each database into separately identified state. No public worker command can
+declare that a feature has been independently verified.
+
+The internal `createWorkTimingObserver`/`measureWorkTiming` API can record explicit
+task boundaries when a trusted task owner has an actual acceptance result. A
+successful request, returned tool call, checkpoint write or completed job is not
+automatically a verified task. Correlated overlapping stage durations must not be
+summed and reported as exclusive wall-clock time. Ordinary tools outside these
+managed paths and autonomous feature acceptance remain outside this instrumentation.
+
+### Compare a fixed workload with failures included
+
+```bash
+pnpm benchmark:workload --baseline /absolute/trusted-baseline \
+  --repetitions 5 --tasks 20 --seed 20261122 --concurrency 1,2,4
+pnpm benchmark:efficiency --replay --baseline /absolute/trusted-baseline --iterations 5
+pnpm benchmark:metadata --baseline /absolute/trusted-baseline
+```
+
+The workload benchmark resets isolated synthetic fixtures, verifies results against
+fixed acceptance cases and alternates baseline/candidate order. Incorrect answers
+and deadline failures are intentional negative controls. Reports include every task,
+batch makespan including failure/cleanup time, verified tasks per elapsed hour,
+completion counts, verified-task latency, attempts, synthetic/unknown token usage,
+process CPU and sampled RSS. Manifest, code and environment digests identify the
+comparison. Paired bootstrap intervals describe timing uncertainty; a few repetitions
+are a smoke measurement, not strong statistical evidence. If completion counts differ,
+report both outcomes and throughput rather than a speedup claim alone.
+
+Concurrency 1/2/4 belongs only to this offline benchmark. It does not raise live
+worker admission, bypass resource budgets, race paid provider requests or change
+provider selection. Resource statistics are process-wide; they do not establish
+memory isolation or production capacity. No concurrency increase should ship without
+representative task correctness and memory-pressure evidence.
+
+Replay exercises meaningful progress, healthy slow responses, native turn limits,
+quota fallback, incorrect fast answers, timeouts and cancellation cleanup. Quota
+reset hints are recorded separately from time actually spent. Opaque adapters keep
+their existing deadlines; skipping protocol repair or cutting hidden reasoning is
+not counted as an optimization. Additional Mistral/Pollinations failure categories
+help distinguish protocol, model, usage and content rejection without retaining bodies.
+
+Metadata benchmarks compare actual trusted baseline/current adapters with injected
+transports and verify unchanged output and completion counts. BeatAPI coalesces
+overlapping preflight usage reads while retaining a separate fresh post-inference
+balance check. Darus coalesces protected overlapping metadata reads. Calls retain
+per-caller consent/grant checks, separate credential identities and independent
+cancellation; later calls read fresh evidence. These fixtures can prove reduced
+redundant work without demonstrating lower real-provider latency.
+
+For end-to-end coding claims, use equivalent independently checked tasks with the
+same acceptance criteria, include failed and timed-out runs in elapsed time, report
+task families and provider conditions, and keep a holdout workload. Tokens and CPU
+per verified task are efficiency measures alongside throughput, not substitutes for
+correctness. Passive production observations corroborate controlled tests; they do
+not remove workload and provider confounding on their own.
+
 ## Resume focused context
 
 `--grunt-checkpoints` enables `grunt_checkpoint_write`, `grunt_checkpoint_read`

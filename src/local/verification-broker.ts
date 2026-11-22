@@ -6,6 +6,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { authenticVerificationReceipt, captureVerificationState, readVerificationReceipt, sameVerificationState, signVerificationReceipt, verificationCommandDigest, verificationPlanDigest, verifyReleaseReceipts, writeVerificationReceipt } from './verification.js';
 import type { VerificationPlan, VerificationReceipt, VerificationState } from './verification.js';
+import { measureWorkTiming, startWorkTiming } from './work-timing.js';
+import type { WorkTimingObserver } from './work-timing.js';
 
 const execute = promisify(execFile);
 const ids = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -20,7 +22,7 @@ export interface VerificationBrokerStatus { version: 1; id: string; state: 'queu
 export interface VerificationBrokerRun { id: string; command: string; projectRoot: string; workspaceRoot: string; timeoutMs: number; signal: AbortSignal }
 /** A trusted host supplies the sandbox executor. This function is never received from the model or read from its outbox. */
 export type VerificationBrokerRunner = (request: VerificationBrokerRun) => Promise<{ exitCode: number }>;
-export interface VerificationBrokerOptions { projectRoot: string; authorityDirectory: string; plans: readonly VerificationPlan[]; runner: VerificationBrokerRunner; environmentDigest: string; now?: () => number }
+export interface VerificationBrokerOptions { projectRoot: string; authorityDirectory: string; plans: readonly VerificationPlan[]; runner: VerificationBrokerRunner; environmentDigest: string; now?: () => number; timing?: WorkTimingObserver }
 
 export function parseVerificationBrokerRequest(value: unknown): VerificationBrokerRequest {
   const v = object(value);
@@ -81,6 +83,7 @@ export class VerificationBroker {
   private running: Promise<unknown> = Promise.resolve();
   private constructor(private options: VerificationBrokerOptions, private project: string, private key: Uint8Array, private plans: readonly VerificationPlan[]) {}
   static async open(options: VerificationBrokerOptions) {
+    return measureWorkTiming('setup', async () => {
     const project = await realpath(options.projectRoot);
     if (project !== options.projectRoot || !isAbsolute(project) || !hash.test(options.environmentDigest) || !options.plans.length || options.plans.length > 16) throw safeError();
     if (inside(project, options.authorityDirectory) || inside(options.authorityDirectory, project)) throw safeError();
@@ -89,8 +92,10 @@ export class VerificationBroker {
     const plans = structuredClone(options.plans); const seen = new Set<string>();
     for (const plan of plans) { verificationPlanDigest(plan); if (seen.has(plan.id)) throw safeError(); seen.add(plan.id); }
     return new VerificationBroker(options, project, await keyFile(join(options.authorityDirectory, 'authority.key')), plans);
+    }, options.timing ? { timing: options.timing } : {});
   }
   get authorityDirectory() { return this.options.authorityDirectory; }
+  private timing(parentId?: string) { return { ...(this.options.timing ? { timing: this.options.timing } : {}), ...(parentId ? { parentId } : {}) }; }
   private plan(request: VerificationBrokerRequest) {
     const plan = this.plans.find(p => p.id === request.planId), check = plan?.checks.find(c => c.id === request.checkId);
     if (!plan || !check) throw safeError();
@@ -124,7 +129,16 @@ export class VerificationBroker {
   /** Concurrent duplicate IDs are never executed twice, including across broker instances/processes. */
   run(value: unknown, signal = new AbortController().signal): Promise<VerificationBrokerStatus> {
     const request = parseVerificationBrokerRequest(value); this.plan(request);
-    const result = this.running.then(() => this.execute(request, signal));
+    const queued = startWorkTiming('queue', this.timing(request.id));
+    const result = this.running.then(async () => {
+      queued.finish(signal.aborted ? 'cancelled' : 'passed');
+      const work = startWorkTiming('verification', this.timing(request.id));
+      try {
+        const status = await work.run(() => this.execute(request, signal));
+        work.finish(status.state === 'completed' ? 'passed' : ['queued', 'running'].includes(status.state) ? 'skipped' : signal.aborted ? 'cancelled' : 'failed');
+        return status;
+      } catch (error) { work.finish(signal.aborted ? 'cancelled' : 'failed'); throw error; }
+    });
     this.running = result.then(() => {}, () => {}); return result;
   }
   private async execute(request: VerificationBrokerRequest, signal: AbortSignal): Promise<VerificationBrokerStatus> {
@@ -139,7 +153,9 @@ export class VerificationBroker {
       try { previous = parseVerificationBrokerRequest(await readJSON(join(path, 'request.json'), 8192)); }
       catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, id: request.id, planId: plan.id, checkId: check.id, state: 'queued' }; throw e; }
       if (Object.entries(request).some(([key, value]) => object(previous)[key] !== value)) throw safeError();
-      return await this.status(request.id) ?? { version: 1, id: request.id, planId: plan.id, checkId: check.id, state: 'queued' };
+      const previousStatus = await this.status(request.id);
+      startWorkTiming('verification', { ...this.timing(request.id), workDisposition: previousStatus?.state === 'completed' ? 'reused' : 'deduplicated' }).finish('passed');
+      return previousStatus ?? { version: 1, id: request.id, planId: plan.id, checkId: check.id, state: 'queued' };
     }
     await atomic(join(path, 'request.json'), request);
     const base = { version: 1 as const, id: request.id, checkId: check.id, planId: plan.id };
@@ -149,22 +165,23 @@ export class VerificationBroker {
     let before: VerificationState | undefined, after: VerificationState | undefined, exitCode: number | undefined;
     let code: VerificationBrokerStatus['code'] = 'capture_failed';
     try {
-      before = await captureVerificationState(this.project, artifacts);
+      before = await measureWorkTiming('capture', () => captureVerificationState(this.project, artifacts), this.timing());
       code = 'inputs_changed';
       if (!before.clean || before.head !== request.expectedHead || before.treeDigest !== request.expectedTreeDigest) throw safeError();
-      await snapshot(this.project, workspace, before, artifacts);
+      await measureWorkTiming('setup', () => snapshot(this.project, workspace, before!, artifacts), this.timing());
       code = 'execution_failed';
       const controller = new AbortController(), combined = AbortSignal.any([signal, controller.signal]);
       const timeout = setTimeout(() => controller.abort(new Error('Verification check exceeded its trusted deadline.')), (check.timeoutSeconds ?? 900) * 1000); timeout.unref();
+      const toolTiming = startWorkTiming('tool', { ...this.timing(), workDisposition: 'fresh' });
       try {
         const result = await this.options.runner({ id: request.id, command: check.command, projectRoot: this.project, workspaceRoot: workspace, timeoutMs: (check.timeoutSeconds ?? 900) * 1000, signal: combined });
         combined.throwIfAborted();
         if (!Number.isInteger(result.exitCode) || result.exitCode < 0 || result.exitCode > 255) throw safeError();
         exitCode = result.exitCode;
-      } finally { clearTimeout(timeout); }
+      } finally { toolTiming.finish(signal.aborted ? 'cancelled' : exitCode === 0 ? 'passed' : 'failed'); clearTimeout(timeout); }
       code = 'inputs_changed';
-      const inSnapshot = await captureVerificationState(workspace, artifacts);
-      after = await captureVerificationState(this.project, artifacts);
+      const inSnapshot = await measureWorkTiming('capture', () => captureVerificationState(workspace, artifacts), this.timing());
+      after = await measureWorkTiming('capture', () => captureVerificationState(this.project, artifacts), this.timing());
       const unchanged = sameVerificationState(before, after) && sameVerificationState(before, { ...inSnapshot, projectRoot: this.project });
       const passed = exitCode === 0 && unchanged && !before.missingArtifacts.length && !after.missingArtifacts.length && !inSnapshot.missingArtifacts.length;
       const receipt: VerificationReceipt = signVerificationReceipt({ version: 1, id: request.id, checkId: check.id, mode: 'release', planDigest: verificationPlanDigest(plan), commandDigest: verificationCommandDigest(check.command),
@@ -187,7 +204,7 @@ export class VerificationBroker {
   /** Publication calls this on the host; a model-supplied `verified:true` is never accepted. */
   async verifiedReceipt(id: string) {
     const { receipt, check } = await this.authenticatedReceipt(id);
-    if (!sameVerificationState(await captureVerificationState(this.project, check.artifactPaths ?? []), receipt.after)) throw safeError();
+    if (!sameVerificationState(await measureWorkTiming('capture', () => captureVerificationState(this.project, check.artifactPaths ?? []), this.timing()), receipt.after)) throw safeError();
     return { id: receipt.id, projectRoot: this.project, head: receipt.after.head, treeDigest: receipt.after.treeDigest, artifactDigest: receipt.after.artifactDigest, checkId: receipt.checkId, mode: 'release' as const, state: 'completed' as const, exitCode: 0 as const, unchanged: true as const, verified: true as const, receipt };
   }
   /** Host housekeeping must supply IDs still referenced by pending publication. Recent and active evidence is preserved. */

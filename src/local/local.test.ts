@@ -374,12 +374,19 @@ it('matches saved user turns with normalized newlines and surrounding whitespace
 it.each(['grunt-local', 'milo-local'])('starts the daemon through the compatible %s bin symlink',async bin=>{
   const {symlink}=await import('node:fs/promises');
   const {spawn}=await import('node:child_process');
+  const {createServer}=await import('node:net');
+  const reservation=createServer();
+  await new Promise<void>((resolve,reject)=>{reservation.once('error',reject);reservation.listen(0,'127.0.0.1',resolve);});
+  const address=reservation.address();
+  if(!address || typeof address==='string') throw new Error('No isolated daemon fixture port');
+  const port=String(address.port);
+  await new Promise<void>((resolve,reject)=>reservation.close(error=>error?reject(error):resolve()));
   const dir=await mkdtemp(join(tmpdir(),'grunt-bin-'));
   await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,bin));
-  const env = bin === 'grunt-local' ? { ...process.env, GRUNT_PORT:'18789',GRUNT_SOURCES:'dots',GRUNT_CONFIG_DIR:dir }
-    : { ...process.env, GRUNT_PORT:undefined,GRUNT_SOURCES:undefined,GRUNT_CONFIG_DIR:undefined,MILO_PORT:'18789',MILO_SOURCES:'dots',MILO_CONFIG_DIR:dir };
+  const env = bin === 'grunt-local' ? { ...process.env, GRUNT_PORT:port,GRUNT_SOURCES:'dots',GRUNT_CONFIG_DIR:dir }
+    : { ...process.env, GRUNT_PORT:undefined,GRUNT_SOURCES:undefined,GRUNT_CONFIG_DIR:undefined,MILO_PORT:port,MILO_SOURCES:'dots',MILO_CONFIG_DIR:dir };
   const child=spawn(process.execPath,['--import','tsx',join(dir,bin),'serve'],{env,stdio:['ignore','ignore','pipe']});
-  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch('http://127.0.0.1:18789/v1/models')).status).toBe(200);}finally{const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } await rm(dir,{recursive:true,force:true});}
+  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch(`http://127.0.0.1:${port}/v1/models`)).status).toBe(200);}finally{const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } await rm(dir,{recursive:true,force:true});}
 });
 it('starts setup from the usegrunt bin without arguments', async () => {
   const { symlink, writeFile } = await import('node:fs/promises');

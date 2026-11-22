@@ -303,6 +303,15 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     try { const since = c.req.query('since'); return c.json(await store.summary(since === undefined ? {} : { since: Number(since) })); }
     catch { return c.json({ error: 'Invalid diagnostic time' }, 400); }
   });
+  app.get('/v1/diagnostics/metrics', async c => {
+    c.header('Cache-Control', 'no-store'); const store = sources.diagnosticStore();
+    if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);
+    try {
+      const since = c.req.query('since'), until = c.req.query('until');
+      const result = await store.metrics({ ...(since === undefined ? {} : { since: Number(since) }), ...(until === undefined ? {} : { until: Number(until) }) });
+      return c.json(result, result.coverage.available ? 200 : 503);
+    } catch { return c.json({ error: 'Invalid diagnostic metrics window' }, 400); }
+  });
   app.get('/v1/diagnostics/traces/:id', async c => {
     c.header('Cache-Control', 'no-store'); const store = sources.diagnosticStore();
     if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);

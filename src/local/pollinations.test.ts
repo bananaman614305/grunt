@@ -164,7 +164,8 @@ it.each([1, 17, 512, 1024, 4096, 100000])('honors a caller output-token hard cap
 
 it.each(['<think>incomplete '+final(), final()+' trailing text', '```json\n'+final()+'\n```', '<think>first</think><think>second</think>'+final(), final('')])('never loosely recovers JSON from invalid output %s', async text => {
   const path = await directory(), fetcher = mock({ infer: () => completion(text) });
-  await expect(source({ directory: path, fetcher }).complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream', output: undefined });
+  await expect(source({ directory: path, fetcher }).complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream', output: undefined,
+    diagnostics: { transport: 'http', endpointLabel: 'chat.completions', failureReason: 'completion_protocol' } });
   expect(posts(fetcher)).toHaveLength(2);
 });
 
@@ -202,8 +203,16 @@ it.each([
   { body: {}, headers: { 'x-model-used': 'paid-model' } }, { body: {}, headers: { 'x-model-requested': '' } }
 ])('rejects response model/route mismatch without protocol retry or fallback %j', async patch => {
   const path = await directory(), fetcher = mock({ infer: () => completion(final(), patch.body, patch.headers) });
-  await expect(source({ directory: path, fetcher }).complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
+  await expect(source({ directory: path, fetcher }).complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream',
+    diagnostics: { transport: 'http', endpointLabel: 'chat.completions', failureReason: 'completion_model' } });
   expect(posts(fetcher)).toHaveLength(1);
+});
+
+it('distinguishes invalid usage from protocol failures without repair or retaining the response', async () => {
+  const path = await directory(), fetcher = mock({ infer: () => completion(final(), { usage: { prompt_tokens: -1, completion_tokens: 1 } }) });
+  const failure = await source({ directory: path, fetcher }).complete(request, AbortSignal.timeout(1000)).catch(error => error);
+  expect(failure.diagnostics).toEqual({ transport: 'http', endpointLabel: 'chat.completions', failureReason: 'completion_usage' });
+  expect(failure.output).toBeUndefined(); expect(posts(fetcher)).toHaveLength(1);
 });
 
 it.each([

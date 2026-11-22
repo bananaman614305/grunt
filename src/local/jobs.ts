@@ -7,6 +7,8 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureVerificationState, parseVerificationInput, readVerificationReceipt, sameVerificationState, verificationBinding, verificationEnvironmentDigest, verificationKey, VERIFICATION_MAX_CACHE_AGE_MS, writeVerificationReceipt } from './verification.js';
 import type { VerificationInput, VerificationReceipt, VerificationState } from './verification.js';
+import { measureWorkTiming, startWorkTiming } from './work-timing.js';
+import type { WorkTimingObserver, WorkTimingSpan } from './work-timing.js';
 
 export const JOB_CATEGORIES = ['test', 'build', 'render', 'download', 'other'] as const;
 export type JobCategory = typeof JOB_CATEGORIES[number];
@@ -37,7 +39,7 @@ export type JobResult = JobStatus & Partial<JobExecution> & { verification?: Ver
 export interface JobRunRequest { id: string; cwd: string; command: string; timeoutMs: number; maxOutputBytes: number; ownerPid: number; directory: string; signal: AbortSignal }
 export type JobRunner = (request: JobRunRequest) => Promise<JobExecution>;
 export interface JobExec { (command: string, args: string[], options: { cwd: string; signal: AbortSignal; timeout: number }): Promise<{ stdout: string; stderr: string; code: number; killed?: boolean }> }
-interface InternalJob { verification?: { input: VerificationInput; key: string; admitted: VerificationState; binding: { planDigest: string; commandDigest: string }; environmentDigest: string }; status: JobStatus; input?: JobInput; cwd?: string; controller?: AbortController; promise?: Promise<void>; result?: JobExecution }
+interface InternalJob { queueTiming?: WorkTimingSpan; verification?: { input: VerificationInput; key: string; admitted: VerificationState; binding: { planDigest: string; commandDigest: string }; environmentDigest: string }; status: JobStatus; input?: JobInput; cwd?: string; controller?: AbortController; promise?: Promise<void>; result?: JobExecution }
 
 export function parseJobInput(value: unknown): JobInput {
   const v = object(value);
@@ -135,17 +137,18 @@ export class JobScheduler {
   private token = randomUUID();
   private waiters = new Map<string, Set<() => void>>();
   private waiting = new Map<string, JobWait>();
-  private constructor(private options: { directory: string; runner: JobRunner; now: () => number; active: number; outputBytes: number }) {
+  private constructor(private options: { directory: string; runner: JobRunner; now: () => number; active: number; outputBytes: number; timing?: WorkTimingObserver }) {
     this.heartbeat = setInterval(() => { if (this.running.size || this.queued.length) void this.persist().catch(() => {}); }, 5000).unref();
   }
-  static async open(options: { stateDirectory?: string; sessionId: string; runner: JobRunner; now?: () => number; maxActive?: number; maxOutputBytes?: number }) {
+  static async open(options: { stateDirectory?: string; sessionId: string; runner: JobRunner; now?: () => number; maxActive?: number; maxOutputBytes?: number; timing?: WorkTimingObserver }) {
+    return measureWorkTiming('setup', async () => {
     if (!sessionPattern.test(options.sessionId)) throw new Error('Invalid Grunt job session.');
     const root = options.stateDirectory ?? jobsStateDirectory();
     if (!isAbsolute(root)) throw new Error('Grunt job state directory must be absolute.');
     const directory = join(root, 'sessions', options.sessionId);
     await privateDirectory(root); await privateDirectory(join(root, 'sessions')); await privateDirectory(directory); await privateDirectory(join(directory, 'jobs')); await privateDirectory(join(directory, 'receipts'));
     const out = new JobScheduler({ directory, runner: options.runner, now: options.now ?? Date.now,
-      active: Math.min(MAX_JOB_ACTIVE, Math.max(1, options.maxActive ?? MAX_JOB_ACTIVE)), outputBytes: Math.min(256 * 1024, Math.max(1, options.maxOutputBytes ?? MAX_JOB_OUTPUT_BYTES)) });
+      active: Math.min(MAX_JOB_ACTIVE, Math.max(1, options.maxActive ?? MAX_JOB_ACTIVE)), outputBytes: Math.min(256 * 1024, Math.max(1, options.maxOutputBytes ?? MAX_JOB_OUTPUT_BYTES)), ...(options.timing ? { timing: options.timing } : {}) });
     try {
       const lock = join(directory, 'owner.json');
       try {
@@ -169,8 +172,11 @@ export class JobScheduler {
       }
       await out.persist(); return out;
     } catch (error) { clearInterval(out.heartbeat); throw error; }
+    }, options.timing ? { timing: options.timing } : {});
   }
   get directory() { return this.options.directory; }
+  private timing(parentId?: string) { return { ...(this.options.timing ? { timing: this.options.timing } : {}), ...(parentId ? { parentId } : {}) }; }
+  private reused(id: string, workDisposition: 'reused' | 'deduplicated') { startWorkTiming('verification', { ...this.timing(id), workDisposition }).finish('passed'); }
   snapshot(): JobSnapshot {
     const rows = [...this.jobs.values()].map(j => ({ ...j.status }));
     return { version: 1, observedAt: this.options.now(), ownerPid: process.pid,
@@ -194,11 +200,11 @@ export class JobScheduler {
     if (!isAbsolute(trustedCwd) || !(await lstat(await realpath(trustedCwd))).isDirectory()) throw new Error('The coding interface must supply an existing working directory.');
     let verification: InternalJob['verification'];
     if (parsed.verification) {
-      const admitted = await captureVerificationState(trustedCwd, parsed.verification.artifactPaths), binding = verificationBinding(parsed.verification, parsed.command, parsed.timeoutSeconds);
+      const admitted = await measureWorkTiming('capture', () => captureVerificationState(trustedCwd, parsed.verification!.artifactPaths), this.timing()), binding = verificationBinding(parsed.verification, parsed.command, parsed.timeoutSeconds);
       const environmentDigest = verificationEnvironmentDigest(jobEnvironment());
       const key = verificationKey(parsed.verification, binding, admitted, environmentDigest);
       // A matching in-flight check is one managed execution, never a replay.
-      for (const job of this.jobs.values()) if (job.verification?.key === key && ['queued', 'running'].includes(job.status.state)) return { id: job.status.id, state: job.status.state, reused: true };
+      for (const job of this.jobs.values()) if (job.verification?.key === key && ['queued', 'running'].includes(job.status.state)) { this.reused(job.status.id, 'deduplicated'); return { id: job.status.id, state: job.status.state, reused: true }; }
       // Recovered scoped receipts are useful hints only; publication rejects unsigned/scoped proof.
       for (const job of this.jobs.values()) if (job.status.state === 'completed' && job.status.exitCode === 0 && !job.status.code) {
         try {
@@ -206,7 +212,7 @@ export class JobScheduler {
           if (receipt.id === job.status.id && receipt.mode === 'scoped' && receipt.state === 'completed' && receipt.exitCode === 0 && receipt.unchanged
             && receipt.completedAt <= this.options.now() && this.options.now() - receipt.completedAt <= VERIFICATION_MAX_CACHE_AGE_MS
             && receipt.planDigest === binding.planDigest && receipt.commandDigest === binding.commandDigest && receipt.environmentDigest === environmentDigest
-            && sameVerificationState(receipt.before, receipt.after) && sameVerificationState(receipt.after, admitted)) return { id: job.status.id, state: job.status.state, reused: true };
+            && sameVerificationState(receipt.before, receipt.after) && sameVerificationState(receipt.after, admitted)) { this.reused(job.status.id, 'reused'); return { id: job.status.id, state: job.status.state, reused: true }; }
         } catch { /* Invalid or stale receipts never suppress a verification run. */ }
       }
       verification = { input: parsed.verification, key, admitted, binding, environmentDigest };
@@ -217,6 +223,7 @@ export class JobScheduler {
     const status: JobStatus = { id, category: parsed.category, state: 'queued', createdAt: this.options.now(), ownerPid: process.pid };
     const job: InternalJob = { status, input: parsed, cwd: await realpath(trustedCwd), controller: new AbortController(), ...(verification ? { verification } : {}) };
     await atomicJSON(join(directory, 'receipt.json'), status);
+    job.queueTiming = startWorkTiming('queue', this.timing(id));
     this.jobs.set(id, job); this.queued.push(job); await this.persist(); this.pump();
     return { id, state: job.status.state };
   }
@@ -234,19 +241,21 @@ export class JobScheduler {
   private pump() {
     while (!this.closed && this.running.size < this.options.active) {
       const job = this.queued.shift(); if (!job) break;
+      job.queueTiming?.finish('passed');
       this.running.add(job); job.status.state = 'running'; job.status.startedAt = this.options.now();
       job.promise = this.execute(job);
     }
   }
   private async execute(job: InternalJob) {
     const directory = join(this.directory, 'jobs', job.status.id);
-    let verificationBefore: VerificationState | undefined;
+    let verificationBefore: VerificationState | undefined, toolTiming: WorkTimingSpan | undefined;
     try {
-      if (job.verification) verificationBefore = await captureVerificationState(job.cwd!, job.verification.input.artifactPaths);
+      if (job.verification) verificationBefore = await measureWorkTiming('capture', () => captureVerificationState(job.cwd!, job.verification!.input.artifactPaths), this.timing(job.status.id));
       await atomicJSON(join(directory, 'receipt.json'), job.status); await this.persist();
       if (await cancellationRequested(directory)) job.controller!.abort('cancelled');
       job.controller!.signal.throwIfAborted();
       const input = job.input!;
+      toolTiming = startWorkTiming('tool', { ...this.timing(job.status.id), workDisposition: 'fresh' });
       const result = await this.options.runner({ id: job.status.id, cwd: job.cwd!, command: input.command, timeoutMs: input.timeoutSeconds * 1000,
         maxOutputBytes: this.options.outputBytes, ownerPid: process.pid, directory, signal: job.controller!.signal });
       job.result = safeExecution(result, this.options.outputBytes);
@@ -257,10 +266,11 @@ export class JobScheduler {
     } catch {
       job.status.state = job.controller?.signal.aborted ? 'cancelled' : 'failed'; job.status.code = job.controller?.signal.aborted ? job.controller.signal.reason === 'interrupted' ? 'interrupted' : 'cancelled' : 'execution_failed';
     } finally {
+      toolTiming?.finish(job.status.state === 'completed' ? 'passed' : job.status.state === 'cancelled' ? 'cancelled' : 'failed');
       job.status.finishedAt = this.options.now();
       if (job.verification && verificationBefore) {
         try {
-          const after = await captureVerificationState(job.cwd!, job.verification.input.artifactPaths);
+          const after = await measureWorkTiming('capture', () => captureVerificationState(job.cwd!, job.verification!.input.artifactPaths), this.timing(job.status.id));
           const receipt: VerificationReceipt = { version: 1, id: job.status.id, checkId: job.verification.input.checkId, mode: 'scoped', ...job.verification.binding,
             state: job.status.state === 'completed' && job.status.exitCode === 0 && !job.status.code && !job.result?.truncated ? 'completed' : 'failed',
             ...(job.status.exitCode !== undefined ? { exitCode: job.status.exitCode } : {}), completedAt: job.status.finishedAt,
@@ -290,6 +300,7 @@ export class JobScheduler {
     if (!['queued', 'running'].includes(job.status.state)) return { ...job.status };
     job.controller?.abort(code);
     if (job.status.state === 'queued') {
+      job.queueTiming?.finish('cancelled');
       this.queued = this.queued.filter(x => x !== job); job.status.state = 'cancelled'; job.status.code = code; job.status.finishedAt = this.options.now();
       const status = { ...job.status }, work = () => atomicJSON(join(this.directory, 'jobs', id, 'receipt.json'), status);
       this.writes = this.writes.then(work, work); void this.persist().catch(() => {}); this.notify(id);
@@ -309,6 +320,8 @@ export class JobScheduler {
       this.waiting.set(token, { id, state: 'waiting', startedAt, deadlineAt: startedAt + options.timeoutMs });
       await this.persist();
     }
+    const collectionTiming = startWorkTiming('collection', this.timing(id));
+    let collected = false, collectionFailed = false;
     try {
       await new Promise<void>((resolveWait, rejectWait) => {
         let timer: NodeJS.Timeout | undefined;
@@ -324,8 +337,11 @@ export class JobScheduler {
         // Completion may have happened while publishing the wait projection.
         if (options.signal?.aborted) abort(); else if (!['queued', 'running'].includes(job.status.state)) ready();
       });
-      return this.result(id);
-    } finally { if (this.waiting.delete(token)) await this.persist(); }
+      const result = await this.result(id);
+      collected = !['queued', 'running'].includes(result.state);
+      return result;
+    } catch (error) { collectionFailed = true; throw error; }
+    finally { collectionTiming.finish(options.signal?.aborted ? 'cancelled' : collectionFailed ? 'failed' : collected ? 'passed' : 'skipped'); if (this.waiting.delete(token)) await this.persist(); }
   }
   async flush() { await this.writes; }
   async close() {
