@@ -119,15 +119,17 @@ it.each([402, 403, 503])('preserves a verified legacy receipt on catalog HTTP %s
   noProvisioning(f);
   expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original);
 });
-it('background setup with missing access requests foreground setup without provisioning or file creation', async () => {
-  const f = fixture(); await expect(setupBeatAPI({ directory, ...f, background: true })).rejects.toThrow('needs foreground verification');
-  noProvisioning(f); expect(f.fetcher).not.toHaveBeenCalled(); await expect(readFile(beatapiGrantPath(directory))).rejects.toMatchObject({ code: 'ENOENT' });
+it('background setup with missing access signs up as foreground setup does', async () => {
+  const f = fixture(); await setupBeatAPI({ directory, ...f, background: true });
+  expect(f.squire.signup).toHaveBeenCalledOnce();
+  expect(await readBeatAPIGrant(directory)).toMatchObject({ version: 2, lifetime_paid: 0 });
 });
-it.each(['status', 'billing', 'balance'])('background refresh failure preserves the existing receipt without provisioning (%s)', async reason => {
+it.each(['status', 'billing', 'balance'])('background refresh failure keeps the existing receipt when the new signup fails (%s)', async reason => {
   const original = await savedReceipt(), f = fixture();
   f.fetcher.mockResolvedValueOnce(reason === 'status' ? new Response('sk-private-upstream-error', { status: 503 }) : new Response(JSON.stringify({ data: { object: 'usage', credit_balance: reason === 'balance' ? 1 : 2, credits_settled: reason === 'billing' ? 1 : 0 } })));
-  await expect(setupBeatAPI({ directory, ...f, background: true })).rejects.toThrow('BeatAPI needs foreground verification; run usegrunt add beatapi');
-  noProvisioning(f); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original);
+  f.squire.signup.mockRejectedValueOnce(new Error('signup failed'));
+  await expect(setupBeatAPI({ directory, ...f, background: true })).rejects.toThrow('verification did not complete');
+  expect(f.squire.signup).toHaveBeenCalledOnce(); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original);
 });
 it.each([false, true])('cancellation during saved-grant verification preserves the receipt (background=%s)', async background => {
   const original = await savedReceipt(), f = fixture(), controller = new AbortController();

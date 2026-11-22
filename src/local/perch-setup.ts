@@ -200,8 +200,8 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
         completed = true; options.notify?.('Perch: existing Starter native login and memory-off settings verified'); return;
       }
     }
-    if (options.background) throw new Error('Perch requires foreground Starter setup');
-    await rm(paths.receipt, { force: true });
+    // Background setup keeps the earlier receipt until a new one replaces it.
+    if (!options.background) await rm(paths.receipt, { force: true });
     if (saved && identity && !sameEmail(saved.email, identity.email)) throw setupFailure();
     const expected = identity?.email ?? saved?.email;
     await browser(options, 'https://chat.perchai.app/', freeGoal(expected), signal);

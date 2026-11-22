@@ -374,32 +374,6 @@ it('drives every later signup with a working anonymous Kilo model', async () => 
   expect(useSignupAgent).toHaveBeenCalledWith(expect.any(Function));
 });
 
-it('prints the Zro terms handoff once and continues to the next provider', async () => {
-  const { BrowserSquire } = await import('./setup.js');
-  const squire = new BrowserSquire();
-  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? {
-    status: 'budget', session_id: 'zro-tab', observation: { dom: 'Please read and accept the terms to continue' }
-  } : {});
-  const handoff = vi.spyOn(squire, 'humanHandoff');
-  const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
-  const stub = actions(['zro', 'tokenharbor']);
-  stub.setupFallbacks.mockImplementation(async options => {
-    const id = options.adapters![0]!;
-    if (id === 'zro') {
-      await expect(squire.signup(id, 'https://zro.moonmath.ai/sign-up', 'Verify free access')).rejects.toThrow('needs Terms of Service acceptance');
-      await options.onSettled?.(id, false, squire.signupFailure(id));
-      return { unavailable: [id] };
-    }
-    expect(output.mock.calls.map(([chunk]) => String(chunk)).join('')).toMatch(/zro\s+needs you \(review the Terms of Service in the browser\)/);
-    await options.onSettled?.(id, true);
-    return { unavailable: [] };
-  });
-  await wizard(undefined, { ...stub, chooseHarness: async () => undefined, createSquire: () => squire });
-  expect(stub.setupFallbacks).toHaveBeenCalledTimes(2);
-  expect(handoff).not.toHaveBeenCalled();
-  expect(output.mock.calls.map(([chunk]) => String(chunk)).join('').match(/zro\s+needs you/g)).toHaveLength(1);
-});
-
 it('bootstraps with Jev, switches to a verified operator and re-bootstraps when its quota runs out', async () => {
   vi.stubEnv('GRUNT_SETUP_NO_ANONYMOUS', '1');
   const { HARNESSES } = await import('./harnesses.js');

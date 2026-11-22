@@ -30,16 +30,14 @@ export function setupFailureReason(error: unknown): string {
 }
 
 // A signup driver whose model reports one of these errors cannot run; the next
-// candidate drives. A hang or timeout is not one of them: it fails the signup.
+// candidate drives. A hang or timeout is not one of them: the signup continues in the same session.
 export function signupOperatorUnavailable(reason: string) {
   return ['quota exhausted', 'model pool unavailable', 'provider request failed', 'CLI unavailable', 'sign-in required'].includes(reason);
 }
 
 export function setupAttention(reason: string) {
   switch (reason) {
-    case 'needs Terms of Service acceptance': return 'review the Terms of Service in the browser';
     case 'needs human verification': return 'complete verification in the browser';
-    case 'needs SMS verification': return 'complete SMS verification in the browser';
     case 'browser requested an approval': return 'review the browser approval';
     case 'native CLI pairing incomplete': return 'complete the native CLI pairing';
     case 'needs Nous login': return 'Nous login';

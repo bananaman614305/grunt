@@ -54,6 +54,14 @@ it('reuses a scoped credential and writes a private grant', async () => {
   expect((await stat(path)).mode & 0o777).toBe(0o600);
 });
 
+it('accepts the extra hosts Squire stores after kenari.id', async () => {
+  const squire = squireClient();
+  squire.call.mockResolvedValueOnce({ credentials: [{ ...metadata, allowed_hosts: ['kenari.id', 'www.kenari.id'] }] });
+  await recordDataSharingConsent(directory, ['kenari']);
+  await setupKenari({ directory, squire, notify });
+  expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
+});
+
 it('provisions once on the ordinary cold-start flow and grants only after scoped capture', async () => {
   const squire = squireClient();
   squire.call.mockResolvedValueOnce({ credentials: [] });
@@ -65,25 +73,23 @@ it('provisions once on the ordinary cold-start flow and grants only after scoped
   expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
 });
 
-it('rejects ambiguous credentials and defers background setup without browser actions', async () => {
+it('uses the first of several credentials that passes the free check, in background as in foreground', async () => {
   const squire = squireClient();
   await recordDataSharingConsent(directory, ['kenari']);
-  await expect(setupKenari({ directory, squire, notify, background: true })).rejects.toThrow('foreground setup');
-  expect(squire.call).not.toHaveBeenCalled();
   squire.call.mockResolvedValueOnce({ credentials: [metadata, { ...metadata, reference: 'vault://other-synthetic' }] });
-  await expect(setupKenari({ directory, squire, notify })).rejects.toThrow('unambiguous');
+  await setupKenari({ directory, squire, notify, background: true });
   expect(squire.signup).not.toHaveBeenCalled();
-  expect(squire.credentials.grant).not.toHaveBeenCalled();
+  expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
 });
 
 it.each([
-  { allowed_hosts: ['kenari.id', 'example.invalid'] },
+  { allowed_hosts: ['example.invalid', 'kenari.id'] },
   { field_names: ['username', 'password'], auth_strategy: 'username_password' }
 ])('rejects a mismatched dedicated credential without minting a grant', async invalid => {
   const squire = squireClient();
   squire.call.mockResolvedValueOnce({ credentials: [{ ...metadata, ...invalid }] });
   await recordDataSharingConsent(directory, ['kenari']);
-  await expect(setupKenari({ directory, squire, notify })).rejects.toThrow('scoped to kenari.id');
+  await expect(setupKenari({ directory, squire, notify })).rejects.toThrow('kenari.id as its first host');
   expect(squire.signup).not.toHaveBeenCalled();
   expect(squire.credentials.grant).not.toHaveBeenCalled();
 });

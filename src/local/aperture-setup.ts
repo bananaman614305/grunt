@@ -1,18 +1,17 @@
 import { readDataSharingConsent } from './data-sharing.js';
 import { Aperture, APERTURE_HOST, APERTURE_ID, APERTURE_MODEL } from './aperture.js';
-import { validateProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
-export async function setupAperture({ directory, squire, notify, connect, signal, background }: {
+export async function setupAperture({ directory, squire, notify, connect, signal }: {
   directory: string; squire: Squire; notify(line: string): void; connect?: () => Promise<void>; signal?: AbortSignal; background: boolean;
 }) {
   const id = APERTURE_ID;
   if (!(await readDataSharingConsent(directory, [id])).includes(id)) throw new Error('Aperture requires current data-sharing approval');
   signal?.throwIfAborted();
   if (await new Aperture({ directory }).available()) { notify('Aperture: verified Free route reused'); return; }
-  if (background) throw new Error('Aperture needs foreground setup');
   await connect?.();
   const select = async () => {
     if (!squire.call) throw new Error('Aperture requires scoped vault lookup');
@@ -32,10 +31,11 @@ export async function setupAperture({ directory, squire, notify, connect, signal
       `Reuse this user's Aperture account, or create one ordinary Free account if none exists. Use Squire's sealed email/password login slots and ordinary verification, including its configured CAPTCHA solver when needed. Never skip or forge verification, create a second account, add a card, pay, top up, buy credits or activate a paid plan. After signing in, open /chat.html and its ordinary Dashboard control. The account API key is available there: capture it directly into Squire service ${id}, label Grunt Free, auth_shape bearer, api_hosts ["${APERTURE_HOST}"]. Never show its value. Use this standard authenticated key control and complete any verification the account requests; pause if a required verification cannot be completed. Use only ${APERTURE_MODEL}. Verify /auth/me reports valid=true and plan=free. Stop when daily free quota is exhausted; no paid model or BYOK fallback.`);
     matches = await select();
   }
-  if (matches.length !== 1) throw new Error('Aperture requires one unambiguous scoped Grunt Free key');
+  if (!matches.length) throw new Error('Aperture requires one unambiguous scoped Grunt Free key');
   signal?.throwIfAborted();
-  const grant = validateProviderGrant(await squire.credentials.grant(matches[0]!.reference!));
-  if (!await new Aperture({ directory, loadGrant: async () => grant }).available()) throw new Error('Aperture Free account and zero-price catalog could not be verified');
+  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
+    grant => new Aperture({ directory, loadGrant: async () => grant }).available(), signal);
+  if (!grant) throw new Error('Aperture Free account and zero-price catalog could not be verified');
   signal?.throwIfAborted();
   await writePrivateProviderGrant(id, grant, directory);
   notify('Aperture: Free route connected; Grunt will verify a live reply.');

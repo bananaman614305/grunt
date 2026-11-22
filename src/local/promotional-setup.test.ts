@@ -23,12 +23,12 @@ it('requires foreground source consent before any signup or vault access', async
   expect(browser.call).not.toHaveBeenCalled();
   expect(browser.signup).not.toHaveBeenCalled();
 });
-it('does not start signup in background', async () => {
+it('looks up the vault in background as in foreground', async () => {
   await recordDataSharingConsent(directory, ['fikra']);
   const browser = squire('fikra');
-  await expect(setupPromotionalApi('fikra', { directory, squire: browser, notify, background: true })).rejects.toThrow('foreground');
-  expect(browser.call).not.toHaveBeenCalled();
-  expect(browser.signup).not.toHaveBeenCalled();
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({ active: false })));
+  await expect(setupPromotionalApi('fikra', { directory, squire: browser, notify, background: true })).rejects.toThrow('free catalog/gate verification failed');
+  expect(browser.call).toHaveBeenCalledWith('list_credentials', { service: 'fikra', fields: 'summary' });
 });
 it('reuses only a scoped credential and saves a private verified proxy grant', async () => {
   await recordDataSharingConsent(directory, ['fikra']);
@@ -54,21 +54,12 @@ it('stops when signup cannot produce an eligible key, without persisting a grant
   await expect(stat(join(directory, 'openference.json'))).rejects.toThrow();
 });
 
-it('does not open signup when the shared Fikra promotion is closed', async () => {
+it('opens signup without a promotion pre-check, but saves no grant the live free check rejects', async () => {
   await recordDataSharingConsent(directory, ['fikra']);
   vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({ active: false })));
   const browser = squire('fikra');
-  await expect(setupPromotionalApi('fikra', { directory, squire: browser, notify, background: false })).rejects.toThrow('signup was not started');
-  expect(browser.signup).not.toHaveBeenCalled();
-  expect(browser.call).not.toHaveBeenCalled();
-});
-
-it('rechecks expiry after a slow Squire connection before opening signup', async () => {
-  await recordDataSharingConsent(directory, ['openference']);
-  const browser = squire('openference');
-  browser.call.mockResolvedValue({ credentials: [] });
-  await expect(setupPromotionalApi('openference', { directory, squire: browser, notify, background: false,
-    connect: async () => { vi.mocked(Date.now).mockReturnValue(Date.parse('2027-01-01T00:00:00Z')); }
-  })).rejects.toThrow('signup was not started');
-  expect(browser.signup).not.toHaveBeenCalled();
+  browser.call.mockResolvedValueOnce({ credentials: [] });
+  await expect(setupPromotionalApi('fikra', { directory, squire: browser, notify, background: false })).rejects.toThrow('free catalog/gate verification failed');
+  expect(browser.signup).toHaveBeenCalledOnce();
+  await expect(stat(join(directory, 'fikra.json'))).rejects.toThrow();
 });

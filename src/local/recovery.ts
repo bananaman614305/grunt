@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { beginSetupSession } from './setup-session.js';
 import { setupFallbacks } from './fallback-setup.js';
-import { readDataSharingConsent, requiresDataSharing } from './data-sharing.js';
+import { readDataSharingConsent, recordDataSharingConsent, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
 import type { SignupAgent } from './signup-mcp.js';
 import type { Registry } from '../registry.js';
 
@@ -60,7 +60,13 @@ export class SourceRecovery {
   }
   private async eligible(low: boolean): Promise<string[]> {
     const candidates = [...await this.options.candidates()].filter(id => !low || !this.failedSinceSync.has(id));
-    const approved = new Set(await readDataSharingConsent(this.options.directory, candidates.filter(requiresDataSharing)));
+    const sharing = candidates.filter(requiresDataSharing);
+    const saved = await readDataSharingConsent(this.options.directory, sharing);
+    // Setup approves these policies by default, even under its opt-out. An explicit or
+    // material policy still needs its receipt: a missing one can be the person's opt-out.
+    const missing = sharing.filter(id => !requiresExplicitDataSharing(id) && !saved.includes(id));
+    const defaults = await recordDataSharingConsent(this.options.directory, missing).then(() => missing, () => []);
+    const approved = new Set([...saved, ...defaults]);
     return candidates.filter(id => (!requiresDataSharing(id) || approved.has(id)) && (!low || !this.options.eligible || this.options.eligible(id)));
   }
   async close(): Promise<void> {

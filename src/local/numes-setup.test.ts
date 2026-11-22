@@ -68,25 +68,23 @@ it('provisions once on the ordinary cold-start flow and grants only after scoped
   expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
 });
 
-it('rejects ambiguous credentials and defers background setup without browser actions', async () => {
+it('uses the first of several credentials that passes the free check, in background as in foreground', async () => {
   const squire = squireClient();
   await recordDataSharingConsent(directory, ['numes']);
-  await expect(setupNumes({ directory, squire, notify, background: true })).rejects.toThrow('foreground setup');
-  expect(squire.call).not.toHaveBeenCalled();
   squire.call.mockResolvedValueOnce({ credentials: [metadata, { ...metadata, reference: 'vault://other-synthetic' }] });
-  await expect(setupNumes({ directory, squire, notify })).rejects.toThrow('unambiguous');
+  await setupNumes({ directory, squire, notify, background: true });
   expect(squire.signup).not.toHaveBeenCalled();
-  expect(squire.credentials.grant).not.toHaveBeenCalled();
+  expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);
 });
 
 it.each([
-  { allowed_hosts: ['api.numes.ai', 'example.invalid'] },
+  { allowed_hosts: ['example.invalid', 'api.numes.ai'] },
   { field_names: ['username', 'password'], auth_strategy: 'username_password' }
 ])('rejects a mismatched dedicated credential without minting a grant', async invalid => {
   const squire = squireClient();
   squire.call.mockResolvedValueOnce({ credentials: [{ ...metadata, ...invalid }] });
   await recordDataSharingConsent(directory, ['numes']);
-  await expect(setupNumes({ directory, squire, notify })).rejects.toThrow('scoped to api.numes.ai');
+  await expect(setupNumes({ directory, squire, notify })).rejects.toThrow('api.numes.ai as its first host');
   expect(squire.signup).not.toHaveBeenCalled();
   expect(squire.credentials.grant).not.toHaveBeenCalled();
 });

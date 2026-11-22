@@ -35,12 +35,13 @@ it('reuses the scoped vault key and saves only a private verified grant', async 
   expect(JSON.parse(await readFile(join(directory, `${APERTURE_ID}.json`), 'utf8')).token).toBe('synthetic-grant');
   expect(notify.mock.calls.flat().join(' ')).not.toContain('synthetic-grant');
 });
-it('does not start browser provisioning in background mode', async () => {
+it('looks up the vault in background mode as in foreground', async () => {
   await recordDataSharingConsent(directory, [APERTURE_ID]);
+  vi.stubGlobal('fetch', transport());
   const squire = browser();
-  await expect(setupAperture({ directory, squire, notify, background: true })).rejects.toThrow('foreground');
-  expect(squire.call).not.toHaveBeenCalled();
-  expect(squire.signup).not.toHaveBeenCalled();
+  await setupAperture({ directory, squire, notify, background: true });
+  expect(squire.call).toHaveBeenCalledWith('list_credentials', { service: APERTURE_ID, fields: 'summary' });
+  expect(squire.credentials.grant).toHaveBeenCalledWith('vault://synthetic-aperture');
 });
 it('routes default onboarding through guarded setup rather than throwing Unsupported vetted adapter', async () => {
   await recordDataSharingConsent(directory, [APERTURE_ID]);

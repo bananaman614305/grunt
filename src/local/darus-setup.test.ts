@@ -28,11 +28,12 @@ it('requires provider approval before vault or browser access', async () => {
   expect(squire.call).not.toHaveBeenCalled();
   expect(squire.signup).not.toHaveBeenCalled();
 });
-it('does not provision an account in the background', async () => {
+it('looks up the vault in the background as in foreground', async () => {
   await recordDataSharingConsent(directory, ['darus']);
+  vi.stubGlobal('fetch', transport());
   const squire = browser();
-  await expect(setupDarus({ directory, squire, notify, background: true })).rejects.toThrow('foreground');
-  expect(squire.call).not.toHaveBeenCalled();
+  await setupDarus({ directory, squire, notify, background: true });
+  expect(squire.call).toHaveBeenCalledWith('list_credentials', { service: 'darus', fields: 'summary' });
 });
 it.each(['Grunt Free', 'personal-free'])('reuses the existing scoped %s key and stores only a private Squire grant', async label => {
   await recordDataSharingConsent(directory, ['darus']);

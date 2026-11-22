@@ -23,10 +23,11 @@ accepted, with `GRUNT_*` taking precedence.
 - **Order.** Each pass takes the registry's adapters that Grunt ships, sorted
   by `fit` (`great`, then `possible`), then by `weight`. It skips adapters
   that are disabled, retired, already open, or rated `poor`.
-- **Consent.** A provider with a data-sharing policy is attempted only when
-  its consent receipt is already recorded. This is the existing
-  `readDataSharingConsent` check. The pass adds no other approval step. The
-  registry is the vetted list.
+- **Consent.** A provider whose data-sharing policy setup approves by default
+  gets that approval recorded, as setup does, and is attempted. A provider with
+  an explicit or material policy is attempted only when its consent receipt is
+  already recorded, because a missing receipt can be the person's opt-out. The
+  pass adds no other approval step. The registry is the vetted list.
 - **Cap.** A route is *open* when its source reports `available()` and the
   router permits dispatch (including registry, setup and cooldown checks).
   The pass runs signups one at a time and stops as soon as N routes are open;
@@ -81,8 +82,8 @@ accepted, with `GRUNT_*` taking precedence.
   the next candidate in the order above. A driver that made no tool call is
   replaced by a fresh start. Once one has acted, the next continues the same
   Squire browser session and is told not to start over. A driver that hangs
-  until its timeout fails that signup and does not switch drivers; other
-  errors and cancellation do not move it either. If no candidate succeeds,
+  until its timeout does not switch drivers; the signup continues in the same
+  Squire session. Other errors and cancellation do not move it either. If no candidate succeeds,
   that attempt fails and driver selection runs again before the next
   signup. Foreground setup tries the remaining free-model drivers on the same
   signup. An unavailable routed driver or exhausted free-model chain instead
@@ -173,8 +174,12 @@ drives under a different vault service name.
 
 ## Operator fixes in this change
 
-- The fallback operator may type or pass only values Grunt supplies: the plan
-  (`free`), the key or project name (`grunt`), and the Squire-connected email.
+- The fallback operator may type into any observed field except a password
+  field, and its `operate_drive` facts pass through except password facts;
+  Grunt's own facts win. It can also solve a CAPTCHA, navigate to a web page,
+  press a key and sign in with Google or GitHub OAuth. Vault, payment, upload,
+  dialog and inbox tools stay out of its reach, and it cannot choose a control
+  that pays or changes an existing key.
 - Once Squire reports a signup complete, every later operator tool call gets
   a final "finished, stop" reply instead of a replay of the stale page.
 - OpenCode free-limit handling is described in the

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { recordDataSharingConsent } from './data-sharing.js';
+import { readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
 import { beginSetupSession } from './setup-session.js';
 import { SourceRecovery } from './recovery.js';
 import { SourceError, Sources } from './source.js';
@@ -15,22 +15,24 @@ const directory = async () => { const dir = await mkdtemp(join(tmpdir(), 'grunt-
 const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
 describe('source recovery', () => {
-  it('adds only providers whose data-sharing consent is recorded, one run at a time', async () => {
+  it('adds providers with default or recorded data-sharing approval, one run at a time', async () => {
     const dir = await directory();
     await recordDataSharingConsent(dir, ['kilo']);
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const setup = vi.fn(async () => { await gate; return { unavailable: [] }; });
-    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo', 'perch', 'zro'], open: async () => 0, notify: () => {}, setup });
+    // Perch's policy is approved by default, as setup does; Kenari's explicit policy has no receipt.
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo', 'perch', 'kenari', 'zro'], open: async () => 0, notify: () => {}, setup });
     recovery.trigger(); recovery.trigger();
     await settle();
     expect(setup).toHaveBeenCalledTimes(1);
     expect(setup.mock.calls[0]![0]).toMatchObject({ adapters: ['kilo'], background: true });
     release(); await settle();
-    expect(setup.mock.calls.map(call => (call as unknown as [{ adapters: string[] }])[0].adapters)).toEqual([['kilo'], ['zro']]);
+    expect(setup.mock.calls.map(call => (call as unknown as [{ adapters: string[] }])[0].adapters)).toEqual([['kilo'], ['perch'], ['zro']]);
+    expect(await readDataSharingConsent(dir, ['perch', 'kenari'])).toEqual(['perch']);
     await recovery.close();
     recovery.trigger(); await settle();
-    expect(setup).toHaveBeenCalledTimes(2);
+    expect(setup).toHaveBeenCalledTimes(3);
   });
 
   it('does nothing when no provider can be added', async () => {

@@ -23,7 +23,7 @@ const ownedKey = (c: Credential) => typeof c?.service === 'string' && c.service.
   && c.label === 'grunt' && typeof c.reference === 'string' && Boolean(c.reference)
   && (c.auth_strategy == null || c.auth_strategy === 'api_key')
   && Array.isArray(c.field_names) && c.field_names.some(f => typeof f === 'string' && ['value', 'apikey', 'key', 'token', 'secret'].includes(f.toLowerCase().replace(/[^a-z]/g, '')))
-  && Array.isArray(c.allowed_hosts) && c.allowed_hosts.length === 1 && c.allowed_hosts[0] === 'api.beatapi.io';
+  && Array.isArray(c.allowed_hosts) && c.allowed_hosts[0] === 'api.beatapi.io';
 export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> {
   // The caller may carry approvals already recorded by this wizard turn, but
   // an unknown or changed policy cannot silently inherit another provider's.
@@ -33,9 +33,9 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(600000)]);
   const guards = { ...(options.fetcher ? { fetcher: options.fetcher } : {}), signal };
   let verifiedLegacy: BeatAPIGrant | undefined;
-  // A daemon can verify existing access, but cannot provision accounts, mint
-  // grants, invalidate receipts or launch browser verification. A user can
-  // explicitly upgrade a working DeepSeek-only receipt with `usegrunt add beatapi`.
+  // Background setup reuses verified access as it is; without it, background
+  // setup signs up like foreground. A user can explicitly upgrade a working
+  // DeepSeek-only receipt with `usegrunt add beatapi`.
   try {
     const grant = await bounded(() => readBeatAPIGrant(options.directory), signal);
     const usage = await bounded(() => verifyBeatAPIAccess(grant, guards), signal);
@@ -47,10 +47,10 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
     }
     verifiedLegacy = grant;
   } catch { if (signal.aborted) throw failure(); }
-  if (options.background) throw new Error('BeatAPI needs foreground verification; run usegrunt add beatapi');
-  // Preserve a still-valid v1 route while attempting to add a second model.
+  // Preserve a still-valid v1 route while attempting to add a second model. Background
+  // setup keeps the earlier receipt until a new one replaces it.
   const invalidate = async () => {
-    if (!verifiedLegacy) await rm(beatapiGrantPath(options.directory), { force: true });
+    if (!verifiedLegacy && !options.background) await rm(beatapiGrantPath(options.directory), { force: true });
   };
   try {
     if (verifiedLegacy) {
@@ -71,7 +71,7 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
     const before = await fresh();
     if (before.length > 1) throw failure();
     await bounded(() => options.squire.signup('beatapi', 'https://beatapi.io/dashboard/apikeys',
-      `Use the personal Google identity already connected to Squire, or the same user's already linked GitHub identity, to sign in to the ordinary BeatAPI account. Reuse this account; never create another account, rotate a key or reset it. Go straight to API keys; do not open Credits & billing. Never change billing, top up, add a card or buy anything; stop on refusal. Reuse the Grunt-owned key named grunt where available. Stop if more than one key has that name. Create one grunt key only if no key with that name exists. For that owned key, set Usage restrictions to allow exactly ${BEATAPI_MODELS.join(' and ')} if both are offered; if the free GLM ID is unavailable, allow only ${BEATAPI_MODEL}. Leave all other key settings alone. Never modify an unrelated key. Read the saved restrictions back in the normal dashboard and confirm no other model is allowed. Reuse the corresponding existing vault credential or capture the new key using operate_extract directly into this user's Squire vault with service beatapi, label grunt, api_hosts ["api.beatapi.io"], auth_shape bearer. Never display, return, fetch or log any raw credential. The user approved BeatAPI's current grouped data-sharing policy; accept required ordinary terms and sharing disclosures only, leave optional marketing off. No phone/SMS, Discord, school approval or payment verification. Required human CAPTCHA/passkey/email verification needs normal browser handoff. Complete only after verifying the saved allowlist and confirming that the Grunt-owned credential is in the vault.`), signal);
+      `Use the personal Google identity already connected to Squire, or the same user's already linked GitHub identity, to sign in to the ordinary BeatAPI account. Reuse this account; never create another account, rotate a key or reset it. Go straight to API keys; do not open Credits & billing. Never change billing, top up, add a card or buy anything; stop on refusal. Reuse the Grunt-owned key named grunt where available. Stop if more than one key has that name. Create one grunt key only if no key with that name exists. For that owned key, set Usage restrictions to allow exactly ${BEATAPI_MODELS.join(' and ')} if both are offered; if the free GLM ID is unavailable, allow only ${BEATAPI_MODEL}. Leave all other key settings alone. Never modify an unrelated key. Read the saved restrictions back in the normal dashboard and confirm no other model is allowed. Reuse the corresponding existing vault credential or capture the new key using operate_extract directly into this user's Squire vault with service beatapi, label grunt, api_hosts ["api.beatapi.io"], auth_shape bearer. Never display, return, fetch or log any raw credential. The user approved BeatAPI's current grouped data-sharing policy; accept required ordinary terms and sharing disclosures only, leave optional marketing off. No Discord, school approval or payment verification. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. Complete only after verifying the saved allowlist and confirming that the Grunt-owned credential is in the vault.`), signal);
     const credentials = await fresh();
     const credential = credentials[0];
     if (!credential || credentials.length !== 1 || (before[0] && before[0].reference !== credential.reference)) throw failure();

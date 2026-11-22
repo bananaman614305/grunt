@@ -395,9 +395,9 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
       `Set up the free ${input.service} provider at ${new URL(input.url).origin}.`, input.goal,
       'Call Squire operate_drive first. If Jev is unsure or needs a value, observe the current page and choose an offered answer or take one observed browser step. Resume operate_drive.',
       'On OAuth not_attempted or Retry oauth_login, wait and retry. Never repeat a dispatched OAuth click.',
-      'Use only the existing Squire-connected identity. Never type secrets or select payment, an upgrade, billing changes, another account, or unrequested consent.',
+      'Use only the existing Squire-connected identity. Never type secrets or select payment, an upgrade or billing changes.',
       'Accept required provider Terms of Service for this free signup. Stop if a terms control also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.',
-      'Stop on refusal or SMS. For verification only the person can do, call operate_share, then resume operate_drive if the person finishes.',
+      'Stop on refusal. For verification only the person can do, call operate_share, then resume operate_drive if the person finishes.',
       'Capture any requested key directly into the Squire vault with operate_extract store. If no value is found, pass capture {store, source: {role: "textbox" or "code", name}} for the revealed key field; if storage is unresolved, retry with the returned capture write_id. Never read or return a raw secret. Report only whether Squire completed.',
       'When operate_drive returns status complete, Squire has already stored any requested key in the vault: stop calling tools and report completion. Use operate_extract only when Squire says a key was not stored.'
     ].join('\n');

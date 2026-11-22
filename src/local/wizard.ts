@@ -673,7 +673,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       };
       // With a harness, a Jev-only bootstrap tries every provider before it
       // hands a browser to the person; the second pass allows that handoff.
-      const retryable = new Set(['browser could not continue', 'needs human verification', 'needs Terms of Service acceptance']);
+      const retryable = new Set(['browser could not continue', 'needs human verification']);
       if (harness) squire?.deferHandoff?.(true);
       for (const id of remaining) {
         await checkOperator();

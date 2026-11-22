@@ -15,7 +15,10 @@ export type SignupAgent = (input: {
   call(name: string, args: Result): Promise<Result>;
 }) => Promise<void>;
 
-export const signupAgentTools = new Set(['operate_drive', 'operate_observe', 'operate_click', 'operate_type', 'operate_select', 'operate_wait', 'operate_scroll', 'operate_extract', 'operate_share']);
+// Vault, payment, upload, dialog and inbox tools stay out: they reveal secrets or local
+// files to the free model, spend money, or confirm a key change no label check sees.
+export const signupAgentTools = new Set(['operate_drive', 'operate_observe', 'operate_click', 'operate_type', 'operate_select', 'operate_wait', 'operate_scroll', 'operate_extract', 'operate_share',
+  'operate_solve_captcha', 'operate_navigate', 'operate_press', 'operate_login']);
 
 const browserArguments: Record<string, readonly string[]> = {
   operate_observe: ['query', 'cursor', 'role'],
@@ -25,7 +28,10 @@ const browserArguments: Record<string, readonly string[]> = {
   operate_wait: ['milliseconds'],
   operate_scroll: ['direction'],
   operate_extract: ['store', 'capture'],
-  operate_share: []
+  operate_share: [],
+  operate_solve_captcha: [],
+  operate_navigate: ['url'],
+  operate_press: ['key']
 };
 
 function signupTool(tool: Tool): Tool {
@@ -33,6 +39,11 @@ function signupTool(tool: Tool): Tool {
     name: tool.name,
     description: 'Start with Jev’s current result. Call again with an offered answer or WAIT, or resume with known signup facts.',
     inputSchema: { type: 'object', properties: { answer: { type: 'string' }, facts: { type: 'object' } }, additionalProperties: false }
+  };
+  if (tool.name === 'operate_login') return {
+    name: tool.name,
+    description: 'Sign in with Google or GitHub OAuth by pressing the observed OAuth control ref. Wait and observe after a timeout; never repeat a dispatched OAuth click.',
+    inputSchema: { type: 'object', properties: { provider: { type: 'string', enum: ['google', 'github'] }, ref: { type: 'string' } }, required: ['provider', 'ref'], additionalProperties: false }
   };
   const allowed = browserArguments[tool.name] ?? [];
   return { name: tool.name, ...(tool.description ? { description: tool.description } : {}), inputSchema: {
@@ -114,10 +125,6 @@ export function guardedSignupChoice(key: string, label: unknown) {
   if (typeof label !== 'string' || !label.trim()) return false;
   const text = label.replace(/[_|-]/g, ' ');
   const choice = `${key} ${text}`.replace(/[_-]/g, ' ');
-  if (/\b(?:billing|payment|credit card|upgrade|premium|subscription|paid|purchase|buy|top up|switch (?:an? )?account|another account|password|passcode|sms|phone|passkey|revoke|rotate|regenerate|roll|reset|delete|done|blocked)\b/i.test(choice)) return false;
-  if (/\b(?:reject|decline) (?:all|optional)(?: cookies)?\b/i.test(text)) return true;
-  const requiredTerms = /\b(?:accept|agree)\b/i.test(text)
-    && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(text)
-    && !/\b(?:optional|marketing|newsletter|training|retention|sharing|consent|authorize|permission)\b/i.test(choice);
-  return requiredTerms || !/\b(?:consent|accept|agree|authorize|permission)\b/i.test(choice);
+  // Only spending money or changing an existing key is refused.
+  return !/\b(?:billing|payment|credit card|upgrade|premium|subscription|paid|purchase|buy|top up|revoke|rotate|regenerate|roll|reset|delete)\b/i.test(choice);
 }

@@ -905,7 +905,7 @@ up recommended providers with current consent. Grant files have mode 0600.
 
 | Source | Exact model | Expiry and checks |
 | --- | --- | --- |
-| Fikra | `deepseek-v4-1-flash-economy-free` | Zero input/output price, at least 204,096 catalog context, a fresh active gate, and remaining shared dollar/token budgets before dispatch. The earlier live expiry wins; the gate reported November 23 UTC on November 20 despite the page saying November 25. A hard November 25 cutoff prevents extensions without review. Setup checks the window before connecting Squire and immediately before signup. |
+| Fikra | `deepseek-v4-1-flash-economy-free` | Zero input/output price, at least 204,096 catalog context, a fresh active gate, and remaining shared dollar/token budgets before dispatch. The earlier live expiry wins; the gate reported November 23 UTC on November 20 despite the page saying November 25. A hard November 25 cutoff prevents extensions without review. Setup saves a grant only after this live check passes. |
 | Openference | `DeepSeek-V4.1-Flash-1017-Free` | Exact free flag, zero prompt/output/cache prices and quota multiplier, native tools, at least 204,096 catalog context, and expiry after December 31, 2026 UTC. Upstream SSE supplies usage and native tool fragments. |
 
 Fikra advertises 1,000 requests/minute and 100,000/day with no token cap on the

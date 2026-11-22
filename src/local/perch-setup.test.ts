@@ -305,9 +305,12 @@ it.each(['identity request failed', 'identity unavailable', 'identity changed', 
   await expect(setupPerch({ ...f.options, background: true })).rejects.toThrow('active Starter verification');
   expect(await readFile(f.paths.receipt)).toEqual(before);
   expect((await stat(f.paths.receipt)).mtimeMs).toBe(modified);
-  expect(f.configureMemory).not.toHaveBeenCalled(); expect(f.install).not.toHaveBeenCalled();
-  expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.squire.cancelSignup).not.toHaveBeenCalled();
-  expect(f.squire.approveDataSharing).not.toHaveBeenCalled(); expect(f.command).not.toHaveBeenCalled();
+  expect(f.install).not.toHaveBeenCalled(); expect(f.squire.cancelSignup).not.toHaveBeenCalled();
+  expect(f.squire.approveDataSharing).not.toHaveBeenCalled();
+  // With no native login, background setup now signs in as foreground does, keeping the old receipt.
+  if (failure === 'identity unavailable') { expect(f.squire.signup).toHaveBeenCalled(); return; }
+  expect(f.configureMemory).not.toHaveBeenCalled();
+  expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.command).not.toHaveBeenCalled();
 });
 
 it.each(['expired plan', 'changed privacy'])('background rejects %s without deleting or rewriting the local verification', async failure => {
