@@ -102,12 +102,30 @@ it('does not swallow cancellation of launchctl bootout and bootstrap an obsolete
 
 it('publishes a successful installation with the same owner signal on every child command', async () => {
   await installService(['kilo'], { signal: fixture.controller!.signal });
-  expect(fixture.spawn.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'systemctl', 'systemctl', 'systemctl']);
+  expect(fixture.spawn.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'systemctl', 'systemctl', 'loginctl', 'systemctl']);
   for (const [, , options] of fixture.spawn.mock.calls) expect(options.signal).toBe(fixture.controller!.signal);
   expect(fixture.spawn.mock.calls.at(-1)![1]).toEqual(['--user', 'restart', 'grunt.service']);
   expect(await readFile(join(directory, 'grunt', 'installed-sources.json'), 'utf8')).toBe('["kilo"]');
   expect(JSON.parse(await readFile(join(directory, 'grunt', 'installed-port.json'), 'utf8'))).toBe(18792);
   expect((await stat(join(directory, 'grunt', 'installed-port.json'))).mode & 0o777).toBe(0o600);
+});
+
+it('keeps the service installed and explains lingering when the user may not enable it', async () => {
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  fixture.spawn.mockImplementation((binary: string) => {
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit('exit', binary === 'loginctl' ? 1 : 0));
+    return child;
+  });
+  await installService(['kilo']);
+  expect(fixture.spawn.mock.calls.at(-1)![1]).toEqual(['--user', 'restart', 'grunt.service']);
+  expect(log).toHaveBeenCalledWith(expect.stringContaining('loginctl enable-linger'));
+});
+
+it('stops before restarting when setup ownership is lost while enabling lingering', async () => {
+  fixture.abortAt = 'enable-linger';
+  await expect(installService(['kilo'], { signal: fixture.controller!.signal })).rejects.toThrow();
+  expect(fixture.spawn.mock.calls.map(([, args]) => args)).not.toContainEqual(['--user', 'restart', 'grunt.service']);
 });
 
 it('atomically replaces a stale port hint without following its symlink or changing the unrelated target', async () => {
@@ -148,7 +166,8 @@ it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and 
   await installService(['kilo', 'antseed-vikey', 'freellmapi']);
   expect(await readFile(unit, 'utf8')).toBe(original); expect(await readFile(dropIn, 'utf8')).toBe(custom);
   expect(fixture.spawn.mock.calls.map(([binary, args]) => [binary, args])).toEqual([
-    ['npm', expect.any(Array)], ['systemctl', ['--user', 'restart', `${identity}.service`]]
+    ['npm', expect.any(Array)], ['systemctl', ['--user', 'enable', `${identity}.service`]],
+    ['loginctl', ['--no-ask-password', 'enable-linger']], ['systemctl', ['--user', 'restart', `${identity}.service`]]
   ]);
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
   // The owned service file can keep its old source environment while setup
@@ -165,7 +184,9 @@ it('preserves the legacy native router service identity and saved environment', 
   await mkdir(join(directory, 'xdg/systemd/user'), { recursive: true }); await writeFile(unit, original, { mode: 0o600 });
   await installBackgroundService('grunt-router', entry, { GRUNT_ROUTER_ENTRY: '/new/router/server.js' });
   expect(await readFile(unit, 'utf8')).toBe(original);
-  expect(fixture.spawn.mock.calls.map(([, args]) => args)).toEqual([['--user', 'restart', 'milo-router.service']]);
+  expect(fixture.spawn.mock.calls.map(([, args]) => args)).toEqual([
+    ['--user', 'enable', 'milo-router.service'], ['--no-ask-password', 'enable-linger'], ['--user', 'restart', 'milo-router.service']
+  ]);
   await expect(readFile(join(directory, 'xdg/systemd/user/grunt-router.service'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 

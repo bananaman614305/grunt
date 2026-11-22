@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- On Linux, setup enables lingering for the user so the local daemon keeps running after logout and starts at boot, and re-running setup re-enables an existing service. If lingering is refused, setup prints `loginctl enable-linger`.
+
 ## [0.9.7] - 2026-11-22
 
 - Preserve hourly runtime measurements beyond raw-event pruning, with explicit coverage, loss counts, latency histogram bounds and trusted runtime-version attribution.

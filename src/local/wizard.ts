@@ -130,6 +130,15 @@ export async function preflight(run = command) {
 }
 const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
 const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+// Without lingering, the systemd user manager and its services stop at logout
+// and start again only at the next login, not at boot.
+async function enableLinger(signal?: AbortSignal) {
+  try { await command('loginctl', ['--no-ask-password', 'enable-linger'], false, signal); }
+  catch {
+    signal?.throwIfAborted();
+    console.log('– local service: stops at logout until lingering is enabled; run loginctl enable-linger');
+  }
+}
 export async function installedSources(directory = configDir()) {
   try {
     const sources: unknown = JSON.parse(await readFile(join(directory, 'installed-sources.json'), 'utf8'));
@@ -227,8 +236,11 @@ export async function installBackgroundService(name: string, entry: string, env:
         if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
       }
       if (name === 'grunt' && options.automaticPool && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources));
-      if (process.platform === 'linux') await run('systemctl', ['--user', 'restart', `${identity}.service`]);
-      else {
+      if (process.platform === 'linux') {
+        await run('systemctl', ['--user', 'enable', `${identity}.service`]);
+        await stage(() => enableLinger(options.signal));
+        await run('systemctl', ['--user', 'restart', `${identity}.service`]);
+      } else {
         const domain = `gui/${process.getuid!()}`;
         await run('launchctl', ['bootout', `${domain}/ai.${identity}.service`]).catch(() => {});
         options.signal?.throwIfAborted();
@@ -245,6 +257,7 @@ export async function installBackgroundService(name: string, entry: string, env:
     await stage(() => writeFile(join(units, `${name}.service`), `[Unit]\nDescription=grunt model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 }));
     await run('systemctl', ['--user', 'daemon-reload']);
     await run('systemctl', ['--user', 'enable', `${name}.service`]);
+    await stage(() => enableLinger(options.signal));
     await run('systemctl', ['--user', 'restart', `${name}.service`]);
   } else {
     const agents = join(homedir(), 'Library', 'LaunchAgents');
