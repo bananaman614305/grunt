@@ -87,9 +87,14 @@ it('keeps every shipped hinted drive goal within the limit', async () => {
 
 it('passes per-signup facts such as a device code to the drive, alongside the Grunt values', async () => {
   const [first] = await driveCalls('freepi', 'https://github.com/login/device', { facts: { user_code: 'ABCD-EFGH' } });
-  expect(first!.facts).toEqual({ user_code: 'ABCD-EFGH', plan: 'free', project_name: 'grunt' });
+  expect(first!.facts).toEqual({ key_name: 'grunt', user_code: 'ABCD-EFGH', plan: 'free', project_name: 'grunt' });
   const [later] = await driveCalls('freepi', 'https://github.com/login/device');
-  expect(later!.facts).toEqual({ plan: 'free', project_name: 'grunt' });
+  expect(later!.facts).toEqual({ key_name: 'grunt', plan: 'free', project_name: 'grunt' });
+});
+
+it('names key-name values key_name, which a provider fact can override', async () => {
+  const [first] = await driveCalls('pollinations', 'https://enter.pollinations.ai/keys', { facts: { key_name: 'grunt-free-pollinations' } });
+  expect(first!.facts).toEqual({ key_name: 'grunt-free-pollinations', plan: 'free', project_name: 'grunt' });
 });
 
 it.each([

@@ -106,7 +106,7 @@
       "install": "builtin:livekit",
       "signup": "https://cloud.livekit.io/",
       "model": "deepseek-ai/deepseek-v4.1-flash",
-      "hints": "Open the existing project from 'Switch project', then 'Settings' in the project sidebar. Project Settings has no Agent observability switch; Agent observability, when present, is under the agents area. If the project exists and no Agent observability switch is offered, finish; there is nothing else to change."
+      "hints": "Open the grunt-free project (use 'Switch project' if another project is open), then 'Settings' in the project sidebar, then 'Observability settings' (/settings/observability). There the 'Agent observability' switch must be off: turn it off if it is on. Leave 'PII redaction' and 'Data region' unchanged, then finish."
     },
     {
       "id": "pollinations",
@@ -119,7 +119,7 @@
       "install": "builtin:pollinations",
       "signup": "https://enter.pollinations.ai/",
       "model": "community/morriszdweck/glm-5.3-flash-free",
-      "hints": "On /keys the Grunt key grunt-free-pollinations is listed. Press its 'Edit secret key', check Budget is 0, 'Quest balance only' is checked and only 'Generate' is on, then press 'Save'. If this vault already holds pollinations grunt-free-pollinations, finish after Save; otherwise press 'Create', type grunt-free-pollinations in Name, 0 in Budget, check 'Quest balance only' and press 'Create'; the shown secret is stored automatically.",
+      "hints": "On /keys, if a key named grunt-free-pollinations is listed, press its 'Edit secret key', set Budget to 0, check 'Quest balance only', leave only 'Generate' on, press 'Save', then finish; one Save is enough, so do not press 'Edit secret key' again. If no key named grunt-free-pollinations is listed, press 'Create', type the key name grunt-free-pollinations in Name, 0 in Budget, check 'Quest balance only' and press 'Create'; the shown secret is stored automatically.",
       "capture": {
         "service": "pollinations",
         "label": "grunt-free-pollinations",
