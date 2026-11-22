@@ -19,6 +19,21 @@ export function validateProviderGrant(value: unknown): FreeApiGrant {
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Invalid private provider endpoint');
   return { base_url: grant.base_url.replace(/\/$/, ''), token: grant.token };
 }
+// Several vault entries can match a provider. Use the first whose grant passes the
+// provider's own free-route check; undefined when none does.
+export async function firstWorkingGrant(references: readonly string[], grant: (reference: string) => Promise<unknown>,
+  works: (grant: FreeApiGrant) => Promise<boolean>, signal?: AbortSignal): Promise<FreeApiGrant | undefined> {
+  for (const reference of references) {
+    signal?.throwIfAborted();
+    try {
+      const candidate = validateProviderGrant(await grant(reference));
+      const available = await works(candidate);
+      signal?.throwIfAborted();
+      if (available) return candidate;
+    } catch { signal?.throwIfAborted(); }
+  }
+  return undefined;
+}
 export async function readPrivateProviderGrant(provider: Provider, location: string): Promise<unknown> {
   const file = await open(join(location, `${name(provider)}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {

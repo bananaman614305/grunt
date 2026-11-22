@@ -1,18 +1,17 @@
 import { readDataSharingConsent } from './data-sharing.js';
 import { Darus, DARUS_HOST, DARUS_MODEL } from './darus.js';
-import { validateProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
-export async function setupDarus({ directory, squire, notify, connect, signal, background }: {
+export async function setupDarus({ directory, squire, notify, connect, signal }: {
   directory: string; squire: Squire; notify(line: string): void; connect?: () => Promise<void>; signal?: AbortSignal; background: boolean;
 }) {
   const id = 'darus';
   if (!(await readDataSharingConsent(directory, [id])).includes(id)) throw new Error('Darus requires current data-sharing approval');
   signal?.throwIfAborted();
   if (await new Darus({ directory }).available()) { notify('Darus: protected daily free route reused'); return; }
-  if (background) throw new Error('Darus needs foreground setup');
   await connect?.();
   const select = async () => {
     if (!squire.call) throw new Error('Darus requires scoped vault lookup');
@@ -32,10 +31,11 @@ export async function setupDarus({ directory, squire, notify, connect, signal, b
       `Reuse this user's existing Darus account and connected identity. If none exists, create one ordinary free account. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed; pause only if Squire cannot complete a required verification. Never skip or forge verification. Do not add a card, pay, top up, choose a paid tier, or create another account. Verify the daily Free tier has minBalance 0 and a 10 million token allowance. In dashboard AI turn Simpan Saldo / Protect Balance ON, so exhaustion stops rather than drawing wallet credit; never disable it. Use only ${DARUS_MODEL}. Reuse or create one key named Grunt Free and capture directly into Squire service darus, label Grunt Free, auth_shape bearer, api_hosts ["${DARUS_HOST}"]. Never show its value. Stop if access needs payment, SMS, Discord or Telegram verification. Do not perform check-in, referral or wallet reward actions.`);
     matches = await select();
   }
-  if (matches.length !== 1) throw new Error('Darus requires one unambiguous scoped free API key');
+  if (!matches.length) throw new Error('Darus requires one unambiguous scoped free API key');
   signal?.throwIfAborted();
-  const grant = validateProviderGrant(await squire.credentials.grant(matches[0]!.reference!));
-  if (!await new Darus({ directory, loadGrant: async () => grant }).available()) throw new Error('Darus protected free entitlement could not be verified');
+  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
+    grant => new Darus({ directory, loadGrant: async () => grant }).available(), signal);
+  if (!grant) throw new Error('Darus protected free entitlement could not be verified');
   signal?.throwIfAborted();
   await writePrivateProviderGrant(id, grant, directory);
   notify('Darus: protected daily free route connected; Grunt will verify a live reply.');

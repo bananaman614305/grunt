@@ -52,11 +52,12 @@ it('refuses a new receipt if the captured key can reach another model', async ()
 it('blocks before signup without current consent', async () => {
   const f = fixture(); await rm(join(directory, 'data-sharing-consent.json')); await expect(setupBeatAPI({ directory, ...f, dataSharingApproved: ['beatapi'] })).rejects.toThrow('current grouped'); expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled();
 });
-it('invalidates old eligibility when fresh signup is refused and never leaks browser errors', async () => {
-  const f = fixture(); await writeFile(beatapiGrantPath(directory), 'old-receipt', { mode: 0o600 }); f.squire.signup.mockRejectedValueOnce(new Error('sk-browser-secret'));
-  await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('BeatAPI free account or key verification did not complete'); await expect(readBeatAPIGrant(directory)).rejects.toBeDefined(); expect(f.squire.credentials.grant).not.toHaveBeenCalled();
+it.each([false, true])('preserves an earlier receipt when fresh signup is refused (background=%s)', async background => {
+  const before = await savedReceipt(), f = fixture();
+  f.fetcher.mockRejectedValueOnce(new Error('temporarily unavailable')); f.squire.signup.mockRejectedValueOnce(new Error('sk-browser-secret'));
+  await expect(setupBeatAPI({ directory, ...f, background })).rejects.toThrow('BeatAPI free account or key verification did not complete'); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(before); expect(f.squire.credentials.grant).not.toHaveBeenCalled();
 });
-it('rejects changed account usage and removes an old receipt', async () => {
+it('rejects changed account usage without issuing a receipt', async () => {
   const f = fixture(); f.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ data: { object: 'usage', credit_balance: 12, credits_settled: 0 } })));
   await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('verification did not complete'); await expect(readBeatAPIGrant(directory)).rejects.toBeDefined();
 });
@@ -119,15 +120,17 @@ it.each([402, 403, 503])('preserves a verified legacy receipt on catalog HTTP %s
   noProvisioning(f);
   expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original);
 });
-it('background setup with missing access requests foreground setup without provisioning or file creation', async () => {
-  const f = fixture(); await expect(setupBeatAPI({ directory, ...f, background: true })).rejects.toThrow('needs foreground verification');
-  noProvisioning(f); expect(f.fetcher).not.toHaveBeenCalled(); await expect(readFile(beatapiGrantPath(directory))).rejects.toMatchObject({ code: 'ENOENT' });
+it('background setup with missing access signs up as foreground setup does', async () => {
+  const f = fixture(); await setupBeatAPI({ directory, ...f, background: true });
+  expect(f.squire.signup).toHaveBeenCalledOnce();
+  expect(await readBeatAPIGrant(directory)).toMatchObject({ version: 2, lifetime_paid: 0 });
 });
-it.each(['status', 'billing', 'balance'])('background refresh failure preserves the existing receipt without provisioning (%s)', async reason => {
+it.each(['status', 'billing', 'balance'])('background refresh failure keeps the existing receipt when the new signup fails (%s)', async reason => {
   const original = await savedReceipt(), f = fixture();
   f.fetcher.mockResolvedValueOnce(reason === 'status' ? new Response('sk-private-upstream-error', { status: 503 }) : new Response(JSON.stringify({ data: { object: 'usage', credit_balance: reason === 'balance' ? 1 : 2, credits_settled: reason === 'billing' ? 1 : 0 } })));
-  await expect(setupBeatAPI({ directory, ...f, background: true })).rejects.toThrow('BeatAPI needs foreground verification; run usegrunt add beatapi');
-  noProvisioning(f); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original);
+  f.squire.signup.mockRejectedValueOnce(new Error('signup failed'));
+  await expect(setupBeatAPI({ directory, ...f, background: true })).rejects.toThrow('verification did not complete');
+  expect(f.squire.signup).toHaveBeenCalledOnce(); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original);
 });
 it.each([false, true])('cancellation during saved-grant verification preserves the receipt (background=%s)', async background => {
   const original = await savedReceipt(), f = fixture(), controller = new AbortController();
@@ -141,8 +144,8 @@ it('pre-cancelled foreground setup preserves even an invalid existing receipt', 
   await expect(setupBeatAPI({ directory, ...f, signal: controller.signal })).rejects.toThrow('verification did not complete');
   noProvisioning(f); expect(f.fetcher).not.toHaveBeenCalled(); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe('existing-invalid-receipt');
 });
-it('foreground setup removes a failed old receipt only when starting fresh verification', async () => {
+it('foreground setup retains the old receipt until fresh verification succeeds', async () => {
   const original = await savedReceipt(), f = fixture();
-  f.fetcher.mockResolvedValueOnce(new Response('private', { status: 401 })); f.squire.signup.mockImplementationOnce(async () => { await expect(readFile(beatapiGrantPath(directory))).rejects.toMatchObject({ code: 'ENOENT' }); });
+  f.fetcher.mockResolvedValueOnce(new Response('private', { status: 401 })); f.squire.signup.mockImplementationOnce(async () => { expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original); });
   await setupBeatAPI({ directory, ...f }); expect(f.squire.signup).toHaveBeenCalledOnce(); expect(f.squire.credentials.grant).toHaveBeenCalledOnce(); expect(await readFile(beatapiGrantPath(directory), 'utf8')).not.toBe(original);
 });

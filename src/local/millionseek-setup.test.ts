@@ -18,9 +18,10 @@ afterEach(async () => { vi.restoreAllMocks(); await rm(directory, { recursive: t
 it('requires exact source consent before provisioning or credentials', async () => {
   const { options, squire } = fixture(); await expect(setupMillionSeek(options)).rejects.toThrow('approval'); expect(squire.call).not.toHaveBeenCalled(); expect(squire.signup).not.toHaveBeenCalled();
 });
-it('leaves unattended missing-account setup to the foreground', async () => {
-  await recordDataSharingConsent(directory, ['millionseek']); vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValue(false);
-  const { options, squire } = fixture(); await expect(setupMillionSeek({ ...options, background: true })).rejects.toThrow('foreground'); expect(squire.call).not.toHaveBeenCalled(); expect(squire.signup).not.toHaveBeenCalled();
+it('signs up a missing account in the background as in foreground', async () => {
+  await recordDataSharingConsent(directory, ['millionseek']); vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  const { options, squire } = fixture(); squire.call.mockResolvedValueOnce({ credentials: [] }).mockResolvedValueOnce({ credentials: [key()] });
+  await setupMillionSeek({ ...options, background: true }); expect(squire.signup).toHaveBeenCalledTimes(1);
 });
 it('reuses a verified grant without browser or vault access', async () => {
   await recordDataSharingConsent(directory, ['millionseek']); vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValue(true);
@@ -32,10 +33,19 @@ it('uses scoped metadata, verifies the sealed grant and saves it privately', asy
   expect(squire.call).toHaveBeenCalledWith('list_credentials', { service: '100milionseek', fields: 'summary' }); expect(squire.signup).not.toHaveBeenCalled(); expect(squire.credentials.grant).toHaveBeenCalledWith('vault://synthetic/key');
   expect(JSON.parse(await readFile(join(directory, 'millionseek.json'), 'utf8'))).toEqual({ base_url: 'https://100milionseek.top', token: 'synthetic' }); expect((await stat(join(directory, 'millionseek.json'))).mode & 0o777).toBe(0o600);
 });
-it('does not pick an arbitrary key when scoped metadata is ambiguous', async () => {
+it('uses the first of several scoped keys that passes the free check', async () => {
+  await recordDataSharingConsent(directory, ['millionseek']);
+  vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  const { options, squire } = fixture(); squire.call.mockResolvedValue({ credentials: [key(), { ...key(), reference: 'vault://synthetic/other' }] });
+  await setupMillionSeek(options);
+  expect(squire.credentials.grant.mock.calls.map(([reference]) => reference)).toEqual(['vault://synthetic/key', 'vault://synthetic/other']);
+  expect(squire.signup).not.toHaveBeenCalled();
+});
+it('stops when no scoped key passes the free check', async () => {
   await recordDataSharingConsent(directory, ['millionseek']); vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValue(false);
   const { options, squire } = fixture(); squire.call.mockResolvedValue({ credentials: [key(), { ...key(), reference: 'vault://synthetic/other' }] });
-  await expect(setupMillionSeek(options)).rejects.toThrow('unambiguous'); expect(squire.credentials.grant).not.toHaveBeenCalled();
+  await expect(setupMillionSeek(options)).rejects.toThrow('could not be verified'); expect(squire.credentials.grant).toHaveBeenCalledTimes(2);
+  await expect(stat(join(directory, 'millionseek.json'))).rejects.toThrow();
 });
 it('completes one guarded Squire signup then checks newly captured metadata', async () => {
   await recordDataSharingConsent(directory, ['millionseek']); vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValueOnce(false).mockResolvedValueOnce(true);

@@ -107,13 +107,14 @@ it('refreshes expired plan verification for the same valid native identity witho
   expect(await Perch.readPerchFreePlanReceipt(directory)).toMatchObject({ ...plan(), checkedAt: expect.any(String) });
 });
 
-it('invalidates a mismatched native identity without switching accounts or repeating sign-in', async () => {
+it('preserves the receipt for a mismatched native identity without switching accounts or repeating sign-in', async () => {
   const f = await fixture();
   await Perch.writePerchFreePlanReceipt(directory, plan());
+  const before = await readFile(f.paths.receipt);
   f.identity.mockReset().mockResolvedValue({ email: 'different@example.test' });
   await expect(setupPerch(f.options)).rejects.toThrow('active Starter verification');
   expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.command).not.toHaveBeenCalled();
-  await expect(stat(f.paths.receipt)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(f.paths.receipt)).toEqual(before);
 });
 
 it.each(['paid plan', 'Starter placeholder not activated'])('does not pair or save Starter access when the initial plan check reports %s', async state => {
@@ -128,11 +129,12 @@ it.each(['paid plan', 'Starter placeholder not activated'])('does not pair or sa
 it('refuses a wrong post-pair native account instead of binding the prior free receipt to it', async () => {
   const f = await fixture();
   await Perch.writePerchFreePlanReceipt(directory, plan());
+  const before = await readFile(f.paths.receipt);
   f.identity.mockReset().mockResolvedValueOnce(null).mockResolvedValue({ email: 'different@example.test' });
   await expect(setupPerch(f.options)).rejects.toThrow('active Starter verification');
   expect(f.squire.signup).toHaveBeenCalledTimes(2);
   expect(f.squire.signup.mock.calls[1]![2]).toContain('person@example.test');
-  await expect(stat(f.paths.receipt)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(f.paths.receipt)).toEqual(before);
 });
 
 it('requires final active-Starter and privacy confirmation after native pairing', async () => {
@@ -305,9 +307,12 @@ it.each(['identity request failed', 'identity unavailable', 'identity changed', 
   await expect(setupPerch({ ...f.options, background: true })).rejects.toThrow('active Starter verification');
   expect(await readFile(f.paths.receipt)).toEqual(before);
   expect((await stat(f.paths.receipt)).mtimeMs).toBe(modified);
-  expect(f.configureMemory).not.toHaveBeenCalled(); expect(f.install).not.toHaveBeenCalled();
-  expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.squire.cancelSignup).not.toHaveBeenCalled();
-  expect(f.squire.approveDataSharing).not.toHaveBeenCalled(); expect(f.command).not.toHaveBeenCalled();
+  expect(f.install).not.toHaveBeenCalled(); expect(f.squire.cancelSignup).not.toHaveBeenCalled();
+  expect(f.squire.approveDataSharing).not.toHaveBeenCalled();
+  // With no native login, background setup now signs in as foreground does, keeping the old receipt.
+  if (failure === 'identity unavailable') { expect(f.squire.signup).toHaveBeenCalled(); return; }
+  expect(f.configureMemory).not.toHaveBeenCalled();
+  expect(f.squire.signup).not.toHaveBeenCalled(); expect(f.command).not.toHaveBeenCalled();
 });
 
 it.each(['expired plan', 'changed privacy'])('background rejects %s without deleting or rewriting the local verification', async failure => {
@@ -329,11 +334,12 @@ it.each(['expired plan', 'changed privacy'])('background rejects %s without dele
 it('does not treat a changed memory account as a setting that foreground setup may repair', async () => {
   const f = await fixture();
   await Perch.writePerchFreePlanReceipt(directory, plan());
+  const before = await readFile(f.paths.receipt);
   f.identity.mockReset().mockResolvedValue({ email: 'person@example.test' });
   f.verifyMemory.mockResolvedValue({ email: 'other@example.test' });
   await expect(setupPerch(f.options)).rejects.toThrow('active Starter verification');
   expect(f.configureMemory).not.toHaveBeenCalled(); expect(f.squire.signup).not.toHaveBeenCalled();
-  await expect(stat(f.paths.receipt)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(f.paths.receipt)).toEqual(before);
 });
 
 it.each(['configuration', 'readback'])('does not issue a free receipt if native memory %s belongs to a different account', async stage => {

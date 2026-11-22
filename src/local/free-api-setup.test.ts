@@ -70,7 +70,7 @@ it.each(['runcrate'] as const)('does not save %s access when browser free-accoun
     if (name === 'operate_finish') return {};
     throw new Error('Unexpected Squire call');
   });
-  await expect(setup(() => {}, [provider], { directory })).rejects.toThrow('refused');
+  await expect(setup(() => {}, [provider], { directory })).rejects.toThrow(`${provider} setup incomplete`);
   expect(call.mock.calls.some(([name]) => name === 'grant_app_access')).toBe(false);
   await expect(stat(join(directory, `${provider}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
 });

@@ -171,21 +171,23 @@ it.each([
   { reason: 'Provider denied automated account creation. passcode is SyntheticCode!42', remaining: '', detail: false },
   { reason: 'Provider denied automated account creation. credential SyntheticCredential!42', remaining: '', detail: false },
   { reason: 'Provider denied automated account creation. key might be SyntheticKey!42', remaining: '', detail: false }
-])('reports only safe refusal details and stops before another provider ($reason)', async ({ reason, remaining, detail }) => {
+])('reports only safe refusal details and drops only the refusing provider ($reason)', async ({ reason, remaining, detail }) => {
   const squire = new BrowserSquire();
   const call = vi.spyOn(squire, 'call').mockResolvedValue({
     status: 'stuck', session_id: 'signup', reason, remaining
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
   const addGrant = vi.fn(), notify = vi.fn();
-  let message = '';
-  try { await setupProviders(squire, { addGrant }, { notify }); } catch (error) { message = (error as Error).message; }
-  expect(message).toBe('Provider refused groq signup; setup stopped' + (detail ? ': Provider denied automated account creation.' : ''));
+  const result = await setupProviders(squire, { addGrant }, { providers: ['groq', 'nvidia'], notify });
+  // Each provider's refusal drops that provider; setup goes on to the next one.
+  expect(result.dropped).toEqual(['groq', 'nvidia']);
+  const message = [squire.signupFailureDetail('groq') ?? '', ...notify.mock.calls.map(([line]) => String(line))].join('\n');
+  expect(message.includes('Provider denied automated account creation.')).toBe(detail);
   for (const secret of ['synthetic-private-value', 'short-secret', 'https://example.test', 'gsk_syntheticprivatevalue', 'SyntheticPass!42', 'SyntheticToken!42', 'Synthetic Secret!42', 'SyntheticKey!42', 'SyntheticCode!42', 'SyntheticCredential!42']) expect(message).not.toContain(secret);
-  expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(1);
+  expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(2);
   expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'signup', outcome: 'none' });
   expect(addGrant).not.toHaveBeenCalled();
-  expect(notify).not.toHaveBeenCalled();
+  expect(notify).toHaveBeenCalledWith('groq: dropped; Squire cannot complete signup automatically: provider refused');
 });
 
 it('preserves refusal details from rejected setup runs', async () => {

@@ -781,12 +781,21 @@ terms such as Free-Pi’s trace sale, in interactive and unattended setup. Setup
 refreshes changed policies and also records OpenCode’s policy for the CLI signup
 driver when the registry omits its route. The daemon also renews, at start, any
 saved approval whose provider policy has since changed, so an update does not
-turn a route off, and logs `Data sharing on: ...` for the renewed providers;
-providers never approved stay off. `GRUNT_SETUP_NO_DATA_SHARING=1` keeps
+turn a route off, and logs `Data sharing on: ...` for the renewed providers.
+The [route acquisition pass](router.md#1-greedy-first-pass-driver-cap) also records
+current policies for candidate providers that have never been approved, including
+explicit and material policies, before attempting setup. A receipt write failure
+skips candidates that require sharing approval without stopping the pass.
+`GRUNT_SETUP_NO_DATA_SHARING=1` keeps
 sources with explicit or material policies off and revokes their saved receipts. Retired Freebuff and APInex records do not authorize routing.
 Daily maintenance does not provision accounts; rerun setup to retry a skipped
 source. Provider-specific data policies remain documented below and in
 `src/local/data-sharing.ts`.
+
+For Aperture, CrowLLM, Darus, Gödel, Kenari, 100milionseek, Numes, Fikra and
+Openference, multiple matching vault entries are tried in order. Setup saves the
+first grant that passes the provider's free-access check; a failed candidate
+does not prevent checking the next, while cancellation stops selection.
 
 
 Token Harbor uses `deepseek-v4.1-flash:free`; its weekly allowance is shared across its free models.
@@ -899,13 +908,12 @@ API host or its Squire proxy. Setup records source-specific data-sharing approva
 uses configured verification tools, and prompts the user if an approval cannot
 be completed. It never adds billing, paid plans or top-ups. Model restrictions,
 when offered, should allow only the exact free alias; paid BYOK stays off.
-Routine background checks only reuse verified access; the
-[route acquisition pass](router.md#1-greedy-first-pass-driver-cap) can also sign
-up recommended providers with current consent. Grant files have mode 0600.
+See the [router guide](router.md#1-greedy-first-pass-driver-cap) for background
+account acquisition controls. Grant files have mode 0600.
 
 | Source | Exact model | Expiry and checks |
 | --- | --- | --- |
-| Fikra | `deepseek-v4-1-flash-economy-free` | Zero input/output price, at least 204,096 catalog context, a fresh active gate, and remaining shared dollar/token budgets before dispatch. The earlier live expiry wins; the gate reported November 23 UTC on November 20 despite the page saying November 25. A hard November 25 cutoff prevents extensions without review. Setup checks the window before connecting Squire and immediately before signup. |
+| Fikra | `deepseek-v4-1-flash-economy-free` | Zero input/output price, at least 204,096 catalog context, a fresh active gate, and remaining shared dollar/token budgets before dispatch. The earlier live expiry wins; the gate reported November 23 UTC on November 20 despite the page saying November 25. A hard November 25 cutoff prevents extensions without review. Setup saves a grant only after this live check passes. |
 | Openference | `DeepSeek-V4.1-Flash-1017-Free` | Exact free flag, zero prompt/output/cache prices and quota multiplier, native tools, at least 204,096 catalog context, and expiry after December 31, 2026 UTC. Upstream SSE supplies usage and native tool fragments. |
 
 Fikra advertises 1,000 requests/minute and 100,000/day with no token cap on the
@@ -1041,7 +1049,8 @@ the ordinary signup flow.
 
 Grunt stores these sources' private Squire egress grants and verification receipts
 in `beatapi.json` and `pollinations.json`; their provider keys stay in Squire.
-Verification receipts expire after 30 days. Neither setup displays or
+Verification receipts expire after 30 days. Failed BeatAPI setup preserves its
+earlier receipt until fresh verification succeeds. Neither setup displays or
 stores a plaintext provider key in grunt's files, harness configuration or logs.
 
 Clixad uses the official Node CLI `0.0.1-beta.51`, installed privately with pinned
@@ -1071,7 +1080,8 @@ allowance is 20,000 Perch Tokens per month, in provider plan units, with no surp
 overages. Setup verifies the optional Starter Data Program is off and turns off
 both Use memory and Learn new memories through official CLI settings, without
 deleting saved notes. A 30-day receipt is bound to the native account identity;
-routing freshly verifies that identity and both memory settings. Keep Starter
+routing freshly verifies that identity and both memory settings. A failed setup
+preserves the earlier receipt; it does not bypass these routing checks. Keep Starter
 active with the Data Program and both memory switches off.
 
 The Perch backend pins `deepseek-flash-starter`, the official
@@ -1116,8 +1126,8 @@ Coding harnesses such as Pi are optional; setup can install the service before
 you install a harness.
 
 Existing vault API keys are reused. Missing keys are created through Squire's
-browser and captured directly into its vault. Human verification opens a browser
-handoff, including email confirmation, and signup resumes in that same session.
+browser and captured directly into its vault. Verification that still requires
+the person can open a browser handoff and resume signup in that same session.
 An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
 token to FreeLLMAPI's custom-provider endpoint for those API providers.
@@ -1126,7 +1136,7 @@ Zro, Token Harbor and Runcrate keep private grants in `zro.json`,
 `/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to
 `zro.moonmath.ai`, `tokenharbor.ai` and `api.runcrate.ai`.
 Kenari keeps a private Squire grant in `kenari.json`. Its upstream key stays in
-Squire with `kenari.id` as its only allowed host.
+Squire with `kenari.id` as its first allowed host; additional hosts are accepted.
 NVIDIA keeps its optional grant in the private `nvidia.json` file and calls the grant's
 `/v1/chat/completions` endpoint directly. Its upstream key stays in Squire,
 scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.

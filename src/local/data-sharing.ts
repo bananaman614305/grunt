@@ -157,7 +157,7 @@ async function receipt(directory: string): Promise<Receipt> {
   } catch { return emptyReceipt(); }
 }
 
-// Background setup only reads this receipt; it never opens an approval prompt.
+// Routing requires a receipt matching the current policy fingerprint.
 export async function readDataSharingConsent(directory: string, providers: readonly string[]): Promise<string[]> {
   const saved = await receipt(directory);
   return dataSharingPolicies(providers).filter(policy => saved.approved[policy.provider]?.policy === fingerprint(policy)).map(policy => policy.provider);
@@ -192,7 +192,8 @@ async function revokeDataSharingConsent(directory: string, providers: readonly s
 // The daemon renews saved approvals the way setup does, without prompting: an
 // approval recorded for an earlier version of a provider's policy is recorded
 // again for the current one. The setup opt-out still keeps explicit and
-// material policies off; providers never approved stay off.
+// material policies off. This renewal only covers existing approvals;
+// acquisition uses approveDataSharing for new providers.
 export async function refreshDataSharingConsent(directory: string, env?: NodeJS.ProcessEnv): Promise<string[]> {
   const saved = await receipt(directory), optOut = gruntEnv('SETUP_NO_DATA_SHARING', env) === '1';
   const stale = DATA_SHARING_POLICIES.filter(policy => Object.hasOwn(saved.approved, policy.provider)

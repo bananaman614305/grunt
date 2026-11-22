@@ -491,7 +491,7 @@ export class BrowserSquire implements SetupSquire {
     // Hints precede the shared safety rules (data sharing, no paid plan, terms), which stay last.
     const compose = (hints: string) => {
     const customGoal = goal === undefined ? undefined : `${goal}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required data-sharing disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
-    return (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ' Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key.' : ''}${provider === 'tokenharbor' ? ' Go straight to the API keys page. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan, payment method, extra account or account switching. Use ordinary email verification only when supported by Squire. Stop for human CAPTCHA, passkey or other human verification. Do not bypass verification. Stop on provider refusal.`) + termsInstruction;
+    return (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ' Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["zro.moonmath.ai"] and auth_shape "bearer". Store service zro, label grunt. Never reset or rotate an existing key.' : ''}${provider === 'tokenharbor' ? ' Go straight to the API keys page. Capture with api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.' : ''}${freeProviderInstructions[provider] ?? ''}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan or payment method. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. Stop on provider refusal.`) + termsInstruction;
     };
     const withHints = hinted ? compose(` Provider hints (page, control, value, in order): ${hinted}`) : undefined;
     // Hints are optional; drop them rather than exceed the drive's goal limit.
@@ -535,16 +535,12 @@ export class BrowserSquire implements SetupSquire {
       const remaining = typeof result.remaining === 'string' && result.remaining.trim()
         && !normalize(instruction).includes(normalize(result.remaining))
         && !normalize(result.remaining).includes(normalize(instruction)) ? result.remaining : undefined;
-      const reason = setupReason(result.reason, remaining);
       const classification = [result.reason, remaining].filter(value => typeof value === 'string').join(' ').replace(/[_-]/g, ' ');
       const observedField = typeof result.field === 'string' && result.field.trim()
         && !normalize(instruction).includes(normalize(result.field))
         && !normalize(result.field).includes(normalize(instruction)) ? result.field : undefined;
       const refusal = ['refused', 'rejected', 'denied', 'forbidden'].includes(String(result.status)) || /\b(?:refus(?:al|ed|es|ing)?|denied|prohibit(?:ed|s)?|not allowed|not permitted|forbidden|disallowed)\b/i.test(`${classification} ${observedField ?? ''}`);
-      if (refusal) {
-        this.failures.set(provider, 'provider refused');
-        throw setupStopped(`Provider refused ${provider} signup; setup stopped`, reason);
-      }
+      if (refusal) return dropped('provider refused');
       if (['pending_approval', 'approval_expired', 'card_incomplete'].includes(String(result.status))) return dropped('browser requested an approval');
       if (result.status === 'complete') {
         this.metadata = undefined; // A browser capture may have added a credential.
@@ -555,11 +551,10 @@ export class BrowserSquire implements SetupSquire {
       const active = this.sessions.get(provider);
       const needsUser = object(result.needs_user);
       const handoff = `${classification} ${observedField ?? ''} ${String(needsUser.wall ?? '')} ${String(needsUser.message ?? '')}`.replace(/[_-]/g, ' ');
-      const needsTerms = provider === 'zro' && /please read and accept the terms to continue/i.test(String(object(result.observation).dom ?? ''));
       const offeredTerms = Object.entries(object(result.options)).find(([key, label]) => typeof label === 'string' && /\b(?:accept|agree)\b/i.test(label) && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(label) && guardedSignupChoice(key, label));
       const usedTerms = this.recoveryChoices.get(provider) ?? new Set<string>();
       this.recoveryChoices.set(provider, usedTerms);
-      const termsButton = !this.options.agent && !this.options.background && active && (Array.isArray(object(result.observation).safe_table) ? object(result.observation).safe_table as unknown[] : []).find(row =>
+      const termsButton = !this.options.agent && active && (Array.isArray(object(result.observation).safe_table) ? object(result.observation).safe_table as unknown[] : []).find(row =>
         Array.isArray(row) && typeof row[0] === 'string' && ['b', 'c'].includes(String(row[1]))
         && /\b(?:accept|agree)\b/i.test(String(row[2]))
         && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(String(row[2]).replace(/[_|-]/g, ' '))
@@ -569,13 +564,12 @@ export class BrowserSquire implements SetupSquire {
         await this.serviceCall(provider, 'operate_click', { session_id: active, ref: termsButton[0] });
         continue;
       }
-      const humanStep = (needsTerms && !offeredTerms && !this.options.agent) || /\b(?:sms|phone|captcha|passkey|2fa|two factor|email verification|verification (?:code|link)|human (?:verification|assistance))\b/i.test(handoff);
-      if (/\b(?:sms|phone)\b/i.test(handoff)) return dropped('needs SMS verification');
+      // Squire solves CAPTCHAs and reads verification email itself.
+      const humanStep = /\b(?:sms|passkey|2fa|two factor|human (?:verification|assistance))\b/i.test(handoff);
       if (humanStep && active && this.canHandOff()) {
         await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(active) }), signal);
         continue;
       }
-      if (humanStep && !this.options.background) return dropped(needsTerms ? 'needs Terms of Service acceptance' : 'needs human verification');
       if (['budget', 'evaluate_timeout'].includes(String(result.status))) return { run: { id: provider, state: 'running' }, decision: 'silent' };
       if (checkCaptured) {
         // A new vault entry can be tested directly unless the goal also
@@ -588,9 +582,8 @@ export class BrowserSquire implements SetupSquire {
           return { run: { id: provider, state: 'completed' }, decision: 'silent' };
         }
       }
-      const uncertain = ['low_confidence', 'needs_value', 'no_progress', 'stuck', 'invalid_answer'].includes(String(result.status));
       const retry = oauthRetry(result);
-      if (!active || (!retry && !uncertain)) return dropped('browser could not continue');
+      if (!active) return dropped('browser could not continue');
       const turns = this.retries.get(provider) ?? 0;
       if (turns >= 8) return dropped('browser recovery limit reached');
       this.retries.set(provider, turns + 1);
@@ -603,8 +596,8 @@ export class BrowserSquire implements SetupSquire {
         } catch (error) {
           signal.throwIfAborted();
           const failure = setupFailureReason(error);
-          // A driver that hangs until its timeout fails this signup; it never switches drivers.
-          if (signupOperatorUnavailable(failure) || failure === 'timed out') return dropped(failure);
+          // A driver that times out never switches drivers; the session continues below.
+          if (signupOperatorUnavailable(failure)) return dropped(failure);
         }
         if (['refused', 'rejected', 'denied', 'forbidden'].includes(String(agentResult.status))) return dropped('provider refused');
         if (agentResult.status === 'complete') {
@@ -612,10 +605,12 @@ export class BrowserSquire implements SetupSquire {
           await this.finishSession(provider, true);
           return { run: { id: provider, state: 'completed' }, decision: 'silent' };
         }
-        if (agentResult.status === 'needs_human') return dropped('needs human verification');
-        if (agentResult.status === 'needs_sms') return dropped('needs SMS verification');
+        // Reported if no recovery below succeeds.
+        if (agentResult.status === 'needs_human') this.failures.set(provider, 'needs human verification');
+        // The operator may yield or time out after useful browser work. Its calls
+        // are drained above; let the drive inspect that page before giving up.
+        else continue;
       }
-      if (this.options.background) return dropped('needs foreground signup');
       const used = this.recoveryChoices.get(provider) ?? new Set<string>();
       this.recoveryChoices.set(provider, used);
       const cookie = !this.options.agent && Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
@@ -658,7 +653,7 @@ export class BrowserSquire implements SetupSquire {
         answer = 'WAIT';
         continue;
       }
-      if (cookie && used.size < 4) {
+      if (cookie) {
         used.add(String(cookie[1]).trim().toLowerCase());
         answer = cookie[0];
         continue;
@@ -667,20 +662,21 @@ export class BrowserSquire implements SetupSquire {
         await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(active) }), signal);
         continue;
       }
+      // Background signups have no person to hand off to; the caller drives the same session again.
+      if (this.options.background) return { run: { id: provider, state: 'running' }, decision: 'silent' };
       return dropped(this.failures.get(provider) ?? 'browser could not continue');
     }
   }
   private async harnessSignup(provider: string, url: string, goal: string, initial: ObjectValue, session: string, signal: AbortSignal) {
     const tools = await this.client.listTools();
     let latest = initial;
-    let turns = 0;
     let started = false;
-    let busy = false;
-    let email: string | undefined;
+    // Calls run one at a time on the shared page state; a parallel call waits its turn.
+    let queue = Promise.resolve();
     let observation = object(initial.observation);
-    // Values Grunt itself supplies for this signup; the operator may type or pass only these.
-    const supplied = () => ['grunt', 'free', ...(email ? [email] : []), ...Object.values(this.signupFacts.get(provider) ?? {})];
-    const terminal = () => ['complete', 'needs_sms', 'refused', 'rejected', 'denied', 'forbidden'].includes(String(latest.status));
+    // A password the free model invents would sit in its provider's logs and never reach the vault.
+    const password = /\bpass(?:word|code)\b/i;
+    const terminal = () => ['complete', 'refused', 'rejected', 'denied', 'forbidden'].includes(String(latest.status));
     // After a terminal result, answer every further call with a final stop instead
     // of replaying the stale page, which reads as unfinished work.
     const finished = () => latest.status === 'complete'
@@ -690,10 +686,13 @@ export class BrowserSquire implements SetupSquire {
       service: provider, url, goal, signal,
       tools: tools.tools.filter(tool => signupAgentTools.has(tool.name)),
       call: async (name, args) => {
-        if (terminal()) return finished();
-        if (busy || ++turns > 24 || !signupAgentTools.has(name)) return { status: 'stopped', reason: 'Tool unavailable for this signup' };
-        busy = true;
+        const turn = queue;
+        let done!: () => void;
+        queue = new Promise<void>(resolve => { done = resolve; });
+        await turn;
         try {
+          if (terminal()) return finished();
+          if (!signupAgentTools.has(name)) return { status: 'stopped', reason: 'Tool unavailable for this signup' };
           signal.throwIfAborted();
           if (!started) {
             if (name !== 'operate_drive') return { status: 'stopped', reason: 'Call operate_drive first' };
@@ -701,19 +700,26 @@ export class BrowserSquire implements SetupSquire {
             return signupAgentResult(latest);
           }
           if (name === 'operate_drive') {
-            const answer = typeof args.answer === 'string' && (args.answer === 'WAIT' || Object.hasOwn(object(latest.options), args.answer)) ? args.answer : undefined;
-            if (args.answer !== undefined && (!answer || (answer !== 'WAIT' && !guardedSignupChoice(answer, object(latest.options)[answer]))))
+            const answer = typeof args.answer === 'string' ? args.answer : undefined;
+            // Squire's fixed resume answers move no control. Any other answer may name an
+            // offered key or a current page control, so its label must pass the payment and key check.
+            const fixed = answer !== undefined && (['WAIT', 'wait', 'DONE', 'done'].includes(answer)
+              || ['BLOCKED', 'NONE_OF_THESE', 'STUCK', 'TAKE_OVER', 'I AM TAKING OVER'].includes(answer.trim().toUpperCase()));
+            const observed = () => (Array.isArray(observation.safe_table) ? observation.safe_table : [])
+              .find(row => Array.isArray(row) && (row[0] === answer || row[2] === answer));
+            if (answer !== undefined && !fixed && !Object.hasOwn(object(latest.options), answer) && !observed())
+              observation = await this.serviceCall(provider, 'operate_observe', { session_id: session });
+            const control = observed();
+            const answerLabel = answer !== undefined && Object.hasOwn(object(latest.options), answer) ? object(latest.options)[answer] : Array.isArray(control) ? control[2] : undefined;
+            if (answer !== undefined && !fixed && !guardedSignupChoice(answer, answerLabel))
               return { status: 'invalid_answer', reason: 'Choose a safe, currently offered option or WAIT',
                 allowed_answers: [...Object.entries(object(latest.options)).filter(([key, label]) => guardedSignupChoice(key, label)).map(([key]) => key), 'WAIT'] };
             if (oauthRetry(latest)) await delay(3000, undefined, { signal });
-            // Forward any fact the operator names whose value Grunt supplies (e.g. "Key Name": "grunt").
-            const facts = Object.fromEntries(Object.entries(object(args.facts)).filter(([, value]) => typeof value === 'string' && supplied().includes(value)));
-            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { ...this.signupFacts.get(provider), ...facts, plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 30,
+            // Forward the operator's facts (e.g. "Key Name": "grunt"); Grunt's own facts win.
+            const facts = Object.fromEntries(Object.entries(object(args.facts)).filter(([key, value]) => typeof value === 'string' && !password.test(key)));
+            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { ...facts, ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 30,
               ...(answer ? { answer } : {}) });
             observation = object(latest.observation);
-            const browserWall = object(latest.needs_user);
-            if (/\b(?:sms|phone)\b/i.test(`${latest.field ?? ''} ${browserWall.wall ?? ''} ${browserWall.message ?? ''}`))
-              latest = { status: 'needs_sms' };
             return signupAgentResult(latest);
           }
           if (name === 'operate_share') {
@@ -729,35 +735,38 @@ export class BrowserSquire implements SetupSquire {
               return { status: 'stopped', reason: 'Capture directly into this provider’s vault entry' };
             args = { ...(typeof args.selector === 'string' ? { selector: args.selector } : {}), ...(store ? { store } : {}), ...(capture ? { capture } : {}) };
           }
+          // OAuth only: the sealed password actions stay with operate_drive.
+          if (name === 'operate_login') args = { action: 'oauth', provider: args.provider, ref: args.ref };
+          // A local file page would hand its contents to the free model.
+          if (name === 'operate_navigate' && !/^https?:\/\//i.test(String(args.url))) return { status: 'stopped', reason: 'Navigate to an http or https page' };
           const text = typeof args.text === 'string' ? args.text : '';
-          if (name === 'operate_type' && !supplied().includes(text)) return { status: 'stopped', reason: 'Only values Grunt supplies (key or project name, plan, Squire-connected email) can be typed', allowed_text: supplied() };
           if (['operate_click', 'operate_type', 'operate_select'].includes(name)) {
             const ref = typeof args.ref === 'string' ? args.ref : args.target;
-            const control = (Array.isArray(observation.safe_table) ? observation.safe_table : [])
+            const find = () => (Array.isArray(observation.safe_table) ? observation.safe_table : [])
               .find(row => Array.isArray(row) && row[0] === ref);
+            // A ref the cached page lacks is looked up on a fresh observation.
+            if (!find()) observation = await this.serviceCall(provider, 'operate_observe', { session_id: session });
+            const control = find();
             const label = Array.isArray(control) ? String(control[2] ?? '') : '';
-            const safe = name === 'operate_type' ? Array.isArray(control) && (text !== email || /(?:email|e-mail)/i.test(label)) : guardedSignupChoice(String(ref), label);
-            if (!safe) return { status: 'stopped', reason: 'Observe and choose a safe browser control: use a ref from the latest operate_observe result' };
+            const safe = name === 'operate_type' ? Array.isArray(control) && !password.test(`${String(ref)} ${label}`.replace(/[_|-]/g, ' ')) : guardedSignupChoice(String(ref), label);
+            if (!safe) return { status: 'stopped', reason: name === 'operate_type' && control ? 'Type into a field other than a password; operate_drive fills passwords' : 'Observe and choose a safe browser control: use a ref from the latest operate_observe result' };
             if (name === 'operate_click') args = { ref };
             if (name === 'operate_type') args = { ref, text };
             if (name === 'operate_select') {
               const values = Array.isArray(args.values) ? args.values : [];
-              if (values.length !== 1 || !guardedSignupChoice(String(ref), values[0])) return { status: 'stopped', reason: 'Select a safe option' };
+              if (values.some(value => !guardedSignupChoice(String(ref), value))) return { status: 'stopped', reason: 'Select a safe option' };
               args = { ref, values };
             }
           }
           const result = await this.serviceCall(provider, name, { ...args, session_id: session });
-          if (name === 'operate_observe') {
-            observation = result;
-            if (typeof result.user_email === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(result.user_email)) email = result.user_email;
-          }
+          if (name === 'operate_observe') observation = result;
           return signupAgentResult(result);
-        } finally { busy = false; }
+        } finally { done(); }
       }
     }); } catch (error) {
       signal.throwIfAborted();
       if (!terminal() && latest.status !== 'needs_human') throw error;
-    }
+    } finally { await queue; }
     return latest;
   }
   async humanHandoff(session: string) {
@@ -1189,8 +1198,8 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
         ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'goedel');
     }
-    // Idle sync only reuses verified state for these guarded sources. It never
-    // deletes their receipts, provisions a browser or changes account settings.
+    // Pollinations, Clixad and Perch retain reuse-only background checks here;
+    // BeatAPI can provision missing access while preserving its earlier receipt.
     if (options.background) {
       const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
       for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
