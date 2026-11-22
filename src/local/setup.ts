@@ -1198,8 +1198,8 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
         ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'goedel');
     }
-    // Idle sync only reuses verified state for these guarded sources. It never
-    // deletes their receipts, provisions a browser or changes account settings.
+    // Pollinations, Clixad and Perch retain reuse-only background checks here;
+    // BeatAPI can provision missing access while preserving its earlier receipt.
     if (options.background) {
       const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
       for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
