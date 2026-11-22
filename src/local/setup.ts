@@ -607,6 +607,9 @@ export class BrowserSquire implements SetupSquire {
         }
         // Reported if no recovery below succeeds.
         if (agentResult.status === 'needs_human') this.failures.set(provider, 'needs human verification');
+        // The operator may yield or time out after useful browser work. Its calls
+        // are drained above; let the drive inspect that page before giving up.
+        else continue;
       }
       const used = this.recoveryChoices.get(provider) ?? new Set<string>();
       this.recoveryChoices.set(provider, used);

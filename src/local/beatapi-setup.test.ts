@@ -144,8 +144,8 @@ it('pre-cancelled foreground setup preserves even an invalid existing receipt', 
   await expect(setupBeatAPI({ directory, ...f, signal: controller.signal })).rejects.toThrow('verification did not complete');
   noProvisioning(f); expect(f.fetcher).not.toHaveBeenCalled(); expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe('existing-invalid-receipt');
 });
-it('foreground setup removes a failed old receipt only when starting fresh verification', async () => {
+it('foreground setup retains the old receipt until fresh verification succeeds', async () => {
   const original = await savedReceipt(), f = fixture();
-  f.fetcher.mockResolvedValueOnce(new Response('private', { status: 401 })); f.squire.signup.mockImplementationOnce(async () => { await expect(readFile(beatapiGrantPath(directory))).rejects.toMatchObject({ code: 'ENOENT' }); });
+  f.fetcher.mockResolvedValueOnce(new Response('private', { status: 401 })); f.squire.signup.mockImplementationOnce(async () => { expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original); });
   await setupBeatAPI({ directory, ...f }); expect(f.squire.signup).toHaveBeenCalledOnce(); expect(f.squire.credentials.grant).toHaveBeenCalledOnce(); expect(await readFile(beatapiGrantPath(directory), 'utf8')).not.toBe(original);
 });

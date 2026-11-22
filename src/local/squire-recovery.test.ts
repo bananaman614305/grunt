@@ -487,7 +487,7 @@ it('forwards an explicit Squire capture for this provider and keeps its write_id
       if (object(args.capture).write_id === '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718') { stored = true; return { status: 'stored', storage: 'stored' }; }
       return { status: 'capture_unresolved', storage: 'unknown', write_id: '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718' };
     }
-    return name === 'operate_drive' ? { status: 'low_confidence', session_id: 'zro-tab', options: {} } : {};
+    return name === 'operate_drive' ? { status: stored ? 'complete' : 'low_confidence', session_id: 'zro-tab', options: {} } : {};
   });
   const source = { role: 'textbox', name: 'API key' };
   squire.useSignupAgent(async agent => {
@@ -520,10 +520,11 @@ it('lets the operator type into observed fields except passwords', async () => {
   const { setupProviders } = await import('./setup.js');
   const squire = harnessSquire();
   const typed: Record<string, unknown>[] = [];
+  let filled = false;
   vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
     if (name === 'operate_type') { typed.push(args); return {}; }
     if (name === 'operate_observe') return { user_email: 'person@example.test', safe_table: [['key-name', 't', 'Key Name'], ['email', 't', 'Email address'], ['secret', 't', '@password|f=password']] };
-    return name === 'operate_drive' ? { status: 'low_confidence', session_id: 'zro-tab', options: {} } : {};
+    return name === 'operate_drive' ? { status: filled ? 'complete' : 'low_confidence', session_id: 'zro-tab', options: {} } : {};
   });
   squire.useSignupAgent(async agent => {
     await agent.call('operate_drive', {});
@@ -533,6 +534,7 @@ it('lets the operator type into observed fields except passwords', async () => {
     expect(await agent.call('operate_type', { ref: 'key-name', text: 'grunt-squire' })).not.toMatchObject({ status: 'stopped' });
     expect(await agent.call('operate_type', { ref: 'secret', text: 'Synthetic!Pass42' })).toMatchObject({ status: 'stopped', reason: expect.stringContaining('password') });
     expect(await agent.call('operate_type', { ref: 'unobserved', text: 'grunt' })).toMatchObject({ status: 'stopped' });
+    filled = true;
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
   await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
@@ -549,7 +551,7 @@ it('passes the operator facts through operate_drive except passwords, and Grunt 
   const squire = harnessSquire();
   const drives: Record<string, unknown>[] = [];
   vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
-    if (name === 'operate_drive') { drives.push(args); return { status: 'low_confidence', session_id: 'zro-tab', options: {} }; }
+    if (name === 'operate_drive') { drives.push(args); return { status: object(args.facts)['Key Name'] ? 'complete' : 'low_confidence', session_id: 'zro-tab', options: {} }; }
     return {};
   });
   squire.useSignupAgent(async agent => {
