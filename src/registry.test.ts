@@ -12,7 +12,7 @@ async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-re
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 it('preserves the established vetted sources while allowing reviewed pool additions', () => {
-  const established = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'];
+  const established = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch'];
   const ids = bundledRegistry.adapters.map(adapter => adapter.id);
   expect(ids.filter(id => established.includes(id))).toEqual(established);
   for (const id of ids) {

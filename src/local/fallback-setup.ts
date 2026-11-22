@@ -355,15 +355,6 @@ export async function setupFallbacks(options: {
         failedSetup('beatapi', error);
         options.notify('BeatAPI free setup incomplete. Rerun usegrunt setup to resume; other routes remain available.');
       } },
-      clixad: async () => { try {
-        if (!reuseOnly) await connect();
-        await (options.setupProvider ?? setup)(options.notify, ['clixad'], { squire: squire as SetupSquire, directory: options.directory,
-          background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
-        options.notify('Clixad: free GLM 5.3 Flash access connected');
-      } catch (error) {
-        failedSetup('clixad', error);
-        options.notify('Clixad setup needs attention. Rerun usegrunt setup; other free routes continue.');
-      } },
       perch: async () => { try {
         if (!reuseOnly) await connect();
         await (options.setupProvider ?? setup)(options.notify, ['perch'], { squire: squire as SetupSquire, directory: options.directory,

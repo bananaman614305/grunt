@@ -133,9 +133,8 @@ that check finishes. Sibling runtimes sharing the same private configuration
 coordinate that queue and preserve each other's results. A recent
 successful reply counts toward the daily check. Otherwise the queue sends one
 bounded hello directly to that provider, with normal consent and free-access
-guards. Idle Clixad checks use read-only metadata to avoid automatic wallet or
-streak claims. Free-Pi checks also use metadata, avoiding a new coding-session
-trace. Both are recorded as metadata evidence rather than a fresh reply.
+guards. Free-Pi checks use metadata, avoiding a new coding-session
+trace. They are recorded as metadata evidence rather than a fresh reply.
 The queue defers checks during user requests, setup and cooldowns. Maintenance
 does not install tools, create accounts or open sign-in flows. Separately, the
 daemon uses the registry to acquire recommended routes with current consent. See the
@@ -209,7 +208,7 @@ Gödel Machines uses a dedicated Free Key for `deepseek/deepseek-v4.1-flash`. Gr
 
 LiveKit adds DeepSeek V4.1 Flash through its free Build plan, using one free project and the official CLI's browser login. The documented included inference allowance is $2.50 per calendar month with a hard stop and no card. Keep the account on Build. LiveKit documents [zero data retention and no training for inference](https://docs.livekit.io/agents/models/inference/), so it needs no sharing approval. The route passed short-prompt, tool-call and 210,077-token context checks through Grunt.
 
-The four additions in 0.6.6 are BeatAPI, Pollinations, Clixad and Perch. BeatAPI's ongoing free DeepSeek route permits one successful request per minute and leaves its separate $2 welcome credit untouched. Pollinations' fixed community GLM route needs a numeric zero-budget, Quest-only key and a positive unused Quest balance; the zero-priced route does not spend its one-time first-key reward. Clixad uses its native free GLM route with a zero wallet balance. Perch uses active Starter access with 20,000 Perch Tokens per month, the optional Data Program off, and both memory switches off. Native CLI output limits are local checks and cannot hard-cap upstream generation; keep Clixad's wallet at zero and Perch on Starter. See the reference for model-attestation and billing limits.
+The additions in 0.6.6 include BeatAPI, Pollinations and Perch. BeatAPI's ongoing free DeepSeek route permits one successful request per minute and leaves its separate $2 welcome credit untouched. Pollinations' fixed community GLM route needs a numeric zero-budget, Quest-only key and a positive unused Quest balance; the zero-priced route does not spend its one-time first-key reward. Perch uses active Starter access with 20,000 Perch Tokens per month, the optional Data Program off, and both memory switches off. Native CLI output limits are local checks and cannot hard-cap upstream generation; keep Perch on Starter. See the reference for model-attestation and billing limits.
 
 Within OpenCode, new conversations rotate across DeepSeek V4.1 Flash Free,
 GLM 5.3 Flash Free and Big Pickle. Follow-ups keep their model. See the

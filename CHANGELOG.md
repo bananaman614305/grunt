@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Remove Clixad. Its free model spends account credits that come only from surveys, offers or purchases, none of which Grunt does, so setup no longer offers, installs or routes it. The remaining experimental sources share the 0.2 weight equally.
 - On Linux, setup enables lingering for the user so the local daemon keeps running after logout and starts at boot, and re-running setup re-enables an existing service. If lingering is refused, setup prints `loginctl enable-linger`.
 
 ## [0.9.7] - 2026-11-22

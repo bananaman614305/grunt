@@ -139,14 +139,14 @@ it('lists only actual attempt sources while retaining skipped providers and avai
 
 it('keeps transport-only maintenance out of logical requests and usage while retaining maintenance and export evidence', async () => {
   const { store } = await fixture(), requestId = randomUUID();
-  const probe = event('transport.finish', { requestId, kind: 'maintenance', source: 'clixad', outcome: 'passed', httpStatus: 200, endpointLabel: 'models' });
-  const maintenance = { version: 1 as const, entries: { clixad: { nextCheckAt: initial + 86400000, lastCheckedAt: initial, outcome: 'passed' as const, evidence: 'metadata' as const } } };
+  const probe = event('transport.finish', { requestId, kind: 'maintenance', source: 'freepi', outcome: 'passed', httpStatus: 200, endpointLabel: 'models' });
+  const maintenance = { version: 1 as const, entries: { freepi: { nextCheckAt: initial + 86400000, lastCheckedAt: initial, outcome: 'passed' as const, evidence: 'metadata' as const } } };
   await store.ingest(batch([probe], { maintenance }));
   expect((await store.requests()).requests).toEqual([]);
   expect(await store.request(requestId)).toBeNull();
   expect((await store.overview()).usage).toMatchObject({ requests: 0, attempts: 0, failures: 0, inputTokens: null, outputTokens: null, unknownInputEvents: 0 });
-  expect((await store.runs()).maintenance).toMatchObject([{ instanceId: 'chad', source: 'clixad', outcome: 'passed', evidence: 'metadata' }]);
-  expect((await store.exportData()).events).toMatchObject([{ requestId, source: 'clixad', type: 'transport.finish' }]);
+  expect((await store.runs()).maintenance).toMatchObject([{ instanceId: 'chad', source: 'freepi', outcome: 'passed', evidence: 'metadata' }]);
+  expect((await store.exportData()).events).toMatchObject([{ requestId, source: 'freepi', type: 'transport.finish' }]);
 });
 
 it('uses request-finish attribution only for legacy traces without attempt lifecycles', async () => {

@@ -2,12 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type * as ClixadSetup from './clixad-setup.js';
 
-const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), clixad: vi.fn(), perch: vi.fn(), kilo: vi.fn(), antseed: vi.fn(), millionseek: vi.fn(), freepi: vi.fn() }));
+const helpers = vi.hoisted(() => ({ pollinations: vi.fn(), beatapi: vi.fn(), perch: vi.fn(), kilo: vi.fn(), antseed: vi.fn(), millionseek: vi.fn(), freepi: vi.fn() }));
 vi.mock('./pollinations-setup.js', () => ({ setupPollinations: helpers.pollinations }));
 vi.mock('./beatapi-setup.js', () => ({ setupBeatAPI: helpers.beatapi }));
-vi.mock('./clixad-setup.js', async importOriginal => ({ ...await importOriginal<typeof ClixadSetup>(), setupClixad: helpers.clixad }));
 vi.mock('./perch-setup.js', () => ({ setupPerch: helpers.perch }));
 vi.mock('./kilo.js', () => ({ verifyKiloAccess: helpers.kilo, KILO_PARTICLE: 'particle-ai/particle-1:free' }));
 vi.mock('./antseed-vikey-setup.js', () => ({ setupAntseedVikey: helpers.antseed }));
@@ -18,7 +16,7 @@ import { setupFallbacks } from './fallback-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 
 const directories: string[] = [];
-const guardedProviders = ['pollinations', 'beatapi', 'clixad', 'perch'] as const;
+const guardedProviders = ['pollinations', 'beatapi', 'perch'] as const;
 afterEach(async () => {
   vi.clearAllMocks();
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
@@ -38,11 +36,11 @@ function client() {
 
 it('provisions the new sources with their guarded helpers without entering the legacy router path', async () => {
   const location = await directory(), squire = client();
-  const providers = ['pollinations', 'beatapi', 'clixad', 'perch'];
+  const providers = ['pollinations', 'beatapi', 'perch'];
   await recordDataSharingConsent(location, providers);
   const signal = new AbortController().signal, notify = vi.fn();
   await expect(setup(notify, providers, { directory: location, squire, signal })).resolves.toEqual({});
-  for (const helper of [helpers.pollinations, helpers.beatapi, helpers.clixad, helpers.perch]) {
+  for (const helper of [helpers.pollinations, helpers.beatapi, helpers.perch]) {
     expect(helper).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ directory: location, squire, signal,
       dataSharingApproved: expect.arrayContaining(providers), notify }));
   }
@@ -120,7 +118,7 @@ it('settles an unsupported Antseed platform without blocking another working fre
   expect(onSettled).toHaveBeenCalledWith('reflection-beam', true, undefined);
 });
 
-it.each(['pollinations', 'beatapi', 'clixad', 'perch', 'kilo'])('requires current %s consent before any provisioning', async provider => {
+it.each(['pollinations', 'beatapi', 'perch', 'kilo'])('requires current %s consent before any provisioning', async provider => {
   const location = await directory(), squire = client();
   await expect(setup(vi.fn(), [provider], { directory: location, squire })).rejects.toThrow('grouped setup approval');
   for (const helper of Object.values(helpers)) expect(helper).not.toHaveBeenCalled();
@@ -201,7 +199,7 @@ it.each([false, true])('preserves the foreground/background intent at the fallba
 
 it('covers parallel cold-start setup jobs using one reusable connection and no retired installers', async () => {
   const location = await directory(), squire = client();
-  const providers = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch', 'kenari', 'numes'];
+  const providers = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch', 'kenari', 'numes'];
   await recordDataSharingConsent(location, providers);
   const signal = new AbortController().signal, notify = vi.fn(), connect = vi.fn(async () => {}), run = vi.fn(async () => {}), verify = vi.fn(async () => {});
   const setupProvider = vi.fn(async (_notify: (line: string) => void, _providers: string[], _options?: Parameters<typeof setup>[2]) => ({}));

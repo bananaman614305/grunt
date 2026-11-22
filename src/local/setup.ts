@@ -26,7 +26,6 @@ import { setupMistralVibe } from './mistral-vibe-setup.js';
 import { setupLiveKit } from './livekit-setup.js';
 import { setupPollinations } from './pollinations-setup.js';
 import { setupBeatAPI } from './beatapi-setup.js';
-import { setupClixad } from './clixad-setup.js';
 import { setupPerch } from './perch-setup.js';
 import { setupNous } from './nous-setup.js';
 import { setupKenari } from './kenari-setup.js';
@@ -53,7 +52,7 @@ import { confirm, isCancel } from '@clack/prompts';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', clixad: 'https://app.clixad.io', perch: 'https://www.perchai.app', nous: 'https://portal.nousresearch.com/login', kenari: 'https://kenari.id/login', numes: 'https://numes.ai/dashboard', goedel: 'https://inference.goedelmachines.com/keys', crowllm: 'https://crowllm.com/keys', fikra: 'https://fikraapi.co.ke/account/signup', openference: 'https://openference.com/register', darus: 'https://gateway.darusalfatah.id/', 'aperture-ai': 'https://www.aperture-ai.run/login.html', 'reflection-beam': 'https://kilo.ai/docs/getting-started/using-kilo-for-free', 'antseed-vikey': 'https://antseed.com/docs/', millionseek: 'https://100milionseek.top/signup', freepi: 'https://freepi.ai' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', perch: 'https://www.perchai.app', nous: 'https://portal.nousresearch.com/login', kenari: 'https://kenari.id/login', numes: 'https://numes.ai/dashboard', goedel: 'https://inference.goedelmachines.com/keys', crowllm: 'https://crowllm.com/keys', fikra: 'https://fikraapi.co.ke/account/signup', openference: 'https://openference.com/register', darus: 'https://gateway.darusalfatah.id/', 'aperture-ai': 'https://www.aperture-ai.run/login.html', 'reflection-beam': 'https://kilo.ai/docs/getting-started/using-kilo-for-free', 'antseed-vikey': 'https://antseed.com/docs/', millionseek: 'https://100milionseek.top/signup', freepi: 'https://freepi.ai' };
 const freeProviderInstructions: Record<string, string> = {
   runcrate: ' Go straight to the API keys page at https://www.runcrate.ai/dashboard/api-keys. Leave optional marketing unchecked. Do not open or change billing settings or create another account. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Reuse an existing vaulted key where possible; never reset or rotate it.',
   apinex: ' Go straight to the API keys page. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Do not use or change any existing paid wallet balance. Dismiss any paid upsell. Do not add billing, top up a wallet, buy credits, or use any paid balance. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
@@ -621,7 +620,7 @@ export class BrowserSquire implements SetupSquire {
         answer = offeredTerms[0];
         continue;
       }
-      const oauthProvider = ['runcrate', 'clixad'].includes(provider) || /use GitHub OAuth/i.test(instruction) ? 'GitHub' : 'Google';
+      const oauthProvider = provider === 'runcrate' || /use GitHub OAuth/i.test(instruction) ? 'GitHub' : 'Google';
       const oauth = this.batchSignup && !this.options.agent && Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
         && new RegExp(`^(?:sign in|sign up|continue|log in|login) with ${oauthProvider}$`, 'i').test(label.trim())
         && !used.has(label.trim().toLowerCase()));
@@ -1198,13 +1197,13 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
         ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'goedel');
     }
-    // Pollinations, Clixad and Perch retain reuse-only background checks here;
+    // Pollinations and Perch retain reuse-only background checks here;
     // BeatAPI can provision missing access while preserving its earlier receipt.
     if (options.background) {
       const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
-      for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
+      for (const provider of ['pollinations', 'beatapi', 'perch'] as const) {
         if (!providers.includes(provider)) continue;
-        await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser, background: true,
+        await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : setupPerch)({ directory: location, squire: browser, background: true,
           dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
         providers = providers.filter(id => id !== provider);
       }
@@ -1212,11 +1211,11 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
     if (!providers.length) return {};
     await owned?.connect();
     options.signal?.throwIfAborted();
-    for (const provider of ['pollinations', 'beatapi', 'clixad', 'perch'] as const) {
+    for (const provider of ['pollinations', 'beatapi', 'perch'] as const) {
       if (!providers.includes(provider)) continue;
       const browser = squire as SetupSquire & Pick<BrowserSquire, 'signup' | 'call' | 'cancelSignup'>;
       if (typeof browser.signup !== 'function') throw new Error(`${provider} signup requires a browser-capable Squire client`);
-      await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : provider === 'clixad' ? setupClixad : setupPerch)({ directory: location, squire: browser,
+      await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : setupPerch)({ directory: location, squire: browser,
         dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}),
         ...(provider === 'beatapi' && options.upgradeBeatAPI ? { upgradeExisting: true } : {}) });
       providers = providers.filter(id => id !== provider);

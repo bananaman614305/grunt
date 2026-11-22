@@ -48,14 +48,14 @@ it('announces a completed provider while another signup still waits', async () =
 
 it('starts anonymous routes before a reordered registry can fill every worker with Squire login', async () => {
   const login = deferred(), events: [string, boolean][] = [], started: string[] = [];
-  const ids = ['zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch', 'opencode', 'kilo'];
+  const ids = ['zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch', 'opencode', 'kilo'];
   const connect = vi.fn(async () => { await login.promise; });
   const verify = vi.fn(async () => {});
   let finished = false;
   const pending = setupFallbacks(await fixture({ adapters: ids, connect, verify,
     setupProvider: async (_notify, requested) => {
       const id = requested![0]!; started.push(id);
-      if (id === 'zro' || id === 'clixad') throw new Error('Free account needs verification');
+      if (id === 'zro' || id === 'perch') throw new Error('Free account needs verification');
       return {};
     },
     onSettled: (id, available) => { events.push([id, available]); }
@@ -67,7 +67,7 @@ it('starts anonymous routes before a reordered registry can fill every worker wi
     expect(connect).toHaveBeenCalledOnce();
     expect(finished).toBe(false);
   } finally { login.resolve(); }
-  await expect(pending).resolves.toEqual({ unavailable: ['zro', 'clixad'] });
+  await expect(pending).resolves.toEqual({ unavailable: ['zro', 'perch'] });
   expect(events).toHaveLength(ids.length);
   expect(new Set(events.map(([id]) => id)).size).toBe(ids.length);
   expect(connect).toHaveBeenCalledOnce();

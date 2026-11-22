@@ -53,7 +53,7 @@ it('automatically accepts material terms and refreshes changed policies', async 
 it('groups the new native providers without renewing existing provider approvals', async () => {
   const path = await directory();
   await recordDataSharingConsent(path, sharingIds);
-  const providers = [...sharingIds, 'clixad', 'perch'];
+  const providers = [...sharingIds, 'perch'];
   expect(await approveDataSharing({ directory: path, providers })).toEqual({ approved: providers, skipped: [] });
   expect(await readDataSharingConsent(path, providers)).toEqual(providers);
 });

@@ -158,9 +158,9 @@ it('marks watch as offline after a fetch fails instead of continuing to show hea
   } finally { await dashboard.stop(); }
 });
 
-it('shows all eleven sources in a normal 80 by 24 setup terminal', () => {
+it('shows all ten sources in a normal 80 by 24 setup terminal', () => {
   const data = snapshot();
-  data.sources = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch'].map(id => ({ id, state: 'ready', active: 0 }));
+  data.sources = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch'].map(id => ({ id, state: 'ready', active: 0 }));
   data.sources.push({ id: 'freebuff', state: 'disabled', active: 0 });
   const view = renderDashboard(data, { width: 80, height: 24, now, interactive: false, setup: true });
   expect(view).toContain('Perch'); expect(view).toContain('OpenCode');

@@ -28,7 +28,7 @@ FAILURES = {'request_body', 'request_tools', 'request_tool_schema', 'request_siz
             'stream_read', 'stream_format', 'stream_incomplete', 'stream_cleanup', 'turn_limit',
             'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'}
 PROVIDERS = {'dots', 'codex', 'opencode', 'kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate',
-             'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'clixad', 'perch', 'nous', 'kenari',
+             'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch', 'nous', 'kenari',
              'numes', 'goedel', 'darus', 'aperture-ai', 'crowllm', 'millionseek', 'freepi', 'fikra',
              'openference', 'reflection-beam', 'antseed-vikey', 'freellmapi'}
 BINS_MS = (1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 180000, 600000, 3600000)

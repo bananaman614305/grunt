@@ -18,7 +18,7 @@ class ActivityTest(unittest.TestCase):
         rows = [
             {'id': 'kilo', 'state': 'available', 'errorCode': 'upstream'},
             {'id': 'zro', 'state': 'limited', 'errorCode': 'quota'},
-            {'id': 'clixad', 'state': 'error', 'errorCode': 'refused'},
+            {'id': 'perch', 'state': 'error', 'errorCode': 'refused'},
             {'id': 'freebuff', 'state': 'disabled', 'errorCode': 'refused'},
         ]
         with patch('activity.events', return_value=[]), patch('activity.private_tail', return_value='{"phase":"working"}'), \
@@ -26,7 +26,7 @@ class ActivityTest(unittest.TestCase):
             self.assertEqual(snapshot()['issues'], [
                 {'source': 'kilo', 'state': 'available', 'error': 'upstream'},
                 {'source': 'zro', 'state': 'limited', 'error': 'quota'},
-                {'source': 'clixad', 'state': 'error', 'error': 'refused'},
+                {'source': 'perch', 'state': 'error', 'error': 'refused'},
             ])
 
     def test_omits_secret_shaped_model_labels_without_losing_progress_or_source_state(self):

@@ -15,7 +15,7 @@ const labels: Record<string, string> = {
   connecting: '~ Connecting', verifying: '~ Verifying', limited: '! Limited', error: '× Error',
   disabled: '- Disabled', unavailable: '- Unavailable', approval: '! Approval'
 };
-const names: Record<string, string> = { opencode: 'OpenCode', kilo: 'Kilo', zro: 'Zro', tokenharbor: 'TokenHarbor', runcrate: 'Runcrate', 'mistral-vibe': 'Mistral Vibe', livekit: 'LiveKit', pollinations: 'Pollinations', beatapi: 'BeatAPI', clixad: 'Clixad', perch: 'Perch', freebuff: 'Freebuff', apinex: 'APInex' };
+const names: Record<string, string> = { opencode: 'OpenCode', kilo: 'Kilo', zro: 'Zro', tokenharbor: 'TokenHarbor', runcrate: 'Runcrate', 'mistral-vibe': 'Mistral Vibe', livekit: 'LiveKit', pollinations: 'Pollinations', beatapi: 'BeatAPI', perch: 'Perch', freebuff: 'Freebuff', apinex: 'APInex' };
 // Runtime status is local, but never let provider metadata control the terminal.
 function safe(value: string) {
   // Strip OSC/DCS strings completely, including terminal-title and hyperlink controls.

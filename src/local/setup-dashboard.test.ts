@@ -85,9 +85,9 @@ it('projects only distinct safe service IDs while active and queued verification
   const unsubscribe = queue.subscribe(services => { seen.push([...services]); });
   const first = queue.wait({ service: 'perch', url: 'https://secret.test/capability-token', goal: 'private requested goal' });
   await entered.promise;
-  const next = queue.wait({ service: 'clixad', url: 'https://secret.test/other-token' });
+  const next = queue.wait({ service: 'beatapi', url: 'https://secret.test/other-token' });
   const duplicate = queue.wait({ service: 'perch', url: 'https://secret.test/third-token' });
-  expect(queue.services()).toEqual(['perch', 'clixad']);
+  expect(queue.services()).toEqual(['perch', 'beatapi']);
   expect(JSON.stringify(seen)).not.toMatch(/secret|token|private|goal|https/);
   hold.resolve(); await Promise.all([first, next, duplicate]);
   expect(queue.services()).toEqual([]); expect(seen.at(-1)).toEqual([]);
