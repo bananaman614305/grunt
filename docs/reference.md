@@ -1185,7 +1185,15 @@ API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
 them. The daemon loads the saved router login at startup and retries if the
 router is temporarily unavailable. Setup keeps a runtime outside the npx cache,
-so cache cleanup does not remove the service. In the ready-first flow, providers
+so cache cleanup does not remove the service. On Linux the service is an enabled
+systemd user unit that restarts after a crash. Setup attempts to enable lingering
+without an authentication prompt so the service keeps running after logout and
+starts at boot. If that fails, installation continues, but persistence across
+logout and boot requires running `loginctl enable-linger` as the installing user;
+setup prints this repair command. Rerunning setup re-enables and restarts an
+existing unit, including a legacy `milo` unit, while preserving its configuration
+and custom drop-ins. On macOS a LaunchAgent restarts it after a crash and starts
+it at each login. In the ready-first flow, providers
 join this installed runtime as their checks finish; the wizard does not reinstall
 or restart it for each provider. Pi's other providers are preserved.
 `PI_CODING_AGENT_DIR` selects a nondefault Pi agent directory.
