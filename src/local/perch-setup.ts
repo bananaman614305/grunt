@@ -5,6 +5,7 @@ import * as Perch from './perch.js';
 import { runPerchCommand, verifyPerchCoreFiles } from './perch-process.js';
 import type { PerchProcesses } from './perch-process.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
+import { removeGroupWrite } from './private-tree.js';
 
 export interface PerchSignup {
   signup(service: string, url: string, goal: string): Promise<void>;
@@ -74,6 +75,7 @@ export async function installPerch(directory: string, options: PerchInstallOptio
     const packagePath = join(temporary, 'package');
     const metadata = await lstat(packagePath);
     if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== process.getuid?.()) throw new Error('Perch package directory is unsafe');
+    await removeGroupWrite(packagePath);
     await verifyPerchCoreFiles(packagePath, Perch.PERCH_CORE_SHA256, signal);
     const userNpmrc = join(temporary, 'user.npmrc'), globalNpmrc = join(temporary, 'global.npmrc');
     await writeFile(userNpmrc, '', { mode: 0o600, flag: 'wx' });
@@ -84,6 +86,7 @@ export async function installPerch(directory: string, options: PerchInstallOptio
       cwd: temporary, env: npmEnv, signal, timeoutMs: 300000, maxOutputBytes: 65536
     });
     if (dependencies.code !== 0) throw new Error('Perch private dependency installation failed');
+    await removeGroupWrite(packagePath);
     await verifyPerchCoreFiles(packagePath, Perch.PERCH_CORE_SHA256, signal);
     await chmod(packagePath, 0o700);
     await chmod(join(packagePath, 'bin', 'perch'), 0o700);
@@ -176,7 +179,7 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
   const identify = options.identity ?? Perch.verifyPerchIdentity;
   const readMemory = options.verifyMemory ?? Perch.verifyPerchMemory;
   const configureMemory = options.configureMemory ?? Perch.configurePerchMemory;
-  let completed = false;
+  let completed = false, stage = 'install';
   try {
     if (signal.aborted) throw setupFailure();
     if (options.background) await Perch.verifyPerchInstallation(options.directory, signal);
@@ -184,10 +187,12 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
       options.squire.approveDataSharing?.(approved);
       await (options.install ?? installPerch)(options.directory, { signal, ...(options.fetcher ? { fetcher: options.fetcher } : {}), ...(options.processes ? { command: options.processes.command } : {}) });
     }
+    stage = 'startup isolation check';
     await Perch.verifyPerchStartupIsolation(paths.work);
     let saved: Perch.PerchFreePlanReceipt | undefined;
     try { saved = await Perch.readPerchFreePlanReceipt(options.directory); } catch { /* A fresh foreground check is required. */ }
     if (options.background && !saved) throw setupFailure();
+    stage = 'native identity check';
     let identity = await bounded(() => identify(options.directory, signal, options.processes), signal);
     if (identity) identity = { email: email(identity.email) };
     if (saved && identity && sameEmail(saved.email, identity.email)) {
@@ -202,16 +207,21 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
     }
     if (saved && identity && !sameEmail(saved.email, identity.email)) throw setupFailure();
     const expected = identity?.email ?? saved?.email;
+    stage = 'browser account check';
     await browser(options, 'https://chat.perchai.app/', freeGoal(expected), signal);
     if (!identity) {
+      stage = 'native login';
       await nativeLogin(options, signal, expected);
       await Perch.assertPerchPrivateAuth(options.directory);
+      stage = 'native identity after login';
       identity = await bounded(() => identify(options.directory, signal, options.processes), signal);
       if (!identity || (expected && !sameEmail(expected, identity.email))) throw setupFailure();
       identity = { email: email(identity.email) };
+      stage = 'browser settings check';
       await browser(options, 'https://chat.perchai.app/', freeGoal(identity.email), signal);
     }
     if (signal.aborted) throw setupFailure();
+    stage = 'memory settings';
     const configured = await bounded(() => configureMemory(options.directory, signal, options.processes), signal);
     if (!sameEmail(identity.email, email(configured.email))) throw setupFailure();
     const memory = await bounded(() => readMemory(options.directory, signal, options.processes), signal);
@@ -223,6 +233,8 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
     completed = true;
     options.notify?.('Perch: active Starter verified with the optional Data Program and both native memory switches off');
   } catch {
+    // The stage names a fixed step; upstream error text never reaches the output.
+    options.notify?.(`Perch: setup stopped at ${stage}`);
     throw setupFailure();
   } finally {
     clearTimeout(timer);

@@ -70,16 +70,19 @@ export class Numes implements Source {
     return this.hasDeepSeekOffer(base, headers, signal).catch(() => false);
   }
 
-  private zeroSpendKey(base: string, headers: Headers, caller?: AbortSignal | null) {
-    return this.metadata.run(this.metadataKey(base, headers, 'key'), signal => this.readZeroSpendKey(base, headers, signal), caller);
+  private usableKey(base: string, headers: Headers, caller?: AbortSignal | null) {
+    return this.metadata.run(this.metadataKey(base, headers, 'key'), signal => this.readUsableKey(base, headers, signal), caller);
   }
-  private async readZeroSpendKey(base: string, headers: Headers, signal: AbortSignal) {
+  private async readUsableKey(base: string, headers: Headers, signal: AbortSignal) {
     const response = await diagnosticFetch(this.fetcher, this.id, 'account')(`${base}${prefix}/key`, {
       headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
     });
     if (!response.ok) { await response.body?.cancel(); return undefined; }
     const { data } = await response.json() as { data?: Key };
-    if (data?.disabled === false && data.is_management_key === false && data.limit === 0 && data.limit_remaining === 0) return data;
+    // Owner, 22 Nov: an uncapped key is fine. Every request still pins zero
+    // prices and is rejected unless Numes reports a zero cost.
+    if (data?.disabled === false && data.is_management_key === false
+      && ((data.limit === 0 && data.limit_remaining === 0) || (data.limit === null && data.limit_remaining === null))) return data;
     return undefined;
   }
 
@@ -121,7 +124,7 @@ export class Numes implements Source {
       const grant = await this.grant();
       const base = grant.base_url;
       const headers = new Headers({ Authorization: `Bearer ${grant.token}` });
-      const key = await this.zeroSpendKey(base, headers, signal);
+      const key = await this.usableKey(base, headers, signal);
       if (!key) return false;
       if (this.options.deepSeekFlash) return deepSeekKey(key) && await this.hasDeepSeekOffer(base, headers, signal);
       const data = await this.offers(base, headers, signal);
@@ -136,7 +139,7 @@ export class Numes implements Source {
     if (!url.endsWith(chatEndpoint) || typeof init?.body !== 'string') return new Response(null, { status: 403 });
     const base = url.slice(0, -chatEndpoint.length);
     const headers = new Headers(init.headers);
-    const key = await this.zeroSpendKey(base, headers, init.signal);
+    const key = await this.usableKey(base, headers, init.signal);
     if (!key || (this.options.deepSeekFlash && !deepSeekKey(key))) return new Response(null, { status: 403 });
     const deepSeekFlash = deepSeekKey(key) && (this.options.deepSeekFlash
       ? await this.hasDeepSeekOffer(base, headers, init.signal)

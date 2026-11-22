@@ -106,7 +106,7 @@
       "install": "builtin:livekit",
       "signup": "https://cloud.livekit.io/",
       "model": "deepseek-ai/deepseek-v4.1-flash",
-      "hints": "Open the grunt-free project (use 'Switch project' if another project is open), then 'Settings' in the project sidebar, then 'Observability settings' (/settings/observability). There the 'Agent observability' switch must be off: turn it off if it is on. Leave 'PII redaction' and 'Data region' unchanged, then finish."
+      "hints": "Open the grunt project (use 'Switch project' if another project is open), then 'Settings' in the project sidebar, then 'Observability settings' (/settings/observability). There the 'Agent observability' switch must be off: turn it off if it is on. Leave 'PII redaction' and 'Data region' unchanged, then finish. On /cli/confirm-auth ('Link project to LiveKit CLI'): press 'Project', choose grunt, then press 'Allow access'. After 'Allow access' is pressed it stays disabled while the CLI links: choose WAIT until the page shows 'Access granted'; never press it again. Once that page shows 'Access granted', the CLI pairing is complete: choose DONE now."
     },
     {
       "id": "pollinations",
@@ -160,7 +160,8 @@
       ],
       "install": "builtin:clixad",
       "signup": "https://app.clixad.io",
-      "model": "glm-5.3-flash"
+      "model": "glm-5.3-flash",
+      "hints": "On app.clixad.io press the 'account' link. On /account you are signed in and nothing else is required: there is no form to fill, no key to create and no setting to change, so choose DONE there. Never press 'token', 'earn', credits, rewards, 'Redeem' or 'Delete my account'. On github.com/login/device/select_account press the 'Continue as …' button (the GitHub account already signed in); never press a 'Select …' button for another account. On github.com/login/device, if the 'User code' boxes are empty, type the user_code value into 'User code 0' (the boxes fill in order), then press 'Continue'. On github.com/login/device/confirmation the heading reads 'Authorize Clixad' and the button names Clixad's developer ('Authorize FlosGit'): that button approves this Clixad pairing, so press it when the page shows 'Existing access' or only read-only profile and email scopes. After it, once GitHub shows the device is connected, choose DONE."
     },
     {
       "id": "perch",

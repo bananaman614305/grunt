@@ -51,9 +51,16 @@ it('checks for the exact free tool-capable offer and a zero spending cap', async
   await expect(numes.available()).resolves.toBe(false);
 });
 
-it('fails closed if the same key no longer has a zero spending cap', async () => {
+it('accepts a key without a spending cap, since requests still pin zero prices', async () => {
   await recordDataSharingConsent(directory, ['numes']);
-  const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { ...zeroCap, limit: null } }));
+  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/key')
+    ? Response.json({ data: { ...zeroCap, limit: null, limit_remaining: null } }) : Response.json({ data: [offer] }));
+  const numes = source(fetcher); expect(await numes.available()).toBe(true); await numes.close();
+});
+
+it('fails closed if the same key has been disabled', async () => {
+  await recordDataSharingConsent(directory, ['numes']);
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { ...zeroCap, disabled: true } }));
   await expect(source(fetcher).complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
   expect(fetcher).toHaveBeenCalledExactlyOnceWith('https://api.numes.ai/api/v1/key', expect.objectContaining({ redirect: 'error' }));
 });
@@ -210,10 +217,10 @@ it('shares overlapping account and catalog reads while preserving independent ad
   } finally { release(); await Promise.allSettled([first, second]); await numes.close(); }
 });
 
-it('does not cache a completed zero-spend check when the next completion sees a changed spending cap', async () => {
+it('does not cache a completed key check when the next completion sees a disabled key', async () => {
   await recordDataSharingConsent(directory, ['numes']); let allowed = true;
   const fetcher = vi.fn<typeof fetch>(async url => {
-    if (String(url).endsWith('/key')) return Response.json({ data: { ...zeroCap, limit: allowed ? 0 : null } });
+    if (String(url).endsWith('/key')) return Response.json({ data: { ...zeroCap, disabled: !allowed } });
     if (String(url).endsWith('/models')) return Response.json({ data: [offer] });
     throw new Error('Inference must not run');
   });

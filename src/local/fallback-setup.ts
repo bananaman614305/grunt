@@ -12,7 +12,6 @@ import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
-import { ClixadNativeLoginRequired } from './clixad-setup.js';
 import type { Source } from './source.js';
 import { setupFailureReason } from './setup-failure.js';
 
@@ -363,7 +362,7 @@ export async function setupFallbacks(options: {
         options.notify('Clixad: free GLM 5.3 Flash access connected');
       } catch (error) {
         failedSetup('clixad', error);
-        options.notify(error instanceof ClixadNativeLoginRequired ? error.message : 'Clixad setup needs attention. Rerun usegrunt setup; other free routes continue.');
+        options.notify('Clixad setup needs attention. Rerun usegrunt setup; other free routes continue.');
       } },
       perch: async () => { try {
         if (!reuseOnly) await connect();
