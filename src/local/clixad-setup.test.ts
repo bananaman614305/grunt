@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { ClixadNativeLoginRequired, installClixad, runClixadSetupCommand, setupClixad } from './clixad-setup.js';
+import { installClixad, runClixadSetupCommand, setupClixad } from './clixad-setup.js';
 import type { ClixadSetupCommand } from './clixad-setup.js';
 import { Clixad, CLIXAD_CORE_SHA256, CLIXAD_INTEGRITY, CLIXAD_MODEL, CLIXAD_TARBALL, clixadPaths, prepareClixadDirectories, readClixadInstallReceipt } from './clixad.js';
 import type * as ClixadModule from './clixad.js';
@@ -86,7 +86,8 @@ it('pairs only the owned GitHub device flow, pins one new model, and verifies ze
   const options = await fixture(); await setupClixad(options);
   expect(options.squire.signup).toHaveBeenCalledTimes(2);
   expect(options.squire.signup.mock.calls[0]![0]).toBe('clixad'); expect(options.squire.signup.mock.calls[0]![1]).toBe('https://app.clixad.io');
-  const pairing = options.squire.signup.mock.calls[1] as unknown as [string, string, string];
+  const pairing = options.squire.signup.mock.calls[1] as unknown as [string, string, string, Record<string, string>];
+  expect(pairing[3]).toEqual({ user_code: 'ABCD-EF12' });
   for (const call of options.squire.signup.mock.calls) expect(planSteps(String((call as unknown[])[2]))).toEqual([]);
   expect(pairing[0]).toBe('clixad'); expect(pairing[1]).toBe('https://github.com/login/device?user_code=ABCD-EF12');
   expect(pairing[2]).toContain('read-only identity/profile and email scopes'); expect(pairing[2]).toContain('CLI owns the token exchange');
@@ -107,16 +108,17 @@ it('reuses current verified native auth without browser pairing, preference writ
   expect(await readFile(join(native, 'config.json'), 'utf8')).toBe(before);
 });
 
-it('preserves an expired native profile and requires official same-account login without automatic re-pairing', async () => {
-  const options = await fixture(true), file = join(native, 'config.json'), before = await readFile(file);
-  options.verify.mockRejectedValue(new SourceError('logged_out', 'synthetic-private-expired-token HTTP401'));
-  const error = await setupClixad(options).catch(reason => reason);
-  expect(error).toBeInstanceOf(ClixadNativeLoginRequired); expect(error.code).toBe('logged_out');
-  expect(error.message).toContain('same Clixad account with the official CLI'); expect(error.message).toContain('rerun usegrunt setup');
-  expect(error.message).not.toContain('synthetic-private'); expect(await readFile(file)).toEqual(before);
-  expect(options.squire.signup).not.toHaveBeenCalled(); expect(options.squire.cancelSignup).not.toHaveBeenCalled();
-  expect(options.command.mock.calls.map(([, args]) => args)).toEqual([[clixadPaths(directory).entry, 'model']]);
-  expect(options.verify).toHaveBeenCalledOnce(); expect(options.notify).not.toHaveBeenCalled();
+it('re-runs the browser sign-in and native device login when an existing native login has expired', async () => {
+  const options = await fixture(true);
+  options.verify.mockRejectedValueOnce(new SourceError('logged_out', 'synthetic-private-expired-token HTTP401'));
+  await setupClixad(options);
+  expect(options.squire.signup).toHaveBeenCalledTimes(2);
+  expect(options.squire.signup.mock.calls[1]![1]).toBe('https://github.com/login/device?user_code=ABCD-EF12');
+  expect(options.command.mock.calls.filter(([, args]) => args.at(-1) === 'login')).toHaveLength(1);
+  // The existing model preference is kept, so no new pin is written.
+  expect(options.command.mock.calls.filter(([, args]) => args.at(-2) === 'model' && args.at(-1) === CLIXAD_MODEL)).toHaveLength(0);
+  expect(options.verify).toHaveBeenCalledTimes(2); expect(options.squire.cancelSignup).not.toHaveBeenCalled();
+  expect(JSON.stringify(options.notify.mock.calls)).not.toContain('synthetic-private');
 });
 
 it('preserves an existing unrelated model choice and gives explicit model-selection guidance', async () => {

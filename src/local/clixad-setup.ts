@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { executable } from './multiplexer.js';
+import { removeGroupWrite } from './private-tree.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
 import {
   Clixad, CLIXAD_CORE_SHA256, CLIXAD_DASHBOARD, CLIXAD_INTEGRITY, CLIXAD_MODEL, CLIXAD_TARBALL,
@@ -13,7 +14,7 @@ import {
 } from './clixad.js';
 
 export interface ClixadSetupSquire {
-  signup(service: string, url: string, goal: string): Promise<void>;
+  signup(service: string, url: string, goal: string, facts?: Record<string, string>): Promise<void>;
   cancelSignup(provider: string): Promise<void>;
   approveDataSharing?(providers: readonly string[]): void;
 }
@@ -21,13 +22,6 @@ interface CommandOptions { cwd: string; env: NodeJS.ProcessEnv; signal: AbortSig
 export type ClixadSetupCommand = (binary: string, args: string[], options: CommandOptions) => Promise<{ code: number | null; stdout: string }>;
 const failure = () => new Error('Clixad free native setup did not complete; rerun usegrunt setup');
 const modelFailure = () => new Error('Clixad already uses another model. Select GLM 5.3 Flash explicitly in the native CLI before rerunning setup; Grunt preserved the existing preference.');
-export class ClixadNativeLoginRequired extends Error {
-  readonly code = 'logged_out';
-  constructor() {
-    super('Sign in to the same Clixad account with the official CLI, then rerun usegrunt setup. The existing native profile was preserved.');
-    this.name = 'ClixadNativeLoginRequired';
-  }
-}
 function stop(child: ReturnType<typeof spawn>, force = false) {
   try { if (child.pid) { if (process.platform === 'win32') child.kill(force ? 'SIGKILL' : 'SIGTERM'); else process.kill(-child.pid, force ? 'SIGKILL' : 'SIGTERM'); } }
   catch { /* Only our owned process group is signalled. */ }
@@ -104,6 +98,7 @@ export async function installClixad(directory: string, options: { signal?: Abort
     const result = await (options.command ?? runClixadSetupCommand)(await executable('npm'), ['install', '--prefix', paths.runtime, '--ignore-scripts', '--no-audit', '--no-fund', '--no-save', '--package-lock=false',
       '--registry=https://registry.npmjs.org', '--userconfig', userconfig, '--globalconfig', globalconfig, '--cache', join(paths.home, 'cache'), tarball], { cwd: paths.work, env, signal });
     signal.throwIfAborted(); if (result.code !== 0) throw failure();
+    await removeGroupWrite(paths.runtime);
     await coreFiles(directory); signal.throwIfAborted(); await writeClixadInstallReceipt(directory);
     if (signal.aborted) { await rm(paths.installation, { force: true }); throw failure(); }
     return paths;
@@ -147,7 +142,9 @@ async function login(options: ClixadSetupOptions, paths: ReturnType<typeof clixa
         || [...address.searchParams.keys()].some(key => key !== 'user_code') || (address.searchParams.has('user_code') && address.searchParams.get('user_code') !== code)) { failed = true; lifetime.abort(); return; }
       address.searchParams.set('user_code', code);
       pairing = bounded(() => options.squire.signup('clixad', address.href,
-        'Approve only the official Clixad native CLI GitHub device pairing started by Grunt, using the same personal GitHub identity. Confirm the displayed device code matches this URL. Permit only read-only identity/profile and email scopes; stop on extra repository, organization, write or billing permissions. Never switch accounts, create another account, reveal tokens, add a payment method, fund a wallet, buy credits, subscribe, run offers, automate feedback or earn rewards. Required human verification needs normal browser handoff; stop on refusal. The CLI owns the token exchange and its fixed native config.'), combined);
+        'Approve only the official Clixad native CLI GitHub device pairing started by Grunt, using the same personal GitHub identity. Confirm the displayed device code matches this URL. Permit only read-only identity/profile and email scopes; stop on extra repository, organization, write or billing permissions. Never switch accounts, create another account, reveal tokens, add a payment method, fund a wallet, buy credits, subscribe, run offers, automate feedback or earn rewards. Required human verification needs normal browser handoff; stop on refusal. The CLI owns the token exchange and its fixed native config.',
+        // GitHub's account chooser drops user_code from the URL, so the drive also gets it as a value.
+        { user_code: code }), combined);
       void pairing.catch(() => { failed = true; lifetime.abort(); });
     }
   });
@@ -161,7 +158,7 @@ export async function setupClixad(options: ClixadSetupOptions): Promise<void> {
   if (!approved.includes('clixad') || (options.dataSharingApproved && !options.dataSharingApproved.includes('clixad'))) throw new Error('Clixad requires the current grouped data-sharing approval');
   const deadline = new AbortController(), timeout = setTimeout(() => deadline.abort(), 600000);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal;
-  let browserStarted = false, cancellation: Promise<void> | undefined;
+  let browserStarted = false, cancellation: Promise<void> | undefined, stage = 'install';
   const cancel = () => { if (browserStarted) cancellation ??= Promise.resolve().then(() => options.squire.cancelSignup('clixad')).catch(() => {}); };
   signal.addEventListener('abort', cancel, { once: true });
   const native = options.nativeDirectory ?? join(homedir(), '.clixad');
@@ -172,38 +169,46 @@ export async function setupClixad(options: ClixadSetupOptions): Promise<void> {
       try { if (!await bounded(() => source.available(), signal)) throw failure(); return; }
       finally { await source.close(); }
     }
+    stage = 'install';
     const paths = await (options.install ?? installClixad)(options.directory, { signal, ...(options.fetcher ? { fetcher: options.fetcher } : {}) });
+    stage = 'public model check';
     await verifyClixadPublicModel({ signal, ...(options.fetcher ? { fetcher: options.fetcher } : {}) });
     const existed = await nativeConfig(native);
     if (existed) {
+      stage = 'native model check';
       const current = await (options.command ?? runClixadSetupCommand)(process.execPath, [paths.entry, 'model'], { cwd: paths.work, env: clixadEnvironment(), signal });
       if (current.code !== 0) throw failure();
       if (clean(current.stdout).trim() !== `current model: ${CLIXAD_MODEL}`) throw modelFailure();
     }
     const verify = () => (options.verify ?? verifyClixadAccess)({ directory: options.directory, signal, ...(options.fetcher ? { fetcher: options.fetcher } : {}) });
+    stage = 'account check';
     try { await bounded(verify, signal); return; }
     catch (error) {
+      // A missing or expired native login is re-run below: the browser signs in
+      // and the official CLI pairing replaces the expired token.
       if (signal.aborted || (error as { code?: string }).code !== 'logged_out') throw error;
-      // An expired native token cannot reveal its original public identity.
-      // Preserve that profile rather than pairing Squire's current account over it.
-      if (existed) throw new ClixadNativeLoginRequired();
     }
+    stage = 'browser sign-in';
     browserStarted = true;
     await bounded(() => options.squire.signup('clixad', CLIXAD_DASHBOARD,
       'Use this user\'s existing personal GitHub identity to sign in to the ordinary Clixad account, or create its one normal free account if absent. Do not open the wallet or billing to audit it. Clixad uses optional prepaid credit packs: never add a card, payment method, subscription, auto-charge, deposit or paid credits. Do not change existing billing, switch identities, reset or rotate existing native authentication, create a public API key, run offers, earn credits, automate feedback, or claim rewards. Account metadata checks are read-only and must never claim rewards. Accept only required terms under the current grouped data-sharing approval; leave optional marketing off. The official CLI GitHub device pairing follows separately with read-only profile/email scopes. Stop on refusal and report required human verification for browser handoff.'), signal);
     if (signal.aborted) throw failure();
     if (!existed && await nativeConfig(native)) throw failure();
+    stage = 'native login';
     await login(options, paths, signal);
     if (signal.aborted || !await nativeConfig(native)) throw failure();
     if (!existed) {
+      stage = 'model pin';
       const pin = await (options.command ?? runClixadSetupCommand)(process.execPath, [paths.entry, 'model', CLIXAD_MODEL], { cwd: paths.work, env: clixadEnvironment(), signal });
       if (pin.code !== 0) throw failure();
     }
+    stage = 'final account check';
     await bounded(verify, signal); if (signal.aborted) throw failure();
     options.notify?.('Clixad: native free GLM 5.3 Flash access verified');
   } catch (error) {
     if (browserStarted) cancel();
-    if (error instanceof ClixadNativeLoginRequired) throw error;
+    // The stage names a fixed step; upstream error text never reaches the output.
+    options.notify?.(`Clixad: setup stopped at ${stage}`);
     if (error instanceof Error && error.message === modelFailure().message) throw modelFailure();
     throw failure();
   } finally {

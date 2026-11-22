@@ -27,6 +27,7 @@ os.umask(0o077)
 logging.disable(logging.CRITICAL)
 from pathlib import Path
 from vibe.core.config import DEFAULT_PROVIDERS, build_default_orchestrator
+from vibe.core.config.harness_files import init_harness_files_manager
 from vibe.core.platform_auth import ApiKeyPlatformCredentialProvider
 from vibe.setup.auth.api_key_persistence import persist_api_key
 from vibe.setup.auth.browser_sign_in import BrowserSignInService
@@ -35,14 +36,22 @@ from vibe.setup.auth.whoami import HttpAccountGateway
 from vibe.utils.api_keys import resolve_api_key
 from dotenv import load_dotenv
 
+step = "start"
+
+def at(name):
+    global step
+    step = name
+
 def emit(event, **data):
     sys.stdout.write(json.dumps(dict(event=event, **data)) + "\n")
     sys.stdout.flush()
 
 async def verify(key):
+    at("account_lookup")
     account = await HttpAccountGateway().read(
         base_url="https://console.mistral.ai",
         credentials=ApiKeyPlatformCredentialProvider.from_api_key(key), timeout=15)
+    at("free_plan_check")
     if account.plan_name.strip().upper() != "FREE" or account.has_paid_vibe_entitlement:
         raise RuntimeError("free_plan_required")
 
@@ -51,6 +60,7 @@ async def main():
         if (Path(os.environ["VIBE_HOME"]) / ".env").is_symlink():
             raise RuntimeError("unsafe_native_credential_file")
         if sys.argv[1] == "check":
+            at("read_saved_key")
             load_dotenv(Path(os.environ["VIBE_HOME"]) / ".env", override=False)
             key = resolve_api_key("MISTRAL_API_KEY")
             if not key:
@@ -61,14 +71,21 @@ async def main():
                 browser_base_url="https://console.mistral.ai",
                 api_base_url="https://console.mistral.ai/api"))
             try:
+                at("start_pairing")
                 attempt = await service.start_attempt()
                 # stdout is temporarily restored only for this safe event.
                 with contextlib.redirect_stdout(sys.__stdout__):
                     emit("authorize", url=attempt.sign_in_url)
+                at("complete_pairing")
                 key = await service.complete_attempt(attempt)
                 await verify(key)
+                at("load_config")
+                # Vibe 3.1 builds its config only after the harness files are set up;
+                # user files only, so nothing from the working directory is read.
+                init_harness_files_manager("user")
                 orchestrator = await build_default_orchestrator()
                 provider = next(p for p in DEFAULT_PROVIDERS if p.name == "mistral")
+                at("save_key")
                 outcome = persist_api_key(provider, key, orchestrator=orchestrator)
                 if outcome != "completed":
                     raise RuntimeError("native_persistence_failed")
@@ -78,10 +95,14 @@ async def main():
 
 try:
     asyncio.run(main())
-except BaseException:
-    emit("failed")
+except BaseException as error:
+    # Only the fixed step name and the exception class leave the process,
+    # never the exception text, which can echo upstream responses.
+    emit("failed", step=step, error=type(error).__name__)
     sys.exit(1)
 `;
+
+const nativeSteps = new Set(['start', 'read_saved_key', 'start_pairing', 'complete_pairing', 'account_lookup', 'free_plan_check', 'load_config', 'save_key']);
 
 /** Kill only a subprocess group created by this module, including its children. */
 function stop(child: ReturnType<typeof spawn>, force = false) {
@@ -197,7 +218,11 @@ async function nativeLogin(options: MistralVibeSetupOptions, mode: 'check' | 'lo
           'Finish the Mistral Vibe CLI browser pairing started by this setup process, using the same Free account. Authorize only this pairing. Do not create a general API key or enable API or Vibe Code pay-as-you-go. No paid plan, card, credits, account switching or extra account. Stop if the account is paid or signup is refused. Report human verification for browser handoff; do not bypass it. Never reveal, copy or store the native CLI key: the CLI owns its credential exchange.');
         void pairing.catch(() => { failure = new Error('Mistral Vibe browser pairing did not complete; rerun usegrunt setup to resume'); abort(); });
       } else if (event.event === 'ready' && event.plan === 'Free' && event.hasPaidVibeEntitlement === false) ready = true;
-      else { protocolFailure(); return; }
+      else if (event.event === 'failed' && typeof event.step === 'string' && nativeSteps.has(event.step)) {
+        const kind = typeof event.error === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(event.error) ? ` (${event.error})` : '';
+        failure = new Error(`Mistral Vibe native ${mode === 'check' ? 'check' : 'sign-in'} failed at ${event.step}${kind}`);
+        options.notify?.(`Mistral Vibe: native ${mode === 'check' ? 'check' : 'sign-in'} failed at ${event.step}${kind}`);
+      } else { protocolFailure(); return; }
     }
   });
   if (signal.aborted) abort();

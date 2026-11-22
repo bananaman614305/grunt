@@ -22,7 +22,6 @@ async function fixture(existing = true, changedDefault = false) {
   const binary = join(directory, "fake lk ' $(touch${IFS}$GRUNT_TEST_MARKER)");
   const script = `#!${process.execPath}
 const fs = require('node:fs');
-const readline = require('node:readline');
 const args = process.argv.slice(2);
 const state = ${JSON.stringify(state)}, native = ${JSON.stringify(native)}, evidence = ${JSON.stringify(join(directory, 'evidence.json'))};
 if (args.includes('--version')) { console.log('lk version 2.19.4'); process.exit(0); }
@@ -39,10 +38,11 @@ if (args.includes('token')) {
 if (!args.includes('auth')) process.exit(1);
 const stored = { HOME: process.env.HOME, livekitOverride: process.env.LiveKit_Url, lkOverride: process.env.LK_PROJECT, path: process.env.PATH, authArgs: args, size: process.stdout.columns };
 fs.writeFileSync(evidence, JSON.stringify(stored));
-const rl = readline.createInterface({input:process.stdin});
-let phase = 'device';
+// Like lk's huh forms: raw keys, a text prompt submits only on \\r, a yes/no prompt takes its key.
+if (process.stdin.isTTY) process.stdin.setRawMode(true);
+let phase = 'device', typed = '';
 console.log('What is the name of this device?');
-rl.on('line', line => {
+const answered = line => {
  if (phase === 'device') {
   phase = 'waiting'; console.log('https://cloud.livekit.io/cli/confirm-auth?t=ordinary-test-pairing');
   const poll = setInterval(() => {
@@ -61,6 +61,15 @@ rl.on('line', line => {
   fs.writeFileSync(native + '/cli-config.yaml','native fixture owned by CLI\\n',{mode:0o600});
   console.log('Authenticated project [grunt-free]'); process.exit(0);
  }
+};
+process.stdin.on('data', chunk => {
+ for (const key of chunk.toString()) {
+  if (phase === 'waiting') continue;
+  if (phase === 'default') { if (key === 'y' || key === 'n') answered(key); continue; }
+  if (key === '\\x15') typed = '';
+  else if (key === '\\r') { const line = typed; typed = ''; answered(line); }
+  else typed += key;
+ }
 });
 `;
   await writeFile(binary, script, { mode: 0o700 });
@@ -72,7 +81,7 @@ it('uses ordinary native pairing, preserves existing profiles/defaults, and reus
   vi.stubEnv('LiveKit_Url', 'https://wrong.invalid'); vi.stubEnv('LK_PROJECT', 'paid-project');
   vi.stubEnv('GRUNT_TEST_MARKER', join(directory, 'DO_NOT_CREATE'));
   const signup = vi.fn(async (_service: string, url: string, goal: string) => {
-    expect(goal).toMatch(/grunt-free project/);
+    expect(goal).toMatch(/grunt project/);
     expect(goal).not.toMatch(/Verify the Build free plan/);
     expect(planSteps(goal)).toEqual([]);
     expect(goal).not.toContain('API secret:');
