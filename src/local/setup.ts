@@ -514,7 +514,8 @@ export class BrowserSquire implements SetupSquire {
     const checkCaptured = !goal && !['zro', 'tokenharbor', 'runcrate', 'apinex'].includes(provider);
     let answer: string | undefined;
     let waits = 0;
-    const facts = { ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
+    // key_name answers key-name fields; a provider's own signup facts may name a different key.
+    const facts = { key_name: 'grunt', ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
     while (true) {
       this.serviceSignal(provider).throwIfAborted();
       const session = this.sessions.get(provider);

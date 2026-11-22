@@ -46,7 +46,8 @@ it('captures new private access after consent, verifies server guards, and reuse
   const browser = squire(), fetcher = metadata(), notify = vi.fn();
   await setupPollinations({ directory, squire: browser, fetcher, notify });
   expect(browser.signup).toHaveBeenCalledOnce();
-  const [provider, url, goal] = browser.signup.mock.calls[0] as unknown as [string, string, string];
+  const [provider, url, goal, facts] = browser.signup.mock.calls[0] as unknown as [string, string, string, Record<string, string>];
+  expect(facts).toEqual({ key_name: 'grunt-free-pollinations' });
   expect([provider, url]).toEqual(['pollinations', 'https://enter.pollinations.ai/keys']);
   expect(planSteps(goal)).toEqual([]);
   expect(goal).toContain('budget must be exactly 0'); expect(goal).toContain('Quest Pollen Only must be enabled');
