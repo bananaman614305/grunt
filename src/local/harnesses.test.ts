@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile, mkdir, chmod, stat, symlink 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { HARNESSES, configureCodex, configureOpenCode, configurePi, connectHarness, detectHarnesses, migrateManagedPiWorkingContext, runHarness } from './harnesses.js';
+import { HARNESSES, claudeProfilePath, configureClaude, configureCodex, configureOpenCode, configurePi, connectHarness, detectHarnesses, migrateManagedPiWorkingContext, opencodeProfilePath, runHarness } from './harnesses.js';
 
 let dir: string;
 afterEach(async () => { vi.unstubAllEnvs(); if (dir) await rm(dir, { recursive: true, force: true }); });
@@ -176,6 +176,8 @@ it('Codex: writes only its own grunt profile file and never edits config.toml', 
   const profile = await readFile(join(dir, 'grunt.config.toml'), 'utf8');
   expect(profile).toContain('base_url = "http://127.0.0.1:19878/v1"');
   expect(profile).toContain('wire_api = "responses"');
+  expect(profile).toContain('web_search = "disabled"');
+  expect(profile).toMatch(/^model = "grunt"$/m);
   expect(await readFile(join(dir, 'config.toml'), 'utf8')).toBe(user);
   expect(await backups(dir)).toEqual([]);
   expect((await configureCodex(19879)).changed).toBe(true);
@@ -194,15 +196,87 @@ it('OpenCode: adds Grunt to JSONC and preserves comments and settings', async ()
   expect(change.changed && change.backup && await readFile(change.backup, 'utf8')).toBe(existing);
   await expect(configureOpenCode(19878)).resolves.toEqual({ changed: false });
 });
+it('Codex: the profile root sets grunt, disables hosted web search and keeps the provider in its own table', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-codex-test-'));
+  vi.stubEnv('CODEX_HOME', dir);
+  await configureCodex(19878);
+  const profile = await readFile(join(dir, 'grunt.config.toml'), 'utf8');
+  const root = profile.slice(0, profile.indexOf('[model_providers.grunt]'));
+  expect(root).toContain('model_provider = "grunt"');
+  expect(root).toContain('web_search = "disabled"');
+  expect(profile.slice(root.length)).not.toContain('web_search');
+});
+it('OpenCode: the provider declares tool calls and limits, and a separate profile selects grunt for model and small_model', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-opencode-test-'));
+  vi.stubEnv('XDG_CONFIG_HOME', dir);
+  const saved = { model: 'anthropic/claude', small_model: 'anthropic/haiku', provider: { anthropic: { options: {} } } };
+  const folder = join(dir, 'opencode');
+  await mkdir(folder);
+  await writeFile(join(folder, 'opencode.json'), JSON.stringify(saved));
+  expect((await configureOpenCode(19878)).changed).toBe(true);
+  const main = JSON.parse(await readFile(join(folder, 'opencode.json'), 'utf8'));
+  // The user's defaults, including small_model, are untouched.
+  expect(main).toMatchObject(saved);
+  expect(main.provider.grunt).toEqual({ name: 'grunt', npm: '@ai-sdk/openai-compatible', options: { baseURL: 'http://127.0.0.1:19878/v1', apiKey: 'local' },
+    models: { grunt: { name: 'grunt', tool_call: true, limit: { context: 128000, output: 8192 } } } });
+  expect(JSON.parse(await readFile(opencodeProfilePath(), 'utf8'))).toEqual({ $schema: 'https://opencode.ai/config.json', model: 'grunt/grunt', small_model: 'grunt/grunt' });
+  expect(opencodeProfilePath()).toBe(join(folder, 'grunt.opencode.json'));
+  expect(await configureOpenCode(19878)).toEqual({ changed: false });
+  expect(await backups(folder)).toHaveLength(1);
+});
+it('OpenCode: writes the profile even when a JSONC config already has the current provider, and leaves a JSONC default alone', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-opencode-test-'));
+  vi.stubEnv('XDG_CONFIG_HOME', dir);
+  const folder = join(dir, 'opencode'), path = join(folder, 'opencode.jsonc');
+  await mkdir(folder);
+  await writeFile(path, '{ "model": "mine/default" }');
+  await configureOpenCode(19878);
+  const once = await readFile(path, 'utf8');
+  await rm(opencodeProfilePath());
+  expect((await configureOpenCode(19878)).changed).toBe(true);
+  expect(await readFile(path, 'utf8')).toBe(once);
+  expect(JSON.parse(once).model).toBe('mine/default');
+  expect(JSON.parse(await readFile(opencodeProfilePath(), 'utf8')).small_model).toBe('grunt/grunt');
+  expect(await backups(folder)).toHaveLength(1);
+});
+it('Claude Code: writes only its own settings file mapping every model alias to grunt, never settings.json', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-claude-test-'));
+  vi.stubEnv('CLAUDE_CONFIG_DIR', dir);
+  const user = '{"model":"opus","env":{"ANTHROPIC_BASE_URL":"https://example.invalid"}}';
+  await writeFile(join(dir, 'settings.json'), user);
+  expect((await configureClaude(19878)).changed).toBe(true);
+  expect(await configureClaude(19878)).toEqual({ changed: false });
+  const profile = JSON.parse(await readFile(claudeProfilePath(), 'utf8'));
+  expect(claudeProfilePath()).toBe(join(dir, 'grunt.settings.json'));
+  expect(profile).toEqual({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:19878', ANTHROPIC_AUTH_TOKEN: 'local',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'grunt', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'grunt', ANTHROPIC_DEFAULT_OPUS_MODEL: 'grunt', CLAUDE_CODE_SUBAGENT_MODEL: 'grunt' } });
+  expect((await stat(claudeProfilePath())).mode & 0o777).toBe(0o600);
+  expect(await readFile(join(dir, 'settings.json'), 'utf8')).toBe(user);
+  expect(await backups(dir)).toEqual([]);
+  expect((await configureClaude(19879)).changed).toBe(true);
+  expect(await backups(dir)).toHaveLength(1);
+});
+it('opt-in launch lines point each harness at its Grunt-owned profile, with the subagent models on grunt', () => {
+  vi.stubEnv('CLAUDE_CONFIG_DIR', '/c');
+  vi.stubEnv('XDG_CONFIG_HOME', '/x y');
+  const launch = (id: string) => HARNESSES.find(h => h.id === id)!.launch(19878);
+  expect(launch('claude')).toContain('claude --settings /c/grunt.settings.json --model grunt');
+  expect(launch('codex')).toContain('codex --profile grunt');
+  expect(launch('opencode')).toContain('OPENCODE_CONFIG="/x y/opencode/grunt.opencode.json" opencode');
+  const claude = HARNESSES.find(h => h.id === 'claude')!.check(19878).env!;
+  expect(claude).toMatchObject({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:19878', CLAUDE_CODE_SUBAGENT_MODEL: 'grunt', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'grunt' });
+});
 it('detects harnesses on PATH and checks one with a real non-interactive run', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-path-test-'));
   const claude = join(dir, 'claude');
   await writeFile(claude, `#!${process.execPath}\nconsole.log(JSON.stringify({ args: process.argv.slice(2), base: process.env.ANTHROPIC_BASE_URL, token: process.env.ANTHROPIC_AUTH_TOKEN }));\n`);
   await chmod(claude, 0o755);
   vi.stubEnv('PATH', dir);
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(dir, 'claude-config'));
   expect((await detectHarnesses()).map(h => h.id)).toEqual(['claude']);
   const { change, answer } = await connectHarness(HARNESSES.find(h => h.id === 'claude')!, 19878);
-  expect(change).toBeUndefined();
+  expect(change).toMatchObject({ changed: true });
+  expect(await readFile(join(dir, 'claude-config', 'grunt.settings.json'), 'utf8')).toContain('CLAUDE_CODE_SUBAGENT_MODEL');
   expect(JSON.parse(answer)).toMatchObject({ args: ['-p', '--model', 'grunt', expect.any(String)], base: 'http://127.0.0.1:19878', token: 'local' });
   await writeFile(claude, `#!${process.execPath}\nconsole.error('no route'); process.exit(3);\n`);
   await expect(runHarness('claude', [])).rejects.toThrow('claude exited with code 3');

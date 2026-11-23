@@ -175,12 +175,15 @@ export async function migrateManagedPiWorkingContext(port: number, env: NodeJS.P
     models: models.map(item => item === model ? { ...item, contextWindow: target } : item) } } });
 }
 // Codex layers $CODEX_HOME/<name>.config.toml over config.toml for `codex --profile <name>`,
-// so grunt gets its own file and the user's config.toml is never edited.
+// so grunt gets its own file and the user's config.toml is never edited. Native subagents
+// (spawn_agent) inherit the session's model, so `codex --profile grunt` puts them on grunt too.
 export const codexProfilePath = () => join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'grunt.config.toml');
 export async function configureCodex(port = 8788): Promise<Change> {
   return writeConfig(codexProfilePath(), `# Written by usegrunt setup for \`codex --profile grunt\`. Your config.toml is unchanged.
 model = "grunt"
 model_provider = "grunt"
+# Codex's hosted web_search tool is not supported by grunt; leaving it on makes every request fail.
+web_search = "disabled"
 
 [model_providers.grunt]
 name = "grunt"
@@ -188,28 +191,52 @@ base_url = "http://127.0.0.1:${port}/v1"
 wire_api = "responses"
 `);
 }
-const openCodeProvider = (port: number) => ({ name: 'grunt', npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'local' }, models: { grunt: { name: 'grunt' } } });
+const openCodeProvider = (port: number) => ({ name: 'grunt', npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'local' }, models: { grunt: { name: 'grunt', tool_call: true, limit: { context: 128000, output: 8192 } } } });
 export const opencodeConfigDir = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode');
-// Adds a grunt provider and leaves OpenCode's default model alone; pick it with /models.
+// Both Claude Code and OpenCode get a Grunt-owned file that opts a session into grunt for
+// the main model and every native subagent. Their own settings files are never edited.
+const combine = (...changes: Change[]): Change => {
+  const written = changes.filter(change => change.changed);
+  return written.length ? { changed: true, backup: written.find(change => change.changed && change.backup)?.backup } : { changed: false };
+};
+const quoted = (path: string) => /^[\w@%+=:,./-]+$/.test(path) ? path : `"${path}"`;
+// OpenCode merges the file named by OPENCODE_CONFIG over its normal configuration, so the
+// provider added below stays an ordinary extra model until a session sets this file.
+export const opencodeProfilePath = () => join(opencodeConfigDir(), 'grunt.opencode.json');
+const openCodeProfile = () => JSON.stringify({ $schema: 'https://opencode.ai/config.json', model: 'grunt/grunt', small_model: 'grunt/grunt' }, null, 2) + '\n';
+// Adds a grunt provider and leaves OpenCode's default model alone; pick it with /models, or
+// run `OPENCODE_CONFIG=<grunt.opencode.json> opencode` to use grunt for the session and its subagents.
 export async function configureOpenCode(port = 8788): Promise<Change> {
   const directory = opencodeConfigDir();
   const path = join(directory, 'opencode.jsonc');
   let jsonc: string | undefined;
   try { jsonc = await readFile(path, 'utf8'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const profile = () => writeConfig(opencodeProfilePath(), openCodeProfile());
   if (jsonc !== undefined) {
     const errors: Parameters<typeof parse>[1] = [];
     const saved = parse(jsonc, errors, { allowTrailingComma: true });
     if (errors.length) throw new Error('Cannot read OpenCode JSONC config');
     const providers = objectOrEmpty(objectOrEmpty(saved, 'OpenCode JSONC config').provider, 'OpenCode JSONC providers');
-    if (JSON.stringify(providers.grunt) === JSON.stringify(openCodeProvider(port))) return { changed: false };
-    return writeConfig(path, applyEdits(jsonc, modify(jsonc, ['provider', 'grunt'], openCodeProvider(port), { formattingOptions: { insertSpaces: true, tabSize: 2 } })));
+    if (JSON.stringify(providers.grunt) === JSON.stringify(openCodeProvider(port))) return profile();
+    return combine(await writeConfig(path, applyEdits(jsonc, modify(jsonc, ['provider', 'grunt'], openCodeProvider(port), { formattingOptions: { insertSpaces: true, tabSize: 2 } }))), await profile());
   }
   const json = join(directory, 'opencode.json');
   const saved = await readJson(json, 'OpenCode config');
   const provider = objectOrEmpty(saved.provider, 'OpenCode config');
   provider.grunt = openCodeProvider(port);
-  return writeConfig(json, JSON.stringify({ $schema: 'https://opencode.ai/config.json', ...saved, provider }, null, 2) + '\n');
+  return combine(await writeConfig(json, JSON.stringify({ $schema: 'https://opencode.ai/config.json', ...saved, provider }, null, 2) + '\n'), await profile());
+}
+// Claude Code layers `claude --settings <file>` over the user's settings, and its `env` block
+// reaches the session and its subagents. Every model alias a subagent may ask for maps to grunt,
+// so nothing requests a model grunt does not serve.
+export const claudeProfilePath = () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'grunt.settings.json');
+const claudeEnv = (port: number) => ({
+  ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_AUTH_TOKEN: 'local',
+  ANTHROPIC_DEFAULT_SONNET_MODEL: 'grunt', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'grunt', ANTHROPIC_DEFAULT_OPUS_MODEL: 'grunt', CLAUDE_CODE_SUBAGENT_MODEL: 'grunt'
+});
+export async function configureClaude(port = 8788): Promise<Change> {
+  return writeConfig(claudeProfilePath(), JSON.stringify({ env: claudeEnv(port) }, null, 2) + '\n');
 }
 
 // Free services refuse a message repeated word for word as automated use, so each check differs.
@@ -231,14 +258,14 @@ export const HARNESSES: Harness[] = [
     check: port => ({ args: ['exec', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '-c', 'model="grunt"',
       '-c', 'model_provider="grunt"', '-c', 'model_providers.grunt.name="grunt"', '-c', 'model_providers.grunt.wire_api="responses"',
       '-c', `model_providers.grunt.base_url="http://127.0.0.1:${port}/v1"`, '-c', 'model_providers.grunt.request_max_retries=0', prompt('Codex')] }),
-    launch: () => 'codex --profile grunt' },
+    launch: () => 'codex --profile grunt   (main model and subagents use grunt)' },
   { id: 'opencode', name: 'OpenCode', binary: 'opencode', configure: configureOpenCode,
     // grunt's own OpenCode source sets OPENCODE_CONFIG; check the user's config without it.
     check: () => ({ args: ['run', '--pure', '-m', 'grunt/grunt', prompt('OpenCode')], env: { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined } }),
-    launch: () => 'opencode -m grunt/grunt   (or pick grunt with /models)' },
-  { id: 'claude', name: 'Claude Code', binary: 'claude', configure: async () => undefined,
-    check: port => ({ args: ['-p', '--model', 'grunt', prompt('Claude Code')], env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_AUTH_TOKEN: 'local' } }),
-    launch: port => `ANTHROPIC_BASE_URL=http://127.0.0.1:${port} ANTHROPIC_AUTH_TOKEN=local claude --model grunt` }
+    launch: () => `OPENCODE_CONFIG=${quoted(opencodeProfilePath())} opencode   (main model, small model and subagents use grunt; or pick grunt with /models)` },
+  { id: 'claude', name: 'Claude Code', binary: 'claude', configure: configureClaude,
+    check: port => ({ args: ['-p', '--model', 'grunt', prompt('Claude Code')], env: claudeEnv(port) }),
+    launch: () => `claude --settings ${quoted(claudeProfilePath())} --model grunt   (main model and subagents use grunt)` }
 ];
 
 export async function onPath(binary: string, path = process.env.PATH ?? '') {
