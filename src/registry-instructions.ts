@@ -105,7 +105,7 @@ Before adding a provider, check that its id and signup host are not already in \
 - \`404\`: DELETE of an id that is not listed.
 - \`413\`: the body is too large.
 - \`422\`: \`{"errors": [{"field", "rule"}]}\`. The rule text is the rule column above; fix that field and retry once.
-- \`502\`: GitHub could not be reached; retry later.
+- \`502\`: GitHub is unavailable or rate limited; retry later.
 
 ## Example PUT body
 

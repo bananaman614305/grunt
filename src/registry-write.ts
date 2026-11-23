@@ -79,11 +79,11 @@ export async function githubWriter(token: string, options: { repo: string; fetch
   });
   try {
     const user = await get('/user');
-    if (!user.ok) { await user.body?.cancel(); return { status: 401 }; }
+    if (!user.ok) { await user.body?.cancel(); return { status: user.status >= 500 || user.status === 429 ? 502 : 401 }; }
     const login = (await user.json() as { login?: unknown }).login;
     if (typeof login !== 'string' || !login) return { status: 401 };
     const repo = await get(`/repos/${options.repo}`);
-    if (!repo.ok) { await repo.body?.cancel(); return { status: 403 }; }
+    if (!repo.ok) { await repo.body?.cancel(); return { status: repo.status >= 500 || repo.status === 429 ? 502 : 403 }; }
     const permissions = (await repo.json() as { permissions?: { push?: unknown } }).permissions;
     return permissions?.push === true ? { login } : { status: 403 };
   } catch { return { status: 502 }; }

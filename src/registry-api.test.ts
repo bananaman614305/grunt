@@ -87,6 +87,28 @@ it('reports an unreachable GitHub separately from a rejected token', async () =>
   expect((await api.request('PUT', '/v1/registry/entries/zro', entry('zro'), tokens.owner)).status).toBe(502);
 });
 
+it.each(['user', 'repository'].flatMap(endpoint => [429, 500, 503, 599].map(status => ({ endpoint, status }))))(
+  'reports GitHub $endpoint HTTP $status as an upstream failure for every write action', async ({ endpoint, status }) => {
+    const api = await server({ published: bundledRegistry });
+    const before = await readFile(api.path, 'utf8');
+    for (const [method, path, body] of [
+      ['PUT', '/v1/registry/entries/zro', entry('zro')],
+      ['DELETE', '/v1/registry/entries/zro', undefined],
+      ['PUT', '/v1/registry/reverts/1', undefined]
+    ] as const) {
+      github.mockClear();
+      if (endpoint === 'repository') github.mockResolvedValueOnce(Response.json({ login: 'lunchboxfortwo' }));
+      github.mockResolvedValueOnce(Response.json({ message: 'Synthetic upstream failure' }, { status }));
+      const response = await api.request(method, path, body, tokens.owner);
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({ error: 'GitHub is unavailable' });
+      expect(github).toHaveBeenCalledTimes(endpoint === 'user' ? 1 : 2);
+      expect(await readFile(api.path, 'utf8')).toBe(before);
+      expect(await api.store.writes()).toEqual([]);
+    }
+  }
+);
+
 // C2: a write publishes the entry and its signup hints at once.
 it('publishes new hints immediately under a newer publication time', async () => {
   const api = await server({ published: bundledRegistry });
