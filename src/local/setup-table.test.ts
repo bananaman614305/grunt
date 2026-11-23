@@ -161,6 +161,26 @@ it('holds a line written between two redraws instead of leaving a second header'
   expect(screen.text()).toEqual(['name status', 'nous needs you (Nous login)', '✓ squire: signed in']);
 });
 
+// Public terminal contract: finish prints full details only for clipped rows.
+// These worked widths allow 5 columns for "nous " below 80, and 30 above it.
+// Reject both duplicate visible statuses and loss of clipped diagnostics.
+it.each([40, 50, 79, 80, 100].flatMap(columns =>
+  (['tool', 'source'] as const).flatMap(kind => [false, true].map(clipped => ({ columns, kind, clipped })))
+))('prints details only for clipped $kind rows at $columns columns ($clipped)', ({ columns, kind, clipped }) => {
+  const screen = new Screen(100);
+  const table = new SetupTable(screen);
+  const statusWidth = columns - 1 - (columns < 80 ? 5 : 30);
+  const status = 'x'.repeat(statusWidth + Number(clipped));
+  table.set(kind, 'nous', status);
+  // Finish must use the new terminal width, including layout changes.
+  screen.columns = columns;
+  table.finish();
+  const text = screen.text();
+  if (!clipped) expect(text).toHaveLength(2);
+  expect(text[1]).toBe(`${columns < 80 ? 'nous ' : `${kind.padEnd(7)} nous${' '.repeat(18)}`}${clipped ? `${status.slice(0, -2)}…` : status}`);
+  if (clipped) expect(text.slice(2).join('')).toBe(`nous: ${status}`);
+});
+
 it('keeps row updates during a prompt and draws them once the prompt ends', async () => {
   const screen = new Screen(50);
   const table = new SetupTable(screen, { live: false, capture: [screen] });

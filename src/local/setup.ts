@@ -112,19 +112,36 @@ function apiKeyField(credential: Credential, provider: Provider): string | undef
     return ['apikey', 'key', 'token', 'value', 'secret', 'apitoken', 'accesstoken'].includes(name);
   });
 }
-type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject' | 'drop'; approval_url?: string; reason?: string };
+type SquireDiagnostic = { question?: string; confidence?: number; reason?: string };
+type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_approval' | 'reject' | 'drop'; approval_url?: string; reason?: string; diagnostic?: SquireDiagnostic };
 // Select only diagnostic text, never serialize the browser result or vault data.
 function setupReason(...values: unknown[]): string {
   return [...new Set(values.filter((value): value is string => typeof value === 'string')
-    // Free-form secret descriptions cannot be redacted reliably. Drop the whole
-    // field, including ambiguous prose, while retaining separate safe details.
-    .filter(value => !/(?:password|passcode|token|secret|key|credential|authorization)/i.test(value.normalize('NFKC'))).map(value => value
+    .map(redactedText).filter(Boolean))].join(' ');
+}
+function redactedText(value: string) {
+  return value.normalize('NFKC')
     .replace(/\p{Cc}|\p{Cf}/gu, ' ')
     .replace(/https?:\/\/\S+/gi, '[link omitted]')
-    .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted authorization]')
-    .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_)[A-Za-z0-9_-]+/g, '[redacted]')
+    .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
+    .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_|eyJ)[A-Za-z0-9_+/.=-]+/g, '[redacted]')
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
-    .replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' ').slice(0, 512);
+    .split(/(?<=[.!?;])\s+/)
+    .filter(sentence => !/\b(?:passwords?|passcodes?|passphrases?|secrets?|credentials?|authorization|cookies?|session[ _-]+tokens?)\b/i.test(sentence))
+    .map(sentence => sentence.trim() === 'Choose one current target key, or DONE, BLOCKED, NONE_OF_THESE, or WAIT.' ? sentence
+      // Alphabetic words can also be credentials. Preserve field descriptions,
+      // but discard the entire value prose rather than guessing safe words.
+      : sentence.replace(/(\b(?:api[ _-]?)?(?:key|token)s?\b["']?\s*[:=]?\s*)(.*)/i, (_match, label: string, words: string) => label
+        + (!/["':=]/.test(label) && /^(?:name|alias|label)\s+field(?:[.!?;]|\s|\[redacted\]|\[link omitted\])*$/i.test(words)
+          ? words : '[redacted]')))
+    .join(' ')
+    .replace(/\s+/g, ' ').trim();
+}
+function squireWords(result: ObjectValue) {
+  const question = typeof result.question === 'string' ? redactedText(result.question) : '';
+  const confidence = typeof result.confidence === 'number' && Number.isFinite(result.confidence) ? result.confidence.toFixed(2) : '';
+  const reason = setupReason(result.reason);
+  return [question && `Squire asked: ${question}`, confidence && `confidence ${confidence}`, reason && `Squire's reason: ${reason}`].filter(Boolean).join('; ');
 }
 // A stopped page with no controls shows only the provider's own message, such
 // as a network block. Its words, redacted like other reasons, explain the stop.
@@ -136,7 +153,7 @@ function pageWords(result: ObjectValue | undefined): string | undefined {
     const body = object(JSON.parse(text));
     text = [body.detail, body.message, body.error].find(value => typeof value === 'string') ?? text;
   } catch { /* Plain page text. */ }
-  return setupReason(text.slice(0, 300)) || undefined;
+  return setupReason(text).slice(0, 300) || undefined;
 }
 function setupStopped(message: string, ...values: unknown[]): Error {
   const reason = setupReason(...values);
@@ -157,7 +174,7 @@ export interface SetupSquire {
     list(): Promise<Credential[]>;
     grant(reference: string): Promise<{ base_url: string; token: string }>;
   };
-  runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string }>; timeout?(id: string): Promise<void> };
+  runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string; diagnostic?: SquireDiagnostic }>; timeout?(id: string): Promise<void> };
 }
 export class SetupPending extends Error {}
 export class SetupFailure extends Error {}
@@ -178,8 +195,8 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
 export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
-  const drop = (provider: string, reason?: string) => {
-    const safe = setupReason(reason);
+  const drop = (provider: string, reason?: string, diagnostic?: SquireDiagnostic) => {
+    const safe = [setupReason(reason), diagnostic && squireWords(diagnostic)].filter(Boolean).join('; ');
     options.notify(`${provider}: dropped; Squire cannot complete signup automatically${safe ? `: ${safe}` : ''}`);
     dropped.push(provider);
   };
@@ -219,18 +236,19 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     // Preserve the provisioning identity so upgrades do not repeat an existing signup.
     const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
     if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
-    if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason); continue; }
+    if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason, result.diagnostic); continue; }
     let state = result.run.state;
     let reason = result.reason;
+    let diagnostic = result.diagnostic;
     const deadline = Date.now() + 120000;
     while (!['completed', 'failed', 'rejected', 'dropped'].includes(state) && Date.now() < deadline) {
-      const run = await squire.runs.get(result.run.id); state = run.state; reason = run.reason ?? reason;
+      const run = await squire.runs.get(result.run.id); state = run.state; reason = run.reason ?? reason; diagnostic = run.diagnostic ?? diagnostic;
       if (run.approval_url || state === 'awaiting_approval') { state = 'dropped'; break; }
       if (!['completed', 'dropped', 'failed', 'rejected'].includes(state)) await delay(1000);
     }
     if (!['completed', 'failed', 'rejected', 'dropped'].includes(state)) await squire.runs.timeout?.(result.run.id);
     if (state === 'failed' || state === 'rejected') throw setupStopped(`Squire could not provision ${provider}; setup stopped`, reason);
-    if (state !== 'completed') { drop(provider, reason); continue; }
+    if (state !== 'completed') { drop(provider, reason, diagnostic); continue; }
     if (!await connect(await matching())) { drop(provider, 'No working provider access was created'); continue; }
   }
   // These sources reuse existing vault access only; missing keys never start signup.
@@ -258,8 +276,14 @@ function registryEntry(registry: Registry, provider: string, url: string | undef
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
   return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
 }
-// UTC helps identify the run; randomness keeps rapid retries and parallel runs distinct.
-const zroKeyName = (now = new Date()) => `grunt-${now.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}-${randomBytes(6).toString('hex')}`;
+// Keep Zro aliases in the documented UTC minute format.
+const zroKeyName = (now = new Date()) => `grunt-${now.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}`;
+// A text field that names the key being created. A bare name needs a key page.
+function keyNameField(label: string, url: unknown) {
+  const field = label.replace(/\([^)]*\)/g, ' ').replace(/[\s_-]+/g, ' ').trim().toLowerCase();
+  if (/^(?:(?:api )?(?:key|token) )?(?:alias|label)$|^(?:api )?(?:key|token) name$/.test(field)) return true;
+  return field === 'name' && typeof url === 'string' && URL.canParse(url) && /key|token/i.test(new URL(url).pathname);
+}
 export function squireStore(service: string) {
   return [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, PROMOTIONAL_STORE, DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
 }
@@ -492,6 +516,7 @@ export class BrowserSquire implements SetupSquire {
           ...(completed ? { summary: 'grunt provider key stored in user vault' } : {}) });
         if (this.sessions.get(provider) === id) this.sessions.delete(provider);
         this.recoveryChoices.delete(provider);
+        this.signupFacts.delete(provider);
         this.retries.delete(provider);
       } catch { /* Preserve the original error; close retries a failed cleanup. */ }
     })();
@@ -507,7 +532,7 @@ export class BrowserSquire implements SetupSquire {
         this.serviceSignal(service).throwIfAborted();
         const result = await this.drive(service, url, goal);
         if (result.run.state === 'completed') return;
-        if (result.run.state !== 'running') throw new SetupFailure(result.reason ?? 'browser could not continue');
+        if (result.run.state !== 'running') throw new SetupFailure(this.failures.get(service) ?? result.reason ?? 'browser could not continue');
       }
       await this.runs.timeout(service, url);
       throw new Error(`${service}: signup timed out; rerun setup to resume`);
@@ -550,8 +575,14 @@ export class BrowserSquire implements SetupSquire {
     let last: ObjectValue | undefined;
     const dropped = async (stop: string): Promise<Run> => {
       const words = setupReason(stop === 'provider refused' ? last?.reason : undefined, pageWords(last));
-      const reason = words ? `${stop}; the page says: ${words}` : stop;
-      this.failures.set(provider, reason);
+      const diagnostic: SquireDiagnostic = {
+        ...(typeof last?.question === 'string' ? { question: redactedText(last.question) } : {}),
+        ...(typeof last?.confidence === 'number' ? { confidence: last.confidence } : {}),
+        ...(typeof last?.reason === 'string' && stop !== 'provider refused' ? { reason: setupReason(last.reason) } : {})
+      };
+      const reason = [stop, words && `the page says: ${words}`].filter(Boolean).join('; ');
+      const own = squireWords(diagnostic);
+      this.failures.set(provider, [reason, own].filter(Boolean).join('; '));
       if (last) {
         const needs = object(last.needs_user);
         const detail = setupReason(...[['status', last.status], ['reason', last.reason], ['remaining', last.remaining], ['field', last.field],
@@ -560,13 +591,13 @@ export class BrowserSquire implements SetupSquire {
         if (detail) this.failureDetails.set(provider, detail);
       }
       await this.finishSession(provider);
-      return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason };
+      return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason, diagnostic };
     };
     const checkCaptured = !goal && !['zro', 'tokenharbor', 'runcrate', 'apinex'].includes(provider);
     let answer: string | undefined;
     let waits = 0;
     // key_name answers key-name fields; a provider's own signup facts may name a different key.
-    const facts = { key_name: 'grunt', ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
+    const facts: Record<string, string> = { key_name: 'grunt', ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
     while (true) {
       this.serviceSignal(provider).throwIfAborted();
       const session = this.sessions.get(provider);
@@ -632,6 +663,28 @@ export class BrowserSquire implements SetupSquire {
       if (turns >= 8) return dropped('browser recovery limit reached');
       this.retries.set(provider, turns + 1);
       if (retry) { await delay(3000, undefined, { signal }); answer = 'WAIT'; continue; }
+      // Recovery requires an observed key-name field, even when a fact is offered.
+      const keyName = this.signupFacts.get(provider)?.key_name;
+      const observed = object(result.observation);
+      const fieldLabel = (row: unknown[]) => String(row[2]).split('|')[0]!.replace(/^@/, '').trim();
+      const nameRow = keyName && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
+        ? observed.safe_table.find((row): row is unknown[] => Array.isArray(row) && row[1] === 't'
+          && keyNameField(fieldLabel(row), observed.url) && !usedTerms.has(`field:${fieldLabel(row)}`)) : undefined;
+      if (nameRow && Object.hasOwn(object(result.options), 'key_name') && !usedTerms.has('fact:key_name')) {
+        usedTerms.add('fact:key_name');
+        answer = 'key_name';
+        continue;
+      }
+      const nameTarget = nameRow && Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
+        && label.trim().toLowerCase() === fieldLabel(nameRow).toLowerCase());
+      if (keyName && nameRow && nameTarget) {
+        usedTerms.add(`field:${fieldLabel(nameRow)}`);
+        // Squire matches a fact to a field by the field's own label.
+        facts[fieldLabel(nameRow)] = keyName;
+        this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldLabel(nameRow)]: keyName });
+        answer = nameTarget[0];
+        continue;
+      }
       // Background signups use the router's driver too; it cannot hand off to a person.
       if (this.options.agent && url) {
         let agentResult = result;
@@ -818,7 +871,7 @@ export class BrowserSquire implements SetupSquire {
       if (input.service === 'zro') this.signupFacts.set('zro', { key_name: zroKeyName() });
       return this.drive(input.service as Provider);
     },
-    get: async (id: string) => { const result = await this.drive(id as Provider); return { state: result.run.state, ...(result.approval_url ? { approval_url: result.approval_url } : {}), ...(result.reason ? { reason: result.reason } : {}) }; }
+    get: async (id: string) => { const result = await this.drive(id as Provider); return { state: result.run.state, ...(result.approval_url ? { approval_url: result.approval_url } : {}), ...(result.reason ? { reason: result.reason } : {}), ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}) }; }
   };
   async close() {
     this.closed = true;
