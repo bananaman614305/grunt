@@ -8,6 +8,10 @@ import type { DiagnosticsStore } from './diagnostics.js';
 import { currentRoutingWorkload, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
+// Negative admission evidence may delay discovery, never authorize dispatch.
+// Share one bounded window across routing, model-list and recovery metadata reads.
+export const AVAILABILITY_NEGATIVE_MS = 30000;
+
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
 export interface SourceSnapshot {
   id: string;
@@ -115,6 +119,11 @@ export class SourceStatus {
   routingAvailability(id: string, positiveAgeMs: number, negativeAgeMs: number): boolean | undefined {
     const entry = this.entry(id), now = this.now();
     if (entry.availabilityCheckedAt === undefined || entry.available === undefined) return;
+    // An observed quota has its own absolute deadline; the ordinary negative
+    // window must not postpone a refill or replace the persisted quota guard.
+    if (!entry.available && (entry.availabilityQuota && (entry.retryAt ?? 0) <= now
+      || entry.failure === 'quota' && entry.retryAt !== undefined
+        && entry.availabilityCheckedAt < entry.retryAt && entry.retryAt <= now)) return;
     const age = now - entry.availabilityCheckedAt;
     if (age < 0 || age >= (entry.available ? positiveAgeMs : negativeAgeMs)) return;
     return entry.available;
@@ -244,6 +253,10 @@ export class SourceStatus {
   }
   async available(source: Source, healthCheck = false): Promise<boolean> {
     const entry = this.entry(source.id), revision = entry.revision;
+    // Retain only negative metadata. Explicit health checks and all adapter
+    // completion guards remain fresh; positive metadata is never reused here.
+    if (!healthCheck && !entry.availabilityQuota && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
+      && this.routingAvailability(source.id, 0, AVAILABILITY_NEGATIVE_MS) === false) return false;
     try {
       const result = await (healthCheck ? source.healthCheck!() : source.available());
       // A reply or explicit recovery observed after this probe started is
@@ -260,6 +273,9 @@ export class SourceStatus {
       }
       return result;
     } catch (error) {
+      // Caller/shutdown cancellation says nothing about provider availability.
+      if (error instanceof SourceError && error.code === 'cancelled'
+        || error instanceof Error && error.name === 'AbortError') throw error;
       if (error instanceof SourceError && error.code === 'quota') {
         // Preserve a live completion throttle, but accept new evidence after it expires.
         if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota || (entry.retryAt ?? 0) <= this.now())) {
@@ -271,7 +287,11 @@ export class SourceStatus {
       }
       if (entry.revision === revision) {
         const wasOpen = this.routeOpen(source.id);
-        entry.revision++; entry.state = 'unavailable'; entry.available = false; entry.availabilityCheckedAt = this.now();
+        entry.revision++; entry.state = 'unavailable'; entry.available = false;
+        // Setup/login recovery has an explicit fresh health-check path. Keep
+        // those barriers discoverable immediately after the user repairs them.
+        if (failureCode(error) === 'logged_out' || failureCode(error) === 'not_installed') delete entry.availabilityCheckedAt;
+        else entry.availabilityCheckedAt = this.now();
         this.notifyClosed(source.id, wasOpen);
       }
       throw error;
