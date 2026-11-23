@@ -9,6 +9,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import type { ModelRequest, Source } from './source.js';
 
+export const ZRO_STORE = { service: 'zro', label: 'grunt', api_hosts: ['zro.moonmath.ai'], auth_shape: 'bearer' };
 export const ZRO_DEEPSEEK = 'deepseek-v4.1-flash';
 export interface ZroGrant extends FreeApiGrant { free_account_verified: true; verified_at: string }
 const directory = () => configRoot();

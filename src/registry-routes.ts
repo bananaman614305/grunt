@@ -2,6 +2,7 @@ import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { Context } from 'hono';
 import { ID_PATTERN, bundledRegistry, validateRegistry } from './registry.js';
 import type { Registry } from './registry.js';
@@ -53,10 +54,10 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
       const temporary = join(dirname(path), `registry.${randomUUID()}.tmp`);
       try {
         await writeFile(temporary, JSON.stringify(result.registry), { mode: 0o600, flag: 'wx' });
+        const find = (registry: Registry) => registry.adapters.find(entry => entry.id === id) ?? registry.candidates?.find(entry => entry.id === id);
+        await store.recordWrite(writer.login, id, find(base), find(result.registry));
         await rename(temporary, path);
       } finally { await rm(temporary, { force: true }); }
-      const find = (registry: Registry) => registry.adapters.find(entry => entry.id === id) ?? registry.candidates?.find(entry => entry.id === id);
-      await store.recordWrite(writer.login, id, find(base), find(result.registry)).catch(() => console.error('grunt registry write history is unavailable.'));
       return result;
     });
     writing = run.catch(() => {});
@@ -66,9 +67,8 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
       return c.json({ published: result.registry.published, etag: registryEtag(result.registry), placed: result.placed });
     } catch { return c.json({ error: 'The registry could not be written' }, 500); }
   };
-  app.put('/v1/registry/entries/:id', async c => {
+  app.put('/v1/registry/entries/:id', bodyLimit({ maxSize: ENTRY_MAX_BYTES, onError: c => c.json({ error: 'Entry is too large' }, 413) }), async c => {
     const text = await c.req.text();
-    if (Buffer.byteLength(text) > ENTRY_MAX_BYTES) return c.json({ error: 'Entry is too large' }, 413);
     let body: unknown;
     try { body = JSON.parse(text); } catch { return c.json({ errors: [{ field: 'entry', rule: 'must be a JSON object' }] }, 400); }
     return write(c, (base, at) => putEntry(base, c.req.param('id'), body, at));
@@ -76,10 +76,9 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
   app.delete('/v1/registry/entries/:id', c => write(c, (base, at) => deleteEntry(base, c.req.param('id'), at)));
   // Anonymous daily route counts from local routers. Only the allowlisted
   // schema is accepted; no address, body or header is stored or logged.
-  app.post('/v1/registry/feedback', async c => {
+  app.post('/v1/registry/feedback', bodyLimit({ maxSize: FEEDBACK_MAX_BYTES, onError: c => c.json({ error: 'Report is too large' }, 413) }), async c => {
     if (!store) return c.json({ error: 'Feedback is unavailable' }, 503);
     const text = await c.req.text();
-    if (Buffer.byteLength(text) > FEEDBACK_MAX_BYTES) return c.json({ error: 'Report is too large' }, 413);
     let report;
     try { report = parseFeedback(JSON.parse(text), await current(), now()); } catch { report = undefined; }
     if (!report) return c.json({ error: 'Invalid feedback report' }, 400);

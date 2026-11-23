@@ -14,7 +14,7 @@ const COUNT_FIELDS = ['ok', 'failed', 'quota', 'auth', 'signup_ok', 'signup_fail
 export interface FeedbackRoute { id: string; ok: number; failed: number; quota: number; auth: number; latency_ms: number; signup_ok: number; signup_failed: number; retired: boolean }
 export interface FeedbackReport { version: 1; install: string; client: string; day: string; routes: FeedbackRoute[] }
 export interface RouteScore {
-  score: number | null; state: 'live' | 'quiet' | 'dead' | 'unknown'; reliability: number | null; last_ok: string | null;
+  score: number | null; state: 'live' | 'dead' | 'unknown'; reliability: number | null; last_ok: string | null;
   installs_7d: number; reports: number; quota_rate: number | null; signup_rate: number; signup_attempts: number; retired_installs: number
 }
 export interface Scores { computed: string; summary: { entries: number; live: number; median: number | null }; scores: Record<string, RouteScore> }
@@ -70,7 +70,7 @@ export function computeScores(rows: readonly Row[], ids: readonly string[], now:
     const freshness = since === undefined ? 0 : 0.5 ** (since / HALF_LIFE_DAYS);
     scores[id] = {
       score: reliability === null ? null : Math.round(100 * reliability * freshness),
-      state: !reports ? 'unknown' : since === undefined || since >= 3 ? 'dead' : since <= 1 ? 'live' : 'quiet',
+      state: !reports ? 'unknown' : since === undefined || since >= 3 ? 'dead' : 'live',
       reliability: reliability === null ? null : Math.round(reliability * 1000) / 1000, last_ok: lastOk ?? null,
       installs_7d: installs.size, reports, quota_rate: attempts ? Math.round(quota / attempts * 1000) / 1000 : null,
       signup_rate: Math.round((signupOk + 1) / (signupOk + signupFailed + 2) * 1000) / 1000, signup_attempts: signupOk + signupFailed,

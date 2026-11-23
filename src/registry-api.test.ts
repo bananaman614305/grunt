@@ -206,7 +206,7 @@ it('scores routes from router feedback and decays a dead route to zero', async (
     scores = await api.scores();
     expect(scores.scores.zro!.score!).toBeLessThanOrEqual(offset === 1 ? last - 1 : last);
     last = scores.scores.zro!.score!;
-    if (offset >= 3) expect(scores.scores.zro!.state).toBe('dead');
+    expect(scores.scores.zro!.state).toBe(offset >= 3 ? 'dead' : 'live');
   }
   expect(scores.scores.zro).toMatchObject({ score: 0, state: 'dead', last_ok: null });
 });
@@ -268,4 +268,39 @@ it('lists dead and low-signup routes from feedback on the worklist', async () =>
   const text = await (await api.app.request('/v1/registry/instructions')).text();
   expect(text.split('\n').find(line => line.startsWith('- Dead in router feedback'))).toContain('`kenari`');
   expect(text.split('\n').find(line => line.startsWith('- Signup success below 30%'))).toContain('`kenari`');
+});
+
+
+it.each(['PUT', 'DELETE'])('keeps the publication unchanged when %s audit persistence fails', async method => {
+  const api = await server({ published: bundledRegistry });
+  const before = await readFile(api.path, 'utf8');
+  vi.spyOn(api.store, 'recordWrite').mockRejectedValueOnce(new Error('database unavailable'));
+  const response = await api.request(method, '/v1/registry/entries/zro', method === 'PUT' ? { ...entry('zro'), hints: 'Changed hints.' } : undefined, tokens.owner);
+  expect(response.status).toBe(500);
+  expect(await readFile(api.path, 'utf8')).toBe(before);
+  expect(await api.store.writes()).toEqual([]);
+  expect((await api.request(method, '/v1/registry/entries/zro', method === 'PUT' ? entry('zro') : undefined, tokens.owner)).status).toBe(200);
+  expect(await api.store.writes()).toHaveLength(1);
+});
+
+it.each([
+  ['PUT', '/v1/registry/entries/zro', 16 * 1024],
+  ['POST', '/v1/registry/feedback', 32 * 1024]
+] as const)('bounds streamed %s bodies before consuming the entire request', async (method, url, limit) => {
+  const api = await server({ published: bundledRegistry });
+  let reads = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      reads++;
+      if (reads > 100) controller.close();
+      else controller.enqueue(new Uint8Array(1024));
+    }
+  });
+  const request = new Request(`http://localhost${url}`, { method, body: stream, duplex: 'half' } as RequestInit);
+  const response = await api.app.request(request);
+  expect(response.status).toBe(413);
+  expect(reads).toBeLessThanOrEqual(limit / 1024 + 2);
+  expect(github).not.toHaveBeenCalled();
+  expect(await api.store.writes()).toEqual([]);
+  expect((await api.client.execute('SELECT * FROM registry_feedback')).rows).toEqual([]);
 });

@@ -103,3 +103,52 @@ it.each([
 ])('rejects an invalid hints field: %j', fields => {
   expect(() => validateRegistry(synced('zro', fields))).toThrow('Invalid adapter registry');
 });
+
+
+it.each(['complete', 'dropped', 'error'])('reports one actual signup outcome for a %s browser attempt', async status => {
+  const signedUp = vi.fn();
+  const squire = new BrowserSquire({ signedUp });
+  vi.spyOn(squire, 'call').mockImplementation(async name => {
+    if (name !== 'operate_drive') return {};
+    if (status === 'error') throw new Error('browser unavailable');
+    return { status, session_id: 'synthetic-session' };
+  });
+  const signup = squire.signup('100milionseek', 'https://100milionseek.top/signup', 'Sign up.');
+  if (status === 'complete') await signup;
+  else await expect(signup).rejects.toThrow();
+  expect(signedUp.mock.calls).toEqual([['millionseek', status === 'complete']]);
+});
+
+it('reports legacy provisioning outcomes through the same browser lifecycle', async () => {
+  const signedUp = vi.fn(), squire = new BrowserSquire({ signedUp });
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'complete', session_id: 'synthetic-session' } : {});
+  await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'synthetic' });
+  expect(signedUp.mock.calls).toEqual([['zro', true]]);
+});
+
+it('does not report a signup when cancellation prevents a browser attempt', async () => {
+  const signedUp = vi.fn(), controller = new AbortController();
+  controller.abort();
+  const squire = new BrowserSquire({ signedUp, signal: controller.signal });
+  const call = vi.spyOn(squire, 'call');
+  await expect(squire.signup('goedel', 'https://inference.goedelmachines.com/keys', 'Sign up.')).rejects.toThrow();
+  expect(call).not.toHaveBeenCalled();
+  expect(signedUp).not.toHaveBeenCalled();
+});
+
+
+it.each([
+  ['zro', 'grunt', 'zro.moonmath.ai'],
+  ['tokenharbor', 'grunt', 'tokenharbor.ai'],
+  ['pollinations', 'grunt-free-pollinations', 'gen.pollinations.ai'],
+  ['beatapi', 'grunt', 'api.beatapi.io'],
+  ['kenari', 'Grunt Free', 'kenari.id'],
+  ['goedel', 'Grunt Free', 'api.goedelmachines.com'],
+  ['fikra', 'Grunt Free', 'api.fikraapi.co.ke'],
+  ['darus', 'Grunt Free', 'gateway.darusalfatah.id'],
+  ['aperture-ai', 'Grunt Free', 'www.aperture-ai.run'],
+  ['100milionseek', 'Grunt Free', '100milionseek.top']
+])('preserves the existing vault contract for %s', async (service, label, host) => {
+  const [drive] = await driveCalls(service, `https://${host}/`);
+  expect(drive!.store).toEqual({ service, label, api_hosts: [host], auth_shape: 'bearer' });
+});

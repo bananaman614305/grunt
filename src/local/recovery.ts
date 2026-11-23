@@ -97,6 +97,7 @@ export class SourceRecovery {
         const outcome = await (this.options.setup ?? setupFallbacks)({
           directory: this.options.directory, adapters: [id], background: true, acquire: true, notify, signal,
           ...(agent ? { agent } : {}), ...(this.options.registry ? { registry: this.options.registry } : {}),
+          ...(this.options.signedUp ? { signedUp: this.options.signedUp } : {}),
           run: async (binary, args, interactive) => {
             if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
             await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal });
@@ -104,7 +105,6 @@ export class SourceRecovery {
         }).catch(() => ({ unavailable: [id] })).finally(() => this.options.opening?.(undefined));
         this.failed.delete(id);
         this.failedSinceSync.delete(id);
-        if (!signal.aborted) try { this.options.signedUp?.(id, !outcome.unavailable.includes(id)); } catch { /* Advisory only. */ }
         if (outcome.unavailable.includes(id)) {
           this.failed.add(id);
           this.failedSinceSync.add(id);

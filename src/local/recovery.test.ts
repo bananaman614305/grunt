@@ -362,3 +362,19 @@ it('owns the setup lease during discovery and every signup, then releases it', a
     await foreground.close();
   } finally { releaseDiscovery(); await recovery.close(); }
 });
+
+
+it.each(['reused', 'unavailable', 'pre-signup error'])('does not count a %s setup result as a signup', async outcome => {
+  const dir = await directory(), signedUp = vi.fn();
+  const setup = vi.fn(async () => {
+    if (outcome === 'pre-signup error') throw new Error('vault unavailable');
+    return { unavailable: outcome === 'unavailable' ? ['goedel'] : [] };
+  });
+  const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['goedel'], open: async () => 0, notify: () => {}, setup, signedUp });
+  try {
+    recovery.trigger();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
+    await settle();
+    expect(signedUp).not.toHaveBeenCalled();
+  } finally { await recovery.close(); }
+});
