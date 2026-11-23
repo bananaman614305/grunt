@@ -54,6 +54,7 @@ export class Zro implements Source {
     try {
       await this.source.complete({ model: this.id, cwd: this.options.directory ?? directory(), messages: [{ role: 'user', content: 'Reply with one word: ready' }],
         tools: [], stream: false, maxTokens: 16 }, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(this.availabilityTimeoutMs)]));
+      signal?.throwIfAborted();
       return true;
     } catch (error) {
       signal?.throwIfAborted();

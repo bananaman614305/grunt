@@ -5,6 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire, FreeLLMAdmin, setup, setupProviders } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { Runcrate } from './runcrate.js';
+import { Zro, writeZroGrant } from './zro.js';
+import { TokenHarbor } from './tokenharbor.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
 import * as mistralSetup from './mistral-vibe-setup.js';
@@ -194,4 +196,75 @@ it.each(['runcrate', 'zro', 'tokenharbor'] as const)('tries %s vault keys newest
   await setupProviders(squire, router, options);
   expect(attempts).toEqual(['paused', 'working', 'old', 'captured']);
   expect(squire.runs.start).toHaveBeenCalledOnce();
+});
+
+it.each([
+  { provider: 'runcrate', adapter: Runcrate },
+  { provider: 'zro', adapter: Zro },
+  { provider: 'tokenharbor', adapter: TokenHarbor }
+] as const)('cancels $provider setup probes for saved and captured grants', async ({ provider, adapter }) => {
+  await recordDataSharingConsent(directory, [provider]);
+  vi.spyOn(adapter.prototype, 'available').mockResolvedValue(false);
+  for (const capture of [false, true]) {
+    const controller = new AbortController();
+    const cancelled = new Error('setup cancelled during probe');
+    let release!: () => void;
+    let started!: (signal: AbortSignal) => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const probing = new Promise<AbortSignal>(resolve => { started = resolve; });
+    const complete = vi.spyOn(adapter.prototype, 'complete').mockImplementation(async (_request, signal) => {
+      started(signal);
+      await pending;
+      return { text: 'ready' };
+    });
+    let captured = false;
+    const squire = {
+      credentials: {
+        list: async () => capture && !captured ? [] : [{ service: provider, reference: 'vault://probe', field_names: ['api_key'] }],
+        grant: async () => ({ base_url: 'https://grant.test', token: 'synthetic-grant' })
+      },
+      runs: { start: vi.fn(async () => {
+        captured = true;
+        return { run: { id: provider, state: 'completed' }, decision: 'silent' as const };
+      }), get: vi.fn() }
+    };
+    const notify = vi.fn();
+    const work = setup(notify, [provider], { directory, squire, signal: controller.signal });
+    const outcome = expect(work).rejects.toBe(cancelled);
+    const signal = await probing;
+    controller.abort(cancelled);
+    expect(signal.aborted).toBe(true);
+    release();
+    await outcome;
+    expect(notify.mock.calls.flat().some(line => /connected/.test(line))).toBe(false);
+    expect(squire.runs.start).toHaveBeenCalledTimes(capture ? 1 : 0);
+    await expect(stat(join(directory, `${provider}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
+    complete.mockRestore();
+  }
+});
+
+it('cancels the initial Zro readiness request without accepting a late reply or starting signup', async () => {
+  await writeZroGrant({ base_url: 'https://grant.test', token: 'synthetic-grant' }, directory);
+  const controller = new AbortController();
+  const cancelled = new Error('setup cancelled during readiness');
+  let release!: (response: Response) => void;
+  let started!: (signal: AbortSignal) => void;
+  const pending = new Promise<Response>(resolve => { release = resolve; });
+  const probing = new Promise<AbortSignal>(resolve => { started = resolve; });
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    started(init!.signal as AbortSignal);
+    return pending;
+  });
+  const squire = { credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
+  const notify = vi.fn();
+  const work = setup(notify, ['zro'], { directory, squire, signal: controller.signal });
+  const outcome = expect(work).rejects.toBe(cancelled);
+  const signal = await probing;
+  controller.abort(cancelled);
+  expect(signal.aborted).toBe(true);
+  release(Response.json({ model: 'deepseek-v4.1-flash', choices: [{ message: { content: 'ready' } }] }));
+  await outcome;
+  expect(notify).not.toHaveBeenCalled();
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  expect(squire.credentials.list).not.toHaveBeenCalled();
 });

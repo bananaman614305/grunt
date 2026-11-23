@@ -166,10 +166,13 @@ export class SetupFailure extends Error {}
 const rejectedStatus = (error: unknown) => error instanceof SourceError && [401, 403].includes(error.diagnostics?.httpStatus ?? 0) ? error.diagnostics!.httpStatus : undefined;
 // One real chat request through the source with its newly written grant. A
 // grant that does not answer is removed, so routing never counts it as connected.
-async function probeGrant(source: Source, location: string) {
+async function probeGrant(source: Source, location: string, caller?: AbortSignal) {
+  const signal = AbortSignal.any([...(caller ? [caller] : []), AbortSignal.timeout(60000)]);
   try {
-    await source.complete({ model: source.id, cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, AbortSignal.timeout(60000));
-  } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); throw error; }
+    signal.throwIfAborted();
+    await source.complete({ model: source.id, cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, signal);
+    signal.throwIfAborted();
+  } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
 }
 
 export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[] } ) {
@@ -1257,7 +1260,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
           addGrant: async (id, grant) => {
             if (id !== provider) throw new Error(`Unexpected ${provider} credential`);
             await writeGrant(grant, location);
-            await probeGrant(source, location);
+            await probeGrant(source, location, options.signal);
           }
         }, { providers: [provider], notify, reuseSaved: false });
         if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
@@ -1269,11 +1272,11 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
       const source = new Zro({ directory: location });
       try {
         const result = await setupProviders(squire, {
-          hasKey: async provider => provider === 'zro' && await source.available(),
+          hasKey: async provider => provider === 'zro' && await source.available(options.signal),
           addGrant: async (provider, grant) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');
             await writeZroGrant(grant, location);
-            await probeGrant(source, location);
+            await probeGrant(source, location, options.signal);
           }
         }, { providers: ['zro'], notify, reuseSaved: false });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
@@ -1289,7 +1292,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
           addGrant: async (provider, grant) => {
             if (provider !== 'tokenharbor') throw new Error('Unexpected Token Harbor credential');
             await writeTokenHarborGrant(grant, location);
-            await probeGrant(source, location);
+            await probeGrant(source, location, options.signal);
           }
         }, { providers: ['tokenharbor'], notify, reuseSaved: false });
         if (result.dropped.length) throw new Error('Token Harbor setup incomplete; rerun usegrunt setup');
