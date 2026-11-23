@@ -128,7 +128,26 @@ it('validates CLI work bounds before executing runtime imports or tasks', async 
   await expect(runWorkloadBenchmark(['--seed', '-1'])).rejects.toThrow('Seed');
   await expect(runWorkloadBenchmark(['--baseline'])).rejects.toThrow('Usage');
   await expect(runWorkloadBenchmark(['--wat', 'value'])).rejects.toThrow('Unknown');
+  for (const value of ['99', '10001', '100.5', 'NaN', 'Infinity']) await expect(runWorkloadBenchmark(['--baseline', '/missing-must-not-be-imported', '--task-deadline-ms', value])).rejects.toThrow('Task deadline');
+  await expect(runWorkloadBenchmark(['--task-deadline-ms'])).rejects.toThrow('Usage');
 });
+
+it('pins configured offline deadlines in reproducible manifests and retains timed-out negative controls', async () => {
+  const log = quiet();
+  try {
+    const args = ['--repetitions', '1', '--tasks', '10', '--concurrency', '4', '--seed', '42', '--task-deadline-ms', '2000'];
+    const first = await runWorkloadBenchmark(args), second = await runWorkloadBenchmark(args);
+    expect(createWorkloadManifest(42, 10).timing.taskDeadlineMs).toBe(120);
+    expect(first.manifest.timing.taskDeadlineMs).toBe(2000);
+    expect(first.manifestDigest).toBe(workloadManifestDigest(first.manifest));
+    expect(first.manifestDigest).not.toBe(workloadManifestDigest(createWorkloadManifest(42, 10)));
+    expect(second.manifestDigest).toBe(first.manifestDigest);
+    for (const result of [first, second]) {
+      expect(result.runs[0]!.current.outcomes).toEqual({ verified: 8, incorrect: 1, failed: 0, timed_out: 1 });
+      expect(result.runs[0]!.current.tasks.find(task => task.kind === 'timeout')).toMatchObject({ outcome: 'timed_out', cleanupComplete: true });
+    }
+  } finally { log.mockRestore(); }
+}, 15000);
 
 it('runs the compiled harness in a source-free installed package without Git or tsx', async () => {
   const root = await mkdtemp(join(tmpdir(), 'grunt-built-workload-'));
@@ -147,13 +166,15 @@ it('runs the compiled harness in a source-free installed package without Git or 
 export class Sources {
   constructor(sources) { this.sources = sources; }
   async complete(request, signal) {
+    if (request.cwd.endsWith('task-1')) await new Promise(done => setTimeout(done, 70));
     for (const source of this.sources) { try { return await source.complete(request, signal); } catch (error) { if (signal.aborted) throw error; } }
     throw new SourceError('upstream', 'Synthetic sources exhausted');
   }
   async close() { await Promise.all(this.sources.map(source => source.close?.())); }
 }`);
-    const invoke = () => promisify(execFile)(process.execPath, [join(root, 'dist/local/workload-benchmark.js'), '--baseline', root, '--repetitions', '1', '--tasks', '4', '--concurrency', '1'], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const invoke = () => promisify(execFile)(process.execPath, [join(root, 'dist/local/workload-benchmark.js'), '--baseline', root, '--repetitions', '1', '--tasks', '4', '--concurrency', '1', '--task-deadline-ms', '2000'], { timeout: 15000, maxBuffer: 1024 * 1024 });
     const first = JSON.parse((await invoke()).stdout);
+    expect(first.manifest.timing.taskDeadlineMs).toBe(2000);
     expect(first.identities.current).toMatchObject({ version: '0.0.0-fixture', commit: null, runtimeFormat: 'built', entrypoint: 'dist/local/source.js' });
     expect(first.identities.baseline).toEqual(first.identities.current);
     expect(first.runs[0].current.outcomes.verified).toBe(4);
