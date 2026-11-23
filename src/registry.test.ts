@@ -125,11 +125,12 @@ it('serves only manually published registry data with conditional requests', asy
   expect((await app.request('/v1/registry', { headers: { 'If-None-Match': etag } })).status).toBe(200);
   await writeFile(path, 'bad'); expect((await app.request('/v1/registry')).status).toBe(503);
 });
-it('restricts publication to owner dispatch on main and validates before uploading', async () => {
+it('restricts publication to write-access dispatch on main in the public repo and validates before uploading', async () => {
   const workflow = await readFile('.github/workflows/registry.yml', 'utf8');
   expect(workflow).toContain('workflow_dispatch:');
   expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
-  expect(workflow).toContain('github.actor == github.repository_owner');
+  expect(workflow).not.toContain('github.actor == github.repository_owner');
+  expect(workflow).toContain('github.event.repository.private == false');
   expect(workflow).toContain("github.ref == 'refs/heads/main'");
   expect(workflow.indexOf('dist/registry.js')).toBeLessThan(workflow.indexOf('flyctl ssh'));
 });
