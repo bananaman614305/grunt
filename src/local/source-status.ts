@@ -185,8 +185,11 @@ export class SourceStatus {
   }
 
   routingWeight(id: string, background = false, workload?: RoutingWorkload) {
-    const entry = this.entry(id), specific = workload ? entry.profiles?.[workload] : undefined;
-    const sample = specific && specific.samples >= 2 ? specific : entry.performance;
+    const entry = this.entry(id);
+    // A short text reply is not evidence for a tool continuation or background
+    // job. Keep a cold/sparse matching cohort neutral rather than letting the
+    // mixed aggregate bias a new-task draw. Unscoped callers retain the summary.
+    const sample = workload ? entry.profiles?.[workload] : entry.performance;
     if (!sample || sample.samples < 2 || this.now() < sample.at || this.now() - sample.at > ROUTING_HISTORY_TTL_MS) return 1;
     // Completed failures cost real time even if the few successful samples are quick.
     const penalty = 1 + sample.failureCostMs / Math.max(250, sample.latencyMs);
