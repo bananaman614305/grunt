@@ -32,7 +32,7 @@ it('keeps the Zro and Token Harbor capture rules', async () => {
   expect(zro).toContain('Never reset or rotate an existing key');
   const [harbor] = await goals('tokenharbor');
   expect(harbor).toContain('api_hosts ["tokenharbor.ai"] and auth_shape "bearer", service tokenharbor, label grunt');
-  expect(harbor).toContain('Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key');
+  expect(harbor).toContain('Do not create a second key if an existing key can be captured, and never reset or rotate an existing key');
 });
 
 it('flags the old Zro and Token Harbor model-enable wording', () => {

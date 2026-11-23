@@ -788,7 +788,7 @@ An uncertain result with a captured key proceeds to a local test request;
 missing or failing access is skipped. Existing accounts are reused; no extra
 Google accounts are created.
 
-Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
+Zro, Token Harbor and Runcrate setup tests an existing vaulted key with one chat request and connects it when it answers, without opening the provider site. Squire opens the site only when no key is saved or the provider rejects the saved one (HTTP 401 or 403); it then captures an existing key where the site shows one and creates a key only otherwise. A grant that does not answer is not kept. Zro setup prefers Google login through Squire. In the browser, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. The private `zro.json` file records the setup; repeat setup can reuse a grant that still answers. Zro readiness is a chat request, because Zro still lists models for a paused key. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
 
 Setup enables the free sources by default, including sources that may retain,
 review or train on prompts. It records current provider policies in a private

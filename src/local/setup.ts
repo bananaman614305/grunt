@@ -55,13 +55,15 @@ import { readSetupSession } from './setup-session.js';
 import { signupAgentTools, signupAgentResult, guardedSignupChoice, writeId } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
+import { SourceError } from './source.js';
+import type { Source } from './source.js';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
 export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', perch: 'https://www.perchai.app', nous: 'https://portal.nousresearch.com/login', kenari: 'https://kenari.id/login', numes: 'https://numes.ai/dashboard', goedel: 'https://inference.goedelmachines.com/keys', crowllm: 'https://crowllm.com/keys', fikra: 'https://fikraapi.co.ke/account/signup', openference: 'https://openference.com/register', darus: 'https://gateway.darusalfatah.id/', 'aperture-ai': 'https://www.aperture-ai.run/login.html', 'reflection-beam': 'https://kilo.ai/docs/getting-started/using-kilo-for-free', 'antseed-vikey': 'https://antseed.com/docs/', millionseek: 'https://100milionseek.top/signup', freepi: 'https://freepi.ai' };
 const freeProviderInstructions: Record<string, string> = {
-  runcrate: ' Go straight to the API keys page at https://www.runcrate.ai/dashboard/api-keys. Leave optional marketing unchecked. Do not open or change billing settings or create another account. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Reuse an existing vaulted key where possible; never reset or rotate it.',
-  apinex: ' Go straight to the API keys page. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Do not use or change any existing paid wallet balance. Dismiss any paid upsell. Do not add billing, top up a wallet, buy credits, or use any paid balance. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Reuse an existing vaulted key; never reset or rotate it.'
+  runcrate: ' Go straight to the API keys page at https://www.runcrate.ai/dashboard/api-keys. Leave optional marketing unchecked. Do not open or change billing settings or create another account. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Capture an existing key where the site shows its value; never reset or rotate it.',
+  apinex: ' Go straight to the API keys page. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Do not use or change any existing paid wallet balance. Dismiss any paid upsell. Do not add billing, top up a wallet, buy credits, or use any paid balance. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Capture an existing key where the site shows its value; never reset or rotate it.'
 };
 export type Provider = keyof typeof PROVIDERS;
 export function providerURL(value: string): URL | undefined {
@@ -124,6 +126,18 @@ function setupReason(...values: unknown[]): string {
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
     .replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' ').slice(0, 512);
 }
+// A stopped page with no controls shows only the provider's own message, such
+// as a network block. Its words, redacted like other reasons, explain the stop.
+function pageWords(result: ObjectValue | undefined): string | undefined {
+  const observation = object(result?.observation);
+  if (typeof observation.dom !== 'string' || (Array.isArray(observation.safe_table) && observation.safe_table.length)) return;
+  let text = observation.dom;
+  try {
+    const body = object(JSON.parse(text));
+    text = [body.detail, body.message, body.error].find(value => typeof value === 'string') ?? text;
+  } catch { /* Plain page text. */ }
+  return setupReason(text.slice(0, 300)) || undefined;
+}
 function setupStopped(message: string, ...values: unknown[]): Error {
   const reason = setupReason(...values);
   return new Error(reason ? `${message}: ${reason}` : message);
@@ -148,7 +162,17 @@ export interface SetupSquire {
 export class SetupPending extends Error {}
 export class SetupFailure extends Error {}
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; verifySaved?: readonly Provider[]; dataSharingApproved?: readonly string[] } ) {
+// The provider's own HTTP 401 or 403 to a request with the saved key.
+const rejectedStatus = (error: unknown) => error instanceof SourceError && [401, 403].includes(error.diagnostics?.httpStatus ?? 0) ? error.diagnostics!.httpStatus : undefined;
+// One real chat request through the source with its newly written grant. A
+// grant that does not answer is removed, so routing never counts it as connected.
+async function probeGrant(source: Source, location: string) {
+  try {
+    await source.complete({ model: source.id, cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, AbortSignal.timeout(60000));
+  } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); throw error; }
+}
+
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[] } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string) => {
@@ -160,25 +184,36 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
     const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     let credential = await find();
-    if (!credential || options.verifySaved?.includes(provider)) {
-      // Preserve the provisioning identity so upgrades do not repeat an existing signup.
-      const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
-      if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
-      if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason); continue; }
-      let state = result.run.state;
-      let reason = result.reason;
-      const deadline = Date.now() + 120000;
-      while (!['completed', 'failed', 'rejected', 'dropped'].includes(state) && Date.now() < deadline) {
-        const run = await squire.runs.get(result.run.id); state = run.state; reason = run.reason ?? reason;
-        if (run.approval_url || state === 'awaiting_approval') { state = 'dropped'; break; }
-        if (!['completed', 'dropped', 'failed', 'rejected'].includes(state)) await delay(1000);
+    // A saved key is tried first. The browser runs only when none is saved or
+    // the provider rejects it, so setup never asks a site for a spare key.
+    if (credential) {
+      try {
+        await router.addGrant(provider, await squire.credentials.grant(credential.reference));
+        options.notify(`${provider}: connected through Squire grant`);
+        continue;
+      } catch (error) {
+        const status = rejectedStatus(error);
+        if (!status) throw error;
+        options.notify(`${provider}: saved key rejected (HTTP ${status}); opening the provider site to capture working access`);
       }
-      if (!['completed', 'failed', 'rejected', 'dropped'].includes(state)) await squire.runs.timeout?.(result.run.id);
-      if (state === 'failed' || state === 'rejected') throw setupStopped(`Squire could not provision ${provider}; setup stopped`, reason);
-      if (state !== 'completed') { drop(provider, reason); continue; }
-      credential = await find();
-      if (!credential) { drop(provider, 'No provider access was created'); continue; }
     }
+    // Preserve the provisioning identity so upgrades do not repeat an existing signup.
+    const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
+    if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
+    if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason); continue; }
+    let state = result.run.state;
+    let reason = result.reason;
+    const deadline = Date.now() + 120000;
+    while (!['completed', 'failed', 'rejected', 'dropped'].includes(state) && Date.now() < deadline) {
+      const run = await squire.runs.get(result.run.id); state = run.state; reason = run.reason ?? reason;
+      if (run.approval_url || state === 'awaiting_approval') { state = 'dropped'; break; }
+      if (!['completed', 'dropped', 'failed', 'rejected'].includes(state)) await delay(1000);
+    }
+    if (!['completed', 'failed', 'rejected', 'dropped'].includes(state)) await squire.runs.timeout?.(result.run.id);
+    if (state === 'failed' || state === 'rejected') throw setupStopped(`Squire could not provision ${provider}; setup stopped`, reason);
+    if (state !== 'completed') { drop(provider, reason); continue; }
+    credential = await find();
+    if (!credential) { drop(provider, 'No provider access was created'); continue; }
     const grant = await squire.credentials.grant(credential.reference);
     await router.addGrant(provider, grant);
     options.notify(`${provider}: connected through Squire grant`);
@@ -488,7 +523,7 @@ export class BrowserSquire implements SetupSquire {
     // Hints precede the shared safety rules (data sharing, no paid plan, terms), which stay last.
     const compose = (hints: string) => {
     const customGoal = goal === undefined ? undefined : `${goal}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required data-sharing disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
-    return (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Reuse an existing key in this user's vault, or create one API key for grunt and store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ` Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["${ZRO_STORE.api_hosts[0]}"] and auth_shape "bearer". Store service zro, label ${ZRO_STORE.label}. Never reset or rotate an existing key.` : ''}${provider === 'tokenharbor' ? ` Go straight to the API keys page. Capture with api_hosts ["${TOKENHARBOR_STORE.api_hosts[0]}"] and auth_shape "bearer", service tokenharbor, label ${TOKENHARBOR_STORE.label}. Do not create a second key if an existing vaulted key is usable, and never reset or rotate an existing key.` : ''}${freeProviderInstructions[provider] ?? ''}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan or payment method. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. Stop on provider refusal.`) + termsInstruction;
+    return (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Capture an existing working API key when the site can show its value; create one API key for grunt only when none can be captured. Store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ` Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["${ZRO_STORE.api_hosts[0]}"] and auth_shape "bearer". Store service zro, label ${ZRO_STORE.label}. Only the newest Zro key answers, so capture the newest key when its value is shown. Never reset or rotate an existing key.` : ''}${provider === 'tokenharbor' ? ` Go straight to the API keys page. Capture with api_hosts ["${TOKENHARBOR_STORE.api_hosts[0]}"] and auth_shape "bearer", service tokenharbor, label ${TOKENHARBOR_STORE.label}. Do not create a second key if an existing key can be captured, and never reset or rotate an existing key.` : ''}${freeProviderInstructions[provider] ?? ''}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan or payment method. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. Stop on provider refusal.`) + termsInstruction;
     };
     const withHints = hinted ? compose(` Provider hints (page, control, value, in order): ${hinted}`) : undefined;
     // Hints are optional; drop them rather than exceed the drive's goal limit.
@@ -496,7 +531,9 @@ export class BrowserSquire implements SetupSquire {
     const signal = this.serviceSignal(provider);
     // The last Squire result, so a drop can report Squire's own stop reason.
     let last: ObjectValue | undefined;
-    const dropped = async (reason: string): Promise<Run> => {
+    const dropped = async (stop: string): Promise<Run> => {
+      const words = pageWords(last);
+      const reason = words ? `${stop}; the page says: ${words}` : stop;
       this.failures.set(provider, reason);
       if (last) {
         const needs = object(last.needs_user);
@@ -589,6 +626,7 @@ export class BrowserSquire implements SetupSquire {
           // A driver that times out never switches drivers; the session continues below.
           if (signupOperatorUnavailable(failure)) return dropped(failure);
         }
+        last = agentResult;
         if (['refused', 'rejected', 'denied', 'forbidden'].includes(String(agentResult.status))) return dropped('provider refused');
         if (agentResult.status === 'complete') {
           this.metadata = undefined;
@@ -1220,9 +1258,9 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
           addGrant: async (id, grant) => {
             if (id !== provider) throw new Error(`Unexpected ${provider} credential`);
             await writeGrant(grant, location);
-            if (!await source.available()) throw new Error(`${provider}: verified free access is unavailable`);
+            await probeGrant(source, location);
           }
-        }, { providers: [provider], notify, reuseSaved: false, verifySaved: [provider] });
+        }, { providers: [provider], notify, reuseSaved: false });
         if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
       } finally { await source.close(); }
       providers = providers.filter(id => id !== provider);
@@ -1236,8 +1274,9 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
           addGrant: async (provider, grant) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');
             await writeZroGrant(grant, location);
+            await probeGrant(source, location);
           }
-        }, { providers: ['zro'], notify, reuseSaved: false, verifySaved: ['zro'] });
+        }, { providers: ['zro'], notify, reuseSaved: false });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'zro');
@@ -1251,8 +1290,9 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
           addGrant: async (provider, grant) => {
             if (provider !== 'tokenharbor') throw new Error('Unexpected Token Harbor credential');
             await writeTokenHarborGrant(grant, location);
+            await probeGrant(source, location);
           }
-        }, { providers: ['tokenharbor'], notify, reuseSaved: false, verifySaved: ['tokenharbor'] });
+        }, { providers: ['tokenharbor'], notify, reuseSaved: false });
         if (result.dropped.length) throw new Error('Token Harbor setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'tokenharbor');
