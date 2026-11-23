@@ -113,8 +113,17 @@ export function configure(env = process.env, registry: () => Registry = () => bu
         ...(published?.expires !== undefined ? { expires: published.expires } : {}) };
     })] };
   };
-  const routing = ids.every(id => knownAdapters.has(id) || localOptIns.has(id))
-    ? { registry: routingRegistry, localOptIns } : undefined;
+  // A manual GRUNT_SOURCES list containing legacy sources (Dots, Codex, FreeLLMAPI)
+  // deliberately keeps its ordered chain: the person chose that order (docs/reference.md).
+  // A managed automatic pool must not lose weighted, sticky routing because one preserved
+  // source, such as an earlier FreeLLMAPI setup, has no registry entry. Those sources stay
+  // selectable by model id and run only after every routed source fails.
+  const unrouted = new Set(ids.filter(id => !knownAdapters.has(id) && !localOptIns.has(id)));
+  const routing = !unrouted.size || selection.automatic
+    ? { registry: routingRegistry, localOptIns, ...(unrouted.size ? { unrouted } : {}) } : undefined;
+  if (routing && unrouted.size) {
+    console.error(`grunt routing: ${[...unrouted].join(', ')} ${unrouted.size === 1 ? 'is' : 'are'} not in the provider registry, so ${unrouted.size === 1 ? 'it is' : 'they are'} not weighted or sticky-routed; ${unrouted.size === 1 ? 'it runs' : 'they run'} only when named as a model or after every routed source fails.`);
+  }
   const build = (id: string) => {
     let source = registered.find(source => source.id === id);
     if (!source && id === 'antseed-vikey') {

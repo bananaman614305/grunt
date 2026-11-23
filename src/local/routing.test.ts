@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Sources, SourceError } from './source.js';
+import { StickyRouter } from './routing.js';
 import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import { Freebuff } from './freebuff.js';
@@ -316,4 +317,12 @@ it('includes vetted Kilo in weighted default routing and falls through after its
   expect(await sources.models()).toContain('kilo');
   vi.mocked(kilo.complete).mockRejectedValue(new SourceError('quota', 'quota', 60));
   expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+});
+it('labels a first draw weighted and a later turn sticky', async () => {
+  const reasons: string[] = [];
+  const a = source('opencode'), b = source('kilo');
+  const router = new StickyRouter([a, b], { registry: () => launchRegistry, random: () => 0, observe: (_id, reason) => { reasons.push(reason); } });
+  await router.complete(request, AbortSignal.timeout(1000));
+  await router.complete({ ...request, messages: [...request.messages, { role: 'assistant', content: 'ok' }] }, AbortSignal.timeout(1000));
+  expect(reasons).toEqual(['weighted', 'sticky']);
 });

@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- Keep weighted, sticky routing when a managed pool preserves a source with no registry entry, such as an earlier FreeLLMAPI route. Before, one such source made the daemon fall back to a fixed first-success chain, so it was tried first on every request. It now runs only when named as a model or after every routed source fails, and the daemon logs one line naming it. Explicit `GRUNT_SOURCES` lists keep their chosen order.
+- Label a task's first source pick `weighted` in diagnostics. Before, every first draw was recorded as `sticky`.
 - Reuse working vault keys before provisioning Zro, Token Harbor or Runcrate access, including when other saved keys fail. See the [setup reference](docs/reference.md#free-api-and-account-setup) for selection and failure handling.
 - Report provider refusal details and Runcrate's actual setup failure. Zro readiness now checks chat access; see [source admission](docs/reference.md#sources-and-app-sessions).
 - Write the registry through the gateway: anyone who can push to `bananaman614305/grunt` sends `PUT`/`DELETE /v1/registry/entries/{id}` with their own GitHub token, and the entry publishes at once with its signup hints, which a written signup must include. Providers without a shipped adapter go in a new `candidates` list that clients ignore. `GET /v1/registry/instructions` is an always-current guide for agents that add to the registry.

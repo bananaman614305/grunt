@@ -39,7 +39,7 @@ export function registryScoreFactor(score: number | null | undefined) {
   return typeof score === 'number' && Number.isFinite(score) ? 0.5 + Math.max(0, Math.min(100, score)) / 100 : 1;
 }
 
-export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; dropped?: (source: string) => void }
+export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; dropped?: (source: string) => void }
 interface Task {
   source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean;
   reassessment?: { from: string; source: string; samples: number; at: number };
@@ -221,6 +221,9 @@ export class StickyRouter {
         const retryTimes: number[] = [];
         for (const source of this.sources) {
           signal.throwIfAborted();
+          // Sources outside the registry are never drawn or reported as skipped;
+          // Sources.complete() offers them only as a last resort.
+          if (this.options.unrouted?.has(source.id)) continue;
           const adapter = adapters.find(a => a.id === source.id);
           if (!worker && !task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
           if (!adapter || this.options.disabled?.has(source.id) || scoutRetired(adapter, this.now()) || worker && !this.workerAdapter(adapter)) {
@@ -288,7 +291,8 @@ export class StickyRouter {
           const faster = this.fasterContinuation(task, request, ready, adapters, workload);
           if (faster) { selected = faster; performanceSwitch = true; }
         }
-        const bound = selected?.source.id === task.source;
+        // A first request has no bound source; its draw is weighted, not sticky.
+        const bound = selected !== undefined && selected.source.id === task.source;
         if (!selected) {
           let draw = (this.options.random ?? Math.random)() * ready.reduce((total, a) => total + a.weight, 0);
           selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;

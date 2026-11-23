@@ -89,6 +89,9 @@ export class Sources {
     // Only subworkers use this secondary router over the same observations.
     if (!this.router) this.workerRouter = this.createRouter({ registry, ...(localOptIns ? { localOptIns } : {}) });
   }
+  // A source outside the registry beside a routed pool (docs/router.md): it is
+  // selectable by model id and tried only after every routed source fails.
+  private unrouted(id: string) { return this.routing?.unrouted?.has(id) ?? false; }
   private get registeredRouter() { return this.router ?? this.workerRouter; }
   private createRouter(routing: RoutingOptions) {
     return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
@@ -108,7 +111,7 @@ export class Sources {
     catch (error) {
       if (!signal.aborted && error instanceof SourceError && error.code !== 'cancelled') {
         // The fixed chain below logs its own failures.
-        if (this.router) console.error(`grunt source: ${source.id} failed (${error.code}) for model ${this.safeModel(request.model)}`);
+        if (this.router && !this.unrouted(source.id)) console.error(`grunt source: ${source.id} failed (${error.code}) for model ${this.safeModel(request.model)}`);
         try { source.failed?.(error); } catch { /* Diagnostics must never affect routing. */ }
       }
       throw error;
@@ -189,7 +192,7 @@ export class Sources {
     const router = this.registeredRouter;
     const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
       retired: id => this.retired(id), pending: this.pending, verifying: this.verifying, preparing: this.preparing,
-      ...(this.router ? { listed: (id: string) => this.router!.listed(id) } : {}),
+      ...(this.router ? { listed: (id: string) => this.unrouted(id) || this.router!.listed(id) } : {}),
       ...(router ? { cooldown: (id: string) => router.cooldown(id) } : {}),
       model: id => {
         const adapter = this.routing?.registry().adapters.find(adapter => adapter.id === id);
@@ -303,7 +306,7 @@ export class Sources {
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
+      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.unrouted(s.id) && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
       if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
       return this.retired(s.id) ? null : s.id;
     }));
@@ -360,7 +363,28 @@ export class Sources {
       answeredBy.set(completion, source.id);
       return completion;
     }
-    if (this.router) return this.router.complete(request, signal);
+    if (this.router) {
+      const unrouted = this.sources.filter(source => this.unrouted(source.id));
+      if (!unrouted.length) return this.router.complete(request, signal);
+      // Naming an unrouted source selects it alone, as in the fixed chain.
+      if (unrouted.some(source => source.id === request.model)) return this.chain(request, signal);
+      try { return await this.router.complete(request, signal); }
+      catch (error) {
+        signal.throwIfAborted();
+        if (!(error instanceof SourceError) || error.code === 'cancelled') throw error;
+        const fallback = { attempted: false };
+        try { return await this.chain(request, signal, unrouted, fallback); }
+        catch (failure) {
+          // Report the routed pool's reason when no fallback source could run.
+          if (!fallback.attempted) throw error;
+          throw failure;
+        }
+      }
+    }
+    return this.chain(request, signal);
+  }
+  // The fixed chain: first success in source order, or the named source alone.
+  private async chain(request: ModelRequest, signal: AbortSignal, pool: Source[] = this.sources, progress = { attempted: false }): Promise<Completion> {
     await this.observation.refreshRoutingHistory();
     signal.throwIfAborted();
     const known = this.sources.some(s => s.id === request.model);
@@ -368,7 +392,7 @@ export class Sources {
     const automatic = request.model === 'grunt' || request.model === 'milo' || !known;
     if (automatic && !['grunt', 'milo'].includes(request.model)) console.error('grunt model mapping: unrecognized model -> grunt');
     const toolsRequired = automatic && needsFunctionTools(request);
-    const candidates = automatic ? this.sources.filter(s => !toolsRequired || toolCapable(s)) : this.sources.filter(s => s.id === request.model);
+    const candidates = automatic ? pool.filter(s => !toolsRequired || toolCapable(s)) : pool.filter(s => s.id === request.model);
     let last = toolsRequired ? new SourceError('not_installed', NO_TOOL_SOURCE) : new SourceError('not_installed', `No source for model ${this.safeModel(request.model)}`);
     let attempted = false;
     for (const source of candidates) {
@@ -381,8 +405,8 @@ export class Sources {
       }
       const context = currentDiagnosticContext();
       if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.selection', source: source.id,
-        ...(!automatic ? { reason: 'explicit' as const } : attempted ? { reason: 'fallback' as const } : {}) });
-      attempted = true;
+        ...(!automatic ? { reason: 'explicit' as const } : attempted || pool !== this.sources ? { reason: 'fallback' as const } : {}) });
+      attempted = true; progress.attempted = true;
       let completion: Completion;
       try { completion = await this.attempt(source, request, signal); }
       catch (error) {
