@@ -123,7 +123,7 @@ it('keeps one table in place through a full setup run with interleaved output', 
   const text = screen.text();
   const at = (pattern: RegExp) => text.findIndex(line => pattern.test(line));
   const steps = [/^✓ harness: pi$/, /^✓ data sharing: on for nous\. Off: GRUNT_SETUP/, /^✓ local service: running on port \d+$/,
-    /^✓ model: grunt \(kilo anonymous\)$/, /^✓ Trusty Squire: already set up and signed in, s/];
+    /^✓ model: grunt \(kilo anonymous\)$/];
   const positions = steps.map(at);
   expect(positions.every(position => position >= 0)).toBe(true);
   expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -146,7 +146,7 @@ it('keeps one table in place through a full setup run with interleaved output', 
   // Setup ends once grunt answers; nous continues in the background.
   expect(text.some(line => /nous: debug/.test(line))).toBe(false);
   const after = text.slice(header + 5);
-  expect(after.join('')).toBe('3 ready; 1 more continue in the background (usegrunt status)Ready');
+  expect(after.join('')).toBe('✓ Trusty Squire: already set up and signed in, skipped3 ready; 1 more continue in the background (usegrunt status)Ready');
 });
 
 it('holds a line written between two redraws instead of leaving a second header', () => {

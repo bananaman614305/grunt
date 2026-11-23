@@ -16,10 +16,13 @@ usegrunt installs grunt on this machine. It pools free AI quota and serves local
 
 Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
 
-Setup plays the miner animation, connects every supported coding tool it finds,
+Setup plays the miner animation, connects your selected coding tool,
 shows one live table of tools and sources, and ends with `Ready`. Setup accepts
-current data-sharing policies automatically; provider verification may still need
-your confirmation. Grunt is added as an extra named model; existing defaults stay intact.
+current data-sharing policies automatically. Once a verified route answers through
+model `grunt`, setup leaves remaining signups to the daemon after finishing local
+configuration and Squire bootstrap. See the [setup flow](docs/reference.md#free-api-and-account-setup)
+for verification and background acquisition limits. Grunt is added as an extra
+named model; existing defaults stay intact.
 Sources that cannot finish signup or pass a test request are skipped while working
 sources remain usable. Rerun setup to retry them.
 
@@ -44,8 +47,8 @@ npx usegrunt status --watch --port 8792
 The dashboard uses green for verified replies, cyan for requests in progress,
 blue for setup, yellow for approvals or limits, and red for failures. Arrow keys
 select a source, Enter shows details, `d` toggles disabled sources, and `q` closes
-the view without stopping the daemon. During unfinished setup the view is
-passive so Squire owns the keyboard; those keys become available after setup.
+the view without stopping the daemon. The watch view remains interactive while
+setup runs in another terminal.
 Status refreshes use cached observations and never send test prompts. Model
 labels describe registry configuration, not an attestation of the latest reply.
 Unobserved sources and unreported credit balances are shown honestly. Narrow
@@ -140,7 +143,8 @@ does not install tools, create accounts or open sign-in flows. Separately, the
 daemon uses the registry to acquire recommended routes with current consent. See the
 [router guide](docs/router.md) for acquisition triggers, limits, refresh timing and automatic
 pool updates. The dashboard's source details show the last check, its outcome
-and the next due time. First-time onboarding stays parallel.
+and the next due time. See the [setup flow](docs/reference.md#free-api-and-account-setup)
+for first-time onboarding.
 
 Maintenance starts automatically with the installed daemon in 0.6.9 and later.
 Existing users update that daemon with:
@@ -189,9 +193,9 @@ and [Free-Pi's restrictions](docs/providers/freepi.md). Antseed remains an
 [explicit experimental installation](docs/antseed-vikey-provisioning.md), with
 large-input qualification still incomplete.
 
-Nous uses `qwen/qwen4-max:free` on the Nous Portal Free plan. During setup, open the Hermes device link and approve inference. Other sources can start serving requests while you finish that step.
+Nous uses `qwen/qwen4-max:free` on the Nous Portal Free plan. See the [Nous setup reference](docs/reference.md#temporary-free-sources) for its Hermes device login.
 
-Kenari uses `ernie-5-5-flash-preview:free`. During setup, Squire connects a dedicated Grunt Free key scoped to `kenari.id` and hands off to you if Kenari requires browser verification. You can also connect it with `npx usegrunt add kenari`. [Kenari free-model limits](https://kenari.id/en/docs/free-models)
+Kenari uses `ernie-5-5-flash-preview:free`. See the [provider setup reference](docs/reference.md#temporary-free-sources) for its dedicated Squire key and verification. You can also connect it with `npx usegrunt add kenari`. [Kenari free-model limits](https://kenari.id/en/docs/free-models)
 
 Numes uses `z-ai/glm-5.3-flash:free` and a dedicated Squire key with a $0 spending cap. Grunt checks the cap before each request and verifies the model and charge in each reply. Free capacity can vary. Use `npx usegrunt add numes` to connect it separately or resume setup. [Numes free routes](https://numes.ai/docs/models#free-models)
 
