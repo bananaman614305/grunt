@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { signupMcp } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
-import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
+import { SetupRefusal, setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
 import { SourceError } from './source.js';
 
 // Writes a whole config file only when its text changes, after copying the old
@@ -47,8 +47,9 @@ const piProvider = (port: number, contextWindow = PI_WORKING_CONTEXT_TOKENS) => 
   models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 4096 }] });
 interface PiContextOptions { workingContextTokens?: number; fromContextWindows?: readonly number[] }
 interface PiConfigureOptions extends PiContextOptions { env?: NodeJS.ProcessEnv }
-const piFailure = () => new Error('Cannot safely update Pi models config; repair its ownership, permissions or JSON before retrying setup');
-const privatePiMode = (mode: number) => process.platform === 'win32' || (mode & 0o022) === 0;
+const piFailure = (reason: string) => new SetupRefusal(reason, `Cannot safely update Pi models config: ${reason}. Repair it before retrying setup`);
+// Group write is the umask 002 default (Ubuntu's per-user groups); write by every user is not.
+const privatePiMode = (mode: number) => process.platform === 'win32' || (mode & 0o002) === 0;
 function piContext(env: NodeJS.ProcessEnv, explicit?: number) {
   const setting = explicit ?? (env.GRUNT_WORKING_CONTEXT_TOKENS === undefined ? PI_WORKING_CONTEXT_TOKENS
     : /^\d+$/.test(env.GRUNT_WORKING_CONTEXT_TOKENS) ? Number(env.GRUNT_WORKING_CONTEXT_TOKENS) : NaN);
@@ -62,10 +63,12 @@ async function piDirectory(path: string, create: boolean): Promise<boolean> {
   for (;;) {
     try {
       const info = await lstat(current);
-      if (!info.isDirectory() || info.isSymbolicLink()) throw piFailure();
-      if (current === path && ((process.getuid && info.uid !== process.getuid()) || !privatePiMode(info.mode))) throw piFailure();
+      if (!info.isDirectory() || info.isSymbolicLink()) throw piFailure('a Pi config path is not a plain directory');
+      if (current === path && process.getuid && info.uid !== process.getuid()) throw piFailure('Pi agent directory is owned by another user');
+      if (current === path && !privatePiMode(info.mode)) throw piFailure('Pi agent directory is writable by every user');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw piFailure();
+      if (error instanceof SetupRefusal) throw error;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw piFailure('Pi agent directory is unreadable');
       if (current === path) missing = true;
     }
     const parent = dirname(current);
@@ -83,15 +86,19 @@ async function readPiConfig(env: NodeJS.ProcessEnv) {
   if (!await piDirectory(directory, false)) return { directory, path, saved: {} as Record<string, unknown>, text: undefined as string | undefined };
   let file;
   try {
-    if ((await lstat(path)).isSymbolicLink()) throw piFailure();
+    if ((await lstat(path)).isSymbolicLink()) throw piFailure('Pi models.json is a symbolic link');
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await file.stat();
-    if (!info.isFile() || (process.getuid && info.uid !== process.getuid()) || !privatePiMode(info.mode) || info.size > 2 * 1024 * 1024) throw piFailure();
+    if (!info.isFile()) throw piFailure('Pi models.json is not a file');
+    if (process.getuid && info.uid !== process.getuid()) throw piFailure('Pi models.json is owned by another user');
+    if (!privatePiMode(info.mode)) throw piFailure('Pi models.json is writable by every user');
+    if (info.size > 2 * 1024 * 1024) throw piFailure('Pi models.json is larger than 2 MiB');
     const text = await file.readFile('utf8');
     return { directory, path, saved: objectOrEmpty(JSON.parse(text), 'Pi models config'), text };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { directory, path, saved: {} as Record<string, unknown>, text: undefined as string | undefined };
-    throw piFailure();
+    if (error instanceof SetupRefusal) throw error;
+    throw piFailure(error instanceof SyntaxError ? 'Pi models.json is not valid JSON' : 'Pi models.json is unreadable or not a JSON object');
   } finally { await file?.close(); }
 }
 async function writePiConfig(current: Awaited<ReturnType<typeof readPiConfig>>, saved: Record<string, unknown>): Promise<Change> {
@@ -101,7 +108,7 @@ async function writePiConfig(current: Awaited<ReturnType<typeof readPiConfig>>, 
   // Re-read without following links before either backing up or replacing a
   // profile. Backups use the bytes already read, never a second symlink-following copy.
   const before = await readPiConfig({ PI_CODING_AGENT_DIR: current.directory });
-  if (before.text !== current.text) throw new Error('Pi models config changed during setup; retry without overwriting it');
+  if (before.text !== current.text) throw new SetupRefusal('Pi models config changed during setup', 'Pi models config changed during setup; retry without overwriting it');
   const suffix = `${process.pid}-${randomInt(100000, 1000000)}`;
   const temporary = `${current.path}.${suffix}.tmp`;
   let backup: string | undefined;
@@ -112,7 +119,7 @@ async function writePiConfig(current: Awaited<ReturnType<typeof readPiConfig>>, 
     }
     await writeFile(temporary, text, { mode: 0o600, flag: 'wx' });
     const latest = await readPiConfig({ PI_CODING_AGENT_DIR: current.directory });
-    if (latest.text !== current.text) throw new Error('Pi models config changed during setup; retry without overwriting it');
+    if (latest.text !== current.text) throw new SetupRefusal('Pi models config changed during setup', 'Pi models config changed during setup; retry without overwriting it');
     await rename(temporary, current.path);
     return { changed: true, backup };
   } finally { await rm(temporary, { force: true }); }
@@ -135,17 +142,17 @@ function managedPiModel(model: Record<string, unknown>) {
 }
 function piModels(provider: Record<string, unknown>) {
   if (provider.models === undefined) return [] as Record<string, unknown>[];
-  if (!Array.isArray(provider.models) || provider.models.some(model => !model || typeof model !== 'object' || Array.isArray(model))) throw piFailure();
+  if (!Array.isArray(provider.models) || provider.models.some(model => !model || typeof model !== 'object' || Array.isArray(model))) throw piFailure('Pi grunt provider has invalid models');
   return provider.models as Record<string, unknown>[];
 }
 export async function configurePi(port = 8788, options: PiConfigureOptions = {}): Promise<Change> {
   const env = options.env ?? process.env, current = await readPiConfig(env), providers = objectOrEmpty(current.saved.providers, 'Pi models config');
   const previous = providers.grunt;
-  if (previous !== undefined && !localPiProvider(previous)) throw new Error('An unmanaged Grunt Pi provider already exists; preserve it under another provider name before running Grunt setup');
+  if (previous !== undefined && !localPiProvider(previous)) throw new SetupRefusal('Pi has an unmanaged grunt provider', 'An unmanaged Grunt Pi provider already exists; preserve it under another provider name before running Grunt setup');
   const provider = objectOrEmpty(previous, 'Grunt Pi provider'), models = piModels(provider), primary = models.filter(model => model.id === 'grunt');
-  if (primary.length > 1) throw piFailure();
+  if (primary.length > 1) throw piFailure('Pi grunt provider lists model grunt twice');
   if (previous !== undefined && (primary.length !== 1 || primary[0]!.name !== 'grunt')) {
-    throw new Error('An unmanaged Grunt Pi model already exists; preserve it under another provider name before running Grunt setup');
+    throw new SetupRefusal('Pi has an unmanaged grunt model', 'An unmanaged Grunt Pi model already exists; preserve it under another provider name before running Grunt setup');
   }
   const explicit = options.workingContextTokens !== undefined || env.GRUNT_WORKING_CONTEXT_TOKENS !== undefined;
   const contextWindow = piContext(env, options.workingContextTokens), generated = piProvider(port, contextWindow);
@@ -397,7 +404,7 @@ export const signupHarness = (harness: Harness, port: number, run = runHarness, 
       'On OAuth not_attempted or Retry oauth_login, wait and retry. Never repeat a dispatched OAuth click.',
       'Use only the existing Squire-connected identity. Never type secrets or select payment, an upgrade or billing changes.',
       'Accept required provider Terms of Service for this free signup. Stop if a terms control also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.',
-      'Stop on refusal. For verification only the person can do, call operate_share, then resume operate_drive if the person finishes.',
+      'Stop on refusal, and stop when a step needs the person (SMS, passkey or another verification Squire cannot do): no one is watching this browser.',
       'Capture any requested key directly into the Squire vault with operate_extract store. If no value is found, pass capture {store, source: {role: "textbox" or "code", name}} for the revealed key field; if storage is unresolved, retry with the returned capture write_id. Never read or return a raw secret. Report only whether Squire completed.',
       'When operate_drive returns status complete, Squire has already stored any requested key in the vault: stop calling tools and report completion. Use operate_extract only when Squire says a key was not stored.'
     ].join('\n');

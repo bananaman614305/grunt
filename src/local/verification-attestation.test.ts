@@ -7,12 +7,11 @@ const input = { service: 'groq', plan: 'free', project_name: 'grunt', category: 
 
 it.each(['low_confidence', 'no_progress', 'needs_value', 'stuck'])('finishes uncertain %s signup without asking when a key was captured', async status => {
   const squire = new BrowserSquire();
-  const handoff = vi.spyOn(squire, 'humanHandoff');
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([{ service: 'groq', reference: 'vault://test', field_names: ['api_key'] }]);
   const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
     ? { status, session_id: 'owned-tab', options: { DONE: 'The goal is complete' } } : {});
   await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'completed' } });
-  expect(handoff).not.toHaveBeenCalled();
+  expect(call.mock.calls.some(([name]) => name === 'operate_share')).toBe(false);
   expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'owned-tab', outcome: 'result', summary: 'grunt provider key stored in user vault' });
   expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(1);
   await squire.close();
@@ -22,12 +21,11 @@ it.each(['low_confidence', 'no_progress', 'needs_value', 'stuck', 'failed'])('sk
   const squire = new BrowserSquire();
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
   const log = vi.spyOn(console, 'log');
-  const handoff = vi.spyOn(squire, 'humanHandoff');
   const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
     ? { status, field: 'email verification', session_id: 'owned-tab', options: { DONE: 'The goal is complete' } } : {});
   await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'dropped' } });
   expect(log).not.toHaveBeenCalled();
-  expect(handoff).not.toHaveBeenCalled();
+  expect(call.mock.calls.some(([name]) => name === 'operate_share')).toBe(false);
   expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'owned-tab', outcome: 'none' });
   await squire.close();
 });

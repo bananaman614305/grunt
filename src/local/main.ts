@@ -148,25 +148,32 @@ export function start(env = process.env) {
   const diagnosticReady = DiagnosticsStore.open({ directory, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
   const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
 
+  // The route the background pass is signing up shows as connecting in status.
+  let opening: string | undefined;
   const reconcile = () => {
     sources.preparing.clear();
     for (const id of sources.pending) sources.preparing.add(id);
+    if (opening && sources.sources.some(source => source.id === opening)) sources.preparing.add(opening);
   };
+  // Foreground setup ends at its first working route and leaves the remaining
+  // signups to the route pass, which cannot start while setup holds its session.
+  let foreground = false;
   // Serialize snapshots so an older filesystem read cannot overwrite a newer
   // provider release while requests and registry checks run concurrently.
   let sessionRead: Promise<unknown> = Promise.resolve();
   const refreshSession = () => {
     const result = sessionRead.then(async () => {
       const session = await readSetupSession(directory);
+      const released = foreground && !session?.owned.size;
+      foreground = Boolean(session?.owned.size);
       // Setup owns the Kilo route while it runs; afterwards keep the verified one.
       anonymousKilo = session?.owned.has('kilo') ? session.anonymousKilo === true : await readKiloRoute(directory) === 'anonymous';
       sources.pending.clear();
       for (const id of session?.pending ?? []) if (sources.sources.some(source => source.id === id)) sources.pending.add(id);
       sources.verifying.clear();
       for (const id of session?.verifying ?? []) if (sources.pending.has(id)) sources.verifying.add(id);
-      sources.approvals.clear();
-      for (const id of session?.approvals ?? []) if (sources.pending.has(id)) sources.approvals.add(id);
       reconcile();
+      if (released) triggerRecovery();
       return session;
     });
     sessionRead = result.catch(() => {});
@@ -202,6 +209,7 @@ export function start(env = process.env) {
       const { signupDriver } = await import('./harnesses.js');
       return signupDriver(port, { routed: drivable.some(Boolean), openCode: (await readDataSharingConsent(directory, ['opencode'])).includes('opencode') });
     },
+    opening: id => { opening = id; reconcile(); },
     notify: console.error });
   // Account acquisition is distinct from registry refresh, dispatch and daily
   // access maintenance. Read the explicit operator policy once at startup.

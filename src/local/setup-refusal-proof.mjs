@@ -16,7 +16,6 @@ await writeFile(hook, `
 import { BrowserSquire, FreeLLMAdmin } from ${JSON.stringify(setupUrl)};
 BrowserSquire.prototype.connect = async () => {};
 BrowserSquire.prototype.close = async () => {};
-BrowserSquire.prototype.humanHandoff = async () => 'https://approval.test/sms';
 BrowserSquire.prototype.call = async function(name, args) {
   if (process.env.GRUNT_PROOF_CASE.startsWith('admin')) {
     if (name === 'list_credentials') return { credentials: [{ service: ' MILO-FREELLMAPI-ADMIN ', reference: 'admin', field_names: ['password', 'encryption_key'] }] };

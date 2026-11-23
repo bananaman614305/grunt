@@ -76,8 +76,6 @@ export class Sources {
   readonly pending = new Set<string>();
   // An exact-ID setup probe may run without admitting that source to the pool.
   readonly verifying = new Set<string>();
-  // Foreground approval metadata contains adapter IDs only, never handoff URLs.
-  readonly approvals = new Set<string>();
   constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs = FIRST_OUTPUT_MS) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
     this.observation = new SourceStatus(sources.map(source => source.id), routing?.now, {
@@ -186,7 +184,7 @@ export class Sources {
   status(): PoolSnapshot {
     const router = this.registeredRouter;
     const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
-      retired: id => this.retired(id), pending: this.pending, verifying: this.verifying, approvals: this.approvals, preparing: this.preparing,
+      retired: id => this.retired(id), pending: this.pending, verifying: this.verifying, preparing: this.preparing,
       ...(this.router ? { listed: (id: string) => this.router!.listed(id) } : {}),
       ...(router ? { cooldown: (id: string) => router.cooldown(id) } : {}),
       model: id => {
@@ -226,7 +224,7 @@ export class Sources {
     if (!source) return { outcome: 'deferred', code: 'not_installed' };
     const eligible = (): MaintenanceResult | undefined => {
       if (this.disabledModels.has(id) || this.router && !this.router.listed(id)) return { outcome: 'deferred', code: 'not_installed' };
-      if (this.pending.has(id) || this.verifying.has(id) || this.approvals.has(id)) return { outcome: 'deferred', code: 'foreground' };
+      if (this.pending.has(id) || this.verifying.has(id)) return { outcome: 'deferred', code: 'foreground' };
       const snapshot = this.status(), state = snapshot.sources.find(source => source.id === id)!;
       if (state.active || this.checking.has(id)) return { outcome: 'deferred', code: 'busy' };
       if (state.retryAt !== undefined && state.retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt: state.retryAt };

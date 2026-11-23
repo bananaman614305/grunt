@@ -360,7 +360,6 @@ export class SourceStatus {
     disabled: ReadonlySet<string>;
     pending: ReadonlySet<string>;
     verifying: ReadonlySet<string>;
-    approvals: ReadonlySet<string>;
     preparing: ReadonlySet<string>;
     listed?: (id: string) => boolean;
     retired?: (id: string) => boolean;
@@ -375,7 +374,7 @@ export class SourceStatus {
         ...(entry.lastSuccessAt !== undefined ? { lastSuccessAt: entry.lastSuccessAt } : {}) };
       const cooldown = options.cooldown?.(id);
       if (options.disabled.has(id) || options.listed && !options.listed(id)) row.state = 'disabled';
-      else if (options.pending.has(id)) row.state = options.verifying.has(id) ? 'verifying' : options.approvals.has(id) ? 'approval' : 'connecting';
+      else if (options.pending.has(id)) row.state = options.verifying.has(id) ? 'verifying' : 'connecting';
       else if (entry.active) row.state = 'answering';
       else if (cooldown !== undefined && cooldown.until > now) {
         row.state = cooldown.code === 'quota' ? 'limited' : cooldown.until === Infinity ? 'unavailable' : 'error';

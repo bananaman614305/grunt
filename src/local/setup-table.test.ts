@@ -97,10 +97,10 @@ it('keeps one table in place through a full setup run with interleaved output', 
       console.log(`squire chatter for ${id}`);
       process.stderr.write(`grunt setup: ${id}: debug\n`);
       if (id === 'zro') await withTerminal(async () => {
-        console.log('Verify zro in your browser: https://h.test/zro');
+        console.log('[sudo] password for grunt:');
         // A row changes while the prompt is still open.
         await options.onSettled?.('zro', true);
-        console.log('Finished verifying zro? yes');
+        console.log('tmux installed');
       });
       await options.onSettled?.(id, id !== 'nous', id === 'nous' ? 'needs Nous login' : undefined);
     }
@@ -112,6 +112,9 @@ it('keeps one table in place through a full setup run with interleaved output', 
     loadRegistry: vi.fn(async () => ({ registry: { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(adapter => ids.includes(adapter.id)) }, origin: 'remote' as const })),
     approveDataSharing: vi.fn(async options => { options.notice?.('Data sharing on: nous. Off: GRUNT_SETUP_NO_DATA_SHARING=1'); return { approved: ids, skipped: [] }; }),
     installService: vi.fn(async () => {}), checkService: vi.fn(async () => {}),
+    // Grunt answers only once zro is ready, so three signups run under the table.
+    smokeTest: vi.fn<(port: number, signal: AbortSignal) => Promise<void>>().mockRejectedValueOnce(new Error('quota exhausted')).mockRejectedValueOnce(new Error('quota exhausted')).mockResolvedValue(),
+    resumeBackground: vi.fn(async () => {}),
     checkServiceSources: vi.fn(async () => {}), checkFallbackServices: vi.fn(async () => {}),
     connectHarnesses: vi.fn(async () => []), setupFallbacks: signups,
     chooseHarness: vi.fn(async () => HARNESSES[0]!), connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })),
@@ -120,7 +123,7 @@ it('keeps one table in place through a full setup run with interleaved output', 
   const text = screen.text();
   const at = (pattern: RegExp) => text.findIndex(line => pattern.test(line));
   const steps = [/^✓ harness: pi$/, /^✓ data sharing: on for nous\. Off: GRUNT_SETUP/, /^✓ local service: running on port \d+$/,
-    /^✓ model: grunt \(kilo anonymous\)$/, /^✓ Trusty Squire: already set up and signed in, s/];
+    /^✓ model: grunt \(kilo anonymous\)$/];
   const positions = steps.map(at);
   expect(positions.every(position => position >= 0)).toBe(true);
   expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -132,17 +135,18 @@ it('keeps one table in place through a full setup run with interleaved output', 
   // The rows sit directly under the header with nothing between them.
   expect(text.slice(header + 1, header + 5)).toEqual([
     expect.stringMatching(/^kilo\s+✓ ready · operator$/), expect.stringMatching(/^zro\s+✓ ready$/),
-    expect.stringMatching(/^pollinations\s+✓ ready$/), expect.stringMatching(/^nous\s+needs you \(Nous login\)$/)
+    expect.stringMatching(/^pollinations\s+✓ ready$/), expect.stringMatching(/^nous\s+background$/)
   ]);
-  // The browser handoff printed while the table was paused, above the table.
-  expect(at(/^Verify zro in your browser/)).toBeLessThan(header);
-  expect(at(/^Finished verifying zro\? yes$/)).toBe(at(/^Verify zro in your browser/) + 1);
+  // A terminal prompt printed while the table was paused, above the table.
+  expect(at(/^\[sudo\] password for grunt:$/)).toBeLessThan(header);
+  expect(at(/^tmux installed$/)).toBe(at(/^\[sudo\] password for grunt:$/) + 1);
   // Output held during signups prints above the table at a pause, or below it
   // once the table is final. Each line appears once.
-  for (const id of ids.slice(1)) expect(text.filter(line => line === `grunt setup: ${id}: debug`)).toHaveLength(1);
+  for (const id of ['pollinations', 'zro']) expect(text.filter(line => line === `grunt setup: ${id}: debug`)).toHaveLength(1);
+  // Setup ends once grunt answers; nous continues in the background.
+  expect(text.some(line => /nous: debug/.test(line))).toBe(false);
   const after = text.slice(header + 5);
-  expect(after.slice(0, 2)).toEqual(['squire chatter for nous', 'grunt setup: nous: debug']);
-  expect(after.slice(-2)).toEqual(['3 ready; needs you: nous', 'Ready']);
+  expect(after.join('')).toBe('✓ Trusty Squire: already set up and signed in, skipped3 ready; 1 more continue in the background (usegrunt status)Ready');
 });
 
 it('holds a line written between two redraws instead of leaving a second header', () => {
@@ -171,4 +175,45 @@ it('keeps row updates during a prompt and draws them once the prompt ends', asyn
   table.set('source', 'zro', '✓ ready');
   table.finish();
   expect(screen.text()).toEqual(['Verify zro in your browser', 'Finished verifying zro? yes', 'name status', 'kilo ✓ ready', 'zro  ✓ ready']);
+});
+
+it('swallows arrow keys while live, hands stdin to a prompt, and keeps Ctrl+C', async () => {
+  const { EventEmitter } = await import('node:events');
+  const screen = new Screen(50);
+  const keys = Object.assign(new EventEmitter(), { isTTY: true, setRawMode: vi.fn(), resume: vi.fn(), pause: vi.fn() });
+  const table = new SetupTable(screen, { live: false, capture: [screen], input: keys as unknown as NodeJS.ReadStream });
+  table.set('source', 'kilo', 'connecting');
+  table.start();
+  expect(keys.setRawMode.mock.calls).toEqual([[true]]);
+  // Raw mode: the terminal does not echo ^[OA or ^[[B into the table.
+  keys.emit('data', Buffer.from('\x1bOA\x1b[B'));
+  expect(screen.text()).toEqual(['name status', 'kilo connecting']);
+  // A prompt owns stdin in cooked mode, then the table takes it back.
+  await withTerminal(async () => { expect(keys.setRawMode.mock.calls).toEqual([[true], [false]]); expect(keys.listenerCount('data')).toBe(0); });
+  expect(keys.setRawMode.mock.calls).toEqual([[true], [false], [true]]);
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+  keys.emit('data', Buffer.from([3]));
+  expect(kill).toHaveBeenCalledWith(process.pid, 'SIGINT');
+  expect(keys.setRawMode.mock.calls.at(-1)).toEqual([false]);
+  table.finish();
+  expect(keys.setRawMode.mock.calls).toEqual([[true], [false], [true], [false]]);
+  expect(keys.listenerCount('data')).toBe(0);
+  expect(screen.text()).toEqual(['name status', 'kilo connecting']);
+});
+
+it('ignores keys during the steps before the table appears and restores the terminal at the end', async () => {
+  const { EventEmitter } = await import('node:events');
+  const screen = new Screen(50);
+  const keys = Object.assign(new EventEmitter(), { isTTY: true, setRawMode: vi.fn(), resume: vi.fn(), pause: vi.fn() });
+  const table = new SetupTable(screen, { live: false, capture: [screen], input: keys as unknown as NodeJS.ReadStream });
+  table.captureKeys();
+  expect(keys.setRawMode.mock.calls).toEqual([[true]]);
+  keys.emit('data', Buffer.from('\x1bOA'));
+  // Setup can end before the table is ever shown; the terminal is still restored.
+  table.finish();
+  expect(keys.setRawMode.mock.calls).toEqual([[true], [false]]);
+  expect(keys.pause).toHaveBeenCalledOnce();
+  expect(keys.listenerCount('data')).toBe(0);
+  table.captureKeys();
+  expect(keys.setRawMode).toHaveBeenCalledTimes(2);
 });

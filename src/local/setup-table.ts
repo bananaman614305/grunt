@@ -1,6 +1,7 @@
 import { observeTerminal } from './terminal.js';
 
 type Output = Pick<NodeJS.WriteStream, 'write' | 'isTTY'> & { columns?: number };
+type Input = Pick<NodeJS.ReadStream, 'isTTY' | 'setRawMode' | 'resume' | 'pause' | 'on' | 'off'>;
 type Stream = Pick<NodeJS.WriteStream, 'write'>;
 type Write = NodeJS.WriteStream['write'];
 
@@ -18,6 +19,8 @@ export interface SetupTableOptions {
   // Streams whose other writes are held while the table is live, so nothing
   // lands between two redraws. Defaults to stdout and stderr for stdout.
   capture?: Stream[];
+  // Keys pressed while the table is live. Defaults to stdin for stdout.
+  input?: Input;
 }
 
 // One terminal region for setup. Pipes receive each completed row once.
@@ -34,9 +37,13 @@ export class SetupTable {
   private stopObserving: (() => void) | undefined;
   private paused = false;
   private done = false;
+  private input: Input | undefined;
+  private raw = false;
+  private stopKeys: (() => void) | undefined;
   constructor(private output: Output = process.stdout, options: SetupTableOptions = {}) {
     this.live = options.live ?? true;
     this.capture = options.capture ?? (output === process.stdout ? [process.stdout, process.stderr] : []);
+    this.input = options.input ?? (output === process.stdout ? process.stdin : undefined);
     const write = output.write;
     this.write = text => { write.call(output, text); };
   }
@@ -73,7 +80,36 @@ export class SetupTable {
         this.draw();
       }
     });
+    this.captureKeys();
     if (!this.paused) this.draw();
+  }
+  // From now until finish(), keys pressed on the terminal are read and ignored
+  // instead of echoing into setup's output. A prompt that owns the terminal
+  // gets stdin back in its normal mode.
+  captureKeys() {
+    if (this.stopKeys || this.done || !this.output.isTTY) return;
+    this.stopKeys = observeTerminal(busy => { if (busy) this.release(); else this.listen(); });
+  }
+  // A key pressed in cooked mode echoes into setup's output (an arrow key prints
+  // ^[OA). Read keys in raw mode and ignore them; Ctrl+C still interrupts setup.
+  private key = (data: Buffer) => {
+    if (!data.includes(3)) return;
+    this.release();
+    process.kill(process.pid, 'SIGINT');
+  };
+  private listen() {
+    if (this.raw || !this.input?.isTTY) return;
+    this.input.setRawMode(true);
+    this.raw = true;
+    this.input.on('data', this.key);
+    this.input.resume();
+  }
+  private release() {
+    if (!this.raw || !this.input) return;
+    this.input.off('data', this.key);
+    this.input.setRawMode(false);
+    this.input.pause();
+    this.raw = false;
   }
   // A setup step that happens while the table is live: one status line inside
   // the table region. Before start() it is a plain line.
@@ -85,6 +121,9 @@ export class SetupTable {
   }
   // Draw the final table and print anything held while it was live.
   finish() {
+    // Keys go back to the terminal even when the table never went live.
+    this.stopKeys?.();
+    this.release();
     if (!this.live || this.done) return;
     this.done = true;
     if (!this.output.isTTY) return;

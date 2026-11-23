@@ -18,6 +18,10 @@ it.each([[false, false], [false, true], [true, false], [true, true]])('runs the 
   vi.stubEnv('GRUNT_CONFIG_DIR', directory);
   const inputTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
   Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: tty });
+  // A terminal stdin can switch to raw mode; the live table uses it to swallow keys.
+  const rawMode = Object.getOwnPropertyDescriptor(process.stdin, 'setRawMode');
+  const setRawMode = vi.fn(() => process.stdin);
+  if (tty) Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: setRawMode });
   // Use a property override because Node exposes isTTY differently on pipes.
   const oldTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
   Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: tty });
@@ -68,8 +72,12 @@ it.each([[false, false], [false, true], [true, false], [true, true]])('runs the 
       expect(output).toContain(keyWorks ? '✓ ready' : 'skipped (key test failed)');
       expect(output.endsWith('Ready\n')).toBe(true);
       expect(output).not.toMatch(/disclosure|personally|confirm|goal|approval|dashboard/i);
+      // Raw mode while the table is live, and the terminal is restored afterwards.
+      expect(setRawMode.mock.calls).toEqual([[true], [false]]);
     }
   } finally {
+    if (rawMode) Object.defineProperty(process.stdin, 'setRawMode', rawMode);
+    else Reflect.deleteProperty(process.stdin, 'setRawMode');
     if (inputTTY) Object.defineProperty(process.stdin, 'isTTY', inputTTY);
     else Reflect.deleteProperty(process.stdin, 'isTTY');
     if (oldTTY) Object.defineProperty(process.stdout, 'isTTY', oldTTY);

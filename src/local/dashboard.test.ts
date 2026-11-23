@@ -83,11 +83,9 @@ it('does not claim a source is ready while status is disconnected or stale', () 
     expect(view).not.toContain('✓ Ready'); expect(view).not.toContain('→ Answering');
   }
 });
-it('shows safe approval overlays and gives passive setup views no fake keyboard controls', () => {
-  const view = renderDashboard(snapshot(), { width: 100, now, approvals: ['perch'], setup: true, interactive: false });
-  expect(view).toContain('! Approval'); expect(view).toContain('Perch');
-  expect(view).toContain('Complete the Trusty Squire prompt');
-  expect(view).toContain('Keep this terminal open'); expect(view).not.toContain('q close'); expect(view).not.toContain('d to show');
+it('gives passive views no fake keyboard controls', () => {
+  const view = renderDashboard(snapshot(), { width: 100, now, interactive: false });
+  expect(view).toContain('Live view: usegrunt status --watch'); expect(view).not.toContain('q close'); expect(view).not.toContain('d to show');
 });
 it('strips terminal control sequences in registry metadata and rejects unsafe identifiers', () => {
   const data = snapshot(); data.sources[0]!.model = '\u001b[2Jowned\n\u001b]0;bad title\u0007';
