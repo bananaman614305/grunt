@@ -34,7 +34,12 @@ const adminAssets = async (name: 'index.html' | 'admin.js' | 'admin.css' | 'grun
     return readFile(new URL(icon ? `../site/${name}` : `../site/admin/${name}`, import.meta.url), 'utf8');
   }
 };
-const app = relay.app.route('/', adminRoutes(adminStore, { ready: adminReady, assets: adminAssets })).route('/', registryRoutes(registryStore ? { store: registryStore } : {})).route('/', agentRoutes(agent));
+const registry = registryRoutes(registryStore ? { store: registryStore } : {});
+if (registryStore) {
+  try { await registry.initialize(); }
+  catch { console.error('grunt registry initialization is unavailable.'); }
+}
+const app = relay.app.route('/', adminRoutes(adminStore, { ready: adminReady, assets: adminAssets })).route('/', registry).route('/', agentRoutes(agent));
 const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`grunt is listening on port ${port}. Open /chat.`));
 let stopping = false;
 async function stop() {

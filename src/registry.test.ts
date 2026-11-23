@@ -112,7 +112,7 @@ it('ignores unknown adapter code and starts a route pass after every sync, chang
   expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
   await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
 });
-it('serves only manually published registry data with conditional requests', async () => {
+it('serves persisted registry data with conditional requests', async () => {
   const path = join(await directory(), 'published.json');
   const app = registryRoutes(path);
   expect((await app.request('/v1/registry')).status).toBe(503);
@@ -124,15 +124,6 @@ it('serves only manually published registry data with conditional requests', asy
   await writeFile(path, JSON.stringify({ ...bundledRegistry, published: '2026-11-12T00:00:00Z' }));
   expect((await app.request('/v1/registry', { headers: { 'If-None-Match': etag } })).status).toBe(200);
   await writeFile(path, 'bad'); expect((await app.request('/v1/registry')).status).toBe(503);
-});
-it('restricts publication to write-access dispatch on main in the public repo and validates before uploading', async () => {
-  const workflow = await readFile('.github/workflows/registry.yml', 'utf8');
-  expect(workflow).toContain('workflow_dispatch:');
-  expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
-  expect(workflow).not.toContain('github.actor == github.repository_owner');
-  expect(workflow).toContain('github.event.repository.private == false');
-  expect(workflow).toContain("github.ref == 'refs/heads/main'");
-  expect(workflow.indexOf('dist/registry.js')).toBeLessThan(workflow.indexOf('flyctl ssh'));
 });
 
 it('reaches the published Fly registry if the custom domain fails', async () => {

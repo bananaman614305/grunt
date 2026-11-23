@@ -1511,6 +1511,12 @@ weights total (0.2) when both tiers are present. Unknown adapter identifiers
 are ignored locally and cannot install new code. `registry/adapters.json` is the
 list bundled with each release.
 
+On startup, a missing registry file is seeded from the bundled registry through
+that same serialized, validated and audited commit path, with a publication
+newer than the bundle. An existing file is preserved, including an invalid file
+that needs repair through a writer's PUT. The former registry publication
+workflow has been removed; ongoing updates use the write API.
+
 The daemon synchronizes on startup and on the
 [router loop schedule](router.md#3-slow-loop-hot-add-and-scout-mapping) with
 If-None-Match. It tries `https://api.grunt.run/v1/registry` first and falls back

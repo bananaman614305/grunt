@@ -143,7 +143,7 @@ export interface SetupSquire {
     list(): Promise<Credential[]>;
     grant(reference: string): Promise<{ base_url: string; token: string }>;
   };
-  runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string }> };
+  runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string }>; timeout?(id: string): Promise<void> };
 }
 export class SetupPending extends Error {}
 export class SetupFailure extends Error {}
@@ -173,6 +173,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
         if (run.approval_url || state === 'awaiting_approval') { state = 'dropped'; break; }
         if (!['completed', 'dropped', 'failed', 'rejected'].includes(state)) await delay(1000);
       }
+      if (!['completed', 'failed', 'rejected', 'dropped'].includes(state)) await squire.runs.timeout?.(result.run.id);
       if (state === 'failed' || state === 'rejected') throw setupStopped(`Squire could not provision ${provider}; setup stopped`, reason);
       if (state !== 'completed') { drop(provider, reason); continue; }
       credential = await find();
@@ -456,8 +457,7 @@ export class BrowserSquire implements SetupSquire {
         if (result.run.state === 'completed') return;
         if (result.run.state !== 'running') throw new SetupFailure(result.reason ?? 'browser could not continue');
       }
-      const id = registryEntry(this.options.registry?.() ?? bundledRegistry, service, url)?.id ?? service;
-      this.options.signedUp?.(id, false);
+      await this.runs.timeout(service, url);
       throw new Error(`${service}: signup timed out; rerun setup to resume`);
     } finally { this.signupFacts.delete(service); await this.finishSession(service); }
   }
@@ -751,6 +751,13 @@ export class BrowserSquire implements SetupSquire {
     return latest;
   }
   runs = {
+    timeout: async (provider: string, url = PROVIDERS[provider]) => {
+      if (!this.serviceSignal(provider).aborted) {
+        const id = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.id ?? provider;
+        this.options.signedUp?.(id, false);
+      }
+      await this.finishSession(provider);
+    },
     start: async (input: ProvisionInput) => this.drive(input.service as Provider),
     get: async (id: string) => { const result = await this.drive(id as Provider); return { state: result.run.state, ...(result.approval_url ? { approval_url: result.approval_url } : {}), ...(result.reason ? { reason: result.reason } : {}) }; }
   };

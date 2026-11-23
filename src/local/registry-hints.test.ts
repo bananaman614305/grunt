@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { BrowserSquire, squireStore } from './setup.js';
+import { BrowserSquire, setupProviders, squireStore } from './setup.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 
@@ -151,4 +151,23 @@ it.each([
 ])('preserves the existing vault contract for %s', async (service, label, host) => {
   const [drive] = await driveCalls(service, `https://${host}/`);
   expect(drive!.store).toEqual({ service, label, api_hosts: [host], auth_shape: 'bearer' });
+});
+
+
+it.each(['zro', 'tokenharbor', 'runcrate', 'nvidia'])('counts one failed signup when %s legacy polling times out', async provider => {
+  let clock = 0, drives = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  const signedUp = vi.fn(), squire = new BrowserSquire({ background: true, signedUp });
+  const call = vi.spyOn(squire, 'call').mockImplementation(async name => {
+    if (name === 'list_credentials') return { credentials: [] };
+    if (name !== 'operate_drive') return {};
+    if (++drives === 2) clock = 120001;
+    return { status: 'needs_human', session_id: 'synthetic-session' };
+  });
+  const addGrant = vi.fn();
+  const result = await setupProviders(squire, { addGrant }, { providers: [provider], notify: () => {}, reuseSaved: false });
+  expect(result.dropped).toEqual([provider]);
+  expect(signedUp.mock.calls).toEqual([[provider, false]]);
+  expect(call).toHaveBeenCalledWith('operate_finish', expect.objectContaining({ session_id: 'synthetic-session' }));
+  expect(addGrant).not.toHaveBeenCalled();
 });

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 
-it("tracks only the root app, operator tools, proof adapters, static site, registry, configuration and six workflows", () => {
+it("tracks only the root app, operator tools, proof adapters, static site, registry, configuration and five workflows", () => {
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
   const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/efficiency.md", "docs/router.md", "docs/antseed-vikey-provisioning.md", "docs/providers/freepi.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/kilo.mjs", "proof/add-url.mjs", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
   const operatorFiles = new Set([
@@ -29,10 +29,9 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
   files.add("scripts/verification-benchmark.ts");
   for (const path of ["docs/efficiency-round3-results.md", "docs/efficiency-empirical-results.md", "docs/passive-efficiency.md", "scripts/metadata-benchmark.ts", "scripts/routing-replay-benchmark.ts", "scripts/passive-efficiency-collector.py", "scripts/test_passive_efficiency_collector.py"]) files.add(path);
   expect(paths.length).toBeGreaterThan(15);
-  for (const path of paths) expect(files.has(path) || operatorFiles.has(path) || path.startsWith("src/") || path.startsWith("site/") || path === "proof/fake.mjs" || [".github/workflows/check.yml", ".github/workflows/ci.yml", ".github/workflows/deploy.yml", ".github/workflows/publish.yml", ".github/workflows/registry.yml", ".github/workflows/site.yml"].includes(path), path).toBe(true);
+  for (const path of paths) expect(files.has(path) || operatorFiles.has(path) || path.startsWith("src/") || path.startsWith("site/") || path === "proof/fake.mjs" || [".github/workflows/check.yml", ".github/workflows/ci.yml", ".github/workflows/deploy.yml", ".github/workflows/publish.yml", ".github/workflows/site.yml"].includes(path), path).toBe(true);
   expect(paths).toContain("src/server.ts");
   expect(paths).toContain("registry/adapters.json");
-  expect(paths).toContain(".github/workflows/registry.yml");
 });
 
 it("packages usegrunt with the primary command and compatibility aliases", () => {

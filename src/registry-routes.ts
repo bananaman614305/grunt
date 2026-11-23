@@ -26,6 +26,28 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
   // A write rebases on the bundled list when the published file is missing or invalid.
   const current = () => published().catch(() => structuredClone(bundledRegistry));
   let writing: Promise<unknown> = Promise.resolve();
+  const serialized = <T>(operation: () => Promise<T>) => {
+    const run = writing.then(operation);
+    writing = run.catch(() => {});
+    return run;
+  };
+  const publish = async (registry: Registry, login: string, base?: Registry, id?: string) => {
+    if (!store) throw new Error('Registry writes are unavailable');
+    const next = validateRegistry(registry);
+    const temporary = join(dirname(path), `registry.${randomUUID()}.tmp`);
+    const find = (document: Registry | undefined, key: string) => document?.adapters.find(entry => entry.id === key) ?? document?.candidates?.find(entry => entry.id === key);
+    const ids = id ? [id] : [...next.adapters, ...(next.candidates ?? [])].map(entry => entry.id);
+    try {
+      await writeFile(temporary, JSON.stringify(next), { mode: 0o600, flag: 'wx' });
+      for (const key of ids) await store.recordWrite(login, key, find(base, key), find(next, key));
+      await rename(temporary, path);
+    } finally { await rm(temporary, { force: true }); }
+  };
+  const initialize = () => serialized(async () => {
+    try { await readFile(path); return; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    await publish({ ...structuredClone(bundledRegistry), published: new Date(Math.max(now(), Date.parse(bundledRegistry.published) + 1)).toISOString() }, 'system');
+  });
   const app = new Hono();
   app.get('/v1/registry', async c => {
     try {
@@ -47,20 +69,13 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     const writer = await githubWriter(token, { repo, ...(config.fetcher ? { fetcher: config.fetcher } : {}) });
     if ('status' in writer) return c.json({ error: writer.status === 401 ? 'GitHub rejected the token' : writer.status === 403 ? `The token's account cannot push to ${repo}` : 'GitHub is unavailable' }, writer.status);
     // One write at a time on this single machine; each rebases on the last.
-    const run = writing.then(async () => {
+    const run = serialized(async () => {
       const base = await current();
       const result = change(base, now());
       if ('errors' in result) return result;
-      const temporary = join(dirname(path), `registry.${randomUUID()}.tmp`);
-      try {
-        await writeFile(temporary, JSON.stringify(result.registry), { mode: 0o600, flag: 'wx' });
-        const find = (registry: Registry) => registry.adapters.find(entry => entry.id === id) ?? registry.candidates?.find(entry => entry.id === id);
-        await store.recordWrite(writer.login, id, find(base), find(result.registry));
-        await rename(temporary, path);
-      } finally { await rm(temporary, { force: true }); }
+      await publish(result.registry, writer.login, base, id);
       return result;
     });
-    writing = run.catch(() => {});
     try {
       const result = await run;
       if ('errors' in result) return c.json({ errors: result.errors }, result.status);
@@ -102,5 +117,5 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     c.header('Cache-Control', 'public, max-age=0, must-revalidate');
     return c.body(registryInstructions({ registry, scores, base, repo, now: at, ...(commit ? { commit } : {}) }));
   });
-  return app;
+  return Object.assign(app, { initialize });
 }

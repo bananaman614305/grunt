@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createClient } from '@libsql/client';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ADAPTER_FIELDS, CANDIDATE_FIELDS, HINTS_MAX, TIER_TOTALS, bundledRegistry, installers, validateRegistry } from './registry.js';
@@ -303,4 +303,49 @@ it.each([
   expect(github).not.toHaveBeenCalled();
   expect(await api.store.writes()).toEqual([]);
   expect((await api.client.execute('SELECT * FROM registry_feedback')).rows).toEqual([]);
+});
+
+
+it('seeds a missing registry once through audited publication and preserves later API writes', async () => {
+  const api = await server({ start: Date.parse(bundledRegistry.published) - 1000 });
+  await Promise.all([api.app.initialize(), api.app.initialize()]);
+  const seeded = await api.registry();
+  expect(seeded.adapters).toEqual(bundledRegistry.adapters);
+  expect(Date.parse(seeded.published)).toBeGreaterThan(Date.parse(bundledRegistry.published));
+  expect(validate097(seeded)).toEqual(seeded);
+  expect((await stat(api.path)).mode & 0o777).toBe(0o600);
+  const writes = await api.store.writes();
+  const entries = [...bundledRegistry.adapters, ...(bundledRegistry.candidates ?? [])];
+  expect(writes).toHaveLength(entries.length);
+  for (const entry of entries) {
+    const write = writes.find(row => row.id === entry.id)!;
+    expect(write.login).toBe('system');
+    expect(write.before_json).toBeNull();
+    expect(JSON.parse(write.after_json!)).toEqual(entry);
+  }
+  expect((await api.request('PUT', '/v1/registry/entries/newco', { signup: 'https://newco.example/', hints: 'Press Sign up.' }, tokens.owner)).status).toBe(200);
+  const updated = await api.registry();
+  const restarted = registryRoutes({ path: api.path, store: api.store });
+  await restarted.initialize();
+  expect(await (await restarted.request('/v1/registry')).json()).toEqual(updated);
+  expect(await api.store.writes()).toHaveLength(entries.length + 1);
+});
+
+it('does not publish a startup seed when its audit fails', async () => {
+  const api = await server();
+  vi.spyOn(api.store, 'recordWrite').mockRejectedValueOnce(new Error('database unavailable'));
+  await expect(api.app.initialize()).rejects.toThrow('database unavailable');
+  expect((await api.request('GET', '/v1/registry')).status).toBe(503);
+  await expect(readFile(api.path)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await api.store.writes()).toEqual([]);
+});
+
+it('leaves an existing invalid registry for an authenticated writer to repair', async () => {
+  const api = await server({ published: 'invalid' });
+  await api.app.initialize();
+  expect(await readFile(api.path, 'utf8')).toBe('invalid');
+  expect(await api.store.writes()).toEqual([]);
+  expect((await api.request('GET', '/v1/registry')).status).toBe(503);
+  expect((await api.request('PUT', '/v1/registry/entries/zro', entry('zro'), tokens.owner)).status).toBe(200);
+  expect((await api.registry()).adapters.find(adapter => adapter.id === 'zro')?.hints).toBe(entry('zro').hints);
 });
