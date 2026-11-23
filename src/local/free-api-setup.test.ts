@@ -268,3 +268,83 @@ it('cancels the initial Zro readiness request without accepting a late reply or 
   expect(squire.runs.start).not.toHaveBeenCalled();
   expect(squire.credentials.list).not.toHaveBeenCalled();
 });
+
+it.each(['runcrate', 'zro', 'tokenharbor'] as const)('tries remaining %s credentials after inconclusive failures in either selection pass', async provider => {
+  for (const afterCapture of [false, true]) {
+    let captured = false;
+    const squire = {
+      credentials: {
+        list: async () => afterCapture && !captured ? [] : ['working', 'limited'].map(reference => ({ service: provider, reference, field_names: ['api_key'] })),
+        grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference })
+      },
+      runs: { start: vi.fn(async () => {
+        captured = true;
+        return { run: { id: provider, state: 'completed' }, decision: 'silent' as const };
+      }), get: vi.fn() }
+    };
+    const attempts: string[] = [];
+    const router = { addGrant: async (_provider: string, grant: { token: string }) => {
+      attempts.push(grant.token);
+      if (grant.token === 'limited') throw new SourceError('quota', 'HTTP 429');
+    } };
+    const result = await setupProviders(squire, router, { providers: [provider], reuseSaved: false, notify: () => {} });
+    expect(result.dropped).toEqual([]);
+    expect(attempts).toEqual(['limited', 'working']);
+    expect(squire.runs.start).toHaveBeenCalledTimes(afterCapture ? 1 : 0);
+  }
+});
+
+it.each(['runcrate', 'zro', 'tokenharbor'] as const)('does not provision %s after any inconclusive key failure', async provider => {
+  const quota = new SourceError('quota', 'HTTP 429');
+  const attempts: string[] = [];
+  const squire = {
+    credentials: {
+      list: async () => ['rejected', 'limited'].map(reference => ({ service: provider, reference, field_names: ['api_key'] })),
+      grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference })
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  const router = { addGrant: async (_provider: string, grant: { token: string }) => {
+    attempts.push(grant.token);
+    throw grant.token === 'limited' ? quota : rejected();
+  } };
+  await expect(setupProviders(squire, router, { providers: [provider], reuseSaved: false, notify: () => {} })).rejects.toBe(quota);
+  expect(attempts).toEqual(['limited', 'rejected']);
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it.each([true, false])('tries vaulted Zro access after local readiness reports quota (working alternative: %s)', async working => {
+  await writeZroGrant({ base_url: 'https://grant.test', token: 'local-limited' }, directory);
+  const requests: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const authorization = new Headers(init!.headers).get('authorization')!;
+    requests.push(authorization);
+    return authorization === 'Bearer working' && working
+      ? Response.json({ model: 'deepseek-v4.1-flash', choices: [{ message: { content: 'ready' } }] })
+      : new Response(null, { status: 429 });
+  });
+  const squire = {
+    credentials: {
+      list: async () => [{ service: 'zro', reference: 'vault://working', field_names: ['api_key'] }],
+      grant: async () => ({ base_url: 'https://grant.test', token: 'working' })
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  if (working) await expect(setup(() => {}, ['zro'], { directory, squire })).resolves.toEqual({});
+  else await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toMatchObject({ code: 'quota' });
+  expect(requests).toEqual(['Bearer local-limited', 'Bearer working']);
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('stops credential selection immediately on cancellation', async () => {
+  const controller = new AbortController();
+  const cancelled = new Error('setup cancelled');
+  const squire = {
+    credentials: {
+      list: async () => ['older', 'newer'].map(reference => ({ service: 'zro', reference, field_names: ['api_key'] })),
+      grant: vi.fn(async () => ({ base_url: 'https://grant.test', token: 'synthetic-grant' }))
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  const router = { addGrant: async () => { controller.abort(cancelled); throw new SourceError('quota', 'HTTP 429'); } };
+  await expect(setupProviders(squire, router, { providers: ['zro'], signal: controller.signal, reuseSaved: false, notify: () => {} })).rejects.toBe(cancelled);
+  expect(squire.credentials.grant).toHaveBeenCalledOnce();
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});

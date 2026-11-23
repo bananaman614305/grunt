@@ -175,7 +175,7 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
   } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
 }
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[] } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string) => {
@@ -184,20 +184,33 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     dropped.push(provider);
   };
   for (const provider of options.providers ?? ['groq']) {
-    if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
+    options.signal?.throwIfAborted();
+    let inconclusive: { error: unknown } | undefined;
+    const rememberFailure = (error: unknown) => {
+      options.signal?.throwIfAborted();
+      if (error instanceof SourceError && error.code === 'cancelled' || error instanceof Error && error.name === 'AbortError') throw error;
+      inconclusive ??= { error };
+    };
+    try {
+      if (await router.hasKey?.(provider)) { options.signal?.throwIfAborted(); options.notify(`${provider}: connected`); continue; }
+    } catch (error) { rememberFailure(error); }
     const matching = async () => (await squire.credentials.list()).filter(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider)).reverse();
     const connect = async (credentials: Credential[]) => {
       for (const credential of credentials) {
+        options.signal?.throwIfAborted();
         try {
           await router.addGrant(provider, await squire.credentials.grant(credential.reference));
+          options.signal?.throwIfAborted();
           options.notify(`${provider}: connected through Squire grant`);
           return true;
         } catch (error) {
           const status = rejectedStatus(error);
-          if (!status) throw error;
-          options.notify(`${provider}: saved key rejected (HTTP ${status})`);
+          if (!status) rememberFailure(error);
+          else { options.signal?.throwIfAborted(); options.notify(`${provider}: saved key rejected (HTTP ${status})`); }
         }
       }
+      options.signal?.throwIfAborted();
+      if (inconclusive) throw inconclusive.error;
       return false;
     };
     const saved = await matching();
@@ -1262,7 +1275,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: [provider], notify, reuseSaved: false });
+        }, { providers: [provider], notify, reuseSaved: false, signal: options.signal });
         if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
       } finally { await source.close(); }
       providers = providers.filter(id => id !== provider);
@@ -1278,7 +1291,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeZroGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: ['zro'], notify, reuseSaved: false });
+        }, { providers: ['zro'], notify, reuseSaved: false, signal: options.signal });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'zro');
@@ -1294,7 +1307,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeTokenHarborGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: ['tokenharbor'], notify, reuseSaved: false });
+        }, { providers: ['tokenharbor'], notify, reuseSaved: false, signal: options.signal });
         if (result.dropped.length) throw new Error('Token Harbor setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'tokenharbor');
