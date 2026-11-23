@@ -9,6 +9,12 @@ import type { RoutingHistory } from './routing-history.js';
 export class SourceError extends Error {
   constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string, public diagnostics?: SafeDiagnosticMetadata) { super(message); }
 }
+// The client sent something grunt cannot translate. This is a request problem,
+// not a source failure: it is raised before routing, so no source is tried and
+// none gets a cooldown. The API answers it with HTTP 400.
+export class RequestError extends SourceError {
+  constructor(message: string) { super('refused', message); }
+}
 export interface Message { role: string; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
@@ -58,6 +64,10 @@ export interface Source {
 // keeps the agent loop. Automatic selection skips sources that run their own
 // tools instead (OpenCode). A source the caller names explicitly stays eligible.
 export const needsFunctionTools = (request: ModelRequest) => request.tools.some(tool => tool.type === 'function');
+// Hosted or native tool types (web_search, custom, ...) that no source can run.
+// Only the type name reaches the message, and only if it looks like a plain identifier.
+export const unsupportedToolTypes = (request: ModelRequest) =>
+  [...new Set(request.tools.filter(tool => tool.type !== 'function').map(tool => /^[\w.-]{1,64}$/.test(String(tool.type)) ? String(tool.type) : 'unknown'))].slice(0, 5);
 export const toolCapable = (source: Source) => source.supportsFunctionTools === true;
 export const NO_TOOL_SOURCE = 'No tool-capable adapter is available for a request with function tools; finish setup or retry after quota resets';
 // A source that has not produced first output by this time counts as failed.
@@ -347,6 +357,12 @@ export class Sources {
       const router = this.registeredRouter;
       if (!router) throw new SourceError('not_installed', 'Subworkers need the registered free model pool');
       return router.complete({ ...request, model: 'grunt' }, signal);
+    }
+    // Automatic selection translates function tools only. Naming a source keeps
+    // that source's own behavior (OpenCode and Codex run their own tools).
+    if (request.model === 'grunt' || request.model === 'milo' || !this.sources.some(source => source.id === request.model)) {
+      const unsupported = unsupportedToolTypes(request);
+      if (unsupported.length) throw new RequestError(`Unsupported tool type${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')}. Grunt accepts function tools only; remove the hosted tool from the client (for Codex, set web_search = "disabled").`);
     }
     if (this.disabledModels.has(request.model)) throw new SourceError('refused', `${request.model} routing is disabled`);
     if (this.pending.has(request.model)) {

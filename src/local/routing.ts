@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
-import { userTurns } from './harness.js';
+import { taskTurns } from './harness.js';
 import { SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
@@ -121,7 +121,7 @@ export class StickyRouter {
     return (await exec('git', ['-C', cwd, ...args], { timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
   }
   private async createTask(request: ModelRequest): Promise<Task> {
-    const task: Task = { original: userTurns(request).at(-1) ?? '', output: '', switched: false, busy: false };
+    const task: Task = { original: taskTurns(request).at(-1) ?? '', output: '', switched: false, busy: false };
     try { task.checkpoint = await this.git(request.cwd, ['stash', 'create']) || await this.git(request.cwd, ['rev-parse', 'HEAD']); }
     catch { /* Non-git and unborn directories use prompt/output handoff only. */ }
     return task;
@@ -188,7 +188,7 @@ export class StickyRouter {
     // An explicit source selection cannot inherit an automatic binding with the
     // same user turns (or another explicitly selected source's continuation).
     const explicit = !worker && this.sources.some(source => source.id === request.model);
-    const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, userTurns(request), request.publicContext, explicit ? request.model : null])).digest('hex');
+    const key = worker ? `worker:${worker.id}` : createHash('sha256').update(JSON.stringify([cwd, taskTurns(request), request.publicContext, explicit ? request.model : null])).digest('hex');
     let task = this.tasks.get(key);
     if (!task) {
       // Reserve the task before asynchronous checkpoint creation to avoid two bindings.

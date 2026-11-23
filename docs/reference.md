@@ -314,7 +314,10 @@ working directory. It logs the chosen directory. Check it before asking for edit
 Text and function-tool turns are translated across APIs. Native Responses tools
 require a compatible delegate; ordinary Chat Completions sources accept function
 tools. Unsupported tools and media blocks return an
-error rather than silently losing context.
+error rather than silently losing context. A request on automatic selection
+that carries a non-function tool (such as Codex's hosted `web_search`) fails at
+once with HTTP 400 `invalid_request_error` naming the tool type. No source is
+tried and none enters cooldown; disable the hosted tool in the client.
 
 ### Subworkers
 
@@ -1460,8 +1463,10 @@ LiveKit's [inference data-retention policy](https://docs.livekit.io/agents/model
 states zero retention and no training by LiveKit or its underlying providers on
 all plans; it does not add a policy to the existing approval group.
 Pi remains the harness. Each new user turn starts a task keyed by the canonical
-working directory and user history. Tool results and retries keep the same
-adapter. No usage counters switch it ahead of quota exhaustion.
+working directory and user history. Tool results, retries and harness subagent
+completion notices (`<subagent_notification>` from Codex, `<task-notification>`
+from Claude Code) keep the same adapter; the model still sees the notice, but a
+message holding only notices is not a new turn. No usage counters switch it ahead of quota exhaustion.
 
 Source admission uses bounded concurrent availability probes with a five-second
 default deadline. Zro instead makes a real chat request with a thirty-second
