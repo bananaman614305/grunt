@@ -276,7 +276,7 @@ function registryEntry(registry: Registry, provider: string, url: string | undef
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
   return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
 }
-// A readable UTC minute stamp, the grunt-YYYYMMDD-HHMM alias the Zro hint names.
+// Keep Zro aliases in the documented UTC minute format.
 const zroKeyName = (now = new Date()) => `grunt-${now.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}`;
 // A text field that names the key being created. A bare name needs a key page.
 function keyNameField(label: string, url: unknown) {

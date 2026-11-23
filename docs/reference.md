@@ -784,8 +784,11 @@ if that model requires it. Kilo verifies its anonymous free model route
 without a sharing question; it needs no account, API key or signup.
 Squire handles supported verification automatically. A signup that requires the
 person is skipped without a browser handoff or confirmation question.
+Dropped signups include Squire's question, confidence and reason when available.
 Provider refusals include Squire's refusal reason; stopped pages with no controls
-also include the page's own message. These details are redacted before reporting.
+also include the page's own message. These details are redacted before reporting;
+secret-describing fragments may be omitted. Statuses clipped in the setup table
+are printed in full below the final table.
 Runcrate reports the actual setup failure instead of assuming a GitHub-age issue.
 An uncertain result with a captured key proceeds to a local test request;
 missing or failing access is skipped. Existing accounts are reused; no extra
