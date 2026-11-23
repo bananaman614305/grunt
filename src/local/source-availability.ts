@@ -48,7 +48,7 @@ export class SourceAvailability {
         void raw.then(() => this.unsettled.delete(source.id), () => this.unsettled.delete(source.id));
         const cancelled = new Promise<never>((_resolve, reject) => {
           controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
-          timer = setTimeout(() => controller.abort(new SourceError('timeout', 'Source admission metadata timed out')), this.timeoutMs);
+          timer = setTimeout(() => controller.abort(new SourceError('timeout', 'Source admission metadata timed out')), source.availabilityTimeoutMs ?? this.timeoutMs);
           timer.unref();
         });
         return Promise.race([raw, cancelled]);

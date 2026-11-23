@@ -318,7 +318,7 @@ export async function setupFallbacks(options: {
         options.notify('Runcrate: GitHub-verified weekly free DeepSeek V4.1 Flash access connected through Squire');
       } catch (error) {
         failedSetup('runcrate', error);
-        options.notify('Runcrate free setup incomplete. GitHub must be at least 30 days old; rerun usegrunt setup to resume. Other routes remain available.');
+        options.notify(`Runcrate free setup incomplete (${failures.get('runcrate')}); rerun usegrunt setup to resume. Other routes remain available.`);
       } },
       'mistral-vibe': async () => { try {
         await connect();

@@ -784,11 +784,29 @@ if that model requires it. Kilo verifies its anonymous free model route
 without a sharing question; it needs no account, API key or signup.
 Squire handles supported verification automatically. A signup that requires the
 person is skipped without a browser handoff or confirmation question.
+Provider refusals include Squire's refusal reason; stopped pages with no controls
+also include the page's own message. These details are redacted before reporting.
+Runcrate reports the actual setup failure instead of assuming a GitHub-age issue.
 An uncertain result with a captured key proceeds to a local test request;
 missing or failing access is skipped. Existing accounts are reused; no extra
 Google accounts are created.
 
-Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
+Zro, Token Harbor and Runcrate setup tries matching vaulted keys, newest entries
+first, with one chat request per grant until one answers, without opening the
+provider site. Failed candidates do not prevent trying the remaining keys;
+cancellation stops selection. If none answers, Squire opens the site only when
+no key is saved or all candidates were rejected with HTTP 401 or 403. An
+inconclusive failure, such as a timeout or quota error, stops setup instead of
+provisioning access. In the browser, Squire captures an existing key where the
+site shows one and creates a key only otherwise. After capture, setup repeats
+the vault selection. A newly written grant that does not answer is removed.
+
+Zro setup prefers Google login through Squire. In the browser, Squire confirms
+the Free plan, no paid subscription or purchased usage-pack balance, and no
+saved payment method. The private `zro.json` file records the setup; repeat
+setup can reuse a grant that still answers. Zro uses the same model ID for free
+and paid access, so an external account upgrade can change billing; grunt never
+upgrades the account.
 
 Setup enables the free sources by default, including sources that may retain,
 review or train on prompts. It records current provider policies in a private
@@ -1120,9 +1138,8 @@ manager. A missing prerequisite prints its install or repair step and stops.
 Coding harnesses such as Pi are optional; setup can install the service before
 you install a harness.
 
-Existing vault API keys are reused. Missing keys are created through Squire's
-browser and captured directly into its vault. The
-[signup verification rules](#free-api-and-account-setup) also apply here.
+Vault reuse and browser capture follow the
+[signup verification rules](#free-api-and-account-setup).
 An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
 token to FreeLLMAPI's custom-provider endpoint for those API providers.
@@ -1443,8 +1460,11 @@ Pi remains the harness. Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results and retries keep the same
 adapter. No usage counters switch it ahead of quota exhaustion.
 
-Source admission uses bounded concurrent metadata probes and short eligibility
-caches: thirty seconds for positive observations, five for negative observations.
+Source admission uses bounded concurrent availability probes with a five-second
+default deadline. Zro instead makes a real chat request with a thirty-second
+deadline, because its models endpoint still answers for paused keys. Admission
+cancellation also cancels that request. Eligibility caches last thirty seconds
+for positive observations, five for negative observations.
 A warm eligible source can dispatch without waiting for unrelated slow probes.
 These cached observations do not authorize billing or data sharing: the selected
 adapter still performs its current consent, account, model and free-access checks

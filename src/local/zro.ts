@@ -1,12 +1,12 @@
-import { diagnosticFetch } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { FreeApi, isDeepSeekV41Model } from './free-api.js';
+import { FreeApi } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
+import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const ZRO_STORE = { service: 'zro', label: 'grunt', api_hosts: ['zro.moonmath.ai'], auth_shape: 'bearer' };
@@ -42,22 +42,25 @@ export async function writeZroGrant(grant: FreeApiGrant, location = directory())
 }
 export class Zro implements Source {
   readonly id = 'zro';
+  readonly availabilityTimeoutMs = 30000;
   readonly supportsFunctionTools = true;
   private source: FreeApi;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<ZroGrant> } = {}) {
     this.source = new FreeApi('zro', { ...options, fetcher: verifiedDeepSeekFetch(options.fetcher), loadGrant: () => this.grant() });
   }
   private grant() { return (this.options.loadGrant?.() ?? readZroGrant(this.options.directory)).then(validate); }
-  async available() {
+  // Readiness is a real chat request: Zro still lists models for a paused key.
+  async available(signal?: AbortSignal) {
     try {
-      const grant = await this.grant();
-      const response = await diagnosticFetch(this.options.fetcher ?? fetch, 'zro', 'models')(`${grant.base_url}/v1/models`, {
-        headers: { Authorization: `Bearer ${grant.token}` }, redirect: 'error', signal: AbortSignal.timeout(5000)
-      });
-      if (!response.ok) { await response.body?.cancel(); return false; }
-      const result = await response.json() as { data?: { id?: string }[] };
-      return result.data?.some(model => isDeepSeekV41Model(model.id)) ?? false;
-    } catch { return false; }
+      await this.source.complete({ model: this.id, cwd: this.options.directory ?? directory(), messages: [{ role: 'user', content: 'Reply with one word: ready' }],
+        tools: [], stream: false, maxTokens: 16 }, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(this.availabilityTimeoutMs)]));
+      signal?.throwIfAborted();
+      return true;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof SourceError && error.code === 'quota') throw error;
+      return false;
+    }
   }
   async healthCheck() { return this.available(); }
   complete(request: ModelRequest, signal: AbortSignal) {

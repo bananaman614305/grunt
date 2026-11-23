@@ -43,6 +43,7 @@ export interface Source {
   // This inference-stream capability opts into prompt cancellation settlement;
   // its reader cleanup must remain abort-safe after the caller has returned.
   reportsProgress?: boolean;
+  availabilityTimeoutMs?: number;
   available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;

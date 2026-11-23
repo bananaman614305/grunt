@@ -6,6 +6,8 @@ import { Zro, ZRO_DEEPSEEK, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor, TOKENHARBOR_DEEPSEEK, writeTokenHarborGrant } from './tokenharbor.js';
 import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
 import { Sources } from './source.js';
+import { SourceAvailability } from './source-availability.js';
+import { SourceStatus } from './source-status.js';
 import { createLocalApp } from './api.js';
 import { configure } from './main.js';
 import { bundledRegistry } from '../registry.js';
@@ -15,7 +17,7 @@ import { setupFallbacks } from './fallback-setup.js';
 const directories: string[] = [];
 const grant = { base_url: 'https://grant.test/zro', token: 'synthetic-grant' };
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-zro-')); directories.push(path); return path; }
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 const payload = { model: 'grunt', messages: [{ role: 'user', content: 'hello' }], max_tokens: 1000 };
 const response = (model = ZRO_DEEPSEEK) => Response.json({ model, choices: [{ message: { content: 'Hello' } }], usage: { prompt_tokens: 37, completion_tokens: 2 } });
 
@@ -31,12 +33,12 @@ it('ships Zro by default and keeps unvetted NVIDIA out of fresh signup', async (
 
 it('routes the normal grunt alias through its pinned Zro model', async () => {
   const path = await directory(); await writeZroGrant(grant, path);
-  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/models') ? Response.json({ data: [{ id: ZRO_DEEPSEEK }] }) : response());
+  const fetcher = vi.fn<typeof fetch>(async () => response());
   const source = new Zro({ directory: path, fetcher });
   const sources = new Sources([source], { registry: () => bundledRegistry });
   const result = await createLocalApp(sources).request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   expect(result.status).toBe(200); expect(result.headers.get('x-grunt-source')).toBe('zro');
-  const sent = fetcher.mock.calls.find(([url]) => String(url).endsWith('/chat/completions'))!;
+  const sent = fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions')).at(-1)!;
   expect(JSON.parse(String(sent[1]?.body))).toMatchObject({ model: ZRO_DEEPSEEK, max_tokens: 1000 });
   await sources.close();
 });
@@ -51,24 +53,72 @@ it('requires a private Free-account verification receipt before making Zro avail
   expect((await stat(join(path, 'zro.json'))).mode & 0o777).toBe(0o600);
 });
 
-it('verifies a reused vault key on first Zro setup without starting an aggregator, then reuses its local grant', async () => {
+const vaultedZro = (start: () => Promise<{ run: { id: string; state: string }; decision: 'silent' | 'reject'; reason?: string }>) => ({
+  credentials: { list: vi.fn(async () => [{ service: 'zro', reference: 'vault://zro', field_names: ['api_key'] }]), grant: vi.fn(async () => grant) },
+  runs: { start: vi.fn(start), get: vi.fn() } });
+const paused = () => Response.json({ error: { code: 'api_key_paused' } }, { status: 403 });
+
+it('uses a working vaulted Zro key without a browser run or aggregator, then reuses its local grant', async () => {
   const path = await directory();
   const backend = vi.spyOn(FreeLLMAdmin.prototype, 'call').mockRejectedValue(new Error('must not start'));
-  const squire = { credentials: { list: vi.fn(async () => [{ service: 'zro', reference: 'vault://zro', field_names: ['api_key'] }]), grant: vi.fn(async () => grant) },
-    runs: { start: vi.fn(async () => ({ run: { id: 'zro', state: 'completed' }, decision: 'silent' as const })), get: vi.fn() } };
-  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ id: ZRO_DEEPSEEK }] })));
+  const squire = vaultedZro(async () => { throw new Error('must not drive'); });
+  const fetcher = vi.fn<typeof fetch>(async () => response());
+  vi.stubGlobal('fetch', fetcher);
   for (let i = 0; i < 2; i++) await setup(() => {}, ['zro'], { squire, directory: path });
-  expect(squire.runs.start).toHaveBeenCalledOnce(); expect(squire.credentials.grant).toHaveBeenCalledOnce(); expect(backend).not.toHaveBeenCalled();
+  expect(squire.runs.start).not.toHaveBeenCalled(); expect(squire.credentials.grant).toHaveBeenCalledOnce(); expect(backend).not.toHaveBeenCalled();
   expect(await readZroGrant(path)).toMatchObject({ free_account_verified: true });
+  // Readiness is a chat request, never the model list.
+  expect(fetcher.mock.calls.length).toBeGreaterThan(0);
+  expect(fetcher.mock.calls.every(([url]) => String(url).endsWith('/v1/chat/completions'))).toBe(true);
 });
 
-it('does not store a Zro grant when free-account verification refuses an existing paid account', async () => {
+it('opens Zro in the browser only after the provider rejects the vaulted key, then connects the captured key', async () => {
   const path = await directory();
-  const squire = { credentials: { list: vi.fn(async () => [{ service: 'zro', reference: 'vault://zro', field_names: ['api_key'] }]), grant: vi.fn() },
-    runs: { start: vi.fn(async () => ({ run: { id: 'zro', state: 'failed' }, decision: 'reject' as const, reason: 'Paid plan active' })), get: vi.fn() } };
+  let captured = false;
+  const squire = vaultedZro(async () => { captured = true; return { run: { id: 'zro', state: 'completed' }, decision: 'silent' }; });
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => captured ? response() : paused()));
+  const lines: string[] = [];
+  await setup(line => lines.push(line), ['zro'], { squire, directory: path });
+  expect(squire.runs.start).toHaveBeenCalledOnce();
+  expect(lines).toContain('zro: no saved key works; opening the provider site to capture working access');
+  expect(lines.at(-1)).toBe('zro: connected through Squire grant');
+});
+
+it('does not open Zro in the browser when the vaulted key fails without a rejection', async () => {
+  const path = await directory();
+  const squire = vaultedZro(async () => { throw new Error('must not drive'); });
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(null, { status: 503 })));
+  await expect(setup(() => {}, ['zro'], { squire, directory: path })).rejects.toThrow('zro returned HTTP 503');
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('reports a Zro paused-key 403 as unavailable, not connected', async () => {
+  const path = await directory(); await writeZroGrant(grant, path);
+  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/models') ? Response.json({ data: [{ id: ZRO_DEEPSEEK }] }) : paused());
+  expect(await new Zro({ directory: path, fetcher }).available()).toBe(false);
+});
+
+it('stops Zro setup when the browser refuses after the vaulted key was rejected', async () => {
+  const path = await directory();
+  const squire = vaultedZro(async () => ({ run: { id: 'zro', state: 'failed' }, decision: 'reject', reason: 'Paid plan active' }));
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => paused()));
   await expect(setup(() => {}, ['zro'], { squire, directory: path })).rejects.toThrow('refused');
-  expect(squire.credentials.grant).not.toHaveBeenCalled();
-  await expect(readFile(join(path, 'zro.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(squire.runs.start).toHaveBeenCalledOnce();
+  await expect(stat(join(path, 'zro.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it.each([
+  { status: 200, drives: 0 },
+  { status: 403, drives: 1 }
+])('tests the vaulted Token Harbor key first and opens the browser only on a rejection (HTTP $status)', async ({ status, drives }) => {
+  const path = await directory(); await recordDataSharingConsent(path, ['tokenharbor']);
+  let captured = false;
+  const squire = { credentials: { list: vi.fn(async () => [{ service: 'tokenharbor', reference: 'vault://tokenharbor', field_names: ['api_key'] }]), grant: vi.fn(async () => grant) },
+    runs: { start: vi.fn(async () => { captured = true; return { run: { id: 'tokenharbor', state: 'completed' }, decision: 'silent' as const }; }), get: vi.fn() } };
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => captured || status === 200 ? response(TOKENHARBOR_DEEPSEEK) : new Response(null, { status })));
+  await setup(() => {}, ['tokenharbor'], { squire, directory: path });
+  expect(squire.runs.start).toHaveBeenCalledTimes(drives);
+  expect(JSON.parse(await readFile(join(path, 'tokenharbor.json'), 'utf8'))).toMatchObject(grant);
 });
 
 it('requests Google signup, free billing checks, vault capture and no paid account mutation', async () => {
@@ -104,6 +154,7 @@ it('keeps grouped approvals on the shared Squire client while another provider s
     if (name === 'operate_drive') return { status: 'complete', session_id: 'provider-session' };
     return {};
   });
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => response()));
   await setup(() => {}, ['zro'], { squire, directory: path });
   await squire.runs.start({ service: 'tokenharbor', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none' });
   const goals = call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => String(args.goal));
@@ -266,4 +317,30 @@ it('passes grouped sharing approval to custom Freebuff and OpenCode browser goal
   const goals = call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => String(args.goal));
   expect(goals).toHaveLength(2);
   for (const goal of goals) expect(goal).toContain('Grunt setup enables this free source by default');
+});
+
+it('admits a Zro chat that answers after six seconds and cancels an unfinished admission on close', async () => {
+  vi.useFakeTimers();
+  const signals: AbortSignal[] = [];
+  const source = new Zro({
+    loadGrant: async () => ({ ...grant, free_account_verified: true, verified_at: new Date().toISOString() }),
+    fetcher: async (_url, init) => new Promise<Response>((resolve, reject) => {
+      const signal = init!.signal as AbortSignal;
+      signals.push(signal);
+      const timer = setTimeout(() => resolve(response()), 6000);
+      signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+    })
+  });
+  const admission = new SourceAvailability(new SourceStatus(['zro']));
+  admission.start([source]);
+  await vi.advanceTimersByTimeAsync(6001);
+  expect(admission.peek('zro')).toBe(true);
+  await admission.close();
+  const next = new SourceAvailability(new SourceStatus(['zro']));
+  next.start([source]);
+  await vi.advanceTimersByTimeAsync(0);
+  await next.close();
+  expect(signals).toHaveLength(2);
+  expect(signals[1].aborted).toBe(true);
+  await source.close();
 });
