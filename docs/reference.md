@@ -1497,7 +1497,7 @@ ignores. The server validates the whole next document with `validateRegistry`,
 requires `hints` on any written entry with a `signup`, rescales tier weights,
 stamps a strictly newer `published` and swaps `/data/registry.json` atomically, so
 an entry and its hints publish together. Invalid writes return 422 with
-`{"errors": [{"field", "rule"}]}`. A write rebases on the bundled list when the
+`{"errors": [{"field": "...", "rule": "..."}]}`. A write rebases on the bundled list when the
 published file is missing or invalid. `registry_writes` in the gateway database
 records each write's GitHub login and the whole registry before and after.
 The response includes the history row number as `write`. To revert, send an
