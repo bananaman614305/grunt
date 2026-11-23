@@ -75,7 +75,7 @@ export class FreePi implements Source {
   private readonly shutdown = new AbortController();
   private readonly session = randomUUID();
   constructor(private options: { directory?: string; fetcher?: typeof fetch; now?: () => number; loadToken?: () => Promise<string>; lockDirectory?: string } = {}) {}
-  acceptsRequest(request: ModelRequest) { return request.publicContext === true && !request.worker && !request.handoffPrompt && !request.imageInput; }
+  acceptsRequest(request: ModelRequest) { return request.publicContext === true && !request.handoffPrompt && !request.imageInput; }
   private get directory() { return this.options.directory ?? configRoot(); }
   private async token() {
     if (!(await readDataSharingConsent(this.directory, [this.id])).includes(this.id)) throw new SourceError('refused', 'Free-Pi requires explicit current trace-sale consent');

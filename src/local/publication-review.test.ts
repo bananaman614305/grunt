@@ -7,7 +7,7 @@ const value: PublicationRecord = { version: 1, id: randomUUID(), createdAt: 1, u
 function fixture() {
   const job = randomUUID(), artifact = randomUUID();
   const worker = { start: vi.fn(async () => ({ batchId: randomUUID() })), wait: vi.fn(async () => ({ state: 'completed', results: [{ ok: true, id: job, text: JSON.stringify({ head: value.snapshot.head, verdict: 'approve' }) }] })), artifact: vi.fn(async () => ({ artifact: { id: artifact, complete: true, truncated: false, files: [] } })), close: vi.fn(async () => {}) };
-  const review = createPublicationReviewer({ port: 8793, context: async () => 'untrusted fixture diff', workers: () => worker });
+  const review = createPublicationReviewer({ context: async () => 'untrusted fixture diff', workers: () => worker });
   return { worker, review, job, artifact };
 }
 it('derives authority from an actual separate worker and retained zero-edit artifact', async () => {

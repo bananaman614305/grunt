@@ -70,6 +70,13 @@ it('rejects unknown commands and invalid update arguments without starting the d
   await expect(cli(['update', '--unexpected'])).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('Usage: usegrunt update') });
 });
 
+it('reports that the removed workers command no longer exists, for old scripts and help text', async () => {
+  for (const args of [['workers', 'run'], ['workers', 'connect', 'pi'], ['workers', 'mcp']]) {
+    await expect(cli(args)).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('subworkers were removed') });
+  }
+  expect((await cli(['--help'])).stdout).not.toContain('workers');
+});
+
 it('asks for initial setup when update has no installed runtime, without running the wizard', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-cli-update-missing-'));
   try {

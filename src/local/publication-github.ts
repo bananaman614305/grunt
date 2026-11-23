@@ -4,12 +4,12 @@ import type { FileHandle } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { publicationMarker, safeRelative } from './publication.js';
 import type { PublicationPolicy, PublicationRecord, PublicationTransport } from './publication.js';
-import { privateWorkerPath } from './worker-tool-helper.js';
+import { privateProjectPath } from './project-paths.js';
 
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === 'object' && !Array.isArray(value) ? value as Json : {};
 const sha = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
-const privateArtifact = (path: string) => privateWorkerPath(path) || path.split('/').some(part => part === '.github' || part === '.gitmodules');
+const privateArtifact = (path: string) => privateProjectPath(path) || path.split('/').some(part => part === '.github' || part === '.gitmodules');
 /** A trusted host supplies fixed-argv gh execution. No auth token, executable, URL or shell comes from a model request. */
 export interface PublicationGithubExec {
   (args: string[], input?: string, signal?: AbortSignal): Promise<{ code: number; stdout: string }>;

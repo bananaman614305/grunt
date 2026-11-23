@@ -43,7 +43,7 @@ it('checks the Free plan and zero-price exact alias before each native JSON requ
     'https://www.aperture-ai.run/auth/me', 'https://www.aperture-ai.run/api/v1/models', 'https://www.aperture-ai.run/api/v1/chat/completions'
   ]);
   expect(JSON.parse(String(fetcher.mock.calls[2]![1]?.body))).toEqual({ model: APERTURE_MODEL, messages: request().messages, stream: false, max_tokens: 1024 });
-  await adapter.complete({ ...request(), model: 'grunt', worker: { id: 'synthetic-worker', onSource() {} } }, AbortSignal.timeout(2000));
+  await adapter.complete({ ...request(), model: 'grunt' }, AbortSignal.timeout(2000));
   expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/auth/me'))).toHaveLength(2);
 });
 it.each([{ valid: false, plan: 'free' }, { valid: true, plan: 'pro' }, { valid: true }, { plan: 'free' }, null])('blocks unverified or paid account metadata %j', async account => {

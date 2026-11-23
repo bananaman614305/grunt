@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { privateWorkerPath } from './worker-tool-helper.js';
+import { privateProjectPath } from './project-paths.js';
 import { VerificationBroker } from './verification-broker.js';
 import type { VerificationBrokerRunner } from './verification-broker.js';
 import { createVerificationBrokerFileClient, tickVerificationBroker } from './verification-broker-client.js';
@@ -48,7 +48,7 @@ async function atomic(path: string, value: unknown) {
   finally { await rm(temporary, { force: true }); }
 }
 export interface ExecutionHostPolicy {
-  version: 1; projectRoot: string; stateDirectory: string; channelDirectory: string; workerPort: number; gitConfigSha256: string; holdFiles?: string[];
+  version: 1; projectRoot: string; stateDirectory: string; channelDirectory: string; /** Legacy subworker port: still required in existing policy files, otherwise unused. */ workerPort: number; gitConfigSha256: string; holdFiles?: string[];
   plans: VerificationPlan[];
   /** Host-owned bwrap argv. Only whole-argument substitutions are supported. */
   sandboxArgv: string[];
@@ -244,7 +244,7 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
     }
     for (const commit of new Set(commits)) if (!screenedCommits.has(commit)) {
       const listing = await git(['ls-tree', '-r', '--name-only', '-z', commit]);
-      if (listing.code || listing.stdout.split('\0').filter(Boolean).some(path => /[\x00-\x1f\x7f]/.test(path) || privateWorkerPath(path) || path === '.gitmodules')) throw new Error('Private-looking committed files cannot be reviewed or published.');
+      if (listing.code || listing.stdout.split('\0').filter(Boolean).some(path => /[\x00-\x1f\x7f]/.test(path) || privateProjectPath(path) || path === '.gitmodules')) throw new Error('Private-looking committed files cannot be reviewed or published.');
       screenedCommits.add(commit);
     }
     if (range) screenedRanges.add(range);
@@ -265,10 +265,10 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
     if (ancestry.code === 0) await publicSource(state.head, baseHead);
     return { ...state, branch: branch.stdout.trim(), gitTree: tree.stdout.trim(), baseHead, baseIsAncestor: ancestry.code === 0 };
   };
-  const reviewer = createPublicationReviewer({ port: policy.workerPort, ...(dependencies.workers ? { workers: dependencies.workers } : {}), context: async record => {
+  const reviewer = createPublicationReviewer({ ...(dependencies.workers ? { workers: dependencies.workers } : {}), context: async record => {
     await publicSource(record.snapshot.head, record.snapshot.baseHead);
     const changed = await git(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', record.snapshot.baseHead, record.snapshot.head, '--']);
-    if (changed.code || changed.stdout.split('\0').filter(Boolean).some(privateWorkerPath)) throw new Error('Private-looking changed paths cannot enter reviewer context.');
+    if (changed.code || changed.stdout.split('\0').filter(Boolean).some(privateProjectPath)) throw new Error('Private-looking changed paths cannot enter reviewer context.');
     const result = await git(['diff', '--no-ext-diff', '--no-textconv', record.snapshot.baseHead, record.snapshot.head, '--']);
     if (result.code || Buffer.byteLength(result.stdout) > 22000) throw new Error('Exact release diff is unavailable or exceeds independent review context.');
     return result.stdout;

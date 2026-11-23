@@ -1,23 +1,26 @@
-import { AgentWorkerBatches } from './worker-agent-client.js';
 import type { PublicationPolicy, PublicationRecord, PublicationReview } from './publication.js';
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-interface ReviewWorkers {
+/** Backend that runs one fresh, read-only reviewer and returns its retained zero-edit evidence. */
+export interface ReviewWorkers {
   start(input: unknown, signal: AbortSignal): Promise<{ batchId: string }>;
   wait(input: unknown, signal: AbortSignal): Promise<unknown>;
   artifact(id: string): Promise<unknown>;
   close(): Promise<void>;
 }
-/** Only a fresh separate Grunt worker may issue a review result. The author cannot submit its own verdict JSON. */
+/**
+ * Only a fresh separate reviewer may issue a review result. The author cannot submit its own verdict JSON.
+ * Grunt subworkers were removed, so no reviewer backend ships by default: the host must inject one.
+ */
 export function createPublicationReviewer(options: {
-  port: number;
   context(record: PublicationRecord): Promise<string>;
   workers?: (projectRoot: string) => ReviewWorkers;
 }) {
   return async (value: PublicationRecord, policy: PublicationPolicy, caller?: AbortSignal): Promise<PublicationReview> => {
     const context = await options.context(value);
     if (Buffer.byteLength(context) > 24000) throw new Error('Review context is too large; use a focused Grunt-owned release.');
-    const workers = options.workers?.(policy.projectRoot) ?? new AgentWorkerBatches(options.port, policy.projectRoot);
+    if (!options.workers) throw new Error('Independent review is unavailable: Grunt subworkers were removed and no reviewer backend is configured.');
+    const workers = options.workers(policy.projectRoot);
     const signal = AbortSignal.any([AbortSignal.timeout(330000), ...(caller ? [caller] : [])]);
     try {
       const batch = await workers.start({ tasks: [{ activity: 'review', ownedPaths: policy.reviewPaths,

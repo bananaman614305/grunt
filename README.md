@@ -66,54 +66,25 @@ terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
 `--port` overrides `GRUNT_PORT`, the saved port, and the default 8788.
 
-### Delegate to Grunt subworkers
+### Parallel work
 
-Grunt can run two subworkers alongside your main coding agent. The default
-`grunt_delegate` tools return proposals from the task and excerpts you supply.
-Opt in to tool-using workers when you want independent edits in private project
-copies:
+Grunt does not run its own subworkers (removed; see the
+[reference](docs/reference.md#subworkers-removed)). Claude Code, Codex and
+OpenCode have native subagents that work through Grunt: each subagent is an
+ordinary model request that Grunt routes to a source. Pi has no subagents, so
+Pi users no longer get parallel workers.
 
-```bash
-npx usegrunt workers connect pi --agentic
-# Launch Pi with the printed command, including:
-# --grunt-agent-workers --grunt-background-jobs --grunt-checkpoints
-npx usegrunt workers status
-```
-
-The Pi flags are separate opt-ins: `--grunt-agent-workers` enables scoped
-workers; `--grunt-background-jobs` enables local command jobs;
-`--grunt-checkpoints` enables private progress checkpoints and focused handoffs. Review your
-interface's custom-tool approval rules before enabling them. For Codex, Claude
-Code or OpenCode, use `workers connect <interface> --agentic --project "$PWD"`
-and install the printed MCP configuration. Omitting `--agentic` keeps proposal
-workers.
-
-Give each tool-using worker explicit `ownedPaths`. It can read the permitted
-project snapshot and edit its owned files, while your main agent continues.
-Command execution requires a verified Linux namespace and resource-limited
-sandbox; otherwise workers have filesystem tools only. Worker commands have no
-network access; Grunt still handles model inference through eligible sources.
-Retained edits survive failed jobs and daemon restarts. Inspect and review the
-full artifact before using the approved `workers apply` command. Verify the
-integrated result, then explicitly discard its retained copy; deliberate
-abandonment also requires discard. Twenty retained/outstanding artifacts
-fill the bounded queue until you clear reviewed work.
-
-Use [the worker reference](docs/reference.md#subworkers) for launch commands,
-artifact recovery and platform limits, or [background jobs](docs/reference.md#background-command-jobs)
-for long tests, builds and renders. Managed jobs return control to Pi so the
-agent can continue independent work; collect results or cancel them before the
-session ends. Neither feature is enabled by ordinary setup. Existing daemons
-need `npx usegrunt update` after installing a release with these capabilities.
-
-With agentic Pi enabled, `grunt_coordinate` plans independent work for the main
-agent and two workers, using current pool capacity while leaving artifacts for
-explicit review and integration. Content-bound verification jobs can reuse a
-recent successful result when the command and all inputs still match. Local
-routing performance and failure backoff persist across runtime restarts.
+Pi keeps two opt-in local capabilities, off by default: `--grunt-background-jobs`
+runs long tests, builds and renders as managed [background jobs](docs/reference.md#background-command-jobs)
+that return control to the agent, and `--grunt-checkpoints` saves private progress
+checkpoints and focused handoffs. Load them with `--extension
+~/.config/grunt/runtime/dist/local/execution-pi.js`. Review your interface's
+custom-tool approval rules before enabling either. Content-bound verification
+jobs can reuse a recent successful result when the command and all inputs still
+match. Local routing performance and failure backoff persist across runtime restarts.
 
 Operators can also configure a private execution host for required release
-checks, a separate Grunt reviewer, exact tested-tree merging and verified GitHub
+checks, an independent reviewer, exact tested-tree merging and verified GitHub
 Pages publication. Its `--grunt-publication` flag and read-only channel manifest
 are explicit launch configuration; credentials and signing authority stay outside
 the coding interface. See [execution efficiency](docs/efficiency.md).
@@ -128,7 +99,7 @@ and the [read-only passive collector](docs/passive-efficiency.md). The
 and the limits of the controlled experiments.
 
 The [private owner console](docs/reference.md#private-owner-admin) opens on
-Grunt's current work, subworker activity and per-source daily, weekly and lifetime usage.
+Grunt's current work, legacy subworker activity from older daemons and per-source daily, weekly and lifetime usage.
 Separate views show request and fallback traces, maintenance and scout progress.
 Google login permits explicitly configured, verified owner email addresses.
 The [Fly preview](https://milo-gateway.fly.dev/admin/) is available while custom
@@ -197,7 +168,7 @@ DeepSeek V4.1 Flash Free and checks its permanent 100-million-token daily
 allowance, resetting at midnight UTC; its qualified input limit is the approved
 198,000-token exception. Free-Pi can sell coding-session traces; setup records its policy automatically.
 It requires a reviewed-public-context attestation on
-every request; ordinary Pi and subworker requests do not supply it. See the
+every request; ordinary Pi requests do not supply it. See the
 [provider reference](docs/reference.md#curated-sources-and-explicit-selections)
 and [Free-Pi's restrictions](docs/providers/freepi.md). Antseed remains an
 [explicit experimental installation](docs/antseed-vikey-provisioning.md), with

@@ -346,7 +346,7 @@ it('keeps retirement visible in status and model listings after the cooldown end
   } finally { await routes.sources.close(); }
 });
 
-it.each(['main', 'worker'] as const)('shares retirement from %s failures across mixed-pool request paths', async failingPath => {
+it('shares retirement from main failures across mixed-pool request paths', async () => {
   let now = Date.parse('2026-11-20T00:00:00Z');
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   const failing = source('kilo', () => new SourceError('upstream', 'Synthetic outage'));
@@ -357,11 +357,7 @@ it.each(['main', 'worker'] as const)('shares retirement from %s failures across 
   try {
     for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
       const request = ask(`failure ${i}`, true);
-      if (failingPath === 'worker') {
-        await expect(sources.complete({ ...request, worker: { id: `worker-${i}`, onSource: () => {} } }, AbortSignal.timeout(1000))).rejects.toThrow();
-      } else {
-        await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'freellmapi done' });
-      }
+      await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'freellmapi done' });
       now += 2 * 60 * 60 * 1000 + 1;
     }
     expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);

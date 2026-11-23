@@ -52,7 +52,6 @@ import { SourceRecovery } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 import { installedRuntimeVersion } from './runtime-version.js';
-import { createWorkerRuntime } from './worker-runtime.js';
 import { automaticPoolSelection } from './automatic-pool.js';
 import { createRuntimeRoutingHistory } from './runtime-routing.js';
 export const HOST = '127.0.0.1';
@@ -137,7 +136,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     return !routing && (knownAdapters.has(id) || localOptIns.has(id)) ? new RegistrySource(consent, routingRegistry) : consent;
   };
   const sources = new Sources(ids.map(build), routing, disabledAdapters);
-  sources.setWorkerRegistry(routingRegistry, localOptIns);
+  sources.setChainRegistry(routingRegistry, localOptIns);
   // Hot-add (docs/router.md): an automatic pool routes a newly listed shipped
   // adapter without a restart. A manual GRUNT_SOURCES list stays fixed.
   const adopt = (current: Registry) => {
@@ -262,12 +261,10 @@ export function start(env = process.env) {
   const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready, consent]).then(refreshSession);
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
-  const workerRuntime = createWorkerRuntime(sources, { directory });
-  const { workers, scopes: workerScopes } = workerRuntime;
-  const app = createLocalApp(sources, { port, workers, workerScopes, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
+  const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
   const server = serve({ fetch: async request => { await ready; await refreshSession(); return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;
-  const close = async () => { if (closing) return; closing = true; await Promise.all([workerRuntime.close(), maintenance.close(), sync.close(), recovery.close()]); await sources.close(); await routingHistory.close(); await diagnosticReady; await diagnostics?.close(); server.close(); };
+  const close = async () => { if (closing) return; closing = true; await Promise.all([maintenance.close(), sync.close(), recovery.close()]); await sources.close(); await routingHistory.close(); await diagnosticReady; await diagnostics?.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, close };
 }
@@ -295,18 +292,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
       await executionHostCommand(process.argv.slice(3));
     } catch (error) { console.error(error instanceof Error ? error.message : 'Grunt execution host failed'); process.exitCode = 1; }
   } else if (process.argv[2] === 'workers') {
-    try {
-      if (process.argv[3] === 'connect') {
-        const { workerConnectCommand } = await import('./worker-connect.js');
-        await workerConnectCommand(process.argv.slice(4));
-      } else {
-        const { workerCommand } = await import('./worker-client.js');
-        await workerCommand(process.argv.slice(3));
-      }
-    }
-    catch (error) { console.error(error instanceof Error ? error.message : 'Grunt workers command failed'); process.exitCode = 1; }
+    console.error('Grunt subworkers were removed. Use your coding harness\'s own subagents (Claude Code, Codex and OpenCode have them built in). Retained worker artifacts, if any, are no longer managed by Grunt.');
+    process.exitCode = 1;
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | workers <run|status|retained|artifact|apply|discard|connect|mcp> | jobs <run|status|result|cancel> | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool, or workers to delegate independent tasks.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | jobs <run|status|result|cancel> | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool.');
   } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }

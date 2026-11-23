@@ -4,45 +4,11 @@ These capabilities belong to the local Grunt runtime and apply to any configured
 project. Project instructions and the coding interface still determine what work
 is authorized. Grunt chooses tasks and providers through its existing interfaces.
 
-## Coordinate independent work
+## Coordinate independent work (removed)
 
-`usegrunt workers connect pi --agentic` prints a launch command enabling scoped
-workers, background jobs and checkpoints. `grunt_coordinate` accepts a main task
-and up to eight task declarations, with disjoint owned paths for independent work
-and explicit dependencies for work that must wait.
-Dispatch admits at most two independent workers when local status metadata leaves
-capacity for the main agent. It neither probes providers nor resets quotas.
-
-For example, declare ownership before dispatching through Pi's tools:
-
-```js
-grunt_coordinate({operation: "plan", main: {
-  task: "Update the usage guide", ownedPaths: ["docs/usage.md"]
-}, tasks: [{id: "empty-state", task: "Implement the empty-state component",
-  activity: "implementation", ownedPaths: ["src/empty-state.ts"]}]})
-grunt_coordinate({operation: "dispatch"})
-grunt_coordinate({operation: "status"})
-```
-
-`plan` records work; only `dispatch` starts it. An empty `tasks` list is valid
-when no independent work exists. Coordination plans belong to the current Pi
-session/project. Plans and completed summaries survive frontend restart when
-the coding interface restores the same Pi session identity and canonical project.
-They are stored in private `~/.cache/grunt/coordination` state; the trusted launch
-setting `GRUNT_COORDINATION_STATE_DIR` can select another absolute directory outside
-the project. Without a stable session identity, a new launch starts a separate plan.
-
-The main agent continues its own task, collects completed batches through
-`grunt_worker_result`, inspects artifacts and explicitly integrates their changes.
-Dependencies remain deferred until integration and a new plan. Failed, cancelled
-or unresolved batches are never replayed automatically. Completed summaries remain
-usable after the shared batch cache evicts their detailed results.
-
-Restored running batches whose live results cannot be recovered become unresolved.
-Grunt must inspect their retained IDs and artifacts before explicitly replanning.
-Dispatch records its intent before starting a batch, so an interrupted or concurrent
-frontend cannot silently repeat it. Saved summaries are advisory context, not proof
-of integration, passing checks or independent review.
+Grunt subworkers and `grunt_coordinate` were removed; use your harness's native
+subagents. See [removed subworkers](reference.md#subworkers-removed). The
+checkpoint and background-job tools below remain Pi opt-ins.
 
 ## Retain routing observations
 
@@ -293,7 +259,7 @@ not remove workload and provider confounding on their own.
 
 ## Resume focused context
 
-`--grunt-checkpoints` enables `grunt_checkpoint_write`, `grunt_checkpoint_read`
+`--grunt-checkpoints` (with `--extension .../runtime/dist/local/execution-pi.js`) enables `grunt_checkpoint_write`, `grunt_checkpoint_read`
 and `grunt_checkpoint_resume`. Save the original requirements, concise completed
 claims, pending job/worker/artifact IDs and the next action. Writes use revision
 checks; the harness binds the project/session and computes file hashes.
@@ -333,8 +299,10 @@ An existing `core.hooksPath=/dev/null` is accepted; custom hooks and included
 Git configuration remain rejected.
 
 The host currently requires Linux, `/usr/bin/bwrap`, `/usr/bin/git`,
-`/usr/bin/gh`, host-side GitHub authentication and a running local Grunt daemon
-at the policy's `workerPort` for independent review. Use an ordinary Git checkout
+`/usr/bin/gh`, host-side GitHub authentication and an independent reviewer backend.
+Independent review used a Grunt subworker, which was removed, so no reviewer ships
+by default: a publication reaches `reviewing` and fails with "Independent review is
+unavailable" until the host injects one. Use an ordinary Git checkout
 with a real `.git/config`; linked worktrees are unsupported. GitHub Pages must
 already use the configured Pages branch at its root.
 
@@ -343,7 +311,7 @@ The JSON policy has `version: 1` and these fields:
 | Field | Required value |
 | --- | --- |
 | `projectRoot`, `stateDirectory`, `channelDirectory` | Canonical absolute, separate directories; none may contain another. |
-| `workerPort` | Local Grunt daemon port, from 1024 to 65535. |
+| `workerPort` | Legacy (formerly the subworker port): still required from 1024 to 65535 but unused. |
 | `gitConfigSha256` | SHA-256 of the approved project's `.git/config` bytes. |
 | `plans` | Release plans with `version: 1`, `id`, `mode: "release"` and fixed `checks` containing `id`, `command`, optional `timeoutSeconds` and `artifactPaths`. Check IDs must be unique across plans. |
 | `sandboxArgv` | Operator-defined `/usr/bin/bwrap` argument array with `--unshare-all`, `--die-with-parent`, `--new-session`, `--clearenv` and exactly one `--bind $WORKSPACE $PROJECT`. `$WORKSPACE`, `$PROJECT` and `$COMMAND` substitutions must each occupy a whole argument. Include the required runtime/dependencies through permitted read-only mounts. |

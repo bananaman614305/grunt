@@ -18,7 +18,7 @@ export interface RoutingBackoff { code: ErrorCode; signature: string; streak: nu
 export interface RoutingHistorySnapshot { performance: { source: string; profile: RoutingProfile; value: RoutingPerformance }[]; backoff: { source: string; value: RoutingBackoff }[] }
 const workloads = new AsyncLocalStorage<RoutingWorkload>();
 export const withRoutingWorkload = <T>(workload: RoutingWorkload, run: () => T) => workloads.run(workload, run);
-export function routingWorkload(request: ModelRequest, background = !!request.worker): RoutingWorkload {
+export function routingWorkload(request: ModelRequest, background = false): RoutingWorkload {
   return `${background ? 'background' : 'interactive'}-${request.tools.some(tool => tool.type === 'function') ? 'tools' : 'text'}`;
 }
 export const currentRoutingWorkload = (request: ModelRequest) => workloads.getStore() ?? routingWorkload(request);

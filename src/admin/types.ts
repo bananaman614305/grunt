@@ -4,7 +4,13 @@ import { sellerQuota } from '../local/quota-policy.js';
 import type { SellerQuota } from '../local/quota-policy.js';
 import { diagnosticFailureReasons, diagnosticReasons } from '../local/diagnostics.js';
 import { knownAdapters, localOptInAdapterIds } from '../registry.js';
-import { MAX_WORKER_ACTIVE, MAX_WORKER_QUEUED, MAX_WORKER_RECENT, workerActivities } from '../local/worker-pool.js';
+
+// Legacy subworker metadata. Grunt no longer provides subworkers, but daemons up to 0.9.x and the
+// Adventure activity feed still report it, so the collector keeps accepting these bounded fields.
+const MAX_WORKER_ACTIVE = 2;
+const MAX_WORKER_QUEUED = 16;
+const MAX_WORKER_RECENT = 20;
+const workerActivities = ['review', 'tests', 'implementation', 'research'] as const;
 
 export type DiagnosticKind = 'user' | 'setup' | 'maintenance' | 'diagnostic';
 export type DiagnosticEventType = 'request.start' | 'request.finish' | 'attempt.start' | 'attempt.finish' | 'route.selection' | 'route.skip' | 'transport.finish';

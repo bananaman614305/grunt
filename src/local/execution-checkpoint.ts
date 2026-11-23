@@ -5,7 +5,7 @@ import { link, lstat, mkdir, open, readdir, realpath, rm, writeFile } from 'node
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { workerRelativePath } from './worker-tool-helper.js';
+import { projectRelativePath } from './project-paths.js';
 
 const exec = promisify(execFile);
 const namePattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}$/;
@@ -26,7 +26,7 @@ function path(v: unknown) {
   // Share the worker boundary's credential and portable-path exclusions; a
   // focused handoff must never be a less restrictive project export route.
   if (value.split('/').some(p => forbidden.test(p))) throw fail();
-  try { return workerRelativePath(value); } catch { throw fail(); }
+  try { return projectRelativePath(value); } catch { throw fail(); }
 }
 export interface CheckpointReference {
   kind: 'job' | 'artifact' | 'worker'; id: string; state: 'pending' | 'ready' | 'collected'; paths: string[];

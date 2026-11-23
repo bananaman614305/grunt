@@ -26,7 +26,7 @@ export class Goedel implements Source {
   }
 
   acceptsRequest(request: ModelRequest) {
-    return request.publicContext === true && !request.worker && !request.handoffPrompt && !request.imageInput;
+    return request.publicContext === true && !request.handoffPrompt && !request.imageInput;
   }
 
   private async freeGrant(signal?: AbortSignal) {

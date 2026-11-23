@@ -90,18 +90,6 @@ it('still selects an unrouted source when its model id is named, and lists it', 
   } finally { await close(); }
 });
 
-it('never offers an unrouted source to subworkers', async () => {
-  vi.spyOn(console, 'error').mockImplementation(() => {});
-  const { sources, fake, close } = await pool();
-  try {
-    fake.get('opencode')!.complete.mockRejectedValue(new SourceError('upstream', 'synthetic outage'));
-    fake.get('kilo')!.complete.mockRejectedValue(new SourceError('upstream', 'synthetic outage'));
-    const worker = { id: 'worker-a', onSource: vi.fn(), onWait: vi.fn() };
-    await expect(sources.complete({ ...request('worker task'), cwd: '/does-not-exist/grunt-worker-scratch', worker }, signal())).rejects.toBeInstanceOf(SourceError);
-    expect(fake.get('freellmapi')!.complete).not.toHaveBeenCalled();
-  } finally { await close(); }
-});
-
 it('keeps a manual GRUNT_SOURCES list as the ordered chain the person chose', async () => {
   const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
   const { sources, fake, close } = await pool({});

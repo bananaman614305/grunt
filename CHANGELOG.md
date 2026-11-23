@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Remove Grunt's built-in subworkers. Parallel work now comes from the harness: Claude Code, Codex and OpenCode subagents run through Grunt as ordinary routed requests; Pi has no subagents, so Pi users lose parallel workers. Removed: proposal and tool-using workers, the `/v1/workers/*` routes, `usegrunt workers ...`, `grunt_delegate`, `grunt_spawn`, `grunt_coordinate`, `grunt_worker_*`, the worker daemon slots in `/v1/status`, and worker-only routing paths. See [removed subworkers](docs/reference.md#subworkers-removed).
+- Keep old clients from crashing the daemon: `/v1/workers/*` answers HTTP 410 with a removal message, `usegrunt workers` exits 1 with the same notice, and the Pi extension still loads from `worker-pi.js` (now a shim for `execution-pi.js`) and ignores `--grunt-agent-workers` and `--grunt-worker-port`.
+- Keep Pi background jobs (`--grunt-background-jobs`), checkpoints (`--grunt-checkpoints`) and the publication tools; they never depended on subworkers. Independent release review did use a subworker, so the trusted publication host now needs an injected reviewer and refuses to review without one.
+- Leave artifacts retained by earlier daemons under `worker-retention/` and `workers/` in the config directory untouched; Grunt no longer applies or discards them.
+
 ## 0.9.12 — 2026-11-23
 
 - Return to the main line after 0.9.11, which was cut from the reviewed maintenance branch. This release therefore includes the writable registry, feedback-driven routing and daily route-count reporting from #175 (counts only: no prompts, responses or keys).

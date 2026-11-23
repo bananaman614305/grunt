@@ -44,7 +44,7 @@ environment variables.
 
 Every normal cycle reads:
 
-- `/v1/status` for the cached provider and subworker snapshot;
+- `/v1/status` for the cached provider snapshot (older daemons also report a legacy subworker snapshot);
 - `/v1/diagnostics/summary` for the persistent stream identity;
 - `/v1/diagnostics/events` for up to 200 oldest unacknowledged events;
 - the private maintenance state and explicitly projected scout state, when present;
