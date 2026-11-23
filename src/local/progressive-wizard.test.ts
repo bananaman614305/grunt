@@ -314,7 +314,11 @@ it.each([true, false])('finishes at anonymous Kilo once grunt answers, leaving s
   const signupHarness = vi.fn(() => async () => {});
   const probeOperator = vi.fn(async () => true);
   stub.checkFallbackServices.mockImplementation(async (_failed, _port, _notify, ids) => { order.push(ids![0]!); });
-  stub.connectSquire.mockImplementation(async () => { order.push('squire'); });
+  stub.connectSquire.mockImplementation(async () => {
+    const { readSetupSession } = await import('./setup-session.js');
+    expect(await readSetupSession(directory)).toBeDefined();
+    order.push('squire');
+  });
   stub.setupFallbacks.mockImplementation(async options => {
     order.push('signup');
     expect(options.adapters).toEqual(['zro']);
@@ -330,15 +334,26 @@ it.each([true, false])('finishes at anonymous Kilo once grunt answers, leaving s
   });
   await wizard(undefined, { ...stub, chooseHarness, connectHarness, signupHarness, probeOperator, createSquire: () => squire });
   // The chosen coding tool is pointed at grunt even though no route drove a signup.
-  expect(order).toEqual(['harness', 'kilo', 'smoke', ...(available ? ['completion'] : []), 'background']);
+  expect(order).toEqual(['harness', 'kilo', 'smoke', ...(available ? ['completion'] : []), 'squire', 'background']);
   expect(stub.smokeTest).toHaveBeenCalledExactlyOnceWith(8788, expect.any(AbortSignal));
   expect(stub.setupFallbacks).not.toHaveBeenCalled();
   expect(signupHarness).not.toHaveBeenCalled();
   expect(log.mock.calls.map(call => call[0])).toEqual([
     available ? '✓ harness: pi' : '… harness: Squire alone',
     '✓ data sharing: on, no new sources', '✓ local service: running on port 8788',
-    '✓ smoke test: grunt answered', '1 ready; 1 more continue in the background (usegrunt status)', 'Ready'
+    '✓ smoke test: grunt answered', '✓ Trusty Squire: already set up and signed in, skipped', '1 ready; 1 more continue in the background (usegrunt status)', 'Ready'
   ]);
+});
+
+it('keeps a ready route when Squire bootstrap fails before the background handoff', async () => {
+  const stub = actions(['kilo', 'zro']);
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  stub.connectSquire.mockRejectedValue(new Error('Squire broker unavailable'));
+  await expect(wizard(undefined, { ...stub, chooseHarness: async () => undefined })).resolves.toBeUndefined();
+  expect(stub.connectSquire).toHaveBeenCalledOnce();
+  expect(stub.resumeBackground).toHaveBeenCalledOnce();
+  expect(log.mock.calls.map(call => call[0])).toContain('✗ Trusty Squire: Squire unavailable');
+  expect(log.mock.calls.at(-1)).toEqual(['Ready']);
 });
 
 it('says why the anonymous Kilo model cannot drive signups', async () => {
@@ -689,9 +704,13 @@ it('checks anonymous OpenCode before any signup, so its row shows the state its 
   vi.spyOn(squire, 'useSignupAgent').mockImplementation(() => {});
   // The registry lists BeatAPI before OpenCode, as the owner's run did.
   const stub = actions(['kilo', 'beatapi', 'opencode']);
+  const order: string[] = [];
+  stub.connectSquire.mockImplementation(async () => { order.push('squire'); });
+  stub.resumeBackground.mockImplementation(async () => { order.push('background'); });
   stub.checkFallbackServices.mockImplementation(async (failed, _port, _notify, ids) => { if (ids![0] === 'kilo') failed.push('kilo'); });
   stub.setupFallbacks.mockImplementation(async options => {
     const id = options.adapters![0]!;
+    order.push(id);
     await options.onSettled?.(id, true);
     return { unavailable: [] };
   });
@@ -701,4 +720,5 @@ it('checks anonymous OpenCode before any signup, so its row shows the state its 
   // Anonymous Kilo failed; its account signup waits for the background with BeatAPI.
   expect(Object.fromEntries(rows)).toEqual({ kilo: 'background', opencode: '✓ ready', beatapi: 'background' });
   expect(stub.resumeBackground).toHaveBeenCalledOnce();
+  expect(order).toEqual(['opencode', 'squire', 'background']);
 });

@@ -708,12 +708,6 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       if (!smoked && !driving && await freeDriver()) useFree();
       if (!smoked && !driving && harness) console.log(skipAnonymous ? `– operator: anonymous Kilo off (GRUNT_SETUP_NO_ANONYMOUS=1); using Squire`
         : '… operator: no working anonymous model; using Squire');
-      if (!smoked && remaining.length) {
-        try {
-          const state = await connectState();
-          console.log(state === 'installed' ? '✓ Trusty Squire: installed and signed in' : '✓ Trusty Squire: already set up and signed in, skipped');
-        } catch (error) { console.log(`✗ Trusty Squire: ${setupFailureReason(error)}`); }
-      }
       table.start();
       const checkOperator = async () => {
         if (!operatorFailure) return;
@@ -769,6 +763,12 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     if (plan?.discoverLater && actions.connectHarnesses) await actions.connectHarnesses(port, { table });
     // Sources setup did not reach, or left for a retry, continue in the daemon's route pass.
     const background = [...new Set([...ids.filter(id => !settled.has(id)), ...table.rowsWith('waiting (retry)')])];
+    if (revised && (connection || background.length)) {
+      try {
+        const state = await connectState();
+        console.log(state === 'installed' ? '✓ Trusty Squire: installed and signed in' : '✓ Trusty Squire: already set up and signed in, skipped');
+      } catch (error) { console.log(`✗ Trusty Squire: ${setupFailureReason(error)}`); }
+    }
     for (const id of background) table.set('source', id, 'background');
     table.finish();
     console.log(`${readyCount} ready${background.length ? `; ${background.length} more continue in the background (usegrunt status)` : ''}`);
