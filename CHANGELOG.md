@@ -2,6 +2,7 @@
 
 ## 0.9.11 — 2026-11-23
 
+- Make offline workload deadlines explicit and reproducible; packaging checks retain verified outcomes on loaded hosts without changing live request deadlines.
 - Bundle the reviewed public registry publication and preserve the shipped BeatAPI capture default, so normal startup refresh retains existing retirement and backoff state.
 - Support verified publication from the exact `release/0.9-reviewed` maintenance branch alongside `main`, retaining stable-version and tested-archive checks.
 - Package the existing retired-source receipt compatibility, negative-availability caching and workload-scoped routing evidence fixes on the reviewed maintenance line.
