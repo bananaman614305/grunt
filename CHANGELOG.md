@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.11 — 2026-11-23
+
+- Support verified publication from the exact `release/0.9-reviewed` maintenance branch alongside `main`, retaining stable-version and tested-archive checks.
+- Package the existing retired-source receipt compatibility, negative-availability caching and workload-scoped routing evidence fixes on the reviewed maintenance line.
+
 ## 0.9.10 — 2026-11-22
 
 - Preserve automatic source discovery when an existing managed receipt still names a retired provider. The receipt stays unchanged and retired providers remain disabled.
