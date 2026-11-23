@@ -27,7 +27,7 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
     "ops/provider-scout/provision.mjs", "ops/provider-scout/test_provision.mjs"
   ]);
   files.add("scripts/verification-benchmark.ts");
-  for (const path of ["docs/efficiency-round3-results.md", "docs/passive-efficiency.md", "scripts/metadata-benchmark.ts", "scripts/passive-efficiency-collector.py", "scripts/test_passive_efficiency_collector.py"]) files.add(path);
+  for (const path of ["docs/efficiency-round3-results.md", "docs/efficiency-empirical-results.md", "docs/passive-efficiency.md", "scripts/metadata-benchmark.ts", "scripts/routing-replay-benchmark.ts", "scripts/passive-efficiency-collector.py", "scripts/test_passive_efficiency_collector.py"]) files.add(path);
   expect(paths.length).toBeGreaterThan(15);
   for (const path of paths) expect(files.has(path) || operatorFiles.has(path) || path.startsWith("src/") || path.startsWith("site/") || path === "proof/fake.mjs" || [".github/workflows/check.yml", ".github/workflows/ci.yml", ".github/workflows/deploy.yml", ".github/workflows/publish.yml", ".github/workflows/registry.yml", ".github/workflows/site.yml"].includes(path), path).toBe(true);
   expect(paths).toContain("src/server.ts");
