@@ -134,6 +134,11 @@ export class SetupTable {
     this.unhook();
     this.drawn = [];
     this.flush();
+    for (const row of this.rows.values()) {
+      if ([...this.line(row.kind, row.name, row.status)].length > Math.max(1, this.width() - 1)) {
+        this.write(`${row.name}: ${row.status}\n`);
+      }
+    }
   }
   private printRow(kind: string, name: string, status: string) {
     if (!this.started) { this.write('type    name                  status\n'); this.started = true; }

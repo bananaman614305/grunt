@@ -2,7 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { BrowserSquire } from './setup.js';
+import { SetupTable } from './setup-table.js';
+import { BrowserSquire, setupProviders } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 
@@ -92,5 +93,49 @@ it('redacts unsafe Squire refusal reasons before exposing them', async () => {
     ? { status: 'rejected', reason: 'secret is synthetic-sensitive-value', session_id: 'refused' } : {});
   await expect(squire.signup('runcrate', 'https://runcrate.test', 'Capture access')).rejects.toThrow('provider refused');
   expect(squire.signupFailure('runcrate')).not.toContain('synthetic-sensitive-value');
+  await squire.close();
+});
+
+const stopQuestion = 'Choose one current target key, or DONE, BLOCKED, NONE_OF_THESE, or WAIT.';
+const stopReason = 'model confidence is below the drive threshold on https://zro.test/api-keys';
+
+it.each([false, true])('notifies full Squire diagnostics for a provisioning drop (polled: %s)', async polled => {
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
+    ? { status: 'low_confidence', question: `${stopQuestion} ghp_syntheticSensitive1234567890`, confidence: 0.32, reason: `${stopReason} Basic short-value`, session_id: 'tab' } : {});
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  if (polled) vi.spyOn(squire.runs, 'start').mockResolvedValueOnce({ run: { id: 'zro', state: 'running' }, decision: 'silent' });
+  const lines: string[] = [];
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: line => lines.push(line) });
+  expect(lines.join('\n')).toContain(stopQuestion);
+  expect(lines.join('\n')).toContain('confidence 0.32');
+  expect(lines.join('\n')).not.toContain('ghp_syntheticSensitive1234567890');
+  expect(lines.join('\n')).not.toContain('short-value');
+  expect(lines.join('\n')).toContain("Squire's reason: model confidence is below the drive threshold on [link omitted]");
+  await squire.close();
+});
+
+it.each([40, 80, undefined])('renders fallback diagnostics in full at %s columns, redacting secrets', async columns => {
+  directory = await mkdtemp(join(tmpdir(), 'grunt-drop-reason-'));
+  const squire = new BrowserSquire();
+  const secret = 'sk-syntheticSensitive123456789012345';
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
+    ? { status: 'low_confidence', question: `${stopQuestion} ${secret}`, confidence: 0.32,
+      reason: `${stopReason} Bearer short-value ${secret}`, session_id: 'tab' } : {});
+  const output: string[] = [];
+  const table = new SetupTable({ isTTY: columns !== undefined, ...(columns ? { columns } : {}),
+    write: ((text: string) => { output.push(text); return true; }) as NodeJS.WriteStream['write'] });
+  await setupFallbacks({ directory, squire, adapters: ['zro'], signal: new AbortController().signal,
+    notify: () => {}, connect: async () => {}, run: async () => {},
+    setupProvider: async () => { await squire.signup('zro', 'https://zro.test', 'Capture access'); },
+    onSettled: (id, available, reason) => { table.set('source', id, available ? 'ready' : `skipped (${reason})`); } });
+  table.finish();
+  const text = output.join('');
+  expect(text).toContain(stopQuestion);
+  expect(text).toContain('confidence 0.32');
+  expect(text).toContain("Squire's reason: model confidence is below the drive threshold on [link omitted] [redacted] [redacted]");
+  expect(text).not.toContain(secret);
+  expect(text).not.toContain('short-value');
+  expect(text).not.toContain('https://zro.test/api-keys');
   await squire.close();
 });

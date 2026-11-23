@@ -61,7 +61,7 @@ it.each([
 it('answers a name field once, then reports Squire\'s stop', async () => {
   const squire = new BrowserSquire();
   const calls = drives(squire, () => unsure('https://zro.moonmath.ai/api-keys', 'Alias|fm=1', 'kalias'));
-  await expect(squire.runs.start(zroInput)).resolves.toMatchObject({ run: { state: 'dropped' }, reason: expect.stringContaining(`Squire asked: ${question}`) });
+  await expect(squire.runs.start(zroInput)).resolves.toMatchObject({ run: { state: 'dropped' }, diagnostic: { question, confidence: 0.32 } });
   expect(calls.map(call => call.answer)).toEqual([undefined, 'kalias']);
   await squire.close();
 });
