@@ -2,7 +2,13 @@ import { SourceError } from './source.js';
 
 // Setup can display these fixed messages on screen and in local logs. Upstream
 // error text is only matched in memory and is never copied into either output.
+// A local setup refusal that carries its own fixed reason, so the screen names
+// the cause instead of a generic "setup failed".
+export class SetupRefusal extends Error {
+  constructor(readonly reason: string, message: string) { super(message); }
+}
 export function setupFailureReason(error: unknown): string {
+  if (error instanceof SetupRefusal) return error.reason;
   if (error instanceof SourceError) {
     return { quota: 'quota exhausted', refused: 'provider refused', logged_out: 'sign-in required',
       not_installed: 'required software unavailable', timeout: 'timed out', cancelled: 'cancelled', upstream: 'provider request failed' }[error.code];
@@ -32,13 +38,4 @@ export function setupFailureReason(error: unknown): string {
 // candidate drives. A hang or timeout is not one of them: the signup continues in the same session.
 export function signupOperatorUnavailable(reason: string) {
   return ['quota exhausted', 'model pool unavailable', 'provider request failed', 'CLI unavailable', 'sign-in required'].includes(reason);
-}
-
-export function setupAttention(reason: string) {
-  switch (reason) {
-    case 'needs human verification': return 'complete verification in the browser';
-    case 'browser requested an approval': return 'review the browser approval';
-    case 'native CLI pairing incomplete': return 'complete the native CLI pairing';
-    case 'needs Nous login': return 'Nous login';
-  }
 }

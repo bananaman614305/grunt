@@ -35,8 +35,8 @@ it('restores completed-call weights across restart without granting availability
   const restarted = new SourceStatus(['kilo'], () => now); await restarted.setRoutingHistory(await open(path));
   expect(restarted.routingWeight('kilo')).toBe(weight);
   expect(restarted.routingAvailability('kilo', 30000, 5000)).toBeUndefined();
-  expect(restarted.snapshot({ ids: ['kilo'], disabled: new Set(), pending: new Set(), verifying: new Set(), approvals: new Set(), preparing: new Set() }).sources[0]).toMatchObject({ state: 'unknown', active: 0 });
-  expect(JSON.stringify(restarted.snapshot({ ids: ['kilo'], disabled: new Set(), pending: new Set(), verifying: new Set(), approvals: new Set(), preparing: new Set() }))).not.toContain('lastSuccessAt');
+  expect(restarted.snapshot({ ids: ['kilo'], disabled: new Set(), pending: new Set(), verifying: new Set(), preparing: new Set() }).sources[0]).toMatchObject({ state: 'unknown', active: 0 });
+  expect(JSON.stringify(restarted.snapshot({ ids: ['kilo'], disabled: new Set(), pending: new Set(), verifying: new Set(), preparing: new Set() }))).not.toContain('lastSuccessAt');
 });
 
 it.each(['quota', 'upstream'] as const)('migrates legacy Kilo %s holds once and preserves subsequent pool exhaustion', async code => {

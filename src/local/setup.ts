@@ -14,8 +14,6 @@ import type { ProvisionInput } from '@trusty-squire/sdk';
 import { freeConfig, loopback } from './freellmapi.js';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
-import { proxyApproval } from './approval-proxy.js';
-import { VerificationQueue } from './verification-queue.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
@@ -47,8 +45,6 @@ import { readSetupSession } from './setup-session.js';
 import { signupAgentTools, signupAgentResult, guardedSignupChoice, writeId } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
-import { withTerminal } from './terminal.js';
-import { confirm, isCancel } from '@clack/prompts';
 
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
@@ -236,24 +232,15 @@ export class BrowserSquire implements SetupSquire {
   useRegistry(registry: () => Registry) { this.options.registry = registry; }
   useSignupAgent(agent: SignupAgent | undefined) { if (agent) this.options.agent = agent; else delete this.options.agent; }
   useBatchSignup() { this.batchSignup = true; }
-  // Bootstrap tries other providers before handing a browser to the person.
-  deferHandoff(deferred: boolean) { this.handoffDeferred = deferred; }
   // Reports when a provider's browser work queues behind the browser limit
   // and when it gets a slot, so setup can show waiting until it starts.
   onBrowserQueue(observer: ((provider: string, state: 'waiting' | 'started') => void) | undefined) { this.browserObserver = observer; }
   private browserObserver: ((provider: string, state: 'waiting' | 'started') => void) | undefined;
   private batchSignup = false;
-  private handoffDeferred = false;
-  private canHandOff() {
-    return !this.options.background && process.stdin.isTTY === true && gruntEnv('SETUP_NO_HUMAN') !== '1'
-      && !(this.handoffDeferred && !this.options.agent);
-  }
   signupFailure(provider: string) { return this.failures.get(provider); }
   /** Squire's own stop detail for the last dropped signup, for GRUNT_SETUP_DEBUG. */
   signupFailureDetail(provider: string) { return this.failureDetails.get(provider); }
   approveDataSharing(providers: readonly string[]) { this.options.dataSharingApproved = [...new Set(providers)]; }
-  pendingVerificationServices(): readonly string[] { return this.verification.services(); }
-  onVerificationChange(observer: (services: readonly string[]) => void) { return this.verification.subscribe(observer); }
   private client = new Client({ name: 'grunt setup', version: '0.1.0' });
   private sessions = new Map<string, string>();
   private services = new Map<string, AbortController>();
@@ -274,17 +261,9 @@ export class BrowserSquire implements SetupSquire {
   private closed = false;
   private shutdown = new AbortController();
   private get signal() { return this.options.signal ? AbortSignal.any([this.options.signal, this.shutdown.signal]) : this.shutdown.signal; }
-  private handoffs: { url: string; close(): void; provider?: string }[] = [];
   private connection: Promise<void> | undefined;
   private metadata: Promise<Credential[]> | undefined;
   private grants = new Map<string, Promise<{ base_url: string; token: string }>>();
-  private verification = new VerificationQueue(items => withTerminal(async () => {
-    for (const item of items) {
-      console.log(`Verify ${item.service} in your browser: ${item.url}`);
-      const answer = await confirm({ message: `Finished verifying ${item.service}?`, initialValue: true, signal: this.signal });
-      if (isCancel(answer) || !answer) throw new SetupFailure('needs human verification');
-    }
-  }));
   private serviceSignal(provider: string) {
     let controller = this.services.get(provider);
     if (!controller) { controller = new AbortController(); this.services.set(provider, controller); }
@@ -351,7 +330,6 @@ export class BrowserSquire implements SetupSquire {
     let controller = this.services.get(provider);
     if (!controller) { controller = new AbortController(); this.services.set(provider, controller); }
     controller.abort(new Error('Provider signup cancelled'));
-    for (const handoff of this.handoffs.filter(item => item.provider === provider)) handoff.close();
     await this.finishSession(provider);
   }
   connect(): Promise<void> {
@@ -449,7 +427,6 @@ export class BrowserSquire implements SetupSquire {
         if (this.sessions.get(provider) === id) this.sessions.delete(provider);
         this.recoveryChoices.delete(provider);
         this.retries.delete(provider);
-        for (const handoff of this.handoffs.filter(item => item.provider === provider)) handoff.close();
       } catch { /* Preserve the original error; close retries a failed cleanup. */ }
     })();
     this.finishing.set(id, pending);
@@ -548,8 +525,6 @@ export class BrowserSquire implements SetupSquire {
         return { run: { id: provider, state: 'completed' }, decision: 'silent' };
       }
       const active = this.sessions.get(provider);
-      const needsUser = object(result.needs_user);
-      const handoff = `${classification} ${observedField ?? ''} ${String(needsUser.wall ?? '')} ${String(needsUser.message ?? '')}`.replace(/[_-]/g, ' ');
       const offeredTerms = Object.entries(object(result.options)).find(([key, label]) => typeof label === 'string' && /\b(?:accept|agree)\b/i.test(label) && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(label) && guardedSignupChoice(key, label));
       const usedTerms = this.recoveryChoices.get(provider) ?? new Set<string>();
       this.recoveryChoices.set(provider, usedTerms);
@@ -561,12 +536,6 @@ export class BrowserSquire implements SetupSquire {
       if (Array.isArray(termsButton)) {
         usedTerms.add(termsButton[0]);
         await this.serviceCall(provider, 'operate_click', { session_id: active, ref: termsButton[0] });
-        continue;
-      }
-      // Squire solves CAPTCHAs and reads verification email itself.
-      const humanStep = /\b(?:sms|passkey|2fa|two factor|human (?:verification|assistance))\b/i.test(handoff);
-      if (humanStep && active && this.canHandOff()) {
-        await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(active) }), signal);
         continue;
       }
       if (['budget', 'evaluate_timeout'].includes(String(result.status))) return { run: { id: provider, state: 'running' }, decision: 'silent' };
@@ -657,11 +626,8 @@ export class BrowserSquire implements SetupSquire {
         answer = cookie[0];
         continue;
       }
-      if (this.canHandOff()) {
-        await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(active) }), signal);
-        continue;
-      }
-      // Background signups have no person to hand off to; the caller drives the same session again.
+      // Setup never hands a browser to the person. In the background the caller
+      // drives the same session again; in the foreground this provider is dropped.
       if (this.options.background) return { run: { id: provider, state: 'running' }, decision: 'silent' };
       return dropped(this.failures.get(provider) ?? 'browser could not continue');
     }
@@ -721,12 +687,6 @@ export class BrowserSquire implements SetupSquire {
             observation = object(latest.observation);
             return signupAgentResult(latest);
           }
-          if (name === 'operate_share') {
-            latest = { status: 'needs_human' };
-            if (!this.canHandOff()) return latest;
-            await this.scoped(this.verification.wait({ service: provider, url: await this.humanHandoff(session) }), signal);
-            return { status: 'human_finished', reason: 'Resume the same browser with operate_drive' };
-          }
           if (name === 'operate_extract') {
             const capture = signupCapture(args.capture, provider);
             const store = args.store === undefined ? undefined : object(args.store);
@@ -768,16 +728,6 @@ export class BrowserSquire implements SetupSquire {
     } finally { await queue; }
     return latest;
   }
-  async humanHandoff(session: string) {
-    const provider = [...this.sessions].find(([, id]) => id === session)?.[0];
-    const share = await (provider ? this.serviceCall(provider, 'operate_share', { session_id: session }) : this.call('operate_share', { session_id: session }));
-    if (provider) this.serviceSignal(provider).throwIfAborted();
-    if (typeof share.url !== 'string') throw new Error('Squire returned no browser handoff link');
-    const proxy = await proxyApproval(share.url);
-    if (provider && this.serviceSignal(provider).aborted) { proxy.close(); throw new Error('Provider signup cancelled'); }
-    this.handoffs.push({ ...proxy, ...(provider ? { provider } : {}) });
-    return proxy.url;
-  }
   runs = {
     start: async (input: ProvisionInput) => this.drive(input.service as Provider),
     get: async (id: string) => { const result = await this.drive(id as Provider); return { state: result.run.state, ...(result.approval_url ? { approval_url: result.approval_url } : {}), ...(result.reason ? { reason: result.reason } : {}) }; }
@@ -787,7 +737,6 @@ export class BrowserSquire implements SetupSquire {
     this.shutdown.abort();
     await Promise.allSettled([...this.pending]);
     await Promise.allSettled([...this.sessions.keys()].map(provider => this.finishSession(provider)));
-    for (const handoff of this.handoffs) handoff.close();
     await this.client.close();
   }
 }

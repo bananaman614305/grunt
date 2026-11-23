@@ -23,6 +23,8 @@ export interface RecoveryOptions {
   // Signup driver selection follows docs/router.md.
   driver?: () => Promise<SignupAgent | undefined>;
   notify?: (line: string) => void;
+  // The route this pass is signing up now, or undefined between signups.
+  opening?: (id: string | undefined) => void;
   setup?: typeof setupFallbacks;
   // The synced registry; signup hints follow it.
   registry?: () => Registry;
@@ -89,6 +91,7 @@ export class SourceRecovery {
         if (this.options.eligible && !this.options.eligible(id)) continue;
         attempts++;
         notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
+        this.options.opening?.(id);
         const outcome = await (this.options.setup ?? setupFallbacks)({
           directory: this.options.directory, adapters: [id], background: true, acquire: true, notify, signal,
           ...(agent ? { agent } : {}), ...(this.options.registry ? { registry: this.options.registry } : {}),
@@ -96,7 +99,7 @@ export class SourceRecovery {
             if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
             await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal });
           },
-        }).catch(() => ({ unavailable: [id] }));
+        }).catch(() => ({ unavailable: [id] })).finally(() => this.options.opening?.(undefined));
         this.failed.delete(id);
         this.failedSinceSync.delete(id);
         if (outcome.unavailable.includes(id)) {

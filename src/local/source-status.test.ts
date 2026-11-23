@@ -104,9 +104,8 @@ it('renders setup gates and retired or removed sources without touching native c
   let current = registry;
   const a = fake('opencode'), b = fake('kilo'), sources = new Sources([a, b], { registry: () => current }, new Set(['freebuff', 'apinex']));
   sources.pending.add('opencode'); sources.pending.add('kilo'); sources.verifying.add('kilo');
-  sources.approvals.add('opencode'); sources.approvals.add('kilo');
   expect(sources.status().sources).toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: 'opencode', state: 'approval', detail: expect.stringContaining('Needs foreground verification') }), expect.objectContaining({ id: 'kilo', state: 'verifying' }),
+    expect.objectContaining({ id: 'opencode', state: 'connecting' }), expect.objectContaining({ id: 'kilo', state: 'verifying' }),
     expect.objectContaining({ id: 'freebuff', state: 'disabled' }), expect.objectContaining({ id: 'apinex', state: 'disabled' })
   ]));
   current = { ...registry, adapters: [registry.adapters[1]!] };
@@ -153,7 +152,7 @@ it('keeps an active setup probe verifying until its successful reply is admitted
   const source = fake('kilo'), sources = new Sources([source], { registry: () => registry });
   let finish!: (value: Completion) => void;
   vi.mocked(source.complete).mockImplementation(() => new Promise<Completion>(resolve => { finish = resolve; }));
-  sources.pending.add('kilo'); sources.verifying.add('kilo'); sources.approvals.add('kilo');
+  sources.pending.add('kilo'); sources.verifying.add('kilo');
   const checking = sources.complete({ ...request, model: 'kilo' }, new AbortController().signal);
   expect(sources.status()).toMatchObject({ activeRequests: 1, sources: [{ state: 'verifying', active: 1 }] });
   expect(sources.status().sources[0]).not.toHaveProperty('lastSuccessAt');

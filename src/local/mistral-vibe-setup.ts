@@ -259,7 +259,7 @@ export async function setupMistralVibe(options: MistralVibeSetupOptions) {
   options.notify?.('Mistral Vibe: signing in and pairing the native CLI');
   try {
     await awaitBrowser(options.squire.signup('mistral-vibe', 'https://console.mistral.ai',
-      "Sign in to the user's existing Mistral account, or use normal Google sign-up for a Free account. Finish as soon as you are signed in; do not open subscription or billing pages to audit the plan. Never enable API or Vibe Code pay-as-you-go. Do not downgrade, remove a card, switch account, create another identity, subscribe, top up or enable billing. Optional marketing remains off. Required unrelated consent, refusal, CAPTCHA, phone, email or passkey verification needs human handoff; do not bypass it. Do not create or reveal a general API key. A separate native CLI pairing will follow."), options.signal);
+      "Sign in to the user's existing Mistral account, or use normal Google sign-up for a Free account. Finish as soon as you are signed in; do not open subscription or billing pages to audit the plan. Never enable API or Vibe Code pay-as-you-go. Do not downgrade, remove a card, switch account, create another identity, subscribe, top up or enable billing. Optional marketing remains off. Stop on required unrelated consent, refusal, CAPTCHA, phone, email or passkey verification; do not bypass it. Do not create or reveal a general API key. A separate native CLI pairing will follow."), options.signal);
   } catch { options.signal?.throwIfAborted(); throw new Error('Mistral Vibe Free account verification did not complete; rerun usegrunt setup to resume'); }
   await nativeLogin(options, 'login');
   await writeMistralVibeFreePlanReceipt(options.directory, {

@@ -17,7 +17,7 @@ export type SignupAgent = (input: {
 
 // Vault, payment, upload, dialog and inbox tools stay out: they reveal secrets or local
 // files to the free model, spend money, or confirm a key change no label check sees.
-export const signupAgentTools = new Set(['operate_drive', 'operate_observe', 'operate_click', 'operate_type', 'operate_select', 'operate_wait', 'operate_scroll', 'operate_extract', 'operate_share',
+export const signupAgentTools = new Set(['operate_drive', 'operate_observe', 'operate_click', 'operate_type', 'operate_select', 'operate_wait', 'operate_scroll', 'operate_extract',
   'operate_solve_captcha', 'operate_navigate', 'operate_press', 'operate_login']);
 
 const browserArguments: Record<string, readonly string[]> = {
@@ -28,7 +28,6 @@ const browserArguments: Record<string, readonly string[]> = {
   operate_wait: ['milliseconds'],
   operate_scroll: ['direction'],
   operate_extract: ['store', 'capture'],
-  operate_share: [],
   operate_solve_captcha: [],
   operate_navigate: ['url'],
   operate_press: ['key']

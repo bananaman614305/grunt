@@ -10,14 +10,13 @@ const heartbeat = 15000;
 const claimName = /^\.setup-session-(\d+)-([a-f0-9-]{36})$/;
 const sourceId = /^[a-z][a-z0-9-]{0,63}$/;
 interface Claim { path: string; id: string; pid: number }
-interface State { version: 1; id: string; pid: number; expires: number; owned: string[]; pending: string[]; verifying: string[]; approvals?: string[]; anonymousKilo?: true }
-export interface SetupSessionState { owned: ReadonlySet<string>; pending: ReadonlySet<string>; verifying: ReadonlySet<string>; approvals?: ReadonlySet<string>; anonymousKilo?: true }
+interface State { version: 1; id: string; pid: number; expires: number; owned: string[]; pending: string[]; verifying: string[]; anonymousKilo?: true }
+export interface SetupSessionState { owned: ReadonlySet<string>; pending: ReadonlySet<string>; verifying: ReadonlySet<string>; anonymousKilo?: true }
 export interface SetupSession {
   readonly signal: AbortSignal;
   verify(id: string): Promise<void>;
   hold(id: string): Promise<void>;
   release(id: string): Promise<void>;
-  setApprovals(ids: readonly string[]): Promise<void>;
   useKiloAccount(): Promise<void>;
   close(): Promise<void>;
 }
@@ -103,19 +102,15 @@ export async function readSetupSession(directory: string): Promise<SetupSessionS
     }
     const valid = states.filter((state): state is State => state !== undefined && state.expires > Date.now());
     if (!valid.length) return;
-    // Approval metadata is display-only. Malformed optional fields must never
-    // change a valid owner's routing exclusions or expose capability links.
-    const approvals = new Set(valid.flatMap(state => Array.isArray(state.approvals)
-      ? state.approvals.filter(id => typeof id === 'string' && state.pending.includes(id) && !state.verifying.includes(id)) : []));
     return {
       owned: new Set(valid.flatMap(state => state.owned)), pending: new Set(valid.flatMap(state => state.pending)),
-      verifying: new Set(valid.flatMap(state => state.verifying)), ...(approvals.size ? { approvals } : {}),
+      verifying: new Set(valid.flatMap(state => state.verifying)),
       ...(valid.some(state => state.anonymousKilo === true && state.owned.includes('kilo')) ? { anonymousKilo: true as const } : {})
     };
   } catch { return; }
 }
 
-/** Claim before starting the daemon. Keep this owner alive while later approvals run. */
+/** Claim before starting the daemon. Keep this owner alive while later signups run. */
 export async function beginSetupSession(directory: string, ids: readonly string[], options: { anonymousKilo?: boolean } = {}): Promise<SetupSession> {
   if (ids.length > 100 || ids.some(id => !sourceId.test(id)) || new Set(ids).size !== ids.length) throw unavailable();
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -127,7 +122,7 @@ export async function beginSetupSession(directory: string, ids: readonly string[
   try {
     for (const peer of await claims(directory)) if (peer.id !== id && await blockingClaim(peer)) throw unavailable();
   } catch (error) { await rm(path, { recursive: true, force: true }); throw error; }
-  const pending = new Set(ids), verifying = new Set<string>(), approvals = new Set<string>(), controller = new AbortController();
+  const pending = new Set(ids), verifying = new Set<string>(), controller = new AbortController();
   let anonymousKilo = options.anonymousKilo === true && ids.includes('kilo');
   let closed = false, initialized = false, failure: Error | undefined, tail: Promise<void> = Promise.resolve();
   let expires = Date.now() + ttl;
@@ -162,7 +157,7 @@ export async function beginSetupSession(directory: string, ids: readonly string[
       const temporary = join(path, `state.${randomUUID()}.tmp`), nextExpiry = Date.now() + ttl;
       try {
         const state: State = { version: 1, id, pid, expires: nextExpiry, owned: [...ids], pending: [...pending], verifying: [...verifying],
-          ...(approvals.size ? { approvals: [...approvals] } : {}), ...(anonymousKilo ? { anonymousKilo: true } : {}) };
+          ...(anonymousKilo ? { anonymousKilo: true } : {}) };
         await writeFile(temporary, JSON.stringify(state), { flag: 'wx', mode: 0o600 });
         // Slow IO must not resurrect a lease after its TTL or watchdog abort.
         await assertOwner();
@@ -179,8 +174,8 @@ export async function beginSetupSession(directory: string, ids: readonly string[
   timer = setInterval(() => { void persist().catch(() => {}); }, heartbeat); timer.unref();
   const update = async (source: string, state: 'verify' | 'hold' | 'release') => {
     if (closed || controller.signal.aborted || !ids.includes(source)) throw unavailable();
-    if (state === 'release') { pending.delete(source); verifying.delete(source); approvals.delete(source); }
-    else { pending.add(source); if (state === 'verify') { verifying.add(source); approvals.delete(source); } else verifying.delete(source); }
+    if (state === 'release') { pending.delete(source); verifying.delete(source); }
+    else { pending.add(source); if (state === 'verify') verifying.add(source); else verifying.delete(source); }
     await persist();
     // Kilo passed verification on the session's current route; keep that route.
     if (state === 'release' && source === 'kilo') await writeKiloRoute(directory, anonymousKilo);
@@ -192,12 +187,6 @@ export async function beginSetupSession(directory: string, ids: readonly string[
     release: source => update(source, 'release'),
     async useKiloAccount() {
       if (anonymousKilo) { anonymousKilo = false; await persist(); }
-    },
-    async setApprovals(selected) {
-      if (closed || controller.signal.aborted || selected.some(source => !ids.includes(source))) throw unavailable();
-      approvals.clear();
-      for (const source of selected) if (pending.has(source) && !verifying.has(source)) approvals.add(source);
-      await persist();
     },
     async close() {
       if (closed) return;

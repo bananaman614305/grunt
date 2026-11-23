@@ -133,7 +133,11 @@ accepted, with `GRUNT_*` taking precedence.
   for reacquisition. A pass never starts another; failed signups wait for the
   next fetch unless a request-failure trigger retries them. Only one
   pass runs at a time, a trigger during a pass joins it, and none runs while
-  foreground `usegrunt setup` holds its session.
+  foreground `usegrunt setup` holds its session. After the
+  [setup flow](reference.md#free-api-and-account-setup) releases its session,
+  the daemon's next read of the
+  session (setup makes one status read) starts a pass for the remaining
+  signups. The route a pass is signing up shows as connecting in status.
 - **Hot-add.** In the automatic pool, a newly listed adapter that Grunt ships
   becomes a routable source at once, with no restart. A manual `GRUNT_SOURCES`
   list stays fixed.

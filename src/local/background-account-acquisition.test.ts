@@ -77,3 +77,38 @@ it.each([
   }
   expect(daemon.serverClose).toHaveBeenCalledOnce(); expect(daemon.syncClose).toHaveBeenCalledOnce();
 });
+
+it('starts the route pass once foreground setup releases its session, and only then', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-account-release-')); directories.push(directory);
+  const { beginSetupSession } = await import('./setup-session.js');
+  // Setup claims its session before it starts the daemon.
+  const session = await beginSetupSession(directory, ['pollinations']);
+  daemon.serve.mockReturnValue({ close: daemon.serverClose });
+  const trigger = vi.spyOn(SourceRecovery.prototype, 'trigger').mockImplementation(() => {});
+  vi.spyOn(Sources.prototype, 'check').mockResolvedValue({ outcome: 'deferred', code: 'busy' });
+  vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('No live browser permitted'));
+  const signals = ['SIGINT', 'SIGTERM'] as const;
+  const original = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
+  const running = start({ GRUNT_SOURCES: 'pollinations', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: '18795' });
+  try {
+    await vi.waitFor(() => expect(daemon.started).toHaveBeenCalledOnce());
+    const { fetch } = daemon.serve.mock.calls[0]![0] as { fetch: (request: Request) => Promise<Response> };
+    const status = async () => (await fetch(new Request('http://127.0.0.1:18795/v1/status'))).json() as Promise<{ sources: { id: string; state: string }[] }>;
+    // The startup pass runs into the held session; a status read while setup holds it starts nothing.
+    expect(trigger).toHaveBeenCalledOnce();
+    expect((await status()).sources).toContainEqual(expect.objectContaining({ id: 'pollinations', state: 'connecting' }));
+    expect(trigger).toHaveBeenCalledOnce();
+    await session.close();
+    await status();
+    expect(trigger).toHaveBeenCalledTimes(2);
+    // Later reads find no session either way and start nothing more.
+    await status();
+    expect(trigger).toHaveBeenCalledTimes(2);
+  } finally {
+    await session.close();
+    await running.close();
+    for (const signal of signals) for (const listener of process.listeners(signal)) {
+      if (!original.get(signal)!.has(listener)) process.removeListener(signal, listener as () => void);
+    }
+  }
+});

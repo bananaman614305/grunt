@@ -270,9 +270,9 @@ release. No other user's installation is enrolled automatically.
 Run the separate local daemon on your own machine (Linux with systemd or macOS
 with launchd). Use Node 22 or 24 LTS for the setup wizard; npm and tar must be
 available. Squire also needs a usable browser/display path. A headless remote
-server may need display helpers such as Xvfb/noVNC or a reachable browser
-handoff. Missing prerequisites are reported for repair; provider verification
-can still require a person. Mistral Vibe separately needs `uv` or Python 3.12+.
+server may need display helpers such as Xvfb/noVNC. Missing prerequisites are
+reported for repair. See the [signup verification rules](#free-api-and-account-setup).
+Mistral Vibe separately needs `uv` or Python 3.12+.
 Setup installs the vetted adapters. Supported account flows use Trusty Squire,
 and Nous uses Hermes's device login.
 
@@ -533,8 +533,10 @@ a release.
 
 `usegrunt status` prints one cached pool snapshot. `usegrunt status --watch`
 opens a live terminal view; `--json` prints a single structured snapshot.
-These commands only read the local daemon's `GET /v1/status`; they do not start
-the daemon, run provider health checks, install services or consume inference.
+These commands read the local daemon's `GET /v1/status`; they do not start
+the daemon or run provider health checks. A status read after setup releases
+its session can trigger [background acquisition](router.md#3-slow-loop-hot-add-and-scout-mapping),
+whose signup driver may consume inference.
 An older daemon without that endpoint needs `npx usegrunt update`.
 `usegrunt --help` prints command usage without starting the daemon.
 
@@ -551,8 +553,7 @@ they do not attest to a provider's physical model. Balances are not invented.
 
 Arrow keys select a source, Enter toggles its details, `d` shows or hides
 disabled sources, and `q`/Ctrl-C exits the watch view while the daemon keeps
-running. `a` gives foreground-setup guidance; a separate watch terminal cannot
-approve another setup process's verification. Narrow panes omit model and
+running. `a` gives foreground-setup guidance. Narrow panes omit model and
 timing columns. `NO_COLOR` disables color; labels and symbols still describe
 every state. Piped output and dumb terminals print one snapshot without cursor
 control sequences. `--watch --json` is rejected rather than emitting a mixed
@@ -563,9 +564,8 @@ Port selection is `--port`, then `GRUNT_PORT`, then the private numeric
 on a custom port can pass `--port` until setup records it. For example, Chad uses
 `usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
 
-Setup shows one live table of tools and sources, then `Ready`, and exits.
-It automatically records current data-sharing policies and does not open the status dashboard. Run
-`usegrunt status --watch` separately to open that view. Closing setup before
+Setup uses a separate live table; see the [setup flow](#free-api-and-account-setup).
+Run `usegrunt status --watch` separately to open the dashboard. Closing setup before
 completion pauses unfinished signups; verified daemon routes remain usable.
 
 `/v1/status` uses the same loopback Host/Origin restrictions as inference and
@@ -669,7 +669,7 @@ runtime is ready to replace. Deferred work retries later without being counted
 as healthy; provider retry delays are honored. A source that needs sign-in is reported for foreground
 setup. Maintenance does not invoke provisioning, install tools, create accounts,
 invalidate authentication receipts or launch browser repair. The setup wizard
-retains its separate parallel first-ready flow. Source details and `--json`
+has a [separate setup flow](#free-api-and-account-setup). Source details and `--json`
 expose cached maintenance timing/outcome/evidence without starting new checks.
 Each source's optional `maintenance` object contains `nextCheckAt` and, when
 known, `lastAttemptAt`, `lastCheckedAt`, `outcome`, `evidence` and a safe `code`.
@@ -711,52 +711,62 @@ experimental tier. Fikra and Openference are temporary offers with expiry guards
 Free-account eligibility still applies. Setup automatically records Free-Pi’s material policy. Free-Pi still requires
 reviewed public context on every request.
 
-The wizard enables free sources by default and connects every supported coding
-tool it detects. It installs the persistent daemon once before provider jobs.
+The wizard enables free sources by default and connects the selected coding
+tool. It installs the persistent daemon once before provider jobs.
 Providers still being prepared are excluded from normal routing and bulk
 availability probes.
 
-Up to six provider jobs run concurrently. When a setup job reports a provider
+The default wizard runs provider jobs one at a time; the legacy setup path can
+run up to six concurrently. When a setup job reports a provider
 available, setup checks that exact provider with a real request through the
 installed daemon; up to three reply checks run at once. A correctly attributed
 reply is required to verify a route. While that check runs,
 the provider stays out of automatic routing; an explicit request for its source
-ID can run the verification probe. The first verified reply starts coding-tool configuration. Other provider jobs and checks continue, and later routes join
-the same daemon without a restart. Each tool and source gets one status row in the setup table.
+ID can run the verification probe. Later routes join the same daemon without a
+restart. Each tool and source gets one status row in the setup table.
 
 Squire bootstrap is lazy and shared: account-dependent jobs reuse one connection
 and one pending sign-in, while eligible anonymous Kilo or OpenCode access can
-become usable before that sign-in finishes. Their anonymous setup attempts are
-prioritized rather than queued behind waiting account jobs. A provider's human
-handoff does not hold up verification or use of other ready routes. Perch stays in the default
-pool; its initial human verification can remain unfinished while another source
-serves requests. No cold-installation timing is promised: npm downloads, native
-packages, browser/display prerequisites and human verification all affect it.
+become usable before bootstrap starts. Their anonymous setup attempts are
+prioritized rather than queued behind waiting account jobs. With a coding
+harness, setup checks anonymous Kilo, then anonymous OpenCode, before any signup.
+No cold-installation timing is promised: npm downloads, native packages and
+browser/display prerequisites all affect it.
 
-The original setup terminal remains the approval console until provider jobs
-and their checks settle. Open a connected coding tool in another terminal to use
-the ready daemon meanwhile. Closing the console pauses unfinished signups;
-already verified daemon routes keep working. Rerun `npx usegrunt setup` to resume.
-On normal completion, failed providers are listed with repair guidance, but the
-command succeeds if at least one provider was verified. If none was verified,
-setup fails. For a foreground daemon, run `usegrunt serve`.
+The default wizard stops foreground provider jobs once one route is verified
+and a smoke test passes: one real completion through model `grunt`, routed by
+the daemon as your own requests
+are. It then finishes the selected coding-tool configuration and bootstraps
+Squire for remaining account signups before returning. A bootstrap failure is
+reported; those account signups still need a working Squire connection.
+It prints `N ready; M more continue in the background (usegrunt status)`
+and `Ready`, and returns. Rows it did not reach show `background`. Setup then
+releases its session, and, when background acquisition is enabled, the daemon
+starts its existing
+[route acquisition pass](router.md#1-greedy-first-pass-driver-cap) for the
+remaining signups; `usegrunt status` shows the route being signed up as
+connecting. If a verified route never passes the smoke test, setup tries the
+other providers and then fails. If none was verified, setup fails. For a
+foreground daemon, run `usegrunt serve`.
 
 Jobs that use Squire share one connection, cached credential metadata and reusable
-grants. Up to three provider browser operations can run concurrently. Browser
-handoffs arriving together share a confirmation prompt; later
-handoffs queue while other jobs continue. Interactive installers and confirmations
-take turns owning the terminal. Provider verification remains individual, and
-Squire has no batch-grant API. Grouped prompts do not create shared provider
+grants. Up to three provider browser operations can run concurrently.
+Interactive installers take turns owning the terminal; while the setup table
+is live it reads keys in raw mode and ignores them (arrow keys no longer print
+`^[OA` into it), and Ctrl+C still stops setup. Provider verification remains individual, and
+Squire has no batch-grant API. Shared credentials do not create shared provider
 accounts or bypass a provider's verification. Reusing one Google or GitHub
 identity does not remove each provider's own sign-in and security requirements.
 
 Setup helpers can cancel one provider without stopping other jobs or the shared
 broker. A pending initial browser operation may finish before its owned tab can
-be closed; cancelled providers do not continue or open another handoff.
+be closed; cancelled providers do not continue.
 
 Setup offers the coding tools it finds on PATH before provider jobs start
 (an installed Pi is preselected; non-interactive runs connect an installed Pi
-only). It applies those choices after the first verified provider reply. If no
+only). The default wizard configures its selected harness while preparing a
+signup driver or after the smoke test passes; the legacy path applies its
+choices after the first verified provider reply. If no
 coding tool was initially installed, setup can offer newly available tools after
 the provider batch finishes. Declining all tools that were already detected does
 not trigger another picker. Each choice adds a
@@ -772,9 +782,10 @@ only after it answers one real request through grunt.
 OpenCode first tries its free model without an account and requests sign-in only
 if that model requires it. Kilo verifies its anonymous free model route
 without a sharing question; it needs no account, API key or signup.
-Squire handles supported verification automatically. An uncertain result with a
-captured key proceeds to a local test request; missing or failing access is
-skipped without a browser handoff or confirmation question. Existing accounts are reused; no extra
+Squire handles supported verification automatically. A signup that requires the
+person is skipped without a browser handoff or confirmation question.
+An uncertain result with a captured key proceeds to a local test request;
+missing or failing access is skipped. Existing accounts are reused; no extra
 Google accounts are created.
 
 Zro setup prefers Google login through Squire. Before connecting a new local grant, Squire confirms the Free plan, no paid subscription or purchased usage-pack balance, and no saved payment method. Existing vaulted keys are reused after that check. The private `zro.json` file records the check; repeat setup can reuse a healthy confirmed grant. Zro uses the same model ID for free and paid access, so an external account upgrade can change billing; grunt never upgrades the account.
@@ -910,7 +921,7 @@ resume their setup on an existing installation.
 Squire reuses service-scoped credentials named **Grunt Free**, including its
 normal provider-domain host defaults. Grunt only sends requests to the fixed
 API host or its Squire proxy. Setup records source-specific data-sharing approval,
-uses configured verification tools, and prompts the user if an approval cannot
+uses configured verification tools, and skips the provider if an approval cannot
 be completed. It never adds billing, paid plans or top-ups. Model restrictions,
 when offered, should allow only the exact free alias; paid BYOK stays off.
 See the [router guide](router.md#1-greedy-first-pass-driver-cap) for background
@@ -954,11 +965,13 @@ The additional experimental routes have these requirements:
 | Numes | `deepseek/deepseek-v4.1-flash:free`, `z-ai/glm-5.3-flash:free` | Free Google sign-in through Squire and a dedicated inference key with a $0 spending cap. Free capacity can vary, with no guaranteed fixed allowance. [Numes free routes](https://numes.ai/docs/models#free-models) |
 | Gödel Machines | `deepseek/deepseek-v4.1-flash` | Current sharing approval and a dedicated Free Key through Squire. Grunt verifies the key's Free tier before inference. The free allowance is 600,000 uncached input tokens and 150,000 output tokens per day, renewing at midnight UTC. [Gödel free-tier terms](https://inference.goedelmachines.com/legal#free-tier) |
 
-For Nous, setup records its current data policy automatically. Open the
-Hermes device link on your phone or computer. Sign in or create the Free account
-yourself, and approve inference access. Grunt uses an installed official Hermes
+For Nous, setup records its current data policy automatically. Squire handles
+the Hermes device login without displaying its link or code. If it cannot
+complete approval, Nous is skipped. A fresh login requires foreground setup;
+background acquisition can only reuse a valid Hermes profile.
+Grunt uses an installed official Hermes
 Agent or installs a pinned Hermes copy in its private configuration directory
-using Git and uv. Other routes can become ready while you approve Nous.
+using Git and uv.
 Hermes keeps and refreshes its own OAuth credentials in a dedicated profile.
 Grunt connects to the official subscription proxy over a private local socket.
 Use `npx usegrunt add nous` to connect Nous separately or repeat device approval.
@@ -966,8 +979,9 @@ Use `npx usegrunt add nous` to connect Nous separately or repeat device approval
 path. Grunt skips Nous if it cannot confirm the Free plan, zero paid balances,
 and zero prices for the pinned model.
 
-For Kenari, setup records data sharing automatically. Complete
-browser verification if Kenari asks. Squire reuses the dedicated Grunt Free
+For Kenari, setup records data sharing automatically. Squire handles supported
+verification; see the [signup verification rules](#free-api-and-account-setup).
+Squire reuses the dedicated Grunt Free
 key scoped to `kenari.id`, or creates one when needed. Use
 `npx usegrunt add kenari` to connect it separately or resume setup. Grunt
 checks that the exact ERNIE route is still free and supports native tool calls.
@@ -1107,8 +1121,8 @@ Coding harnesses such as Pi are optional; setup can install the service before
 you install a harness.
 
 Existing vault API keys are reused. Missing keys are created through Squire's
-browser and captured directly into its vault. Verification that still requires
-the person can open a browser handoff and resume signup in that same session.
+browser and captured directly into its vault. The
+[signup verification rules](#free-api-and-account-setup) also apply here.
 An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
 token to FreeLLMAPI's custom-provider endpoint for those API providers.
@@ -1183,7 +1197,7 @@ need this separate router service.
 
 `GRUNT_SQUIRE_HOME` and `GRUNT_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
 home without relocating grunt state. `GRUNT_SETUP_NO_HUMAN=1` stops before Squire
-onboarding or browser handoff if human verification would be needed.
+onboarding if its own sign-in would need the person.
 
 The installed command is `usegrunt`. In 0.6.6, production adapters passed real
 Grunt prompt, function-tool,
@@ -1206,11 +1220,6 @@ official native Google pairing, matching identity and memory-off checks complete
 this does not establish unattended fresh signup. Later account views disagreed
 on the included quota. Grunt records the vetted 20,000 PT recurring floor and does
 not promise the larger displayed amount or count signup bonuses as recurring.
-When Squire cannot choose a control and explicitly offers goal completion, setup
-shows the full requested goal and asks for a default-No confirmation that every
-condition was personally verified. Only that confirmation can resume the same
-owned session with the offered completion choice. Captcha completion alone cannot
-attest to plan or privacy conditions; background setup never makes that choice.
 The final 0.6.6 runtime on Chad returned correctly attributed replies through all
 eleven automatic sources and rejected both retired source IDs. A subsequent
 restart kept all eleven available without changing the saved access receipts or

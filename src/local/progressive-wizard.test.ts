@@ -21,8 +21,11 @@ const actions = (ids = ['kilo', 'perch']) => ({
   loadRegistry: vi.fn(async () => ({ registry: { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(adapter => ids.includes(adapter.id)) }, origin: 'remote' as const })),
   approveDataSharing: vi.fn(async () => ({ approved: ids, skipped: [] })),
   installService: vi.fn(async () => {}), checkService: vi.fn(async () => {}),
+  smokeTest: vi.fn(async (_port: number, _signal: AbortSignal) => {}), resumeBackground: vi.fn(async (_port: number) => {}),
   checkServiceSources: vi.fn(async () => {}), checkFallbackServices: vi.fn(async () => {}),
   connectHarnesses: vi.fn(async () => []),
+  // Never the real Pi/OpenCode configuration in tests.
+  connectHarness: vi.fn(async (..._args: unknown[]) => ({ change: undefined, answer: 'ready' })),
   setupFallbacks: vi.fn(async (_options: Parameters<typeof setupFallbacks>[0]) => ({ unavailable: [] as string[] }))
 });
 it('serves and connects coding tools after the first verified provider while another signup is still waiting', async () => {
@@ -298,7 +301,7 @@ it('refuses a symlinked private Squire bootstrap client file before launching th
   expect(await readFile(protectedFile, 'utf8')).toBe('{"preserved":true}');
 });
 
-it.each([true, false])('checks anonymous access before Squire and signups (harness available: %s)', async available => {
+it.each([true, false])('finishes at anonymous Kilo once grunt answers, leaving signups to the background (harness available: %s)', async available => {
   const order: string[] = [];
   const stub = actions(['kilo', 'zro']);
   const { HARNESSES } = await import('./harnesses.js');
@@ -311,22 +314,46 @@ it.each([true, false])('checks anonymous access before Squire and signups (harne
   const signupHarness = vi.fn(() => async () => {});
   const probeOperator = vi.fn(async () => true);
   stub.checkFallbackServices.mockImplementation(async (_failed, _port, _notify, ids) => { order.push(ids![0]!); });
-  stub.connectSquire.mockImplementation(async () => { order.push('squire'); });
+  stub.connectSquire.mockImplementation(async () => {
+    const { readSetupSession } = await import('./setup-session.js');
+    expect(await readSetupSession(directory)).toBeDefined();
+    order.push('squire');
+  });
   stub.setupFallbacks.mockImplementation(async options => {
     order.push('signup');
     expect(options.adapters).toEqual(['zro']);
     await options.onSettled?.('zro', false, 'needs human verification');
     return { unavailable: ['zro'] };
   });
+  stub.smokeTest.mockImplementation(async () => { order.push('smoke'); });
+  stub.resumeBackground.mockImplementation(async () => {
+    order.push('background');
+    // The daemon's route pass can start only once setup has released its session.
+    const { readSetupSession } = await import('./setup-session.js');
+    expect(await readSetupSession(directory)).toBeUndefined();
+  });
   await wizard(undefined, { ...stub, chooseHarness, connectHarness, signupHarness, probeOperator, createSquire: () => squire });
-  expect(order).toEqual(['harness', 'kilo', ...(available ? ['completion'] : []), 'squire', 'signup']);
-  expect(signupHarness).toHaveBeenCalledTimes(Number(available));
+  // The chosen coding tool is pointed at grunt even though no route drove a signup.
+  expect(order).toEqual(['harness', 'kilo', 'smoke', ...(available ? ['completion'] : []), 'squire', 'background']);
+  expect(stub.smokeTest).toHaveBeenCalledExactlyOnceWith(8788, expect.any(AbortSignal));
+  expect(stub.setupFallbacks).not.toHaveBeenCalled();
+  expect(signupHarness).not.toHaveBeenCalled();
   expect(log.mock.calls.map(call => call[0])).toEqual([
-    available ? '✓ harness: pi' : '… harness: Squire with human handoff',
+    available ? '✓ harness: pi' : '… harness: Squire alone',
     '✓ data sharing: on, no new sources', '✓ local service: running on port 8788',
-    ...(available ? ['✓ model: grunt (kilo anonymous)'] : []),
-    '✓ Trusty Squire: already set up and signed in, skipped', '1 ready; needs you: zro', 'Ready'
+    '✓ smoke test: grunt answered', '✓ Trusty Squire: already set up and signed in, skipped', '1 ready; 1 more continue in the background (usegrunt status)', 'Ready'
   ]);
+});
+
+it('keeps a ready route when Squire bootstrap fails before the background handoff', async () => {
+  const stub = actions(['kilo', 'zro']);
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  stub.connectSquire.mockRejectedValue(new Error('Squire broker unavailable'));
+  await expect(wizard(undefined, { ...stub, chooseHarness: async () => undefined })).resolves.toBeUndefined();
+  expect(stub.connectSquire).toHaveBeenCalledOnce();
+  expect(stub.resumeBackground).toHaveBeenCalledOnce();
+  expect(log.mock.calls.map(call => call[0])).toContain('✗ Trusty Squire: Squire unavailable');
+  expect(log.mock.calls.at(-1)).toEqual(['Ready']);
 });
 
 it('says why the anonymous Kilo model cannot drive signups', async () => {
@@ -345,12 +372,14 @@ it('says why the anonymous Kilo model cannot drive signups', async () => {
     await options.onSettled?.(id, true);
     return { unavailable: [] };
   });
+  stub.smokeTest.mockRejectedValueOnce(new Error('quota exhausted'));
   await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })),
     signupHarness: vi.fn(() => async () => {}), probeOperator, createSquire: () => new BrowserSquire() });
   const lines = log.mock.calls.map(call => String(call[0]));
+  expect(lines).toContain('… smoke test: quota exhausted; continuing setup');
   expect(lines).toContain('… operator: kilo cannot drive signups (tool-call probe was answered by opencode)');
-  expect(lines).toContain('… operator: zro cannot drive signups (tool-call probe failed)');
   expect(lines).not.toContain('✓ model: grunt (kilo anonymous)');
+  expect(stub.smokeTest).toHaveBeenCalledTimes(2);
 });
 
 it('drives every later signup with a working anonymous Kilo model', async () => {
@@ -365,10 +394,13 @@ it('drives every later signup with a working anonymous Kilo model', async () => 
     await options.onSettled?.(options.adapters![0]!, true);
     return { unavailable: [] };
   });
+  // Grunt does not answer at first, so setup keeps signing up with Kilo driving.
+  stub.smokeTest.mockRejectedValueOnce(new Error('quota exhausted'));
   await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })),
     signupHarness: vi.fn(() => async () => {}), probeOperator, createSquire: () => squire });
   const lines = log.mock.calls.map(call => String(call[0]));
   expect(lines).toContain('✓ model: grunt (kilo anonymous)');
+  expect(stub.setupFallbacks.mock.calls.map(call => call[0].adapters)).toEqual([['zro']]);
   expect(lines.filter(line => /bootstrap: .* via Squire/.test(line))).toEqual([]);
   expect(probeOperator).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'kilo', expect.any(AbortSignal));
   expect(useSignupAgent).toHaveBeenCalledWith(expect.any(Function));
@@ -398,15 +430,17 @@ it('bootstraps with Jev, switches to a verified operator and re-bootstraps when 
   });
   const probeOperator = vi.fn(async (_port, id: string) => { events.push(`tool:${id}`); return true; });
   const connectHarness = vi.fn(async () => ({ change: undefined, answer: 'ready' }));
-  await wizard(undefined, {
+  // Grunt never answers through model grunt here, so every signup runs in the foreground.
+  stub.smokeTest.mockRejectedValue(new Error('grunt returned HTTP 503'));
+  await expect(wizard(undefined, {
     ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, probeOperator, connectHarness,
     signupHarness: () => { const instance = ++instances; return async () => { if (instance === 1) throw new Error('quota exhausted'); }; }
-  });
+  })).rejects.toThrow('Grunt did not answer a request through model grunt');
   expect(events).toEqual(['kilo:jev', 'pollinations:jev', 'tool:pollinations', 'beatapi:harness', 'zro:jev', 'tool:zro', 'tokenharbor:harness', 'beatapi:harness']);
   expect(connectHarness).toHaveBeenCalledTimes(2);
 });
 
-it('shows waiting on queued sources, connecting only on the one being set up, and marks the operator', async () => {
+it('shows waiting on queued sources, connecting only on the one being set up, and background on the rest', async () => {
   vi.stubEnv('GRUNT_SETUP_NO_ANONYMOUS', '1');
   const { HARNESSES } = await import('./harnesses.js');
   const { BrowserSquire } = await import('./setup.js');
@@ -445,13 +479,15 @@ it('shows waiting on queued sources, connecting only on the one being set up, an
   try {
     expect(Object.fromEntries(rows)).toEqual({ kilo: 'connecting', pollinations: 'waiting', zro: 'waiting' });
   } finally { release.resolve(); await running; }
-  expect(history).toContain('kilo: waiting (retry)');
-  expect(Object.fromEntries(rows)).toEqual({ kilo: '✓ ready', pollinations: '✓ ready · operator', zro: '✓ ready' });
-  for (const id of ['kilo', 'pollinations', 'zro']) {
+  // A signup that needs the person is skipped, never retried for a hand-off.
+  expect(kiloRuns).toBe(1);
+  expect(Object.fromEntries(rows)).toEqual({ kilo: 'skipped (needs human verification)', pollinations: '✓ ready', zro: 'background' });
+  for (const id of ['kilo', 'pollinations']) {
     const own = history.filter(line => line.startsWith(`${id}: `));
     expect(own[0]).toBe(`${id}: waiting`);
     expect(own.indexOf(`${id}: connecting`)).toBeGreaterThan(0);
   }
+  expect(history.filter(line => line.startsWith('zro: '))).toEqual(['zro: waiting', 'zro: background']);
 });
 
 it('keeps sources queued behind the browser limit on waiting until a browser slot is granted', async () => {
@@ -518,6 +554,7 @@ it.each([true, false])('uses an anonymous OpenCode operator before upgrading onl
     });
     const signupHarness = vi.fn((_harness: unknown, _port: number, _run?: unknown, _model?: string) => async () => {});
     const probeOperator = vi.fn(async () => true);
+    stub.smokeTest.mockRejectedValueOnce(new Error('quota exhausted'));
     await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES.find(harness => harness.id === 'opencode'),
       connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })), signupHarness, probeOperator, createSquire: () => squire });
     expect(signupHarness.mock.calls.map(call => call[3])).toEqual(approved ? ['opencode/big-pickle', undefined] : [undefined]);
@@ -551,8 +588,10 @@ it.each([true, false])('hands signups from an exhausted Pi operator to OpenCode 
       drivers.push(`${harness.id}${anonymous ? ':free' : ''}`);
       if (harness.id === 'pi') throw new Error('No tool-capable adapter is available');
     });
-    await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, signupHarness,
-      probeOperator: vi.fn(async () => true), connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })) });
+    stub.smokeTest.mockRejectedValue(new Error('grunt returned HTTP 503'));
+    await expect(wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire, signupHarness,
+      probeOperator: vi.fn(async () => true), connectHarness: vi.fn(async () => ({ change: undefined, answer: 'ready' })) }))
+      .rejects.toThrow('Grunt did not answer a request through model grunt');
     expect(drivers).toEqual(approved ? ['pi', 'opencode:free', 'opencode:free'] : ['pi']);
     expect(log.mock.calls.map(call => String(call[0]))).not.toContain('… operator: no working anonymous model; using Squire');
   } finally { await rm(bin, { recursive: true, force: true }); }
@@ -594,14 +633,19 @@ it.each([
     await options.onSettled?.(id, true);
     return { unavailable: [] };
   });
-  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire,
+  // OpenCode answers but grunt does not yet, so setup goes on to the next signup.
+  stub.smokeTest.mockRejectedValueOnce(new Error('quota exhausted'));
+  const running = wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire,
     probeOperator: vi.fn(async () => false),
     signupHarness: (harness, _port, _run, anonymous) => async input => {
       driven.push(`${input.service}:${harness.id}:${anonymous ? 'free' : 'router'}`);
     }
   });
-  expect(driven).toEqual(approved ? ['reflection-beam:opencode:free'] : []);
-  expect(attempts.get('opencode')).toBe(initial === 'deferred' ? 2 : 1);
+  // A signup that could not continue is not retried for a hand-off.
+  if (initial === 'deferred') await expect(running).rejects.toThrow('No adapters passed verification');
+  else await running;
+  expect(driven).toEqual(approved && initial !== 'deferred' ? ['reflection-beam:opencode:free'] : []);
+  expect(attempts.get('opencode')).toBe(1);
 });
 
 it.each([true, false])('walks every free harness model before Squire drives alone, with a Pi model answering: %s', async piAnswers => {
@@ -642,4 +686,39 @@ it.each([true, false])('walks every free harness model before Squire drives alon
   expect((await readFile(probes, 'utf8')).trim().split('\n')).toEqual(['opencode opencode/big-pickle', 'opencode opencode/glm-free', 'pi vendor/model:free']);
   expect(driven).toEqual(piAnswers ? ['pi:openrouter/vendor/model:free'] : []);
   expect(lines).toContain(piAnswers ? '✓ model: openrouter/vendor/model:free (free)' : '… operator: no working anonymous model; using Squire');
+});
+
+it('checks anonymous OpenCode before any signup, so its row shows the state its free-model check found', async () => {
+  vi.stubEnv('PATH', '');
+  const { HARNESSES } = await import('./harnesses.js');
+  const { BrowserSquire } = await import('./setup.js');
+  const { SetupTable } = await import('./setup-table.js');
+  const rows = new Map<string, string>();
+  const set = SetupTable.prototype.set;
+  vi.spyOn(SetupTable.prototype, 'set').mockImplementation(function (this: InstanceType<typeof SetupTable>, kind, name, status) {
+    if (kind === 'source') rows.set(name, status);
+    return set.call(this, kind, name, status);
+  });
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'useSignupAgent').mockImplementation(() => {});
+  // The registry lists BeatAPI before OpenCode, as the owner's run did.
+  const stub = actions(['kilo', 'beatapi', 'opencode']);
+  const order: string[] = [];
+  stub.connectSquire.mockImplementation(async () => { order.push('squire'); });
+  stub.resumeBackground.mockImplementation(async () => { order.push('background'); });
+  stub.checkFallbackServices.mockImplementation(async (failed, _port, _notify, ids) => { if (ids![0] === 'kilo') failed.push('kilo'); });
+  stub.setupFallbacks.mockImplementation(async options => {
+    const id = options.adapters![0]!;
+    order.push(id);
+    await options.onSettled?.(id, true);
+    return { unavailable: [] };
+  });
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], createSquire: () => squire,
+    probeOperator: vi.fn(async () => false), signupHarness: () => async () => {} });
+  expect(stub.setupFallbacks.mock.calls.map(call => call[0].adapters)).toEqual([['opencode']]);
+  // Anonymous Kilo failed; its account signup waits for the background with BeatAPI.
+  expect(Object.fromEntries(rows)).toEqual({ kilo: 'background', opencode: '✓ ready', beatapi: 'background' });
+  expect(stub.resumeBackground).toHaveBeenCalledOnce();
+  expect(order).toEqual(['opencode', 'squire', 'background']);
 });
