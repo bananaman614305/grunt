@@ -41,8 +41,10 @@ export const localOptInAdapters: readonly Adapter[] = [
   { id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:antseed-vikey' },
 ];
 export const localOptInAdapterIds = new Set(localOptInAdapters.map(adapter => adapter.id));
-// Retain schema compatibility with saved registries while stopping every app route.
-export const disabledAdapters = new Set(['freebuff', 'apinex']);
+// Keep retired IDs as tombstones for saved selections and explicit requests.
+// Clixad's installer/source are removed; its ID must not become an automatic
+// fallback alias or send an old setup request through legacy provisioning.
+export const disabledAdapters = new Set(['freebuff', 'apinex', 'clixad']);
 export function validateRegistry(value: unknown): Registry {
   const fail = () => { throw new Error('Invalid adapter registry'); };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
