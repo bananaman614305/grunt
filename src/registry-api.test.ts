@@ -87,8 +87,13 @@ it('reports an unreachable GitHub separately from a rejected token', async () =>
   expect((await api.request('PUT', '/v1/registry/entries/zro', entry('zro'), tokens.owner)).status).toBe(502);
 });
 
-it.each(['user', 'repository'].flatMap(endpoint => [429, 500, 503, 599].map(status => ({ endpoint, status }))))(
-  'reports GitHub $endpoint HTTP $status as an upstream failure for every write action', async ({ endpoint, status }) => {
+it.each(['user', 'repository'].flatMap(endpoint => [
+  ...[429, 500, 503, 599].map(status => ({ status, headers: new Headers() })),
+  { status: 403, headers: new Headers({ 'x-ratelimit-remaining': '0' }) },
+  { status: 403, headers: new Headers({ 'retry-after': '60' }) },
+  { status: 403, headers: new Headers({ 'retry-after': '0' }) }
+].map(result => ({ endpoint, ...result }))))(
+  'reports GitHub $endpoint HTTP $status with $headers as an upstream failure for every write action', async ({ endpoint, status, headers }) => {
     const api = await server({ published: bundledRegistry });
     const before = await readFile(api.path, 'utf8');
     for (const [method, path, body] of [
@@ -98,7 +103,7 @@ it.each(['user', 'repository'].flatMap(endpoint => [429, 500, 503, 599].map(stat
     ] as const) {
       github.mockClear();
       if (endpoint === 'repository') github.mockResolvedValueOnce(Response.json({ login: 'lunchboxfortwo' }));
-      github.mockResolvedValueOnce(Response.json({ message: 'Synthetic upstream failure' }, { status }));
+      github.mockResolvedValueOnce(Response.json({ message: 'Synthetic upstream failure' }, { status, headers }));
       const response = await api.request(method, path, body, tokens.owner);
       expect(response.status).toBe(502);
       expect(await response.json()).toEqual({ error: 'GitHub is unavailable' });
@@ -108,6 +113,20 @@ it.each(['user', 'repository'].flatMap(endpoint => [429, 500, 503, 599].map(stat
     }
   }
 );
+
+it.each([
+  { endpoint: 'user', upstream: 401, headers: new Headers({ 'x-ratelimit-remaining': '0' }), expected: 401 },
+  { endpoint: 'user', upstream: 403, headers: new Headers(), expected: 401 },
+  { endpoint: 'repository', upstream: 403, headers: new Headers(), expected: 403 },
+  { endpoint: 'repository', upstream: 403, headers: new Headers({ 'x-ratelimit-remaining': '1' }), expected: 403 }
+])('preserves authorization failures for $endpoint HTTP $upstream with $headers', async ({ endpoint, upstream, headers, expected }) => {
+  const api = await server({ published: bundledRegistry });
+  if (endpoint === 'repository') github.mockResolvedValueOnce(Response.json({ login: 'lunchboxfortwo' }));
+  github.mockResolvedValueOnce(Response.json({ message: 'Synthetic authorization failure' }, { status: upstream, headers }));
+  expect((await api.request('PUT', '/v1/registry/entries/zro', entry('zro'), tokens.owner)).status).toBe(expected);
+  expect(github).toHaveBeenCalledTimes(endpoint === 'user' ? 1 : 2);
+  expect(await api.store.writes()).toEqual([]);
+});
 
 // C2: a write publishes the entry and its signup hints at once.
 it('publishes new hints immediately under a newer publication time', async () => {

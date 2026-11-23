@@ -77,13 +77,15 @@ export async function githubWriter(token: string, options: { repo: string; fetch
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'grunt-registry', 'X-GitHub-Api-Version': '2022-11-28' },
     redirect: 'error', signal: AbortSignal.timeout(5000)
   });
+  const unavailable = (response: Response) => response.status >= 500 || response.status === 429
+    || response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after'));
   try {
     const user = await get('/user');
-    if (!user.ok) { await user.body?.cancel(); return { status: user.status >= 500 || user.status === 429 ? 502 : 401 }; }
+    if (!user.ok) { await user.body?.cancel(); return { status: unavailable(user) ? 502 : 401 }; }
     const login = (await user.json() as { login?: unknown }).login;
     if (typeof login !== 'string' || !login) return { status: 401 };
     const repo = await get(`/repos/${options.repo}`);
-    if (!repo.ok) { await repo.body?.cancel(); return { status: repo.status >= 500 || repo.status === 429 ? 502 : 403 }; }
+    if (!repo.ok) { await repo.body?.cancel(); return { status: unavailable(repo) ? 502 : 403 }; }
     const permissions = (await repo.json() as { permissions?: { push?: unknown } }).permissions;
     return permissions?.push === true ? { login } : { status: 403 };
   } catch { return { status: 502 }; }
