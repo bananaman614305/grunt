@@ -125,7 +125,7 @@ function redactedText(value: string) {
     .replace(/https?:\/\/\S+/gi, '[link omitted]')
     .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
     .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_|eyJ)[A-Za-z0-9_+/.=-]+/g, '[redacted]')
-    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)\s*(?::|=|\b(?:is|was|might be)\b)\s*)(?:"[^"]*"|'[^']*'|[^\s;,]+)/gi, '$1[redacted]')
+    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)["']?\s*(?::|=|\b(?:is|was|might be)\b)\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;,]+)/gi, '$1[redacted]')
     .replace(/\b(credential\s+)[^\s;,]*[!0-9_-][^\s;,]*/gi, '$1[redacted]')
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
     .replace(/\s+/g, ' ').trim();
@@ -509,6 +509,7 @@ export class BrowserSquire implements SetupSquire {
           ...(completed ? { summary: 'grunt provider key stored in user vault' } : {}) });
         if (this.sessions.get(provider) === id) this.sessions.delete(provider);
         this.recoveryChoices.delete(provider);
+        this.signupFacts.delete(provider);
         this.retries.delete(provider);
       } catch { /* Preserve the original error; close retries a failed cleanup. */ }
     })();
@@ -669,6 +670,7 @@ export class BrowserSquire implements SetupSquire {
         usedTerms.add(`field:${fieldLabel(nameRow)}`);
         // Squire matches a fact to a field by the field's own label.
         facts[fieldLabel(nameRow)] = keyName;
+        this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldLabel(nameRow)]: keyName });
         answer = nameTarget[0];
         continue;
       }

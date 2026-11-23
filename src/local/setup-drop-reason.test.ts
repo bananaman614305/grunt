@@ -101,7 +101,8 @@ const stopReason = 'model confidence is below the drive threshold on https://zro
 
 it.each([false, true].flatMap(polled => [
   { reason: stopReason, expected: 'model confidence is below the drive threshold on [link omitted]' },
-  { reason: 'No matching fact for the API key name field', expected: 'No matching fact for the API key name field' }
+  { reason: 'No matching fact for the API key name field', expected: 'No matching fact for the API key name field' },
+  { reason: 'API key 123e4567-e89b-12d3-a456-426614174000 was rejected; "api_key": "quoted-value"', expected: 'API key [redacted] was rejected; "api_key": [redacted]' }
 ].map(diagnostic => ({ polled, ...diagnostic }))))('notifies full Squire diagnostics for a provisioning drop ($polled, $reason)', async ({ polled, reason, expected }) => {
   const squire = new BrowserSquire();
   vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
@@ -114,6 +115,8 @@ it.each([false, true].flatMap(polled => [
   expect(lines.join('\n')).toContain('confidence 0.32');
   expect(lines.join('\n')).not.toContain('ghp_syntheticSensitive1234567890');
   expect(lines.join('\n')).not.toContain('short-value');
+  expect(lines.join('\n')).not.toContain('123e4567-e89b-12d3-a456-426614174000');
+  expect(lines.join('\n')).not.toContain('quoted-value');
   expect(lines.join('\n')).toContain(`Squire's reason: ${expected}`);
   await squire.close();
 });
@@ -123,8 +126,8 @@ it.each([40, 80, undefined])('renders fallback diagnostics in full at %s columns
   const squire = new BrowserSquire();
   const secret = 'sk-syntheticSensitive123456789012345';
   vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
-    ? { status: 'low_confidence', question: `${stopQuestion} ${secret}`, confidence: 0.32,
-      reason: `No matching fact for the API key name field. Bearer short-value ${secret}`, session_id: 'tab' } : {});
+    ? { status: 'low_confidence', question: `${stopQuestion} ${secret} "token": "table-secret"`, confidence: 0.32,
+      reason: `No matching fact for the API key name field. Bearer short-value ${secret}; API key 123e4567-e89b-12d3-a456-426614174000 was rejected; "api_key": "quoted-value"`, session_id: 'tab' } : {});
   const output: string[] = [];
   const table = new SetupTable({ isTTY: columns !== undefined, ...(columns ? { columns } : {}),
     write: ((text: string) => { output.push(text); return true; }) as NodeJS.WriteStream['write'] });
@@ -139,6 +142,9 @@ it.each([40, 80, undefined])('renders fallback diagnostics in full at %s columns
   expect(text).toContain("Squire's reason: No matching fact for the API key name field. [redacted] [redacted]");
   expect(text).not.toContain(secret);
   expect(text).not.toContain('short-value');
+  expect(text).not.toContain('123e4567-e89b-12d3-a456-426614174000');
+  expect(text).not.toContain('quoted-value');
+  expect(text).not.toContain('table-secret');
   expect(text).not.toContain('https://zro.test/api-keys');
   await squire.close();
 });
@@ -148,13 +154,14 @@ it.each(['rejected', 'page'])('preserves benign key diagnostics at refusal/page 
   directory = await mkdtemp(join(tmpdir(), 'grunt-drop-reason-'));
   const diagnostic = 'No matching fact for the API key name field';
   const secrets = ['sk-short', 'sk_short', 'gsk_short', 'nvapi-short', 'ghp_short', 'freellmapi-short',
-    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 'basic-value', 'bearer-value', 'synthetic-sensitive-value'];
-  const message = `${diagnostic}; ${secrets.slice(0, 8).join(' ')} Basic basic-value Bearer bearer-value secret is synthetic-sensitive-value`;
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 'basic-value', 'bearer-value', 'synthetic-sensitive-value', '123e4567-e89b-12d3-a456-426614174000', 'quoted-value', 'single-quoted-value'];
+  const message = `${diagnostic}; ${secrets.slice(0, 8).join(' ')} Basic basic-value Bearer bearer-value secret is synthetic-sensitive-value; API key 123e4567-e89b-12d3-a456-426614174000 was rejected; ${JSON.stringify({ api_key: 'quoted-value' })}; 'password': 'single-quoted-value'`;
   const squire = new BrowserSquire();
   vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
     ? { status: status === 'page' ? 'stuck' : 'rejected', session_id: 'tab',
       ...(status === 'page' ? { observation: { dom: JSON.stringify({ detail: message }), safe_table: [] } } : { reason: message }),
-      question: `${stopQuestion} ${message}`, confidence: 0.32 } : {});
+      question: `${stopQuestion} ${message}`, confidence: 0.32,
+      remaining: message, field: message, needs_user: { wall: message, message }, error: message } : {});
   const output: string[] = [];
   const debug = vi.spyOn(console, 'error').mockImplementation(line => { output.push(String(line)); });
   await setupFallbacks({ directory, squire, adapters: ['zro'], signal: new AbortController().signal,
