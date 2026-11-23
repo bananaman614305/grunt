@@ -597,7 +597,8 @@ export class BrowserSquire implements SetupSquire {
     let answer: string | undefined;
     let waits = 0;
     // key_name answers key-name fields; a provider's own signup facts may name a different key.
-    const facts: Record<string, string> = { key_name: 'grunt', ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
+    // project_name repeats that key name so a single name field gets the same value either way.
+    const facts: Record<string, string> = { key_name: 'grunt', ...this.signupFacts.get(provider), plan: 'free', project_name: this.signupFacts.get(provider)?.key_name ?? 'grunt' };
     while (true) {
       this.serviceSignal(provider).throwIfAborted();
       const session = this.sessions.get(provider);
@@ -812,7 +813,7 @@ export class BrowserSquire implements SetupSquire {
             if (oauthRetry(latest)) await delay(3000, undefined, { signal });
             // Forward the operator's facts (e.g. "Key Name": "grunt"); Grunt's own facts win.
             const facts = Object.fromEntries(Object.entries(object(args.facts)).filter(([key, value]) => typeof value === 'string' && !password.test(key)));
-            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { ...facts, ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' }, max_seconds: 45, max_steps: 30,
+            latest = await this.serviceCall(provider, name, { session_id: session, goal, facts: { ...facts, ...this.signupFacts.get(provider), plan: 'free', project_name: this.signupFacts.get(provider)?.key_name ?? 'grunt' }, max_seconds: 45, max_steps: 30,
               ...(answer ? { answer } : {}) });
             observation = object(latest.observation);
             return signupAgentResult(latest);

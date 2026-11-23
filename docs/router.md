@@ -183,6 +183,9 @@ drives under a different vault service name.
 Values named in hints or goals must also be supplied in `operate_drive` facts;
 goal text alone does not authorize typing them. Grunt supplies `key_name`,
 `plan` and `project_name`, with provider-specific key names taking precedence.
+When a provider supplies `key_name`, both the initial drive and the signup
+agent's drive use it for `project_name` too, so either name fact gives the same
+value for an Alias field. Otherwise, `project_name` defaults to `grunt`.
 Kenari also receives its pinned free model as the `model` fact. Each Zro key
 creation attempt receives a `key_name` of the form `grunt-YYYYMMDD-HHMM`, the
 UTC minute it started. When Squire returns `low_confidence` on an observed key

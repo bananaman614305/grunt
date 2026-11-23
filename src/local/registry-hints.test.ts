@@ -95,7 +95,7 @@ it('passes per-signup facts such as a device code to the drive, alongside the Gr
 
 it('names key-name values key_name, which a provider fact can override', async () => {
   const [first] = await driveCalls('pollinations', 'https://enter.pollinations.ai/keys', { facts: { key_name: 'grunt-free-pollinations' } });
-  expect(first!.facts).toEqual({ key_name: 'grunt-free-pollinations', plan: 'free', project_name: 'grunt' });
+  expect(first!.facts).toEqual({ key_name: 'grunt-free-pollinations', plan: 'free', project_name: 'grunt-free-pollinations' });
 });
 
 it('gives each Zro creation a readable UTC minute key name with no random suffix', async () => {
@@ -109,8 +109,8 @@ it('gives each Zro creation a readable UTC minute key name with no random suffix
     vi.setSystemTime(new Date('2026-11-23T14:14:40Z'));
     await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
     expect(facts()).toEqual([
-      { key_name: 'grunt-20261123-1413', plan: 'free', project_name: 'grunt' },
-      { key_name: 'grunt-20261123-1414', plan: 'free', project_name: 'grunt' }
+      { key_name: 'grunt-20261123-1413', plan: 'free', project_name: 'grunt-20261123-1413' },
+      { key_name: 'grunt-20261123-1414', plan: 'free', project_name: 'grunt-20261123-1414' }
     ]);
   } finally { vi.useRealTimers(); }
 });
