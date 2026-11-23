@@ -39,7 +39,7 @@
       "install": "builtin:zro",
       "signup": "https://zro.moonmath.ai/overview",
       "model": "deepseek-v4.1-flash",
-      "hints": "On /overview press 'API Keys'. On /api-keys press 'Create key', type grunt-YYYYMMDD-HHMMSS (today's UTC date and time) in 'Alias' so it differs from existing keys, leave 'Spend limit' and 'Expiration date' empty, press 'Create'. The new key is shown once in the dialog; press its 'Copy' button so it is stored, then finish. Never press a 'Revoke' button."
+      "hints": "On /overview press 'API Keys'. On /api-keys press 'Create key', type the supplied key_name fact (grunt-YYYYMMDD-HHMMSS with a unique suffix) in 'Alias' so it differs from existing keys, leave 'Spend limit' and 'Expiration date' empty, press 'Create'. The new key is shown once in the dialog; press its 'Copy' button so it is stored, then finish. Never press a 'Revoke' button."
     },
     {
       "id": "tokenharbor",

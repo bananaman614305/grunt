@@ -258,8 +258,8 @@ function registryEntry(registry: Registry, provider: string, url: string | undef
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
   return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
 }
-// A new Zro key alias in the form the Zro hint names: grunt-YYYYMMDD-HHMMSS (UTC).
-const zroKeyName = (now = new Date()) => `grunt-${now.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}`;
+// UTC helps identify the run; randomness keeps rapid retries and parallel runs distinct.
+const zroKeyName = (now = new Date()) => `grunt-${now.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}-${randomBytes(6).toString('hex')}`;
 export function squireStore(service: string) {
   return [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, PROMOTIONAL_STORE, DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
 }
