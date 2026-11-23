@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-11-23
+
 - Remove Clixad. Its free model spends account credits that come only from surveys, offers or purchases, none of which Grunt does, so setup no longer offers, installs or routes it. The remaining experimental sources share the 0.2 weight equally.
 - On Linux, setup enables lingering for the user so the local daemon keeps running after logout and starts at boot, and re-running setup re-enables an existing service. If lingering is refused, setup prints `loginctl enable-linger`.
 - Setup stops foreground provider jobs once one route is verified and a real request through model `grunt` answers, then finishes coding-tool configuration and Squire bootstrap. Rows it did not reach show `background`; the daemon's existing route pass opens them once setup releases its session, and `usegrunt status` shows the route being signed up as connecting.
