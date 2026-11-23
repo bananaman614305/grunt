@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.10 — 2026-11-22
+
+- Preserve automatic source discovery when an existing managed receipt still names a retired provider. The receipt stays unchanged and retired providers remain disabled.
+
 ## [Unreleased]
 
 ## [0.9.9] - 2026-11-22
