@@ -1,8 +1,10 @@
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AUTOMATIC_POOL_FILE, automaticPoolSelection, migrateAutomaticPool, writeAutomaticPool } from './automatic-pool.js';
+import { configure } from './main.js';
+import { bundledRegistry } from '../registry.js';
 
 const directories: string[] = [];
 const configured = ['opencode', 'kilo'];
@@ -34,9 +36,40 @@ it('keeps old receipt compatibility without treating malformed selected source d
   const path = await directory(), file = join(path, AUTOMATIC_POOL_FILE);
   await writeFile(file, JSON.stringify({ version: 1, mode: 'automatic', serviceSources: configured }), { mode: 0o600 });
   expect(automaticPoolSelection(path, configured, curated, true).sources).toEqual(curated);
-  for (const value of [[], ['antseed-vikey', 'antseed-vikey'], ['unknown-source'], ['https://example.test/v1'], 'antseed-vikey']) {
+  for (const value of [[], ['antseed-vikey', 'antseed-vikey'], ['unknown-source'], ['clixad', 'unknown-source'], ['https://example.test/v1'], 'antseed-vikey']) {
     await writeFile(file, JSON.stringify({ version: 1, mode: 'automatic', serviceSources: configured, selectedSources: value }));
     expect(automaticPoolSelection(path, configured, curated, true).sources).toEqual(configured);
+  }
+});
+
+it.each([
+  { serviceSources: ['opencode', 'clixad'], selectedSources: ['opencode', 'clixad'] },
+  { serviceSources: configured, selectedSources: [...configured, 'clixad'] },
+  { serviceSources: configured, selectedSources: ['clixad'] }
+])('preserves owned automatic discovery after Clixad retirement: %j', async receipt => {
+  const path = await directory(), file = join(path, AUTOMATIC_POOL_FILE);
+  const saved = JSON.stringify({ version: 1, mode: 'automatic', ...receipt });
+  await writeFile(file, saved, { mode: 0o600 });
+  const before = await stat(file);
+  const selection = automaticPoolSelection(path, receipt.serviceSources, curated, true);
+  expect(selection).toEqual({ automatic: true,
+    sources: [...new Set([...receipt.serviceSources, ...receipt.selectedSources, ...curated])],
+    explicit: [...new Set([...receipt.serviceSources, ...receipt.selectedSources])] });
+  const sources = configure({ GRUNT_CONFIG_DIR: path, GRUNT_DAEMON: '1', GRUNT_SOURCES: receipt.serviceSources.join(',') },
+    () => ({ ...bundledRegistry, adapters: bundledRegistry.adapters.filter(adapter => curated.includes(adapter.id)) }));
+  try {
+    expect(sources.sources.map(source => source.id)).toEqual(selection.sources.filter(id => id !== 'clixad'));
+    expect(sources.sources.map(source => source.id)).not.toContain('clixad');
+  } finally { await sources.close(); }
+  expect(await readFile(file, 'utf8')).toBe(saved);
+  const after = await stat(file);
+  expect([after.dev, after.ino, after.mtimeMs]).toEqual([before.dev, before.ino, before.mtimeMs]);
+});
+
+it('does not re-enroll removed Clixad or unknown IDs in newly written explicit source selections', async () => {
+  const path = await directory();
+  for (const id of ['clixad', 'unknown-source']) {
+    await expect(writeAutomaticPool(path, configured, [...configured, id])).rejects.toThrow('Invalid managed');
   }
 });
 
