@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
-import { beginSetupSession } from './setup-session.js';
+import { beginSetupSession, readSetupSession } from './setup-session.js';
 import { SourceRecovery } from './recovery.js';
 import { SourceError, Sources } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -12,7 +12,10 @@ import type { Source } from './source.js';
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 const directory = async () => { const dir = await mkdtemp(join(tmpdir(), 'grunt-recovery-')); dirs.push(dir); return dir; };
-const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+// Once setup has been observed, lease release marks the end of the pass.
+const finished = (dir: string) => vi.waitFor(async () => {
+  expect(await readSetupSession(dir)).toBeUndefined();
+});
 
 describe('source recovery', () => {
   it('adds providers with default or recorded data-sharing approval, one run at a time', async () => {
@@ -23,14 +26,13 @@ describe('source recovery', () => {
     const setup = vi.fn(async () => { await gate; return { unavailable: [] }; });
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo', 'perch', 'kenari', 'zro'], open: async () => 0, notify: () => {}, setup });
     recovery.trigger(); recovery.trigger();
-    await settle();
-    expect(setup).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
     expect(setup.mock.calls[0]![0]).toMatchObject({ adapters: ['kilo'], background: true });
-    release(); await settle();
-    expect(setup.mock.calls.map(call => (call as unknown as [{ adapters: string[] }])[0].adapters)).toEqual([['kilo'], ['perch'], ['kenari'], ['zro']]);
+    release();
+    await vi.waitFor(() => expect(setup.mock.calls.map(call => (call as unknown as [{ adapters: string[] }])[0].adapters)).toEqual([['kilo'], ['perch'], ['kenari'], ['zro']]));
     expect(await readDataSharingConsent(dir, ['perch', 'kenari'])).toEqual(['perch', 'kenari']);
     await recovery.close();
-    recovery.trigger(); await settle();
+    recovery.trigger();
     expect(setup).toHaveBeenCalledTimes(4);
   });
 
@@ -44,8 +46,8 @@ describe('source recovery', () => {
       return { unavailable: [] };
     });
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['perch', 'zro'], open: async () => 0, notify: () => {}, opening, setup });
-    recovery.trigger(); await settle();
-    expect(seen).toEqual(['perch', undefined, 'zro', undefined]);
+    recovery.trigger();
+    await vi.waitFor(() => expect(seen).toEqual(['perch', undefined, 'zro', undefined]));
     await recovery.close();
   });
 
@@ -55,10 +57,10 @@ describe('source recovery', () => {
     await recordDataSharingConsent(dir, ['kilo']);
     const setup = vi.fn();
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kenari', 'kilo'], open: async () => 0, notify: () => {}, setup });
-    recovery.trigger(); await settle();
-    expect(setup).not.toHaveBeenCalled();
-    expect(await readDataSharingConsent(dir, ['kenari', 'kilo'])).toEqual([]);
+    recovery.trigger();
+    await vi.waitFor(async () => expect(await readDataSharingConsent(dir, ['kenari', 'kilo'])).toEqual([]));
     await recovery.close();
+    expect(setup).not.toHaveBeenCalled();
   });
 
   it('keeps running after a failed run so the next exhaustion can try again', async () => {
@@ -67,9 +69,12 @@ describe('source recovery', () => {
     const setup = vi.fn().mockRejectedValueOnce(new Error('squire unavailable')).mockResolvedValue({ unavailable: [] });
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['kilo'], open: async () => 0, notify: () => {}, setup });
-    recovery.trigger(); await settle();
-    recovery.trigger(); await settle();
-    expect(setup).toHaveBeenCalledTimes(2);
+    recovery.trigger();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
+    await finished(dir);
+    recovery.trigger();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(2));
+    await recovery.close();
     quiet.mockRestore();
   });
 });
@@ -82,11 +87,11 @@ describe('low open routes', () => {
     let open = 2;
     const setup = vi.fn(async () => { open++; return { unavailable: [] }; });
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['zro'], open: async () => open, notify: () => {}, setup });
-    await recovery.lowRoutes(); await settle();
+    await recovery.lowRoutes();
     expect(setup).not.toHaveBeenCalled();
     open = 1;
-    await recovery.lowRoutes(); await settle();
-    expect(adapters(setup)).toEqual(['zro']);
+    await recovery.lowRoutes();
+    await vi.waitFor(() => expect(adapters(setup)).toEqual(['zro']));
     await recovery.close();
   });
 
@@ -96,10 +101,11 @@ describe('low open routes', () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     const setup = vi.fn(async () => { await gate; return { unavailable: [] }; });
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['zro', 'livekit'], open: async () => 0, notify: () => {}, setup });
-    recovery.synced(); await settle();
+    recovery.synced();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
     await recovery.lowRoutes(); await recovery.lowRoutes();
-    release(); await settle();
-    expect(adapters(setup)).toEqual(['zro', 'livekit']);
+    release();
+    await vi.waitFor(() => expect(adapters(setup)).toEqual(['zro', 'livekit']));
     await recovery.close();
   });
 
@@ -110,16 +116,18 @@ describe('low open routes', () => {
       return { unavailable: ['zro'] };
     });
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['zro'], open: async () => 0, notify: () => {}, setup });
-    await recovery.lowRoutes(); await settle();
-    expect(setup).toHaveBeenCalledTimes(1);
-    for (let flap = 0; flap < 3; flap++) { await recovery.lowRoutes(); await settle(); }
+    await recovery.lowRoutes();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
+    await finished(dir);
+    for (let flap = 0; flap < 3; flap++) { await recovery.lowRoutes(); }
     expect(setup).toHaveBeenCalledTimes(1);
     // The 6 h registry pass is unchanged: it retries the failed signup.
-    recovery.synced(); await settle();
-    expect(setup).toHaveBeenCalledTimes(2);
+    recovery.synced();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(2));
+    await finished(dir);
     // Request-failure triggers keep their behavior too.
-    recovery.trigger(); await settle();
-    expect(setup).toHaveBeenCalledTimes(3);
+    recovery.trigger();
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(3));
     await recovery.close();
   });
 
@@ -130,7 +138,7 @@ describe('low open routes', () => {
     const recovery = new SourceRecovery({ directory: dir, candidates: async () => open < 2 ? ['zro'] : [], open: async () => open, notify: () => {}, setup });
     await recovery.lowRoutes();
     await vi.waitFor(() => expect(open).toBe(2));
-    await settle();
+    await finished(dir);
     expect(adapters(setup)).toEqual(['zro']);
     open = 1;
     await recovery.lowRoutes();
@@ -264,7 +272,8 @@ describe('low open routes', () => {
     const setup = vi.fn(async () => ({ unavailable: ['livekit'] }));
     const live = async (source: Source) => await sources.available(source) && sources.openRoute(source.id);
     const open = async () => (await Promise.all(providers.map(live))).filter(Boolean).length;
-    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['livekit'], open, notify: () => {}, setup });
+    const recoveryOpen = vi.fn(open);
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['livekit'], open: recoveryOpen, notify: () => {}, setup });
     const dropped = vi.fn();
     sources.setRouteDropped(dropped);
     try {
@@ -275,7 +284,9 @@ describe('low open routes', () => {
       expect(await open()).toBe(expectedOpen);
       expect(await live(providers[0]!)).toBe(elapsed > 120000);
       recovery.synced();
-      await settle();
+      if (expectedSignups) await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(expectedSignups));
+      else await vi.waitFor(() => expect(recoveryOpen).toHaveBeenCalledTimes(1));
+      await finished(dir);
       await recovery.close();
       expect(setup).toHaveBeenCalledTimes(expectedSignups);
       expect(dropped.mock.calls).toEqual([['zro']]);
@@ -374,7 +385,7 @@ it.each(['reused', 'unavailable', 'pre-signup error'])('does not count a %s setu
   try {
     recovery.trigger();
     await vi.waitFor(() => expect(setup).toHaveBeenCalledTimes(1));
-    await settle();
+    await recovery.close();
     expect(signedUp).not.toHaveBeenCalled();
   } finally { await recovery.close(); }
 });
