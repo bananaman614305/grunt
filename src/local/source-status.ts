@@ -8,6 +8,10 @@ import type { DiagnosticsStore } from './diagnostics.js';
 import { currentRoutingWorkload, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
+// Negative admission evidence may delay discovery, never authorize dispatch.
+// Share one bounded window across routing, model-list and recovery metadata reads.
+export const AVAILABILITY_NEGATIVE_MS = 30000;
+
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
 export interface SourceSnapshot {
   id: string;
@@ -115,6 +119,15 @@ export class SourceStatus {
   routingAvailability(id: string, positiveAgeMs: number, negativeAgeMs: number): boolean | undefined {
     const entry = this.entry(id), now = this.now();
     if (entry.availabilityCheckedAt === undefined || entry.available === undefined) return;
+    // Honor reset evidence restored from a sibling as well as local metadata.
+    // Mixed failures can keep dispatch benched longer than the actual quota;
+    // reading quotaUntil here must not shorten that separate dispatch backoff.
+    const backoff = this.backoffs.get(id);
+    const quotaUntil = Math.max(entry.failure === 'quota' ? entry.retryAt ?? 0 : 0,
+      backoff?.code === 'quota' ? backoff.quotaUntil ?? backoff.until : 0);
+    // Only evidence older than a known reset expires at that reset. A fresh
+    // denial with a zero/no hint still needs a bounded retry window.
+    if (!entry.available && entry.availabilityCheckedAt < quotaUntil && quotaUntil <= now) return;
     const age = now - entry.availabilityCheckedAt;
     if (age < 0 || age >= (entry.available ? positiveAgeMs : negativeAgeMs)) return;
     return entry.available;
@@ -185,8 +198,11 @@ export class SourceStatus {
   }
 
   routingWeight(id: string, background = false, workload?: RoutingWorkload) {
-    const entry = this.entry(id), specific = workload ? entry.profiles?.[workload] : undefined;
-    const sample = specific && specific.samples >= 2 ? specific : entry.performance;
+    const entry = this.entry(id);
+    // A short text reply is not evidence for a tool continuation or background
+    // job. Keep a cold/sparse matching cohort neutral rather than letting the
+    // mixed aggregate bias a new-task draw. Unscoped callers retain the summary.
+    const sample = workload ? entry.profiles?.[workload] : entry.performance;
     if (!sample || sample.samples < 2 || this.now() < sample.at || this.now() - sample.at > ROUTING_HISTORY_TTL_MS) return 1;
     // Completed failures cost real time even if the few successful samples are quick.
     const penalty = 1 + sample.failureCostMs / Math.max(250, sample.latencyMs);
@@ -241,6 +257,11 @@ export class SourceStatus {
   }
   async available(source: Source, healthCheck = false): Promise<boolean> {
     const entry = this.entry(source.id), revision = entry.revision;
+    // Retain only negative metadata. Explicit health checks and all adapter
+    // completion guards remain fresh; positive metadata is never reused here.
+    // Explicit quota discovery keeps its existing fresh recovery behavior.
+    if (!healthCheck && !entry.availabilityQuota && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
+      && this.routingAvailability(source.id, 0, AVAILABILITY_NEGATIVE_MS) === false) return false;
     try {
       const result = await (healthCheck ? source.healthCheck!() : source.available());
       // A reply or explicit recovery observed after this probe started is
@@ -257,6 +278,9 @@ export class SourceStatus {
       }
       return result;
     } catch (error) {
+      // Caller/shutdown cancellation says nothing about provider availability.
+      if (error instanceof SourceError && error.code === 'cancelled'
+        || error instanceof Error && error.name === 'AbortError') throw error;
       if (error instanceof SourceError && error.code === 'quota') {
         // Preserve a live completion throttle, but accept new evidence after it expires.
         if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota || (entry.retryAt ?? 0) <= this.now())) {
@@ -268,7 +292,11 @@ export class SourceStatus {
       }
       if (entry.revision === revision) {
         const wasOpen = this.routeOpen(source.id);
-        entry.revision++; entry.state = 'unavailable'; entry.available = false; entry.availabilityCheckedAt = this.now();
+        entry.revision++; entry.state = 'unavailable'; entry.available = false;
+        // Setup/login recovery has an explicit fresh health-check path. Keep
+        // those barriers discoverable immediately after the user repairs them.
+        if (failureCode(error) === 'logged_out' || failureCode(error) === 'not_installed') delete entry.availabilityCheckedAt;
+        else entry.availabilityCheckedAt = this.now();
         this.notifyClosed(source.id, wasOpen);
       }
       throw error;

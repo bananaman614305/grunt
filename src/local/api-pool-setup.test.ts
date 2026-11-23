@@ -142,12 +142,21 @@ it.each(guardedProviders)('passes background mode to %s without opening a new Sq
   } finally { connect.mockRestore(); signup.mockRestore(); close.mockRestore(); }
 });
 
-it.each(['freebuff', 'apinex'])('refuses retired %s setup before account or credential operations', async provider => {
+it.each(['freebuff', 'apinex', 'clixad'])('refuses retired %s setup before account or credential operations', async provider => {
   const location = await directory(), squire = client();
   await recordDataSharingConsent(location, [provider]);
   await expect(setup(vi.fn(), [provider], { directory: location, squire })).rejects.toThrow('routing is disabled');
   for (const helper of Object.values(helpers)) expect(helper).not.toHaveBeenCalled();
   for (const operation of [squire.signup, squire.call, squire.credentials.list, squire.credentials.grant, squire.runs.start, squire.runs.get]) expect(operation).not.toHaveBeenCalled();
+});
+
+it('settles a saved Clixad setup request as disabled without installation or account access', async () => {
+  const location = await directory(), squire = client(), run = vi.fn(), connect = vi.fn(), setupProvider = vi.fn(), onSettled = vi.fn();
+  await expect(setupFallbacks({ directory: location, squire, adapters: ['clixad'],
+    run, connect, setupProvider, notify: vi.fn(), onSettled })).resolves.toEqual({ unavailable: ['clixad'] });
+  expect(onSettled).toHaveBeenCalledWith('clixad', false, undefined);
+  for (const operation of [run, connect, setupProvider, squire.signup, squire.call, squire.credentials.list,
+    squire.credentials.grant, squire.runs.start, squire.runs.get]) expect(operation).not.toHaveBeenCalled();
 });
 
 it.each([false, true])('dispatches all four guarded pool additions with a shared client (background: %s)', async background => {

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { SourceAvailability } from './source-availability.js';
+import { AVAILABILITY_NEGATIVE_MS, SourceAvailability } from './source-availability.js';
 import { SourceStatus } from './source-status.js';
 import type { Source } from './source.js';
 
@@ -30,7 +30,7 @@ it('keeps one real check per uncooperative source after a deadline, and ignores 
   availability.start([source]);
   await vi.advanceTimersByTimeAsync(11);
   expect(availability.peek(source.id)).toBe(false);
-  await vi.advanceTimersByTimeAsync(5001);
+  await vi.advanceTimersByTimeAsync(AVAILABILITY_NEGATIVE_MS + 1);
   availability.start([source]);
   expect(source.available).toHaveBeenCalledOnce();
   release(true); await vi.advanceTimersByTimeAsync(0);

@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import { SourceError } from './source.js';
 import type { Source } from './source.js';
-import type { SourceStatus } from './source-status.js';
+import { AVAILABILITY_NEGATIVE_MS, type SourceStatus } from './source-status.js';
+export { AVAILABILITY_NEGATIVE_MS } from './source-status.js';
 
 export const AVAILABILITY_POSITIVE_MS = 30000;
-export const AVAILABILITY_NEGATIVE_MS = 5000;
 export const AVAILABILITY_DEADLINE_MS = 5000;
 const MAX_PROBES = 4;
 
@@ -36,20 +36,26 @@ export class SourceAvailability {
       const controller = new AbortController();
       const parent = currentDiagnosticContext();
       const context = { requestId: randomUUID(), kind: 'diagnostic' as const, ...(parent?.sink ? { sink: parent.sink } : {}) };
-      let timer: ReturnType<typeof setTimeout>;
-      const raw = withDiagnosticContext(context, () => Promise.resolve().then(() => {
-        controller.signal.throwIfAborted();
-        return source.available(controller.signal);
-      }));
-      void raw.then(() => this.unsettled.delete(source.id), () => this.unsettled.delete(source.id));
-      const cancelled = new Promise<never>((_resolve, reject) => {
-        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
-        timer = setTimeout(() => controller.abort(new SourceError('timeout', 'Source admission metadata timed out')), this.timeoutMs);
-        timer.unref();
-      });
-      const guarded: Source = { id: source.id, available: () => Promise.race([raw, cancelled]), complete: source.complete.bind(source) };
+      let timer: ReturnType<typeof setTimeout> | undefined, launched = false;
+      const guarded: Source = { id: source.id, available: () => {
+        // SourceStatus may have received newer negative evidence since peek().
+        // Start the real check lazily so a cached denial cannot detach a probe.
+        launched = true;
+        const raw = withDiagnosticContext(context, () => Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          return source.available(controller.signal);
+        }));
+        void raw.then(() => this.unsettled.delete(source.id), () => this.unsettled.delete(source.id));
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+          timer = setTimeout(() => controller.abort(new SourceError('timeout', 'Source admission metadata timed out')), this.timeoutMs);
+          timer.unref();
+        });
+        return Promise.race([raw, cancelled]);
+      }, complete: source.complete.bind(source) };
       const settled = withDiagnosticContext(context, () => this.observation.available(guarded)).then(() => {}, () => {}).finally(() => {
         clearTimeout(timer);
+        if (!launched) this.unsettled.delete(source.id);
         this.active.delete(source.id);
         for (const wake of this.waiting) wake();
       });

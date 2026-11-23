@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { configure } from './main.js';
 import { createLocalApp } from './api.js';
 import { RegistrySync } from './registry.js';
-import { bundledRegistry } from '../registry.js';
+import { bundledRegistry, knownAdapters, localOptInAdapters } from '../registry.js';
 import type { Adapter, Registry } from '../registry.js';
 
 const directories: string[] = [];
@@ -18,7 +18,7 @@ async function directory() {
   directories.push(path);
   return path;
 }
-const retired = ['freebuff', 'apinex'];
+const retired = ['freebuff', 'apinex', 'clixad'];
 function legacyRegistry(offset: number): Registry {
   const adapters: Adapter[] = [
     { id: 'freebuff', kind: 'agent', tier: 'stable', weight: 0.3, modalities: ['text'], install: 'npm:freebuff' },
@@ -49,10 +49,16 @@ it.each([-1000, 1000])('never re-enables retired routes from stale or freshly re
   } finally { await sync.close(); }
 });
 
-it.each(['freebuff,apinex,opencode', 'opencode,freebuff,apinex'])('filters old saved source selections (%s)', async selection => {
+it.each(['freebuff,apinex,opencode', 'opencode,freebuff,apinex', 'clixad,opencode', 'opencode,clixad'])('filters old saved source selections (%s)', async selection => {
   const sources = configure({ GRUNT_SOURCES: selection, GRUNT_CONFIG_DIR: await directory() });
   expect(sources.sources.map(source => source.id)).toEqual(['opencode']);
   await sources.close();
+});
+
+it('still rejects unrecognized saved sources rather than treating every unknown ID as retired', async () => {
+  const path = await directory();
+  expect(() => configure({ GRUNT_SOURCES: 'unrecognized-source,opencode', GRUNT_CONFIG_DIR: path }))
+    .toThrow('Unknown grunt source: unrecognized-source');
 });
 
 it.each(['opencode', 'opencode,codex'])('rejects explicit retired models before probing or routing to any remaining source (%s)', async selection => {
@@ -75,7 +81,7 @@ it.each(['opencode', 'opencode,codex'])('rejects explicit retired models before 
   } finally { await sources.close(); }
 });
 
-it.each(['freebuff,apinex', ''])('keeps an empty or retired-only saved installation reachable without silently selecting a replacement (%s)', async selection => {
+it.each(['freebuff,apinex', 'clixad', 'freebuff,apinex,clixad', ''])('keeps an empty or retired-only saved installation reachable without silently selecting a replacement (%s)', async selection => {
   const sources = configure({ GRUNT_SOURCES: selection, GRUNT_CONFIG_DIR: await directory() });
   expect(sources.sources).toEqual([]);
   const app = createLocalApp(sources);
@@ -84,4 +90,25 @@ it.each(['freebuff,apinex', ''])('keeps an empty or retired-only saved installat
   expect((await response.json()).data.map((model: { id: string }) => model.id)).toEqual(['grunt']);
   await expect(sources.complete({ model: 'grunt', cwd: await directory(), messages: [{ role: 'user', content: 'Hello' }], tools: [], stream: false }, new AbortController().signal)).rejects.toThrow();
   await sources.close();
+});
+
+it.each(['builtin:clixad', 'npm:clixad'])('never restores removed Clixad from a newer cached registry (%s)', async install => {
+  const path = await directory();
+  const registry = { version: 1, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(), adapters: [
+    { id: 'clixad', kind: 'agent', tier: 'stable', weight: 0.5, modalities: ['text'], install },
+    { ...bundledRegistry.adapters.find(adapter => adapter.id === 'opencode')!, tier: 'stable', weight: 0.5 }
+  ] };
+  const saved = JSON.stringify({ registry, etag: '"removed-provider"' });
+  await writeFile(join(path, 'registry.json'), saved, { mode: 0o600 });
+  const sync = new RegistrySync({ directory: path, fetcher: vi.fn<typeof fetch>(async () => new Response(null, { status: 304 })) });
+  try {
+    await sync.load();
+    expect(sync.enabled.map(adapter => adapter.id)).not.toContain('clixad');
+    expect(knownAdapters.has('clixad')).toBe(false);
+    expect(localOptInAdapters.some(adapter => adapter.id === 'clixad')).toBe(false);
+    const sources = configure({ GRUNT_CONFIG_DIR: path, GRUNT_OPT_IN_SOURCES: 'clixad' }, () => sync.current);
+    expect(sources.sources.map(source => source.id)).not.toContain('clixad');
+    await sources.close();
+    expect(await readFile(join(path, 'registry.json'), 'utf8')).toBe(saved);
+  } finally { await sync.close(); }
 });

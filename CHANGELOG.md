@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-11-22
+
+- Suppress repeated negative non-quota availability checks across routing, model-list and configured-access paths for thirty seconds. Preserve fresh completion guards, explicit recovery and absolute local or persisted quota reset deadlines.
+- Keep performance weights within the requested workload until enough matching observations exist, while retaining existing failure-cost penalties and safe continuation boundaries. Add an offline mixed-workload replay.
+- Treat removed Clixad selections as retired so older source lists remain usable, explicit requests cannot silently select another provider, and stale setup cannot reprovision it.
+
 ## [0.9.8] - 2026-11-23
 
 - Remove Clixad. Its free model spends account credits that come only from surveys, offers or purchases, none of which Grunt does, so setup no longer offers, installs or routes it. The remaining experimental sources share the 0.2 weight equally.

@@ -57,6 +57,11 @@ History never grants access or marks a source ready. Fresh free-access, consent,
 billing and eligibility checks still run. If this optional store cannot open, the
 daemon uses current-session observations and emits a fixed advisory message.
 
+New-task performance weights use the requested workload's observations. Fewer than
+two matching observations leave the performance weight neutral; interactive/tool
+traffic does not inherit a score measured on background/text traffic. Existing
+unscoped observation callers can still inspect the aggregate score.
+
 Automatic foreground continuations with Pi function tools can reconsider a sticky
 provider at a turn boundary. Migration requires sufficient recent observations of
 the same workload, at least equal reliability and registry fit, a substantial
@@ -81,6 +86,16 @@ adapter instance. Cancelling one caller does not cancel other waiters. Completed
 checks are not cached for later dispatch: a later call reads fresh access evidence,
 and consent is checked for each caller. Cancellation and bounded check deadlines
 prevent replacement storms when a transport has not finished cleaning up.
+
+Ordinary admission, model-list and configured-access checks share a thirty-second
+interval after non-quota negative availability evidence. This suppresses repeated
+checks of an unavailable provider without retaining positive authority to spend
+or bypassing selected-adapter guards. Explicit health checks can refresh evidence,
+and quota reset deadlines remain in force.
+Quota-specific model-list checks retain their existing fresh recovery behavior;
+router admission still bounds repeated quota checks when no future reset is known.
+The [empirical results](efficiency-empirical-results.md) explain the measurements
+and limits behind these changes.
 
 Grunt-owned OpenCode servers shut down after five idle minutes and restart on
 demand. On POSIX, cleanup also terminates descendants in the server's owned process
