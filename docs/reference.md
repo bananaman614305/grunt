@@ -1499,7 +1499,12 @@ stamps a strictly newer `published` and swaps `/data/registry.json` atomically, 
 an entry and its hints publish together. Invalid writes return 422 with
 `{"errors": [{"field", "rule"}]}`. A write rebases on the bundled list when the
 published file is missing or invalid. `registry_writes` in the gateway database
-records each write's GitHub login and the entry before and after.
+records each write's GitHub login and the whole registry before and after.
+The response includes the history row number as `write`. To revert, send an
+authenticated `PUT /v1/registry/reverts/{write}` with no body. It restores that
+write's `before_json` document through the same commit path, preserving every
+entry and weight exactly while advancing `published`, and records a new history
+row. A revert also replaces intervening edits; inspect the live registry first.
 `GET /v1/registry/instructions` is a Markdown guide for agents, generated on
 each request from the validator's constants and the live registry and scores,
 with a worklist of entries that need attention. `POST /v1/registry/feedback`

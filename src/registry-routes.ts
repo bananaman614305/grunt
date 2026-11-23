@@ -6,7 +6,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { Context } from 'hono';
 import { ID_PATTERN, bundledRegistry, validateRegistry } from './registry.js';
 import type { Registry } from './registry.js';
-import { DEFAULT_REGISTRY_REPO, ENTRY_MAX_BYTES, deleteEntry, githubWriter, putEntry, registryEtag } from './registry-write.js';
+import { DEFAULT_REGISTRY_REPO, ENTRY_MAX_BYTES, deleteEntry, githubWriter, putEntry, registryEtag, restoreRegistry } from './registry-write.js';
 import type { WriteResult } from './registry-write.js';
 import { FEEDBACK_MAX_BYTES, parseFeedback } from './registry-store.js';
 import type { RegistryStore } from './registry-store.js';
@@ -35,12 +35,11 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     if (!store) throw new Error('Registry writes are unavailable');
     const next = validateRegistry(registry);
     const temporary = join(dirname(path), `registry.${randomUUID()}.tmp`);
-    const find = (document: Registry | undefined, key: string) => document?.adapters.find(entry => entry.id === key) ?? document?.candidates?.find(entry => entry.id === key);
-    const ids = id ? [id] : [...next.adapters, ...(next.candidates ?? [])].map(entry => entry.id);
     try {
       await writeFile(temporary, JSON.stringify(next), { mode: 0o600, flag: 'wx' });
-      for (const key of ids) await store.recordWrite(login, key, find(base, key), find(next, key));
+      const write = await store.recordWrite(login, id ?? 'registry', base, next);
       await rename(temporary, path);
+      return write;
     } finally { await rm(temporary, { force: true }); }
   };
   const initialize = () => serialized(async () => {
@@ -60,9 +59,9 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
       return c.body(JSON.stringify(registry));
     } catch { return c.json({ error: 'No valid registry has been published' }, 503); }
   });
-  const write = async (c: Context, change: (base: Registry, at: number) => WriteResult) => {
+  const write = async (c: Context, change: (base: Registry, at: number) => WriteResult | Promise<WriteResult>) => {
     if (!store) return c.json({ error: 'Registry writes are unavailable' }, 503);
-    const id = c.req.param('id') ?? '';
+    const id = c.req.param('id') ?? 'registry';
     if (!ID_PATTERN.test(id)) return c.json({ errors: [{ field: 'id', rule: `must match ${ID_PATTERN}` }] }, 400);
     const token = bearer(c.req.header('Authorization'));
     if (!token) return c.json({ error: 'Send a GitHub token as Authorization: Bearer <token>' }, 401);
@@ -71,15 +70,14 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     // One write at a time on this single machine; each rebases on the last.
     const run = serialized(async () => {
       const base = await current();
-      const result = change(base, now());
+      const result = await change(base, now());
       if ('errors' in result) return result;
-      await publish(result.registry, writer.login, base, id);
-      return result;
+      return { ...result, write: await publish(result.registry, writer.login, base, id) };
     });
     try {
       const result = await run;
       if ('errors' in result) return c.json({ errors: result.errors }, result.status);
-      return c.json({ published: result.registry.published, etag: registryEtag(result.registry), placed: result.placed });
+      return c.json({ published: result.registry.published, etag: registryEtag(result.registry), placed: result.placed, write: result.write });
     } catch { return c.json({ error: 'The registry could not be written' }, 500); }
   };
   app.put('/v1/registry/entries/:id', bodyLimit({ maxSize: ENTRY_MAX_BYTES, onError: c => c.json({ error: 'Entry is too large' }, 413) }), async c => {
@@ -89,6 +87,13 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     return write(c, (base, at) => putEntry(base, c.req.param('id'), body, at));
   });
   app.delete('/v1/registry/entries/:id', c => write(c, (base, at) => deleteEntry(base, c.req.param('id'), at)));
+  app.put('/v1/registry/reverts/:write', c => write(c, async (base, at) => {
+    const value = c.req.param('write');
+    if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) return { status: 400, errors: [{ field: 'write', rule: 'must be a positive safe integer' }] };
+    const snapshot = await store?.beforeWrite(Number(value));
+    if (snapshot === undefined || snapshot === null) return { status: 404, errors: [{ field: 'write', rule: 'has no prior registry snapshot' }] };
+    return restoreRegistry(base, JSON.parse(snapshot), at);
+  }));
   // Anonymous daily route counts from local routers. Only the allowlisted
   // schema is accepted; no address, body or header is stored or logged.
   app.post('/v1/registry/feedback', bodyLimit({ maxSize: FEEDBACK_MAX_BYTES, onError: c => c.json({ error: 'Report is too large' }, 413) }), async c => {

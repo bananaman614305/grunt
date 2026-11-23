@@ -5,7 +5,7 @@ import type { Adapter, Candidate, Registry, RegistryError } from './registry.js'
 export const ENTRY_MAX_BYTES = 16 * 1024;
 export const DEFAULT_REGISTRY_REPO = 'bananaman614305/grunt';
 export type Placement = 'adapters' | 'candidates';
-export type WriteResult = { registry: Registry; placed: Placement } | { status: 400 | 404 | 422; errors: RegistryError[] };
+export type WriteResult = { registry: Registry; placed: Placement | 'registry' } | { status: 400 | 404 | 422; errors: RegistryError[] };
 
 export const registryEtag = (registry: Registry) => '"' + createHash('sha256').update(JSON.stringify(registry)).digest('hex') + '"';
 // Every write advances `published`, so clients accept it as a newer publication.
@@ -60,6 +60,14 @@ export function deleteEntry(base: Registry, id: string, now: number): WriteResul
   if (adapters.length === base.adapters.length && candidates.length === (base.candidates ?? []).length) return { status: 404, errors: [{ field: 'id', rule: 'is not in the registry' }] };
   const registry = finish(base, adapters, candidates, now);
   return registry ? { registry, placed: adapters.length === base.adapters.length ? 'candidates' : 'adapters' } : { status: 422, errors: [invalid] };
+}
+
+export function restoreRegistry(base: Registry, snapshot: unknown, now: number): WriteResult {
+  try {
+    const prior = validateRegistry(snapshot);
+    const registry = { ...prior, published: nextPublished(base.published, Math.max(now, Date.parse(prior.published) + 1)) };
+    return { registry: validateRegistry(registry), placed: 'registry' };
+  } catch { return { status: 422, errors: [{ field: 'registry', rule: 'must be a valid registry snapshot' }] }; }
 }
 
 // A writer is any GitHub account that can push to the repository. The caller's

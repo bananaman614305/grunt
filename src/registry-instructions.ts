@@ -51,6 +51,7 @@ Any GitHub account with push access to \`${repo}\`. Send that account's own GitH
 - \`DELETE ${base}/v1/registry/entries/{id}\`: remove one entry.
 - \`POST ${base}/v1/registry/feedback\`: daily route counts from Grunt routers. Agents do not send this.
 - \`GET ${base}/v1/registry/instructions\`: this page.
+- \`PUT ${base}/v1/registry/reverts/{write}\`: restore the whole document saved before that write; requires the same GitHub authorization and no request body.
 
 \`\`\`sh
 curl -s ${base}/v1/registry > registry.json
@@ -67,7 +68,8 @@ curl -s -X DELETE ${base}/v1/registry/entries/example-free-api -H "Authorization
 - On an adapter update, an omitted \`weight\` keeps the old one. Each tier is then rescaled so stable weights total ${TIER_TOTALS.stable} and experimental weights total ${TIER_TOTALS.experimental}.
 - An entry with a \`signup\` must carry \`hints\`.
 - Each accepted write publishes at once under a new \`published\` time, so an entry and its hints go live together. Routers pick it up within 6 hours.
-- The response is \`{"published", "etag", "placed"}\`, with \`placed\` set to \`adapters\` or \`candidates\`.
+- The response is \`{"published", "etag", "placed", "write"}\`, with \`placed\` set to \`adapters\`, \`candidates\` or \`registry\` for a revert. It also includes \`write\`, the history row number.
+- History stores whole registry documents before and after each write. Revert with \`PUT /v1/registry/reverts/{write}\` using that response number. This restores every entry and weight exactly, with a newer \`published\`, and records another write. It replaces intervening edits too; read the live registry before reverting.
 
 ## Adapter fields
 

@@ -163,12 +163,12 @@ it('places adapters and candidates, keeps tier totals, and records reversible hi
     api.request('PUT', '/v1/registry/entries/two', { signup: 'https://two.example/', hints: 'Two.' }, tokens.bananaman)]);
   expect([a.status, b.status]).toEqual([200, 200]);
   expect((await api.registry()).candidates!.map(candidate => candidate.id)).toEqual(['newco', 'one', 'two']);
-  // Delete, then revert by writing the recorded previous entry back.
   expect((await api.request('DELETE', '/v1/registry/entries/newco', undefined, tokens.owner)).status).toBe(200);
   expect((await api.request('DELETE', '/v1/registry/entries/newco', undefined, tokens.owner)).status).toBe(404);
   const removed = (await api.store.writes()).at(-1)!;
-  expect(removed).toMatchObject({ login: 'lunchboxfortwo', id: 'newco', after_json: null });
-  expect((await api.request('PUT', '/v1/registry/entries/newco', JSON.parse(removed.before_json!), tokens.owner)).status).toBe(200);
+  expect(removed).toMatchObject({ login: 'lunchboxfortwo', id: 'newco' });
+  expect(JSON.parse(removed.after_json!).candidates.map((candidate: { id: string }) => candidate.id)).not.toContain('newco');
+  expect((await api.request('PUT', `/v1/registry/reverts/${removed.write}`, undefined, tokens.owner)).status).toBe(200);
   expect((await api.registry()).candidates!.map(candidate => candidate.id)).toContain('newco');
   validateRegistry(JSON.parse(await readFile(api.path, 'utf8')));
 });
@@ -315,20 +315,15 @@ it('seeds a missing registry once through audited publication and preserves late
   expect(validate097(seeded)).toEqual(seeded);
   expect((await stat(api.path)).mode & 0o777).toBe(0o600);
   const writes = await api.store.writes();
-  const entries = [...bundledRegistry.adapters, ...(bundledRegistry.candidates ?? [])];
-  expect(writes).toHaveLength(entries.length);
-  for (const entry of entries) {
-    const write = writes.find(row => row.id === entry.id)!;
-    expect(write.login).toBe('system');
-    expect(write.before_json).toBeNull();
-    expect(JSON.parse(write.after_json!)).toEqual(entry);
-  }
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ login: 'system', id: 'registry', before_json: null });
+  expect(JSON.parse(writes[0]!.after_json!)).toEqual(seeded);
   expect((await api.request('PUT', '/v1/registry/entries/newco', { signup: 'https://newco.example/', hints: 'Press Sign up.' }, tokens.owner)).status).toBe(200);
   const updated = await api.registry();
   const restarted = registryRoutes({ path: api.path, store: api.store });
   await restarted.initialize();
   expect(await (await restarted.request('/v1/registry')).json()).toEqual(updated);
-  expect(await api.store.writes()).toHaveLength(entries.length + 1);
+  expect(await api.store.writes()).toHaveLength(2);
 });
 
 it('does not publish a startup seed when its audit fails', async () => {
@@ -348,4 +343,58 @@ it('leaves an existing invalid registry for an authenticated writer to repair', 
   expect((await api.request('GET', '/v1/registry')).status).toBe(503);
   expect((await api.request('PUT', '/v1/registry/entries/zro', entry('zro'), tokens.owner)).status).toBe(200);
   expect((await api.registry()).adapters.find(adapter => adapter.id === 'zro')?.hints).toBe(entry('zro').hints);
+});
+
+
+it.each([
+  'delete stable', 'delete experimental', 'update stable weight', 'update experimental weight',
+  'move stable tier', 'move experimental tier', 'adapter to candidate', 'candidate to adapter'
+])('reverts %s to byte-identical entries and weights', async mutation => {
+  const api = await server({ published: bundledRegistry });
+  const tool = { id: 'newtool', kind: 'agent', tier: 'stable', weight: 0.1, modalities: ['text'], install: 'npm:newtool' };
+  expect((await api.request('PUT', '/v1/registry/entries/newtool', tool, tokens.owner)).status).toBe(200);
+  expect((await api.request('PUT', '/v1/registry/entries/newco', { ...EXAMPLE_CANDIDATE, id: 'newco' }, tokens.owner)).status).toBe(200);
+  const before = await api.registry();
+  const target = mutation.includes('experimental') ? before.adapters.find(adapter => adapter.tier === 'experimental')! : before.adapters.find(adapter => adapter.id === 'kilo')!;
+  let response: Response;
+  if (mutation.startsWith('delete')) response = await api.request('DELETE', `/v1/registry/entries/${target.id}`, undefined, tokens.owner);
+  else if (mutation === 'adapter to candidate') response = await api.request('PUT', '/v1/registry/entries/newtool', { signup: 'https://newtool.example/', hints: 'Press Sign up.' }, tokens.owner);
+  else if (mutation === 'candidate to adapter') response = await api.request('PUT', '/v1/registry/entries/newco', { ...tool, id: 'newco', install: 'npm:newco' }, tokens.owner);
+  else response = await api.request('PUT', `/v1/registry/entries/${target.id}`, {
+    ...target, ...(target.signup ? { hints: target.hints ?? 'Follow the signup controls.' } : {}),
+    ...(mutation.startsWith('update') ? { weight: 0.15 } : { tier: target.tier === 'stable' ? 'experimental' : 'stable' })
+  }, tokens.owner);
+  expect(response.status).toBe(200);
+  const { write } = await response.json() as { write: number };
+  const changed = await api.registry();
+  const restoredResponse = await api.request('PUT', `/v1/registry/reverts/${write}`, undefined, tokens.bananaman);
+  expect(restoredResponse.status).toBe(200);
+  const restored = await api.registry();
+  expect(JSON.stringify(restored.adapters)).toBe(JSON.stringify(before.adapters));
+  expect(JSON.stringify(restored.candidates)).toBe(JSON.stringify(before.candidates));
+  expect(Date.parse(restored.published)).toBeGreaterThan(Date.parse(changed.published));
+  const history = (await api.store.writes()).at(-1)!;
+  expect(history.login).toBe('bananaman614305');
+  expect(JSON.parse(history.before_json!)).toEqual(changed);
+  expect(JSON.parse(history.after_json!)).toEqual(restored);
+  expect((await api.request('PUT', `/v1/registry/reverts/${history.write}`, undefined, tokens.owner)).status).toBe(200);
+  expect(JSON.stringify((await api.registry()).adapters)).toBe(JSON.stringify(changed.adapters));
+  expect(JSON.stringify((await api.registry()).candidates)).toBe(JSON.stringify(changed.candidates));
+});
+
+it('applies authorization, snapshot validation and mandatory auditing to reverts', async () => {
+  const api = await server({ published: bundledRegistry });
+  const deleted = await api.request('DELETE', '/v1/registry/entries/kilo', undefined, tokens.owner);
+  const { write } = await deleted.json() as { write: number };
+  const path = `/v1/registry/reverts/${write}`, before = await readFile(api.path, 'utf8');
+  expect((await api.request('PUT', path)).status).toBe(401);
+  expect((await api.request('PUT', path, undefined, tokens.reader)).status).toBe(403);
+  expect((await api.request('PUT', '/v1/registry/reverts/999999', undefined, tokens.owner)).status).toBe(404);
+  expect((await api.request('PUT', '/v1/registry/reverts/0', undefined, tokens.owner)).status).toBe(400);
+  const invalid = await api.store.recordWrite('system', 'registry', { invalid: true }, bundledRegistry);
+  expect((await api.request('PUT', `/v1/registry/reverts/${invalid}`, undefined, tokens.owner)).status).toBe(422);
+  vi.spyOn(api.store, 'recordWrite').mockRejectedValueOnce(new Error('database unavailable'));
+  expect((await api.request('PUT', path, undefined, tokens.owner)).status).toBe(500);
+  expect(await readFile(api.path, 'utf8')).toBe(before);
+  expect((await api.request('PUT', path, undefined, tokens.owner)).status).toBe(200);
 });

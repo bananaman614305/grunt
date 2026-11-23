@@ -94,11 +94,16 @@ export class RegistryStore {
     `);
   }
   async recordWrite(login: string, id: string, before: unknown, after: unknown) {
-    await this.db.execute({ sql: 'INSERT INTO registry_writes VALUES (?,?,?,?,?)',
+    const result = await this.db.execute({ sql: 'INSERT INTO registry_writes VALUES (?,?,?,?,?)',
       args: [this.now(), login, id, before === undefined ? null : JSON.stringify(before), after === undefined ? null : JSON.stringify(after)] });
+    return Number(result.lastInsertRowid);
   }
   async writes() {
-    return (await this.db.execute('SELECT at,login,id,before_json,after_json FROM registry_writes ORDER BY rowid')).rows as unknown as { at: number; login: string; id: string; before_json: string | null; after_json: string | null }[];
+    return (await this.db.execute('SELECT rowid AS write,at,login,id,before_json,after_json FROM registry_writes ORDER BY rowid')).rows as unknown as { write: number; at: number; login: string; id: string; before_json: string | null; after_json: string | null }[];
+  }
+  async beforeWrite(write: number) {
+    const result = await this.db.execute({ sql: 'SELECT before_json FROM registry_writes WHERE rowid = ?', args: [write] });
+    return result.rows[0]?.before_json as string | null | undefined;
   }
   // A report carries cumulative day totals, so a replay replaces rather than adds.
   async recordFeedback(report: FeedbackReport) {
