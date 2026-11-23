@@ -118,13 +118,26 @@ function setupReason(...values: unknown[]): string {
   return [...new Set(values.filter((value): value is string => typeof value === 'string')
     // Free-form secret descriptions cannot be redacted reliably. Drop the whole
     // field, including ambiguous prose, while retaining separate safe details.
-    .filter(value => !/(?:password|passcode|token|secret|key|credential|authorization)/i.test(value.normalize('NFKC'))).map(value => value
+    .filter(value => !/(?:password|passcode|token|secret|key|credential|authorization)/i.test(value.normalize('NFKC'))).map(redactedText).filter(Boolean))].join(' ').slice(0, 512);
+}
+function redactedText(value: string) {
+  return value
     .replace(/\p{Cc}|\p{Cf}/gu, ' ')
     .replace(/https?:\/\/\S+/gi, '[link omitted]')
     .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted authorization]')
     .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_)[A-Za-z0-9_-]+/g, '[redacted]')
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
-    .replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' ').slice(0, 512);
+    .replace(/\s+/g, ' ').trim();
+}
+// Squire's own question, score and reason for a stopped drive. The question is
+// Squire's fixed wording, which names "target key" controls, so it is redacted
+// but not dropped for that word.
+function squireWords(result: ObjectValue) {
+  const question = typeof result.question === 'string' ? redactedText(result.question).slice(0, 240) : '';
+  const confidence = typeof result.confidence === 'number' && Number.isFinite(result.confidence) ? result.confidence.toFixed(2) : '';
+  // A page link such as /api-keys must not drop the whole reason for its word.
+  const reason = setupReason(typeof result.reason === 'string' ? result.reason.replace(/https?:\/\/\S+/gi, '[link omitted]') : undefined);
+  return [question && `Squire asked: ${question}`, confidence && `confidence ${confidence}`, reason && `Squire's reason: ${reason}`].filter(Boolean).join('; ');
 }
 // A stopped page with no controls shows only the provider's own message, such
 // as a network block. Its words, redacted like other reasons, explain the stop.
@@ -258,8 +271,14 @@ function registryEntry(registry: Registry, provider: string, url: string | undef
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
   return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
 }
-// UTC helps identify the run; randomness keeps rapid retries and parallel runs distinct.
-const zroKeyName = (now = new Date()) => `grunt-${now.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}-${randomBytes(6).toString('hex')}`;
+// A readable UTC minute stamp, the grunt-YYYYMMDD-HHMM alias the Zro hint names.
+const zroKeyName = (now = new Date()) => `grunt-${now.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}`;
+// A text field that names the key being created. A bare name needs a key page.
+function keyNameField(label: string, url: unknown) {
+  const field = label.replace(/\([^)]*\)/g, ' ').replace(/[\s_-]+/g, ' ').trim().toLowerCase();
+  if (/^(?:(?:api )?(?:key|token) )?(?:alias|label)$|^(?:api )?(?:key|token) name$/.test(field)) return true;
+  return field === 'name' && typeof url === 'string' && URL.canParse(url) && /key|token/i.test(new URL(url).pathname);
+}
 export function squireStore(service: string) {
   return [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, PROMOTIONAL_STORE, DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
 }
@@ -550,7 +569,9 @@ export class BrowserSquire implements SetupSquire {
     let last: ObjectValue | undefined;
     const dropped = async (stop: string): Promise<Run> => {
       const words = setupReason(stop === 'provider refused' ? last?.reason : undefined, pageWords(last));
-      const reason = words ? `${stop}; the page says: ${words}` : stop;
+      // A refusal already quotes Squire's reason as the page's words.
+      const own = last && stop !== 'provider refused' ? squireWords(last) : '';
+      const reason = [stop, words && `the page says: ${words}`, own].filter(Boolean).join('; ');
       this.failures.set(provider, reason);
       if (last) {
         const needs = object(last.needs_user);
@@ -566,7 +587,7 @@ export class BrowserSquire implements SetupSquire {
     let answer: string | undefined;
     let waits = 0;
     // key_name answers key-name fields; a provider's own signup facts may name a different key.
-    const facts = { key_name: 'grunt', ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
+    const facts: Record<string, string> = { key_name: 'grunt', ...this.signupFacts.get(provider), plan: 'free', project_name: 'grunt' };
     while (true) {
       this.serviceSignal(provider).throwIfAborted();
       const session = this.sessions.get(provider);
@@ -632,6 +653,23 @@ export class BrowserSquire implements SetupSquire {
       if (turns >= 8) return dropped('browser recovery limit reached');
       this.retries.set(provider, turns + 1);
       if (retry) { await delay(3000, undefined, { signal }); answer = 'WAIT'; continue; }
+      // An unsure drive on the key's own name field: this provider's key_name
+      // belongs there. Name the field's fact and resume on that field.
+      const keyName = this.signupFacts.get(provider)?.key_name;
+      const observed = object(result.observation);
+      const fieldLabel = (row: unknown[]) => String(row[2]).split('|')[0]!.replace(/^@/, '').trim();
+      const nameRow = keyName && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
+        ? observed.safe_table.find((row): row is unknown[] => Array.isArray(row) && row[1] === 't'
+          && keyNameField(fieldLabel(row), observed.url) && !usedTerms.has(`field:${fieldLabel(row)}`)) : undefined;
+      const nameTarget = nameRow && Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
+        && label.trim().toLowerCase() === fieldLabel(nameRow).toLowerCase());
+      if (keyName && nameRow && nameTarget) {
+        usedTerms.add(`field:${fieldLabel(nameRow)}`);
+        // Squire matches a fact to a field by the field's own label.
+        facts[fieldLabel(nameRow)] = keyName;
+        answer = nameTarget[0];
+        continue;
+      }
       // Background signups use the router's driver too; it cannot hand off to a person.
       if (this.options.agent && url) {
         let agentResult = result;

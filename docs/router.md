@@ -184,8 +184,11 @@ Values named in hints or goals must also be supplied in `operate_drive` facts;
 goal text alone does not authorize typing them. Grunt supplies `key_name`,
 `plan` and `project_name`, with provider-specific key names taking precedence.
 Kenari also receives its pinned free model as the `model` fact. Each Zro key
-creation attempt receives a fresh `key_name` containing a UTC timestamp and
-random suffix, so rapid retries can use different aliases.
+creation attempt receives a `key_name` of the form `grunt-YYYYMMDD-HHMM`, the
+UTC minute it started. When Squire is unsure on a key's own name, alias or
+label field and the provider has its own `key_name`, Grunt supplies that value
+under the field's label and resumes on that field instead of dropping. A
+dropped signup reports Squire's own question, confidence and reason.
 
 Squire's `operate_drive` `store` (where the drive saves a key it reveals) never
 comes from the registry. Grunt derives it from the vault service the signup

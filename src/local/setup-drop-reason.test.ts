@@ -24,10 +24,10 @@ it('prints Squire\'s own stop reason for a dropped signup in debug mode', async 
   await expect(setupFallbacks({ directory, squire, adapters: ['zro'], signal: new AbortController().signal,
     notify: () => {}, connect: async () => {}, run: async () => {}, setupProvider })).resolves.toEqual({ unavailable: ['zro'] });
   const lines = debug.mock.calls.map(call => String(call[0])).filter(line => line.startsWith('grunt setup: zro:'));
-  expect(lines).toEqual(['grunt setup: zro: browser could not continue (squire status: failed; reason: Google sign-in page did not load; remaining: open the account page;)']);
+  expect(lines).toEqual(['grunt setup: zro: browser could not continue; Squire\'s reason: Google sign-in page did not load (squire status: failed; reason: Google sign-in page did not load; remaining: open the account page;)']);
 });
 
-it('keeps the plain reason when debug mode is off', async () => {
+it('reports Squire\'s own reason without the debug line when debug mode is off', async () => {
   directory = await mkdtemp(join(tmpdir(), 'grunt-drop-reason-'));
   const squire = new BrowserSquire();
   vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'failed', session_id: 'zro-tab', reason: 'blocked' } : {});
@@ -35,7 +35,7 @@ it('keeps the plain reason when debug mode is off', async () => {
   const setupProvider = async () => { await squire.signup('zro', 'https://zro.moonmath.ai/sign-up', 'Verify free access'); };
   await setupFallbacks({ directory, squire, adapters: ['zro'], signal: new AbortController().signal,
     notify: () => {}, connect: async () => {}, run: async () => {}, setupProvider });
-  expect(squire.signupFailure('zro')).toBe('browser could not continue');
+  expect(squire.signupFailure('zro')).toBe('browser could not continue; Squire\'s reason: blocked');
   expect(debug.mock.calls.some(call => String(call[0]).startsWith('grunt setup:'))).toBe(false);
 });
 
