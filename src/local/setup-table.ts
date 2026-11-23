@@ -134,8 +134,10 @@ export class SetupTable {
     this.unhook();
     this.drawn = [];
     this.flush();
-    for (const row of this.rows.values()) {
-      if ([...this.line(row.kind, row.name, row.status)].length > Math.max(1, this.width() - 1)) {
+    const columns = this.width();
+    const lines = this.lines(columns);
+    for (const [index, row] of [...this.rows.values()].entries()) {
+      if ([...lines[index + 1]!].length > Math.max(1, columns - 1)) {
         this.write(`${row.name}: ${row.status}\n`);
       }
     }
@@ -176,12 +178,11 @@ export class SetupTable {
     const width = Math.max(1, columns - 1);
     const status = this.status ? [this.status] : [];
     if (columns >= 80) {
-      return ['type    name                  status', ...rows.map(row => this.line(row.kind, row.name, row.status)), ...status].map(line => fit(line, width));
+      return ['type    name                  status', ...rows.map(row => this.line(row.kind, row.name, row.status)), ...status];
     }
     // Narrow terminals (phones) drop the type column and shorten the name.
     const nameWidth = Math.min(Math.max(4, ...rows.map(row => row.name.length)), Math.max(4, Math.floor(width / 3)));
-    return [`${'name'.padEnd(nameWidth)} status`, ...rows.map(row => `${fit(row.name, nameWidth).padEnd(nameWidth)} ${row.status}`), ...status]
-      .map(line => fit(line, width));
+    return [`${'name'.padEnd(nameWidth)} status`, ...rows.map(row => `${fit(row.name, nameWidth).padEnd(nameWidth)} ${row.status}`), ...status];
   }
   // Rows of the last frame at the current width, in case the terminal was
   // narrowed since then.
@@ -195,7 +196,7 @@ export class SetupTable {
   }
   private draw() {
     const columns = this.width();
-    const lines = this.lines(columns);
+    const lines = this.lines(columns).map(line => fit(line, Math.max(1, columns - 1)));
     const height = this.height(columns);
     let frame = height ? `\x1b[${height}A\r` : '';
     frame += lines.map(line => `\x1b[2K${line}\n`).join('');
