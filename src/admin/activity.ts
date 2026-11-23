@@ -4,11 +4,13 @@ import type { AdminWorkers } from './types.js';
 const phases = ['starting', 'working', 'checkpoint', 'waiting_for_free_pool', 'stopped', 'offline'] as const;
 const errors = ['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'] as const;
 const issueStates = ['available', 'limited', 'error', 'unavailable'] as const;
-const toolNames = ['read', 'write', 'edit', 'bash'] as const;
+const toolNames = ['read', 'write', 'edit', 'bash', 'subagent'] as const;
+const toolPhases = ['started', 'finished'] as const;
 
 type Provider = { source: string; model?: string };
-type Event = { at: number; kind: 'progress'; text: string }
-  | { at: number; kind: 'tool'; tool: typeof toolNames[number]; failed: boolean };
+// subagent marks entries from a Claude Code subagent; phase applies to tool 'subagent'.
+type Event = { at: number; kind: 'progress'; text: string; subagent?: true }
+  | { at: number; kind: 'tool'; tool: typeof toolNames[number]; failed: boolean; subagent?: true; phase?: typeof toolPhases[number] };
 const milestoneStates = ['draft', 'review', 'merged', 'closed'] as const;
 const workStates = ['working', 'provider_wait', 'between_cycles', 'starting', 'paused', 'offline', 'stalled', 'tool_wait', 'unknown'] as const;
 const dayMs = 86400000;
@@ -166,12 +168,15 @@ export function projectAgentActivity(value: unknown, now: number): AgentActivity
   const events = list<Event | null>(data.events, 40, value => {
     const event = record(value);
     const at = recent(event.at);
+    const mark = event.subagent === true ? { subagent: true as const } : {};
     if (event.kind === 'tool' && typeof event.failed === 'boolean') {
-      return { at, kind: 'tool', tool: oneOf(event.tool, toolNames), failed: event.failed };
+      const tool = oneOf(event.tool, toolNames);
+      return { at, kind: 'tool', tool, failed: event.failed, ...mark,
+        ...(tool === 'subagent' && event.phase !== undefined ? { phase: oneOf(event.phase, toolPhases) } : {}) };
     }
     if (event.kind !== 'progress' || typeof event.text !== 'string' || event.text.length > 400) return invalid();
     const text = projectedProse(event.text, 400);
-    return text ? { at, kind: 'progress', text } : null;
+    return text ? { at, kind: 'progress', text, ...mark } : null;
   });
   return {
     version: 1, observedAt, phase: oneOf(data.phase, phases),
