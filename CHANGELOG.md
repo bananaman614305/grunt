@@ -6,8 +6,8 @@
 
 ## [Unreleased]
 
-- Zro, Token Harbor and Runcrate setup tests a vaulted key with one chat request and uses it when it answers. The provider site opens only when no key is saved or the provider rejects the saved one (HTTP 401 or 403), and the browser then captures an existing key where the site shows one before creating any. Zro readiness is now a chat request, since Zro lists models for a paused key.
-- A signup that stops on a page with no controls reports that page's own words, such as a network block. Runcrate's setup failure names the real reason instead of a fixed GitHub-age message.
+- Reuse working vault keys before provisioning Zro, Token Harbor or Runcrate access, including when other saved keys fail. See the [setup reference](docs/reference.md#free-api-and-account-setup) for selection and failure handling.
+- Report provider refusal details and Runcrate's actual setup failure. Zro readiness now checks chat access; see [source admission](docs/reference.md#sources-and-app-sessions).
 - Write the registry through the gateway: anyone who can push to `bananaman614305/grunt` sends `PUT`/`DELETE /v1/registry/entries/{id}` with their own GitHub token, and the entry publishes at once with its signup hints, which a written signup must include. Providers without a shipped adapter go in a new `candidates` list that clients ignore. `GET /v1/registry/instructions` is an always-current guide for agents that add to the registry.
 - Routers send daily per-route counts to the registry by default (no prompts, responses, keys or provider error text). The registry turns them into a decaying 0–100 liveliness score at `GET /v1/registry/scores`, and the scores now weight each router's draw. A newer publication un-retires only the routes whose entry changed.
 - Squire's signup `store` is derived from the vault service Grunt checks; the registry no longer carries a `capture` field. Deployments check that `GET /v1/registry` returns 200.

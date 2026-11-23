@@ -222,7 +222,7 @@ GLM 5.3 Flash Free and Big Pickle. Follow-ups keep their model. See the
 [OpenCode reference](docs/reference.md#opencode-app-driver) for model-level quota
 failover and shared free-limit handling. Grunt does not purchase credits.
 
-Zro setup confirms the Free plan, no purchased usage balance and no payment method before connecting it. Keep that account free: Zro uses the same model ID on its paid plans, so changing the account outside grunt can change billing. Token Harbor uses its explicit `:free` model ID. Runcrate requires no paid balance, no card and automatic top-ups off; Mistral Vibe keeps pay-as-you-go off. Setup saves current provider data policies in a private receipt. Background setup never prompts, and signup and routing require the current receipt where required.
+See the [setup reference](docs/reference.md#free-api-and-account-setup) for Zro, Token Harbor and Runcrate saved-key reuse and Zro's free-account requirements. Token Harbor uses its explicit `:free` model ID. Runcrate requires no paid balance, no card and automatic top-ups off; Mistral Vibe keeps pay-as-you-go off. Setup saves current provider data policies in a private receipt. Background setup never prompts, and signup and routing require the current receipt where required.
 
 Freebuff and APInex are retired from all grunt routing in 0.6.6. Freebuff's native application is preserved; its saved source selection and legacy fallback no longer enable routing, and no port-8789 bridge starts. APInex changed its recurring daily entitlement to require a $5 top-up; grunt makes no purchase, and a one-time Telegram reward is excluded. Old sharing receipts cannot reactivate either source.
 
