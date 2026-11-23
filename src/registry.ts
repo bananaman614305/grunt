@@ -34,6 +34,7 @@ export const NOTES_MAX = 500;
 export const NAME_MAX = 100;
 export const MODELS_MAX = 20;
 export const ADAPTERS_MAX = 100;
+export const CANDIDATES_MAX = 100;
 export const KINDS = ['agent', 'model'] as const;
 export const TIERS = ['stable', 'experimental'] as const;
 export const MODALITIES = ['text', 'image'] as const;
@@ -155,6 +156,15 @@ export function validateRegistry(value: unknown): Registry {
     weights[a.tier] += a.weight;
   }
   if (weights.stable && weights.experimental && (Math.abs(weights.stable - TIER_TOTALS.stable) > 1e-9 || Math.abs(weights.experimental - TIER_TOTALS.experimental) > 1e-9)) return fail();
+  if ('candidates' in registry) {
+    if (!Array.isArray(registry.candidates) || registry.candidates.length > CANDIDATES_MAX) return fail();
+    for (const item of registry.candidates as unknown[]) {
+      if (candidateErrors(item).length) return fail();
+      const candidate = item as Candidate;
+      if (ids.has(candidate.id)) return fail();
+      ids.add(candidate.id);
+    }
+  }
   return structuredClone(value) as Registry;
 }
 const packaged = new URL('./registry/adapters.json', import.meta.url);

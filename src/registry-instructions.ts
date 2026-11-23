@@ -1,4 +1,4 @@
-import { ADAPTER_FIELDS, ADAPTER_RULES, CANDIDATE_FIELDS, CANDIDATE_RULES, HINTS_MAX, TIER_TOTALS, installers } from './registry.js';
+import { ADAPTER_FIELDS, ADAPTER_RULES, CANDIDATE_FIELDS, CANDIDATE_RULES, CANDIDATES_MAX, HINTS_MAX, TIER_TOTALS, installers } from './registry.js';
 import type { Registry } from './registry.js';
 import type { Scores } from './registry-store.js';
 import { ENTRY_MAX_BYTES } from './registry-write.js';
@@ -63,7 +63,7 @@ curl -s -X DELETE ${base}/v1/registry/entries/example-free-api -H "Authorization
 ## How a write works
 
 - A PUT replaces the whole entry. Read the registry, change the entry, and send it back.
-- An id that Grunt ships an adapter for, or an entry whose \`install\` is \`npm:<package>\`, goes in \`adapters\`. Any other id goes in \`candidates\`, the providers waiting for an adapter. An id lives in one list only.
+- An id that Grunt ships an adapter for, or an entry whose \`install\` is \`npm:<package>\`, goes in \`adapters\`. Any other id goes in \`candidates\`, the providers waiting for an adapter. An id lives in one list only. The registry accepts at most ${CANDIDATES_MAX} candidates.
 - Shipped adapter ids: ${list(shipped)}.
 - On an adapter update, an omitted \`weight\` keeps the old one. Each tier is then rescaled so stable weights total ${TIER_TOTALS.stable} and experimental weights total ${TIER_TOTALS.experimental}.
 - An entry with a \`signup\` must carry \`hints\`.

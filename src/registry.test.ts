@@ -168,3 +168,32 @@ it.each([{ fit: ['poor'] }, { status: ['inactive'] }, { fit: {} }, { status: 1 }
   Object.assign(registry.adapters[0]!, fields);
   expect(() => validateRegistry(registry)).toThrow('Invalid adapter registry');
 });
+
+
+const validCandidate = { id: 'newco', signup: 'https://newco.example/signup', hints: 'Press Sign up.' };
+it.each([
+  {}, null, undefined, 'invalid', 1, [null],
+  [{ ...validCandidate, id: 'Invalid ID' }],
+  [{ ...validCandidate, signup: 'http://newco.example/' }],
+  [{ ...validCandidate, hints: '' }],
+  [{ ...validCandidate, hints: undefined }],
+  [{ ...validCandidate, name: 7 }],
+  [{ ...validCandidate, models: ['duplicate', 'duplicate'] }],
+  [{ ...validCandidate, docs: 'not a URL' }],
+  [{ ...validCandidate, notes: 'x'.repeat(501) }],
+  [{ ...validCandidate, unexpected: true }],
+  [validCandidate, validCandidate],
+  [{ ...validCandidate, id: 'kilo' }],
+  Array.from({ length: 101 }, (_, i) => ({ ...validCandidate, id: `candidate-${i}` }))
+].map(candidates => ({ candidates })))('rejects a registry with invalid candidates: %#', ({ candidates }) => {
+  expect(() => validateRegistry({ ...bundledRegistry, candidates })).toThrow('Invalid adapter registry');
+});
+
+it('accepts absent, empty and 100 valid candidates without changing their fields', () => {
+  const { candidates: _candidates, ...withoutCandidates } = bundledRegistry;
+  expect(validateRegistry(withoutCandidates)).toEqual(withoutCandidates);
+  expect(validateRegistry({ ...withoutCandidates, candidates: [] }).candidates).toEqual([]);
+  const candidates = Array.from({ length: 100 }, (_, i) => ({ ...validCandidate, id: `candidate-${i}`,
+    name: 'New provider', models: ['free-model'], docs: 'https://newco.example/docs', notes: 'Free tier.' }));
+  expect(validateRegistry({ ...withoutCandidates, candidates }).candidates).toEqual(candidates);
+});

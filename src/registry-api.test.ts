@@ -439,3 +439,31 @@ it('applies authorization, snapshot validation and mandatory auditing to reverts
   expect(await readFile(api.path, 'utf8')).toBe(before);
   expect((await api.request('PUT', path, undefined, tokens.owner)).status).toBe(200);
 });
+
+
+it.each(['PUT', 'DELETE'])('rebases %s on the bundle when persisted candidates are damaged', async method => {
+  for (const candidates of [{}, [{ ...EXAMPLE_CANDIDATE, hints: '' }]]) {
+    const damaged = { ...bundledRegistry, candidates };
+    expect(() => validateRegistry(damaged)).toThrow('Invalid adapter registry');
+    const api = await server({ published: JSON.stringify(damaged) });
+    expect((await api.request('GET', '/v1/registry')).status).toBe(503);
+    expect((await api.request('GET', '/v1/registry/instructions')).status).toBe(200);
+    const response = await api.request(method, '/v1/registry/entries/kilo', method === 'PUT' ? entry('kilo') : undefined, tokens.owner);
+    expect(response.status).toBe(200);
+    const repaired = await api.registry();
+    expect(repaired.adapters.map(adapter => adapter.id)).toEqual(bundledRegistry.adapters.filter(adapter => method === 'PUT' || adapter.id !== 'kilo').map(adapter => adapter.id));
+    expect(repaired.candidates ?? []).toEqual(bundledRegistry.candidates ?? []);
+    expect(JSON.parse((await api.store.writes()).at(-1)!.before_json!)).toEqual(bundledRegistry);
+  }
+});
+
+it('rejects a saved snapshot with malformed candidates before reverting', async () => {
+  const api = await server({ published: bundledRegistry });
+  const before = await readFile(api.path, 'utf8');
+  const write = await api.store.recordWrite('system', 'registry', { ...bundledRegistry, candidates: {} }, bundledRegistry);
+  const response = await api.request('PUT', `/v1/registry/reverts/${write}`, undefined, tokens.owner);
+  expect(response.status).toBe(422);
+  expect(await response.json()).toEqual({ errors: [{ field: 'registry', rule: 'must be a valid registry snapshot' }] });
+  expect(await readFile(api.path, 'utf8')).toBe(before);
+  expect(await api.store.writes()).toHaveLength(1);
+});
