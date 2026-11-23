@@ -1484,14 +1484,32 @@ git repository, only task text and output are sent. If the next adapter is
 Gödel Machines, it receives the approved request payload without generated
 handoff context.
 
-The owner curates `registry/adapters.json` and publishes it manually using
-authorized Fly access. Validate the registry, upload it atomically to the
-gateway volume, and check `GET /v1/registry`. CI does not publish the registry.
-Ordinary code deployments do not publish registry edits.
+The live registry is written through the gateway's registry API. Any GitHub
+account with push access to `bananaman614305/grunt` (`GRUNT_REGISTRY_REPO`) may
+write, using its own GitHub token as `Authorization: Bearer <token>`; a person
+can use `gh auth token`, and a bot a token from its secret store. The server reads
+only `/user` and the repository's `permissions.push` with that token and never
+stores it. `PUT /v1/registry/entries/{id}` adds or replaces one entry and
+`DELETE /v1/registry/entries/{id}` removes one. A shipped adapter id, or an entry
+whose `install` is `npm:<package>`, goes in `adapters`; any other id goes in a
+top-level `candidates` list of providers awaiting an adapter, which every client
+ignores. The server validates the whole next document with `validateRegistry`,
+requires `hints` on any written entry with a `signup`, rescales tier weights,
+stamps a strictly newer `published` and swaps `/data/registry.json` atomically, so
+an entry and its hints publish together. Invalid writes return 422 with
+`{"errors": [{"field", "rule"}]}`. A write rebases on the bundled list when the
+published file is missing or invalid. `registry_writes` in the gateway database
+records each write's GitHub login and the entry before and after.
+`GET /v1/registry/instructions` is a Markdown guide for agents, generated on
+each request from the validator's constants and the live registry and scores,
+with a worklist of entries that need attention. `POST /v1/registry/feedback`
+and `GET /v1/registry/scores` carry [route feedback](router.md#4-route-feedback).
+Every deployment checks that `GET /v1/registry` returns 200.
 Before the first valid registry is published the endpoint returns HTTP 503. Published data
 survives deploys and has an ETag. Stable weights total (0.8) and experimental
 weights total (0.2) when both tiers are present. Unknown adapter identifiers
-are ignored locally and cannot install new code.
+are ignored locally and cannot install new code. `registry/adapters.json` is the
+list bundled with each release.
 
 The daemon synchronizes on startup and on the
 [router loop schedule](router.md#3-slow-loop-hot-add-and-scout-mapping) with
@@ -1517,8 +1535,8 @@ from leaving a permanent exclusion; normal cleanup removes only that session's
 lease. This foreground gate is separate from routine background preparation;
 background checks do not themselves block an already-bound healthy route.
 Removing a registry entry disables it without uninstalling its files. `GRUNT_CONFIG_DIR` and
-`GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the sync
-endpoint for local development.
+`GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the sync,
+feedback and scores endpoint for local development.
 
 Explicit `GRUNT_SOURCES` configurations containing legacy sources such as Dots,
 Codex or FreeLLMAPI retain their existing ordered behavior. They are outside the

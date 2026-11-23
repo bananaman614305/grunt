@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Write the registry through the gateway: anyone who can push to `bananaman614305/grunt` sends `PUT`/`DELETE /v1/registry/entries/{id}` with their own GitHub token, and the entry publishes at once with its signup hints, which a written signup must include. Providers without a shipped adapter go in a new `candidates` list that clients ignore. `GET /v1/registry/instructions` is an always-current guide for agents that add to the registry.
+- Routers send daily per-route counts to the registry by default (no prompts, responses, keys or provider error text). The registry turns them into a decaying 0–100 liveliness score at `GET /v1/registry/scores`, and the scores now weight each router's draw. A newer publication un-retires only the routes whose entry changed.
+- Squire's signup `store` is derived from the vault service Grunt checks; the registry no longer carries a `capture` field. Deployments check that `GET /v1/registry` returns 200.
+
 ## [0.9.9] - 2026-11-22
 
 - Suppress repeated negative non-quota availability checks across routing, model-list and configured-access paths for thirty seconds. Preserve fresh completion guards, explicit recovery and absolute local or persisted quota reset deadlines.

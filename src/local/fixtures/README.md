@@ -33,3 +33,8 @@ chad excerpt; this installed client identifies itself as the official CLI rather
 than the Agent SDK. This records a
 real housekeeping call, not a constructed approximation. Other harnesses have
 not emitted side calls in the recorded runs.
+
+registry-0.9.7.mjs is the adapter-registry validator from the published
+usegrunt 0.9.7 (`src/registry.ts` at 04fdc23), compiled to JavaScript with
+esbuild, plus that release's bundled `published` time. Registry API tests run
+served documents through it, as installed 0.9.7 clients do on every sync.

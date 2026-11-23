@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { BrowserSquire } from './setup.js';
+import { BrowserSquire, squireStore } from './setup.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 
@@ -17,11 +17,11 @@ const synced = (id: string, fields: Record<string, unknown>): Registry => {
   return registry;
 };
 
-it('appends registry hints to the drive goal and passes the shipped capture as store', async () => {
+it('appends registry hints to the drive goal and derives the Squire store from the vault service', async () => {
   const entry = bundledRegistry.adapters.find(a => a.id === 'aperture-ai')!;
   const [first] = await driveCalls('aperture-ai', 'https://www.aperture-ai.run/login.html');
   expect(String(first!.goal)).toContain(`Provider hints (page, control, value, in order): ${entry.hints}`);
-  expect(first!.store).toEqual(entry.capture);
+  expect(first!.store).toEqual({ service: 'aperture-ai', label: 'Grunt Free', api_hosts: ['www.aperture-ai.run'], auth_shape: 'bearer' });
 });
 
 it('puts hints before the shared safety rules, which stay last', async () => {
@@ -39,29 +39,30 @@ it('uses hints from the synced registry, as for provider routes', async () => {
   expect(String(first!.goal)).not.toContain(bundledRegistry.adapters.find(a => a.id === 'goedel')!.hints!);
 });
 
-it('never takes capture from a synced registry; only the shipped one supplies store', async () => {
-  const shipped = bundledRegistry.adapters.find(a => a.id === 'goedel')!.capture;
+it('never takes the Squire store from registry data', async () => {
+  expect(bundledRegistry.adapters.some(a => 'capture' in a)).toBe(false);
   const registry = synced('goedel', { capture: { service: 'goedel', label: 'other', api_hosts: ['elsewhere.test'] } });
   const [first] = await driveCalls('goedel', 'https://inference.goedelmachines.com/keys', { registry });
-  expect(first!.store).toEqual(shipped);
+  expect(first!.store).toEqual(squireStore('goedel'));
+  expect(first!.store).toEqual({ service: 'goedel', label: 'Grunt Free', api_hosts: ['api.goedelmachines.com'], auth_shape: 'bearer' });
   const added = synced('kilo', { capture: { service: 'kilo', label: 'grunt' } });
   const [kilo] = await driveCalls('kilo', 'https://app.kilo.ai/profile', { registry: added });
   expect(kilo).not.toHaveProperty('store');
 });
 
-it('passes store only when the shipped capture names the vault service this signup checks', async () => {
+it('passes store only for the vault service this signup checks', async () => {
   const entry = bundledRegistry.adapters.find(a => a.id === 'millionseek')!;
-  // Found by signup host; its capture names the service the setup drives under.
+  // Found by signup host; the store names the service the setup drives under.
   const [matched] = await driveCalls('100milionseek', 'https://100milionseek.top/signup');
   expect(String(matched!.goal)).toContain(entry.hints!);
-  expect(matched!.store).toEqual(entry.capture);
+  expect(matched!.store).toEqual({ service: '100milionseek', label: 'Grunt Free', api_hosts: ['100milionseek.top'], auth_shape: 'bearer' });
   // Same host, different vault service: hints still apply, store does not.
   const [other] = await driveCalls('millionseek-other', 'https://100milionseek.top/signup');
   expect(String(other!.goal)).toContain(entry.hints!);
   expect(other).not.toHaveProperty('store');
 });
 
-it('leaves the goal and call unchanged for an entry without hints or capture', async () => {
+it('leaves the goal and call unchanged for an entry without hints or a Squire store', async () => {
   const [first] = await driveCalls('kilo', 'https://app.kilo.ai/profile');
   expect(String(first!.goal)).not.toContain('Provider hints');
   expect(first).not.toHaveProperty('store');
@@ -79,7 +80,7 @@ it('drops the hints at runtime rather than exceed the 4000-character drive goal'
 
 it('keeps every shipped hinted drive goal within the limit', async () => {
   for (const entry of bundledRegistry.adapters.filter(a => a.hints)) {
-    const [first] = await driveCalls(entry.capture?.service ?? entry.id, entry.signup ?? `https://${entry.id}.test/`);
+    const [first] = await driveCalls(entry.id, entry.signup ?? `https://${entry.id}.test/`);
     expect(String(first!.goal).length).toBeLessThanOrEqual(4000);
     expect(String(first!.goal)).toContain('Provider hints');
   }
@@ -99,9 +100,6 @@ it('names key-name values key_name, which a provider fact can override', async (
 
 it.each([
   { hints: '' }, { hints: 7 }, { hints: 'x'.repeat(2001) },
-  { capture: 'zro' }, { capture: {} }, { capture: { service: 'zro', label: '' } },
-  { capture: { service: 'zro', api_hosts: 'zro.moonmath.ai' } }, { capture: { service: 'zro', auth_shape: 'basic' } },
-  { capture: { service: 'zro', egress_hosts: ['zro.moonmath.ai'] } },
-])('rejects an invalid hints or capture field: %j', fields => {
+])('rejects an invalid hints field: %j', fields => {
   expect(() => validateRegistry(synced('zro', fields))).toThrow('Invalid adapter registry');
 });

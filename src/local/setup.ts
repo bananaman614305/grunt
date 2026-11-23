@@ -197,6 +197,20 @@ function registryEntry(registry: Registry, provider: string, url: string | undef
   const host = (value: string | undefined) => { try { return value ? new URL(value).hostname.replace(/^www\./, '') : undefined; } catch { return undefined; } };
   return registry.adapters.find(a => a.id === provider) ?? registry.adapters.find(a => host(a.signup) !== undefined && host(a.signup) === host(url));
 }
+// Where Squire's drive stores a key it reveals (operate_drive `store`): the vault
+// service this signup checks, with the label and API host its shipped source reads.
+// Registry data never supplies it.
+const squireStores: Readonly<Record<string, { label: string; host: string }>> = {
+  zro: { label: 'grunt', host: 'zro.moonmath.ai' }, tokenharbor: { label: 'grunt', host: 'tokenharbor.ai' },
+  pollinations: { label: 'grunt-free-pollinations', host: 'gen.pollinations.ai' }, beatapi: { label: 'grunt', host: 'api.beatapi.io' },
+  kenari: { label: 'Grunt Free', host: 'kenari.id' }, goedel: { label: 'Grunt Free', host: 'api.goedelmachines.com' },
+  fikra: { label: 'Grunt Free', host: 'api.fikraapi.co.ke' }, darus: { label: 'Grunt Free', host: 'gateway.darusalfatah.id' },
+  'aperture-ai': { label: 'Grunt Free', host: 'www.aperture-ai.run' }, '100milionseek': { label: 'Grunt Free', host: '100milionseek.top' }
+};
+export function squireStore(service: string) {
+  const known = Object.hasOwn(squireStores, service) ? squireStores[service] : undefined;
+  return known && { service, label: known.label, api_hosts: [known.host], auth_shape: 'bearer' };
+}
 // operate_drive rejects a longer goal.
 const DRIVE_GOAL_LIMIT = 4000;
 // Squire's explicit capture stores one revealed textbox/code value, or retries
@@ -227,8 +241,7 @@ export function squireEnvironment() {
 }
 export class BrowserSquire implements SetupSquire {
   constructor(private options: { background?: boolean | undefined; signal?: AbortSignal; dataSharingApproved?: readonly string[]; agent?: SignupAgent; registry?: () => Registry } = {}) {}
-  // Hints follow the synced registry, as provider routes do; capture is read only
-  // from the registry shipped with this release.
+  // Hints follow the synced registry, as provider routes do.
   useRegistry(registry: () => Registry) { this.options.registry = registry; }
   useSignupAgent(agent: SignupAgent | undefined) { if (agent) this.options.agent = agent; else delete this.options.agent; }
   useBatchSignup() { this.batchSignup = true; }
@@ -460,9 +473,7 @@ export class BrowserSquire implements SetupSquire {
   }
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
     const hinted = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.hints;
-    const shipped = registryEntry(bundledRegistry, provider, url)?.capture;
-    // A shipped capture stores only under the vault service this signup checks.
-    const store = shipped?.service === provider ? shipped : undefined;
+    const store = squireStore(provider);
     const termsInstruction = ' Accept required provider Terms of Service for this free signup. Never accept a terms control that also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.';
     // Hints precede the shared safety rules (data sharing, no paid plan, terms), which stay last.
     const compose = (hints: string) => {

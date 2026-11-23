@@ -28,6 +28,8 @@ export interface RecoveryOptions {
   setup?: typeof setupFallbacks;
   // The synced registry; signup hints follow it.
   registry?: () => Registry;
+  // Each finished background signup, for the registry's route feedback.
+  signedUp?: (id: string, ok: boolean) => void;
 }
 
 // One greedy pass over the registry's recommended routes (docs/router.md): sign
@@ -102,6 +104,7 @@ export class SourceRecovery {
         }).catch(() => ({ unavailable: [id] })).finally(() => this.options.opening?.(undefined));
         this.failed.delete(id);
         this.failedSinceSync.delete(id);
+        if (!signal.aborted) try { this.options.signedUp?.(id, !outcome.unavailable.includes(id)); } catch { /* Advisory only. */ }
         if (outcome.unavailable.includes(id)) {
           this.failed.add(id);
           this.failedSinceSync.add(id);
