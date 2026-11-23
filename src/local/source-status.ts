@@ -121,9 +121,8 @@ export class SourceStatus {
     if (entry.availabilityCheckedAt === undefined || entry.available === undefined) return;
     // An observed quota has its own absolute deadline; the ordinary negative
     // window must not postpone a refill or replace the persisted quota guard.
-    if (!entry.available && (entry.availabilityQuota && (entry.retryAt ?? 0) <= now
-      || entry.failure === 'quota' && entry.retryAt !== undefined
-        && entry.availabilityCheckedAt < entry.retryAt && entry.retryAt <= now)) return;
+    if (!entry.available && entry.retryAt !== undefined && entry.retryAt <= now
+      && (entry.availabilityQuota || entry.failure === 'quota' && entry.availabilityCheckedAt < entry.retryAt)) return;
     const age = now - entry.availabilityCheckedAt;
     if (age < 0 || age >= (entry.available ? positiveAgeMs : negativeAgeMs)) return;
     return entry.available;
@@ -255,7 +254,7 @@ export class SourceStatus {
     const entry = this.entry(source.id), revision = entry.revision;
     // Retain only negative metadata. Explicit health checks and all adapter
     // completion guards remain fresh; positive metadata is never reused here.
-    if (!healthCheck && !entry.availabilityQuota && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
+    if (!healthCheck && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
       && this.routingAvailability(source.id, 0, AVAILABILITY_NEGATIVE_MS) === false) return false;
     try {
       const result = await (healthCheck ? source.healthCheck!() : source.available());

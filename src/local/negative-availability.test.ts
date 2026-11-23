@@ -164,3 +164,23 @@ it('caps an older negative observation at a completion quota reset, then caches 
   expect(fixture.available).toHaveBeenCalledTimes(3);
   await admission.close();
 });
+
+it('bounds quota metadata without a reset hint across direct checks and routing admission', async () => {
+  let now = 10000;
+  const fixture = source(), status = new SourceStatus([fixture.id], () => now), admission = new SourceAvailability(status);
+  vi.mocked(fixture.available).mockRejectedValue(new SourceError('quota', 'fixture quota without reset hint'));
+  expect(await status.available(fixture)).toBe(false);
+  expect(status.quotaRetryAt(fixture.id)).toBeUndefined();
+  expect(admission.peek(fixture.id)).toBe(false);
+  for (let second = 1; second < 30; second++) {
+    now = 10000 + second * 1000;
+    expect(admission.start([fixture])).toBe(0);
+    expect(await status.available(fixture)).toBe(false);
+  }
+  expect(fixture.available).toHaveBeenCalledOnce();
+  now = 40000;
+  expect(admission.peek(fixture.id)).toBeUndefined();
+  expect(admission.start([fixture])).toBe(1); await turn();
+  expect(fixture.available).toHaveBeenCalledTimes(2);
+  await admission.close();
+});
