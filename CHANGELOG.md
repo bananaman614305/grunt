@@ -1,11 +1,10 @@
 # Changelog
 
-## 0.9.10 — 2026-11-22
-
-- Preserve automatic source discovery when an existing managed receipt still names a retired provider. The receipt stays unchanged and retired providers remain disabled.
-
 ## [Unreleased]
 
+## 0.9.12 — 2026-11-23
+
+- Return to the main line after 0.9.11, which was cut from the reviewed maintenance branch. This release therefore includes the writable registry, feedback-driven routing and daily route-count reporting from #175 (counts only: no prompts, responses or keys).
 - Keep an orchestrator's task and source when a harness reports a finished subagent. Codex (`<subagent_notification>`) and Claude Code (`<task-notification>`) send these as new user messages, which gave the task a new key and a fresh random source after every subagent with no failure behind it. A message made only of such notices no longer counts as a new user turn; the model still sees them, and real text mixed with a notice still does.
 - Answer a request with an unsupported tool type, such as Codex's default `web_search`, with HTTP 400 naming the type. Before, every source refused it, each went into a cooldown of about fifteen minutes, and the client got a 429 "No tool-capable adapter" quota error. No source is tried or put in cooldown now; see the [tool contract](docs/reference.md#use-grunt-as-your-harnesss-model).
 - Keep weighted, sticky routing when a managed pool preserves a source with no registry entry, such as an earlier FreeLLMAPI route. Before, one such source made the daemon fall back to a fixed first-success chain, so it was tried first on every request. It now runs only when named as a model or after every routed source fails, and the daemon logs one line naming it. Explicit `GRUNT_SOURCES` lists keep their chosen order.
@@ -15,6 +14,17 @@
 - Write the registry through the gateway: anyone who can push to `bananaman614305/grunt` sends `PUT`/`DELETE /v1/registry/entries/{id}` with their own GitHub token, and the entry publishes at once with its signup hints, which a written signup must include. Providers without a shipped adapter go in a new `candidates` list that clients ignore. `GET /v1/registry/instructions` is an always-current guide for agents that add to the registry.
 - Routers send daily per-route counts to the registry by default (no prompts, responses, keys or provider error text). The registry turns them into a decaying 0–100 liveliness score at `GET /v1/registry/scores`, and the scores now weight each router's draw. A newer publication un-retires only the routes whose entry changed.
 - Squire's signup `store` is derived from the vault service Grunt checks; the registry no longer carries a `capture` field. Deployments check that `GET /v1/registry` returns 200.
+
+## 0.9.11 — 2026-11-23
+
+- Make offline workload deadlines explicit and reproducible; packaging checks retain verified outcomes on loaded hosts without changing live request deadlines.
+- Bundle the reviewed public registry publication and preserve the shipped BeatAPI capture default, so normal startup refresh retains existing retirement and backoff state.
+- Support verified publication from the exact `release/0.9-reviewed` maintenance branch alongside `main`, retaining stable-version and tested-archive checks.
+- Package the existing retired-source receipt compatibility, negative-availability caching and workload-scoped routing evidence fixes on the reviewed maintenance line.
+
+## 0.9.10 — 2026-11-22
+
+- Preserve automatic source discovery when an existing managed receipt still names a retired provider. The receipt stays unchanged and retired providers remain disabled.
 
 ## [0.9.9] - 2026-11-22
 

@@ -76,7 +76,7 @@ function validateManifest(manifest: WorkloadManifest) {
     if (!/^task-\d{1,3}$/.test(task.id) || !['answer', 'repository', 'fallback', 'incorrect', 'timeout'].includes(task.kind) || !Number.isSafeInteger(task.value)
       || task.repair !== undefined && !['sum', 'normalize', 'clamp'].includes(task.repair) || task.kind === 'repository' && !task.repair) throw new Error('Invalid workload task.');
   }
-  for (const value of Object.values(manifest.timing)) boundedInteger(value, 1, 5000, 'Fixture timing');
+  for (const [key, value] of Object.entries(manifest.timing)) boundedInteger(value, 1, key === 'taskDeadlineMs' ? 10000 : 5000, 'Fixture timing');
 }
 
 function repositoryFixture(task: WorkloadTask) {
@@ -300,19 +300,22 @@ export async function loadWorkloadRuntime(root: string, preferredFormat: 'source
   return { runtime, identity };
 }
 export async function runWorkloadBenchmark(args: string[]) {
-  let baseline: string | undefined, repetitions = 3, count = 20, seed = 20261122, concurrency = [1, 2, 4];
+  let baseline: string | undefined, repetitions = 3, count = 20, seed = 20261122, concurrency = [1, 2, 4], taskDeadlineMs = 120;
   for (let index = 0; index < args.length; index++) {
-    const flag = args[index], value = args[++index]; if (!value) throw new Error('Usage: benchmark:workload [--baseline CHECKOUT] [--repetitions 1–10] [--tasks 4–100] [--seed INTEGER] [--concurrency 1,2,4]');
+    const flag = args[index], value = args[++index]; if (!value) throw new Error('Usage: benchmark:workload [--baseline CHECKOUT] [--repetitions 1–10] [--tasks 4–100] [--seed INTEGER] [--concurrency 1,2,4] [--task-deadline-ms 100–10000]');
     if (flag === '--baseline') baseline = value;
     else if (flag === '--repetitions') repetitions = Number(value);
     else if (flag === '--tasks') count = Number(value);
     else if (flag === '--seed') seed = Number(value);
     else if (flag === '--concurrency') concurrency = value.split(',').map(Number);
+    else if (flag === '--task-deadline-ms') taskDeadlineMs = Number(value);
     else throw new Error('Unknown workload benchmark argument.');
   }
   boundedInteger(repetitions, 1, 10, 'Repetitions');
+  boundedInteger(taskDeadlineMs, 100, 10000, 'Task deadline');
   if (!concurrency.length || new Set(concurrency).size !== concurrency.length || concurrency.some(value => ![1, 2, 4].includes(value))) throw new Error('Concurrency sweep must contain distinct values from 1,2,4.');
   const manifest = createWorkloadManifest(seed, count), environment = workloadEnvironment();
+  manifest.timing.taskDeadlineMs = taskDeadlineMs;
   const current = await loadWorkloadRuntime(resolve(dirname(fileURLToPath(import.meta.url)), '../..'));
   const previous = baseline ? await loadWorkloadRuntime(baseline) : undefined;
   const runs: { concurrency: number; repetition: number; order: ('baseline' | 'current')[]; current: WorkloadBatch; baseline?: WorkloadBatch }[] = [];
