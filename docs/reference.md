@@ -1574,7 +1574,12 @@ feedback and scores endpoint for local development.
 
 Explicit `GRUNT_SOURCES` configurations containing legacy sources such as Dots,
 Codex or FreeLLMAPI retain their existing ordered behavior. They are outside the
-launch registry. Codex still requires explicit opt-in. The Fly personal-agent
+launch registry. Codex still requires explicit opt-in. A managed automatic pool
+behaves differently: a source it preserves that has no registry entry, such as an
+earlier FreeLLMAPI route, does not turn off weighted, sticky routing for the rest.
+The daemon logs one `grunt routing:` line naming such sources. They are never drawn
+or tried first; model `freellmapi` still selects one alone, and model `grunt` tries
+it only after every routed source has failed. Subworkers never use it. The Fly personal-agent
 API remains separate from this local daemon.
 
 ### Retired sources
