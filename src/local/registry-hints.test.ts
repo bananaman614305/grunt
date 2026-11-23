@@ -49,6 +49,30 @@ it('never takes capture from a synced registry; only the shipped one supplies st
   expect(kilo).not.toHaveProperty('store');
 });
 
+it('retains the reviewed BeatAPI store when the bundled catalog omits capture', async () => {
+  const entry = bundledRegistry.adapters.find(a => a.id === 'beatapi')!, previous = entry.capture;
+  delete entry.capture;
+  try {
+    const registry = synced('beatapi', { capture: { service: 'beatapi', label: 'unreviewed', api_hosts: ['elsewhere.test'] } });
+    const [first] = await driveCalls('beatapi', 'https://beatapi.io/dashboard/apikeys', { registry });
+    expect(first!.store).toEqual({ service: 'beatapi', label: 'grunt', api_hosts: ['api.beatapi.io'], auth_shape: 'bearer' });
+    const [other] = await driveCalls('other-service', 'https://beatapi.io/dashboard/apikeys', { registry });
+    expect(other).not.toHaveProperty('store');
+  } finally { if (previous === undefined) delete entry.capture; else entry.capture = previous; }
+});
+
+it('preserves an explicitly shipped BeatAPI capture instead of replacing it with the fallback', async () => {
+  const entry = bundledRegistry.adapters.find(a => a.id === 'beatapi')!, previous = entry.capture;
+  entry.capture = { service: 'beatapi', label: 'reviewed-capture', api_hosts: ['api.beatapi.io'], auth_shape: 'bearer' };
+  try {
+    const [first] = await driveCalls('beatapi', 'https://beatapi.io/dashboard/apikeys');
+    expect(first!.store).toEqual(entry.capture);
+    entry.capture = { ...entry.capture, service: 'other-service' };
+    const [mismatched] = await driveCalls('beatapi', 'https://beatapi.io/dashboard/apikeys');
+    expect(mismatched).not.toHaveProperty('store');
+  } finally { if (previous === undefined) delete entry.capture; else entry.capture = previous; }
+});
+
 it('passes store only when the shipped capture names the vault service this signup checks', async () => {
   const entry = bundledRegistry.adapters.find(a => a.id === 'millionseek')!;
   // Found by signup host; its capture names the service the setup drives under.

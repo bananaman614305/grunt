@@ -461,8 +461,12 @@ export class BrowserSquire implements SetupSquire {
   private async driveOnce(provider: string, url: string | undefined, goal?: string): Promise<Run> {
     const hinted = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.hints;
     const shipped = registryEntry(bundledRegistry, provider, url)?.capture;
+    // Preserve the reviewed BeatAPI vault target when its published catalog
+    // omits capture. Synced registry data still cannot change this store.
+    const capture = shipped === undefined && provider === 'beatapi'
+      ? { service: 'beatapi', label: 'grunt', api_hosts: ['api.beatapi.io'], auth_shape: 'bearer' } : shipped;
     // A shipped capture stores only under the vault service this signup checks.
-    const store = shipped?.service === provider ? shipped : undefined;
+    const store = capture?.service === provider ? capture : undefined;
     const termsInstruction = ' Accept required provider Terms of Service for this free signup. Never accept a terms control that also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.';
     // Hints precede the shared safety rules (data sharing, no paid plan, terms), which stay last.
     const compose = (hints: string) => {
