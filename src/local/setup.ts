@@ -125,9 +125,14 @@ function redactedText(value: string) {
     .replace(/https?:\/\/\S+/gi, '[link omitted]')
     .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
     .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_|eyJ)[A-Za-z0-9_+/.=-]+/g, '[redacted]')
-    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)["']?\s*(?::|=|\b(?:is|was|might be)\b|(?=["']))\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;,]+)/gi, '$1[redacted]')
-    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)\s+)[^\s;,]*[!0-9_-][^\s;,]*/gi, '$1[redacted]')
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
+    .split(/(?<=[.!?;])\s+/)
+    .filter(sentence => !/\b(?:passwords?|passcodes?|passphrases?|secrets?|credentials?|authorization|cookies?|session[ _-]+tokens?)\b/i.test(sentence))
+    .map(sentence => sentence.trim() === 'Choose one current target key, or DONE, BLOCKED, NONE_OF_THESE, or WAIT.' ? sentence
+      : sentence.replace(/(\b(?:api[ _-]?)?(?:key|token)s?\b["']?\s*[:=]?\s*)(.*)/i, (_match, label: string, words: string) => label
+        + words.replace(/\[redacted\]|\[link omitted\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+/g, word =>
+          /^(?:\[redacted\]|\[link omitted\]|[A-Z]?[a-z]+[.,!?;:]?)$/.test(word) ? word : '[redacted]')))
+    .join(' ')
     .replace(/\s+/g, ' ').trim();
 }
 function squireWords(result: ObjectValue) {
