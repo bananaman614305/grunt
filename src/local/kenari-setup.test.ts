@@ -67,7 +67,8 @@ it('provisions once on the ordinary cold-start flow and grants only after scoped
   squire.call.mockResolvedValueOnce({ credentials: [] });
   await recordDataSharingConsent(directory, ['kenari']);
   await setupKenari({ directory, squire, notify });
-  expect(squire.signup).toHaveBeenCalledExactlyOnceWith('kenari', 'https://kenari.id/login', expect.stringContaining(KENARI_FREE_MODEL));
+  expect(squire.signup).toHaveBeenCalledExactlyOnceWith('kenari', 'https://kenari.id/login', expect.stringContaining(KENARI_FREE_MODEL),
+    { model: KENARI_FREE_MODEL, key_name: 'grunt' });
   expect(planSteps(String((squire.signup.mock.calls[0] as unknown[])[2]))).toEqual([]);
   expect(squire.call).toHaveBeenCalledTimes(2);
   expect(squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(metadata.reference);

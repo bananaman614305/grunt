@@ -370,7 +370,7 @@ it('connects Kilo and restarts the daemon before reporting success', async () =>
   actions.checkService.mockImplementation(async () => { order.push('ready'); });
   await wizard('kilo', actions);
   expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo'], { dataSharingApproved: sharingIds() });
-  expect(order).toEqual(['banner', 'squire', 'grant', 'service', 'ready', 'check:kilo']);
+  expect(order).toEqual(['banner', 'registry', 'squire', 'grant', 'service', 'ready', 'check:kilo']);
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.connectHarnesses).not.toHaveBeenCalled();
 });
@@ -517,6 +517,18 @@ it('adds Zro while preserving saved custom API routing and without enabling opti
   await wizard('zro', actions);
   expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['zro'], { dataSharingApproved: ['opencode'] });
   expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'opencode', 'zro']);
+});
+
+it('gives add the live registry hints, as setup has', async () => {
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'close').mockResolvedValue();
+  const useRegistry = vi.spyOn(squire, 'useRegistry');
+  const registry = structuredClone(bundledRegistry);
+  registry.adapters.find(adapter => adapter.id === 'zro')!.hints = 'Live hint: press Create key.';
+  const actions = stubActions([], { createSquire: () => squire, loadRegistry: vi.fn(async () => ({ registry, origin: 'remote' as const })) });
+  await wizard('zro', actions);
+  expect(actions.loadRegistry).toHaveBeenCalledOnce();
+  expect(useRegistry.mock.calls[0]![0]()).toBe(registry);
 });
 
 it('keeps an already approved sharing source when adding a custom API provider', async () => {

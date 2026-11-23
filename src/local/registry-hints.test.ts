@@ -98,6 +98,26 @@ it('names key-name values key_name, which a provider fact can override', async (
   expect(first!.facts).toEqual({ key_name: 'grunt-free-pollinations', plan: 'free', project_name: 'grunt' });
 });
 
+it('gives Zro creations in one minute distinct UTC key names, even at the same timestamp', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const squire = new BrowserSquire();
+    const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'complete', session_id: 'zro-session' } : {});
+    const facts = () => call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => (args as Record<string, unknown>).facts);
+    vi.setSystemTime(new Date('2026-11-23T14:13:02Z'));
+    await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
+    vi.setSystemTime(new Date('2026-11-23T14:13:40Z'));
+    await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
+    await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
+    expect(facts()).toEqual([
+      { key_name: expect.stringMatching(/^grunt-20261123-141302-.+$/), plan: 'free', project_name: 'grunt' },
+      { key_name: expect.stringMatching(/^grunt-20261123-141340-.+$/), plan: 'free', project_name: 'grunt' },
+      { key_name: expect.stringMatching(/^grunt-20261123-141340-.+$/), plan: 'free', project_name: 'grunt' }
+    ]);
+    expect(new Set(facts().map(value => (value as Record<string, string>).key_name)).size).toBe(3);
+  } finally { vi.useRealTimers(); }
+});
+
 it.each([
   { hints: '' }, { hints: 7 }, { hints: 'x'.repeat(2001) },
 ])('rejects an invalid hints field: %j', fields => {

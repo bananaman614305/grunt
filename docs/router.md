@@ -169,9 +169,9 @@ signup alone. It is an add-on: the signup driver model stays the fallback.
 
 - `hints` (up to 2000 characters): what the user sees on the provider's signup
   pages, the controls to press and the Grunt-supplied values to type (`grunt`,
-  `free`, the Squire email), in order. Setup reads hints from the synced
-  registry, the same source as the provider routes, so a registry publication
-  updates them for every user without a release. Grunt places them in the
+  `free`, the Squire email), in order. Both `usegrunt setup` and `usegrunt add`
+  read hints from the synced registry, the same source as the provider routes,
+  so a registry publication updates them for every user without a release. Grunt places them in the
   `operate_drive` goal before the shared safety rules (data sharing, no paid
   plan, terms), which stay last. If the full goal would exceed the drive's
   4000-character limit, the hints are dropped for that call. A registry write
@@ -179,6 +179,13 @@ signup alone. It is an add-on: the signup driver model stays the fallback.
 
 Hints match an entry by id, or by the entry's `signup` host when a setup
 drives under a different vault service name.
+
+Values named in hints or goals must also be supplied in `operate_drive` facts;
+goal text alone does not authorize typing them. Grunt supplies `key_name`,
+`plan` and `project_name`, with provider-specific key names taking precedence.
+Kenari also receives its pinned free model as the `model` fact. Each Zro key
+creation attempt receives a fresh `key_name` containing a UTC timestamp and
+random suffix, so rapid retries can use different aliases.
 
 Squire's `operate_drive` `store` (where the drive saves a key it reveals) never
 comes from the registry. Grunt derives it from the vault service the signup
