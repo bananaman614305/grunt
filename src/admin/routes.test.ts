@@ -244,7 +244,10 @@ it('shares short-lived live activity only with signed-in owners and excludes it 
     events: [
       { at: now, kind: 'progress', text, reasoning: 'private reasoning' },
       { at: now, kind: 'progress', text: 'Authorization Bearer synthetic-value' },
-      { at: now, kind: 'tool', tool: 'bash', failed: false, output: 'raw tool content' }
+      { at: now, kind: 'tool', tool: 'bash', failed: false, output: 'raw tool content' },
+      { at: now, kind: 'tool', tool: 'subagent', failed: false, phase: 'started', prompt: 'private prompt' },
+      { at: now, kind: 'tool', tool: 'read', failed: true, subagent: true },
+      { at: now, kind: 'progress', text: 'Subagent finished the map.', subagent: true }
     ]
   };
   const upload = (key: string, instanceId = 'chad') => f.request('/ingest/activity', {
@@ -262,7 +265,10 @@ it('shares short-lived live activity only with signed-in owners and excludes it 
   expect(result.headers.get('Cache-Control')).toBe('no-store');
   expect(await result.json()).toEqual({ instances: [{
     instanceId: 'chad', receivedAt: now, activity: { ...activity, events: [
-      { at: now, kind: 'progress', text }, { at: now, kind: 'tool', tool: 'bash', failed: false }
+      { at: now, kind: 'progress', text }, { at: now, kind: 'tool', tool: 'bash', failed: false },
+      { at: now, kind: 'tool', tool: 'subagent', failed: false, phase: 'started' },
+      { at: now, kind: 'tool', tool: 'read', failed: true, subagent: true },
+      { at: now, kind: 'progress', text: 'Subagent finished the map.', subagent: true }
     ] }
   }] });
   expect(await (await f.request('/api/export', owner)).text()).not.toContain(text);

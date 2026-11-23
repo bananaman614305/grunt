@@ -116,7 +116,9 @@ def managed_jobs(directory, read, now):
 
 
 def tool_running(raw):
-    """Project the supervisor's bounded event tail to an unfinished-tool flag."""
+    """Project the supervisor's bounded event tail to an unfinished-tool flag.
+
+    Understands Pi events and Claude Code stream-json rows."""
     pending = set()
     for line in raw.splitlines():
         try:
@@ -126,6 +128,20 @@ def tool_running(raw):
         if not isinstance(row, dict):
             continue
         kind, call = row.get('type'), row.get('toolCallId')
+        if kind == 'result' or (kind == 'system' and row.get('subtype') == 'init'):
+            pending.clear()
+        message = row.get('message')
+        if kind in ('assistant', 'user') and isinstance(message, dict) and isinstance(message.get('content'), list):
+            # Claude Code stream-json: a tool_use block starts a call, its tool_result ends it.
+            # Backgrounded Agent launches return at once, so they never stay pending.
+            for block in message['content']:
+                if not isinstance(block, dict) or not isinstance(block.get('id', block.get('tool_use_id')), str):
+                    continue
+                if kind == 'assistant' and block.get('type') == 'tool_use':
+                    pending.add(block['id'])
+                elif kind == 'user' and block.get('type') == 'tool_result':
+                    pending.discard(block['tool_use_id'])
+            continue
         if kind in ('turn_start', 'agent_end'):
             pending.clear()
         if not isinstance(call, str):
@@ -176,7 +192,10 @@ def worker_exists(pid):
         return False
 
 
-def shell_activity(worker_pid, proc=Path('/proc')):
+CLAUDE_AGENTS = ('claude',)
+
+
+def shell_activity(worker_pid, proc=Path('/proc'), agents=('pi',)):
     """Sample only this worker's shell descendants, using process names and CPU counters."""
     if type(worker_pid) is not int or worker_pid <= 1:
         return False, False, {}
@@ -208,7 +227,7 @@ def shell_activity(worker_pid, proc=Path('/proc')):
             if entry is None:
                 continue
             name = entry[0]
-            if name == 'pi':
+            if name in agents:
                 shells.extend(child for child in children(pid) if (process(child) or ('',))[0] == 'bash')
             if name == 'bwrap':
                 nested.extend(children(pid))
@@ -241,7 +260,10 @@ def shell_activity(worker_pid, proc=Path('/proc')):
 
 
 class WorkProbe:
-    def __init__(self, directory, read, pool):
+    def __init__(self, directory, read, pool, session=None):
+        # session: optional Claude Code transcript reader. Without it the probe
+        # watches a Pi runner exactly as before.
+        self.session = session
         self.directory = directory
         self.read = read
         self.pool = pool
@@ -270,7 +292,7 @@ class WorkProbe:
             self.tool_request_at = None
             return False, False, False
         pid = status.get('workerPid')
-        live, sleeping, counters = shell_activity(pid)
+        live, sleeping, counters = shell_activity(pid, agents=CLAUDE_AGENTS) if self.session else shell_activity(pid)
         identity = (pid, started) if live else None
         # Use the dedicated game pool. Ordinary daemon health checks share lastSuccessAt.
         request_sources = [row for row in sources if 'maintenance' not in row] if live and not sleeping else []
@@ -295,6 +317,23 @@ class WorkProbe:
         fresh_request = self.tool_request_at is not None and 0 <= now - self.tool_request_at <= MODEL_PROGRESS_MS
         return live, sleeping, live and (fresh_cpu or fresh_reply or fresh_request)
 
+    def transcript(self, now, status):
+        """Fold Claude Code transcript evidence (main agent and subagents) into status."""
+        agent = {'openTools': 0}
+        if self.session is None:
+            return agent
+        try:
+            agent = self.session.activity(now)
+        except (ValueError, OSError):
+            return agent
+        number = lambda value: type(value) in (int, float) and math.isfinite(value)
+        if type(agent['lastAt']) is int and agent['lastAt'] <= now + 5000:
+            status['lastActivityAt'] = max(status['lastActivityAt'] if number(status.get('lastActivityAt')) else 0,
+                                           agent['lastAt'] / 1000)
+        if agent['openTools'] > 0 and type(agent['openSince']) is int and not number(status.get('lastToolStartedAt')):
+            status['lastToolStartedAt'] = agent['openSince'] / 1000
+        return agent
+
     def sample(self, now):
         self.failed_model_since = None
         self.category = None
@@ -308,6 +347,7 @@ class WorkProbe:
         if not isinstance(status, dict):
             self.exclusive_model = None
             return 'unknown'
+        agent = self.transcript(now, status)
         try:
             pool = self.pool()
             if not isinstance(pool, dict) or type(pool.get('activeRequests')) is not int or not isinstance(pool.get('sources'), list):
@@ -334,7 +374,7 @@ class WorkProbe:
                 pass
         # Shell work can outlast, or never reach, the buffered cycle log.
         shell_live, sleeping, progress = self.shell_progress(now, status, sources)
-        unfinished = (unfinished or shell_live) and not sleeping
+        unfinished = (unfinished or shell_live or agent['openTools'] > 0) and not sleeping
         if unfinished or status.get('phase') != 'working':
             self.handoff_at = None
         state = classify_work(now, status, pool, worker_alive=worker_exists(status.get('workerPid')),

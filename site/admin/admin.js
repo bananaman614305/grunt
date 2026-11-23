@@ -735,8 +735,10 @@ export class AdminConsole {
         const event = object(value), row = element('li');
         const isProgress = event.kind === 'progress';
         row.append(timestamp(event.at, true));
-        row.append(isProgress ? element('p', '', text(event.text, '', 400))
-          : badge(event.failed ? 'failed' : 'passed', text(event.tool, 'Tool') + (event.failed ? ' failed' : ' finished')));
+        const who = event.subagent === true && event.tool !== 'subagent' ? 'Subagent ' : '';
+        row.append(isProgress ? element('p', '', (who ? 'Subagent: ' : '') + text(event.text, '', 400))
+          : badge(event.failed ? 'failed' : 'passed', who + text(event.tool, 'Tool') +
+            (event.failed ? ' failed' : event.phase === 'started' ? ' started' : ' finished')));
         list.append(row);
       }
       timeline.append(list.children.length ? list : empty('Waiting for progress', 'New messages appear when Grunt completes a reply.'));

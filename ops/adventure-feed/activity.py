@@ -58,7 +58,7 @@ def progress_text(content):
     return ' '.join(parts)[:400].strip()
 
 
-def private_tail(path, limit, *, checkpoint=False):
+def private_tail(path, limit, *, checkpoint=False, shared_read=False):
     # Open each component by descriptor so a worker cannot redirect a
     # concurrent read through a replaced directory or a symbolic link.
     directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
@@ -72,7 +72,9 @@ def private_tail(path, limit, *, checkpoint=False):
         os.close(directory)
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        # Claude Code subagent transcripts follow the builder's umask (commonly
+        # 0664). For them tolerate group access but never other-writable files.
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & (0o002 if shared_read else 0o077):
             raise ValueError('Expected a private runner file')
         if info.st_size > limit:
             if checkpoint:
@@ -83,7 +85,31 @@ def private_tail(path, limit, *, checkpoint=False):
         return (data, info.st_mtime_ns // 1000000) if checkpoint else data
 
 
+SESSION_FORMATS = ('pi', 'claude-code')
+
+
+def session_format(state):
+    """Select the builder's session format: env, then config.json, then Pi."""
+    chosen = os.environ.get('GRUNT_ADVENTURE_SESSION_FORMAT')
+    if not chosen:
+        try:
+            chosen = json.loads(private_tail(state / 'config.json', 65536)).get('sessionFormat')
+        except (OSError, ValueError, AttributeError):
+            chosen = None
+    chosen = chosen or 'pi'
+    if chosen not in SESSION_FORMATS:
+        raise ValueError('Unknown adventure session format')
+    return chosen
+
+
+def claude_reader(state):
+    from claude_session import ClaudeSessionReader
+    return ClaudeSessionReader(state, private_tail, progress_text, os.environ.get('GRUNT_ADVENTURE_CLAUDE_PROJECTS'))
+
+
 def events(state, now):
+    if session_format(state) == 'claude-code':
+        return claude_reader(state).events(now)
     config = json.loads(private_tail(state / 'config.json', 65536))
     session = str(config.get('sessionId', ''))
     if not re.fullmatch(r'[a-f0-9-]{36}', session):
@@ -358,11 +384,14 @@ def watch():
                     print(f'  {source} · {error.replace("_", " ")}', flush=True)
         history = data['events']
         for i, event in enumerate(history):
-            key = (event['at'], event['kind'], event.get('text'), event.get('tool'))
+            key = (event['at'], event['kind'], event.get('text'), event.get('tool'), event.get('phase'), event.get('subagent'))
             if key not in seen and (prior is not None or i >= len(history) - 12):
                 stamp = time.strftime('%H:%M:%S', time.localtime(event['at'] / 1000))
+                who = 'subagent ' if event.get('subagent') and event.get('tool') != 'subagent' else ''
                 detail = event['text'] if event['kind'] == 'progress' else (
-                    f"{event['tool']} {'failed' if event['failed'] else 'finished'}")
+                    f"{who}{event['tool']} " + ('started' if event.get('phase') == 'started' else 'failed' if event['failed'] else 'finished'))
+                if event['kind'] == 'progress' and event.get('subagent'):
+                    detail = 'subagent: ' + detail
                 print(f'{stamp}  {detail}', flush=True)
             seen.add(key)
         if len(seen) > 4000:
@@ -378,7 +407,10 @@ def upload():
     if not re.fullmatch(r'[A-Za-z0-9_-]{32,128}', key) or not PROVIDER.fullmatch(instance):
         raise ValueError('Invalid activity upload configuration')
     from uptime import WorkMeter, WorkProbe
-    meter = WorkMeter(WorkProbe(STATE, private_tail, lambda: ask(POOL, timeout=2)), STATE / 'uptime' / 'work.sqlite3')
+    claude = session_format(STATE) == 'claude-code'
+    probe = WorkProbe(STATE, private_tail, lambda: ask(POOL, timeout=2),
+                      session=claude_reader(STATE) if claude else None)
+    meter = WorkMeter(probe, STATE / 'uptime' / 'work.sqlite3')
     threading.Thread(target=meter.run, name='grunt-work-meter', daemon=True).start()
     delay = 0
     while True:
@@ -406,6 +438,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', choices=['snapshot', 'watch', 'upload'])
     mode = parser.parse_args().mode
+    session_format(STATE)  # Fail at startup on a misconfigured format.
     if mode == 'snapshot':
         print(json.dumps(snapshot(), ensure_ascii=False))
     elif mode == 'watch':
