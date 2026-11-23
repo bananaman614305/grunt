@@ -171,14 +171,15 @@ it('continues other free setup when native Mistral Vibe onboarding fails', async
 });
 
 it.each(['runcrate', 'zro', 'tokenharbor'] as const)('tries %s vault keys newest first before provisioning and after capture', async provider => {
-  const credentials = ['old', 'working', 'paused'].map(reference => ({ service: provider, reference, field_names: ['api_key'] }));
+  // Squire lists credentials newest first.
+  const credentials = ['paused', 'working', 'old'].map(reference => ({ service: provider, reference, field_names: ['api_key'] }));
   let captured = false;
   const attempts: string[] = [];
   const squire = {
     credentials: { list: async () => credentials, grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference }) },
     runs: { start: vi.fn(async () => {
       captured = true;
-      credentials.push({ service: provider, reference: 'captured', field_names: ['api_key'] });
+      credentials.unshift({ service: provider, reference: 'captured', field_names: ['api_key'] });
       return { run: { id: provider, state: 'completed' }, decision: 'silent' as const };
     }), get: vi.fn() }
   };
@@ -274,7 +275,7 @@ it.each(['runcrate', 'zro', 'tokenharbor'] as const)('tries remaining %s credent
     let captured = false;
     const squire = {
       credentials: {
-        list: async () => afterCapture && !captured ? [] : ['working', 'limited'].map(reference => ({ service: provider, reference, field_names: ['api_key'] })),
+        list: async () => afterCapture && !captured ? [] : ['limited', 'working'].map(reference => ({ service: provider, reference, field_names: ['api_key'] })),
         grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference })
       },
       runs: { start: vi.fn(async () => {
@@ -299,7 +300,7 @@ it.each(['runcrate', 'zro', 'tokenharbor'] as const)('does not provision %s afte
   const attempts: string[] = [];
   const squire = {
     credentials: {
-      list: async () => ['rejected', 'limited'].map(reference => ({ service: provider, reference, field_names: ['api_key'] })),
+      list: async () => ['limited', 'rejected'].map(reference => ({ service: provider, reference, field_names: ['api_key'] })),
       grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference })
     }, runs: { start: vi.fn(), get: vi.fn() }
   };

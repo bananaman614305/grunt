@@ -194,7 +194,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     try {
       if (await router.hasKey?.(provider)) { options.signal?.throwIfAborted(); options.notify(`${provider}: connected`); continue; }
     } catch (error) { rememberFailure(error); }
-    const matching = async () => (await squire.credentials.list()).filter(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider)).reverse();
+    const matching = async () => (await squire.credentials.list()).filter(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     const connect = async (credentials: Credential[]) => {
       for (const credential of credentials) {
         options.signal?.throwIfAborted();
