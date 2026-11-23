@@ -98,7 +98,7 @@ it('names key-name values key_name, which a provider fact can override', async (
   expect(first!.facts).toEqual({ key_name: 'grunt-free-pollinations', plan: 'free', project_name: 'grunt' });
 });
 
-it('gives each Zro key creation a new UTC-stamped key_name, so it never reuses an existing alias', async () => {
+it('gives Zro creations in different seconds of one minute distinct UTC key names', async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   try {
     const squire = new BrowserSquire();
@@ -106,11 +106,11 @@ it('gives each Zro key creation a new UTC-stamped key_name, so it never reuses a
     const facts = () => call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => (args as Record<string, unknown>).facts);
     vi.setSystemTime(new Date('2026-11-23T14:13:02Z'));
     await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
-    vi.setSystemTime(new Date('2026-11-24T09:05:59Z'));
+    vi.setSystemTime(new Date('2026-11-23T14:13:40Z'));
     await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
     expect(facts()).toEqual([
-      { key_name: 'grunt-20261123-1413', plan: 'free', project_name: 'grunt' },
-      { key_name: 'grunt-20261124-0905', plan: 'free', project_name: 'grunt' }
+      { key_name: 'grunt-20261123-141302', plan: 'free', project_name: 'grunt' },
+      { key_name: 'grunt-20261123-141340', plan: 'free', project_name: 'grunt' }
     ]);
   } finally { vi.useRealTimers(); }
 });
