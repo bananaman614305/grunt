@@ -119,10 +119,15 @@ export class SourceStatus {
   routingAvailability(id: string, positiveAgeMs: number, negativeAgeMs: number): boolean | undefined {
     const entry = this.entry(id), now = this.now();
     if (entry.availabilityCheckedAt === undefined || entry.available === undefined) return;
-    // An observed quota has its own absolute deadline; the ordinary negative
-    // window must not postpone a refill or replace the persisted quota guard.
-    if (!entry.available && entry.retryAt !== undefined && entry.retryAt <= now
-      && (entry.availabilityQuota || entry.failure === 'quota' && entry.availabilityCheckedAt < entry.retryAt)) return;
+    // Honor reset evidence restored from a sibling as well as local metadata.
+    // Mixed failures can keep dispatch benched longer than the actual quota;
+    // reading quotaUntil here must not shorten that separate dispatch backoff.
+    const backoff = this.backoffs.get(id);
+    const quotaUntil = Math.max(entry.failure === 'quota' ? entry.retryAt ?? 0 : 0,
+      backoff?.code === 'quota' ? backoff.quotaUntil ?? backoff.until : 0);
+    // Only evidence older than a known reset expires at that reset. A fresh
+    // denial with a zero/no hint still needs a bounded retry window.
+    if (!entry.available && entry.availabilityCheckedAt < quotaUntil && quotaUntil <= now) return;
     const age = now - entry.availabilityCheckedAt;
     if (age < 0 || age >= (entry.available ? positiveAgeMs : negativeAgeMs)) return;
     return entry.available;
@@ -254,7 +259,8 @@ export class SourceStatus {
     const entry = this.entry(source.id), revision = entry.revision;
     // Retain only negative metadata. Explicit health checks and all adapter
     // completion guards remain fresh; positive metadata is never reused here.
-    if (!healthCheck && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
+    // Explicit quota discovery keeps its existing fresh recovery behavior.
+    if (!healthCheck && !entry.availabilityQuota && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
       && this.routingAvailability(source.id, 0, AVAILABILITY_NEGATIVE_MS) === false) return false;
     try {
       const result = await (healthCheck ? source.healthCheck!() : source.available());

@@ -3,6 +3,7 @@ import { SourceAvailability } from './source-availability.js';
 import { SourceStatus } from './source-status.js';
 import { SourceError } from './source.js';
 import type { Source } from './source.js';
+import type { RoutingBackoff, RoutingHistory } from './routing-history.js';
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
 const source = (): Source => ({ id: 'fixture', available: vi.fn(async () => false),
@@ -165,7 +166,7 @@ it('caps an older negative observation at a completion quota reset, then caches 
   await admission.close();
 });
 
-it('bounds quota metadata without a reset hint across direct checks and routing admission', async () => {
+it('bounds routing quota metadata without a reset hint', async () => {
   let now = 10000;
   const fixture = source(), status = new SourceStatus([fixture.id], () => now), admission = new SourceAvailability(status);
   vi.mocked(fixture.available).mockRejectedValue(new SourceError('quota', 'fixture quota without reset hint'));
@@ -175,12 +176,82 @@ it('bounds quota metadata without a reset hint across direct checks and routing 
   for (let second = 1; second < 30; second++) {
     now = 10000 + second * 1000;
     expect(admission.start([fixture])).toBe(0);
-    expect(await status.available(fixture)).toBe(false);
   }
   expect(fixture.available).toHaveBeenCalledOnce();
   now = 40000;
   expect(admission.peek(fixture.id)).toBeUndefined();
   expect(admission.start([fixture])).toBe(1); await turn();
   expect(fixture.available).toHaveBeenCalledTimes(2);
+  await admission.close();
+});
+
+it('bounds routing quota metadata with a zero reset hint at its observation timestamp', async () => {
+  const fixture = source(), status = new SourceStatus([fixture.id], () => 1000), admission = new SourceAvailability(status);
+  vi.mocked(fixture.available).mockRejectedValue(new SourceError('quota', 'fixture exhausted quota', 0));
+  expect(await status.available(fixture)).toBe(false);
+  for (let repeat = 0; repeat < 5; repeat++) {
+    expect(admission.peek(fixture.id)).toBe(false);
+    expect(admission.start([fixture])).toBe(0); await turn();
+  }
+  expect(fixture.available).toHaveBeenCalledOnce();
+  await admission.close();
+});
+
+it.each([undefined, 0, 2])('keeps explicit quota recovery metadata fresh for a reset hint of %s', async retry => {
+  const fixture = source(), status = new SourceStatus([fixture.id]);
+  vi.mocked(fixture.available).mockRejectedValueOnce(new SourceError('quota', 'fixture exhausted quota', retry)).mockResolvedValue(true);
+  expect(await status.available(fixture)).toBe(false);
+  expect(await status.available(fixture)).toBe(true);
+  expect(fixture.available).toHaveBeenCalledTimes(2);
+});
+
+it.each(['restored', 'sibling'] as const)('caps negative admission evidence at a known %s quota reset without mutating it', async origin => {
+  let now = 0;
+  const fixture = source(), status = new SourceStatus([fixture.id], () => now), admission = new SourceAvailability(status);
+  const backoff: RoutingBackoff = { code: 'quota', at: 0, until: 2000, streak: 1, signature: 'quota:::' };
+  const history = { snapshot: vi.fn(async () => ({ performance: [], backoff: [{ source: fixture.id, value: backoff }] })) } as unknown as RoutingHistory;
+  if (origin === 'restored') await status.setRoutingHistory(history);
+  expect(await status.available(fixture)).toBe(false);
+  if (origin === 'sibling') { now = 1000; await status.setRoutingHistory(history); }
+  now = 2000;
+  expect(admission.peek(fixture.id)).toBeUndefined();
+  vi.mocked(fixture.available).mockResolvedValue(true);
+  expect(await status.available(fixture)).toBe(true);
+  expect(fixture.available).toHaveBeenCalledTimes(2);
+  expect(status.routingBackoff(fixture.id)).toEqual(backoff);
+  await admission.close();
+});
+
+it('uses a mixed persisted quota reset for negative evidence while preserving the longer dispatch backoff', async () => {
+  let now = 0;
+  const fixture = source(), status = new SourceStatus([fixture.id], () => now), admission = new SourceAvailability(status);
+  const backoff: RoutingBackoff = { code: 'quota', at: 0, until: 20000, quotaUntil: 2000, streak: 2, signature: 'upstream:503::' };
+  const history = { snapshot: vi.fn(async () => ({ performance: [], backoff: [{ source: fixture.id, value: backoff }] })) } as unknown as RoutingHistory;
+  await status.setRoutingHistory(history);
+  expect(await status.available(fixture)).toBe(false);
+  now = 2000;
+  expect(admission.peek(fixture.id)).toBeUndefined();
+  expect(await status.available(fixture)).toBe(false);
+  now = 3000;
+  expect(admission.peek(fixture.id)).toBe(false);
+  expect(await status.available(fixture)).toBe(false);
+  expect(fixture.available).toHaveBeenCalledTimes(2);
+  expect(status.routingBackoff(fixture.id)).toEqual(backoff);
+  await admission.close();
+});
+
+it('uses the later of local and sibling quota resets for negative evidence', async () => {
+  let now = 0;
+  const fixture = source(), status = new SourceStatus([fixture.id], () => now), admission = new SourceAvailability(status);
+  const backoff: RoutingBackoff = { code: 'quota', at: 0, until: 2000, streak: 1, signature: 'quota:::' };
+  await status.setRoutingHistory({ snapshot: async () => ({ performance: [], backoff: [{ source: fixture.id, value: backoff }] }) } as unknown as RoutingHistory);
+  status.failed(fixture.id, 'quota', 10);
+  expect(await status.available(fixture)).toBe(false);
+  now = 2000;
+  expect(admission.peek(fixture.id)).toBe(false);
+  expect(await status.available(fixture)).toBe(false);
+  expect(fixture.available).toHaveBeenCalledOnce();
+  now = 10000;
+  expect(admission.peek(fixture.id)).toBeUndefined();
   await admission.close();
 });
