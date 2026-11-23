@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- Keep an orchestrator's task and source when a harness reports a finished subagent. Codex (`<subagent_notification>`) and Claude Code (`<task-notification>`) send these as new user messages, which gave the task a new key and a fresh random source after every subagent with no failure behind it. A message made only of such notices no longer counts as a new user turn; the model still sees them, and real text mixed with a notice still does.
+- Answer a request with an unsupported tool type, such as Codex's default `web_search`, with HTTP 400 naming the type. Before, every source refused it, each went into a cooldown of about fifteen minutes, and the client got a 429 "No tool-capable adapter" quota error. No source is tried or put in cooldown now; see the [tool contract](docs/reference.md#use-grunt-as-your-harnesss-model).
 - Keep weighted, sticky routing when a managed pool preserves a source with no registry entry, such as an earlier FreeLLMAPI route. Before, one such source made the daemon fall back to a fixed first-success chain, so it was tried first on every request. It now runs only when named as a model or after every routed source fails, and the daemon logs one line naming it. Explicit `GRUNT_SOURCES` lists keep their chosen order.
 - Label a task's first source pick `weighted` in diagnostics. Before, every first draw was recorded as `sticky`.
 - Reuse working vault keys before provisioning Zro, Token Harbor or Runcrate access, including when other saved keys fail. See the [setup reference](docs/reference.md#free-api-and-account-setup) for selection and failure handling.

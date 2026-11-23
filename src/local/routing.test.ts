@@ -326,3 +326,60 @@ it('labels a first draw weighted and a later turn sticky', async () => {
   await router.complete({ ...request, messages: [...request.messages, { role: 'assistant', content: 'ok' }] }, AbortSignal.timeout(1000));
   expect(reasons).toEqual(['weighted', 'sticky']);
 });
+// Harness subagent notifications arrive as new user-role messages. They report
+// on the same task, so the orchestrator keeps its task, source and checkpoint.
+const codexNote = '<subagent_notification>\n{"agent_path":"a1","status":{"completed":"done"}}\n</subagent_notification>';
+const claudeNote = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n</task-notification>';
+it.each([['codex', codexNote], ['claude', claudeNote]])('keeps the task and source when a %s subagent notification arrives as a user turn', async (_name, note) => {
+  const random = vi.fn().mockReturnValueOnce(0).mockReturnValue(0.99);
+  const { a, b, sources } = routed(random);
+  const first = { ...request, messages: [{ role: 'user', content: 'Orchestrate' }] };
+  await sources.complete(first, AbortSignal.timeout(1000));
+  const withNote = { ...first, messages: [...first.messages, { role: 'assistant', content: 'spawned' }, { role: 'user', content: note }] };
+  await sources.complete(withNote, AbortSignal.timeout(1000));
+  // A decoded request that lists the notification as user turns behaves alike.
+  await sources.complete({ ...withNote, userMessages: ['Orchestrate', note, note] }, AbortSignal.timeout(1000));
+  expect(a.complete).toHaveBeenCalledTimes(3); expect(b.complete).not.toHaveBeenCalled(); expect(random).toHaveBeenCalledOnce();
+  // The model still sees the notification.
+  expect(vi.mocked(a.complete).mock.calls[1][0].messages.at(-1)!.content).toBe(note);
+  // A real new user turn still starts a new task and draws again.
+  await sources.complete({ ...withNote, messages: [...withNote.messages, { role: 'user', content: 'Next task' }] }, AbortSignal.timeout(1000));
+  expect(b.complete).toHaveBeenCalledOnce();
+});
+it('keeps real user text mixed with a notification as a new turn', async () => {
+  const { taskTurns } = await import('./harness.js');
+  const base = { ...request, messages: [] as ModelRequest['messages'] };
+  expect(taskTurns({ ...base, userMessages: ['Orchestrate', `${codexNote}\n`, `${claudeNote}\nNow also fix the tests`, `<system-reminder>x</system-reminder>\n${codexNote}`] }))
+    .toEqual(['Orchestrate', 'Now also fix the tests']);
+  expect(taskTurns({ ...base, messages: [{ role: 'user', content: 'Orchestrate' }, { role: 'user', content: codexNote }] })).toEqual(['Orchestrate']);
+  const { a, b, sources } = routed(vi.fn().mockReturnValueOnce(0).mockReturnValue(0.99));
+  await sources.complete({ ...request, userMessages: ['Orchestrate'] }, AbortSignal.timeout(1000));
+  await sources.complete({ ...request, userMessages: ['Orchestrate', `${claudeNote}\nNow also fix the tests`] }, AbortSignal.timeout(1000));
+  expect(a.complete).toHaveBeenCalledOnce(); expect(b.complete).toHaveBeenCalledOnce();
+});
+// A client's unsupported tool type is a request problem, never source quota.
+it.each([false, true])('rejects an unsupported tool type with 400 and records no source failure (sticky=%s)', async sticky => {
+  const picky = (id: string) => {
+    const complete = vi.fn(async (input: ModelRequest) => {
+      if (input.tools.some(tool => tool.type !== 'function')) throw new SourceError('upstream', 'requires function tools');
+      return { text: `${id} done` };
+    });
+    return { ...source(id), supportsFunctionTools: true, complete };
+  };
+  const a = picky('opencode'), b = picky('kilo');
+  const sources = new Sources([a, b], sticky ? { registry: () => launchRegistry, random: () => 0 } : undefined);
+  const app = createLocalApp(sources);
+  const post = (tools: unknown[]) => app.request('http://localhost:8788/v1/responses', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'grunt', input: 'Do work', cwd: '/tmp', tools }) });
+  const fn = { type: 'function', name: 'exec_command', parameters: { type: 'object' } };
+  const response = await post([fn, { type: 'web_search', external_web_access: true }, { type: 'custom', name: 'apply_patch' }]);
+  expect(response.status).toBe(400);
+  const body = await response.json() as { error: { type: string; message: string } };
+  expect(body.error.type).toBe('invalid_request_error');
+  expect(body.error.message).toContain('web_search'); expect(body.error.message).toContain('custom');
+  expect(response.headers.get('retry-after')).toBeNull();
+  expect(a.complete).not.toHaveBeenCalled(); expect(b.complete).not.toHaveBeenCalled();
+  // Nothing was put in cooldown: the next ordinary request is answered at once.
+  expect((await post([fn])).status).toBe(200);
+  expect(a.complete).toHaveBeenCalledOnce();
+});

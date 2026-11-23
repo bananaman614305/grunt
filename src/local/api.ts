@@ -7,7 +7,7 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
-import { SourceError, answeredBy } from './source.js';
+import { RequestError, SourceError, answeredBy } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
@@ -339,7 +339,8 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       c.req.raw.signal.addEventListener('abort', abort, { once: true });
       const failure = (e: unknown) => {
         const err = e instanceof SourceError ? e : new SourceError('upstream', 'grunt source failed');
-        return { err, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type: api === 'messages' ? 'api_error' : 'server_error', code: err.code, message: err.message } } };
+        const invalid = err instanceof RequestError;
+        return { err, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type: invalid ? 'invalid_request_error' : api === 'messages' ? 'api_error' : 'server_error', code: err.code, message: err.message } } };
       };
       try {
         // Agent adapters return final text, not incremental tokens. Resolve routing
@@ -359,7 +360,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         const { err, body } = failure(e);
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
         if (err.retryAfter !== undefined) c.header('Retry-After', String(Math.max(1, Math.ceil(err.retryAfter))));
-        return c.json(body, err.code === 'quota' ? 429 : err.code === 'timeout' ? 504 : 503);
+        return c.json(body, err instanceof RequestError ? 400 : err.code === 'quota' ? 429 : err.code === 'timeout' ? 504 : 503);
       } finally { c.req.raw.signal.removeEventListener('abort', abort); }
     });
   }
