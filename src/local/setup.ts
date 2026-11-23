@@ -117,27 +117,23 @@ type Run = { run: { id: string; state: string }; decision: 'silent' | 'needs_app
 // Select only diagnostic text, never serialize the browser result or vault data.
 function setupReason(...values: unknown[]): string {
   return [...new Set(values.filter((value): value is string => typeof value === 'string')
-    // Free-form secret descriptions cannot be redacted reliably. Drop the whole
-    // field, including ambiguous prose, while retaining separate safe details.
-    .filter(value => !/(?:password|passcode|token|secret|key|credential|authorization)/i.test(value.normalize('NFKC'))).map(redactedText).filter(Boolean))].join(' ').slice(0, 512);
+    .map(redactedText).filter(Boolean))].join(' ');
 }
 function redactedText(value: string) {
-  return value
+  return value.normalize('NFKC')
     .replace(/\p{Cc}|\p{Cf}/gu, ' ')
     .replace(/https?:\/\/\S+/gi, '[link omitted]')
     .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
-    .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_)[A-Za-z0-9_-]+/g, '[redacted]')
+    .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_|eyJ)[A-Za-z0-9_+/.=-]+/g, '[redacted]')
+    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)\s*(?::|=|\b(?:is|was|might be)\b)\s*)(?:"[^"]*"|'[^']*'|[^\s;,]+)/gi, '$1[redacted]')
+    .replace(/\b(credential\s+)[^\s;,]*[!0-9_-][^\s;,]*/gi, '$1[redacted]')
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
     .replace(/\s+/g, ' ').trim();
 }
-// Squire's own question, score and reason for a stopped drive. The question is
-// Squire's fixed wording, which names "target key" controls, so it is redacted
-// but not dropped for that word.
 function squireWords(result: ObjectValue) {
   const question = typeof result.question === 'string' ? redactedText(result.question) : '';
   const confidence = typeof result.confidence === 'number' && Number.isFinite(result.confidence) ? result.confidence.toFixed(2) : '';
-  // A page link such as /api-keys must not drop the whole reason for its word.
-  const reason = setupReason(typeof result.reason === 'string' ? redactedText(result.reason) : undefined);
+  const reason = setupReason(result.reason);
   return [question && `Squire asked: ${question}`, confidence && `confidence ${confidence}`, reason && `Squire's reason: ${reason}`].filter(Boolean).join('; ');
 }
 // A stopped page with no controls shows only the provider's own message, such
@@ -150,7 +146,7 @@ function pageWords(result: ObjectValue | undefined): string | undefined {
     const body = object(JSON.parse(text));
     text = [body.detail, body.message, body.error].find(value => typeof value === 'string') ?? text;
   } catch { /* Plain page text. */ }
-  return setupReason(text.slice(0, 300)) || undefined;
+  return setupReason(text).slice(0, 300) || undefined;
 }
 function setupStopped(message: string, ...values: unknown[]): Error {
   const reason = setupReason(...values);
@@ -574,7 +570,7 @@ export class BrowserSquire implements SetupSquire {
       const diagnostic: SquireDiagnostic = {
         ...(typeof last?.question === 'string' ? { question: redactedText(last.question) } : {}),
         ...(typeof last?.confidence === 'number' ? { confidence: last.confidence } : {}),
-        ...(typeof last?.reason === 'string' && stop !== 'provider refused' ? { reason: setupReason(redactedText(last.reason)) } : {})
+        ...(typeof last?.reason === 'string' && stop !== 'provider refused' ? { reason: setupReason(last.reason) } : {})
       };
       const reason = [stop, words && `the page says: ${words}`].filter(Boolean).join('; ');
       const own = squireWords(diagnostic);

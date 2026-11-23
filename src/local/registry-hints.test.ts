@@ -188,3 +188,11 @@ it.each(['zro', 'tokenharbor', 'runcrate', 'nvidia'])('counts one failed signup 
   expect(call).toHaveBeenCalledWith('operate_finish', expect.objectContaining({ session_id: 'synthetic-session' }));
   expect(addGrant).not.toHaveBeenCalled();
 });
+
+it.each([
+  ['zro', "On /overview press 'API Keys'. On /api-keys press 'Create key', type the supplied key_name in 'Alias', leave 'Spend limit' and 'Expiration date' empty, press 'Create'. The new key is shown once in the dialog; press its 'Copy' button so it is stored, then finish. Never press a 'Revoke' button."],
+  ['kenari', "On /overview open 'API Keys' (/keys). Press 'Buat API Key', type the supplied key_name in 'Label (opsional)', then open 'Pengaturan lanjutan', choose 'Model tertentu' and tick the checkbox 'ernie-5-5-flash-preview:free' (scroll to it; do not type into 'Cari model...'). Press 'Buat Key'. The new key is shown once: press its copy button so it is stored, then finish. Never press 'Ganti key' (rotate) or 'Cabut key' (revoke)."]
+])('delivers the owner-specified signup hint to Squire for %s', async (provider, hint) => {
+  const [drive] = await driveCalls(provider, `https://${provider}.test/overview`);
+  expect(String(drive!.goal)).toContain(`Provider hints (page, control, value, in order): ${hint}`);
+});

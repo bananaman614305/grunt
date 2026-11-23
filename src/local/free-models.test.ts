@@ -162,16 +162,16 @@ it('preserves disabled providers and enables Kilo in the router chain', async ()
 });
 
 it.each([
-  { reason: 'Provider denied automated account creation.', remaining: '', detail: true },
-  { reason: 'Provider denied automated account creation.', remaining: 'API key: synthetic-private-value; password=short-secret; token https://example.test/?token=private; gsk_syntheticprivatevalue1234567890', detail: true },
-  { reason: 'Provider denied automated account creation. password is SyntheticPass!42.', remaining: '', detail: false },
-  { reason: 'Provider denied automated account creation. your token was "SyntheticToken!42".', remaining: '', detail: false },
-  { reason: "Provider denied automated account creation. secret = 'Synthetic Secret!42'", remaining: '', detail: false },
-  { reason: 'Provider denied automated account creation. api key: "SyntheticKey!42"', remaining: '', detail: false },
-  { reason: 'Provider denied automated account creation. passcode is SyntheticCode!42', remaining: '', detail: false },
-  { reason: 'Provider denied automated account creation. credential SyntheticCredential!42', remaining: '', detail: false },
-  { reason: 'Provider denied automated account creation. key might be SyntheticKey!42', remaining: '', detail: false }
-])('reports only safe refusal details and drops only the refusing provider ($reason)', async ({ reason, remaining, detail }) => {
+  { reason: 'Provider denied automated account creation.', remaining: '' },
+  { reason: 'Provider denied automated account creation.', remaining: 'API key: synthetic-private-value; password=short-secret; token https://example.test/?token=private; gsk_syntheticprivatevalue1234567890' },
+  { reason: 'Provider denied automated account creation. password is SyntheticPass!42.', remaining: '' },
+  { reason: 'Provider denied automated account creation. your token was "SyntheticToken!42".', remaining: '' },
+  { reason: "Provider denied automated account creation. secret = 'Synthetic Secret!42'", remaining: '' },
+  { reason: 'Provider denied automated account creation. api key: "SyntheticKey!42"', remaining: '' },
+  { reason: 'Provider denied automated account creation. passcode is SyntheticCode!42', remaining: '' },
+  { reason: 'Provider denied automated account creation. credential SyntheticCredential!42', remaining: '' },
+  { reason: 'Provider denied automated account creation. key might be SyntheticKey!42', remaining: '' }
+])('reports only safe refusal details and drops only the refusing provider ($reason)', async ({ reason, remaining }) => {
   const squire = new BrowserSquire();
   const call = vi.spyOn(squire, 'call').mockResolvedValue({
     status: 'stuck', session_id: 'signup', reason, remaining
@@ -182,12 +182,12 @@ it.each([
   // Each provider's refusal drops that provider; setup goes on to the next one.
   expect(result.dropped).toEqual(['groq', 'nvidia']);
   const message = [squire.signupFailureDetail('groq') ?? '', ...notify.mock.calls.map(([line]) => String(line))].join('\n');
-  expect(message.includes('Provider denied automated account creation.')).toBe(detail);
+  expect(message).toContain('Provider denied automated account creation.');
   for (const secret of ['synthetic-private-value', 'short-secret', 'https://example.test', 'gsk_syntheticprivatevalue', 'SyntheticPass!42', 'SyntheticToken!42', 'Synthetic Secret!42', 'SyntheticKey!42', 'SyntheticCode!42', 'SyntheticCredential!42']) expect(message).not.toContain(secret);
   expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(2);
   expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'signup', outcome: 'none' });
   expect(addGrant).not.toHaveBeenCalled();
-  expect(notify).toHaveBeenCalledWith(`groq: dropped; Squire cannot complete signup automatically: provider refused${detail ? '; the page says: Provider denied automated account creation.' : ''}`);
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining('groq: dropped; Squire cannot complete signup automatically: provider refused; the page says: Provider denied automated account creation.'));
 });
 
 it('preserves refusal details from rejected setup runs', async () => {
