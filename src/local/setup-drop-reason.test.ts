@@ -105,8 +105,8 @@ it.each([false, true].flatMap(polled => [
   { reason: 'Provider denied automated signup. Password "SyntheticPass!42" was rejected', expected: 'Provider denied automated signup.' },
   { reason: 'Provider denied automated signup. Password Swordfish was rejected', expected: 'Provider denied automated signup.' },
   { reason: 'Provider denied automated signup. Password is correct horse battery staple', expected: 'Provider denied automated signup.' },
-  { reason: 'API key aBcD was rejected', expected: 'API key [redacted] was rejected' },
-  { reason: 'API key 123e4567-e89b-12d3-a456-426614174000 was rejected; "api_key": "quoted-value"', expected: 'API key [redacted] was rejected; "api_key": [redacted]' }
+  { reason: 'API key aBcD was rejected', expected: 'API key [redacted]' },
+  { reason: 'API key 123e4567-e89b-12d3-a456-426614174000 was rejected; "api_key": "quoted-value"', expected: 'API key [redacted]' }
 ].map(diagnostic => ({ polled, ...diagnostic }))))('notifies full Squire diagnostics for a provisioning drop ($polled, $reason)', async ({ polled, reason, expected }) => {
   const squire = new BrowserSquire();
   vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
@@ -181,5 +181,18 @@ it.each(['rejected', 'page'])('preserves benign key diagnostics at refusal/page 
   expect(output.join('\n')).toContain(stopQuestion);
   expect(debug).toHaveBeenCalledWith(expect.stringContaining(diagnostic));
   for (const secret of secrets) expect(output.join('\n')).not.toContain(secret);
+  await squire.close();
+});
+
+// Synthetic credentials must never reach user notifications, regardless of casing.
+it.each(['swordfish', 'Swordfish', 'correct horse battery staple'])('omits API key prose containing %s from provisioning notifications', async secret => {
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
+    ? { status: 'rejected', reason: `Provider denied automated signup. API key ${secret} was rejected`, session_id: 'tab' } : {});
+  vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
+  const lines: string[] = [];
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: line => lines.push(line) });
+  expect(lines.join('\n')).toContain('Provider denied automated signup.');
+  expect(lines.join('\n')).not.toContain(secret);
   await squire.close();
 });

@@ -134,3 +134,12 @@ it('answers a repeated key_name fact question only once across a polling yield',
   expect(calls.map(call => call.answer)).toEqual([undefined, 'key_name', undefined]);
   await squire.close();
 });
+
+// The intent permits fact recovery only for key name/alias/label fields.
+it.each(['Email', 'Password', 'Project', 'Spend limit'])('does not use key_name for an unrelated %s field', async field => {
+  const squire = new BrowserSquire();
+  const calls = drives(squire, () => factQuestion(field));
+  await expect(squire.signup('kenari', 'https://kenari.test/keys', 'Create one key.', { key_name: 'grunt' })).rejects.toThrow('confidence 0.32');
+  expect(calls.map(call => call.answer)).toEqual([undefined]);
+  await squire.close();
+});

@@ -129,9 +129,11 @@ function redactedText(value: string) {
     .split(/(?<=[.!?;])\s+/)
     .filter(sentence => !/\b(?:passwords?|passcodes?|passphrases?|secrets?|credentials?|authorization|cookies?|session[ _-]+tokens?)\b/i.test(sentence))
     .map(sentence => sentence.trim() === 'Choose one current target key, or DONE, BLOCKED, NONE_OF_THESE, or WAIT.' ? sentence
+      // Alphabetic words can also be credentials. Preserve field descriptions,
+      // but discard the entire value prose rather than guessing safe words.
       : sentence.replace(/(\b(?:api[ _-]?)?(?:key|token)s?\b["']?\s*[:=]?\s*)(.*)/i, (_match, label: string, words: string) => label
-        + words.replace(/\[redacted\]|\[link omitted\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+/g, word =>
-          /^(?:\[redacted\]|\[link omitted\]|[A-Z]?[a-z]+[.,!?;:]?)$/.test(word) ? word : '[redacted]')))
+        + (!/["':=]/.test(label) && /^(?:name|alias|label)\s+field(?:[.!?;]|\s|\[redacted\]|\[link omitted\])*$/i.test(words)
+          ? words : '[redacted]')))
     .join(' ')
     .replace(/\s+/g, ' ').trim();
 }
@@ -661,19 +663,18 @@ export class BrowserSquire implements SetupSquire {
       if (turns >= 8) return dropped('browser recovery limit reached');
       this.retries.set(provider, turns + 1);
       if (retry) { await delay(3000, undefined, { signal }); answer = 'WAIT'; continue; }
-      // An unsure drive on the key's own name field: this provider's key_name
-      // belongs there. Name the field's fact and resume on that field.
+      // Recovery requires an observed key-name field, even when a fact is offered.
       const keyName = this.signupFacts.get(provider)?.key_name;
-      if (keyName && result.status === 'low_confidence' && Object.hasOwn(object(result.options), 'key_name') && !usedTerms.has('fact:key_name')) {
-        usedTerms.add('fact:key_name');
-        answer = 'key_name';
-        continue;
-      }
       const observed = object(result.observation);
       const fieldLabel = (row: unknown[]) => String(row[2]).split('|')[0]!.replace(/^@/, '').trim();
       const nameRow = keyName && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
         ? observed.safe_table.find((row): row is unknown[] => Array.isArray(row) && row[1] === 't'
           && keyNameField(fieldLabel(row), observed.url) && !usedTerms.has(`field:${fieldLabel(row)}`)) : undefined;
+      if (nameRow && Object.hasOwn(object(result.options), 'key_name') && !usedTerms.has('fact:key_name')) {
+        usedTerms.add('fact:key_name');
+        answer = 'key_name';
+        continue;
+      }
       const nameTarget = nameRow && Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
         && label.trim().toLowerCase() === fieldLabel(nameRow).toLowerCase());
       if (keyName && nameRow && nameTarget) {
