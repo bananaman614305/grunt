@@ -22,7 +22,14 @@ current data-sharing policies automatically. Once a verified route answers throu
 model `grunt`, setup leaves remaining signups to the daemon after finishing local
 configuration and Squire bootstrap. See the [setup flow](docs/reference.md#free-api-and-account-setup)
 for verification and background acquisition limits. Grunt is added as an extra
-named model; existing defaults stay intact.
+named model; existing defaults stay intact. Claude Code, Codex and OpenCode have
+native subagents; each gets a grunt-owned file that puts the session and its
+subagents on grunt:
+`claude --settings ~/.claude/grunt.settings.json --model grunt`,
+`codex --profile grunt`, or
+`OPENCODE_CONFIG=~/.config/opencode/grunt.opencode.json opencode`.
+Pi stays supported, without parallel subagents. See the
+[harness reference](docs/reference.md#claude-code).
 Sources that cannot finish signup or pass a test request are skipped while working
 sources remain usable. Rerun setup to retry them.
 

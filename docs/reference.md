@@ -777,10 +777,13 @@ named **grunt** option and keeps your default model and provider:
 Pi gets a `grunt` provider in `models.json`; Codex gets its own
 `$CODEX_HOME/grunt.config.toml` for `codex --profile grunt` (`config.toml` is
 not edited); OpenCode gets a `grunt` provider in `opencode.json` (pick it with
-`/models`; an `opencode.jsonc` file is left alone); Claude Code needs no file
-and is started with the printed `ANTHROPIC_BASE_URL` command. A changed file is
+`/models`; an `opencode.jsonc` file is left alone) and a separate
+`grunt.opencode.json`; Claude Code gets its own `grunt.settings.json` in
+`$CLAUDE_CONFIG_DIR` (default `~/.claude`) and `settings.json` is not edited. A changed file is
 first copied to `<file>.grunt-backup-<time>`. Each tool is reported connected
-only after it answers one real request through grunt.
+only after it answers one real request through grunt. Your defaults never
+change; the grunt-owned files are how you opt a session, and its native
+subagents, into grunt (see the harness sections below).
 
 OpenCode first tries its free model without an account and requests sign-in only
 if that model requires it. Kilo verifies its anonymous free model route
@@ -1344,24 +1347,41 @@ Do not send confidential data through these free routes.
 
 ### opencode
 
-For opencode 1.18.31, save this as `opencode.json` in your project:
+Tested with opencode 1.19.5 (Grunt's `opencode` source above is a different
+thing: it drives OpenCode as a worker). Setup adds this provider to your
+`opencode.json` without touching your default `model`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "grunt/grunt",
   "provider": {
     "grunt": {
       "name": "grunt",
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:8788/v1", "apiKey": "local" },
-      "models": { "grunt": { "name": "grunt" } }
+      "models": { "grunt": { "name": "grunt", "tool_call": true, "limit": { "context": 128000, "output": 8192 } } }
     }
   }
 }
 ```
 
-Then run `opencode -m grunt/grunt`. The [provider docs for this config format](https://docs.dev.opencode.ai/docs/providers/)
+`tool_call` is required for agentic use. Pick it with `/models`, or run
+`opencode -m grunt/grunt`. To use grunt for the whole session including
+subagents, add the model lines below, or let setup's `grunt.opencode.json`
+(next to your `opencode.json`) do it per launch:
+
+```json
+{ "model": "grunt/grunt", "small_model": "grunt/grunt" }
+```
+
+```sh
+OPENCODE_CONFIG=~/.config/opencode/grunt.opencode.json opencode
+```
+
+OpenCode merges that file over your normal configuration, so the defaults
+return when you launch without it. Subagents started with the `task` tool
+inherit the session model, and `small_model` covers titles and summaries.
+A project `opencode.json` still overrides both. The [provider docs for this config format](https://docs.dev.opencode.ai/docs/providers/)
 use `provider`, `npm`, and `options`. Newer native configs in the
 [current docs](https://opencode.ai/docs/providers/) use `providers`,
 `package: "@opencode/ai/providers/openai-compatible"`, and `settings` instead.
@@ -1387,7 +1407,8 @@ Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
 }
 ```
 
-Run `pi --provider grunt --model grunt`. See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
+Run `pi --provider grunt --model grunt`. Pi stays supported but has no native
+subagents, so it runs one session at a time. See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
 
 The managed Pi profile uses a 65,536-token working context to compact conversation
 history earlier and reduce repeated input. This local setting does not reduce a
@@ -1399,25 +1420,45 @@ user-adjusted contexts are preserved. For an explicit managed setup/update,
 
 ### Claude Code
 
-Claude Code 2.1.319 uses the Anthropic endpoint:
+Tested with Claude Code 2.1.330. Setup writes `~/.claude/grunt.settings.json`
+(or under `$CLAUDE_CONFIG_DIR`), which Claude Code layers over your own settings
+when you pass `--settings`; your `settings.json` is never edited:
 
-```sh
-ANTHROPIC_BASE_URL=http://127.0.0.1:8788 \
-ANTHROPIC_AUTH_TOKEN=local \
-claude --model grunt
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8788",
+    "ANTHROPIC_AUTH_TOKEN": "local",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "grunt",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "grunt",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "grunt",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "grunt"
+  }
+}
 ```
 
+```sh
+claude --settings ~/.claude/grunt.settings.json --model grunt
+```
+
+The four model variables make every alias a subagent might request (`sonnet`,
+`haiku`, `opus`, or an agent's own setting) resolve to `grunt`, so the `Agent`
+tool's subagents run on grunt. Without them a subagent asks for a Claude model
+grunt does not serve. Launch without `--settings` and Claude Code is unchanged.
+The same variables work exported in your shell. The placeholder token satisfies
+the client; the loopback daemon does not require a provider credential. Claude Code
+prints a harmless `[claude-code:unrecognized_model]` warning for the custom model.
 See [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway).
-The placeholder token satisfies the client; the loopback daemon does not require
-a provider credential. Custom model metadata may produce a context-window warning.
 
 ### Codex
 
-Add to your user `config.toml` (Responses API; tested with Codex 0.167.0):
+Tested with Codex 0.170.0. Setup writes `$CODEX_HOME/grunt.config.toml` (default
+`~/.codex`); your `config.toml` is not edited. Run `codex --profile grunt`:
 
 ```toml
 model = "grunt"
 model_provider = "grunt"
+web_search = "disabled"
 
 [model_providers.grunt]
 name = "grunt"
@@ -1425,7 +1466,14 @@ base_url = "http://127.0.0.1:8788/v1"
 wire_api = "responses"
 ```
 
-Run `codex`. See the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+`web_search = "disabled"` is required: Codex's hosted `web_search` tool is not
+supported through grunt, and the daemon rejects a request that includes it with
+400. Codex's native subagents (`spawn_agent` and its companions) are on by
+default and inherit the session's model, so the profile puts them on grunt too.
+Codex resends the full history each turn (no `previous_response_id`). `codex exec`
+needs stdin redirected, for example `</dev/null`. The same lines work in your
+user `config.toml` if you want grunt as the default. See the
+[official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 ### Codex source
 
