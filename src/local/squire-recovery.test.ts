@@ -156,7 +156,7 @@ it('closes a refused browser without obscuring the refusal reason', async () => 
   const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
     ? { status: 'rejected', session_id: 'refused-tab', reason: 'Provider denied automated signup.' } : {});
   // A refusal drops only this provider; setup goes on to the next one.
-  await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'dropped' }, reason: 'provider refused' });
+  await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'dropped' }, reason: 'provider refused; the page says: Provider denied automated signup.' });
   expect(squire.signupFailureDetail('kilo')).toContain('Provider denied automated signup.');
   expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'refused-tab', outcome: 'none' });
 });

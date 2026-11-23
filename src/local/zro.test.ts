@@ -6,6 +6,8 @@ import { Zro, ZRO_DEEPSEEK, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor, TOKENHARBOR_DEEPSEEK, writeTokenHarborGrant } from './tokenharbor.js';
 import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
 import { Sources } from './source.js';
+import { SourceAvailability } from './source-availability.js';
+import { SourceStatus } from './source-status.js';
 import { createLocalApp } from './api.js';
 import { configure } from './main.js';
 import { bundledRegistry } from '../registry.js';
@@ -15,7 +17,7 @@ import { setupFallbacks } from './fallback-setup.js';
 const directories: string[] = [];
 const grant = { base_url: 'https://grant.test/zro', token: 'synthetic-grant' };
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-zro-')); directories.push(path); return path; }
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 const payload = { model: 'grunt', messages: [{ role: 'user', content: 'hello' }], max_tokens: 1000 };
 const response = (model = ZRO_DEEPSEEK) => Response.json({ model, choices: [{ message: { content: 'Hello' } }], usage: { prompt_tokens: 37, completion_tokens: 2 } });
 
@@ -78,7 +80,7 @@ it('opens Zro in the browser only after the provider rejects the vaulted key, th
   const lines: string[] = [];
   await setup(line => lines.push(line), ['zro'], { squire, directory: path });
   expect(squire.runs.start).toHaveBeenCalledOnce();
-  expect(lines).toContain('zro: saved key rejected (HTTP 403); opening the provider site to capture working access');
+  expect(lines).toContain('zro: no saved key works; opening the provider site to capture working access');
   expect(lines.at(-1)).toBe('zro: connected through Squire grant');
 });
 
@@ -315,4 +317,30 @@ it('passes grouped sharing approval to custom Freebuff and OpenCode browser goal
   const goals = call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => String(args.goal));
   expect(goals).toHaveLength(2);
   for (const goal of goals) expect(goal).toContain('Grunt setup enables this free source by default');
+});
+
+it('admits a Zro chat that answers after six seconds and cancels an unfinished admission on close', async () => {
+  vi.useFakeTimers();
+  const signals: AbortSignal[] = [];
+  const source = new Zro({
+    loadGrant: async () => ({ ...grant, free_account_verified: true, verified_at: new Date().toISOString() }),
+    fetcher: async (_url, init) => new Promise<Response>((resolve, reject) => {
+      const signal = init!.signal as AbortSignal;
+      signals.push(signal);
+      const timer = setTimeout(() => resolve(response()), 6000);
+      signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+    })
+  });
+  const admission = new SourceAvailability(new SourceStatus(['zro']));
+  admission.start([source]);
+  await vi.advanceTimersByTimeAsync(6001);
+  expect(admission.peek('zro')).toBe(true);
+  await admission.close();
+  const next = new SourceAvailability(new SourceStatus(['zro']));
+  next.start([source]);
+  await vi.advanceTimersByTimeAsync(0);
+  await next.close();
+  expect(signals).toHaveLength(2);
+  expect(signals[1].aborted).toBe(true);
+  await source.close();
 });

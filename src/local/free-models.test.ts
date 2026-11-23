@@ -187,7 +187,7 @@ it.each([
   expect(call.mock.calls.filter(([name]) => name === 'operate_drive')).toHaveLength(2);
   expect(call).toHaveBeenCalledWith('operate_finish', { session_id: 'signup', outcome: 'none' });
   expect(addGrant).not.toHaveBeenCalled();
-  expect(notify).toHaveBeenCalledWith('groq: dropped; Squire cannot complete signup automatically: provider refused');
+  expect(notify).toHaveBeenCalledWith(`groq: dropped; Squire cannot complete signup automatically: provider refused${detail ? '; the page says: Provider denied automated account creation.' : ''}`);
 });
 
 it('preserves refusal details from rejected setup runs', async () => {

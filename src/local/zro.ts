@@ -42,6 +42,7 @@ export async function writeZroGrant(grant: FreeApiGrant, location = directory())
 }
 export class Zro implements Source {
   readonly id = 'zro';
+  readonly availabilityTimeoutMs = 30000;
   readonly supportsFunctionTools = true;
   private source: FreeApi;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<ZroGrant> } = {}) {
@@ -49,12 +50,13 @@ export class Zro implements Source {
   }
   private grant() { return (this.options.loadGrant?.() ?? readZroGrant(this.options.directory)).then(validate); }
   // Readiness is a real chat request: Zro still lists models for a paused key.
-  async available() {
+  async available(signal?: AbortSignal) {
     try {
       await this.source.complete({ model: this.id, cwd: this.options.directory ?? directory(), messages: [{ role: 'user', content: 'Reply with one word: ready' }],
-        tools: [], stream: false, maxTokens: 16 }, AbortSignal.timeout(30000));
+        tools: [], stream: false, maxTokens: 16 }, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(this.availabilityTimeoutMs)]));
       return true;
     } catch (error) {
+      signal?.throwIfAborted();
       if (error instanceof SourceError && error.code === 'quota') throw error;
       return false;
     }

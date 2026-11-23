@@ -182,21 +182,24 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
   };
   for (const provider of options.providers ?? ['groq']) {
     if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
-    const find = async () => (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
-    let credential = await find();
-    // A saved key is tried first. The browser runs only when none is saved or
-    // the provider rejects it, so setup never asks a site for a spare key.
-    if (credential) {
-      try {
-        await router.addGrant(provider, await squire.credentials.grant(credential.reference));
-        options.notify(`${provider}: connected through Squire grant`);
-        continue;
-      } catch (error) {
-        const status = rejectedStatus(error);
-        if (!status) throw error;
-        options.notify(`${provider}: saved key rejected (HTTP ${status}); opening the provider site to capture working access`);
+    const matching = async () => (await squire.credentials.list()).filter(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider)).reverse();
+    const connect = async (credentials: Credential[]) => {
+      for (const credential of credentials) {
+        try {
+          await router.addGrant(provider, await squire.credentials.grant(credential.reference));
+          options.notify(`${provider}: connected through Squire grant`);
+          return true;
+        } catch (error) {
+          const status = rejectedStatus(error);
+          if (!status) throw error;
+          options.notify(`${provider}: saved key rejected (HTTP ${status})`);
+        }
       }
-    }
+      return false;
+    };
+    const saved = await matching();
+    if (await connect(saved)) continue;
+    if (saved.length) options.notify(`${provider}: no saved key works; opening the provider site to capture working access`);
     // Preserve the provisioning identity so upgrades do not repeat an existing signup.
     const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
     if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
@@ -212,11 +215,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     if (!['completed', 'failed', 'rejected', 'dropped'].includes(state)) await squire.runs.timeout?.(result.run.id);
     if (state === 'failed' || state === 'rejected') throw setupStopped(`Squire could not provision ${provider}; setup stopped`, reason);
     if (state !== 'completed') { drop(provider, reason); continue; }
-    credential = await find();
-    if (!credential) { drop(provider, 'No provider access was created'); continue; }
-    const grant = await squire.credentials.grant(credential.reference);
-    await router.addGrant(provider, grant);
-    options.notify(`${provider}: connected through Squire grant`);
+    if (!await connect(await matching())) { drop(provider, 'No working provider access was created'); continue; }
   }
   // These sources reuse existing vault access only; missing keys never start signup.
   const approved = options.dataSharingApproved ?? await readDataSharingConsent(dirname(localAdminPath()), savedProviders);
@@ -532,7 +531,7 @@ export class BrowserSquire implements SetupSquire {
     // The last Squire result, so a drop can report Squire's own stop reason.
     let last: ObjectValue | undefined;
     const dropped = async (stop: string): Promise<Run> => {
-      const words = pageWords(last);
+      const words = setupReason(stop === 'provider refused' ? last?.reason : undefined, pageWords(last));
       const reason = words ? `${stop}; the page says: ${words}` : stop;
       this.failures.set(provider, reason);
       if (last) {

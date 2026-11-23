@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
+import { BrowserSquire, FreeLLMAdmin, setup, setupProviders } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { Runcrate } from './runcrate.js';
 import { recordDataSharingConsent } from './data-sharing.js';
@@ -76,7 +76,7 @@ it.each(['runcrate'] as const)('opens %s in the browser only after the provider 
   await expect(setup(line => lines.push(line), [provider], { directory })).resolves.toEqual({});
   expect(events.filter(name => name === 'operate_drive')).toHaveLength(1);
   expect(events.indexOf('grant_app_access')).toBeLessThan(events.indexOf('operate_drive'));
-  expect(lines).toContain(`${provider}: saved key rejected (HTTP 401); opening the provider site to capture working access`);
+  expect(lines).toContain(`${provider}: no saved key works; opening the provider site to capture working access`);
   expect(JSON.parse(await readFile(join(directory, `${provider}.json`), 'utf8'))).toMatchObject({ free_account_verified: true });
 });
 
@@ -166,4 +166,32 @@ it('continues other free setup when native Mistral Vibe onboarding fails', async
     run: vi.fn(), notify: vi.fn(), squire, setupProvider });
   expect(result).toEqual({ unavailable: ['mistral-vibe'] });
   expect(setupProvider).toHaveBeenCalledTimes(2);
+});
+
+it.each(['runcrate', 'zro', 'tokenharbor'] as const)('tries %s vault keys newest first before provisioning and after capture', async provider => {
+  const credentials = ['old', 'working', 'paused'].map(reference => ({ service: provider, reference, field_names: ['api_key'] }));
+  let captured = false;
+  const attempts: string[] = [];
+  const squire = {
+    credentials: { list: async () => credentials, grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference }) },
+    runs: { start: vi.fn(async () => {
+      captured = true;
+      credentials.push({ service: provider, reference: 'captured', field_names: ['api_key'] });
+      return { run: { id: provider, state: 'completed' }, decision: 'silent' as const };
+    }), get: vi.fn() }
+  };
+  let working = true;
+  const router = { addGrant: async (_provider: string, grant: { token: string }) => {
+    attempts.push(grant.token);
+    if (grant.token === 'captured' && captured || grant.token === 'working' && working) return;
+    throw rejected();
+  } };
+  const options = { providers: [provider], reuseSaved: false, notify: () => {} };
+  await setupProviders(squire, router, options);
+  expect(attempts).toEqual(['paused', 'working']);
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  working = false; attempts.length = 0;
+  await setupProviders(squire, router, options);
+  expect(attempts).toEqual(['paused', 'working', 'old', 'captured']);
+  expect(squire.runs.start).toHaveBeenCalledOnce();
 });

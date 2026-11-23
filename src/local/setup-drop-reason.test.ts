@@ -76,3 +76,21 @@ it('names the real Runcrate failure instead of a fixed GitHub-age message', asyn
   expect(lines).toContain('Runcrate free setup incomplete (Squire unavailable); rerun usegrunt setup to resume. Other routes remain available.');
   expect(lines.join('\n')).not.toContain('30 days');
 });
+
+it.each([undefined, { safe_table: [['@e1', 'b', 'Continue']] }])('passes a Squire refusal without requiring an empty DOM', async observation => {
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
+    ? { status: 'rejected', reason: 'Provider denied automated signup.', session_id: 'refused', observation } : {});
+  await expect(squire.signup('runcrate', 'https://runcrate.test', 'Capture access')).rejects.toThrow('Provider denied automated signup.');
+  expect(squire.signupFailure('runcrate')).toContain('Provider denied automated signup.');
+  await squire.close();
+});
+
+it('redacts unsafe Squire refusal reasons before exposing them', async () => {
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
+    ? { status: 'rejected', reason: 'secret is synthetic-sensitive-value', session_id: 'refused' } : {});
+  await expect(squire.signup('runcrate', 'https://runcrate.test', 'Capture access')).rejects.toThrow('provider refused');
+  expect(squire.signupFailure('runcrate')).not.toContain('synthetic-sensitive-value');
+  await squire.close();
+});

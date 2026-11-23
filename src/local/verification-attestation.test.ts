@@ -35,7 +35,7 @@ it.each(['rejected', 'refused'])('keeps a provider %s authoritative even when a 
   const credentials = vi.spyOn(squire.credentials, 'list');
   vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive'
     ? { status, session_id: 'owned-tab', reason: 'Provider denied automated signup' } : {});
-  await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'dropped' }, reason: 'provider refused' });
+  await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'dropped' }, reason: 'provider refused; the page says: Provider denied automated signup' });
   expect(credentials).not.toHaveBeenCalled();
   await squire.close();
 });
