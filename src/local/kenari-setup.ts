@@ -45,7 +45,8 @@ export async function setupKenari(options: {
     if (!squire.signup) throw new Error('Kenari setup requires a browser-capable Trusty Squire');
     signal?.throwIfAborted();
     await squire.signup(id, 'https://kenari.id/login',
-      `Reuse this user's Kenari account with the Google identity already connected to Squire, or create one ordinary free account if none exists. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. No duplicate account, paid plan, top-up, card, or other paid feature. Create at most one Grunt Free key restricted to ${KENARI_FREE_MODEL}, with paid capabilities off. Store it directly in the vault under service kenari and label ${KENARI_STORE.label} with ${KENARI_STORE.api_hosts[0]} as its primary API host. Do not display, return or read the secret.`);
+      `Reuse this user's Kenari account with the Google identity already connected to Squire, or create one ordinary free account if none exists. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. No duplicate account, paid plan, top-up, card, or other paid feature. Create at most one Grunt Free key restricted to ${KENARI_FREE_MODEL}, with paid capabilities off. Store it directly in the vault under service kenari and label ${KENARI_STORE.label} with ${KENARI_STORE.api_hosts[0]} as its primary API host. Do not display, return or read the secret.`,
+      { model: KENARI_FREE_MODEL, key_name: 'grunt' });
     matches = await select();
   }
   if (!matches.length) throw new Error('Kenari needs one unambiguous free-route vault credential');

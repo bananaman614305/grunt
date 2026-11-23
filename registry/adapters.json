@@ -39,7 +39,7 @@
       "install": "builtin:zro",
       "signup": "https://zro.moonmath.ai/overview",
       "model": "deepseek-v4.1-flash",
-      "hints": "On /overview press 'API Keys'. On /api-keys press 'Create key', type grunt in 'Alias', leave 'Spend limit' and 'Expiration date' empty, press 'Create'. The new key is shown once in the dialog; press its 'Copy' button so it is stored, then finish. Never press a 'Revoke' button."
+      "hints": "On /overview press 'API Keys'. On /api-keys press 'Create key', type grunt-YYYYMMDD-HHMM (today's date and time) in 'Alias' so it differs from existing keys, leave 'Spend limit' and 'Expiration date' empty, press 'Create'. The new key is shown once in the dialog; press its 'Copy' button so it is stored, then finish. Never press a 'Revoke' button."
     },
     {
       "id": "tokenharbor",
@@ -153,7 +153,7 @@
       "install": "builtin:kenari",
       "signup": "https://kenari.id/login",
       "model": "ernie-5-5-flash-preview:free",
-      "hints": "On /overview open 'API Keys' (/keys). Press 'Buat API Key' (create), open 'Pengaturan lanjutan' (advanced), choose 'Model tertentu' (specific model) and the model this goal names, type grunt as the name, press the create button. The new key is shown once: press its copy button so it is stored, then finish. Never press 'Ganti key' (rotate) or 'Cabut key' (revoke)."
+      "hints": "On /overview open 'API Keys' (/keys). Press 'Buat API Key' (create), open 'Pengaturan lanjutan' (advanced), choose 'Model tertentu' (specific model), type the model ID this goal names into 'Cari model...' and tick its checkbox, type grunt as the name, press the create button. The new key is shown once: press its copy button so it is stored, then finish. Never press 'Ganti key' (rotate) or 'Cabut key' (revoke)."
     },
     {
       "id": "numes",
