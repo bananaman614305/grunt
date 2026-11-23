@@ -548,7 +548,8 @@ it('passes the operator facts through operate_drive except passwords, and Grunt 
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
   await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
-  expect(object(drives.at(-1)).facts).toEqual({ 'Key Name': 'grunt-squire', 'Card Number': '4242424242424242', key_name: expect.stringMatching(/^grunt-\d{8}-\d{4}$/), plan: 'free', project_name: 'grunt' });
+  const facts = object(object(drives.at(-1)).facts);
+  expect(facts).toEqual({ 'Key Name': 'grunt-squire', 'Card Number': '4242424242424242', key_name: expect.stringMatching(/^grunt-\d{8}-\d{4}$/), plan: 'free', project_name: facts.key_name });
   await squire.close();
 });
 

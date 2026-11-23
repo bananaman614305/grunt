@@ -22,7 +22,7 @@ function drives(squire: BrowserSquire, answer: (args: Record<string, unknown>) =
   return calls;
 }
 
-it('resumes an unsure Zro Alias field with the key_name Grunt supplied, stamped to the minute', async () => {
+it('offers Zro only its stamped key_name as the name, and resumes an unsure Alias field with it', async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date('2026-11-23T14:54:22Z'));
   const squire = new BrowserSquire();
@@ -30,9 +30,9 @@ it('resumes an unsure Zro Alias field with the key_name Grunt supplied, stamped 
     ? { status: 'complete', session_id: 'tab' } : unsure('https://zro.moonmath.ai/api-keys', 'Alias|ph=agent-prod|fm=1', 'kalias_ph_agent_prod_fm_1_t'));
   await expect(squire.runs.start(zroInput)).resolves.toMatchObject({ run: { state: 'completed' } });
   expect(calls).toHaveLength(2);
-  expect(calls[0]!.facts).toEqual({ key_name: 'grunt-20261123-1454', plan: 'free', project_name: 'grunt' });
+  expect(calls[0]!.facts).toEqual({ key_name: 'grunt-20261123-1454', plan: 'free', project_name: 'grunt-20261123-1454' });
   expect(calls[1]).toMatchObject({ session_id: 'tab', answer: 'kalias_ph_agent_prod_fm_1_t',
-    facts: { key_name: 'grunt-20261123-1454', Alias: 'grunt-20261123-1454', plan: 'free', project_name: 'grunt' } });
+    facts: { key_name: 'grunt-20261123-1454', Alias: 'grunt-20261123-1454', plan: 'free', project_name: 'grunt-20261123-1454' } });
   await squire.close();
 });
 
@@ -96,7 +96,7 @@ it.each(['budget', 'evaluate_timeout'].flatMap(status => ['provisioning', 'signu
   for (const start of [0, 3]) {
     expect(calls[start]!.facts).not.toHaveProperty(field);
     expect(calls[start + 1]).toMatchObject({ answer: 'kname', facts: { [field]: expectedName, key_name: expectedName } });
-    expect(calls[start + 2]).toMatchObject({ session_id: 'tab', facts: { [field]: expectedName, key_name: expectedName, plan: 'free', project_name: 'grunt' } });
+    expect(calls[start + 2]).toMatchObject({ session_id: 'tab', facts: { [field]: expectedName, key_name: expectedName, plan: 'free', project_name: expectedName } });
   }
   expect(supplied).toEqual({ key_name: 'grunt', model: 'free-model' });
   await squire.close();
