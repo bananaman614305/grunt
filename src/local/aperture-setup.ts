@@ -3,7 +3,7 @@ import { Aperture, APERTURE_HOST, APERTURE_ID, APERTURE_MODEL } from './aperture
 import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
-export const APERTURE_STORE = { service: APERTURE_ID, label: 'Grunt Free', api_hosts: [APERTURE_HOST], auth_shape: 'bearer' };
+export const APERTURE_STORE = { service: APERTURE_ID, label: 'Grunt Free', api_hosts: [APERTURE_HOST], auth_shape: 'bearer' } as const;
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
 export async function setupAperture({ directory, squire, notify, connect, signal }: {

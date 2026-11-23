@@ -3,7 +3,7 @@ import { Darus, DARUS_HOST, DARUS_MODEL } from './darus.js';
 import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
-export const DARUS_STORE = { service: 'darus', label: 'Grunt Free', api_hosts: [DARUS_HOST], auth_shape: 'bearer' };
+export const DARUS_STORE = { service: 'darus', label: 'Grunt Free', api_hosts: [DARUS_HOST], auth_shape: 'bearer' } as const;
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
 export async function setupDarus({ directory, squire, notify, connect, signal }: {

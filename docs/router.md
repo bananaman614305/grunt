@@ -129,8 +129,8 @@ accepted, with `GRUNT_*` taking precedence.
 
 - **Loop.** `RegistrySync` fetches the registry every `REGISTRY_INTERVAL`
   (6 h, aligned to UTC midnight), keeping the ETag and the newer-publication
-  rule. After each fetch it sends route feedback, reads the registry scores
-  (see [Route feedback](#4-route-feedback)) and starts one acquisition pass. So do the earlier
+  rule. After each fetch it starts the [route feedback exchange](#4-route-feedback)
+  without waiting for it, and starts one acquisition pass. So do the earlier
   recovery triggers: quota, logged-out and not-installed failures. So does a
   route leaving the open set (an observed availability loss, bench, quota hold,
   retirement or bar) when
@@ -188,22 +188,27 @@ checks: that service, the label and API host its shipped source reads, and
 
 ## 4. Route feedback
 
-Each router sends the registry one small report per UTC day after every
-registry sync, on by default: for each listed route, counts of successful
-replies (`ok`), upstream/timeout/refused failures (`failed`), quota failures
+After every registry sync, each router sends today's running totals and any
+retained totals from yesterday, on by default. Acknowledged yesterday totals
+are then discarded. For each listed route with recorded activity, reports contain
+counts of successful replies (`ok`), upstream/timeout/refused failures (`failed`), quota failures
 (`quota`), logged-out/not-installed failures (`auth`), background signup
-outcomes (`signup_ok`, `signup_failed`), the success latency rounded to 100 ms,
-and whether the route is retired. A random install id, kept in
-`registry-install` in the config directory, lets the registry replace a day's
-cumulative totals instead of adding them. Nothing else is sent: no prompts,
-responses, keys, provider error text, model names, paths or hosts. Counters live
-in memory, so a restart loses part of a day.
+outcomes (`signup_ok`, `signup_failed`), the smoothed success latency rounded to
+100 ms, and whether the route is retired. Each report includes the schema and
+client versions and UTC day. A random install id, kept in `registry-install`
+(mode 0600) in the config directory, lets the registry replace a day's cumulative
+totals instead of adding them. Nothing else is sent: no prompts,
+responses, tool data, keys, grants, emails, provider error text, request ids,
+model names, paths, hosts or IPs. Counters live in memory, so a restart loses
+part of a day.
 
 The registry turns the last 14 days into a 0–100 score per route:
 reliability `(S+1)/(S+F+2)` over capped, 3-day-half-life weighted successes and
 failures, times a freshness that halves every 3 days without a success. A route
-with no success in the window scores 0 (`dead`); one with no reports has no
-score (`unknown`). `GET /v1/registry/scores` serves the scores, their states and
+with reports but no success in the window scores 0; one with no reports has no
+score (`unknown`). A reported route is `live` if its last success was fewer
+than three UTC days ago, otherwise `dead`, even if its score is still positive.
+`GET /v1/registry/scores` serves the scores, their states and
 sample counts, and the daemon feeds them into the weighted draw (§2).
 
 ## Operator fixes in this change

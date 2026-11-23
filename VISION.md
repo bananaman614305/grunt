@@ -29,15 +29,16 @@ It does not serve industrial or bulk workloads.
 
 ## The owner curates the source list
 
-The registry lists the adapters that offer free tokens, with a tier and a fixed weight for each.
+The registry lists the adapters that offer free tokens, with a tier and a base weight for each.
 The 0.8.2 curated registry has 22 sources, subject to individual signup, consent and request eligibility. The same registry is offered to every installation. Freebuff and APInex are retired from grunt routing; the person's native Freebuff application is preserved.
-A weight is the chance that an adapter is picked for a new task.
+A weight sets the adapter's base chance in the [routing draw](docs/router.md#2-score-back-off-retirement).
 Stable adapters share 0.8 of the weight and experimental adapters share 0.2.
 The bundled starting pool has three stable adapters in relative proportions 6:8:5: OpenCode at about 0.252632, Kilo at about 0.336842 and Zro at about 0.210526.
 Kilo's model selection and data-sharing terms are documented in the [Kilo reference](docs/reference.md#kilo-free-models).
 Eighteen experimental sources share the remaining 0.2 equally. Each joins after its required data-sharing approval and free-account checks; see the [current provider reference](docs/reference.md#curated-sources-and-explicit-selections). LiveKit uses the free Build plan's included inference allowance with a hard stop, no card and no paid fallback. Pollinations requires a hard zero-budget Quest-only key, a positive unused Quest balance and the fixed vetted community model; BeatAPI uses only its free model without spending welcome credit. Perch requires active Starter access with optional data sharing and both memory switches off. Native local output checks do not hard-cap upstream generation or allowance use.
 Cloudflare Qwen is excluded from this pool by the owner's choice; NVIDIA remains optional while its account verification is unvetted.
-New sources enter by pull request, are tested, and reach people only when the owner publishes the registry.
+Adapters ship through tested releases. Live source-list updates follow the
+[registry publication contract](docs/reference.md#sources-and-app-sessions).
 The registry can only select adapters that grunt already has code for; it cannot add code.
 The daemon refreshes the registry on the [router loop schedule](docs/router.md#3-slow-loop-hot-add-and-scout-mapping) and keeps the last good copy when the gateway is down.
 
@@ -58,7 +59,8 @@ Caller cancellation stops the whole chain.
 The daemon serves the model endpoint on localhost and binds loopback only.
 The harness keeps the agent loop, tools and conversation; grunt answers its model calls.
 Adapters act with the person's own filesystem permissions.
-The gateway serves the published registry; it never receives prompts, files or keys.
+Registry clients never send inference payloads to the gateway. Their
+[route feedback](docs/router.md#4-route-feedback) contains only health metadata.
 API-provider keys stay in the person's vault, and grunt receives scoped, revocable grants instead. Native CLIs keep their credentials in their own private storage; LiveKit signs ten-minute inference-only tokens for grunt to hold in memory.
 No key, token or device secret appears in logs, terminal output or harness config.
 grunt reuses logins the person already holds. Official native CLIs manage their own login files; grunt does not copy their credentials.

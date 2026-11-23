@@ -13,7 +13,7 @@ export interface RouteFeedbackOptions {
   directory: string;
   // Registry endpoints, best first, for example https://api.grunt.run/v1/registry.
   urls: readonly string[];
-  // Routes the current registry lists; the registry rejects any other id.
+  // Routes the current registry lists; the registry drops counts for other ids.
   listed: () => readonly string[];
   retired: (id: string) => boolean;
   client?: string;

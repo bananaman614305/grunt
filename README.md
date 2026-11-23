@@ -30,6 +30,9 @@ Free sources are enabled by default, including services that may retain prompts,
 allow staff review, or use prompts for training. Provider disclosures remain in
 `src/local/data-sharing.ts` and the reference documentation.
 
+Grunt also shares [route health counts](docs/router.md#4-route-feedback) with
+the registry by default to improve routing.
+
 `npx usegrunt add <provider-or-base-URL>` adds a provider. https://grunt.run.
 `grunt-local` is the local-daemon entry point. Older command names remain supported
 for installed users; see the compatibility section in the reference.

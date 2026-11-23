@@ -3,7 +3,7 @@ import { Goedel } from './goedel.js';
 import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
-export const GOEDEL_STORE = { service: 'goedel', label: 'Grunt Free', api_hosts: ['api.goedelmachines.com'], auth_shape: 'bearer' };
+export const GOEDEL_STORE = { service: 'goedel', label: 'Grunt Free', api_hosts: ['api.goedelmachines.com'], auth_shape: 'bearer' } as const;
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface SummaryCredential {
   reference: string;
