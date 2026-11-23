@@ -10,6 +10,7 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
     "ops/adventure-execution/stage.py", "ops/adventure-execution/test_stage.py", "ops/adventure-execution/activate.py", "ops/adventure-execution/test_activate.py",
     "ops/adventure-execution/MAINTENANCE.md", "ops/adventure-execution/stage_maintenance.py", "ops/adventure-execution/test_stage_maintenance.py",
     "ops/adventure-feed/README.md", "ops/adventure-feed/activity.py", "ops/adventure-feed/uptime.py", "ops/adventure-feed/test_activity.py",
+    "ops/adventure-feed/claude_session.py", "ops/adventure-feed/test_claude_session.py",
     "ops/provider-scout/.gitignore", "ops/provider-scout/POLICY.md", "ops/provider-scout/README.md",
     "ops/provider-scout/report.schema.json", "ops/provider-scout/scout.py", "ops/provider-scout/test_scout.py",
     "ops/provider-scout/pipeline.py", "ops/provider-scout/test_pipeline.py",
