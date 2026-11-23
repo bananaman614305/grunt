@@ -101,3 +101,36 @@ it.each(['budget', 'evaluate_timeout'].flatMap(status => ['provisioning', 'signu
   expect(supplied).toEqual({ key_name: 'grunt', model: 'free-model' });
   await squire.close();
 });
+
+const factQuestion = (field: string) => ({
+  ...unsure('https://zro.test/keys', `${field}|fm=1`, 'unused'),
+  options: { key_name: 'Use the supplied key_name', plan: 'Use the plan', project_name: 'Use the project name', none: 'None of these' }
+});
+
+it.each(['Alias', 'Label', 'Name'])('resumes an offered key_name fact for %s once, using this provider\'s fact', async field => {
+  const squire = new BrowserSquire();
+  const calls = drives(squire, args => args.answer === 'key_name' ? { status: 'complete', session_id: 'tab' } : factQuestion(field));
+  await squire.signup('kenari', 'https://kenari.test/keys', 'Create one key.', { key_name: 'Grunt Free' });
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).toMatchObject({ answer: 'key_name', facts: { key_name: 'Grunt Free' }, session_id: 'tab' });
+  await squire.close();
+});
+
+it('does not answer an offered key_name without this provider supplying that fact', async () => {
+  const squire = new BrowserSquire();
+  const calls = drives(squire, () => factQuestion('Alias'));
+  await expect(squire.signup('fikra', 'https://fikra.test/keys', 'Create one key.')).rejects.toThrow('confidence 0.32');
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).not.toHaveProperty('answer');
+  await squire.close();
+});
+
+it('answers a repeated key_name fact question only once across a polling yield', async () => {
+  const squire = new BrowserSquire();
+  let turn = 0;
+  const calls = drives(squire, () => ++turn === 2 ? { status: 'budget', session_id: 'tab' } : factQuestion('Alias'));
+  await expect(squire.runs.start(zroInput)).resolves.toMatchObject({ run: { state: 'running' } });
+  await expect(squire.runs.get('zro')).resolves.toMatchObject({ state: 'dropped' });
+  expect(calls.map(call => call.answer)).toEqual([undefined, 'key_name', undefined]);
+  await squire.close();
+});

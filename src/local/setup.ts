@@ -125,8 +125,8 @@ function redactedText(value: string) {
     .replace(/https?:\/\/\S+/gi, '[link omitted]')
     .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
     .replace(/\b(?:gsk_|nvapi-|sk-|sk_|freellmapi-|ghp_|eyJ)[A-Za-z0-9_+/.=-]+/g, '[redacted]')
-    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)["']?\s*(?::|=|\b(?:is|was|might be)\b)\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;,]+)/gi, '$1[redacted]')
-    .replace(/\b(credential\s+)[^\s;,]*[!0-9_-][^\s;,]*/gi, '$1[redacted]')
+    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)["']?\s*(?::|=|\b(?:is|was|might be)\b|(?=["']))\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;,]+)/gi, '$1[redacted]')
+    .replace(/\b((?:password|passcode|token|secret|(?:api[ _-]?)?key|credential|authorization)\s+)[^\s;,]*[!0-9_-][^\s;,]*/gi, '$1[redacted]')
     .replace(/[A-Za-z0-9_+/=-]{24,}/g, '[redacted]')
     .replace(/\s+/g, ' ').trim();
 }
@@ -659,6 +659,11 @@ export class BrowserSquire implements SetupSquire {
       // An unsure drive on the key's own name field: this provider's key_name
       // belongs there. Name the field's fact and resume on that field.
       const keyName = this.signupFacts.get(provider)?.key_name;
+      if (keyName && result.status === 'low_confidence' && Object.hasOwn(object(result.options), 'key_name') && !usedTerms.has('fact:key_name')) {
+        usedTerms.add('fact:key_name');
+        answer = 'key_name';
+        continue;
+      }
       const observed = object(result.observation);
       const fieldLabel = (row: unknown[]) => String(row[2]).split('|')[0]!.replace(/^@/, '').trim();
       const nameRow = keyName && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
