@@ -28,6 +28,8 @@ export interface RecoveryOptions {
   setup?: typeof setupFallbacks;
   // The synced registry; signup hints follow it.
   registry?: () => Registry;
+  // Each finished background signup, for the registry's route feedback.
+  signedUp?: (id: string, ok: boolean) => void;
 }
 
 // One greedy pass over the registry's recommended routes (docs/router.md): sign
@@ -95,6 +97,7 @@ export class SourceRecovery {
         const outcome = await (this.options.setup ?? setupFallbacks)({
           directory: this.options.directory, adapters: [id], background: true, acquire: true, notify, signal,
           ...(agent ? { agent } : {}), ...(this.options.registry ? { registry: this.options.registry } : {}),
+          ...(this.options.signedUp ? { signedUp: this.options.signedUp } : {}),
           run: async (binary, args, interactive) => {
             if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
             await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal });

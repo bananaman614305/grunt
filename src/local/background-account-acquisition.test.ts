@@ -66,7 +66,8 @@ it.each([
     setup.mock.calls[0]![0]();
     expect(trigger).toHaveBeenCalledTimes(enabled ? 3 : 0);
     daemon.options!.changed!(bundledRegistry);
-    daemon.options!.changed!({ ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() });
+    daemon.options!.changed!({ ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(),
+      adapters: bundledRegistry.adapters.map(adapter => ({ ...adapter, fit: 'great' as const })) });
     expect(unretire).toHaveBeenCalledExactlyOnceWith(bundledRegistry.adapters.map(adapter => adapter.id));
     expect(connect).not.toHaveBeenCalled(); expect(signup).not.toHaveBeenCalled();
   } finally {

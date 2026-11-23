@@ -28,7 +28,8 @@ Before enabling live access, verify all of the following:
 
 The public CI and existing Fly `deploy` workflow are enabled. Backend pushes to
 `main` deploy through GitHub Actions; `workflow_dispatch` also supports an explicit
-run. Site, npm publication and registry workflows remain separately disabled.
+run. Site and npm publication workflows remain separately disabled. Registry
+updates follow the [registry publication contract](reference.md#sources-and-app-sessions).
 Use standard Ubuntu runners for CI, without paid runners or artifact/cache uploads.
 
 The deployment job runs `flyctl secrets sync --app milo-gateway --stage` before

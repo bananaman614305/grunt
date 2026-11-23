@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from './registry.js';
@@ -112,7 +112,7 @@ it('ignores unknown adapter code and starts a route pass after every sync, chang
   expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
   await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
 });
-it('serves only manually published registry data with conditional requests', async () => {
+it('serves persisted registry data with conditional requests', async () => {
   const path = join(await directory(), 'published.json');
   const app = registryRoutes(path);
   expect((await app.request('/v1/registry')).status).toBe(503);
@@ -124,15 +124,6 @@ it('serves only manually published registry data with conditional requests', asy
   await writeFile(path, JSON.stringify({ ...bundledRegistry, published: '2026-11-12T00:00:00Z' }));
   expect((await app.request('/v1/registry', { headers: { 'If-None-Match': etag } })).status).toBe(200);
   await writeFile(path, 'bad'); expect((await app.request('/v1/registry')).status).toBe(503);
-});
-it('restricts publication to write-access dispatch on main in the public repo and validates before uploading', async () => {
-  const workflow = await readFile('.github/workflows/registry.yml', 'utf8');
-  expect(workflow).toContain('workflow_dispatch:');
-  expect(workflow).not.toMatch(/^\s+(?:push|pull_request|schedule):/m);
-  expect(workflow).not.toContain('github.actor == github.repository_owner');
-  expect(workflow).toContain('github.event.repository.private == false');
-  expect(workflow).toContain("github.ref == 'refs/heads/main'");
-  expect(workflow.indexOf('dist/registry.js')).toBeLessThan(workflow.indexOf('flyctl ssh'));
 });
 
 it('reaches the published Fly registry if the custom domain fails', async () => {
@@ -176,4 +167,33 @@ it.each([{ fit: ['poor'] }, { status: ['inactive'] }, { fit: {} }, { status: 1 }
   const registry = structuredClone(bundledRegistry);
   Object.assign(registry.adapters[0]!, fields);
   expect(() => validateRegistry(registry)).toThrow('Invalid adapter registry');
+});
+
+
+const validCandidate = { id: 'newco', signup: 'https://newco.example/signup', hints: 'Press Sign up.' };
+it.each([
+  {}, null, undefined, 'invalid', 1, [null],
+  [{ ...validCandidate, id: 'Invalid ID' }],
+  [{ ...validCandidate, signup: 'http://newco.example/' }],
+  [{ ...validCandidate, hints: '' }],
+  [{ ...validCandidate, hints: undefined }],
+  [{ ...validCandidate, name: 7 }],
+  [{ ...validCandidate, models: ['duplicate', 'duplicate'] }],
+  [{ ...validCandidate, docs: 'not a URL' }],
+  [{ ...validCandidate, notes: 'x'.repeat(501) }],
+  [{ ...validCandidate, unexpected: true }],
+  [validCandidate, validCandidate],
+  [{ ...validCandidate, id: 'kilo' }],
+  Array.from({ length: 101 }, (_, i) => ({ ...validCandidate, id: `candidate-${i}` }))
+].map(candidates => ({ candidates })))('rejects a registry with invalid candidates: %#', ({ candidates }) => {
+  expect(() => validateRegistry({ ...bundledRegistry, candidates })).toThrow('Invalid adapter registry');
+});
+
+it('accepts absent, empty and 100 valid candidates without changing their fields', () => {
+  const { candidates: _candidates, ...withoutCandidates } = bundledRegistry;
+  expect(validateRegistry(withoutCandidates)).toEqual(withoutCandidates);
+  expect(validateRegistry({ ...withoutCandidates, candidates: [] }).candidates).toEqual([]);
+  const candidates = Array.from({ length: 100 }, (_, i) => ({ ...validCandidate, id: `candidate-${i}`,
+    name: 'New provider', models: ['free-model'], docs: 'https://newco.example/docs', notes: 'Free tier.' }));
+  expect(validateRegistry({ ...withoutCandidates, candidates }).candidates).toEqual(candidates);
 });

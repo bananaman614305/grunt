@@ -8,6 +8,7 @@ import { dotsRelay } from "./dots-relay.js";
 import { registryRoutes } from './registry-routes.js';
 import { AdminStore } from './admin/store.js';
 import { adminRoutes } from './admin/routes.js';
+import { RegistryStore } from './registry-store.js';
 import { readFile } from 'node:fs/promises';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -21,6 +22,9 @@ const adminStore = new AdminStore(agent.store.db);
 let adminReady = true;
 try { await adminStore.init(); }
 catch { adminReady = false; console.error('grunt admin storage is unavailable.'); }
+let registryStore: RegistryStore | undefined = new RegistryStore(agent.store.db);
+try { await registryStore.init(); }
+catch { registryStore = undefined; console.error('grunt registry storage is unavailable.'); }
 const adminAssets = async (name: 'index.html' | 'admin.js' | 'admin.css' | 'grunt.svg' | 'favicon.svg') => {
   const icon = name === 'grunt.svg' || name === 'favicon.svg';
   const packaged = new URL(icon ? `./${name}` : `./admin-public/${name}`, import.meta.url);
@@ -30,7 +34,12 @@ const adminAssets = async (name: 'index.html' | 'admin.js' | 'admin.css' | 'grun
     return readFile(new URL(icon ? `../site/${name}` : `../site/admin/${name}`, import.meta.url), 'utf8');
   }
 };
-const app = relay.app.route('/', adminRoutes(adminStore, { ready: adminReady, assets: adminAssets })).route('/', registryRoutes()).route('/', agentRoutes(agent));
+const registry = registryRoutes(registryStore ? { store: registryStore } : {});
+if (registryStore) {
+  try { await registry.initialize(); }
+  catch { console.error('grunt registry initialization is unavailable.'); }
+}
+const app = relay.app.route('/', adminRoutes(adminStore, { ready: adminReady, assets: adminAssets })).route('/', registry).route('/', agentRoutes(agent));
 const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`grunt is listening on port ${port}. Open /chat.`));
 let stopping = false;
 async function stop() {

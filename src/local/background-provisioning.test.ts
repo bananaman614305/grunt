@@ -75,7 +75,7 @@ it('restarts registry downloads independently from serial checks without provisi
   expect(daemon.syncClose).toHaveBeenCalledOnce();
 });
 
-it('starts a route pass after each registry sync and un-retires routes only on a newer publication', async () => {
+it('starts a route pass after each registry sync and un-retires only routes a newer publication changes', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-route-loop-'));
   directories.push(directory);
   daemon.serve.mockReturnValue({ close: daemon.serverClose });
@@ -92,9 +92,15 @@ it('starts a route pass after each registry sync and un-retires routes only on a
     options.changed!(bundledRegistry);
     options.changed!(bundledRegistry);
     expect(unretire).not.toHaveBeenCalled();
-    const newer = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() };
-    options.changed!(newer);
-    expect(unretire).toHaveBeenCalledExactlyOnceWith(bundledRegistry.adapters.map(adapter => adapter.id));
+    const later = (seconds: number, change: (adapter: (typeof bundledRegistry.adapters)[number]) => object) => ({ ...bundledRegistry,
+      published: new Date(Date.parse(bundledRegistry.published) + seconds * 1000).toISOString(),
+      adapters: bundledRegistry.adapters.map(adapter => ({ ...adapter, ...change(adapter) })) });
+    // Rescaled weights alone are not a change to the route.
+    options.changed!(later(1, adapter => ({ weight: adapter.weight * 0.9 })));
+    expect(unretire).toHaveBeenLastCalledWith([]);
+    options.changed!(later(2, adapter => adapter.id === 'zro' ? { hints: 'New hints.' } : {}));
+    expect(unretire).toHaveBeenLastCalledWith(['zro']);
+    expect(unretire).toHaveBeenCalledTimes(2);
   } finally {
     await running.close();
     for (const signal of signals) for (const listener of process.listeners(signal)) {

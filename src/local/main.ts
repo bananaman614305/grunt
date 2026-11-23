@@ -42,8 +42,10 @@ import { Dots } from './dots.js';
 import type { Source } from './source.js';
 import { toolCapable } from './source.js';
 import { bundledRegistry } from '../registry.js';
-import type { Registry } from '../registry.js';
-import { RegistrySync } from './registry.js';
+import type { Adapter, Registry } from '../registry.js';
+import { REGISTRY_URLS, RegistrySync } from './registry.js';
+import { RouteFeedback } from './route-feedback.js';
+import { isDeepStrictEqual } from 'node:util';
 import { configDir } from './wizard.js';
 import { createSourceMaintenance } from './runtime-maintenance.js';
 import { SourceRecovery } from './recovery.js';
@@ -147,6 +149,11 @@ export function start(env = process.env) {
   const runtimeVersion = installedRuntimeVersion();
   const diagnosticReady = DiagnosticsStore.open({ directory, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
   const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
+  // Route health goes to the registry on each sync and its scores weight routing (docs/router.md).
+  const feedback = new RouteFeedback({ directory, urls: env.GRUNT_REGISTRY_URL ? [env.GRUNT_REGISTRY_URL] : REGISTRY_URLS,
+    listed: () => registry.adapters.map(adapter => adapter.id), retired: id => sources.retired(id), ...(runtimeVersion ? { client: runtimeVersion } : {}) });
+  sources.setFeedback((id, outcome, latencyMs) => feedback.record(id, outcome, latencyMs));
+  sources.setRegistryScores(id => feedback.score(id));
 
   // The route the background pass is signing up shows as connecting in status.
   let opening: string | undefined;
@@ -210,6 +217,7 @@ export function start(env = process.env) {
       return signupDriver(port, { routed: drivable.some(Boolean), openCode: (await readDataSharingConsent(directory, ['opencode'])).includes('opencode') });
     },
     opening: id => { opening = id; reconcile(); },
+    signedUp: (id, ok) => feedback.signup(id, ok),
     notify: console.error });
   // Account acquisition is distinct from registry refresh, dispatch and daily
   // access maintenance. Read the explicit operator policy once at startup.
@@ -220,12 +228,18 @@ export function start(env = process.env) {
   let published: string | undefined;
   const sync = new RegistrySync({ directory, ...(env.GRUNT_REGISTRY_URL ? { url: env.GRUNT_REGISTRY_URL } : {}),
     changed: current => {
-      // A newer publication that still lists a retired route gives it a fresh try.
-      if (published !== undefined && Date.parse(current.published) > Date.parse(published)) sources.unretire(current.adapters.map(adapter => adapter.id));
+      // A newer publication that changes a retired route's entry gives it a fresh try.
+      // A weight-only change does not; every write rescales its tier's weights.
+      const same = (adapter: Adapter) => {
+        const previous = registry.adapters.find(item => item.id === adapter.id);
+        return !!previous && isDeepStrictEqual({ ...previous, weight: 0 }, { ...adapter, weight: 0 });
+      };
+      if (published !== undefined && Date.parse(current.published) > Date.parse(published)) sources.unretire(current.adapters.filter(adapter => !same(adapter)).map(adapter => adapter.id));
       published = current.published;
       registry = current;
       sources.adopt(current);
     },
+    exchange: () => feedback.exchange(),
     synced: () => { if (acquireAccounts) recovery.synced(); }, notify: console.error
   });
   const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });

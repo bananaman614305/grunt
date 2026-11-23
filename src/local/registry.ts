@@ -8,7 +8,7 @@ import type { Registry } from '../registry.js';
 // The slow router loop (docs/router.md): re-read the registry, then open routes.
 export const REGISTRY_INTERVAL = 6 * 60 * 60 * 1000;
 // Existing Fly application is retained as a registry mirror until infrastructure is renamed.
-const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
+export const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);
   private etag: string | undefined;
@@ -23,6 +23,8 @@ export class RegistrySync {
     changed?: (registry: Registry) => void;
     // Runs after every refresh, changed or not; the daemon opens routes here.
     synced?: () => void;
+    // Runs after every refresh: route feedback out, liveliness scores in.
+    exchange?: () => Promise<void>;
   }) {}
   get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)); }
   private accepts(registry: Registry) {
@@ -78,6 +80,8 @@ export class RegistrySync {
         this.options.changed?.(registry);
       } else if (!unchanged) throw new Error('Registry unavailable');
     } catch { this.options.notify?.('Registry update unavailable; keeping the last good list'); }
+    // Advisory and never awaited: route opening does not wait on the registry API.
+    if (!this.controller.signal.aborted) void this.options.exchange?.().catch(() => {});
     if (!this.controller.signal.aborted) this.options.synced?.();
   }
   async start() {

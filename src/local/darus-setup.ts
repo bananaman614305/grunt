@@ -3,12 +3,13 @@ import { Darus, DARUS_HOST, DARUS_MODEL } from './darus.js';
 import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
+export const DARUS_STORE = { service: 'darus', label: 'Grunt Free', api_hosts: [DARUS_HOST], auth_shape: 'bearer' } as const;
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
 export async function setupDarus({ directory, squire, notify, connect, signal }: {
   directory: string; squire: Squire; notify(line: string): void; connect?: () => Promise<void>; signal?: AbortSignal; background: boolean;
 }) {
-  const id = 'darus';
+  const id = DARUS_STORE.service;
   if (!(await readDataSharingConsent(directory, [id])).includes(id)) throw new Error('Darus requires current data-sharing approval');
   signal?.throwIfAborted();
   if (await new Darus({ directory }).available()) { notify('Darus: protected daily free route reused'); return; }
@@ -28,7 +29,7 @@ export async function setupDarus({ directory, squire, notify, connect, signal }:
     if (!squire.signup) throw new Error('Darus requires browser-capable Trusty Squire');
     signal?.throwIfAborted();
     await squire.signup(id, `https://${DARUS_HOST}/`,
-      `Reuse this user's existing Darus account and connected identity. If none exists, create one ordinary free account. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed; pause only if Squire cannot complete a required verification. Never skip or forge verification. Do not add a card, pay, top up, choose a paid tier, or create another account. Verify the daily Free tier has minBalance 0 and a 10 million token allowance. In dashboard AI turn Simpan Saldo / Protect Balance ON, so exhaustion stops rather than drawing wallet credit; never disable it. Use only ${DARUS_MODEL}. Reuse or create one key named Grunt Free and capture directly into Squire service darus, label Grunt Free, auth_shape bearer, api_hosts ["${DARUS_HOST}"]. Never show its value. Stop if access needs payment, SMS, Discord or Telegram verification. Do not perform check-in, referral or wallet reward actions.`);
+      `Reuse this user's existing Darus account and connected identity. If none exists, create one ordinary free account. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed; pause only if Squire cannot complete a required verification. Never skip or forge verification. Do not add a card, pay, top up, choose a paid tier, or create another account. Verify the daily Free tier has minBalance 0 and a 10 million token allowance. In dashboard AI turn Simpan Saldo / Protect Balance ON, so exhaustion stops rather than drawing wallet credit; never disable it. Use only ${DARUS_MODEL}. Reuse or create one key named Grunt Free and capture directly into Squire service darus, label ${DARUS_STORE.label}, auth_shape bearer, api_hosts ["${DARUS_HOST}"]. Never show its value. Stop if access needs payment, SMS, Discord or Telegram verification. Do not perform check-in, referral or wallet reward actions.`);
     matches = await select();
   }
   if (!matches.length) throw new Error('Darus requires one unambiguous scoped free API key');

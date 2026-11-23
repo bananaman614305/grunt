@@ -75,12 +75,13 @@ export async function setupFallbacks(options: {
   dataSharingApproved?: readonly string[];
   // The synced registry; signup hints follow it.
   registry?: () => Registry;
+  signedUp?: (id: string, ok: boolean) => void;
   onSettled?: (id: string, available: boolean, reason?: string) => void | Promise<void>;
   onStarted?: (id: string) => void;
   // Fallback operator for an owned background browser (the router's driver).
   agent?: SignupAgent;
 }) {
-  const squire = options.squire ?? new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}), ...(options.registry ? { registry: options.registry } : {}) });
+  const squire = options.squire ?? new BrowserSquire({ ...(options.signedUp ? { signedUp: options.signedUp } : {}), ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: options.dataSharingApproved ?? [], ...(options.agent ? { agent: options.agent } : {}), ...(options.registry ? { registry: options.registry } : {}) });
   if (options.registry && options.squire instanceof BrowserSquire) options.squire.useRegistry(options.registry);
   const owned = squire instanceof BrowserSquire && !options.squire;
   const reuseOnly = options.background === true && options.acquire !== true;

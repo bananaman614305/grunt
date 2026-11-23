@@ -95,7 +95,11 @@ accepted, with `GRUNT_*` taking precedence.
 
 - **Score.** Each success or failure updates the route's reliability, latency
   and failure cost in `SourceStatus`, and this persists in routing history.
-  The weighted draw uses `registry weight × routingWeight` (existing code).
+  The weighted draw uses `registry weight × routingWeight × registry score
+  factor`. The factor comes from the registry's liveliness score for the route
+  (`GET /v1/registry/scores`, read after each registry sync): `0.5 + score/100`,
+  so 0.5 at score 0, 1 at 50 and 1.5 at 100. A route with no score keeps
+  factor 1.
 - **Back-off.** Upstream failures, timeouts and refusals normally bench the
   route for 15 minutes. Each identical repeat within 6 hours doubles that
   delay, up to 2 hours. An invalid function-call response starts at 30 seconds
@@ -116,7 +120,8 @@ accepted, with `GRUNT_*` taking precedence.
 - **Return.** Three things bring a retired route back:
   - a successful reply, which includes the daily access check (that check
     probes the source directly);
-  - a newer registry publication that still lists it;
+  - a newer registry publication that changes its entry (a weight-only change
+    does not count, because every registry write rescales its tier);
   - a restart more than 6 hours after its last failure, because history keeps
     back-offs for 6 hours.
 
@@ -124,7 +129,8 @@ accepted, with `GRUNT_*` taking precedence.
 
 - **Loop.** `RegistrySync` fetches the registry every `REGISTRY_INTERVAL`
   (6 h, aligned to UTC midnight), keeping the ETag and the newer-publication
-  rule. After each fetch it starts one acquisition pass. So do the earlier
+  rule. After each fetch it starts the [route feedback exchange](#4-route-feedback)
+  without waiting for it, and starts one acquisition pass. So do the earlier
   recovery triggers: quota, logged-out and not-installed failures. So does a
   route leaving the open set (an observed availability loss, bench, quota hold,
   retirement or bar) when
@@ -142,8 +148,9 @@ accepted, with `GRUNT_*` taking precedence.
   becomes a routable source at once, with no restart. A manual `GRUNT_SOURCES`
   list stays fixed.
 - **Scout to registry.** The daemon never reads the scout's sheet. The scout,
-  or a small publish step, writes three optional fields per adapter into
-  `registry/adapters.json`, then publishes as today:
+  or a bot following `GET /v1/registry/instructions`, writes three optional
+  fields per adapter through the registry API (`PUT /v1/registry/entries/{id}`;
+  see [reference](reference.md#sources-and-app-sessions)):
 
 | Scout column | Registry field | Effect in the daemon |
 |---|---|---|
@@ -152,12 +159,13 @@ accepted, with `GRUNT_*` taking precedence.
 | Expiry date | `expires: "YYYY-MM-DD"` | After that UTC day, the route counts as Inactive. |
 
 An offering with no Grunt adapter is a "needs adapter" signal for the scout's
-release pipeline (`ops/provider-scout`). Adapters still ship by release. The
-router ignores registry ids that no shipped adapter matches, so the daemon
+release pipeline (`ops/provider-scout`). It is written to the registry's
+`candidates` list, which every client ignores. Adapters still ship by release.
+The router ignores registry ids that no shipped adapter matches, so the daemon
 skips them.
 
-Two more optional adapter fields raise the chance that Squire's drive finishes a
-signup alone. They are an add-on: the signup driver model stays the fallback.
+One more optional adapter field raises the chance that Squire's drive finishes a
+signup alone. It is an add-on: the signup driver model stays the fallback.
 
 - `hints` (up to 2000 characters): what the user sees on the provider's signup
   pages, the controls to press and the Grunt-supplied values to type (`grunt`,
@@ -166,16 +174,42 @@ signup alone. They are an add-on: the signup driver model stays the fallback.
   updates them for every user without a release. Grunt places them in the
   `operate_drive` goal before the shared safety rules (data sharing, no paid
   plan, terms), which stay last. If the full goal would exceed the drive's
-  4000-character limit, the hints are dropped for that call.
-- `capture` (`service`, optional `label`, `api_hosts`, `auth_shape`): passed as
-  `operate_drive`'s `store`, so the drive saves a key it reveals straight into
-  the vault. Without `store`, only a fallback operator's `operate_extract` can
-  capture it. Capture is read only from the registry shipped with Grunt: a
-  synced publication cannot add or change it. It is used only when its
-  `service` is the vault service that signup checks.
+  4000-character limit, the hints are dropped for that call. A registry write
+  that has a `signup` must include `hints`.
 
-Both match an entry by id, or by the entry's `signup` host when a setup
+Hints match an entry by id, or by the entry's `signup` host when a setup
 drives under a different vault service name.
+
+Squire's `operate_drive` `store` (where the drive saves a key it reveals) never
+comes from the registry. Grunt derives it from the vault service the signup
+checks: that service, the label and API host its shipped source reads, and
+`auth_shape` `bearer`. Without `store`, only a fallback operator's
+`operate_extract` can capture the key.
+
+## 4. Route feedback
+
+After every registry sync, each router sends today's running totals and any
+retained totals from yesterday, on by default. Acknowledged yesterday totals
+are then discarded. For each listed route with recorded activity, reports contain
+counts of successful replies (`ok`), upstream/timeout/refused failures (`failed`), quota failures
+(`quota`), logged-out/not-installed failures (`auth`), background signup
+outcomes (`signup_ok`, `signup_failed`), the smoothed success latency rounded to
+100 ms, and whether the route is retired. Each report includes the schema and
+client versions and UTC day. A random install id, kept in `registry-install`
+(mode 0600) in the config directory, lets the registry replace a day's cumulative
+totals instead of adding them. Nothing else is sent: no prompts,
+responses, tool data, keys, grants, emails, provider error text, request ids,
+model names, paths, hosts or IPs. Counters live in memory, so a restart loses
+part of a day.
+
+The registry turns the last 14 days into a 0–100 score per route:
+reliability `(S+1)/(S+F+2)` over capped, 3-day-half-life weighted successes and
+failures, times a freshness that halves every 3 days without a success. A route
+with reports but no success in the window scores 0; one with no reports has no
+score (`unknown`). A reported route is `live` if its last success was fewer
+than three UTC days ago, otherwise `dead`, even if its score is still positive.
+`GET /v1/registry/scores` serves the scores, their states and
+sample counts, and the daemon feeds them into the weighted draw (§2).
 
 ## Operator fixes in this change
 

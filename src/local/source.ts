@@ -178,6 +178,9 @@ export class Sources {
   add(source: Source) { this.sources.push(source); }
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; this.observation.setDiagnostics(store); }
   setRoutingHistory(store: RoutingHistory) { return this.observation.setRoutingHistory(store); }
+  setFeedback(feedback: Parameters<SourceStatus['setFeedback']>[0]) { this.observation.setFeedback(feedback); }
+  // The registry's liveliness scores weight the routers' draw (docs/router.md).
+  setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.workerRouter]) router?.useRegistryScores(score); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
   diagnosticStore() { return this.diagnostics; }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }

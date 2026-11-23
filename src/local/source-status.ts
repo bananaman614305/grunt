@@ -67,7 +67,13 @@ export class SourceStatus {
   private diagnostics: DiagnosticsStore | undefined;
   private history: RoutingHistory | undefined;
   private backoffs = new Map<string, RoutingBackoff>();
+  private feedback: ((id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) => void) | undefined;
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
+  // Counts each settled reply for the registry's route feedback.
+  setFeedback(feedback: (id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) => void) { this.feedback = feedback; }
+  private report(id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) {
+    try { this.feedback?.(id, outcome, latencyMs); } catch { /* Feedback must never affect routing. */ }
+  }
   constructor(ids: readonly string[], private now: () => number = Date.now, private routes?: { open: (id: string) => boolean; dropped: (id: string) => void }) {
     for (const id of ids) this.observations.set(id, { state: 'unknown', active: 0, revision: 0 });
   }
@@ -338,6 +344,7 @@ export class SourceStatus {
         entry.available = true; entry.availabilityCheckedAt = this.now();
         delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
         if (guard) guard.acceptedRevision = entry.revision;
+        this.report(source.id, 'ok', this.now() - started);
         await this.performance(source.id, true, this.now() - started, request);
       }
       return result;
@@ -347,6 +354,7 @@ export class SourceStatus {
         const retry = error && typeof error === 'object' && 'retryAfter' in error ? error.retryAfter : undefined;
         this.failed(source.id, code, typeof retry === 'number' ? retry : undefined);
         if (guard) guard.acceptedRevision = entry.revision;
+        this.report(source.id, code);
         if (code !== 'quota') await this.performance(source.id, false, this.now() - started, request);
       }
       throw error;

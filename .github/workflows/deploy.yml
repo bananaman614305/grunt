@@ -34,3 +34,5 @@ jobs:
         run: flyctl secrets sync --app milo-gateway --stage
       - name: Deploy the tested image
         run: flyctl deploy --app milo-gateway --ha=false --image "$IMAGE"
+      - name: Prove the deployed registry is served
+        run: curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors --output /dev/null https://milo-gateway.fly.dev/v1/registry

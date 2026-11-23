@@ -10,6 +10,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, QuotaWindow, Source } from './source.js';
 
+export const TOKENHARBOR_STORE = { service: 'tokenharbor', label: 'grunt', api_hosts: ['tokenharbor.ai'], auth_shape: 'bearer' };
 export const TOKENHARBOR_DEEPSEEK = 'deepseek-v4.1-flash:free';
 const directory = () => configRoot();
 const MAX_WINDOW_MS = 31 * 86400000;

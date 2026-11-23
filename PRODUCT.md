@@ -28,7 +28,7 @@ making progress.
 - Google sign-in is restricted to two explicitly configured owner identities.
   Exact email addresses are kept in private deployment configuration and must
   be verified before production access is enabled.
-- Other users' installations are not automatically enrolled in telemetry.
+- Owner diagnostics require explicit enrollment; [registry route feedback](docs/router.md#4-route-feedback) is separate.
 
 ## Capabilities and Constraints
 

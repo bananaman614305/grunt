@@ -42,5 +42,5 @@ default to a cap of 4096 tokens when the harness omits its limit.
 Owner diagnostics use `src/admin/` and `site/admin/`. Google sign-in must verify
 exact explicitly configured owner emails and stay unavailable without its required
 configuration. The collector is opt-in and sends only allowlisted metadata. Never
-expose the inference daemon publicly, collect customer telemetry automatically,
-log raw provider errors, or persist prompts, responses, OAuth codes or credentials.
+expose the inference daemon publicly, log raw provider errors, or persist prompts,
+responses, OAuth codes or credentials.

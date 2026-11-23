@@ -139,8 +139,8 @@ The current gateway registry release uses two persisted Machine file overlays,
 `/app/dist/registry.js` and `/app/dist/registry/adapters.json`, on the existing
 `dc5e3347e62c112f9f757709d3155eabad25d5e7` image. The next full image deployment
 must include the updated registry validator and remove these two overlays from
-the Machine configuration, or they can mask newer files in that image. Publish
-the on-volume registry separately after validating the deployed code.
+the Machine configuration, or they can mask newer files in that image. For
+registry updates, follow the [publication contract](#sources-and-app-sessions).
 
 This replaces the former OpenAI-compatible gateway. The old `/v1/*` routes are
 removed. There is no Jev, billing, roster service, worker tooling or monorepo.
@@ -1484,14 +1484,43 @@ git repository, only task text and output are sent. If the next adapter is
 Gödel Machines, it receives the approved request payload without generated
 handoff context.
 
-The owner curates `registry/adapters.json` and publishes it manually using
-authorized Fly access. Validate the registry, upload it atomically to the
-gateway volume, and check `GET /v1/registry`. CI does not publish the registry.
-Ordinary code deployments do not publish registry edits.
+The live registry is written through the gateway's registry API. Any GitHub
+account with push access to `bananaman614305/grunt` (`GRUNT_REGISTRY_REPO`) may
+write, using its own GitHub token as `Authorization: Bearer <token>`; a person
+can use `gh auth token`, and a bot a token from its secret store. The server reads
+only `/user` and the repository's `permissions.push` with that token and never
+stores it. `PUT /v1/registry/entries/{id}` adds or replaces one entry and
+`DELETE /v1/registry/entries/{id}` removes one. A shipped adapter id, or an entry
+whose `install` is `npm:<package>`, goes in `adapters`; any other id goes in a
+top-level `candidates` list of providers awaiting an adapter, which every client
+ignores. The server validates the whole next document with `validateRegistry`,
+requires `hints` on any written entry with a `signup`, rescales tier weights,
+stamps a strictly newer `published` and swaps `/data/registry.json` atomically, so
+an entry and its hints publish together. Invalid writes return 422 with
+`{"errors": [{"field": "...", "rule": "..."}]}`. A write rebases on the bundled list when the
+published file is missing or invalid. `registry_writes` in the gateway database
+records each write's GitHub login and the whole registry before and after.
+The response includes the history row number as `write`. To revert, send an
+authenticated `PUT /v1/registry/reverts/{write}` with no body. It restores that
+write's `before_json` document through the same commit path, preserving every
+entry and weight exactly while advancing `published`, and records a new history
+row. A revert also replaces intervening edits; inspect the live registry first.
+`GET /v1/registry/instructions` is a Markdown guide for agents, generated on
+each request from the validator's constants and the live registry and scores,
+with a worklist of entries that need attention. `POST /v1/registry/feedback`
+and `GET /v1/registry/scores` carry [route feedback](router.md#4-route-feedback).
+Every deployment checks that `GET /v1/registry` returns 200.
 Before the first valid registry is published the endpoint returns HTTP 503. Published data
 survives deploys and has an ETag. Stable weights total (0.8) and experimental
 weights total (0.2) when both tiers are present. Unknown adapter identifiers
-are ignored locally and cannot install new code.
+are ignored locally and cannot install new code. `registry/adapters.json` is the
+list bundled with each release.
+
+On startup, a missing registry file is seeded from the bundled registry through
+that same serialized, validated and audited commit path, with a publication
+newer than the bundle. An existing file is preserved, including an invalid file
+that needs repair through a writer's PUT. The former registry publication
+workflow has been removed; ongoing updates use the write API.
 
 The daemon synchronizes on startup and on the
 [router loop schedule](router.md#3-slow-loop-hot-add-and-scout-mapping) with
@@ -1517,8 +1546,8 @@ from leaving a permanent exclusion; normal cleanup removes only that session's
 lease. This foreground gate is separate from routine background preparation;
 background checks do not themselves block an already-bound healthy route.
 Removing a registry entry disables it without uninstalling its files. `GRUNT_CONFIG_DIR` and
-`GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the sync
-endpoint for local development.
+`GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the sync,
+feedback and scores endpoint for local development.
 
 Explicit `GRUNT_SOURCES` configurations containing legacy sources such as Dots,
 Codex or FreeLLMAPI retain their existing ordered behavior. They are outside the

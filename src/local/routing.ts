@@ -33,6 +33,12 @@ export function recommendedAdapters(registry: Registry, now = Date.now()) {
     .sort((a, b) => rank(a) - rank(b) || b.weight - a.weight);
 }
 
+// Registry feedback scales a route's draw from 0.5x (score 0) to 1.5x (score
+// 100); a route without a score keeps its weight.
+export function registryScoreFactor(score: number | null | undefined) {
+  return typeof score === 'number' && Number.isFinite(score) ? 0.5 + Math.max(0, Math.min(100, score)) / 100 : 1;
+}
+
 export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; dropped?: (source: string) => void }
 interface Task {
   source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean;
@@ -48,11 +54,13 @@ export class StickyRouter {
   private observation: SourceStatus;
   private availability: SourceAvailability;
   private shutdown = new AbortController();
+  private registryScore: ((id: string) => number | null | undefined) | undefined;
   constructor(private sources: Source[], private options: RoutingOptions) {
     this.observation = options.observation ?? new SourceStatus(sources.map(source => source.id), options.now);
     this.availability = new SourceAvailability(this.observation);
   }
   private now() { return (this.options.now ?? Date.now)(); }
+  useRegistryScores(score: (id: string) => number | null | undefined) { this.registryScore = score; }
   retired(id: string) {
     const backoff = this.observation.routingBackoff(id);
     return !!backoff && backoff.streak >= RETIRE_AFTER_FAILURES;
@@ -239,7 +247,7 @@ export class StickyRouter {
             continue;
           }
           const available = this.availability.peek(source.id);
-          if (source.id === task.source || available === true) eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, !!worker, workload) });
+          if (source.id === task.source || available === true) eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, !!worker, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
           else if (available === undefined) unknown.push(source);
           else {
             // This live allowance check can discover a reset the router did not know at entry.
