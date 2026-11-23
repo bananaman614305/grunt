@@ -119,7 +119,7 @@ it('defers a fresh check while any coding request is active', async () => {
   } finally { finish({ text: 'other completed' }); await busy; }
 });
 
-it.each(['pending', 'verifying', 'approvals'] as const)('defers foreground %s without touching a source', async state => {
+it.each(['pending', 'verifying'] as const)('defers foreground %s without touching a source', async state => {
   const source = fake(), sources = new Sources([source]); sources[state].add('kilo');
   expect(await sources.check('kilo', signal())).toEqual({ outcome: 'deferred', code: 'foreground' });
   expect(source.complete).not.toHaveBeenCalled(); expect(source.available).not.toHaveBeenCalled();

@@ -21,10 +21,10 @@ import { configurePi, connectHarness, detectHarnesses, HARNESSES, listFreeModels
 import type { Harness } from './harnesses.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { beginSetupSession } from './setup-session.js';
-import { startSetupDashboard, watchSetupDashboard } from './setup-dashboard.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { SetupTable } from './setup-table.js';
-import { setupAttention, setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
+import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
+import { fetchStatus } from './dashboard.js';
 import { select, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
 
@@ -376,7 +376,7 @@ export async function chooseSetupHarness(): Promise<Harness | undefined> {
     options: [
       ...installed.map(tool => ({ value: tool.id as string, label: tool.name })),
       ...(missingPi ? [{ value: 'install-pi', label: 'Install Pi' }] : []),
-      { value: 'jev', label: 'Use Squire with human handoff' }
+      { value: 'jev', label: 'Use Squire alone' }
     ]
   }));
   if (isCancel(selected)) throw new Error('Setup cancelled');
@@ -409,6 +409,27 @@ export async function probeSetupOperator(port: number, source: string, signal: A
   if (calls?.length === 1 && calls[0]?.function?.name === 'setup_ready' && /^\{\s*\}$/.test(calls[0].function.arguments ?? '')) return true;
   throw new OperatorProbeFailure(calls?.length ? 'model made the wrong tool call' : 'model answered without a tool call');
 }
+// One real completion through model grunt: the router picks the route, as it
+// will for the person's own requests. Fixed outcomes; model text is never copied.
+export async function smokeTest(port: number, signal: AbortSignal) {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-smoke-'));
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+      body: JSON.stringify({ model: 'grunt', cwd: directory, stream: false, max_tokens: 256,
+        messages: [{ role: 'user', content: `Reply only: grunt is ready. Do not use tools or change files. Check ${randomUUID()}.` }] })
+    });
+    if (response.status === 429) throw new Error('quota exhausted');
+    if (!response.ok) throw new Error(`grunt returned HTTP ${response.status}`);
+    const result = await response.json().catch(() => ({})) as { choices?: { message?: { content?: string } }[] };
+    if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('grunt printed no answer');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+// The daemon re-reads the setup session on every request. One status read after
+// setup releases it starts the daemon's route pass for the remaining signups.
+export async function resumeBackground(port: number) {
+  await fetchStatus({ port }).catch(() => {});
+}
 type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness; table?: SetupTable };
 type HarnessPlan = (() => Promise<Harness[]>) & { discoverLater?: true };
 export async function prepareHarnesses(port: number, options: HarnessOptions = {}): Promise<HarnessPlan> {
@@ -433,8 +454,8 @@ export async function prepareHarnesses(port: number, options: HarnessOptions = {
 export async function connectHarnesses(port: number, options: HarnessOptions = {}) {
   return (await prepareHarnesses(port, options))();
 }
-const wizardActions = { probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing, startDashboard: startSetupDashboard, watchDashboard: watchSetupDashboard };
-type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'listFreeModels' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing' | 'startDashboard' | 'watchDashboard';
+const wizardActions = { smokeTest, resumeBackground, probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing };
+type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'listFreeModels' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add === '') throw new Error('Specify a provider name or base URL');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
@@ -458,7 +479,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const revised = !add && Boolean(actions.chooseHarness);
     if (revised) squire?.useBatchSignup();
     const harness = revised ? await actions.chooseHarness?.() : undefined;
-    if (revised) console.log(harness ? `✓ harness: ${harness.id}` : '… harness: Squire with human handoff');
+    // Keys pressed from here on are ignored rather than echoed into the output.
+    table.captureKeys();
+    if (revised) console.log(harness ? `✓ harness: ${harness.id}` : '… harness: Squire alone');
     const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     const { registry } = !add && actions.loadRegistry ? await actions.loadRegistry() : { registry: bundledRegistry };
     squire?.useRegistry?.(() => registry);
@@ -520,9 +543,24 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       finally { const next = queuedChecks.shift(); if (next) next(); else activeChecks--; }
     };
     const settled = new Map<string, Promise<void>>();
-    const failedReasons = new Map<string, string>();
     let firstReady: Promise<unknown> | undefined;
     let readyCount = 0;
+    // Foreground setup ends at the first ready route that also answers a real
+    // request through model grunt. The daemon's route pass opens the rest.
+    let smoked = false, passes = 0, smokedAt = 0;
+    const smoke = async () => {
+      if (smoked || !readyCount || passes <= smokedAt) return smoked;
+      smokedAt = passes;
+      try {
+        await actions.smokeTest(port, session!.signal);
+        smoked = true;
+        table.step('✓ smoke test: grunt answered');
+      } catch (error) {
+        session!.signal.throwIfAborted();
+        table.step(`… smoke test: ${setupFailureReason(error)}; continuing setup`);
+      }
+      return smoked;
+    };
     const onSettled = (id: string, available: boolean, reason?: string): Promise<void> => {
       if (!ids.includes(id)) return Promise.reject(new Error('Unexpected provider setup result'));
       const existing = settled.get(id);
@@ -544,6 +582,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (passed) {
           await session!.release(id);
           readyCount++;
+          passes++;
           table.set('source', id, '✓ ready');
           if (!revised) {
             firstReady ??= applyHarnesses();
@@ -553,9 +592,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           if (!unavailable.includes(id)) unavailable.push(id);
           await session!.hold(id);
           const why = reason ?? (available ? 'key test failed' : 'setup failed');
-          failedReasons.set(id, why);
-          const attention = revised && setupAttention(why);
-          table.set('source', id, attention ? `needs you (${attention})` : `skipped (${why})`);
+          table.set('source', id, `skipped (${why})`);
         }
       })();
       settled.set(id, task);
@@ -572,7 +609,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     };
     if (!revised) { table.start(); await provision(ids); }
     else {
-      const ordered = ['kilo', 'pollinations', 'beatapi', 'zro', 'tokenharbor', 'runcrate', ...ids];
+      // Anonymous OpenCode first: it needs no signup, so its row shows what the
+      // free-model check already knows. In this loop Kilo is an account signup.
+      const ordered = ['opencode', 'kilo', 'pollinations', 'beatapi', 'zro', 'tokenharbor', 'runcrate', ...ids];
       const remaining = [...new Set(ordered)].filter(id => ids.includes(id));
       let driving = false;
       // Anonymous OpenCode drives only until an account route can: it bypasses
@@ -580,6 +619,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       let anonymousDriver = false;
       let operator: string | undefined;
       let operatorFailure: string | undefined;
+      let harnessReady = false;
       const deferred: string[] = [];
       const configure = () => (actions.connectHarness ?? connectHarness)(harness!, port,
         (binary, args, env) => runHarness(binary, args, env, 45000, { signal: session!.signal }));
@@ -636,6 +676,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         }
         try {
           await configure();
+          harnessReady = true;
           useOperator();
         } catch (error) {
           session!.signal.throwIfAborted();
@@ -651,8 +692,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       if (ids.includes('kilo') && !skipAnonymous) {
         table.set('source', 'kilo', 'connecting');
         await onSettled('kilo', true);
-        driving = await activate('kilo', false);
-        if (!unavailable.includes('kilo') && (driving || !harness)) remaining.shift();
+        const anonymousKilo = () => { remaining.splice(remaining.indexOf('kilo'), 1); };
+        if (!unavailable.includes('kilo') && await smoke()) anonymousKilo();
+        else if (!unavailable.includes('kilo') && ((driving = await activate('kilo', false)) || !harness)) anonymousKilo();
         else {
           settled.delete('kilo');
           table.set('source', 'kilo', 'waiting');
@@ -663,10 +705,10 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
           await session.useKiloAccount();
         }
       }
-      if (!driving && await freeDriver()) useFree();
-      if (!driving && harness) console.log(skipAnonymous ? `– operator: anonymous Kilo off (GRUNT_SETUP_NO_ANONYMOUS=1); using Squire`
+      if (!smoked && !driving && await freeDriver()) useFree();
+      if (!smoked && !driving && harness) console.log(skipAnonymous ? `– operator: anonymous Kilo off (GRUNT_SETUP_NO_ANONYMOUS=1); using Squire`
         : '… operator: no working anonymous model; using Squire');
-      if (remaining.length) {
+      if (!smoked && remaining.length) {
         try {
           const state = await connectState();
           console.log(state === 'installed' ? '✓ Trusty Squire: installed and signed in' : '✓ Trusty Squire: already set up and signed in, skipped');
@@ -684,42 +726,57 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
         if (await freeDriver()) { table.step(`… operator: ${failure}; using ${freeLabel} (free)`); useFree(); }
         else table.step(`… operator: ${failure}; using Squire`);
       };
-      // With a harness, a Jev-only bootstrap tries every provider before it
-      // hands a browser to the person; the second pass allows that handoff.
-      const retryable = new Set(['browser could not continue', 'needs human verification']);
-      if (harness) squire?.deferHandoff?.(true);
       for (const id of remaining) {
+        if (smoked) break;
         await checkOperator();
         if (!driving && harness && id !== 'opencode') table.step(`… bootstrap: ${id} via Squire`);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
         if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeDriver()) useFree();
+        if (await smoke()) break;
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
-        if (harness && (operatorFailure || (!driving && retryable.has(failedReasons.get(id) ?? '')))) {
+        // The operator stopped mid-signup: retry this one with the next driver.
+        if (harness && operatorFailure) {
           deferred.push(id);
           table.set('source', id, 'waiting (retry)');
         }
       }
-      squire?.deferHandoff?.(false);
       for (const id of deferred) {
+        if (smoked) break;
         await checkOperator();
         settled.delete(id);
-        failedReasons.delete(id);
         const failed = unavailable.indexOf(id);
         if (failed !== -1) unavailable.splice(failed, 1);
         table.set('source', id, 'connecting');
         await provision([id], id === 'kilo');
         if (!driving && id === 'opencode' && !unavailable.includes(id) && await freeDriver()) useFree();
+        if (await smoke()) break;
         if ((!driving || anonymousDriver) && id !== 'opencode') driving = await activate(id, true) || driving;
+      }
+      // Setup ended before a route drove signups: point the chosen coding tool at grunt now.
+      if (smoked && harness && !harnessReady) {
+        try { await configure(); table.step(`✓ ${harness.id}: uses grunt`); }
+        catch (error) {
+          session.signal.throwIfAborted();
+          table.step(`… ${harness.id} setup failed: ${setupFailureReason(error)}; rerun usegrunt setup`);
+        }
       }
     }
     await Promise.all(settled.values());
     session.signal.throwIfAborted();
     if (!readyCount) throw new Error('No adapters passed verification. Run usegrunt setup to resume.');
+    if (revised && !smoked) throw new Error('Grunt did not answer a request through model grunt. Run usegrunt status, then usegrunt setup to resume.');
     if (plan?.discoverLater && actions.connectHarnesses) await actions.connectHarnesses(port, { table });
+    // Sources setup did not reach, or left for a retry, continue in the daemon's route pass.
+    const background = [...new Set([...ids.filter(id => !settled.has(id)), ...table.rowsWith('waiting (retry)')])];
+    for (const id of background) table.set('source', id, 'background');
     table.finish();
-    const needsYou = table.rowsWith('needs you');
-    console.log(`${readyCount} ready${needsYou.length ? `; needs you: ${needsYou.join(', ')}` : ''}`);
+    console.log(`${readyCount} ready${background.length ? `; ${background.length} more continue in the background (usegrunt status)` : ''}`);
+    if (revised) {
+      await closeSquire();
+      await session.close();
+      await actions.resumeBackground(port);
+    }
     console.log('Ready');
   } finally {
     table.finish();

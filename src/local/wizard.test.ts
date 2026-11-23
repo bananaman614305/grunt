@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -41,6 +41,31 @@ it('adds the Pi provider without removing user providers and preserves it on rep
   await writeFile(path, '{invalid');
   await expect(configurePi()).rejects.toThrow('Cannot safely update Pi models config');
   expect(await readFile(path, 'utf8')).toBe('{invalid');
+});
+
+it('configures Pi in a group-writable agent directory and names the cause when it cannot', async () => {
+  const { setupFailureReason } = await import('./setup-failure.js');
+  dir = await mkdtemp(join(tmpdir(), 'grunt-pi-umask-'));
+  // umask 002 (Ubuntu's default) makes Pi's own ~/.pi/agent 775.
+  await chmod(dir, 0o775);
+  vi.stubEnv('PI_CODING_AGENT_DIR', dir);
+  const path = join(dir, 'models.json');
+  await writeFile(path, JSON.stringify({ providers: {} }), { mode: 0o664 });
+  await expect(configurePi(19878)).resolves.toMatchObject({ changed: true });
+  expect(JSON.parse(await readFile(path, 'utf8')).providers.grunt.baseUrl).toBe('http://127.0.0.1:19878/v1');
+  const reason = async () => setupFailureReason(await configurePi(19878).then(() => undefined, (error: unknown) => error));
+  await writeFile(path, '{invalid');
+  expect(await reason()).toBe('Pi models.json is not valid JSON');
+  await writeFile(path, JSON.stringify({ providers: { grunt: { baseUrl: 'https://remote.example.test/v1' } } }));
+  expect(await reason()).toBe('Pi has an unmanaged grunt provider');
+  await rm(path);
+  await writeFile(join(dir, 'elsewhere.json'), '{}');
+  await symlink(join(dir, 'elsewhere.json'), path);
+  expect(await reason()).toBe('Pi models.json is a symbolic link');
+  await rm(path);
+  await chmod(dir, 0o777);
+  try { expect(await reason()).toBe('Pi agent directory is writable by every user'); }
+  finally { await chmod(dir, 0o775); }
 });
 
 it('reuses working Squire without a session check or installer', async () => {
@@ -153,6 +178,21 @@ async function service(sources: Sources) {
   return { port, close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }) };
 }
 const fake = (id: string, complete: Source['complete'] = async () => ({ text: `${id} ready` })): Source => ({ id, available: async () => true, complete });
+it('smoke-tests a real completion through model grunt and names a failure without copying it', async () => {
+  const { smokeTest } = await import('./wizard.js');
+  const prompts: string[] = [];
+  const live = await service(new Sources([fake('kilo', async request => { prompts.push(String(request.messages.at(-1)?.content)); return { text: 'grunt is ready.' }; })]));
+  try { await expect(smokeTest(live.port, new AbortController().signal)).resolves.toBeUndefined(); }
+  finally { await live.close(); }
+  expect(prompts).toEqual([expect.stringMatching(/^Reply only: grunt is ready\./)]);
+  const failing = await service(new Sources([fake('kilo', async () => { throw new SourceError('quota', 'synthetic upstream detail'); })]));
+  try {
+    const { setupFailureReason } = await import('./setup-failure.js');
+    const error = await smokeTest(failing.port, new AbortController().signal).then(() => undefined, (failure: unknown) => failure);
+    expect(setupFailureReason(error)).toBe('quota exhausted');
+    expect(String(error)).not.toContain('synthetic upstream detail');
+  } finally { await failing.close(); }
+});
 it('fails an adapter check when another source answered for it', async () => {
   // Owner drop-in MILO_SOURCES=freellmapi,opencode,dots maps freebuff to milo, so FreeLLMAPI answers.
   const live = await service(new Sources([fake('freellmapi'), fake('opencode')]));

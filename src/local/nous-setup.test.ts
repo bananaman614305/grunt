@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
 import { NOUS_LOGIN_NEEDED, nousApprovalURL, setupNous } from './nous-setup.js';
-import { setupAttention, setupFailureReason } from './setup-failure.js';
+import { setupFailureReason } from './setup-failure.js';
 import { planSteps } from './fixtures/key-only-goal.js';
 
 const profile = vi.hoisted(() => ({ ready: false }));
@@ -69,7 +69,7 @@ it('ends with needs you (Nous login) when Squire cannot approve, without printin
   const error = await setupNous({ directory: '/nonexistent', notify: () => {}, squire: { signup }, spawnLogin: () => child as never }).catch(failure => failure);
   expect(error).toBeInstanceOf(Error);
   expect((error as Error).message).toBe(NOUS_LOGIN_NEEDED);
-  expect(setupAttention(setupFailureReason(error))).toBe('Nous login');
+  expect(setupFailureReason(error)).toBe('needs Nous login');
   expect(child.kill).toHaveBeenCalled();
   expect(written.join('')).not.toMatch(/user_code|portal\.nousresearch\.com|ABCD-1234/);
 });

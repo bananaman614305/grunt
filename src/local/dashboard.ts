@@ -56,13 +56,13 @@ function countdown(until: number, now: number) {
 }
 export interface DashboardRenderOptions {
   width?: number; height?: number; color?: boolean; now?: number; selected?: number; details?: boolean;
-  interactive?: boolean; offline?: boolean; approvalCount?: number; approvals?: readonly string[]; setup?: boolean; showDisabled?: boolean; notice?: string;
+  interactive?: boolean; offline?: boolean; showDisabled?: boolean; notice?: string;
 }
 export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRenderOptions = {}) {
   const columns = Math.max(20, Math.min(240, Math.floor(options.width ?? 80)));
   const now = options.now ?? Date.now(), chalk = new Chalk({ level: options.color ? 1 : 0 });
   const offline = options.offline || now - snapshot.updatedAt > 15000 || snapshot.updatedAt > now + 60000;
-  const approvals = new Set([...(options.approvals ?? []), ...snapshot.sources.filter(source => source.state === 'approval').map(source => source.id)]);
+  const approvals = new Set(snapshot.sources.filter(source => source.state === 'approval').map(source => source.id));
   const paint = (value: string, state: string) => {
     if (offline) return chalk.gray(value);
     if (state === 'ready' || state === 'available') return state === 'ready' ? chalk.green(value) : chalk.gray(value);
@@ -93,7 +93,7 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
     const pieces = [paint(`${ready} ready`, 'ready')];
     const available = counts.get('available') ?? 0;
     const connecting = (counts.get('connecting') ?? 0) + (counts.get('verifying') ?? 0);
-    const approval = Math.max(counts.get('approval') ?? 0, options.approvalCount ?? approvals.size);
+    const approval = counts.get('approval') ?? 0;
     if (available) pieces.push(chalk.gray(`${available} available`));
     if (connecting) pieces.push(paint(`${connecting} connecting`, 'connecting'));
     if (approval) pieces.push(paint(`${approval} approval${approval === 1 ? '' : 's'}`, 'approval'));
@@ -106,7 +106,7 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
       else line += (line ? ' · ' : '') + piece;
     }
     add(line);
-    add(chalk.gray(fit(`${snapshot.activeRequests} request${snapshot.activeRequests === 1 ? '' : 's'} active${options.setup ? ' · setup continues' : ''}`, columns)));
+    add(chalk.gray(fit(`${snapshot.activeRequests} request${snapshot.activeRequests === 1 ? '' : 's'} active`, columns)));
   }
   add();
   const wide = columns >= 72, mid = columns >= 48;
@@ -115,7 +115,7 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
   const modelWidth = wide ? columns - sourceWidth - stateWidth - 12 : 0;
   add(chalk.gray(fit('SOURCE', sourceWidth, true) + '  ' + fit('STATE', stateWidth, true) + (wide ? '  ' + fit('MODEL', modelWidth, true) + '  ' + fit('REPLY', 6) : '')));
   // Keep source selection visible even in short split panes.
-  const hasApproval = !offline && (approvals.size > 0 || (options.approvalCount ?? 0) > 0);
+  const hasApproval = !offline && approvals.size > 0;
   const hasHidden = !options.showDisabled && all.some(source => source.state === 'disabled');
   const maintenance = options.details ? visible[selectedIndex]?.maintenance : undefined;
   const maintenanceLines = maintenance ? 2 + (maintenance.lastCheckedAt !== undefined ? 1 : 0) : 0;
@@ -151,13 +151,13 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
     add(chalk.gray(fit(quota ? `Free quota · ${quota.detail}` : 'Credit balance: not reported', columns)));
   }
   add(); add(chalk.gray('─'.repeat(columns)));
-  if (!offline && (approvals.size || options.approvalCount)) {
-    add(chalk.yellow(fit(`${Math.max(approvals.size, options.approvalCount ?? 0)} action${approvals.size === 1 ? '' : 's'} needed${approvals.size ? ` · ${[...approvals].map(id => names[id] ?? id).join(', ')}` : ''}`, columns)));
-    add(fit(options.setup ? 'Complete the Trusty Squire prompt when shown.' : 'Run usegrunt setup to resume approvals.', columns));
+  if (!offline && approvals.size) {
+    add(chalk.yellow(fit(`${approvals.size} action${approvals.size === 1 ? '' : 's'} needed${approvals.size ? ` · ${[...approvals].map(id => names[id] ?? id).join(', ')}` : ''}`, columns)));
+    add(fit('Run usegrunt setup to resume approvals.', columns));
     add(chalk.gray(fit('Other ready sources keep working.', columns)));
   } else if (options.notice) add(chalk.yellow(fit(options.notice, columns)));
   else add(chalk.gray(fit(offline ? 'Run usegrunt setup if the daemon is stopped.' : 'Available = configured; ready = verified reply.', columns)));
-  add(chalk.gray(fit(options.interactive === false ? (options.setup ? 'Keep this terminal open for setup approvals.' : 'Live view: usegrunt status --watch') : mid ? '↑↓ select · enter details · a approvals · d disabled · q close view' : '↑↓ select · enter details · q close', columns)));
+  add(chalk.gray(fit(options.interactive === false ? 'Live view: usegrunt status --watch' : mid ? '↑↓ select · enter details · a approvals · d disabled · q close view' : '↑↓ select · enter details · q close', columns)));
   return lines.join('\n');
 }
 
@@ -251,7 +251,6 @@ type DashboardInput = Pick<NodeJS.ReadStream, 'on' | 'off' | 'resume' | 'pause' 
 export interface DashboardOptions {
   port: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal; fetcher?: typeof fetch; interval?: number;
   input?: DashboardInput; output?: DashboardOutput; interactive?: boolean;
-  approvals?: () => readonly string[]; isSuspended?: () => boolean; setup?: boolean;
 }
 export interface DashboardHandle { stop(): Promise<void>; done: Promise<void>; pause(): void; resume(): void }
 export function startDashboard(options: DashboardOptions): DashboardHandle {
@@ -267,9 +266,9 @@ export function startDashboard(options: DashboardOptions): DashboardHandle {
   const previousRaw = input.isRaw ?? false, previousPaused = input.isPaused(), previousFlowing = input.readableFlowing;
   const leave = () => { if (screen) { output.write('\u001b[?25h\u001b[?1049l'); screen = false; } };
   const paint = () => {
-    if (closed || paused || options.isSuspended?.()) { leave(); return; }
+    if (closed || paused) { leave(); return; }
     if (!screen) { output.write('\u001b[?1049h\u001b[?25l'); screen = true; }
-    output.write('\u001b[H\u001b[2J' + renderDashboard(snapshot, { width: output.columns ?? 80, height: output.rows ?? 24, color: env.NO_COLOR === undefined && env.TERM !== 'dumb', selected, details, offline, approvals: options.approvals?.() ?? [], setup: options.setup ?? false, interactive, showDisabled, notice }));
+    output.write('\u001b[H\u001b[2J' + renderDashboard(snapshot, { width: output.columns ?? 80, height: output.rows ?? 24, color: env.NO_COLOR === undefined && env.TERM !== 'dumb', selected, details, offline, interactive, showDisabled, notice }));
   };
   const close = () => {
     if (closed) return;
@@ -301,7 +300,7 @@ export function startDashboard(options: DashboardOptions): DashboardHandle {
   const interrupt = () => signalClose('SIGINT', interrupt);
   const terminate = () => signalClose('SIGTERM', terminate);
   const key = (chunk: Buffer | string) => {
-    if (closed || paused || options.isSuspended?.()) return;
+    if (closed || paused) return;
     pendingKey += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
     while (pendingKey) {
       if ('\u001b[A'.startsWith(pendingKey) || '\u001b[B'.startsWith(pendingKey)) { if (pendingKey.length < 3) break; }

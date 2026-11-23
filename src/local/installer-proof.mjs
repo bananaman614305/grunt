@@ -24,7 +24,6 @@ squire.call = async (name, args) => {
   if (name === 'operate_finish') return {};
   throw new Error('Unexpected Squire operation in offline proof');
 };
-squire.humanHandoff = async () => { events.push('handoff link shown'); return 'https://handoff.example.test/verification'; };
 const run = async (binary, args) => {
   if (args[0] === '--version' && ['freebuff', 'opencode'].includes(binary) && !installed.has(binary)) throw new Error('missing');
   if (binary === 'npm' && args[0] === 'install') { installed.add(args.at(-1) === 'opencode-ai' ? 'opencode' : args.at(-1)); events.push(`installed ${args.at(-1)}`); }

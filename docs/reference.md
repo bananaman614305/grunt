@@ -270,9 +270,9 @@ release. No other user's installation is enrolled automatically.
 Run the separate local daemon on your own machine (Linux with systemd or macOS
 with launchd). Use Node 22 or 24 LTS for the setup wizard; npm and tar must be
 available. Squire also needs a usable browser/display path. A headless remote
-server may need display helpers such as Xvfb/noVNC or a reachable browser
-handoff. Missing prerequisites are reported for repair; provider verification
-can still require a person. Mistral Vibe separately needs `uv` or Python 3.12+.
+server may need display helpers such as Xvfb/noVNC. Missing prerequisites are
+reported for repair. Setup never hands a browser to the person: a provider whose
+signup needs the person is skipped and the next one runs. Mistral Vibe separately needs `uv` or Python 3.12+.
 Setup installs the vetted adapters. Supported account flows use Trusty Squire,
 and Nous uses Hermes's device login.
 
@@ -727,32 +727,34 @@ the same daemon without a restart. Each tool and source gets one status row in t
 Squire bootstrap is lazy and shared: account-dependent jobs reuse one connection
 and one pending sign-in, while eligible anonymous Kilo or OpenCode access can
 become usable before that sign-in finishes. Their anonymous setup attempts are
-prioritized rather than queued behind waiting account jobs. A provider's human
-handoff does not hold up verification or use of other ready routes. Perch stays in the default
-pool; its initial human verification can remain unfinished while another source
-serves requests. No cold-installation timing is promised: npm downloads, native
-packages, browser/display prerequisites and human verification all affect it.
+prioritized rather than queued behind waiting account jobs. With a coding
+harness, setup checks anonymous Kilo, then anonymous OpenCode, before any signup.
+No cold-installation timing is promised: npm downloads, native packages and
+browser/display prerequisites all affect it.
 
-The original setup terminal remains the approval console until provider jobs
-and their checks settle. Open a connected coding tool in another terminal to use
-the ready daemon meanwhile. Closing the console pauses unfinished signups;
-already verified daemon routes keep working. Rerun `npx usegrunt setup` to resume.
-On normal completion, failed providers are listed with repair guidance, but the
-command succeeds if at least one provider was verified. If none was verified,
-setup fails. For a foreground daemon, run `usegrunt serve`.
+Setup ends as soon as one route is verified and a smoke test passes: one real
+completion through model `grunt`, routed by the daemon as your own requests
+are. It prints `N ready; M more continue in the background (usegrunt status)`
+and `Ready`, and returns. Rows it did not reach show `background`. Setup then
+releases its session, and the daemon starts its existing
+[route acquisition pass](router.md#1-greedy-first-pass-driver-cap) for the
+remaining signups; `usegrunt status` shows the route being signed up as
+connecting. If a verified route never passes the smoke test, setup tries the
+other providers and then fails. If none was verified, setup fails. For a
+foreground daemon, run `usegrunt serve`.
 
 Jobs that use Squire share one connection, cached credential metadata and reusable
-grants. Up to three provider browser operations can run concurrently. Browser
-handoffs arriving together share a confirmation prompt; later
-handoffs queue while other jobs continue. Interactive installers and confirmations
-take turns owning the terminal. Provider verification remains individual, and
+grants. Up to three provider browser operations can run concurrently.
+Interactive installers take turns owning the terminal; while the setup table
+is live it reads keys in raw mode and ignores them (arrow keys no longer print
+`^[OA` into it), and Ctrl+C still stops setup. Provider verification remains individual, and
 Squire has no batch-grant API. Grouped prompts do not create shared provider
 accounts or bypass a provider's verification. Reusing one Google or GitHub
 identity does not remove each provider's own sign-in and security requirements.
 
 Setup helpers can cancel one provider without stopping other jobs or the shared
 broker. A pending initial browser operation may finish before its owned tab can
-be closed; cancelled providers do not continue or open another handoff.
+be closed; cancelled providers do not continue.
 
 Setup offers the coding tools it finds on PATH before provider jobs start
 (an installed Pi is preselected; non-interactive runs connect an installed Pi
@@ -910,7 +912,7 @@ resume their setup on an existing installation.
 Squire reuses service-scoped credentials named **Grunt Free**, including its
 normal provider-domain host defaults. Grunt only sends requests to the fixed
 API host or its Squire proxy. Setup records source-specific data-sharing approval,
-uses configured verification tools, and prompts the user if an approval cannot
+uses configured verification tools, and skips the provider if an approval cannot
 be completed. It never adds billing, paid plans or top-ups. Model restrictions,
 when offered, should allow only the exact free alias; paid BYOK stays off.
 See the [router guide](router.md#1-greedy-first-pass-driver-cap) for background
@@ -1107,9 +1109,9 @@ Coding harnesses such as Pi are optional; setup can install the service before
 you install a harness.
 
 Existing vault API keys are reused. Missing keys are created through Squire's
-browser and captured directly into its vault. Verification that still requires
-the person can open a browser handoff and resume signup in that same session.
-An incomplete or refused service is reported while other service jobs finish.
+browser and captured directly into its vault. A signup that needs the person
+(SMS, passkey or another verification Squire cannot do) is skipped; no approval
+link or confirmation prompt is shown. An incomplete or refused service is reported while other service jobs finish.
 grunt calls `grant_app_access` and sends only the grant's base URL and bearer
 token to FreeLLMAPI's custom-provider endpoint for those API providers.
 Zro, Token Harbor and Runcrate keep private grants in `zro.json`,
@@ -1183,7 +1185,7 @@ need this separate router service.
 
 `GRUNT_SQUIRE_HOME` and `GRUNT_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
 home without relocating grunt state. `GRUNT_SETUP_NO_HUMAN=1` stops before Squire
-onboarding or browser handoff if human verification would be needed.
+onboarding if its own sign-in would need the person.
 
 The installed command is `usegrunt`. In 0.6.6, production adapters passed real
 Grunt prompt, function-tool,

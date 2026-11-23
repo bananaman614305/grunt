@@ -4,6 +4,11 @@
 
 - Remove Clixad. Its free model spends account credits that come only from surveys, offers or purchases, none of which Grunt does, so setup no longer offers, installs or routes it. The remaining experimental sources share the 0.2 weight equally.
 - On Linux, setup enables lingering for the user so the local daemon keeps running after logout and starts at boot, and re-running setup re-enables an existing service. If lingering is refused, setup prints `loginctl enable-linger`.
+- Setup returns as soon as one route is verified and a real request through model `grunt` answers. Rows it did not reach show `background`; the daemon's existing route pass opens them once setup releases its session, and `usegrunt status` shows the route being signed up as connecting.
+- Setup never hands a browser to the person: no localhost approval links and no "Finished verifying?" prompt. A signup that needs the person is skipped and the next one runs; the signup driver no longer gets `operate_share`.
+- Anonymous OpenCode is checked right after anonymous Kilo, before any signup, so its row matches what its free-model check found instead of waiting behind BeatAPI.
+- Arrow keys pressed while the setup table is live no longer print `^[OA` into it.
+- Pi setup accepts a group-writable `~/.pi/agent` (the umask 002 default), and a Pi configuration refusal names its cause instead of "setup failed".
 
 ## [0.9.7] - 2026-11-22
 

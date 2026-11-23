@@ -127,7 +127,6 @@ it('cancels queued browser work on close while retaining late owned session clea
 
 it('dismisses the observed cookie overlay without treating echoed instructions as a refusal', async () => {
   const squire = new BrowserSquire();
-  const handoff = vi.spyOn(squire, 'humanHandoff');
   const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
     if (name !== 'operate_drive') return {};
     return args.answer ? { status: 'complete', session_id: 'cookie-tab' }
@@ -137,7 +136,7 @@ it('dismisses the observed cookie overlay without treating echoed instructions a
   await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'completed' } });
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'cookie-tab', answer: 'cookie_reject' }));
   expect(call).toHaveBeenCalledWith('operate_finish', expect.objectContaining({ session_id: 'cookie-tab', outcome: 'result' }));
-  expect(handoff).not.toHaveBeenCalled();
+  expect(call.mock.calls.some(([name]) => name === 'operate_share')).toBe(false);
   await squire.close();
   expect(call.mock.calls.filter(([name]) => name === 'operate_finish')).toHaveLength(1);
 });
@@ -378,7 +377,6 @@ it.each([
 ] as const)('accepts required terms for %s by %s and does not choose payment or an upgrade', async (provider, mode) => {
   vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
   const squire = new BrowserSquire();
-  const handoff = vi.spyOn(squire, 'humanHandoff');
   let accepted = false;
   const call = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
     if (name === 'operate_click') {
@@ -415,7 +413,7 @@ it.each([
     const value = args as { answer?: string; ref?: string };
     return ['paid', 'upgrade', 'billing', 'account'].includes(value.answer ?? '') || ['paid-terms', 'tos-link', 'upgrade', 'billing', 'account'].includes(value.ref ?? '');
   })).toBe(false);
-  expect(handoff).not.toHaveBeenCalled();
+  expect(call.mock.calls.some(([name]) => name === 'operate_share')).toBe(false);
   await squire.close();
 });
 
@@ -423,7 +421,7 @@ function harnessSquire() {
   const squire = new BrowserSquire();
   squire.useBatchSignup();
   const client = (squire as unknown as { client: { listTools(): Promise<unknown> } }).client;
-  vi.spyOn(client, 'listTools').mockResolvedValue({ tools: ['operate_drive', 'operate_extract', 'operate_share'].map(name => ({ name, inputSchema: { type: 'object' } })) });
+  vi.spyOn(client, 'listTools').mockResolvedValue({ tools: ['operate_drive', 'operate_extract'].map(name => ({ name, inputSchema: { type: 'object' } })) });
   return squire;
 }
 function terminal(tty: boolean) {
@@ -432,46 +430,36 @@ function terminal(tty: boolean) {
   return () => { if (previous) Object.defineProperty(process.stdin, 'isTTY', previous); else delete (process.stdin as { isTTY?: boolean }).isTTY; };
 }
 
-it('hands a blocked batch signup to the person when the harness asks for operate_share', async () => {
+it('never hands a blocked batch signup to the person, even on a terminal', async () => {
   vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '0');
   const restore = terminal(true);
   try {
     const { setupProviders } = await import('./setup.js');
     const squire = harnessSquire();
-    let shared = false;
-    vi.spyOn(squire, 'call').mockImplementation(async name => name !== 'operate_drive' ? {}
-      : shared ? { status: 'complete', session_id: 'zro-tab' } : { status: 'low_confidence', session_id: 'zro-tab', options: {} });
-    const handoff = vi.spyOn(squire, 'humanHandoff').mockImplementation(async () => { shared = true; return 'http://127.0.0.1:1/share'; });
+    const call = vi.spyOn(squire, 'call').mockImplementation(async name => name !== 'operate_drive' ? {}
+      : { status: 'low_confidence', session_id: 'zro-tab', options: {} });
     squire.useSignupAgent(async agent => {
       await agent.call('operate_drive', {});
-      expect(await agent.call('operate_share', {})).toMatchObject({ status: 'human_finished' });
-      expect(await agent.call('operate_drive', {})).toMatchObject({ status: 'complete' });
+      expect(await agent.call('operate_share', {})).toMatchObject({ status: 'stopped', reason: 'Tool unavailable for this signup' });
     });
-    vi.spyOn(squire.credentials, 'list').mockImplementation(async () => shared ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
-    vi.spyOn(squire.credentials, 'grant').mockResolvedValue({ base_url: 'https://squire.test', token: 'synthetic' });
+    vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
     const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
-    expect(handoff).toHaveBeenCalledWith('zro-tab');
-    expect(result.dropped).toEqual([]);
+    expect(result.dropped).toEqual(['zro']);
+    expect(call.mock.calls.some(([name]) => name === 'operate_share')).toBe(false);
     await squire.close();
   } finally { restore(); }
 });
 
-it('defers a Jev-only bootstrap handoff, then hands the browser over once allowed', async () => {
+it('drops a Jev-only signup that needs the person instead of sharing its browser', async () => {
   vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '0');
   const restore = terminal(true);
   try {
     const squire = new BrowserSquire();
     squire.useBatchSignup();
-    let shared = false;
-    vi.spyOn(squire, 'call').mockImplementation(async name => name !== 'operate_drive' ? {}
-      : shared ? { status: 'complete', session_id: 'kilo-tab' } : { status: 'stuck', session_id: 'kilo-tab', needs_user: { wall: 'captcha' } });
-    const handoff = vi.spyOn(squire, 'humanHandoff').mockImplementation(async () => { shared = true; return 'http://127.0.0.1:1/share'; });
-    squire.deferHandoff(true);
+    const call = vi.spyOn(squire, 'call').mockImplementation(async name => name !== 'operate_drive' ? {}
+      : { status: 'stuck', session_id: 'kilo-tab', needs_user: { wall: 'sms verification' } });
     await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'dropped' } });
-    expect(handoff).not.toHaveBeenCalled();
-    squire.deferHandoff(false);
-    await expect(squire.runs.start(input)).resolves.toMatchObject({ run: { state: 'completed' } });
-    expect(handoff).toHaveBeenCalledOnce();
+    expect(call.mock.calls.some(([name]) => name === 'operate_share')).toBe(false);
     await squire.close();
   } finally { restore(); }
 });

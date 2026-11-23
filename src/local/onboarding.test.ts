@@ -11,7 +11,6 @@ import { SourceError, Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { createLocalApp } from './api.js';
 import { parallelMap } from './parallel.js';
-import { VerificationQueue } from './verification-queue.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
 
 const dirs: string[] = [];
@@ -74,24 +73,6 @@ it('cancels queued jobs and waits for active work before closing shared resource
   await expect(pending).rejects.toThrow(); expect(entered).toEqual([0, 1]);
 });
 
-it('groups simultaneous human handoffs and serializes later batches', async () => {
-  const hold = deferred(), batches: string[][] = [];
-  let active = 0, peak = 0;
-  const queue = new VerificationQueue(async items => { active++; peak = Math.max(peak, active); batches.push(items.map(item => item.service)); await hold.promise; active--; });
-  const first = queue.wait({ service: 'kilo', url: 'https://one.test' });
-  const second = queue.wait({ service: 'freebuff', url: 'https://two.test' });
-  await vi.waitFor(() => expect(batches).toEqual([['kilo', 'freebuff']]));
-  const third = queue.wait({ service: 'opencode', url: 'https://three.test' });
-  hold.resolve(); await Promise.all([first, second, third]);
-  expect(batches).toEqual([['kilo', 'freebuff'], ['opencode']]); expect(peak).toBe(1);
-});
-
-it('rejects every waiting verification when a handoff is cancelled', async () => {
-  const queue = new VerificationQueue(async () => { throw new Error('cancelled'); });
-  const result = await Promise.allSettled([queue.wait({ service: 'kilo', url: 'https://one.test' }), queue.wait({ service: 'opencode', url: 'https://two.test' })]);
-  expect(result.every(item => item.status === 'rejected')).toBe(true);
-});
-
 it('shares vault metadata and egress grants, then refreshes metadata after capture', async () => {
   const squire = new BrowserSquire();
   const call = vi.spyOn(squire, 'call').mockImplementation(async name => {
@@ -139,16 +120,15 @@ it('credits Kilo only when the backend confirms its Kilo model route', async () 
   expect(response.status).toBe(200); expect(response.headers.get('x-grunt-source')).toBe('kilo');
 });
 
-it('shares terminal ownership between privileged installers and provider confirmations', async () => {
+it('serializes terminal ownership between interactive installers', async () => {
   const hold = deferred(), order: string[] = [];
   const installer = withTerminal(async () => { order.push('sudo'); await hold.promise; order.push('sudo done'); });
   await vi.waitFor(() => expect(order).toEqual(['sudo']));
-  const queue = new VerificationQueue(items => withTerminal(async () => { order.push(`confirm ${items.map(item => item.service).join(',')}`); }));
-  const verification = queue.wait({ service: 'kilo', url: 'https://one.test' });
+  const next = withTerminal(async () => { order.push('brew'); });
   await new Promise(resolve => setImmediate(resolve));
   expect(order).toEqual(['sudo']);
-  hold.resolve(); await Promise.all([installer, verification]);
-  expect(order).toEqual(['sudo', 'sudo done', 'confirm kilo']);
+  hold.resolve(); await Promise.all([installer, next]);
+  expect(order).toEqual(['sudo', 'sudo done', 'brew']);
 });
 
 it('forwards acquisition cancellation to the owned signup operator', async () => {

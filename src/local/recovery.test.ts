@@ -34,6 +34,21 @@ describe('source recovery', () => {
     expect(setup).toHaveBeenCalledTimes(4);
   });
 
+  it('reports the route it is signing up, so status can show it connecting', async () => {
+    const dir = await directory();
+    const seen: (string | undefined)[] = [];
+    const opening = vi.fn((id: string | undefined) => { seen.push(id); });
+    const setup = vi.fn(async (options: { adapters?: string[] }) => {
+      expect(seen.at(-1)).toBe(options.adapters![0]);
+      if (options.adapters![0] === 'perch') throw new Error('squire unavailable');
+      return { unavailable: [] };
+    });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['perch', 'zro'], open: async () => 0, notify: () => {}, opening, setup });
+    recovery.trigger(); await settle();
+    expect(seen).toEqual(['perch', undefined, 'zro', undefined]);
+    await recovery.close();
+  });
+
   it('skips explicit policies and revokes their receipts under the opt-out', async () => {
     vi.stubEnv('GRUNT_SETUP_NO_DATA_SHARING', '1');
     const dir = await directory();
