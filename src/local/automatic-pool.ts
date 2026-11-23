@@ -3,14 +3,14 @@ import type { Stats } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { knownAdapters, localOptInAdapterIds } from '../registry.js';
+import { disabledAdapters, knownAdapters, localOptInAdapterIds } from '../registry.js';
 
 export const AUTOMATIC_POOL_FILE = 'automatic-pool.json';
 interface AutomaticPool { version: 1; mode: 'automatic'; serviceSources: string[]; selectedSources?: string[] }
 const ids = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 100
   && value.every(id => typeof id === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(id)) && new Set(value).size === value.length;
 const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => b[i] === id);
-const selected = (value: unknown): value is string[] => ids(value) && value.every(id => knownAdapters.has(id) || localOptInAdapterIds.has(id) || id === 'freellmapi');
+const selected = (value: unknown, allowRetired = false): value is string[] => ids(value) && value.every(id => knownAdapters.has(id) || localOptInAdapterIds.has(id) || id === 'freellmapi' || allowRetired && disabledAdapters.has(id));
 const owned = (stat: Stats, mode: number) => !stat.isSymbolicLink() && stat.uid === process.getuid?.() && (stat.mode & 0o777) === mode;
 const serialized = (serviceSources: readonly string[], selectedSources: readonly string[] = serviceSources) => {
   if (!ids(serviceSources) || !selected(selectedSources)) throw new Error('Invalid managed Grunt source selection');
@@ -30,7 +30,9 @@ export function automaticPoolSelection(directory: string, configured: readonly s
     if (!info.isFile() || !owned(info, 0o600) || info.size > 16384) return { sources: [...configured], automatic: false };
     const value = JSON.parse(readFileSync(fd, 'utf8')) as Partial<AutomaticPool>;
     if (value.version !== 1 || value.mode !== 'automatic' || !ids(value.serviceSources) || !same(value.serviceSources, configured)) return { sources: [...configured], automatic: false };
-    if (value.selectedSources !== undefined && !selected(value.selectedSources)) return { sources: [...configured], automatic: false };
+    // An upgrade can remove a formerly selected provider. Its retired ID remains
+    // valid receipt history, not access authority; configure still filters it.
+    if (value.selectedSources !== undefined && !selected(value.selectedSources, true)) return { sources: [...configured], automatic: false };
     // Setup may explicitly add a supported source outside the curated pool.
     // Keep that selection even when the owned service still has its old env.
     return { sources: [...new Set([...configured, ...(value.selectedSources ?? []), ...curated])], automatic: true, explicit: [...new Set([...configured, ...(value.selectedSources ?? [])])] };

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.10 — 2026-11-22
+
+- Preserve automatic source discovery when an existing managed receipt still names a retired provider. The receipt stays unchanged and retired providers remain disabled.
+
 ## [Unreleased]
 
 - Write the registry through the gateway: anyone who can push to `bananaman614305/grunt` sends `PUT`/`DELETE /v1/registry/entries/{id}` with their own GitHub token, and the entry publishes at once with its signup hints, which a written signup must include. Providers without a shipped adapter go in a new `candidates` list that clients ignore. `GET /v1/registry/instructions` is an always-current guide for agents that add to the registry.
