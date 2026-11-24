@@ -1,6 +1,6 @@
 # Maintainer provider scouting
 
-This operator-only job runs on Chad at **09:00 and 21:00 America/New_York**.
+This operator-only job runs on Chad **every four hours** (01:00, 05:00, 09:00, 13:00, 17:00 and 21:00 America/New_York).
 The server timezone follows Eastern daylight saving changes. It searches the
 internet for additional recurring free providers, qualifies them and can release
 successful integrations through the supervised pipeline below. It is separate
