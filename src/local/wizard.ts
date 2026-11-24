@@ -17,7 +17,7 @@ import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js
 import { writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
-import { configurePi, connectHarness, detectHarnesses, HARNESSES, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
+import { configurePi, connectHarness, detectHarnesses, HARNESSES, launchLines, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { beginSetupSession } from './setup-session.js';
@@ -543,8 +543,11 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       finally { const next = queuedChecks.shift(); if (next) next(); else activeChecks--; }
     };
     const settled = new Map<string, Promise<void>>();
-    let firstReady: Promise<unknown> | undefined;
+    let firstReady: Promise<Harness[] | void> | undefined;
+    // Harnesses setup configured and checked: each gets its opt-in launch line before Ready.
+    const configured = new Map<string, Harness>();
     let readyCount = 0;
+    let harnessReady = false;
     // Foreground setup ends at the first ready route that also answers a real
     // request through model grunt. The daemon's route pass opens the rest.
     let smoked = false, passes = 0, smokedAt = 0;
@@ -619,7 +622,6 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       let anonymousDriver = false;
       let operator: string | undefined;
       let operatorFailure: string | undefined;
-      let harnessReady = false;
       const deferred: string[] = [];
       const configure = () => (actions.connectHarness ?? connectHarness)(harness!, port,
         (binary, args, env) => runHarness(binary, args, env, 45000, { signal: session!.signal }));
@@ -749,7 +751,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       }
       // Setup ended before a route drove signups: point the chosen coding tool at grunt now.
       if (smoked && harness && !harnessReady) {
-        try { await configure(); table.step(`✓ ${harness.id}: uses grunt`); }
+        try { await configure(); harnessReady = true; table.step(`✓ ${harness.id}: uses grunt`); }
         catch (error) {
           session.signal.throwIfAborted();
           table.step(`… ${harness.id} setup failed: ${setupFailureReason(error)}; rerun usegrunt setup`);
@@ -760,7 +762,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     session.signal.throwIfAborted();
     if (!readyCount) throw new Error('No adapters passed verification. Run usegrunt setup to resume.');
     if (revised && !smoked) throw new Error('Grunt did not answer a request through model grunt. Run usegrunt status, then usegrunt setup to resume.');
-    if (plan?.discoverLater && actions.connectHarnesses) await actions.connectHarnesses(port, { table });
+    if (plan?.discoverLater && actions.connectHarnesses) firstReady = actions.connectHarnesses(port, { table });
+    for (const connected of (await firstReady) ?? []) configured.set(connected.id, connected);
+    if (harnessReady && harness) configured.set(harness.id, harness);
     // Sources setup did not reach, or left for a retry, continue in the daemon's route pass.
     const background = [...new Set([...ids.filter(id => !settled.has(id)), ...table.rowsWith('waiting (retry)')])];
     if (revised && (connection || background.length)) {
@@ -777,6 +781,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       await session.close();
       await actions.resumeBackground(port);
     }
+    for (const line of launchLines([...configured.values()], port)) console.log(line);
     console.log('Ready');
   } finally {
     table.finish();

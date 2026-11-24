@@ -146,7 +146,7 @@ it('keeps one table in place through a full setup run with interleaved output', 
   // Setup ends once grunt answers; nous continues in the background.
   expect(text.some(line => /nous: debug/.test(line))).toBe(false);
   const after = text.slice(header + 5);
-  expect(after.join('')).toBe('✓ Trusty Squire: already set up and signed in, skipped3 ready; 1 more continue in the background (usegrunt status)Ready');
+  expect(after.join('')).toBe('✓ Trusty Squire: already set up and signed in, skipped3 ready; 1 more continue in the background (usegrunt status)→ Pi on grunt: pi --provider grunt --model gruntReady');
 });
 
 it('holds a line written between two redraws instead of leaving a second header', () => {

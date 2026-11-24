@@ -35,7 +35,7 @@ it.each([[false, false], [false, true], [true, false], [true, true]])('runs the 
   vi.spyOn(squire, 'close').mockResolvedValue();
   const configure = vi.fn(async () => undefined);
   const tools: Harness[] = ['Pi', 'Claude Code', 'OpenCode'].map((name, index) => ({ id: (['pi', 'claude', 'opencode'] as const)[index]!, name, binary: 'node', configure,
-    check: () => ({ args: [] }), launch: () => '' }));
+    check: () => ({ args: [] }), launch: () => `${(['pi', 'claude', 'opencode'] as const)[index]} --grunt` }));
   const run = vi.fn(async () => 'OK');
   const probes: string[] = [];
   try {
@@ -66,6 +66,9 @@ it.each([[false, false], [false, true], [true, false], [true, true]])('runs the 
     expect(await readDataSharingConsent(directory, ids)).toEqual(['opencode', 'kilo', 'tokenharbor', 'perch']);
     const prompts = await import('@clack/prompts');
     for (const name of ['text', 'password', 'confirm', 'select', 'multiselect'] as const) expect(prompts[name]).not.toHaveBeenCalled();
+    // One plain launch line per connected harness, just before Ready, with no terminal control codes.
+    const launch = output.slice(output.lastIndexOf('→ Pi on grunt'));
+    expect(launch).toBe('→ Pi on grunt: pi --grunt\n→ Claude Code on grunt: claude --grunt\n→ OpenCode on grunt: opencode --grunt\nReady\n');
     if (!tty) expect(output).toMatchSnapshot();
     else {
       expect(output).toContain('✓ connected');

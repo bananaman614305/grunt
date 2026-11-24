@@ -7,6 +7,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PoolSnapshot, SourceSnapshot } from './source-status.js';
 import type { MaintenanceEntry } from './maintenance.js';
+import type { Harness } from './harnesses.js';
 
 const errorCodes = new Set(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
 const states = new Set(['unknown', 'available', 'ready', 'answering', 'connecting', 'verifying', 'limited', 'error', 'disabled', 'unavailable', 'approval']);
@@ -355,7 +356,9 @@ export async function installedPort(env: NodeJS.ProcessEnv): Promise<number> {
   finally { await file.close(); }
 }
 
-export interface StatusCommandOptions { env?: NodeJS.ProcessEnv; input?: DashboardInput; output?: DashboardOutput; fetcher?: typeof fetch; signal?: AbortSignal; interval?: number }
+export interface StatusCommandOptions { env?: NodeJS.ProcessEnv; input?: DashboardInput; output?: DashboardOutput; fetcher?: typeof fetch; signal?: AbortSignal; interval?: number;
+  // Harnesses to look for; a snapshot then ends with an opt-in launch line for each one that is installed and configured.
+  harnesses?: readonly Harness[] }
 export async function statusCommand(args: string[], options: StatusCommandOptions = {}) {
   const env = options.env ?? process.env, input = options.input ?? process.stdin, output = options.output ?? process.stdout;
   let watch = false, json = false, portText = gruntEnv('PORT', env);
@@ -378,4 +381,8 @@ export async function statusCommand(args: string[], options: StatusCommandOption
   try { snapshot = await fetchStatus({ port, ...(options.fetcher ? { fetcher: options.fetcher } : {}), ...(options.signal ? { signal: options.signal } : {}) }); }
   catch { throw new Error(`Grunt status unavailable on 127.0.0.1:${port}. Run usegrunt setup if the daemon is stopped.`); }
   output.write((json ? JSON.stringify(snapshot, null, 2) : renderDashboard(snapshot, { width: output.columns ?? 80, color: output.isTTY === true && env.NO_COLOR === undefined && env.TERM !== 'dumb', interactive: false })) + '\n');
+  if (json || !options.harnesses) return;
+  const { configuredHarnesses, launchLines } = await import('./harnesses.js');
+  const lines = launchLines(await configuredHarnesses([...options.harnesses], env.PATH), port);
+  if (lines.length) output.write(lines.join('\n') + '\n');
 }
