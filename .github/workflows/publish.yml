@@ -120,7 +120,7 @@ jobs:
           const registry = 'https://registry.npmjs.org';
           const tarball = `${registry}/usegrunt/-/${filename}`;
           // npm caches misses while the release propagates.
-          for (let attempt = 0; attempt < 30; attempt++) {
+          for (let attempt = 0; attempt < 90; attempt++) {
             const url = `${registry}/usegrunt/${version}?run=${process.env.GITHUB_RUN_ID}-${Date.now()}`;
             const response = await fetch(url, { signal: AbortSignal.timeout(5000) }).catch(() => null);
             if (response?.ok) {

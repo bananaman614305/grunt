@@ -164,6 +164,31 @@ class PublishRun(unittest.TestCase):
         with self.assertRaisesRegex(rp.ReleaseError, 'No successful publish.yml run'):
             rp.find_publish_run('0.10.2', repo='/repo', slug='o/r', run=run)
 
+    def test_a_failed_run_is_used_only_when_no_success_exists_and_its_artifact_survives(self):
+        rows = [{'databaseId': 5, 'headSha': 'f' * 40, 'headBranch': 'main', 'event': 'workflow_dispatch', 'createdAt': '2026-11-24T07:00:00Z', 'conclusion': 'failure'},
+                {'databaseId': 4, 'headSha': 'f' * 40, 'headBranch': 'main', 'event': 'workflow_dispatch', 'createdAt': '2026-11-24T06:00:00Z', 'conclusion': 'cancelled'}]
+        artifacts = {'5': True}
+
+        def run(command, **kw):
+            if command[:3] == ['gh', 'run', 'list']:
+                return SimpleNamespace(stdout=self.runs(rows), stderr='', returncode=0)
+            if command[:2] == ['gh', 'api']:
+                run_id = command[2].split('/')[-2]
+                body = {'artifacts': [{'name': rp.ARTIFACT_NAME, 'expired': False}] if artifacts.get(run_id) else []}
+                return SimpleNamespace(stdout=json.dumps(body), stderr='', returncode=0)
+            if command[3] == 'fetch':
+                return SimpleNamespace(stdout='', stderr='', returncode=0)
+            return SimpleNamespace(stdout=json.dumps({'version': '0.10.2'}), stderr='', returncode=0)
+        found = rp.find_publish_run('0.10.2', repo='/repo', slug='o/r', run=run)
+        self.assertEqual((found['runId'], found['publishRunConclusion']), ('5', 'failure'))
+        artifacts.clear()
+        with self.assertRaisesRegex(rp.ReleaseError, 'No successful publish.yml run'):
+            rp.find_publish_run('0.10.2', repo='/repo', slug='o/r', run=run)
+        rows.insert(0, {'databaseId': 6, 'headSha': 'f' * 40, 'headBranch': 'main', 'event': 'workflow_dispatch', 'createdAt': '2026-11-24T08:00:00Z', 'conclusion': 'success'})
+        found = rp.find_publish_run('0.10.2', repo='/repo', slug='o/r', run=run)
+        self.assertEqual(found['runId'], '6')
+        self.assertNotIn('publishRunConclusion', found)
+
     def test_slug_parsing_and_pull_request_lookup_are_best_effort(self):
         self.assertEqual(rp.repo_slug('https://github.com/owner/name.git'), 'owner/name')
         self.assertEqual(rp.repo_slug('git@github.com:owner/name.git'), 'owner/name')

@@ -61,13 +61,24 @@ def package_version_at(repo, commit, *, run=subprocess.run):
         return None
 
 
+def _artifact_present(run_id, *, slug, run):
+    """True when the run kept its unexpired package artifact (the archive its build job tested)."""
+    try:
+        rows = json.loads(sh(['gh', 'api', f'repos/{slug}/actions/runs/{run_id}/artifacts'], run=run, timeout=60))
+        return any(item.get('name') == ARTIFACT_NAME and not item.get('expired') for item in rows.get('artifacts', []))
+    except (ReleaseError, ValueError, AttributeError, subprocess.SubprocessError):
+        return False
+
+
 def find_publish_run(version, *, repo, slug, run=subprocess.run, limit=40):
-    """The newest successful publish run on main whose commit carries package.json version `version`.
+    """The newest publish run on main whose commit carries package.json version `version`.
 
     The workflow input is not in `gh run list`, but the workflow refuses a version that differs from package.json at the run's commit,
-    so the version of package.json at headSha identifies the run."""
-    rows = json.loads(sh(['gh', 'run', 'list', '-R', slug, '-w', PUBLISH_WORKFLOW, '--status', 'success', '-L', str(limit),
-                          '--json', 'databaseId,headSha,headBranch,event,createdAt'], run=run, timeout=60))
+    so the version of package.json at headSha identifies the run. A successful run is preferred. A failed run is accepted only
+    when it still has its package artifact: npm can accept an upload and then stay invisible past the workflow's own registry
+    check. That is safe because the caller then requires the npm tarball, this artifact and a clean build to be byte-identical."""
+    rows = json.loads(sh(['gh', 'run', 'list', '-R', slug, '-w', PUBLISH_WORKFLOW, '--status', 'completed', '-L', str(limit),
+                          '--json', 'databaseId,headSha,headBranch,event,createdAt,conclusion'], run=run, timeout=60))
     rows = sorted(rows, key=lambda row: row['createdAt'], reverse=True)
     sh(['git', '-C', str(repo), 'fetch', '-q', 'origin'], run=run, timeout=300, check=False)
     matches = []
@@ -76,11 +87,17 @@ def find_publish_run(version, *, repo, slug, run=subprocess.run, limit=40):
             continue
         if package_version_at(repo, row['headSha'], run=run) == version:
             matches.append(row)
-    if not matches:
+    succeeded = [row for row in matches if row.get('conclusion', 'success') == 'success']
+    lagged = [row for row in matches if row.get('conclusion') == 'failure' and _artifact_present(row['databaseId'], slug=slug, run=run)]
+    usable = succeeded or lagged
+    if not usable:
         raise ReleaseError(f'No successful {PUBLISH_WORKFLOW} run on main published usegrunt {version}; publish it first (or the checkout lacks the commit)')
-    chosen = matches[0]
-    return {'runId': str(chosen['databaseId']), 'commit': chosen['headSha'], 'createdAt': chosen['createdAt'],
-            'otherRunsForVersion': [str(row['databaseId']) for row in matches[1:]]}
+    chosen = usable[0]
+    result = {'runId': str(chosen['databaseId']), 'commit': chosen['headSha'], 'createdAt': chosen['createdAt'],
+              'otherRunsForVersion': [str(row['databaseId']) for row in matches if row is not chosen]}
+    if not succeeded:
+        result['publishRunConclusion'] = 'failure'
+    return result
 
 
 def find_pull_request(commit, *, slug, run=subprocess.run):
