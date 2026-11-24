@@ -45,7 +45,7 @@ class ScoutTests(unittest.TestCase):
         original = '# another project\n*/5 * * * * /other/project.sh\n'
         result = scout.cron_text(original, '/safe/scout run')
         self.assertTrue(result.startswith(original))
-        self.assertEqual(result.count('0 9,21 * * *'), 1)
+        self.assertEqual(result.count('0 1,5,9,13,17,21 * * *'), 1)
         self.assertEqual(scout.cron_text(result, '/safe/scout run'), result)
         replaced = scout.cron_text(result, '/safe/new-scout run')
         self.assertNotIn('/safe/scout run', replaced)

@@ -109,7 +109,7 @@ live launcher is still checked against the new package's modules.
   nothing staged or paused; the cache is left as the runtime wrote it, never rolled back over someone else's newer write). A cache that
   is newer than the public registry is refused, never downgraded. The cache is not reverted by a pre-start activation failure: it is
   generated data that the daemon would write itself at its next refresh.
-- **Provider scout** (09:00 and 21:00 America/New_York, up to ~45 min) imports the runtime this upgrade swaps. `upgrade.py` warns
+- **Provider scout** (every four hours from 01:00 America/New_York, up to ~45 min) imports the runtime this upgrade swaps. `upgrade.py` warns
   when a scout start falls inside the window; prefer launching right after one ends.
 - **Provider-source set**: the gate pins the candidate's eligible set and the live pools must serve exactly it (apart from the
   retired Clixad tombstone and the owner's `freellmapi` advertisement on 8792). A release that adds or removes a source fails the

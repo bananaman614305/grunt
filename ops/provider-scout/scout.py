@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Operator-only, twice-daily discovery, qualification and guarded release."""
+"""Operator-only discovery, qualification and guarded release, every four hours."""
 import argparse
 import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -682,7 +682,7 @@ def cron_text(existing, command):
         if existing[finish:finish + 1] == '\n':
             finish += 1
         existing = existing[:start] + existing[finish:]
-    return existing.rstrip('\n') + '\n\n' + BEGIN + '\n# 09:00 and 21:00 America/New_York (server timezone)\n0 9,21 * * * ' + command + '\n' + END + '\n'
+    return existing.rstrip('\n') + '\n\n' + BEGIN + '\n# Every four hours from 01:00 America/New_York (server timezone)\n0 1,5,9,13,17,21 * * * ' + command + '\n' + END + '\n'
 
 
 def owner_decision(root, homepage, *, excluded, reason):
@@ -765,7 +765,7 @@ def install(root, source_repo):
     subprocess.run(['crontab', '-'], input=updated, text=True, check=True, capture_output=True)
     if subprocess.check_output(['crontab', '-l'], text=True) != updated:
         raise ValueError('Scheduled crontab verification failed')
-    print(json.dumps({'installed': True, 'schedule': '09:00 and 21:00 America/New_York', 'command': str(wrapper)}))
+    print(json.dumps({'installed': True, 'schedule': 'every four hours from 01:00 America/New_York', 'command': str(wrapper)}))
 
 
 def record_pipeline_result(ledger, result, candidate=None):
@@ -1123,7 +1123,7 @@ def main():
     if options.command == 'status':
         ledger = load(options.state / 'ledger.json', {'candidates': {}}, max_bytes=None)
         canonicalize_ledger(ledger)
-        print(json.dumps({'schedule': '09:00 and 21:00 America/New_York', 'last_run': load(options.state / 'last-run.json'),
+        print(json.dumps({'schedule': 'every four hours from 01:00 America/New_York', 'last_run': load(options.state / 'last-run.json'),
                           'candidates': len(ledger['candidates']), 'unique_searches': len(ledger.get('search_queries', {})),
                           'pending_reviews': len(ledger.get('discovery_pending', {})),
                           'due_reviews': len(qualification_scope(ledger)),

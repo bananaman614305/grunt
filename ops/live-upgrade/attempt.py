@@ -32,7 +32,7 @@ BUDGETS = {'overallSeconds': 7200, 'checkpointWaitSeconds': 3600, 'pauseSettleSe
 UNIT_PREFIX = 'grunt-runtime-upgrade-'
 DEFAULT_AUTHORIZATION = ('Planned maintenance pause: the owner authorized deliberately pausing the Amazing Adventure builder for about 10-15 minutes, '
                          'between cycles and never mid-cycle, as the standard live-upgrade path (ops/live-upgrade/README.md)')
-SCOUT_TIMES = ((9, 0), (21, 0))      # provider scout cron, America/New_York; it uses the runtime this upgrade swaps
+SCOUT_TIMES = tuple((hour, 0) for hour in (1, 5, 9, 13, 17, 21))      # provider scout cron, America/New_York; it uses the runtime this upgrade swaps
 
 
 class AttemptError(RuntimeError):
@@ -274,7 +274,7 @@ def next_scout(now, zone='America/New_York'):
 
 
 def scout_warning(now, *, within=BUDGETS['overallSeconds'] + 1800):
-    """The provider scout (cron 09:00/21:00 New York, up to ~45 min) imports the runtime this upgrade swaps."""
+    """The provider scout (cron every four hours from 01:00 New York, up to ~45 min) imports the runtime this upgrade swaps."""
     start = next_scout(now)
     ahead = (start - now.astimezone(start.tzinfo)).total_seconds()
     if ahead <= within:

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Operator: the provider scout runs every four hours (01:00, 05:00, 09:00, 13:00, 17:00 and 21:00 America/New_York) instead of twice daily; the live upgrade's scout-window warning follows the new schedule.
+
 - Operator: make the one-command live upgrade much faster. The controller no longer waits up to 6 hours for the daemon's own registry refresh: before staging and any pause it writes the approved public registry into `~/.config/milo/registry.json` itself, through the installed runtime's own `RegistrySync` (same validator, newer-publication rule, canonical shape and atomic write; the public ETag is kept so a later normal refresh writes the same bytes), keeps the old bytes in the attempt directory and records the change in the receipt. Running daemons hold the registry in memory, so nothing re-routes until the planned restart. If the cache is rewritten meanwhile the public registry is fetched once more and the write retried once, then the attempt gives up cleanly with nothing staged. Every other check, and the npm == CI artifact == clean-build proof, is unchanged.
 - Operator: `--end-cycle` now ends a builder cycle that is at least 120 seconds old by default (was 900; `--end-cycle-min-age` still overrides it).
 
