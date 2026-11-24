@@ -352,8 +352,9 @@ class ScoutTests(unittest.TestCase):
                                                 release_request={'source_id':f'source{index}'}) for index in range(25)]]}
         self.assertEqual(len(scout.ingest(report, {'candidates':{}}, self.workspace)['candidates']), 26)
         report['candidates'] = [item]
-        with self.assertRaisesRegex(ValueError, 'Integration budget'):
+        with self.assertRaises(scout.ReportError) as raised:
             scout.ingest(report, {'candidates':{}}, self.workspace, smoke=True)
+        self.assertEqual(raised.exception.code, 'integration_budget_exceeded')
 
     def test_report_and_summary_use_operator_validated_statuses(self):
         report = {'summary': 'Synthetic provider ready for review', 'web_search_used': True,
@@ -792,6 +793,68 @@ class ScoutTests(unittest.TestCase):
         prompt = agent.call_args.args[0]['prompt']
         context = json.loads(prompt.split('## This run\n',1)[1])
         self.assertNotIn('max_integrations',context)
+
+    def run_qualification(self, result, pipeline=None):
+        pipeline = pipeline or Mock()
+        pipeline.resume_pending.return_value = []
+        pipeline.process.return_value = {'status':'released','source_id':'synthetic','head_sha':'a'*40}
+        def agent(request, *_args):
+            scout.atomic(Path(request['output_path']), result['result'])  # the worker's raw output file
+            return result
+        with patch.dict('sys.modules',{'pipeline':types.SimpleNamespace(Pipeline=Mock(return_value=pipeline))}), \
+                patch.object(scout,'run_agent',agent), contextlib.redirect_stdout(io.StringIO()):
+            return scout.run(self.workspace)
+
+    def test_narrow_qualification_need_not_report_broad_search_queries(self):
+        # A single-offer qualification legitimately reports one (or no) query;
+        # the supervisor already proved a real search event.
+        for queries in (['only one'], []):
+            with self.subTest(queries=queries):
+                self.setUp()
+                _, item, result = self.enabled_pipeline_fixture()
+                result['result']['search_queries'] = queries
+                self.assertEqual(self.run_qualification(result), 0)
+                state = scout.load(self.workspace / 'last-run.json')
+                self.assertEqual(state['status'], 'completed')
+                self.assertEqual(state['candidates_seen'], 1)
+                self.assertEqual(scout.load(self.workspace / 'ledger.json')['discovery_pending'], {})
+
+    def test_ingest_still_requires_discovery_research_by_default_with_a_specific_code(self):
+        for report, code in (({'web_search_used': True, 'search_queries': ['one'], 'candidates': []}, 'insufficient_search_queries'),
+                             ({'web_search_used': False, 'search_queries': ['a', 'b'], 'candidates': []}, 'web_search_not_reported'),
+                             ({'web_search_used': True, 'search_queries': 'x', 'candidates': []}, 'invalid_search_queries'),
+                             ({'web_search_used': True, 'search_queries': ['a', 'b'], 'candidates': 'x'}, 'invalid_candidates'),
+                             ([], 'report_not_an_object')):
+            with self.subTest(code=code):
+                with self.assertRaises(scout.ReportError) as raised:
+                    scout.ingest(report, {'version': 1, 'candidates': {}}, self.workspace)
+                self.assertEqual(raised.exception.code, code)
+        with self.assertRaises(scout.ReportError):
+            scout.ingest({'web_search_used': True, 'search_queries': [3], 'candidates': []},
+                         {'version': 1, 'candidates': {}}, self.workspace, worker_searched=True)
+
+    def test_failed_validation_persists_only_a_safe_reason_code(self):
+        secret = 'sk-PRIVATE-model-text-0123456789'
+        _, item, result = self.enabled_pipeline_fixture()
+        result['result']['candidates'] = secret
+        self.assertEqual(self.run_qualification(result), 1)
+        state = scout.load(self.workspace / 'last-run.json')
+        self.assertEqual((state['status'], state['reason_code']), ('failed', 'invalid_candidates'))
+        run = self.workspace / 'runs' / state['id'] / 'result.json'
+        self.assertEqual(scout.load(run), {'status': 'quarantined', 'reason': 'report_validation_failed',
+                                           'detail': 'invalid_candidates'})
+        self.assertNotIn(secret, json.dumps(state))
+
+    def test_unexpected_pipeline_exception_reports_only_its_class(self):
+        secret = 'https://provider.example/?token=PRIVATE-0123456789'
+        _, item, result = self.enabled_pipeline_fixture()
+        with patch.object(scout, 'normalized_report', side_effect=KeyError(secret)):
+            self.assertEqual(self.run_qualification(result), 1)
+        state = scout.load(self.workspace / 'last-run.json')
+        self.assertEqual(state['reason_code'], 'KeyError')
+        self.assertEqual(state['reason'], 'worker, output or pipeline validation failed')
+        self.assertNotIn('PRIVATE', json.dumps(state))
+        self.assertNotIn('PRIVATE', json.dumps(scout.load(self.workspace / 'runs' / state['id'] / 'result.json')))
 
     def test_blocked_head_does_not_prevent_another_qualified_candidate_from_releasing(self):
         config, first, result = self.enabled_pipeline_fixture()
