@@ -6,6 +6,7 @@ import { createLocalApp } from './api.js';
 import { Sources } from './source.js';
 import { FreeApi, FREE_API_PROVIDERS, isDeepSeekV41Model, readFreeApiGrant } from './free-api.js';
 import type { FreeApiProvider } from './free-api.js';
+import { Zro, ZRO_DEEPSEEK } from './zro.js';
 
 const locations: string[] = [];
 const grant = { base_url: 'https://grant.test/egress/provider', token: 'synthetic-private-grant' };
@@ -28,9 +29,39 @@ it.each(Object.keys(FREE_API_PROVIDERS) as FreeApiProvider[])('pins %s to its ex
   const [url, init] = fetcher.mock.calls[0]!;
   expect(url).toBe(`${grant.base_url}${FREE_API_PROVIDERS[provider].prefix}/chat/completions`);
   expect(init?.redirect).toBe('error');
-  expect(JSON.parse(String(init?.body))).toMatchObject({ model: FREE_API_PROVIDERS[provider].model, max_tokens: 4096, stream: false,
+  expect(JSON.parse(String(init?.body))).toMatchObject({ model: FREE_API_PROVIDERS[provider].model, max_tokens: provider === 'zro' ? 90000 : 4096, stream: false,
     tools: [{ type: 'function', function: { name: 'read' } }] });
   await source.close();
+});
+
+it.each([null, ''])('surfaces Zro reasoning-only truncation to Pi when content is %j', async content => {
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ model: ZRO_DEEPSEEK,
+    choices: [{ finish_reason: 'length', message: { content, reasoning_content: 'Synthetic hidden reasoning' } }],
+    usage: { prompt_tokens: 20, completion_tokens: 4096, completion_tokens_details: { reasoning_tokens: 4096 } } }));
+  const source = new Zro({ loadGrant: async () => ({ ...grant, free_account_verified: true, verified_at: '2026-11-24T00:00:00Z' }), fetcher });
+  const app = createLocalApp(new Sources([source]));
+  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'grunt', messages: request.messages, max_tokens: 65536, stream: true, stream_options: { include_usage: true } })
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get('x-grunt-source')).toBe('zro');
+  const wire = await response.text();
+  const frames = wire.split(/\r?\n/).filter(line => line.startsWith('data: ')).map(line => line.slice(6));
+  expect(frames.at(-1)).toBe('[DONE]');
+  expect(JSON.parse(frames.at(-3)!)).toMatchObject({ choices: [{ delta: {}, finish_reason: 'length' }] });
+  expect(JSON.parse(frames.at(-2)!)).toMatchObject({ usage: { completion_tokens: 4096 } });
+  expect(wire).not.toContain('Synthetic hidden reasoning');
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body)).max_tokens).toBe(65536);
+  await source.close();
+});
+
+it('lets Zro choose its output budget when the caller supplies none', async () => {
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ finish_reason: 'stop', message: { content: 'Hello' } }] }));
+  const source = new FreeApi('zro', { loadGrant: async () => grant, fetcher });
+  await expect(source.complete(request, AbortSignal.timeout(1000))).resolves.toMatchObject({ text: 'Hello', finishReason: 'stop' });
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).not.toHaveProperty('max_tokens');
 });
 
 it('rejects unknown providers and arbitrary model requests before any HTTP call', async () => {

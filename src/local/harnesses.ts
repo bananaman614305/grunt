@@ -43,8 +43,10 @@ async function readJson(path: string, what: string) {
 }
 
 export const PI_WORKING_CONTEXT_TOKENS = 65536;
+// The native output limit of Zro's DeepSeek model. Pi uses 16384 if omitted.
+const PI_MAX_OUTPUT_TOKENS = 65536;
 const piProvider = (port: number, contextWindow = PI_WORKING_CONTEXT_TOKENS) => ({ baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
-  models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 4096 }] });
+  models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: PI_MAX_OUTPUT_TOKENS }] });
 interface PiContextOptions { workingContextTokens?: number; fromContextWindows?: readonly number[] }
 interface PiConfigureOptions extends PiContextOptions { env?: NodeJS.ProcessEnv }
 const piFailure = (reason: string) => new SetupRefusal(reason, `Cannot safely update Pi models config: ${reason}. Repair it before retrying setup`);
@@ -136,7 +138,7 @@ function localPiProvider(value: unknown, port?: number) {
 }
 function managedPiModel(model: Record<string, unknown>) {
   const cost = model.cost && typeof model.cost === 'object' && !Array.isArray(model.cost) ? model.cost as Record<string, unknown> : {};
-  return model.id === 'grunt' && model.name === 'grunt' && model.reasoning === false && model.maxTokens === 4096
+  return model.id === 'grunt' && model.name === 'grunt' && model.reasoning === false && (model.maxTokens === 4096 || model.maxTokens === PI_MAX_OUTPUT_TOKENS)
     && Array.isArray(model.input) && model.input.length === 1 && model.input[0] === 'text'
     && ['input', 'output', 'cacheRead', 'cacheWrite'].every(key => cost[key] === 0);
 }
@@ -156,13 +158,17 @@ export async function configurePi(port = 8788, options: PiConfigureOptions = {})
   }
   const explicit = options.workingContextTokens !== undefined || env.GRUNT_WORKING_CONTEXT_TOKENS !== undefined;
   const contextWindow = piContext(env, options.workingContextTokens), generated = piProvider(port, contextWindow);
-  const merged = models.map(model => model.id !== 'grunt' ? model : { ...model,
-    ...(explicit || managedPiModel(model) && model.contextWindow === 128000 ? { contextWindow } : {}) });
+  const merged = models.map(model => {
+    if (model.id !== 'grunt') return model;
+    const managed = managedPiModel(model);
+    return { ...model, ...(managed ? { maxTokens: PI_MAX_OUTPUT_TOKENS } : {}),
+      ...(explicit || managed && model.contextWindow === 128000 ? { contextWindow } : {}) };
+  });
   if (!primary.length) merged.push(generated.models[0]!);
   return writePiConfig(current, { ...current.saved, providers: { ...providers, grunt: { ...provider, ...generated, models: merged } } });
 }
-/** Update only an existing managed profile on this daemon's endpoint. */
-export async function migrateManagedPiWorkingContext(port: number, env: NodeJS.ProcessEnv = process.env, options: PiContextOptions = {}): Promise<Change> {
+/** Update the output budget and legacy context of an existing managed profile on this daemon's endpoint. */
+export async function migrateManagedPiWorkingContext(port: number, env: NodeJS.ProcessEnv = process.env, options: PiContextOptions = {}): Promise<Change & { contextChanged?: boolean }> {
   const target = piContext(env, options.workingContextTokens), current = await readPiConfig(env);
   if (current.text === undefined) return { changed: false };
   const providers = objectOrEmpty(current.saved.providers, 'Pi models config'), provider = providers.grunt;
@@ -170,9 +176,12 @@ export async function migrateManagedPiWorkingContext(port: number, env: NodeJS.P
   const selected = provider as Record<string, unknown>, models = piModels(selected), primary = models.filter(model => model.id === 'grunt');
   if (primary.length !== 1) return { changed: false };
   const model = primary[0]!, from = options.fromContextWindows ?? [128000];
-  if (!managedPiModel(model) || typeof model.contextWindow !== 'number' || !from.includes(model.contextWindow) || model.contextWindow === target) return { changed: false };
-  return writePiConfig(current, { ...current.saved, providers: { ...providers, grunt: { ...selected,
-    models: models.map(item => item === model ? { ...item, contextWindow: target } : item) } } });
+  if (!managedPiModel(model)) return { changed: false };
+  const contextWindow = typeof model.contextWindow === 'number' && from.includes(model.contextWindow) ? target : model.contextWindow;
+  if (model.maxTokens === PI_MAX_OUTPUT_TOKENS && model.contextWindow === contextWindow) return { changed: false };
+  const change = await writePiConfig(current, { ...current.saved, providers: { ...providers, grunt: { ...selected,
+    models: models.map(item => item === model ? { ...item, contextWindow, maxTokens: PI_MAX_OUTPUT_TOKENS } : item) } } });
+  return { ...change, contextChanged: contextWindow !== model.contextWindow };
 }
 // Codex layers $CODEX_HOME/<name>.config.toml over config.toml for `codex --profile <name>`,
 // so grunt gets its own file and the user's config.toml is never edited. Native subagents

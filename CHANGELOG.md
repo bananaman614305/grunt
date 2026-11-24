@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.10.1 — 2026-11-24
+
+- Use the native DeepSeek output budget in Grunt-managed Pi profiles, pass the caller's budget through to Zro, and preserve Zro's finish reason so Pi can detect a truncated reply.
+
 ## 0.10.0 — 2026-11-24
 
 - **Breaking for Pi users:** remove Grunt's built-in subworkers, Pi background jobs and execution checkpoints. Pi is no longer a parallel or agentic platform for Grunt. Parallelism and background work now come from the harness: Claude Code, Codex and OpenCode native subagents and background tasks run through Grunt as ordinary routed requests, and those are the supported way to work in parallel. Pi has no subagents, so Pi users lose parallel workers, managed background command jobs and saved task checkpoints.
