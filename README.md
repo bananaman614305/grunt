@@ -80,7 +80,7 @@ longer a parallel or agentic platform for Grunt (see the
 Local routing performance and failure backoff persist across runtime restarts.
 
 Operators can also configure a private execution host for required release
-checks, an independent reviewer, exact tested-tree merging and verified GitHub
+checks, a builder-recorded review bound to the exact commit, exact tested-tree merging and verified GitHub
 Pages publication. Its read-only channel manifest
 is explicit launch configuration; credentials and signing authority stay outside
 the coding interface. See [execution efficiency](docs/efficiency.md).

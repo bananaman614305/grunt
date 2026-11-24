@@ -38,6 +38,15 @@ def replace_once(text, before, after):
     return text.replace(before, after, 1)
 
 
+def require_subworker_runtime(owner_root):
+    """The staged launcher imports runtime/dist/local/worker-pool.js and worker-runtime.js, which Grunt 0.10 removed."""
+    local = owner_root / "runtime" / "dist" / "local"
+    missing = [name for name in ("worker-pool.js", "worker-runtime.js") if not (local / name).is_file()]
+    if missing:
+        raise ValueError("The installed Grunt runtime has no subworkers (" + ", ".join(missing)
+                         + " missing); this upgrade does not apply to it. Nothing was staged")
+
+
 def transform(files, runtime_directory):
     supervisor = files["supervisor.py"].decode("utf-8")
     supervisor = replace_once(supervisor,
@@ -98,6 +107,7 @@ def stage(owner_root, destination, runtime_directory, baseline):
         raise ValueError("Stage outside the active infrastructure directory")
     if destination.exists() or destination.is_symlink():
         raise ValueError("Staging destination must be new; nothing was overwritten")
+    require_subworker_runtime(owner_root)
     files = {}
     for name in FILES:
         fd = os.open(owner_root / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)

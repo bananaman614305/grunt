@@ -442,6 +442,21 @@ class PerformanceTest(unittest.TestCase):
             self.assertEqual(probe.category, 'tool_wait')
             self.assertEqual(probe.sample(self.now + 15001), 'stalled')
 
+    def test_runtime_without_subworkers_or_job_snapshots_yields_no_worker_or_job_data(self):
+        start = self.now / 1000 - 30
+        status = dict(phase='working', workerPid=101, lastActivityAt=start, lastToolStartedAt=start)
+        def read(path, _limit):
+            if path.name == 'status.json':
+                return json.dumps(status)
+            if path.name == 'config.json':
+                return json.dumps({'sessionId': self.worker_id})
+            raise FileNotFoundError(path)
+        probe = WorkProbe(Path('/state'), read, lambda: {'activeRequests': 0, 'sources': []})
+        with patch('uptime.worker_exists', return_value=True), patch('uptime.shell_activity', return_value=(True, False, {})):
+            self.assertIn(probe.sample(self.now), ('working', 'tool_wait'))
+        self.assertIsNone(probe.workers)
+        self.assertIsNone(probe.jobs)
+
 
 if __name__ == '__main__':
     unittest.main()

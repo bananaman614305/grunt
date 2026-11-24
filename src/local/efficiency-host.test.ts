@@ -56,15 +56,13 @@ async function fixture(options: { deletedSecret?: boolean } = {}) {
     else throw new Error('Unexpected synthetic API ' + path);
     return { code: 0, stdout: JSON.stringify(result) };
   });
-  const reviewerId = randomUUID(), artifactId = randomUUID();
-  const workers = { start: vi.fn(async () => ({ batchId: randomUUID() })), wait: vi.fn(async () => ({ state: 'completed', results: [{ ok: true, id: reviewerId, text: JSON.stringify({ head, verdict: 'approve' }) }] })), artifact: vi.fn(async () => ({ artifact: { complete: true, truncated: false, files: [], id: artifactId } })), close: vi.fn(async () => {}) };
   const runner = vi.fn(async (request: { workspaceRoot: string; command: string }) => { expect(request.command).toBe('synthetic tests only'); expect(await readFile(join(request.workspaceRoot, 'source.txt'), 'utf8')).toBe('candidate'); expect(await readFile(join(request.workspaceRoot, 'dist/index.html'), 'utf8')).toBe('synthetic page'); expect(request.workspaceRoot.startsWith(policy.stateDirectory)).toBe(true); return { exitCode: 0 }; });
-  return { root, projectRoot, policy, base, head, exec, runner, workers, mutations };
+  return { root, projectRoot, policy, base, head, exec, runner, mutations };
 }
 
-it('composes a synthetic worker check, authenticated host evidence, independent review and exact GitData/Pages release end to end', async () => {
-  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
-  expect(f.exec).not.toHaveBeenCalled(); expect(f.runner).not.toHaveBeenCalled(); expect(f.workers.start).not.toHaveBeenCalled();
+it('composes a synthetic worker check, authenticated host evidence, builder-recorded review and exact GitData/Pages release end to end', async () => {
+  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
+  expect(f.exec).not.toHaveBeenCalled(); expect(f.runner).not.toHaveBeenCalled();
   const verification = createVerificationBrokerFileClient({ projectRoot: f.projectRoot, inboxDirectory: join(f.policy.channelDirectory, 'verification-inbox'), resultDirectory: join(f.policy.channelDirectory, 'verification-results') });
   const check = await verification.start({ planId: 'release', checkId: 'tests' }, { cwd: f.projectRoot });
   await host.tick(); expect(await verification.result({ id: check.id }, { cwd: f.projectRoot })).toMatchObject({ state: 'completed', verified: false });
@@ -72,8 +70,13 @@ it('composes a synthetic worker check, authenticated host evidence, independent 
   const publication = createPublicationFileChannel({ version: 1, projectRoot: f.projectRoot, channelDirectory: f.policy.channelDirectory });
   const prepared = await publication.request('prepare', { head: f.head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Synthetic fixture only.', verificationIds: [check.id] }, { cwd: f.projectRoot }) as { id: string };
   await host.tick(); expect(await host.queue.status(prepared.id)).toMatchObject({ phase: 'awaiting_review' });
-  for (const phase of ['ready', 'pull_request', 'deploying', 'deployed']) { await publication.request('advance', { id: prepared.id }, { cwd: f.projectRoot }); await host.tick(); expect(await host.queue.status(prepared.id)).toMatchObject({ phase }); }
-  expect(f.workers.start).toHaveBeenCalledTimes(1); expect(f.workers.close).toHaveBeenCalledTimes(1); expect(f.runner).toHaveBeenCalledTimes(1);
+  await publication.request('advance', { id: prepared.id }, { cwd: f.projectRoot }); await host.tick(); expect(await host.queue.status(prepared.id)).toMatchObject({ phase: 'awaiting_review' });
+  const gitTree = git(f.projectRoot, 'rev-parse', 'HEAD^{tree}');
+  await publication.request('review-record', { id: prepared.id, head: f.head, gitTree, verdict: 'approve', summary: 'Self-review of the synthetic diff: no findings.' }, { cwd: f.projectRoot }); await host.tick();
+  expect(await host.queue.status(prepared.id)).toMatchObject({ phase: 'ready' });
+  expect(await readdir(join(f.policy.channelDirectory, 'publication-inbox'))).toEqual([]);
+  for (const phase of ['pull_request', 'deploying', 'deployed']) { await publication.request('advance', { id: prepared.id }, { cwd: f.projectRoot }); await host.tick(); expect(await host.queue.status(prepared.id)).toMatchObject({ phase }); }
+  expect(f.runner).toHaveBeenCalledTimes(1);
   const status = await publication.request('status', { id: prepared.id }, { cwd: f.projectRoot }); expect(status).toMatchObject({ phase: 'deployed', trusted: false, deploymentUrl: 'https://synthetic.github.io/fixture/' });
   expect(f.mutations).toContain('push'); expect(f.mutations).toContain('POST /pages/builds');
   expect(await readdir(f.policy.channelDirectory)).not.toContain('authority.key');
@@ -90,16 +93,16 @@ it('rejects writable policy, symlink manifests, authority mounts, arbitrary comm
 });
 
 it('does not accept forged verification authority from the worker channel or start checks for malformed intents', async () => {
-  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   const id = randomUUID(); await writeFile(join(f.policy.channelDirectory, 'verification-inbox', id + '.json'), JSON.stringify({ version: 1, id, command: 'arbitrary host shell' }), { mode: 0o600 });
   const fake = randomUUID(); await writeFile(join(f.policy.channelDirectory, 'verification-results', fake + '.json'), JSON.stringify({ version: 1, id: fake, verified: true, head: f.head, state: 'completed' }), { mode: 0o600 });
   const channel = createPublicationFileChannel({ version: 1, projectRoot: f.projectRoot, channelDirectory: f.policy.channelDirectory });
   const queued = await channel.request('prepare', { head: f.head, branch: 'grunt/fixture', title: 'Synthetic forged proof', body: 'Fixture', verificationIds: [fake] }, { cwd: f.projectRoot }) as { id: string };
-  await host.tick(); expect(f.runner).not.toHaveBeenCalled(); expect(await host.queue.status(queued.id)).toMatchObject({ phase: 'blocked', reason: 'verification_required' }); expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+  await host.tick(); expect(f.runner).not.toHaveBeenCalled(); expect(await host.queue.status(queued.id)).toMatchObject({ phase: 'blocked', reason: 'verification_required' }); expect(f.mutations).toEqual([]);
 });
 
 it('pins Git configuration before any publication capture or credential execution', async () => {
-  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   git(f.projectRoot, 'config', 'url.https://synthetic.invalid/.insteadOf', 'https://github.com/');
   await expect(host.queue.prepare({ head: f.head, branch: 'grunt/fixture', title: 'Fixture', body: 'Fixture', verificationIds: [randomUUID()] })).rejects.toThrow('configuration changed');
   expect(f.exec).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
@@ -117,42 +120,64 @@ it('awaits a pending synthetic verification in one-shot mode and stops a managed
 });
 
 
-it('refuses mutable config includes and keeps source secrets out of independent review context', async () => {
+it('refuses mutable config includes and fails closed before any release work', async () => {
   const f = await fixture();
   await writeFile(join(f.projectRoot, '.git/extra'), '[url "https://synthetic.invalid/"]\n insteadOf = https://github.com/\n');
   git(f.projectRoot, 'config', 'include.path', 'extra');
   f.policy.gitConfigSha256 = createHash('sha256').update(await readFile(join(f.projectRoot, '.git/config'))).digest('hex');
-  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   await expect(host.queue.prepare({ head: f.head, branch: 'grunt/fixture', title: 'Fixture', body: 'Fixture', verificationIds: [randomUUID()] })).rejects.toThrow('execution-sensitive');
-  expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+  expect(f.mutations).toEqual([]);
 });
 
-it('rejects private committed filenames before contacting a reviewer or Github', async () => {
+it('rejects private committed filenames before contacting Github', async () => {
   const f = await fixture(); await writeFile(join(f.projectRoot, '.netrc'), 'synthetic secret fixture'); git(f.projectRoot, 'add', '.netrc'); git(f.projectRoot, 'commit', '-m', 'synthetic secret guard');
-  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   await expect(host.queue.prepare({ head: git(f.projectRoot, 'rev-parse', 'HEAD'), branch: 'grunt/fixture', title: 'Fixture', body: 'Fixture', verificationIds: [randomUUID()] })).rejects.toThrow('Private-looking');
-  expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+  expect(f.mutations).toEqual([]);
   expect((f.exec as ReturnType<typeof vi.fn>).mock.calls.some(call => call[0][0] === '/usr/bin/gh')).toBe(false);
 });
 
-it('keeps host authority intact when writable publication directories are swapped during asynchronous review', async () => {
-  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+it('keeps host authority intact when writable publication directories are swapped while a review is recorded', async () => {
+  const f = await fixture(); let swapped = false;
+  const exec: HostExec = async (argv, options) => {
+    if (!swapped && argv[0] === '/usr/bin/git' && argv.includes('diff')) {
+      swapped = true;
+      for (const child of ['publication-results', 'releases']) {
+        await rename(join(f.policy.channelDirectory, child), join(f.policy.channelDirectory, child + '-held'));
+        await symlink(join(f.policy.stateDirectory, 'publication'), join(f.policy.channelDirectory, child));
+      }
+    }
+    return f.exec(argv, options);
+  };
+  const host = await openExecutionHost(f.policy, { exec, runner: f.runner });
   const verification = createVerificationBrokerFileClient({ projectRoot: f.projectRoot, inboxDirectory: join(f.policy.channelDirectory, 'verification-inbox'), resultDirectory: join(f.policy.channelDirectory, 'verification-results') });
   const check = await verification.start({ planId: 'release', checkId: 'tests' }, { cwd: f.projectRoot }); await host.tick();
   const channel = createPublicationFileChannel({ version: 1, projectRoot: f.projectRoot, channelDirectory: f.policy.channelDirectory });
   const request = await channel.request('prepare', { head: f.head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [check.id] }, { cwd: f.projectRoot }) as { id: string }; await host.tick();
-  f.workers.start.mockImplementationOnce(async () => {
-    for (const child of ['publication-results', 'releases']) {
-      await rename(join(f.policy.channelDirectory, child), join(f.policy.channelDirectory, child + '-held'));
-      await symlink(join(f.policy.stateDirectory, 'publication'), join(f.policy.channelDirectory, child));
-    }
-    return { batchId: randomUUID() };
-  });
-  await channel.request('advance', { id: request.id }, { cwd: f.projectRoot }); await host.tick();
+  await channel.request('review-record', { id: request.id, head: f.head, gitTree: git(f.projectRoot, 'rev-parse', 'HEAD^{tree}'), verdict: 'approve', summary: 'Synthetic self-review.' }, { cwd: f.projectRoot }); await host.tick();
+  expect(swapped).toBe(true);
   expect(await host.queue.status(request.id)).toMatchObject({ phase: 'ready' });
   const protectedRecord = JSON.parse(await readFile(join(f.policy.stateDirectory, 'publication', request.id + '.json'), 'utf8'));
-  expect(protectedRecord.review.independent).toBe(true); expect(protectedRecord.snapshot.head).toBe(f.head);
+  expect(protectedRecord.review).toMatchObject({ source: 'builder', verdict: 'approve' }); expect(protectedRecord.snapshot.head).toBe(f.head);
   expect(await readdir(join(f.policy.stateDirectory, 'publication'))).toEqual([request.id + '.json']);
+});
+
+it('rejects a malformed or mismatched review-record request without changing the release', async () => {
+  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
+  const verification = createVerificationBrokerFileClient({ projectRoot: f.projectRoot, inboxDirectory: join(f.policy.channelDirectory, 'verification-inbox'), resultDirectory: join(f.policy.channelDirectory, 'verification-results') });
+  const check = await verification.start({ planId: 'release', checkId: 'tests' }, { cwd: f.projectRoot }); await host.tick();
+  const channel = createPublicationFileChannel({ version: 1, projectRoot: f.projectRoot, channelDirectory: f.policy.channelDirectory });
+  const prepared = await channel.request('prepare', { head: f.head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [check.id] }, { cwd: f.projectRoot }) as { id: string }; await host.tick();
+  const results = join(f.policy.channelDirectory, 'publication-results'), gitTree = git(f.projectRoot, 'rev-parse', 'HEAD^{tree}');
+  const send = async (input: unknown) => { const queued = await channel.request('review-record', input, { cwd: f.projectRoot }) as { requestId: string }; await host.tick(); return JSON.parse(await readFile(join(results, queued.requestId + '.json'), 'utf8')); };
+  await expect(channel.request('review-record', { id: prepared.id }, { cwd: f.projectRoot })).rejects.toThrow();
+  expect(await send({ id: prepared.id, head: f.base, gitTree, verdict: 'approve', summary: 'Wrong commit.' })).toMatchObject({ state: 'failed', code: 'review_not_recorded' });
+  expect(await send({ id: prepared.id, head: f.head, gitTree: f.base, verdict: 'approve', summary: 'Wrong tree.' })).toMatchObject({ state: 'failed', code: 'review_not_recorded' });
+  expect(await send({ id: randomUUID(), head: f.head, gitTree, verdict: 'approve', summary: 'Unknown release.' })).toMatchObject({ state: 'failed', code: 'review_not_recorded' });
+  expect(await host.queue.status(prepared.id)).toMatchObject({ phase: 'awaiting_review' });
+  expect(await send({ id: prepared.id, head: f.head, gitTree, verdict: 'changes_requested', summary: 'Synthetic finding.' })).toMatchObject({ state: 'completed', release: { phase: 'blocked', reason: 'changes_requested' } });
+  expect(f.mutations).toEqual([]);
 });
 
 it('recovers a dead process lease, refuses a live owner and preserves private evidence', async () => {
@@ -176,13 +201,15 @@ it('supports the public finite tick CLI without starting external work', async (
 });
 
 
-it('rejects a deleted private file before its old contents can enter reviewer context', async () => {
-  const f = await fixture({ deletedSecret: true }), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+it('rejects a review of a candidate whose changed paths include a deleted private file', async () => {
+  const f = await fixture({ deletedSecret: true }), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   const verification = createVerificationBrokerFileClient({ projectRoot: f.projectRoot, inboxDirectory: join(f.policy.channelDirectory, 'verification-inbox'), resultDirectory: join(f.policy.channelDirectory, 'verification-results') });
   const check = await verification.start({ planId: 'release', checkId: 'tests' }, { cwd: f.projectRoot }); await host.tick();
   const request = await host.queue.prepare({ head: f.head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [check.id] });
-  await expect(host.queue.advance(request.id)).rejects.toThrow('Private-looking changed paths');
-  expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+  git(f.projectRoot, 'replace', f.base, f.head); expect(git(f.projectRoot, 'diff', f.base, f.head)).toBe('');
+  const review = { id: request.id, head: f.head, gitTree: git(f.projectRoot, 'rev-parse', 'HEAD^{tree}'), verdict: 'approve' as const, summary: 'Synthetic self-review.' };
+  await expect(host.queue.recordReview(request.id, review)).rejects.toThrow('Private-looking changed paths');
+  expect(await host.queue.status(request.id)).toMatchObject({ phase: 'awaiting_review' }); expect(f.mutations).toEqual([]);
 });
 
 it('keeps explicit requests pending under startup hold and exposes local health without invoking checks', async () => {
@@ -231,19 +258,6 @@ it('pins dependency directories before bwrap so a worker symlink swap cannot exp
   expect(pinned).toBe(true); expect(await host.broker.verifiedReceipt(check.id)).toMatchObject({ verified: true });
 });
 
-it('ignores replacement refs when preparing the independent exact-base review diff', async () => {
-  const f = await fixture(), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
-  const verification = createVerificationBrokerFileClient({ projectRoot: f.projectRoot, inboxDirectory: join(f.policy.channelDirectory, 'verification-inbox'), resultDirectory: join(f.policy.channelDirectory, 'verification-results') });
-  const check = await verification.start({ planId: 'release', checkId: 'tests' }, { cwd: f.projectRoot }); await host.tick();
-  const request = await host.queue.prepare({ head: f.head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [check.id] });
-  git(f.projectRoot, 'replace', f.base, f.head);
-  expect(git(f.projectRoot, 'diff', f.base, f.head)).toBe('');
-  await host.queue.advance(request.id);
-  const reviewInput = f.workers.start.mock.calls[0]![0] as { tasks: { context: string }[] };
-  expect(reviewInput.tasks[0]!.context).toContain('-base'); expect(reviewInput.tasks[0]!.context).toContain('+candidate');
-});
-
-
 it('awaits group escalation after a redirected descendant ignores TERM and its parent exits', async () => {
   const root = await mkdtemp(join(tmpdir(), 'grunt-host-cancellation-')); roots.push(root); const marker = join(root, 'descendant.pid');
   const controller = new AbortController();
@@ -260,19 +274,19 @@ it('rejects private files in newly reachable intermediate commits even when remo
   const f = await fixture();
   await writeFile(join(f.projectRoot, '.netrc'), 'synthetic historical secret'); git(f.projectRoot, 'add', '.netrc'); git(f.projectRoot, 'commit', '-m', 'synthetic intermediate secret');
   git(f.projectRoot, 'rm', '.netrc'); git(f.projectRoot, 'commit', '-m', 'synthetic remove secret');
-  const head = git(f.projectRoot, 'rev-parse', 'HEAD'), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const head = git(f.projectRoot, 'rev-parse', 'HEAD'), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   expect(git(f.projectRoot, 'ls-tree', '-r', '--name-only', head)).not.toContain('.netrc');
   await expect(host.queue.prepare({ head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [randomUUID()] })).rejects.toThrow('Private-looking');
-  expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+  expect(f.mutations).toEqual([]);
 });
 
 it('ignores grafted ancestry when the local candidate does not contain the pinned public base', async () => {
   const f = await fixture(); git(f.projectRoot, 'checkout', '--orphan', 'grunt/orphan'); git(f.projectRoot, 'commit', '-m', 'synthetic unrelated candidate');
   const head = git(f.projectRoot, 'rev-parse', 'HEAD'); await writeFile(join(f.projectRoot, '.git/info/grafts'), head + ' ' + f.base + '\n');
   expect(git(f.projectRoot, 'merge-base', '--is-ancestor', f.base, head)).toBe('');
-  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   await expect(host.queue.prepare({ head, branch: 'grunt/orphan', title: 'Synthetic release', body: 'Fixture', verificationIds: [randomUUID()] })).rejects.toThrow('current base');
-  expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+  expect(f.mutations).toEqual([]);
 });
 
 it('runs a real isolated synthetic bwrap check with inherited readonly mount descriptors', async () => {
@@ -289,9 +303,9 @@ it('runs a real isolated synthetic bwrap check with inherited readonly mount des
 it.each(['/dev/null', '/tmp/synthetic-custom-hooks', '/dev/null\n'])('accepts pinned core.hooksPath only with the exact safe value: %j', async hooksPath => {
   const f = await fixture(); git(f.projectRoot, 'config', 'core.hooksPath', hooksPath);
   f.policy.gitConfigSha256 = createHash('sha256').update(await readFile(join(f.projectRoot, '.git/config'))).digest('hex');
-  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner, workers: () => f.workers });
+  const host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
   const request = { head: f.head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [randomUUID()] };
   if (hooksPath === '/dev/null') expect(await host.queue.prepare(request)).toMatchObject({ phase: 'blocked', reason: 'verification_required' });
   else await expect(host.queue.prepare(request)).rejects.toThrow('execution-sensitive');
-  expect(f.workers.start).not.toHaveBeenCalled(); expect(f.mutations).toEqual([]);
+  expect(f.mutations).toEqual([]);
 });

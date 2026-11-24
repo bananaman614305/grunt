@@ -357,8 +357,10 @@ removal notice and exits 1. State left under `~/.cache/grunt/jobs` and
 `~/.cache/grunt/checkpoints` is no longer read; delete it by hand.
 
 The operator-owned execution host (`usegrunt execution-host`) for required release
-checks, independent review and publication, and its read-only channel manifest,
-are unchanged; see [execution efficiency](efficiency.md).
+checks and publication, and its read-only channel manifest, are kept. It no longer
+runs a reviewer: the builder records its own review of the exact verified commit
+and tree with the new `review-record` channel request; see
+[execution efficiency](efficiency.md).
 
 ### Source dashboard
 

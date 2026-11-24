@@ -105,13 +105,22 @@ class GateTests(unittest.TestCase):
                        lambda g: g.pools[8793]["workers"].update(active=[{"id": "work"}]),
                        lambda g: g.pools[8793]["workers"].update(queued=[{"id": "work"}]),
                        lambda g: setattr(g, "status", {"phase": "working", "workerPid": 2}),
-                       lambda g: g.pools.update({8792: []})):
+                       lambda g: g.pools.update({8792: []}),
+                       lambda g: g.pools[8793].update(workers=[])):
             with self.subTest(change=change):
                 gate = FakeGate()
                 gate.before_pool = lambda _port: change(gate)
                 with self.assertRaises(module.GateError):
                     gate.acquire(timeout_seconds=0)
                 self.assertEqual(gate.signals[-1], (1000, signal.SIGCONT))
+
+    def test_runtime_without_subworkers_is_idle_when_no_request_is_active(self):
+        gate = FakeGate()
+        for pool in gate.pools.values():
+            del pool["workers"]
+        self.assertTrue(gate._idle())
+        gate.pools[8793]["activeRequests"] = 1
+        self.assertFalse(gate._idle())
 
     def test_keyboard_interrupt_after_freeze_resumes_and_propagates(self):
         gate = FakeGate()

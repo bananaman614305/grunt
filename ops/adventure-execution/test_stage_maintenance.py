@@ -14,11 +14,32 @@ await Promise.all([sync.close(),workerRuntime.close()]);
 """
 
 
+def runtime(root):
+    directory = root / 'runtime' / 'dist' / 'local'
+    directory.mkdir(parents=True)
+    (directory / 'worker-runtime.js').write_text('// synthetic runtime fixture\n')
+
+
 class StageMaintenanceTests(unittest.TestCase):
+    def test_refuses_a_runtime_without_subworkers_and_an_already_wired_helper(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            source, destination = root / 'free-pool.mjs', root / 'stage'
+            source.write_bytes(SOURCE)
+            with self.assertRaisesRegex(ValueError, 'no worker-runtime.js'):
+                module.stage(source, destination)
+            self.assertFalse(destination.exists())
+            runtime(root)
+            source.write_bytes(SOURCE + b'const maintenance=createSourceMaintenance(sources,{directory});\n')
+            with self.assertRaisesRegex(ValueError, 'already wires'):
+                module.stage(source, destination)
+            self.assertFalse(destination.exists())
+
     def test_stages_only_and_keeps_current_helper_untouched(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             source, destination = root / 'free-pool.mjs', root / 'stage'
+            runtime(root)
             source.write_bytes(SOURCE)
             receipt = module.stage(source, destination)
             self.assertEqual(source.read_bytes(), SOURCE)
@@ -35,6 +56,7 @@ class StageMaintenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             source, destination = root / 'free-pool.mjs', root / 'stage'
+            runtime(root)
             source.write_bytes(SOURCE.replace(b'await sync.start();', b'await different.start();'))
             with self.assertRaises(ValueError):
                 module.stage(source, destination)
@@ -44,6 +66,7 @@ class StageMaintenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             source, target = root / 'free-pool.mjs', root / 'target'
+            runtime(root)
             target.write_bytes(SOURCE)
             source.symlink_to(target)
             with self.assertRaises(OSError):

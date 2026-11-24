@@ -127,9 +127,10 @@ class CheckpointGate:
             if not isinstance(pool, dict):
                 return False
             workers = pool.get("workers")
+            # Runtimes after 0.9.12 have no subworkers and omit the field; earlier ones must report it empty.
             if (type(pool.get("activeRequests")) is not int or pool["activeRequests"] != 0
-                    or not isinstance(workers, dict)
-                    or workers.get("active") != [] or workers.get("queued") != []):
+                    or workers is not None and (not isinstance(workers, dict)
+                                                or workers.get("active") != [] or workers.get("queued") != [])):
                 return False
         return True
 

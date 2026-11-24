@@ -43,8 +43,13 @@ monitor checks the running Pi process for quiet shell tools when logs are
 buffered. CPU progress among descendants, fresh nested replies, and fresh nested
 requests help distinguish execution from long waits.
 
+The collector still understands the retired subworker and job observations from
+runtimes up to 0.9.12; when the pool reports no `workers` field or no job
+snapshot exists (Grunt 0.10 and later), those parts of the snapshot are simply
+absent and the remaining activity and uptime metrics are unaffected.
+
 The activity snapshot also includes the dedicated Adventure pool's sanitized
-worker statuses from port 8793. It preserves allowlisted failure codes,
+worker statuses from port 8793, when the runtime still reports them. It preserves allowlisted failure codes,
 capabilities, mode, turn/tool counters and artifact-availability flags, but never
 worker prompts, commands, paths, artifacts or model output. The overview prefers
 this pool over the primary daemon's snapshot for the same installation, avoiding
@@ -76,23 +81,17 @@ last check time. Errors retain dated cached evidence for at most one hour,
 then return unknown. Successful deployment is not proof of playability. No
 Actions workflow, game test or deployment is run by this collector.
 
-These metrics require real opt-in execution metadata. Pi must load Grunt's
-installed worker extension and be launched with `--grunt-agent-workers` for
-scoped workers and `--grunt-background-jobs` for managed jobs; neither ordinary
-setup nor a dashboard deploy grants those capabilities. Use
-`usegrunt workers connect pi --agentic` for the launch command. The owner's
-separate [execution staging runbook](../adventure-execution/README.md) handles
-reviewed installation and restart preparation; this collector never starts
-workers, applies artifacts, runs checks or develops the game.
+The worker and job metrics need real opt-in execution metadata, which only
+runtimes up to 0.9.12 with Pi's worker extension and the `--grunt-agent-workers`
+and `--grunt-background-jobs` flags produced (see the owner's historical
+[execution staging runbook](../adventure-execution/README.md)). Grunt 0.10 and
+later neither has those flags nor writes the snapshots. This collector never
+starts workers, applies artifacts, runs checks or develops the game.
 
-Managed jobs belong to the coding session. The agent must collect their outcomes
-or cancel them before ending/checkpointing; shutdown cancels active work and
-recovery records interruptions without replaying commands. Worker artifacts
-remain retained for scoped inspection and explicit caller-side application.
-The dashboard receives only their availability flags, not their contents.
-For commands and the review/apply/discard workflow, see the
-[worker reference](../../docs/reference.md#subworkers) and
-[background-job reference](../../docs/reference.md#background-command-jobs).
+On those older runtimes, managed jobs belong to the coding session and worker
+artifacts stay retained for scoped inspection. The dashboard receives only their
+availability flags, not their contents. The removal is described in the
+[reference](../../docs/reference.md#background-jobs-checkpoints-and-pi-release-tools-removed).
 
 Updating the npm package alone does not install these operator scripts. For this
 owner deployment, install the reviewed `activity.py`, `uptime.py` and `claude_session.py` together in

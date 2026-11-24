@@ -240,17 +240,15 @@ not remove workload and provider confounding on their own.
 
 Publication is an operator opt-in. The private host policy selects the project,
 repository, branch prefix/base, Pages branch, static artifact directory, required
-check IDs, fixed check commands, independent review paths and merge/deploy
+check IDs, fixed check commands, the review path list and merge/deploy
 permissions. It also pins Git configuration and an isolated sandbox argv template.
 Keep the policy and authority directory outside the project and all worker mounts.
 An existing `core.hooksPath=/dev/null` is accepted; custom hooks and included
 Git configuration remain rejected.
 
 The host currently requires Linux, `/usr/bin/bwrap`, `/usr/bin/git`,
-`/usr/bin/gh`, host-side GitHub authentication and an independent reviewer backend.
-Independent review used a Grunt subworker, which was removed, so no reviewer ships
-by default: a publication reaches `reviewing` and fails with "Independent review is
-unavailable" until the host injects one. Use an ordinary Git checkout
+`/usr/bin/gh` and host-side GitHub authentication. The host runs no reviewer:
+Grunt reviews its own releases and records the outcome (see below). Use an ordinary Git checkout
 with a real `.git/config`; linked worktrees are unsupported. GitHub Pages must
 already use the configured Pages branch at its root.
 
@@ -263,7 +261,7 @@ The JSON policy has `version: 1` and these fields:
 | `gitConfigSha256` | SHA-256 of the approved project's `.git/config` bytes. |
 | `plans` | Release plans with `version: 1`, `id`, `mode: "release"` and fixed `checks` containing `id`, `command`, optional `timeoutSeconds` and `artifactPaths`. Check IDs must be unique across plans. |
 | `sandboxArgv` | Operator-defined `/usr/bin/bwrap` argument array with `--unshare-all`, `--die-with-parent`, `--new-session`, `--clearenv` and exactly one `--bind $WORKSPACE $PROJECT`. `$WORKSPACE`, `$PROJECT` and `$COMMAND` substitutions must each occupy a whole argument. Include the required runtime/dependencies through permitted read-only mounts. |
-| `publication` | `version: 1`, matching `projectRoot`, `repository` (`owner/repo`), `base`, slash-terminated `headPrefix`, `requiredChecks`, `reviewPaths`, `artifactDirectory`, `pagesBranch`, `allowMerge` and `allowDeploy`. |
+| `publication` | `version: 1`, matching `projectRoot`, `repository` (`owner/repo`), `base`, slash-terminated `headPrefix`, `requiredChecks`, `reviewPaths` (still required, now unused: it named the paths the removed reviewer owned), `artifactDirectory`, `pagesBranch`, `allowMerge` and `allowDeploy`. |
 | `holdFiles` | Optional list of absolute paths; the existence of any one prevents admission of new host work. |
 
 Every check's `artifactPaths` must be exactly `[publication.artifactDirectory]`,
@@ -312,10 +310,28 @@ model-written claims.
 
 Commit a clean candidate before requesting the required checks. After collecting
 their IDs, the client requests publication `prepare` with `{head, branch, title,
-body, verificationIds}`, then uses `advance` and `status` with the request `id`. Each advance request
-queues one stage; the host does not advance the whole release automatically.
-Status reads do not advance work. The durable queue requires an actual separate
-read-only Grunt reviewer and matching authenticated
+body, verificationIds}`. A release whose receipts verify waits in `awaiting_review`;
+the builder reviews it (for Grunt, with its own Claude Code subagent) and sends
+`review-record` with the release `id` and exactly `{id, head, gitTree, verdict,
+summary}`: the 40-hex commit and Git tree it reviewed, `verdict` of `approve` or
+`changes_requested`, and a summary of 1 to 2000 characters that the builder
+chooses. The host records only that summary. It refuses the record unless the
+release is still `awaiting_review` with no review, its verification receipts
+still authenticate, the project is still the exact verified candidate, the
+commit and tree match it and the changed paths pass the private-file screen. An
+approval makes the release `ready`; `changes_requested` blocks it with reason
+`changes_requested`, and a fix needs a new commit and a new `prepare`. A refused
+record leaves the release as it was and answers `review_not_recorded`. Repeating
+the identical record is harmless; a second, different verdict is refused.
+
+The host cannot know who reviewed, so the evidence is labelled `source:
+"builder"`. It proves the verdict named this exact commit and tree after the
+authenticated checks, not that the reviewer was independent of the author. Every
+other gate is unchanged. Then the client uses `advance` and `status` with the
+request `id`. Each advance request queues one stage; the host does not advance the
+whole release automatically (an advance while awaiting review changes nothing).
+Status reads do not advance work. The durable queue requires a recorded approving
+review and matching authenticated
 receipts. It merges the exact tested tree using a non-force compare-and-swap
 update, uploads the verified static artifact bytes and confirms the exact Pages
 build commit. New base work or changed evidence blocks publication. Private and
@@ -323,6 +339,6 @@ executable GitHub configuration paths are excluded from static uploads.
 
 Signing keys and GitHub credentials remain host-only. Worker-visible status is
 advisory; authority is rechecked privately at every release gate. Unresolved
-checks/reviews must be addressed before a new publication attempt. A configured
+checks and requested changes must be addressed before a new publication attempt. A configured
 publication path does not grant permission to skip checks or claim deployment
 before its verified build completes.
