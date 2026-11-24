@@ -22,19 +22,15 @@ is deleted or taken over based on a clock or a reused PID.
 
 ## Owner rollout
 
-Upgrade both the standard daemon package and the owner runtime package before
-enabling the owner helper's maintenance wiring. Older versions do not acquire
-the coordination lock and must not remain active writers alongside the new
-scheduler. Preserve `maintenance.json`; do not reset completed checks or quota
-timestamps. Use the existing owner checkpoint gate to preserve its saved Pi
-session and active work.
-
-`stage_maintenance.py --source /absolute/path/free-pool.mjs --stage /new/path`
-prepares an original copy, candidate and SHA-256 receipt without modifying live
-files or restarting services. It refuses changed helper anchors. The candidate
-adds the shared integration and waits for maintenance shutdown before closing
-the sources. Apply it only after reviewing the receipt against the current
-helper and installing the matching runtime module.
+Both installed runtime packages (the standard daemon and the owner runtime) and the
+owner's `free-pool.mjs` launcher must run the coordinated scheduler together: older
+versions do not acquire the coordination lock and must not remain active writers
+alongside the new one. The [live upgrade](../live-upgrade/README.md) replaces both
+runtime trees in one transaction, preserves `maintenance.json` (it never resets
+completed checks or quota timestamps), checks that every eligible source still has
+maintenance coverage after the restart, and refuses to start while a source check is
+due inside the startup window. The Pi-era staging helper that patched the launcher
+was removed with the other 0.9.x tooling (see git history before 0.10.1).
 
 Verify both runtime status responses expose maintenance entries for their
 installed eligible sources. Upcoming schedules should retain prior evidence;

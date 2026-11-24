@@ -83,8 +83,7 @@ Actions workflow, game test or deployment is run by this collector.
 
 The worker and job metrics need real opt-in execution metadata, which only
 runtimes up to 0.9.12 with Pi's worker extension and the `--grunt-agent-workers`
-and `--grunt-background-jobs` flags produced (see the owner's historical
-[execution staging runbook](../adventure-execution/README.md)). Grunt 0.10 and
+and `--grunt-background-jobs` flags produced. Grunt 0.10 and
 later neither has those flags nor writes the snapshots. This collector never
 starts workers, applies artifacts, runs checks or develops the game.
 
