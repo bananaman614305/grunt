@@ -12,24 +12,39 @@
 npx usegrunt
 ```
 
-usegrunt installs grunt on this machine. It pools free AI quota and serves local coding agents.
+usegrunt installs grunt on this machine. It pools free AI quota and serves it as a local model endpoint. Your coding harness keeps the agent loop, tools and parallelism; grunt supplies the free model.
+
+## Use it with a harness
+
+Recommended: Claude Code, Codex and OpenCode. Each has native subagents, and
+they run through grunt in parallel. Setup writes a grunt-owned file for each one
+it finds, and you opt a session in by launching with it:
+
+```bash
+claude --settings ~/.claude/grunt.settings.json --model grunt
+codex --profile grunt
+OPENCODE_CONFIG=~/.config/opencode/grunt.opencode.json opencode
+```
+
+Launch any of them without those options and nothing changes: your own
+settings, defaults and models are never edited. Claude Code works without a
+paid subscription when it points at grunt. Codex runs with `web_search`
+disabled, because grunt returns 400 for hosted tools.
+
+Pi stays supported as a single-agent harness (`pi --provider grunt --model grunt`);
+it has no subagents, so it has no parallelism. See the
+[harness reference](docs/reference.md#claude-code) for each file's contents and
+[parallel work](#parallel-work) for how subagents are routed.
 
 Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
 
-Setup plays the miner animation, connects your selected coding tool,
+Setup plays the miner animation, connects your coding tools,
 shows one live table of tools and sources, and ends with `Ready`. Setup accepts
 current data-sharing policies automatically. Once a verified route answers through
 model `grunt`, setup leaves remaining signups to the daemon after finishing local
 configuration and Squire bootstrap. See the [setup flow](docs/reference.md#free-api-and-account-setup)
 for verification and background acquisition limits. Grunt is added as an extra
-named model; existing defaults stay intact. Claude Code, Codex and OpenCode have
-native subagents; each gets a grunt-owned file that puts the session and its
-subagents on grunt:
-`claude --settings ~/.claude/grunt.settings.json --model grunt`,
-`codex --profile grunt`, or
-`OPENCODE_CONFIG=~/.config/opencode/grunt.opencode.json opencode`.
-Pi stays supported, without parallel subagents. See the
-[harness reference](docs/reference.md#claude-code).
+named model; existing defaults stay intact.
 Sources that cannot finish signup or pass a test request are skipped while working
 sources remain usable. Rerun setup to retry them.
 
@@ -66,17 +81,19 @@ terminals hide model/timing columns, `NO_COLOR` removes color, and piped output
 prints a single plain snapshot. New setup remembers the installed port;
 `--port` overrides `GRUNT_PORT`, the saved port, and the default 8788.
 
-### Parallel work
+## Parallel work
 
-Grunt does not run its own subworkers (removed; see the
-[reference](docs/reference.md#subworkers-removed)). Claude Code, Codex and
-OpenCode have native subagents that work through Grunt: each subagent is an
-ordinary model request that Grunt routes to a source. Pi has no subagents, so
-Pi users no longer get parallel workers.
+Grunt runs no workers of its own. Parallelism belongs to the harness: the native
+subagents of Claude Code, Codex and OpenCode send ordinary model requests that
+Grunt routes. Each subagent is its own task and stays on one free source unless
+that source fails, so parallel subagents spread across your sources. Your
+orchestrator keeps its source when a subagent finishes.
 
-Pi background jobs and checkpoints were removed along with the subworkers; Pi is no
-longer a parallel or agentic platform for Grunt (see the
-[reference](docs/reference.md#background-jobs-checkpoints-and-pi-release-tools-removed)).
+Parallel subagents use free quota faster. The remedy is more sources, which the
+scout keeps adding, not throttling. Pi has no subagents and runs one session at
+a time; Pi background jobs, checkpoints and Grunt's subworkers were removed (see
+the [reference](docs/reference.md#parallel-work)).
+
 Local routing performance and failure backoff persist across runtime restarts.
 
 Operators can also configure a private execution host for required release
@@ -185,7 +202,7 @@ Aperture uses the pinned `baidu/ernie-5.5-flash-preview:free` route on a verifie
 Fikra and Openference are included in automatic Squire onboarding for their temporary free DeepSeek V4.1 Flash offers. See the [temporary-source reference](docs/reference.md#temporary-free-sources) for promotion windows and verification checks.
 
 
-Gödel Machines uses a dedicated Free Key for `deepseek/deepseek-v4.1-flash`. Grunt setup connects it through Squire. Only local model requests with `X-Grunt-Context: public` can use the route, including when their model is `grunt`. Set this header only when the entire payload, including system instructions, conversation history, source code, and tool results, is approved for retention, staff review, and training and has no secrets, confidential business information, or other people’s personal data. Ordinary Pi and subworker sessions omit the header. The free allowance is 600,000 uncached input and 150,000 output tokens per day, renewing at midnight UTC. [Gödel free-tier terms](https://inference.goedelmachines.com/legal#free-tier)
+Gödel Machines uses a dedicated Free Key for `deepseek/deepseek-v4.1-flash`. Grunt setup connects it through Squire. Only local model requests with `X-Grunt-Context: public` can use the route, including when their model is `grunt`. Set this header only when the entire payload, including system instructions, conversation history, source code, and tool results, is approved for retention, staff review, and training and has no secrets, confidential business information, or other people’s personal data. Ordinary harness sessions omit the header. The free allowance is 600,000 uncached input and 150,000 output tokens per day, renewing at midnight UTC. [Gödel free-tier terms](https://inference.goedelmachines.com/legal#free-tier)
 
 LiveKit adds DeepSeek V4.1 Flash through its free Build plan, using one free project and the official CLI's browser login. The documented included inference allowance is $2.50 per calendar month with a hard stop and no card. Keep the account on Build. LiveKit documents [zero data retention and no training for inference](https://docs.livekit.io/agents/models/inference/), so it needs no sharing approval. The route passed short-prompt, tool-call and 210,077-token context checks through Grunt.
 

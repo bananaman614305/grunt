@@ -4,9 +4,9 @@
 
 `grunt` exists so that a person who cannot pay for intelligence still gets an agent that does serious work.
 It serves the knowledge worker who budgets for food and rent before any AI plan, and who falls further behind those who can pay.
-grunt is a local model endpoint that the person's harness, such as Pi, calls like any other model.
+grunt is a local model endpoint that the person's harness calls like any other model.
 Behind that endpoint, grunt turns free tokens scattered across siloed quotas and hard-to-reach harnesses into one model that keeps answering.
-In Pi, the person sees one agent that keeps working; grunt is the free engine underneath it.
+The harness owns the agent loop, the tools and any parallelism; grunt is the free engine underneath it.
 It owns exactly one thing: sourcing free tokens and routing each task to a source that can finish it.
 
 ## Free is the product, not a tier
@@ -45,6 +45,7 @@ The daemon refreshes the registry on the [router loop schedule](docs/router.md#3
 ## One adapter per task, hand off at the wall
 
 Each new user turn starts a task, and the daemon binds it to one adapter, drawn at random by weight.
+Managed pools always draw by weight and stay sticky; a source with no registry entry, such as an earlier FreeLLMAPI route, is a last resort.
 Adapters that cannot handle the task's modality are filtered out before the draw.
 The task stays on that adapter until it returns a 429, fails past a set tolerance, or loses its login.
 grunt does not count usage ahead of time; it lets the adapter hit its limit, then switches.
@@ -53,6 +54,9 @@ The next adapter gets the original task, the edits so far and the last output, a
 Each failure carries a typed reason, so the next adapter and the person both know why.
 A timeout after possible filesystem work stops instead of replaying that work.
 Caller cancellation stops the whole chain.
+A harness that runs subagents sends each as its own task, so parallel subagents spread across sources.
+The orchestrator keeps its own source when a subagent finishes.
+Parallel work spends free quota faster; the answer is more sources, which the scout adds, and not throttling.
 
 ## Work stays on the person's machine
 
@@ -65,11 +69,15 @@ API-provider keys stay in the person's vault, and grunt receives scoped, revocab
 No key, token or device secret appears in logs, terminal output or harness config.
 grunt reuses logins the person already holds. Official native CLIs manage their own login files; grunt does not copy their credentials.
 
-## One command to a working agent
+## One command to a working endpoint
 
-`npx usegrunt` installs dependencies, the daemon and the starting adapters, and points Pi at grunt.
+`npx usegrunt` installs dependencies, the daemon and the starting adapters, and writes opt-in files for the harnesses it finds.
 The package and the command are both `usegrunt`; "grunt" is the brand only, because the `grunt` command already belongs to the JavaScript task runner.
-Other harnesses that accept a custom model endpoint, such as Claude Code and opencode, can use grunt the same way.
+The recommended harnesses are Claude Code, Codex and OpenCode.
+Their native subagents work through grunt, so parallel work needs nothing from grunt but more sources.
+Claude Code works without a paid subscription when it points at grunt.
+Pi stays supported as a single-agent harness with no parallelism.
+Each harness gets its own grunt file and is launched with it on purpose; the person's own defaults are never edited.
 Setup checks each adapter is installed and signed in, and fixes what it can.
 Setup reports success only after a real task travels through the installed daemon.
 Human verification hands off to a browser and resumes in the same session.
@@ -77,7 +85,8 @@ One refused provider drops out; the rest still install.
 
 ## Scope
 
-grunt is not a harness, a model host, a credit reseller, or a billing service.
+grunt is not a harness, an agent loop, a model host, a credit reseller, or a billing service.
+It runs no workers, background jobs or checkpoints of its own.
 It does not compete with frontier models on benchmarks; it competes on cost to the person, which is zero.
 It is not an industrial-scale inference pool.
 It does not select Google models, add a paid OpenRouter source, or admit unvetted aggregators. A vetted free provider may use its own upstream processors, disclosed during setup.
