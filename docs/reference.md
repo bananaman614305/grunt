@@ -1260,7 +1260,7 @@ Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
       "models": [{
         "id": "grunt", "name": "grunt", "reasoning": false, "input": ["text"],
         "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-        "contextWindow": 65536, "maxTokens": 4096
+        "contextWindow": 65536, "maxTokens": 65536
       }]
     }
   }
@@ -1274,9 +1274,9 @@ one session at a time (see [parallel work](#parallel-work)). See [pi's model con
 The managed Pi profile uses a 65,536-token working context to compact conversation
 history earlier and reduce repeated input. This local setting does not reduce a
 provider's native context capacity or change the provider qualification floor.
-Default setup/update migration changes only Grunt-managed profiles using this
-daemon's loopback endpoint and the former 128,000 setting; custom providers, remote endpoints and
-user-adjusted contexts are preserved. For an explicit managed setup/update,
+Setup and update refresh the output budget on Grunt-managed profiles. Update
+matches the daemon's loopback endpoint. The working-context migration still
+targets the former 128,000 setting and preserves user-adjusted contexts. For an explicit managed setup/update,
 `GRUNT_WORKING_CONTEXT_TOKENS` accepts integers from 65,536 to 200,000.
 
 ### Claude Code

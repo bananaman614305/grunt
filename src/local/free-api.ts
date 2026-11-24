@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SourceError } from './source.js';
-import type { ModelRequest, Source, ToolCall } from './source.js';
+import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 import { nousQuotaDelay, quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { diagnosticFetch } from './diagnostics.js';
 
@@ -54,6 +54,7 @@ export async function readFreeApiGrant(provider: FreeApiProvider, location = dir
   } finally { await file.close(); }
 }
 const tokens = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+const finishReasons = ['stop', 'length', 'tool_calls', 'content_filter', 'function_call'] as const satisfies readonly Completion['finishReason'][];
 const validCalls = (value: unknown): value is ToolCall[] => Array.isArray(value) && value.every(call => call && typeof call.id === 'string'
   && call.type === 'function' && typeof call.function?.name === 'string' && typeof call.function?.arguments === 'string');
 
@@ -87,7 +88,7 @@ export class FreeApi implements Source {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
         body: JSON.stringify({ model: this.spec.model, messages: request.messages,
           tools: request.tools.length ? request.tools : undefined, stream: false,
-          max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
+          max_tokens: this.id === 'zro' ? request.maxTokens : Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
       });
     } catch {
       caller.throwIfAborted();
@@ -111,17 +112,20 @@ export class FreeApi implements Source {
         { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
     }
     try {
-      const body = await response.json() as { model?: unknown; choices?: { message?: { content?: unknown; tool_calls?: unknown; refusal?: unknown } }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
+      const body = await response.json() as { model?: unknown; choices?: { finish_reason?: unknown; message?: { content?: unknown; tool_calls?: unknown; refusal?: unknown } }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
       signal.throwIfAborted();
       if (this.options.expectedModel !== undefined && body.model !== this.options.expectedModel) {
         throw new SourceError('upstream', `${this.id} returned a different model`);
       }
-      const message = body.choices?.[0]?.message;
+      const choice = body.choices?.[0], message = choice?.message;
+      const finishReason = this.id === 'zro' ? finishReasons.find(reason => reason === choice?.finish_reason) : undefined;
       if (message?.refusal) throw new SourceError('refused', `${this.id} refused the request`);
       const calls = message?.tool_calls;
-      if (!message || (typeof message.content !== 'string' && !(validCalls(calls) && calls.length)) || (calls !== undefined && !validCalls(calls))) throw new SourceError('upstream', `${this.id} returned an invalid completion`);
+      const cutOff = finishReason === 'length' && message?.content == null;
+      if (!message || (typeof message.content !== 'string' && !cutOff && !(validCalls(calls) && calls.length)) || (calls !== undefined && !validCalls(calls))) throw new SourceError('upstream', `${this.id} returned an invalid completion`);
       const inputTokens = tokens(body.usage?.prompt_tokens), outputTokens = tokens(body.usage?.completion_tokens);
       return { text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),
+        ...(finishReason ? { finishReason } : {}),
         ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
     } catch (error) {
       caller.throwIfAborted();

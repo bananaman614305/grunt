@@ -151,7 +151,7 @@ it.each([true, false])('migrates the matching managed Pi window only after a suc
   const result = await updateRuntime({ ...f.options, notify: line => lines.push(line) });
   expect(result.active).toBe(active);
   const written = JSON.parse(await readFile(pi.path, 'utf8'));
-  expect(written.providers.grunt.models[0].contextWindow).toBe(65536);
+  expect(written.providers.grunt.models[0]).toMatchObject({ contextWindow: 65536, maxTokens: 65536 });
   expect(written.providers.grunt.baseUrl).toBe('http://127.0.0.1:18792/v1');
   expect(written.providers.grunt.models[1]).toEqual(pi.saved.providers.grunt.models[1]);
   expect(written.providers.other).toEqual(pi.saved.providers.other);
@@ -169,11 +169,20 @@ it('does not migrate Pi when runtime activation fails', async () => {
   await f.preserved();
 });
 
-it.each([[18793, 128000], [18792, 200000]] as const)('does not rewrite another Pi endpoint or a custom window (%s/%s)', async (port, contextWindow) => {
-  const f = await fixture(), pi = await legacyPi(f.piDirectory, port, contextWindow), original = await readFile(pi.path, 'utf8');
+it('does not rewrite another Pi endpoint', async () => {
+  const f = await fixture(), pi = await legacyPi(f.piDirectory, 18793), original = await readFile(pi.path, 'utf8');
   await updateRuntime(f.options);
   expect(await readFile(pi.path, 'utf8')).toBe(original);
   expect((await readdir(f.piDirectory)).filter(name => name.includes('.grunt-backup-'))).toEqual([]);
+  await f.preserved();
+});
+
+it('updates the managed Pi output budget without changing a custom working context', async () => {
+  const f = await fixture(), pi = await legacyPi(f.piDirectory, 18792, 200000), lines: string[] = [];
+  await updateRuntime({ ...f.options, notify: line => lines.push(line) });
+  const written = JSON.parse(await readFile(pi.path, 'utf8'));
+  expect(written.providers.grunt.models[0]).toMatchObject({ contextWindow: 200000, maxTokens: 65536 });
+  expect(lines).not.toContain('Updated the managed Pi working context');
   await f.preserved();
 });
 

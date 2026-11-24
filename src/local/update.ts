@@ -195,7 +195,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
   const notify = (message: string) => { try { options.notify?.(message); } catch { /* Progress output must not interrupt a runtime transaction. */ } };
   const migratePi = async (port: number) => {
     try {
-      if ((await migrateManagedPiWorkingContext(port, env)).changed) notify('Updated the managed Pi working context');
+      if ((await migrateManagedPiWorkingContext(port, env)).contextChanged) notify('Updated the managed Pi working context');
     } catch {
       // A custom or malformed harness file must not roll back a healthy daemon.
       notify('Grunt updated; Pi working-context migration was skipped. Repair the Pi profile before retrying setup.');

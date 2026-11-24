@@ -25,7 +25,7 @@ it('Pi: uses an efficient working window without changing global compaction sett
   await writeFile(join(dir, 'settings.json'), settings, { mode: 0o600 });
   await configurePi(19878, { env });
   const written = JSON.parse(await readFile(join(dir, 'models.json'), 'utf8'));
-  expect(written.providers.grunt.models[0]).toMatchObject({ contextWindow: 65536, maxTokens: 4096 });
+  expect(written.providers.grunt.models[0]).toMatchObject({ contextWindow: 65536, maxTokens: 65536 });
   expect(await readFile(join(dir, 'settings.json'), 'utf8')).toBe(settings);
   expect((await stat(join(dir, 'models.json'))).mode & 0o777).toBe(0o600);
 });
@@ -34,7 +34,7 @@ it('Pi setup merges managed fields while keeping extra models, provider fields a
   const f = await piFixture();
   const extra = { id: 'other-grunt-model', contextWindow: 222222, maxTokens: 1000 };
   const saved = { ...f.saved, providers: { ...f.saved.providers, grunt: { ...f.saved.providers.grunt,
-    headers: { 'X-Custom': 'keep' }, models: [{ ...f.saved.providers.grunt.models[0], contextWindow: 131072, custom: 'keep' }, extra] } } };
+    headers: { 'X-Custom': 'keep' }, models: [{ ...f.saved.providers.grunt.models[0], contextWindow: 131072, maxTokens: 8192, custom: 'keep' }, extra] } } };
   await writeFile(f.path, JSON.stringify(saved), { mode: 0o600 });
   await configurePi(19879, { env: f.env });
   const result = JSON.parse(await readFile(f.path, 'utf8'));
@@ -44,22 +44,29 @@ it('Pi setup merges managed fields while keeping extra models, provider fields a
   expect(await backups(dir)).toHaveLength(1);
 });
 
-it('Pi migration updates only the managed legacy working window and backs up privately once', async () => {
+it('Pi migration updates the managed legacy working window and output budget and backs up privately once', async () => {
   const f = await piFixture();
   const first = await migrateManagedPiWorkingContext(19878, f.env);
   expect(first.changed).toBe(true);
   const result = JSON.parse(await readFile(f.path, 'utf8'));
   expect(result).toEqual({ ...f.saved, providers: { ...f.saved.providers, grunt: { ...f.saved.providers.grunt,
-    models: [{ ...f.saved.providers.grunt.models[0], contextWindow: 65536 }] } } });
+    models: [{ ...f.saved.providers.grunt.models[0], contextWindow: 65536, maxTokens: 65536 }] } } });
   expect(first.changed && first.backup && JSON.parse(await readFile(first.backup, 'utf8'))).toEqual(f.saved);
   expect(first.changed && first.backup && (await stat(first.backup)).mode & 0o777).toBe(0o600);
   expect(await migrateManagedPiWorkingContext(19878, f.env)).toEqual({ changed: false });
   expect(await backups(dir)).toHaveLength(1);
 });
 
+it.each([65536, 200000])('Pi migration replaces the old output budget while keeping the working window (%s)', async contextWindow => {
+  const f = await piFixture(managedPi(19878, contextWindow));
+  expect((await migrateManagedPiWorkingContext(19878, f.env)).changed).toBe(true);
+  const written = JSON.parse(await readFile(f.path, 'utf8'));
+  expect(written.providers.grunt.models[0]).toMatchObject({ contextWindow, maxTokens: 65536 });
+  expect(await migrateManagedPiWorkingContext(19878, f.env)).toEqual({ changed: false });
+});
+
 it.each([
   ['different port', 19879, managedPi()],
-  ['custom window', 19878, managedPi(19878, 200000)],
   ['custom model', 19878, { ...managedPi(), models: [{ ...managedPi().models[0], name: 'my-custom-grunt' }] }],
   ['custom token budget', 19878, { ...managedPi(), models: [{ ...managedPi().models[0], maxTokens: 8192 }] }],
   ['remote provider', 19878, { ...managedPi(), baseUrl: 'https://example.invalid/v1' }],
@@ -87,7 +94,9 @@ it('Pi setup refuses an unrecognized local Grunt model before changing its endpo
 });
 
 it('Pi migration can explicitly change an authorized owner window while preserving its separate endpoint', async () => {
-  const f = await piFixture(managedPi(8793, 200000));
+  const provider = managedPi(8793, 200000);
+  provider.models[0]!.maxTokens = 65536;
+  const f = await piFixture(provider);
   expect(await migrateManagedPiWorkingContext(8792, f.env, { fromContextWindows: [200000] })).toEqual({ changed: false });
   expect(await migrateManagedPiWorkingContext(8793, f.env)).toEqual({ changed: false });
   expect((await migrateManagedPiWorkingContext(8793, f.env, { workingContextTokens: 65536, fromContextWindows: [200000] })).changed).toBe(true);
