@@ -1,10 +1,11 @@
 """Read-only collector identity/checkpoint preservation; never sends a collector cycle."""
 import hashlib,json,os,stat,uuid
 from pathlib import Path
+import hostpaths
 UNIT='grunt-admin-collector.service'
 def assert_entry(unit_reader,node):
  value=unit_reader(UNIT,'ExecStart').split(' ; ignore_errors=',1)[0]
- expected=node+' /home/alan/.config/milo/runtime/dist/admin/collector.js'
+ expected=node+' '+hostpaths.COLLECTOR_ENTRY
  if 'argv[]='+expected not in value:raise RuntimeError('Collector entry point differs from the upgraded primary runtime')
 def _stopped(unit_reader):
  if unit_reader(UNIT,'MainPID')!='0' or unit_reader(UNIT,'ActiveState') not in ('inactive','failed'):raise RuntimeError('Collector must remain gracefully stopped')

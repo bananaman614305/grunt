@@ -7,11 +7,12 @@ import stat
 import time
 import json
 
+import hostpaths
 import stage
 
 ROOT = Path(__file__).resolve().parent
-CACHE = Path('/home/alan/.config/milo/registry.json')
-STATE = Path('/home/alan/.local/state/usegrunt-adventure')
+CACHE = hostpaths.CONFIG / 'registry.json'
+STATE = hostpaths.STATE
 
 
 def private_json(path, limit=2 * 1024 * 1024):

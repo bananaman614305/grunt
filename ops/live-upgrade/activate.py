@@ -7,19 +7,20 @@ from acquisition_guard import normalized_service_environment, assert_unit_opt_ou
 from rollout_checks import maintenance_coverage
 import quota_store,host_metadata,sqlite_families,daemon_admission,collector_guard,source_transition,registry_cache
 from rollout_config import VERSION, PREVIOUS_VERSION, CONSENT_GUARD_NAME
+import hostpaths
 from startup_gate import StartupGate, MaintenanceWindowError, TEMP_ENV_CONTENT
 import stage as staging
 from daemon_admission import OwnedDaemonAdmission
 from release_proof import HOST_UNIT, tree_digest, assert_runtime, session_snapshot, assert_session_preserved, assert_profile, assert_host_installation, assert_public_archive, capture_cooldowns, assert_cooldowns
 ROOT = Path(__file__).resolve().parent
-OWNER = Path('/home/alan/.local/lib/usegrunt-adventure')
-STATE = Path('/home/alan/.local/state/usegrunt-adventure')
-NODE = '/home/alan/projects/hermes/service/data/node/bin/node'
-HOST_POLICY = Path('/home/alan/.config/milo/execution-host-adventure.json')
+OWNER = hostpaths.OWNER
+STATE = hostpaths.STATE
+NODE = hostpaths.NODE
+HOST_POLICY = hostpaths.HOST_POLICY
+PRIMARY_MAIN = hostpaths.PRIMARY_MAIN
 UNITS = ('milo.service', 'grunt-amazing-adventure.service')
 OBSERVERS = ('grunt-admin-collector.service', 'grunt-adventure-activity.service')
-ENV = {**os.environ, 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}',
-       'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'}
+ENV = hostpaths.systemd_env()
 
 def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def save(path, data):
@@ -52,13 +53,13 @@ def managed_primary_anchor():
     primary_pid = int(unit_value('milo.service', 'MainPID'))
     proc = Path('/proc') / str(primary_pid)
     command = [value.decode() for value in (proc / 'cmdline').read_bytes().split(b'\0') if value]
-    if primary_pid <= 1 or command != [NODE, '/home/alan/.config/milo/runtime/dist/local/main.js'] or os.readlink(proc / 'exe') != NODE:
+    if primary_pid <= 1 or command != [NODE, PRIMARY_MAIN] or os.readlink(proc / 'exe') != NODE:
         raise RuntimeError('Primary daemon is not the trusted managed entry point')
     effective = dict(row.split(b'=', 1) for row in (proc / 'environ').read_bytes().split(b'\0') if b'=' in row)
     def setting(name):
         value = effective.get(('GRUNT_' + name).encode(), effective.get(('MILO_' + name).encode()))
         return value.decode() if value is not None else None
-    if setting('DAEMON') != '1' or setting('CONFIG_DIR') != '/home/alan/.config/milo' or setting('PORT') != '8792':
+    if setting('DAEMON') != '1' or setting('CONFIG_DIR') != str(hostpaths.CONFIG) or setting('PORT') != '8792':
         raise RuntimeError('Primary daemon lacks an unambiguous managed selection anchor')
     sources = [value.strip() for value in (setting('SOURCES') or '').split(',') if value.strip()]
     if not sources or len(sources) > 100 or len(set(sources)) != len(sources) or any(not re.fullmatch('[a-z][a-z0-9-]{0,63}', value) for value in sources):
@@ -83,7 +84,7 @@ def host_health(*, held):
         raise HostBusyError('Execution host must preserve startup hold without starting jobs')
     return {key: value[key] for key in ('pid', 'state', 'activeVerification', 'activePublication', 'updatedAt')}
 
-RUNTIME_DIR=Path('/run/user')/str(os.getuid())
+RUNTIME_DIR=hostpaths.RUNTIME_DIR
 ACTIVE_DEADLINE=None
 ORIGINAL_CTL=ctl
 def budget():
@@ -231,7 +232,7 @@ def activate(timeout, *, retry_mode=False, attempt_number=1, overall_deadline=No
                 if sha(live/name)!=digest:raise RuntimeError('Installed runtime changed since stage')
             if tree_digest(live/'node_modules')!=row['dependenciesSha256']:raise RuntimeError('Installed dependency tree changed')
             assert_runtime(new,plan,row)
-        assert_process_opt_out(lambda field:unit_value('milo.service',field),NODE,'/home/alan/.config/milo/runtime/dist/local/main.js')
+        assert_process_opt_out(lambda field:unit_value('milo.service',field),NODE,PRIMARY_MAIN)
     def remove_hold():
         if owned and hold.is_file() and not hold.is_symlink() and (hold.stat().st_dev,hold.stat().st_ino)==hold_identity and hold.read_bytes()==hold_bytes:hold.unlink()
         else:raise RuntimeError('Owned startup hold changed; preserve and inspect')
@@ -312,7 +313,7 @@ def activate(timeout, *, retry_mode=False, attempt_number=1, overall_deadline=No
                 startup.assert_ready(environment,source_ids_per_port=sets)
                 quiet_time_budget()
                 return True
-            admission=OwnedDaemonAdmission(node=NODE,primary_script='/home/alan/.config/milo/runtime/dist/local/main.js',backend_script=str(OWNER/'free-pool.mjs'),primary_pid=int(unit_value('milo.service','MainPID')),backend_pid=frozen.backend_pid,supervisor_pid=frozen.pid,runtime_directory=RUNTIME_DIR,env=ENV,idle_checker=checkpoint._idle,host_pid=int(unit_value(HOST_UNIT,'MainPID')),host_script=str(OWNER/'runtime/dist/local/main.js'),host_policy=str(HOST_POLICY),quiet_checker=quiet_checker,quiet_timeout=60)
+            admission=OwnedDaemonAdmission(node=NODE,primary_script=PRIMARY_MAIN,backend_script=str(OWNER/'free-pool.mjs'),primary_pid=int(unit_value('milo.service','MainPID')),backend_pid=frozen.backend_pid,supervisor_pid=frozen.pid,runtime_directory=RUNTIME_DIR,env=ENV,idle_checker=checkpoint._idle,host_pid=int(unit_value(HOST_UNIT,'MainPID')),host_script=str(OWNER/'runtime/dist/local/main.js'),host_policy=str(HOST_POLICY),quiet_checker=quiet_checker,quiet_timeout=60)
             admission_for_retry=admission
             receipt['daemonAdmissionProof']=admission.receipt
             try:
@@ -380,8 +381,8 @@ def activate(timeout, *, retry_mode=False, attempt_number=1, overall_deadline=No
             quota_store.assert_future(HOST_POLICY.parent,captured,int(time.time()*1000))
             quota_store.assert_future_rows(HOST_POLICY.parent,future_rows,int(time.time()*1000))
             assert_session_preserved(STATE,saved)
-            assert_process_opt_out(lambda field:unit_value('milo.service',field),NODE,'/home/alan/.config/milo/runtime/dist/local/main.js')
-            startup.assert_process_environment(int(unit_value('milo.service','MainPID')),'/home/alan/.config/milo/runtime/dist/local/main.js')
+            assert_process_opt_out(lambda field:unit_value('milo.service',field),NODE,PRIMARY_MAIN)
+            startup.assert_process_environment(int(unit_value('milo.service','MainPID')),PRIMARY_MAIN)
             restore_drop()
             for unit,digest in plan['unitFingerprints'].items():
                 if staging.unit_fingerprint(unit)!=digest:raise RuntimeError('Unit fingerprint not restored')

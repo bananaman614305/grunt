@@ -25,13 +25,14 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
 import attempt as attempts_lib  # noqa: E402
+import hostpaths  # noqa: E402
 import release_pins  # noqa: E402
 import stage  # noqa: E402   (pure constants and read-only helpers; importing it performs no action)
 import activate  # noqa: E402
 from attempt import AttemptError  # noqa: E402
 
 REPO = HERE.parents[1]
-LIVE_CACHE = Path('/home/alan/.config/milo/registry.json')
+LIVE_CACHE = hostpaths.CONFIG / 'registry.json'
 EXIT_REFUSED = 2
 
 
@@ -74,7 +75,8 @@ def run_upgrade(args, *, workspace=None, runtimes=None, owner=None, state_dir=No
         log('WARNING: ' + warning)
     attempt = attempts_lib.new_attempt_dir(workspace, version, now=now)
     log(f'[1/7] attempt directory {attempt}  ({previous} -> {version})')
-    attempts_lib.write_scope(attempt, version, previous)
+    node = attempts_lib.discover_node(stage.unit_value)
+    attempts_lib.write_scope(attempt, version, previous, node=node)
     log('[2/7] verifying the published release (npm tarball == CI artifact == clean build of the published commit)')
     pins = release_pins.verify_release(version, previous, repo=REPO, attempt=attempt, log=log)
     pins_path = attempt / 'evidence' / f'release-{version}-public-pins.json'
@@ -88,7 +90,7 @@ def run_upgrade(args, *, workspace=None, runtimes=None, owner=None, state_dir=No
     log('[4/7] preparing: helper copies, provider-source pins, installed-runtime manifests, pinned public registry, seal')
     attempts_lib.install_helpers(attempt)
     environment = {**activate.primary_environment(), 'GRUNT_SETUP_NO_DATA_SHARING': '1'}
-    metadata = attempts_lib.run_metadata(activate.NODE, source, stage.CONFIG, environment)
+    metadata = attempts_lib.run_metadata(node, source, stage.CONFIG, environment)
     expectations = attempts_lib.write_expectations(attempt, attempts_lib.derive_expectations(metadata))
     if expectations != attempts_lib.rollout_config.DEFAULT_EXPECTATIONS:
         log('NOTE: the candidate release serves a different provider-source set than the one reviewed for 0.10.0; the rehearsal checks it against the live pools.')
@@ -113,7 +115,7 @@ def run_upgrade(args, *, workspace=None, runtimes=None, owner=None, state_dir=No
             raise AttemptError('helper tests failed against the candidate build: ' + ' | '.join(tail))
         log('      ' + ' | '.join(tail))
     log('[6/7] read-only rehearsal against the live host (stage and preflight in a private copy)')
-    check = attempts_lib.rehearse(attempt, pins, prep, node=activate.NODE, log=log)
+    check = attempts_lib.rehearse(attempt, pins, prep, node=node, log=log)
     log('      ' + json.dumps({key: value for key, value in check.items() if key != 'rehearsalDirectory'}))
     status = attempts_lib.assertions(attempt, unit_value=stage.unit_value, state_dir=state_dir, runtimes=runtimes, previous=previous, owner=owner,
                                      list_units=lambda: list_controller_units(env=env), version=version)
@@ -218,7 +220,7 @@ def run_verify(attempt, *, run=subprocess.run, env=None):
     if not script.is_file():
         raise AttemptError(f'{attempt} has no verify_success.py (was the attempt prepared?)')
     result = run([sys.executable, str(script)], capture_output=True, text=True, timeout=120,
-                 env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', **(env or {}), 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'})
+                 env=hostpaths.systemd_env({**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', **(env or {})}))
     print((result.stdout or '') + (result.stderr or ''), end='')
     return result.returncode
 
@@ -227,7 +229,7 @@ def run_verify(attempt, *, run=subprocess.run, env=None):
 
 def add_workspace(parser, *, suppress=False):
     default = argparse.SUPPRESS if suppress else Path(os.environ.get('GRUNT_UPGRADE_WORKSPACE') or attempts_lib.DEFAULT_WORKSPACE)
-    parser.add_argument('--workspace', type=Path, default=default, help='where attempt directories are made (default %s)' % Path(os.environ.get('GRUNT_UPGRADE_WORKSPACE') or attempts_lib.DEFAULT_WORKSPACE))
+    parser.add_argument('--workspace', type=Path, default=default, help='where attempt directories are made (default: $GRUNT_UPGRADE_WORKSPACE, else usegrunt-upgrades under the XDG state directory)')
 
 
 def add_run_options(parser, *, suppress=False):

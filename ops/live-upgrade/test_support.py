@@ -2,14 +2,13 @@
 
 `GRUNT_UPGRADE_TEST_RUNTIME` names a built checkout (dist/ present) of the release under test; it defaults to this repository, so run
 `pnpm build` first. Tests that need it skip with a clear message when it is missing. `GRUNT_UPGRADE_TEST_NODE` overrides the Node
-binary (default: the host's managed Node when present, else `node` from PATH). Nothing here touches the live host."""
+binary (default: `node` from PATH). Nothing here touches the live host."""
 import os
 import shutil
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-HOST_NODE = '/home/alan/projects/hermes/service/data/node/bin/node'
 
 
 def runtime():
@@ -20,7 +19,8 @@ def runtime():
 
 
 def node():
-    value = os.environ.get('GRUNT_UPGRADE_TEST_NODE') or (HOST_NODE if Path(HOST_NODE).is_file() else shutil.which('node'))
+    value = os.environ.get('GRUNT_UPGRADE_TEST_NODE') or shutil.which('node')
+    value = os.path.realpath(value) if value else value   # the startup gate compares resolved binaries
     if not value:
         raise unittest.SkipTest('no node binary found; set GRUNT_UPGRADE_TEST_NODE')
     return value

@@ -4,9 +4,10 @@ import argparse,base64,hashlib,json,os,re,shutil,subprocess,tarfile
 from pathlib import Path,PurePosixPath
 from release_proof import tree_digest,assert_profile
 from rollout_config import VERSION,PREVIOUS_VERSION,helper_files
+import hostpaths
 ROOT=Path(__file__).resolve().parent
-OWNER=Path('/home/alan/.local/lib/usegrunt-adventure');STATE=Path('/home/alan/.local/state/usegrunt-adventure');CONFIG=Path('/home/alan/.config/milo')
-NODE='/home/alan/projects/hermes/service/data/node/bin/node'
+OWNER=hostpaths.OWNER;STATE=hostpaths.STATE;CONFIG=hostpaths.CONFIG
+NODE=hostpaths.NODE
 RUNTIMES=[CONFIG/'runtime',OWNER/'runtime']
 # Owner-side files an attempt may replace together with the runtimes: the 8793 launcher, the Claude Code builder's brief and
 # release CLI, and the hash manifest that pins them. Optional: only the files present in ROOT/payload (see `upgrade.py --payload`)
@@ -16,9 +17,9 @@ ASSET_NAMES=('worker-brief.md','settings.json','hooks/stop_gate.py','bin/grunt-r
 # Same list the Claude Code cutover scans its runner and assets with; the removal release must never be re-introduced by an owner file.
 FORBIDDEN_LAUNCHER_TOKENS=('worker-pi','worker-pool','worker-runtime','/v1/workers','grunt_spawn','grunt_coordinate','grunt_worker_','grunt_delegate','usegrunt workers','grunt_job_','grunt_checkpoint_','GRUNT_JOBS_STATE_DIR','GRUNT_CHECKPOINT_STATE_DIR','createWorkerRuntime')
 UNITS=('milo.service','grunt-amazing-adventure.service','grunt-adventure-execution-host.service','grunt-admin-collector.service','grunt-adventure-activity.service','grunt-efficiency-observer.timer','grunt-efficiency-observer.service')
-ENV={**os.environ,'XDG_RUNTIME_DIR':f'/run/user/{os.getuid()}','DBUS_SESSION_BUS_ADDRESS':f'unix:path=/run/user/{os.getuid()}/bus'}
-MEMORY_ROOT=Path('/sys/fs/cgroup/user.slice/user-1006.slice/user@1006.service/app.slice/grunt-amazing-adventure.service')
-OBSERVER_STATE=Path('/home/alan/.local/state/usegrunt-efficiency')
+ENV=hostpaths.systemd_env()
+MEMORY_ROOT=hostpaths.MEMORY_ROOT
+OBSERVER_STATE=hostpaths.EFFICIENCY_STATE
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def save(p,v):
  t=p.with_suffix('.tmp');t.write_text(json.dumps(v,indent=2)+'\n');t.chmod(0o600);os.replace(t,p)
@@ -28,7 +29,7 @@ def unit_fingerprint(unit):
  rows['ExecStart']=rows['ExecStart'].split(' ; ignore_errors=',1)[0]
  return hashlib.sha256(json.dumps(rows,sort_keys=True).encode()).hexdigest()
 def protected_paths():
- return [STATE/'config.json',STATE/'worker/execution-channel.json',OWNER/'supervisor.py',CONFIG/'execution-host-adventure.json',Path('/home/alan/.local/state/usegrunt-admin/runtime/collector.env'),CONFIG/'automatic-pool.json',CONFIG/'data-sharing-consent.json',CONFIG/'registry.json',Path('/home/alan/.config/systemd/user/grunt-adventure-execution-host.service'),Path('/home/alan/.config/systemd/user/milo.service.d/50-grunt-account-acquisition.conf'),Path('/run/user/1006/systemd/user.control/grunt-amazing-adventure.service.d/50-MemoryHigh.conf'),Path('/home/alan/.local/lib/usegrunt-efficiency/passive-efficiency-collector.py'),*[Path('/home/alan/.config/systemd/user')/('grunt-efficiency-observer.'+x) for x in ('service','timer')]]
+ return [STATE/'config.json',STATE/'worker/execution-channel.json',OWNER/'supervisor.py',CONFIG/'execution-host-adventure.json',hostpaths.ADMIN_STATE/'runtime/collector.env',CONFIG/'automatic-pool.json',CONFIG/'data-sharing-consent.json',CONFIG/'registry.json',hostpaths.SYSTEMD_USER/'grunt-adventure-execution-host.service',hostpaths.SYSTEMD_USER/'milo.service.d/50-grunt-account-acquisition.conf',hostpaths.RUNTIME_DIR/'systemd/user.control/grunt-amazing-adventure.service.d/50-MemoryHigh.conf',hostpaths.EFFICIENCY_LIB/'passive-efficiency-collector.py',*[hostpaths.SYSTEMD_USER/('grunt-efficiency-observer.'+x) for x in ('service','timer')]]
 def expected_assets(owner,payload):
  """New assets.json bytes: the live manifest with only the payload's brief and/or release CLI re-hashed. Everything else must already match the live files."""
  root=Path(owner)/'claude';live=json.loads((root/'assets.json').read_text())

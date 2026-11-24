@@ -438,7 +438,7 @@ class Probes(unittest.TestCase):
             for fd, inode in spec.get('sockets', {}).items():
                 os.symlink(f'socket:[{inode}]', base / 'fd' / str(fd))
             for name in ('tcp', 'tcp6'):
-                rows = [header] + [f'   0: {l} {r} {st} 00000000:00000000 00:00000000 00000000  1006        0 {inode} 1 0000000000000000 100 0 0 10 0\n'
+                rows = [header] + [f'   0: {l} {r} {st} 00000000:00000000 00:00000000 00000000  {os.getuid()}        0 {inode} 1 0000000000000000 100 0 0 10 0\n'
                                     for (tbl, l, r, st, inode) in table if tbl == name]
                 (base / 'net' / name).write_text(''.join(rows))
         return self.root

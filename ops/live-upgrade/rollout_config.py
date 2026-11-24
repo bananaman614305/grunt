@@ -7,6 +7,8 @@ of the sealed helper set, so a changed scope is refused like any other changed h
 Outside an attempt directory (the repository checkout, the unit tests) the scope is the placeholder pair below. Neither value can
 equal a real package version, so staging, activation and the controller refuse to do anything with it."""
 import json
+import os
+import shutil
 from pathlib import Path
 
 ATTEMPT_FILE = 'attempt.json'
@@ -43,6 +45,17 @@ def load_scope(directory=None):
 
 
 VERSION, PREVIOUS_VERSION = load_scope()
+
+
+def load_node(directory=None):
+    """The managed Node binary the daemons run under. `upgrade.py` discovers it from the live unit (milo.service ExecStart) and records it in
+    attempt.json, so the sealed helpers compare the daemons' /proc/<pid>/exe with exactly that binary. Outside an attempt directory:
+    GRUNT_UPGRADE_NODE, else the first `node` on PATH (tests; nothing live can match it)."""
+    path = Path(directory or Path(__file__).resolve().parent) / ATTEMPT_FILE
+    value = json.loads(path.read_text()).get('node') if path.is_file() else None
+    if value is not None and (type(value) is not str or not os.path.isabs(value)):
+        raise ValueError('attempt.json node must be an absolute path')
+    return value or os.environ.get('GRUNT_UPGRADE_NODE') or shutil.which('node') or '/usr/bin/node'
 
 # Provider-source expectations the startup gate and the source-transition proof hold the live pools and the candidate release to.
 # These defaults are the set reviewed for the 0.9.12 -> 0.10.0 cutover. An attempt directory carries `source-expectations.json`,

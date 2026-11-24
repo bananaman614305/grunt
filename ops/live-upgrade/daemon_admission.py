@@ -17,8 +17,10 @@ import time
 import uuid
 import urllib.request
 
-OPENCODE_ARGV0 = '/home/alan/.local/bin/opencode'
-OPENCODE_EXE = '/home/alan/.local/lib/node_modules/opencode-ai/bin/opencode.exe'
+import hostpaths
+
+OPENCODE_ARGV0 = hostpaths.OPENCODE_ARGV0
+OPENCODE_EXE = hostpaths.OPENCODE_EXE
 # Fresh stage supplies the explicitly reviewed anonymous profile pin. No historical default.
 OPENCODE_CONTENT_SHA256 = None
 from rollout_config import RUNTIME_GUARD_NAME
@@ -245,8 +247,8 @@ class OwnedDaemonAdmission:
         content = env.get(b'OPENCODE_CONFIG_CONTENT', b'')
         if (hashlib.sha256(content).hexdigest() != OPENCODE_CONTENT_SHA256 or env.get(b'OPENCODE_CONFIG')
             or env.get(b'OPENCODE_CONFIG_DIR') or env.get(b'OPENCODE_SERVER_PASSWORD')
-            or env.get(b'HOME') != b'/home/alan' or env.get(b'XDG_CONFIG_HOME', b'/home/alan/.config') != b'/home/alan/.config'
-            or env.get(b'XDG_DATA_HOME', b'/home/alan/.local/share') != b'/home/alan/.local/share'):
+            or env.get(b'HOME') != os.fsencode(hostpaths.HOME) or env.get(b'XDG_CONFIG_HOME', os.fsencode(hostpaths.HOME / '.config')) != os.fsencode(hostpaths.HOME / '.config')
+            or env.get(b'XDG_DATA_HOME', os.fsencode(hostpaths.HOME / '.local/share')) != os.fsencode(hostpaths.HOME / '.local/share')):
             raise AdmissionError('Managed OpenCode profile is not the reviewed anonymous scope')
         if json.loads(content).get('permission', {}).get('external_directory') != 'deny':
             raise AdmissionError('Managed OpenCode external directory policy changed')

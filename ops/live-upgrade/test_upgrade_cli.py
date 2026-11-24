@@ -77,6 +77,7 @@ class Host(unittest.TestCase):
             patch.object(up, 'LIVE_CACHE', self.root / 'no-cache.json'),
             patch.object(up, 'list_controller_units', lambda **kw: self.units),
             patch.object(up.stage, 'unit_value', lambda unit, field: 'not-found'),
+            patch.object(up.attempts_lib, 'discover_node', lambda unit_value: '/managed/node'),
         ]
         for item in patches:
             item.start()
@@ -103,6 +104,7 @@ class Run(Host):
         attempt = self.attempt_dir()
         self.assertEqual(json.loads((attempt / 'attempt.json').read_text())['version'], '0.10.1')
         self.assertEqual(json.loads((attempt / 'attempt.json').read_text())['previousVersion'], '0.10.0')     # derived from the installed runtime
+        self.assertEqual(json.loads((attempt / 'attempt.json').read_text())['node'], '/managed/node')         # discovered from the live unit
         for name in ('attempt-preparation.json', 'approved-registry-public.json', 'old-runtime-manifests.json', 'seal.json', 'source-expectations.json', 'stage.py',
                      'pause-and-activate.py', 'verify_success.py', 'end_cycle.py'):
             self.assertTrue((attempt / name).is_file(), name)

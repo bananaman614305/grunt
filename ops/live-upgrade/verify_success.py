@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True
 import activate  # noqa: E402
+import hostpaths  # noqa: E402
 import registry_cache  # noqa: E402
 import stage  # noqa: E402
 from release_proof import assert_runtime  # noqa: E402
@@ -83,7 +84,7 @@ def verify(root=ROOT, *, unit_value=None, status_reader=None, started_at=process
         assert stage.sha(activate.OWNER / 'claude' / name) == digest, name
     for unit, digest in plan['unitFingerprints'].items():
         assert stage.unit_fingerprint(unit) == digest, unit
-    runtime = Path('/run/user') / str(os.getuid()) / 'systemd/user'
+    runtime = hostpaths.RUNTIME_DIR / 'systemd/user'
     leftovers = [activate.STATE / 'execution-upgrade-hold', runtime / 'milo.service.d' / '98-grunt-runtime-consent.conf']
     leftovers += [runtime / (unit + '.d') / '99-grunt-runtime-cutover.conf' for unit in DAEMON_UNITS]
     for path in leftovers:

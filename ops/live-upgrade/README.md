@@ -19,7 +19,7 @@ conditions true on purpose, for about two minutes, between cycles.
 ## What the command does
 
 1. **Attempt directory.** A fresh private `runtime-upgrade-<version>-<stamp>/` under the workspace
-   (`~/.local/state/usegrunt-scout/workspace`, or `--workspace` / `GRUNT_UPGRADE_WORKSPACE`). The previous version is read from the
+   (`usegrunt-upgrades` under the XDG state directory, `~/.local/state` by default, or `--workspace` / `GRUNT_UPGRADE_WORKSPACE`). The previous version is read from the
    installed runtimes (both must agree); `--version` must be newer. Nothing is edited by hand.
 2. **Release check.** The publish run on `main` for that version is found with `gh` (the commit whose `package.json` carries the
    version). The npm tarball, the CI artifact of that run and a clean `pnpm install --frozen-lockfile && pnpm build && npm pack` of

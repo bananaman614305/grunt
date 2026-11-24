@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import hostpaths
 from daemon_admission import AdmissionError, OwnedDaemonAdmission, OPENCODE_ARGV0, OPENCODE_EXE, unix_socket_diagnostics
 
 
@@ -83,7 +84,7 @@ class AdmissionFixture(unittest.TestCase):
         # Explicit joining avoids numeric/octal escape ambiguity in fixture argv.
         (root / 'cmdline').write_bytes(b'\0'.join(value.encode() for value in [OPENCODE_ARGV0, 'serve', '--hostname', '127.0.0.1', '--port', '0']) + b'\0')
         (root / 'exe').symlink_to(OPENCODE_EXE)
-        (root / 'environ').write_bytes(b'HOME=/home/alan\0OPENCODE_CONFIG_CONTENT={"permission":{"external_directory":"deny"}}\0')
+        (root / 'environ').write_bytes(b'HOME=' + os.fsencode(hostpaths.HOME) + b'\0OPENCODE_CONFIG_CONTENT={"permission":{"external_directory":"deny"}}\0')
         (root / 'cwd').symlink_to('/synthetic/owner'); (self.proc / '102/cwd').symlink_to('/synthetic/owner')
         (root / 'fd/0').symlink_to('/dev/null'); (root / 'fd/1').symlink_to('pipe:[777]'); (root / 'fd/2').symlink_to('/dev/null')
         (root / 'fd/18').symlink_to('socket:[1040]')

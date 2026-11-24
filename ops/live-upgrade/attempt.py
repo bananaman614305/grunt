@@ -18,11 +18,12 @@ from zoneinfo import ZoneInfo
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
+import hostpaths  # noqa: E402
 import release_pins  # noqa: E402
 import rollout_config  # noqa: E402
 
 TOOLING = ('upgrade.py', 'attempt.py', 'release_pins.py')      # run from the repository; never copied into an attempt directory
-DEFAULT_WORKSPACE = Path.home() / '.local/state/usegrunt-scout/workspace'
+DEFAULT_WORKSPACE = Path(os.environ.get('XDG_STATE_HOME') or hostpaths.HOME / '.local/state') / 'usegrunt-upgrades'
 REGISTRY_URLS = ('https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry')   # same order as src/local/registry.ts
 OPENCODE_PROFILE = '{"permission":{"external_directory":"deny"}}'   # the managed native OpenCode child's pinned OPENCODE_CONFIG_CONTENT
 OPENCODE_SOURCE = 'src/local/opencode.ts'
@@ -104,9 +105,27 @@ def install_helpers(attempt):
     return helper_names()
 
 
-def write_scope(attempt, version, previous, *, created_at=None):
-    """attempt.json: the release pair every sealed helper reads through rollout_config (derived from --version and the installed runtime)."""
-    write_private(Path(attempt) / rollout_config.ATTEMPT_FILE, {'version': version, 'previousVersion': previous, 'createdAt': time.time() if created_at is None else created_at})
+def write_scope(attempt, version, previous, *, created_at=None, node=None):
+    """attempt.json: the release pair (derived from --version and the installed runtime) and the managed Node binary (discovered from the live
+    unit), which every sealed helper reads through rollout_config."""
+    value = {'version': version, 'previousVersion': previous, 'createdAt': time.time() if created_at is None else created_at}
+    if node is not None:
+        value['node'] = str(node)
+    write_private(Path(attempt) / rollout_config.ATTEMPT_FILE, value)
+
+
+def discover_node(unit_value, unit='milo.service'):
+    """The Node binary the primary daemon actually runs under, from its unit's ExecStart (`{ path=... ; argv[]=<node> <script> ... }`)."""
+    exec_start = unit_value(unit, 'ExecStart')
+    marker = 'argv[]='
+    if marker not in exec_start:
+        raise AttemptError(f'{unit} has no ExecStart to discover the managed Node binary from')
+    node = exec_start.split(marker, 1)[1].split()[0]
+    if not os.path.isabs(node) or not os.access(node, os.X_OK):
+        raise AttemptError(f'The managed Node binary {node!r} of {unit} is not an executable absolute path')
+    if os.path.realpath(node) != node:
+        raise AttemptError(f'The managed Node binary {node!r} of {unit} is a symlink; the daemon checks compare resolved binaries, so point the unit at {os.path.realpath(node)}')
+    return node
 
 
 def installed_version(runtimes):
@@ -376,7 +395,7 @@ def rehearse(attempt, pins, prep, *, node, run=subprocess.run, log=print):
         shutil.copy2(path, copy / path.name)
     if (attempt / 'payload').is_dir():
         shutil.copytree(attempt / 'payload', copy / 'payload')
-    env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'}
+    env = hostpaths.systemd_env({**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     result = {'rehearsalDirectory': str(copy)}
     try:
         log('[check] staging the public archive in a private copy (read-only on the live host)')

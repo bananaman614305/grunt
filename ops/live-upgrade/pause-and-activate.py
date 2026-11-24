@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import hostpaths
 import stage
 import preflight
 import activate
@@ -97,8 +98,7 @@ def verify_first_cycle(config, *, read_status=None, run_verify=None, clock=time.
     is working on the Claude harness, that model replies rise, and run the existing success verification."""
     read_status = read_status or (lambda: json.loads((STATE / 'status.json').read_text()))
     run_verify = run_verify or (lambda: subprocess.run([sys.executable, str(ROOT / 'verify_success.py')], capture_output=True, text=True, timeout=120,
-                                                         env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}',
-                                                              'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'}))
+                                                         env=hostpaths.systemd_env({**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})))
     deadline = clock() + config['verifyBudgetSeconds']
     result = {'at': time.time(), 'working': False, 'modelRepliesRising': False, 'verifySuccess': None}
     baseline = None

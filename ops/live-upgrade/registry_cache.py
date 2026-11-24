@@ -5,6 +5,7 @@ cache is written here. Normal RegistrySync may rewrite this generated cache.
 """
 import hashlib,json,os,stat,subprocess
 from pathlib import Path
+import hostpaths
 
 
 def private_bytes(path):
@@ -40,7 +41,7 @@ def assert_preserved(proof,*,candidate_runtime,node,allow_derived):
     raw=private_bytes(proof['path']);digest=hashlib.sha256(raw).hexdigest()
     if digest==proof['originalRawSha256']:return {'rawBytesUnchanged':True,'rawSha256':digest}
     if not allow_derived:raise RuntimeError('Protected registry cache changed before new startup')
-    result=subprocess.run([node,str(Path(__file__).with_name('registry_cache_metadata.mjs'))],input=json.dumps({'path':proof['path'],'candidateRuntime':str(candidate_runtime),'expectedCatalogSha256':proof['candidateCatalogSha256']}).encode(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10,env={'PATH':'/usr/bin:/bin','HOME':'/home/alan'})
+    result=subprocess.run([node,str(Path(__file__).with_name('registry_cache_metadata.mjs'))],input=json.dumps({'path':proof['path'],'candidateRuntime':str(candidate_runtime),'expectedCatalogSha256':proof['candidateCatalogSha256']}).encode(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10,env={'PATH':'/usr/bin:/bin','HOME':str(hostpaths.HOME)})
     if result.returncode or len(result.stdout)>16384:raise RuntimeError('Protected generated registry cache changed semantics or shape')
     value=json.loads(result.stdout)
     if value.get('rawSha256')!=digest or value.get('catalogSha256')!=proof['candidateCatalogSha256'] or value.get('normalWriterShape') is not True:raise RuntimeError('Derived registry cache proof mismatch')

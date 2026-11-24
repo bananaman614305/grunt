@@ -86,6 +86,44 @@ class Scope(Base):
             at.installed_version([self.root / 'a', self.root / 'b'])
 
 
+class NodeDiscovery(Base):
+    def exec_start(self, node):
+        return '{ path=%s ; argv[]=%s /srv/runtime/dist/local/main.js ; ignore_errors=no ; start_time=[n/a] }' % (node, node)
+
+    def test_the_managed_node_comes_from_the_primary_units_exec_start(self):
+        node = self.root / 'bin/node'
+        node.parent.mkdir()
+        node.write_text('#!/bin/sh\n')
+        node.chmod(0o755)
+        self.assertEqual(at.discover_node(lambda unit, field: self.exec_start(node)), str(node))
+
+    def test_a_missing_relative_or_non_executable_node_is_refused(self):
+        plain = self.root / 'node'
+        plain.write_text('x')
+        for value in ('', '{ path=node ; argv[]=node main.js }', self.exec_start(self.root / 'absent'), self.exec_start(plain)):
+            with self.subTest(value), self.assertRaises(at.AttemptError):
+                at.discover_node(lambda unit, field: value)
+
+    def test_a_symlinked_node_is_refused_because_the_daemon_checks_compare_resolved_binaries(self):
+        real = self.root / 'real-node'
+        real.write_text('#!/bin/sh\n')
+        real.chmod(0o755)
+        link = self.root / 'link-node'
+        link.symlink_to(real)
+        with self.assertRaisesRegex(at.AttemptError, 'symlink'):
+            at.discover_node(lambda unit, field: self.exec_start(link))
+
+    def test_helpers_inside_an_attempt_use_the_recorded_node_and_a_relative_one_is_refused(self):
+        path = self.attempt()
+        (path / 'attempt.json').unlink()
+        at.write_scope(path, '0.10.1', '0.10.0', node='/recorded/node')
+        self.assertEqual(rc.load_node(path), '/recorded/node')
+        self.assertEqual(rc.load_scope(path), ('0.10.1', '0.10.0'))
+        (path / 'attempt.json').write_text(json.dumps({'version': '0.10.1', 'previousVersion': '0.10.0', 'node': 'node'}))
+        with self.assertRaises(ValueError):
+            rc.load_node(path)
+
+
 class Helpers(Base):
     def test_only_production_helpers_are_copied_never_tests_or_the_tooling(self):
         names = at.helper_names()

@@ -28,9 +28,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from startup_gate import EXPECTED_UNION, EXPECTED_DEFERRED
+import hostpaths
 
-STATE = Path('/home/alan/.local/state/usegrunt-adventure')
-MAINTENANCE = Path('/home/alan/.config/milo/maintenance.json')
+STATE = hostpaths.STATE
+MAINTENANCE = hostpaths.CONFIG / 'maintenance.json'
 PUBLISHER_UNIT = 'grunt-adventure-activity.service'
 WATCH_TIMER = 'grunt-adventure-overnight-watch.timer'
 WATCH_SERVICE = 'grunt-adventure-overnight-watch.service'
@@ -410,7 +411,7 @@ def watchdog(spec, *, sleep=time.sleep, wall=time.time, ctl=None, poll=2.0):
 
 
 def _systemctl(action, unit):
-    env = {**os.environ, 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'}
+    env = hostpaths.systemd_env()
     subprocess.run(['systemctl', '--user', action, unit], env=env, check=True, timeout=30, stdout=subprocess.DEVNULL)
 
 
@@ -429,7 +430,7 @@ class WatchdogUnit:
 def spawn_watchdog_unit(spec, record_path, unit, *, run=subprocess.run, ctl=None):
     """Start the watchdog as `systemd-run --user` transient unit `unit` (outside the owner's cgroup). Failure to start is an error:
     the caller must not keep the builder frozen without a working watchdog."""
-    env = {**os.environ, 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'}
+    env = hostpaths.systemd_env()
     command = ['systemd-run', '--user', '--collect', '--unit=' + unit, '--property=Type=exec', '--property=StandardOutput=null', '--property=StandardError=null',
                '--setenv=PYTHONDONTWRITEBYTECODE=1', '/usr/bin/python3', str(Path(__file__).resolve()), 'watchdog', json.dumps(spec), str(record_path)]
     result = run(command, env=env, capture_output=True, text=True, timeout=15)
@@ -443,8 +444,7 @@ def spawn_watchdog(spec, record_path):
     the owner handles itself with a SIGTERM handler)."""
     return subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'watchdog', json.dumps(spec), str(record_path)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                            env={'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1', 'HOME': str(Path.home()),
-                                 'XDG_RUNTIME_DIR': f'/run/user/{os.getuid()}', 'DBUS_SESSION_BUS_ADDRESS': f'unix:path=/run/user/{os.getuid()}/bus'})
+                            env=hostpaths.systemd_env({'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1', 'HOME': str(hostpaths.HOME)}))
 
 
 if __name__ == '__main__':
