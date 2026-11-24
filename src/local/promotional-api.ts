@@ -149,7 +149,7 @@ function completion(text: string, calls: ToolCall[], usage: Record<string, unkno
 // SSE is transport even when the harness requests a non-streamed completion.
 // Bound memory, assemble indexed function fragments, require an explicit finish,
 // and reject errors/truncated streams instead of passing partial output as success.
-export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void }): Promise<Completion> {
+export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void }): Promise<Completion> {
   // Observers receive fixed reason codes only. Preserve thrown values (even
   // non-Error values), cancellation priority and all existing acceptance rules.
   const tagged = (error: unknown, reason: FailureReason) => {
@@ -175,6 +175,8 @@ export async function readPromotionalStream(response: Response, model: string, s
     if (chunk.error) throw invalid('stream_format', 'Stream failed');
     if (chunk.model !== undefined) { if (chunk.model !== model) throw invalid('completion_model', 'Unexpected model'); seenModel = true; }
     if (chunk.usage) usage = object(chunk.usage);
+    // A usage-only chunk may omit `choices`; any other chunk must carry them.
+    if (chunk.choices === undefined && chunk.usage) return;
     if (!Array.isArray(chunk.choices)) throw invalid('response_choices', 'Invalid stream choices');
     let progressing = false;
     for (const value of chunk.choices) {
@@ -232,6 +234,8 @@ export async function readPromotionalStream(response: Response, model: string, s
     if (truncated && result.length > 0 || !validCalls(result)) throw invalid('response_tools', 'Incomplete stream');
     if (!text && !result.length) throw invalid('stream_incomplete', 'Incomplete stream');
     signal.throwIfAborted();
+    // The observer may reject usage it cannot accept; it never changes the reply.
+    observe?.result?.(usage);
     return completion(text, result, usage);
   } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(cleanupFailed); observed('stream_cleanup', () => reader.releaseLock()); }
 }

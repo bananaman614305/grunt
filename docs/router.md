@@ -116,7 +116,14 @@ accepted, with `GRUNT_*` taking precedence.
   instead. Explicit HTTP 5xx retry hints bypass multiplication and are bounded
   to 1 second–24 hours. Local request-shape refusals (`failureReason`
   `request_*`: unsupported tools, a tool schema or tool conversation the
-  adapter refused before any provider was reached) set no back-off at all. Quota failures use the provider's reset time instead;
+  adapter refused before any provider was reached) set no back-off at all. A source
+  may opt into a slow-upstream policy (100milionseek does): its gateway errors
+  (HTTP 502, 503, 504, 524), connection resets, cut streams and output
+  deadlines, with no Retry-After, bench it for the policy's base (30 minutes),
+  doubling per consecutive slow failure of any kind up to its cap (2 hours); a
+  success resets the count, a parallel failure inside the cooldown does not
+  escalate it, and a provider Retry-After still wins. Retirement counts are
+  unchanged. Quota failures use the provider's reset time instead;
   successful recovery preserves that quota deadline. Missing installations
   and expired logins stay barred until a successful health check.
   On the first upgrade to Kilo's free-model rotation, routing history clears

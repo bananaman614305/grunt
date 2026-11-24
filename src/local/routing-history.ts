@@ -59,6 +59,15 @@ export function upstreamRetryHint(error: SourceError) {
   return error.code === 'upstream' && status !== undefined && Number.isInteger(status) && status >= 500 && status < 600
     && retry !== undefined && Number.isFinite(retry) && retry >= 0;
 }
+// A failure that means a congested or slow provider rather than a refusal: gateway errors, a reset or cut
+// stream, or an output deadline. Used by sources that opt into a SlowUpstreamPolicy.
+export function slowUpstreamFailure(error: SourceError) {
+  if (error.code === 'timeout') return true;
+  if (error.code !== 'upstream') return false;
+  const safe = sanitizeSafeDiagnosticMetadata(error.diagnostics);
+  return [502, 503, 504, 524].includes(safe.httpStatus ?? 0) || safe.networkCode === 'ECONNRESET' || safe.networkCode === 'ETIMEDOUT'
+    || safe.failureReason === 'stream_read' || safe.failureReason === 'stream_incomplete';
+}
 export function routingFailureSignature(error: SourceError) {
   const safe = sanitizeSafeDiagnosticMetadata(error.diagnostics);
   return [error.code, safe.httpStatus ?? '', safe.failureReason ?? '', safe.networkCode ?? ''].join(':').toLowerCase();
