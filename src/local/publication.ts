@@ -7,11 +7,17 @@ import { bindReview, parseReviewRecord } from './publication-review.js';
 const sha = /^[a-f0-9]{40}$/, digest = /^[a-f0-9]{64}$/, id = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const branch = /^(?!\/)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[a-zA-Z0-9][a-zA-Z0-9._/-]{0,120}(?<!\/)(?<!\.lock)$/;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/** An operator-readable refusal whose fixed text is safe to show in worker-visible release status. */
+export class HostRefusal extends Error {}
+/** Commits a release may add beyond the public base before the host refuses to inspect them. */
+export const DEFAULT_MAX_SCREENED_COMMITS = 10000;
 export interface PublicationPolicy {
   version: 1; projectRoot: string; repository: string; base: string; headPrefix: string;
   requiredChecks: string[]; reviewPaths: string[]; artifactDirectory: string; pagesBranch: string;
   /** Operator-owned permission, never supplied in a model tool call. */
   allowMerge: boolean; allowDeploy: boolean;
+  /** Optional bound on commits newly published beyond the base; the default applies when absent so existing policies keep their digest. */
+  maxScreenedCommits?: number;
 }
 export interface PublicationSnapshot {
   projectRoot: string; head: string; treeDigest: string; artifactDigest: string; clean: boolean;
@@ -60,7 +66,8 @@ export function publicationPolicy(value: PublicationPolicy): PublicationPolicy {
     || new Set(value.requiredChecks).size !== value.requiredChecks.length || value.requiredChecks.some(x => !/^[a-zA-Z0-9_-]{1,80}$/.test(x))
     || !Array.isArray(value.reviewPaths) || !value.reviewPaths.length || value.reviewPaths.length > 32
     || [...value.reviewPaths, value.artifactDirectory].some(x => !safeRelative(x))
-    || typeof value.allowMerge !== 'boolean' || typeof value.allowDeploy !== 'boolean') throw new Error('Invalid trusted publication policy.');
+    || typeof value.allowMerge !== 'boolean' || typeof value.allowDeploy !== 'boolean'
+    || value.maxScreenedCommits !== undefined && (!Number.isSafeInteger(value.maxScreenedCommits) || value.maxScreenedCommits < 1 || value.maxScreenedCommits > 100000)) throw new Error('Invalid trusted publication policy.');
   return structuredClone(value);
 }
 export function safeRelative(value: unknown): value is string {
@@ -81,7 +88,7 @@ function request(value: unknown, policy: PublicationPolicy): PublicationRequest 
 function snapshot(value: PublicationSnapshot, policy: PublicationPolicy, merged = false) {
   if (value.projectRoot !== policy.projectRoot || !sha.test(value.head) || !sha.test(value.baseHead) || !sha.test(value.gitTree)
     || !digest.test(value.treeDigest) || !digest.test(value.artifactDigest) || value.clean !== true || !merged && value.baseIsAncestor !== true
-    || !branch.test(value.branch) || !value.branch.startsWith(policy.headPrefix)) throw new Error('Publication requires a clean, fully committed project containing the current base.');
+    || !branch.test(value.branch) || !value.branch.startsWith(policy.headPrefix)) throw new HostRefusal('Publication requires a clean, fully committed project containing the current base.');
   return { projectRoot: value.projectRoot, head: value.head, treeDigest: value.treeDigest, artifactDigest: value.artifactDigest,
     clean: value.clean, branch: value.branch, baseHead: value.baseHead, baseIsAncestor: value.baseIsAncestor, gitTree: value.gitTree };
 }
@@ -189,7 +196,7 @@ export class PublicationQueue {
         return publicationView(previous);
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       const captured = snapshot(await this.options.capture(), this.policy);
-      if (parsed.head !== captured.head || parsed.branch !== captured.branch) throw new Error('Release request does not match the current committed head.');
+      if (parsed.head !== captured.head || parsed.branch !== captured.branch) throw new HostRefusal('Release request does not match the current committed head.');
       const now = (this.options.now ?? Date.now)(), value: PublicationRecord = { version: 1, id: releaseId, policyDigest: this.policyDigest(), createdAt: now, updatedAt: now,
         phase: 'awaiting_review', request: parsed, snapshot: captured, verificationIds: parsed.verificationIds };
       if (!await this.verified(value)) { value.phase = 'blocked'; value.reason = 'verification_required'; }

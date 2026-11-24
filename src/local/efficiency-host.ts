@@ -9,7 +9,7 @@ import type { VerificationBrokerRunner } from './verification-broker.js';
 import { createVerificationBrokerFileClient, tickVerificationBroker } from './verification-broker-client.js';
 import { assertVerificationArtifactContents, captureVerificationState, verificationEnvironmentDigest, verificationPlanDigest } from './verification.js';
 import type { VerificationPlan } from './verification.js';
-import { PublicationQueue, publicationPolicy } from './publication.js';
+import { DEFAULT_MAX_SCREENED_COMMITS, HostRefusal, PublicationQueue, publicationPolicy } from './publication.js';
 import type { PublicationPolicy, PublicationRecord, PublicationRequest } from './publication.js';
 import { GithubPublicationTransport, readPublicationArtifacts } from './publication-github.js';
 import type { PublicationGithubExec } from './publication-github.js';
@@ -140,13 +140,14 @@ export async function loadExecutionHostChannels(path: string) {
 
 export interface HostExecResult { code: number; stdout: string }
 export interface HostExec {
-  (argv: readonly string[], options: { cwd?: string; input?: string; signal?: AbortSignal; environment?: NodeJS.ProcessEnv; timeoutMs?: number; descriptors?: number[] }): Promise<HostExecResult>;
+  (argv: readonly string[], options: { cwd?: string; input?: string; signal?: AbortSignal; environment?: NodeJS.ProcessEnv; timeoutMs?: number; descriptors?: number[]; /** Combined stdout and stderr budget; defaults to 1 MiB. */ maxOutputBytes?: number }): Promise<HostExecResult>;
 }
 /** All child process groups belong to this invocation; cancellation waits for exit and never kills the coding worker. */
 export const executionHostExec: HostExec = async (argv, options) => new Promise((resolveResult, reject) => {
   options.signal?.throwIfAborted();
   const child = spawn(argv[0]!, argv.slice(1), { ...(options.cwd ? { cwd: options.cwd } : {}), env: options.environment ?? process.env, detached: true, stdio: ['pipe', 'pipe', 'pipe', ...(options.descriptors ?? [])] });
-  let output = '', bytes = 0, exceeded = false, cancellation: Promise<void> | undefined;
+  const budget = options.maxOutputBytes ?? 1024 * 1024, chunks: Buffer[] = [];
+  let bytes = 0, exceeded = false, cancellation: Promise<void> | undefined;
   const kill = () => {
     if (cancellation) return;
     try { process.kill(-child.pid!, 'SIGTERM'); } catch { /* parent may have exited while descendants remain */ }
@@ -158,9 +159,9 @@ export const executionHostExec: HostExec = async (argv, options) => new Promise(
   };
   const timer = setTimeout(kill, options.timeoutMs ?? 120000);
   options.signal?.addEventListener('abort', kill, { once: true });
-  child.stdout!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 1024 * 1024) { exceeded = true; kill(); } else output += chunk.toString('utf8'); });
+  child.stdout!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > budget) { exceeded = true; kill(); } else chunks.push(chunk); });
   // Do not echo credential-bearing host errors into writable worker channels.
-  child.stderr!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 1024 * 1024) { exceeded = true; kill(); } });
+  child.stderr!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > budget) { exceeded = true; kill(); } });
   const cleanup = () => { clearTimeout(timer); options.signal?.removeEventListener('abort', kill); };
   child.on('error', error => { cleanup(); reject(error); });
   child.on('close', async code => {
@@ -169,7 +170,7 @@ export const executionHostExec: HostExec = async (argv, options) => new Promise(
     if (!cancellation && child.pid) { try { process.kill(-child.pid, 0); kill(); } catch { /* group fully exited */ } }
     if (cancellation) await cancellation;
     if (exceeded) reject(new Error('Trusted host command output budget exceeded.'));
-    else resolveResult({ code: options.signal?.aborted ? 130 : code ?? 1, stdout: output });
+    else resolveResult({ code: options.signal?.aborted ? 130 : code ?? 1, stdout: Buffer.concat(chunks).toString('utf8') });
   });
   child.stdin!.on('error', () => {}); child.stdin!.end(options.input);
 });
@@ -211,7 +212,7 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
     }
     finally { await file.close(); }
   };
-  const git = async (args: string[], signal?: AbortSignal) => { await guardedConfig(); return exec(['/usr/bin/git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args], { cwd: policy.projectRoot, environment: gitEnvironment, ...(signal ? { signal } : {}) }); };
+  const git = async (args: string[], signal?: AbortSignal, maxOutputBytes?: number) => { await guardedConfig(); return exec(['/usr/bin/git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args], { cwd: policy.projectRoot, environment: gitEnvironment, ...(signal ? { signal } : {}), ...(maxOutputBytes ? { maxOutputBytes } : {}) }); };
   const runner: VerificationBrokerRunner = dependencies.runner ?? (async request => {
     const argv = policy.sandboxArgv.map(arg => arg === '$WORKSPACE' ? request.workspaceRoot : arg === '$PROJECT' ? request.projectRoot : arg === '$COMMAND' ? request.command : arg);
     const handles = [];
@@ -234,20 +235,32 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
     environmentDigest: verificationEnvironmentDigest({ ...minimalEnvironment, GRUNT_EXECUTION_POLICY: digest(policy) }) });
   const github: PublicationGithubExec = (args, input, signal) => exec(['/usr/bin/gh', ...args], { environment: hostEnvironment, ...(input !== undefined ? { input } : {}), ...(signal ? { signal } : {}), timeoutMs: 120000 });
   const screenedCommits = new Set<string>(), screenedRanges = new Set<string>();
+  const unsafeCommittedPath = (path: string) => /[\x00-\x1f\x7f]/.test(path) || privateProjectPath(path) || path === '.gitmodules';
+  const maxScreenedCommits = policy.publication.maxScreenedCommits ?? DEFAULT_MAX_SCREENED_COMMITS;
+  // Path lists for a long unpublished history are far larger than ordinary command output.
+  const historyOutputBytes = 64 * 1024 * 1024;
+  /**
+   * Keeps private paths out of published history. A path in a new commit's tree is either already in a parent (so it came
+   * from the public base or from an earlier new commit) or is added by that commit. The head tree plus every path added
+   * anywhere in the range therefore covers everything the newly published commits can contain, in one pass whatever the
+   * range length.
+   */
   const publicSource = async (head: string, baseHead?: string) => {
-    const commits = [head], range = baseHead ? baseHead + ':' + head : undefined;
+    if (!screenedCommits.has(head)) {
+      const listing = await git(['ls-tree', '-r', '--name-only', '-z', head]);
+      if (listing.code || listing.stdout.split('\0').filter(Boolean).some(unsafeCommittedPath)) throw new HostRefusal('Private-looking committed files cannot be reviewed or published.');
+      screenedCommits.add(head);
+    }
+    const range = baseHead ? baseHead + ':' + head : undefined;
     if (baseHead && !screenedRanges.has(range!)) {
-      const history = await git(['rev-list', '--max-count=257', head, '^' + baseHead]);
-      const reachable = history.stdout.trim().split('\n').filter(Boolean);
-      if (history.code || reachable.length > 256 || reachable.some(commit => !sha.test(commit))) throw new Error('Newly published history exceeds the bounded private-file inspection.');
-      commits.push(...reachable);
+      const counted = await git(['rev-list', '--count', '--max-count=' + (maxScreenedCommits + 1), head, '^' + baseHead]), count = Number(counted.stdout.trim());
+      if (counted.code || !Number.isSafeInteger(count)) throw new HostRefusal('Cannot count the newly published history.');
+      if (count > maxScreenedCommits) throw new HostRefusal(`Newly published history has more than ${maxScreenedCommits} commits; raise publication.maxScreenedCommits in the host policy to inspect it.`);
+      // -m includes merge commits; --no-renames keeps one path per record.
+      const removed = await git(['log', '--no-ext-diff', '--no-textconv', '--no-renames', '-m', '--diff-filter=A', '--name-only', '-z', '--format=', head, '^' + baseHead, '--'], undefined, historyOutputBytes);
+      if (removed.code || removed.stdout.split('\0').filter(Boolean).some(unsafeCommittedPath)) throw new HostRefusal('Private-looking committed files cannot be reviewed or published.');
+      screenedRanges.add(range!);
     }
-    for (const commit of new Set(commits)) if (!screenedCommits.has(commit)) {
-      const listing = await git(['ls-tree', '-r', '--name-only', '-z', commit]);
-      if (listing.code || listing.stdout.split('\0').filter(Boolean).some(path => /[\x00-\x1f\x7f]/.test(path) || privateProjectPath(path) || path === '.gitmodules')) throw new Error('Private-looking committed files cannot be reviewed or published.');
-      screenedCommits.add(commit);
-    }
-    if (range) screenedRanges.add(range);
   };
   const capture = async () => {
     await guardedConfig();
@@ -258,7 +271,8 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
       github(['api', '--method', 'GET', `repos/${policy.publication.repository}/git/ref/heads/${policy.publication.base}`]),
     ]);
     const baseHead = object(object(JSON.parse(remote.stdout)).object).sha;
-    if (branch.code || tree.code || remote.code || typeof baseHead !== 'string' || !sha.test(baseHead)) throw new Error('Cannot capture the policy-pinned publication base.');
+    if (branch.code) throw new HostRefusal('Publication requires the project checkout to be on a named branch, not a detached HEAD.');
+    if (tree.code || remote.code || typeof baseHead !== 'string' || !sha.test(baseHead)) throw new HostRefusal('Cannot capture the policy-pinned publication base.');
     // The candidate is still local and unpushed. A clean release must already contain this pinned base.
     // A missing base object fails closed during preparation; after our recorded merge it may be remote-only.
     const ancestry = await git(['merge-base', '--is-ancestor', baseHead, state.head]);
@@ -268,8 +282,8 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
   // The builder records its own review over the channel. The host still refuses private-looking commits and changed paths first.
   const screen = async (record: PublicationRecord) => {
     await publicSource(record.snapshot.head, record.snapshot.baseHead);
-    const changed = await git(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', record.snapshot.baseHead, record.snapshot.head, '--']);
-    if (changed.code || changed.stdout.split('\0').filter(Boolean).some(privateProjectPath)) throw new Error('Private-looking changed paths cannot be reviewed or published.');
+    const changed = await git(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', record.snapshot.baseHead, record.snapshot.head, '--'], undefined, historyOutputBytes);
+    if (changed.code || changed.stdout.split('\0').filter(Boolean).some(privateProjectPath)) throw new HostRefusal('Private-looking changed paths cannot be reviewed or published.');
   };
   const transport = new GithubPublicationTransport({ exec: github,
     pushHead: async (record, publication, signal) => {
@@ -327,12 +341,13 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
           : request.operation === 'review-record' ? await queue.recordReview(releaseId, request.input) : await queue.status(releaseId);
         await atomic(join(pinned.releases!, releaseId + '.json'), result);
         response = { requestId, state: 'completed', release: result };
-      } catch {
+      } catch (error) {
         const releaseId = request.operation === 'prepare' ? request.id : String(object(request.input).id);
         const code = request.operation === 'review-record' ? 'review_not_recorded' : 'release_not_advanced';
         response = { requestId, state: 'failed', code, releaseId };
         const current = await queue.status(releaseId).catch(() => ({ id: releaseId, phase: 'blocked', reason: 'release_not_advanced' }));
-        await atomic(join(pinned.releases!, releaseId + '.json'), { ...current, lastRequestError: code, requestId });
+        // Only the host's own fixed refusal text is shown; filesystem, Git and GitHub errors stay private.
+        await atomic(join(pinned.releases!, releaseId + '.json'), { ...current, lastRequestError: code, ...(error instanceof HostRefusal ? { lastRequestDetail: error.message } : {}), requestId });
       }
       await atomic(saved, { version: 1, requestId, intentDigest, state: 'completed', response });
       await atomic(join(pinned.publicationResults!, name), response); await rm(path);

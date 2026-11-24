@@ -11,7 +11,18 @@ import { createVerificationBrokerFileClient } from './verification-broker-client
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', ...args], { cwd, encoding: 'utf8' }).trim();
-async function fixture(options: { deletedSecret?: boolean } = {}) {
+/** Appends `count` synthetic commits to the current branch in one fast-import pass; `secretAt` adds then removes a private path. */
+function synthesizeHistory(projectRoot: string, count: number, secretAt?: number) {
+  const branch = git(projectRoot, 'symbolic-ref', 'HEAD'); let stream = '';
+  const commit = (index: number, change: string) => { const message = 'synthetic history ' + index; stream += `commit ${branch}\ncommitter Synthetic Fixture <synthetic@example.invalid> ${1700000000 + index} +0000\ndata ${message.length}\n${message}\n${index === 0 ? 'from ' + branch + '^0\n' : ''}${change}\n`; };
+  for (let i = 0; i < count; i++) {
+    const body = 'history ' + i;
+    commit(i, `M 100644 inline history/${i}.txt\ndata ${body.length}\n${body}\n` + (i === secretAt ? `M 100644 inline deep/nested/.netrc\ndata 9\nsynthetic\n` : i === (secretAt ?? -2) + 1 ? 'D deep/nested/.netrc\n' : ''));
+  }
+  execFileSync('/usr/bin/git', ['fast-import', '--quiet'], { cwd: projectRoot, input: stream });
+  git(projectRoot, 'reset', '--hard', '--quiet');
+}
+async function fixture(options: { deletedSecret?: boolean; history?: number; secretAt?: number; maxScreenedCommits?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'grunt-host-synthetic-')); roots.push(root);
   const projectRoot = join(root, 'project'); await mkdir(projectRoot, { mode: 0o700 });
   git(projectRoot, 'init', '--initial-branch=main'); git(projectRoot, 'config', 'user.email', 'synthetic@example.invalid'); git(projectRoot, 'config', 'user.name', 'Synthetic Fixture');
@@ -19,13 +30,14 @@ async function fixture(options: { deletedSecret?: boolean } = {}) {
   if (options.deletedSecret) await writeFile(join(projectRoot, '.netrc'), 'synthetic old secret fixture');
   git(projectRoot, 'add', '.'); git(projectRoot, 'commit', '-m', 'synthetic base'); const base = git(projectRoot, 'rev-parse', 'HEAD');
   git(projectRoot, 'checkout', '-b', 'grunt/fixture'); if (options.deletedSecret) git(projectRoot, 'rm', '.netrc'); await writeFile(join(projectRoot, 'source.txt'), 'candidate'); git(projectRoot, 'commit', '-am', 'synthetic candidate');
+  if (options.history) synthesizeHistory(projectRoot, options.history, options.secretAt);
   const head = git(projectRoot, 'rev-parse', 'HEAD'), gitTree = git(projectRoot, 'rev-parse', 'HEAD^{tree}');
   await mkdir(join(projectRoot, 'dist')); await writeFile(join(projectRoot, 'dist/index.html'), 'synthetic page');
   const policy: ExecutionHostPolicy = { version: 1, projectRoot, stateDirectory: join(root, 'authority'), channelDirectory: join(root, 'channels'), workerPort: 8793,
     gitConfigSha256: createHash('sha256').update(await readFile(join(projectRoot, '.git/config'))).digest('hex'),
     plans: [{ version: 1, id: 'release', mode: 'release', checks: [{ id: 'tests', command: 'synthetic tests only', artifactPaths: ['dist'], timeoutSeconds: 10 }] }],
     sandboxArgv: ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', '--bind', '$WORKSPACE', '$PROJECT', '--chdir', '$PROJECT', '/bin/sh', '-lc', '$COMMAND'],
-    publication: { version: 1, projectRoot, repository: 'synthetic/fixture', base: 'main', headPrefix: 'grunt/', requiredChecks: ['tests'], reviewPaths: ['source.txt'], artifactDirectory: 'dist', pagesBranch: 'gh-pages', allowMerge: true, allowDeploy: true } };
+    publication: { version: 1, projectRoot, repository: 'synthetic/fixture', base: 'main', headPrefix: 'grunt/', requiredChecks: ['tests'], reviewPaths: ['source.txt'], artifactDirectory: 'dist', pagesBranch: 'gh-pages', allowMerge: true, allowDeploy: true, ...(options.maxScreenedCommits ? { maxScreenedCommits: options.maxScreenedCommits } : {}) } };
   const refs = new Map([['main', base], ['gh-pages', 'd'.repeat(40)]]), commits = new Map<string, Record<string, unknown>>([
     [head, { sha: head, tree: { sha: gitTree }, message: 'candidate' }], [base, { sha: base, tree: { sha: gitTree }, message: 'base' }], ['d'.repeat(40), { sha: 'd'.repeat(40), tree: { sha: gitTree }, message: 'old pages' }],
   ]);
@@ -308,4 +320,51 @@ it.each(['/dev/null', '/tmp/synthetic-custom-hooks', '/dev/null\n'])('accepts pi
   if (hooksPath === '/dev/null') expect(await host.queue.prepare(request)).toMatchObject({ phase: 'blocked', reason: 'verification_required' });
   else await expect(host.queue.prepare(request)).rejects.toThrow('execution-sensitive');
   expect(f.mutations).toEqual([]);
+});
+
+async function release(f: Awaited<ReturnType<typeof fixture>>, host: Awaited<ReturnType<typeof openExecutionHost>>) {
+  const verification = createVerificationBrokerFileClient({ projectRoot: f.projectRoot, inboxDirectory: join(f.policy.channelDirectory, 'verification-inbox'), resultDirectory: join(f.policy.channelDirectory, 'verification-results') });
+  const check = await verification.start({ planId: 'release', checkId: 'tests' }, { cwd: f.projectRoot }); await host.tick();
+  const head = git(f.projectRoot, 'rev-parse', 'HEAD');
+  return { head, request: { head, branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [check.id] } };
+}
+
+it('screens a long unpublished history in one pass and still releases it after a builder-recorded review', async () => {
+  const f = await fixture({ history: 320 }), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
+  expect(Number(git(f.projectRoot, 'rev-list', '--count', 'HEAD', '^' + f.base))).toBeGreaterThan(300);
+  const { head, request } = await release(f, host);
+  const prepared = await host.queue.prepare(request);
+  expect(prepared).toMatchObject({ phase: 'awaiting_review', head });
+  const review = { id: prepared.id, head, gitTree: git(f.projectRoot, 'rev-parse', 'HEAD^{tree}'), verdict: 'approve' as const, summary: 'Synthetic self-review of a long history.' };
+  expect(await host.queue.recordReview(prepared.id, review)).toMatchObject({ phase: 'ready' });
+  expect(await host.queue.advance(prepared.id)).toMatchObject({ phase: 'pull_request' });
+  expect(f.mutations).toContain('push');
+});
+
+it('rejects a private path added and removed deep in a long unpublished history', async () => {
+  const f = await fixture({ history: 320, secretAt: 40 }), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
+  expect(git(f.projectRoot, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('.netrc');
+  expect(git(f.projectRoot, 'log', '--all', '--format=', '--name-only', '--diff-filter=A')).toContain('deep/nested/.netrc');
+  await expect(host.queue.prepare({ head: git(f.projectRoot, 'rev-parse', 'HEAD'), branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [randomUUID()] })).rejects.toThrow('Private-looking');
+  expect(f.mutations).toEqual([]);
+});
+
+it('keeps a policy without maxScreenedCommits byte-identical and bounds the screened history only when configured', async () => {
+  const plain = await fixture(), bounded = await fixture({ history: 120, maxScreenedCommits: 100 });
+  expect(JSON.stringify(executionHostPolicy(JSON.parse(JSON.stringify(plain.policy))))).toBe(JSON.stringify(plain.policy));
+  expect(JSON.stringify(executionHostPolicy(plain.policy).publication)).not.toContain('maxScreenedCommits');
+  for (const bad of [0, -1, 1.5, 100001, '10', null]) expect(() => executionHostPolicy({ ...plain.policy, publication: { ...plain.policy.publication, maxScreenedCommits: bad } })).toThrow();
+  const host = await openExecutionHost(bounded.policy, { exec: bounded.exec, runner: bounded.runner });
+  await expect(host.queue.prepare({ head: git(bounded.projectRoot, 'rev-parse', 'HEAD'), branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [randomUUID()] })).rejects.toThrow('maxScreenedCommits');
+});
+
+it('tells the builder through release status why a release was refused, without leaking other errors', async () => {
+  const f = await fixture({ history: 120, maxScreenedCommits: 100 }), host = await openExecutionHost(f.policy, { exec: f.exec, runner: f.runner });
+  const publication = createPublicationFileChannel({ version: 1, projectRoot: f.projectRoot, channelDirectory: f.policy.channelDirectory });
+  const request = { head: git(f.projectRoot, 'rev-parse', 'HEAD'), branch: 'grunt/fixture', title: 'Synthetic release', body: 'Fixture', verificationIds: [randomUUID()] };
+  const refused = await publication.request('prepare', request, { cwd: f.projectRoot }) as { id: string }; await host.tick();
+  expect(await publication.request('status', { id: refused.id }, { cwd: f.projectRoot })).toMatchObject({ phase: 'blocked', lastRequestError: 'release_not_advanced', lastRequestDetail: expect.stringContaining('maxScreenedCommits') });
+  git(f.projectRoot, 'checkout', '--detach', '--quiet');
+  const detached = await publication.request('prepare', request, { cwd: f.projectRoot }) as { id: string }; await host.tick();
+  expect(await publication.request('status', { id: detached.id }, { cwd: f.projectRoot })).toMatchObject({ lastRequestDetail: expect.stringContaining('named branch') });
 });
