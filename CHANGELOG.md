@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Operator: the live upgrade accepts a publish run whose `build` job passed and whose package artifact survives even if the run failed at its final registry check (npm can accept an upload and stay invisible for minutes); the npm tarball, that artifact and a clean build must still be byte-identical. The publish workflow now waits up to 15 minutes for npm instead of 5.
+
 ## 0.10.2 — 2026-11-24
 
 - Fix execution-host releases that could never prepare once a release branch was more than 256 commits ahead of the public base. The private-file screen no longer refuses long histories: it checks the head tree plus every path added anywhere in the new range in one `git log` pass (about 3 s for 10,000 commits instead of about 70 s for one `ls-tree` per commit), so a private path added and removed deep in history is still refused. The limit is now a bound on the commit count, default 10000, set with the optional host-policy field `publication.maxScreenedCommits` (1 to 100000). A policy without the field keeps exactly the same policy digest, so no policy change or re-pinning is needed. Path-list output from these Git calls may be up to 64 MiB instead of 1 MiB.
