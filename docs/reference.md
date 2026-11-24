@@ -319,6 +319,36 @@ that carries a non-function tool (such as Codex's hosted `web_search`) fails at
 once with HTTP 400 `invalid_request_error` naming the tool type. No source is
 tried and none enters cooldown; disable the hosted tool in the client.
 
+### Parallel work
+
+Grunt provides no parallelism of its own; the harness does. Claude Code, Codex
+and OpenCode run native subagents, and with the grunt files from setup (see the
+[Claude Code](#claude-code), [Codex](#codex) and [opencode](#opencode) sections)
+each subagent's model calls arrive as ordinary requests. Pi has no subagents.
+
+- **Each subagent is its own task.** A task is keyed by the working directory
+  and the user turns it holds, and a subagent starts from its own prompt, so
+  Grunt draws a source for it by weight like any new task. Parallel subagents
+  therefore spread across sources and run concurrently.
+- **Stickiness.** A subagent stays on its source for its whole run, including
+  tool results and retries, and moves, with a handoff, only when that source
+  returns a 429, fails past tolerance or loses its login. Managed pools always
+  route by weight and stay sticky. A source with no registry entry, such as an
+  earlier FreeLLMAPI route, is a last resort: it runs only when named as a model
+  or after every routed source fails.
+- **Notifications.** Codex reports a finished subagent to its orchestrator as a
+  `<subagent_notification>` user message and Claude Code as a
+  `<task-notification>`. A message holding only such notices is not a new turn,
+  so the orchestrator keeps its task and source (0.9.12 and later). The model
+  still sees the notice; real text in the same message still starts a new task.
+- **Quota.** Parallel subagents draw on free quota faster than one session, and
+  each source's limits are unchanged. Grunt does not throttle them. The answer
+  is more sources: the scout keeps adding them, and `npx usegrunt add` adds one.
+  A source that hits its limit is barred until it clears and its tasks continue
+  on the next source.
+- **Hosted tools.** A request that carries a hosted tool such as Codex's
+  `web_search` gets HTTP 400, so keep those tools disabled in the grunt profile.
+
 ### Subworkers (removed)
 
 Grunt no longer provides its own parallelism: the proposal and tool-using
@@ -1237,8 +1267,9 @@ Add this provider to `~/.pi/agent/models.json` (tested with pi 0.99.1):
 }
 ```
 
-Run `pi --provider grunt --model grunt`. Pi stays supported but has no native
-subagents, so it runs one session at a time. See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
+Run `pi --provider grunt --model grunt`. Pi stays supported as a single-agent
+harness: it has no native subagents and Grunt no longer adds workers, so it runs
+one session at a time (see [parallel work](#parallel-work)). See [pi's model configuration](https://pi.dev/docs/latest/models-configuration).
 
 The managed Pi profile uses a 65,536-token working context to compact conversation
 history earlier and reduce repeated input. This local setting does not reduce a
@@ -1340,7 +1371,7 @@ with data-sharing policies require current approval before they can be selected.
 LiveKit's [inference data-retention policy](https://docs.livekit.io/agents/models/inference/)
 states zero retention and no training by LiveKit or its underlying providers on
 all plans; it does not add a policy to the existing approval group.
-Pi remains the harness. Each new user turn starts a task keyed by the canonical
+Each new user turn starts a task keyed by the canonical
 working directory and user history. Tool results, retries and harness subagent
 completion notices (`<subagent_notification>` from Codex, `<task-notification>`
 from Claude Code) keep the same adapter; the model still sees the notice, but a
