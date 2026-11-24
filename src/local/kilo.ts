@@ -1,5 +1,5 @@
-import { Ajv } from 'ajv';
-import type { AnySchema, ValidateFunction } from 'ajv';
+import { compileToolSchemas } from './tool-schema.js';
+import type { ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
@@ -122,11 +122,7 @@ function conversation(request: ModelRequest) {
     }
     new FreebuffTools({ ...request, messages }); // Validate roles and actual correlated results; no JSON bridge or tool execution.
   } catch { throw requestFailure('Kilo rejected invalid function tools or an uncorrelated tool conversation', 'request_tools'); }
-  try {
-    const validators = new Map<string, ValidateFunction>(), ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
-    for (const tool of request.tools) { const fn = object(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
-    return { messages, validators };
-  } catch { throw requestFailure('Kilo rejected a function tool schema', 'request_tool_schema'); }
+  return { messages, validators: compileToolSchemas(request.tools, 'Kilo rejected a function tool schema') };
 }
 export class Kilo implements Source {
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;

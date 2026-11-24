@@ -1,3 +1,4 @@
+import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -317,4 +318,13 @@ it('keeps the Reflection Beam route on its single model', async () => {
   const f = fixture({ reflectionBeam: true, catalogRows: rotation(), infer: () => new Response(null, { status: 429 }) });
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota' });
   expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_BEAM]);
+});
+it.each([false, true])('accepts every tool of a recorded Claude Code request and forwards them unchanged (reflection-beam %s)', async reflectionBeam => {
+  const tools = claudeCodeRequest(0).tools;
+  await recordDataSharingConsent(directory, ['reflection-beam']);
+  for (const index of [0, 1, 2] as const) {
+    const f = fixture({ reflectionBeam, ...(reflectionBeam ? { catalogRows: rotation() } : {}), infer: init => Response.json(result({ model: sentModel(init) })) });
+    await expect(f.source.complete(claudeCodeRequest(index, 'kilo'), new AbortController().signal)).resolves.toMatchObject({ text: expect.any(String) });
+    expect(JSON.parse(f.posts()[0]![1]!.body as string).tools).toEqual(tools);
+  }
 });

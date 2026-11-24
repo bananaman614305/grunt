@@ -38,3 +38,12 @@ registry-0.9.7.mjs is the adapter-registry validator from the published
 usegrunt 0.9.7 (`src/registry.ts` at 04fdc23), compiled to JavaScript with
 esbuild, plus that release's bundled `published` time. Registry API tests run
 served documents through it, as installed 0.9.7 clients do on every sync.
+
+claude-code-tools.json was captured on 2026-11-24 from Claude Code 2.1.331 (the pinned
+Amazing Adventure builder client) run headless with the supervisor's flags and environment
+against a loopback server that answered with scripted completions. The tool list and every
+JSON Schema are byte-for-byte what the client sent (each carries
+`"$schema": "https://json-schema.org/draft/2020-12/schema"`; Monitor, SendMessage and TaskStop
+arrive with `defer_loading`). System text, the environment reminder and the tool results are
+synthetic. Request 0 is the first turn, 1 follows a parallel Bash and Read tool round (results
+listed out of call order), 2 follows a ToolSearch result made of `tool_reference` blocks.

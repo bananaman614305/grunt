@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { MillionSeek, MILLIONSEEK_MODEL } from './millionseek.js';
+import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
 
 const now = Date.parse('2026-11-20T15:00:00Z'), reset = '2026-11-21T00:00:00.000Z';
 const grant = { base_url: 'https://100milionseek.top', token: 'synthetic-key' };
@@ -65,4 +66,17 @@ it('accepts only requested, schema-valid inert native function calls', async () 
   const request = { ...req(), tools: [{ type: 'function', function: { name: 'record_probe', parameters: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'], additionalProperties: false } } }] };
   await expect(source(transport({ completion })).complete(request, AbortSignal.timeout(1000))).resolves.toMatchObject({ text: '', calls: [call] });
   call.function.arguments = '{"marker":42}'; await expect(source(transport({ completion })).complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
+});
+it('accepts every tool of a recorded Claude Code request', async () => {
+  await recordDataSharingConsent(directory, ['millionseek']);
+  const completion = { ...answer(), choices: [{ message: { content: null, tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'Bash', arguments: '{"command":"echo hi"}' } }] }, finish_reason: 'tool_calls' }] };
+  for (const index of [0, 1, 2] as const) {
+    const fetcher = transport({ completion });
+    await expect(source(fetcher).complete({ ...claudeCodeRequest(index, 'millionseek'), cwd: directory }, AbortSignal.timeout(1000))).resolves.toMatchObject({ calls: [{ function: { name: 'Bash' } }] });
+    const sent = JSON.parse(String(fetcher.mock.calls.at(-1)![1]!.body));
+    expect(sent.tools.map((t: { function: { name: string } }) => t.function.name)).toEqual(claudeCodeRequest(index).tools.map(t => (t as { function: { name: string } }).function.name));
+  }
+  // The completion is still validated against the Claude Code schema.
+  completion.choices[0]!.message.tool_calls[0]!.function.arguments = '{"command":"echo hi","unknown":1}';
+  await expect(source(transport({ completion })).complete({ ...claudeCodeRequest(0, 'millionseek'), cwd: directory }, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
 });

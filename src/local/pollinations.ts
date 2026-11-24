@@ -5,8 +5,7 @@ import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { Ajv } from 'ajv';
-import type { AnySchema } from 'ajv';
+import { compileToolSchemas } from './tool-schema.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { SourceError, requestRefusal } from './source.js';
@@ -164,12 +163,9 @@ export async function verifyPollinationsAccess(grant: AccessGrant, options: { fe
   }
 }
 function requestBridge(request: ModelRequest): FreebuffTools {
+  if (request.tools.some(tool => tool.type !== 'function' || !object(tool.function).parameters)) throw requestRefusal('Pollinations rejected unsupported tool definitions or an invalid tool conversation');
+  compileToolSchemas(request.tools, 'Pollinations rejected a function tool schema');
   try {
-    const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, validateFormats: true, addUsedSchema: false });
-    for (const tool of request.tools) {
-      if (tool.type !== 'function' || !object(tool.function).parameters) throw new Error('Unsupported tool');
-      ajv.compile(object(tool.function).parameters as AnySchema);
-    }
     // Responses represents simultaneous calls as adjacent assistant items.
     // Group those call-only items before enforcing complete result correlation.
     const messages: ModelRequest['messages'] = [];
