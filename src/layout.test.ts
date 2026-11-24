@@ -6,9 +6,18 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
   const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/efficiency.md", "docs/router.md", "docs/antseed-vikey-provisioning.md", "docs/providers/freepi.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/kilo.mjs", "proof/add-url.mjs", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
   const operatorFiles = new Set([
-    "ops/adventure-execution/README.md", "ops/adventure-execution/CHECKPOINT_GATE.md", "ops/adventure-execution/baseline.json",
-    "ops/adventure-execution/stage.py", "ops/adventure-execution/test_stage.py", "ops/adventure-execution/activate.py", "ops/adventure-execution/test_activate.py",
-    "ops/adventure-execution/MAINTENANCE.md", "ops/adventure-execution/stage_maintenance.py", "ops/adventure-execution/test_stage_maintenance.py",
+    "ops/adventure-execution/MAINTENANCE.md",
+    "ops/live-upgrade/README.md", "ops/live-upgrade/acquisition_guard.py", "ops/live-upgrade/activate.py", "ops/live-upgrade/attempt.py", "ops/live-upgrade/check_runtime_contract.mjs",
+    "ops/live-upgrade/checkpoint_gate.py", "ops/live-upgrade/collector_guard.py", "ops/live-upgrade/daemon_admission.py", "ops/live-upgrade/end_cycle.py", "ops/live-upgrade/host_metadata.py", "ops/live-upgrade/hostpaths.py",
+    "ops/live-upgrade/maintenance_pause.py", "ops/live-upgrade/pause-and-activate.py", "ops/live-upgrade/preflight.py", "ops/live-upgrade/preparation.py", "ops/live-upgrade/quota_store.py",
+    "ops/live-upgrade/registry_cache.py", "ops/live-upgrade/registry_cache_metadata.mjs", "ops/live-upgrade/release_pins.py", "ops/live-upgrade/release_proof.py",
+    "ops/live-upgrade/rollout_checks.py", "ops/live-upgrade/rollout_config.py", "ops/live-upgrade/seed-routing-history.mjs", "ops/live-upgrade/source_transition.py",
+    "ops/live-upgrade/sqlite_families.py", "ops/live-upgrade/stage.py", "ops/live-upgrade/startup_gate.py", "ops/live-upgrade/startup_gate_metadata.mjs", "ops/live-upgrade/test_admission_retry.py",
+    "ops/live-upgrade/test_attempt.py", "ops/live-upgrade/test_checkpoint_floor.py", "ops/live-upgrade/test_controller.py", "ops/live-upgrade/test_daemon_admission.py",
+    "ops/live-upgrade/test_end_cycle.py", "ops/live-upgrade/test_maintenance_pause.py", "ops/live-upgrade/test_no_hand_edited_versions.py", "ops/live-upgrade/test_preparation_wait.py",
+    "ops/live-upgrade/test_registry_cache.py", "ops/live-upgrade/test_release_pins.py", "ops/live-upgrade/test_resource_policy.py", "ops/live-upgrade/test_source_transition.py",
+    "ops/live-upgrade/test_sqlite_families.py", "ops/live-upgrade/test_startup_gate.py", "ops/live-upgrade/test_support.py", "ops/live-upgrade/test_upgrade.py",
+    "ops/live-upgrade/test_upgrade_cli.py", "ops/live-upgrade/test_verify_success.py", "ops/live-upgrade/upgrade.py", "ops/live-upgrade/verify_success.py",
     "ops/adventure-feed/README.md", "ops/adventure-feed/activity.py", "ops/adventure-feed/uptime.py", "ops/adventure-feed/test_activity.py",
     "ops/adventure-feed/claude_session.py", "ops/adventure-feed/test_claude_session.py",
     "ops/provider-scout/.gitignore", "ops/provider-scout/POLICY.md", "ops/provider-scout/README.md",
