@@ -13,7 +13,7 @@ import signal
 import time
 from pathlib import Path
 
-DEFAULT_MIN_AGE = 900.0       # cycles normally last 10-15 minutes; only a cycle at least this old is ended
+DEFAULT_MIN_AGE = 120.0       # owner: interrupting a cycle is fine; only a cycle at least this old is ended (a just-started cycle is left to finish its first moves)
 POLL = 5.0
 
 

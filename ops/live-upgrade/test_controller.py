@@ -25,7 +25,15 @@ class Retryable(RuntimeError):
 
 
 class Controller(unittest.TestCase):
+    def refresh(self, root, raw, etag, **kw):
+        self.refreshed.append((Path(root), raw, etag, kw))
+        self.order.append('refresh')
+        if self.refresh_error:
+            raise self.refresh_error
+        return {'action': 'written', 'publication': 'p'}
+
     def setUp(self):
+        self.refreshed, self.refresh_error = [], None
         self.temp = tempfile.TemporaryDirectory(dir=HERE)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -33,15 +41,16 @@ class Controller(unittest.TestCase):
         self.state.mkdir()
         (self.root / 'approved-registry-public.json').write_text('{"published":"p"}')
         (self.root / 'attempt-preparation.json').write_text(json.dumps({'newAdmissionBudgetAuthorized': True, 'totalAdmissionBudgetSeconds': 7200,
-            'publicRegistrySha256': stage.sha(self.root / 'approved-registry-public.json'), 'publicRegistryPublication': 'p',
+            'publicRegistrySha256': stage.sha(self.root / 'approved-registry-public.json'), 'publicRegistryPublication': 'p', 'publicRegistryEtag': '"e1"',
             'archive': 'a', 'source': 's', 'releaseManifest': 'r', 'opencodeProfileSha256': 'f' * 64}))
         (self.root / 'old-runtime-manifests.json').write_text('[]')
         (self.root / 'runtime-stage.json').write_text('{}')
         self.config = {'deadlineMonotonic': time.monotonic() + 3000, 'checkpointWaitSeconds': 60, 'pauseSettleBudgetSeconds': 60, 'activationBudgetSeconds': 60, 'verifyBudgetSeconds': 5}
-        stub = SimpleNamespace(private_json=lambda path: json.loads(Path(path).read_text()), wait_for_normal_registry=lambda *a: None, preserve_pause=lambda: None)
+        stub = SimpleNamespace(private_json=lambda path: json.loads(Path(path).read_text()), bring_registry_current=self.refresh, preserve_pause=lambda: None)
         self.messages = []
+        self.order = []
         for patcher in (patch.object(controller, 'ROOT', self.root), patch.object(controller, 'STATE', self.state), patch.object(controller, '_load', return_value=stub),
-                        patch.object(controller.stage, 'stage', return_value={}), patch.object(controller, 'preflight_when_clear', return_value={})):
+                        patch.object(controller.stage, 'stage', side_effect=lambda *a, **k: self.order.append('stage') or {}), patch.object(controller, 'preflight_when_clear', return_value={})):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -81,6 +90,24 @@ class Controller(unittest.TestCase):
         self.assertEqual(self.read('release-state.json')['state'], 'activated_and_first_cycle_verified')
         self.assertEqual(self.read('activation-ready.json')['phase'], 'planned_pause_settled')
         self.assertFalse((self.root / 'pause-outcome.json').exists())
+
+    def test_the_live_registry_cache_is_brought_current_before_staging_with_the_pinned_bytes_and_etag(self):
+        self.go(self.FakePauser(self), lambda t, **kw: {'success': True})
+        self.assertEqual(self.order, ['refresh', 'stage'])
+        root, raw, etag, kw = self.refreshed[0]
+        self.assertEqual((root, raw, etag), (self.root, b'{"published":"p"}', '"e1"'))
+        self.assertEqual((kw['runtime'], kw['node']), (controller.stage.RUNTIMES[0], controller.stage.NODE))
+        self.assertTrue(any('live registry cache: written' in m for m in self.messages))
+
+    def test_there_is_no_wait_for_the_daemons_own_refresh(self):
+        with patch.object(controller.time, 'sleep', side_effect=AssertionError('the controller must not sleep for the registry')):
+            self.go(self.FakePauser(self), lambda t, **kw: {'success': True})
+
+    def test_a_cache_that_cannot_be_made_current_is_a_clean_give_up_before_staging(self):
+        self.refresh_error = controller.registry_refresh.RegistryRefreshError('the live registry cache could not be brought to the public registry after a re-fetch: x')
+        self.attempt(self.FakePauser(self))
+        self.assertCleanGiveUp(3, 'registry_cache_not_current')
+        self.assertEqual(self.order, ['refresh'])
 
     def test_activated_but_first_cycle_not_confirmed_is_reported_loudly_and_not_called_clean(self):
         result = self.go(self.FakePauser(self), lambda t, **kw: {'success': True}, verify=lambda config: {'ok': False, 'working': True, 'modelRepliesRising': False})

@@ -273,8 +273,11 @@ class Preparation(Base):
             urls.append(url)
             if 'api.grunt.run' in url:
                 raise OSError('no such host')
-            return io.BytesIO(b'{"published": "x", "adapters": []}')
-        raw, url = at.fetch_public_registry(opener=opener)
+            response = io.BytesIO(b'{"published": "x", "adapters": []}')
+            response.headers = {'ETag': '"abc"'}
+            return response
+        raw, url, etag = at.fetch_public_registry(opener=opener)
+        self.assertEqual(etag, '"abc"')
         self.assertEqual(urls, list(at.REGISTRY_URLS))
         self.assertIn('milo-gateway', url)
         with self.assertRaises(at.AttemptError):
@@ -285,7 +288,8 @@ class Preparation(Base):
         (path / 'evidence').mkdir()
         raw = b'{"published": "2026-11-24T00:00:00Z", "adapters": []}'
         prep = at.write_preparation(path, version='0.10.1', previous='0.10.0', pins={'sourceCommit': 'a' * 40}, pins_path=path / 'evidence/p.json', source=path / 'source',
-                                    registry_raw=raw, registry_url='https://x', opencode_sha=at.opencode_profile_pin(), opencode_note='n', live_cache_equal=True, authorization='ok')
+                                    registry_raw=raw, registry_url='https://x', opencode_sha=at.opencode_profile_pin(), opencode_note='n', live_cache_equal=True, authorization='ok', registry_etag='"abc"')
+        self.assertEqual(prep['publicRegistryEtag'], '"abc"')
         self.assertTrue(prep['newAdmissionBudgetAuthorized'])
         self.assertEqual(prep['totalAdmissionBudgetSeconds'], 7200)
         self.assertEqual(prep['publicRegistrySha256'], hashlib.sha256(raw).hexdigest())

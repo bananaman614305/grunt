@@ -67,7 +67,7 @@ class Host(unittest.TestCase):
             patch.object(up.release_pins, 'verify_release', verify_release), patch.object(up.attempts_lib, 'rehearse', rehearse), patch.object(up.attempts_lib, 'launch', launch),
             patch.object(up.attempts_lib, 'run_unit_tests', lambda source, **kw: (self.events.append('tests') or self.tests_ok, ['OK'] if self.tests_ok else ['FAILED'])),
             patch.object(up.attempts_lib, 'run_metadata', lambda *a, **kw: {'eligibleUnion': ['a', 'b'], 'consentDeferred': ['b'], 'retiredPackagedSources': []}),
-            patch.object(up.attempts_lib, 'fetch_public_registry', lambda **kw: (b'{"published": "p", "adapters": []}', 'https://registry')),
+            patch.object(up.attempts_lib, 'fetch_public_registry', lambda **kw: (b'{"published": "p", "adapters": []}', 'https://registry', '"etag-1"')),
             patch.object(up.attempts_lib, 'supervisor_running', lambda pid: None),
             patch.object(up.attempts_lib, 'opencode_profile_unchanged', lambda *a, **kw: self.opencode_same),
             patch.object(up.release_pins, 'find_publish_run', lambda version, **kw: {'runId': '1', 'commit': 'p' * 40}),
@@ -133,6 +133,20 @@ class Run(Host):
         end = self.launched[0]['end_cycle']
         self.assertEqual(end['minAgeSeconds'], 600.0)
         self.assertIn('Owner authorized', end['authorization'])
+
+    def test_end_cycle_defaults_to_a_two_minute_minimum_age(self):
+        self.run_up('--version', '0.10.1', '--end-cycle')
+        end = self.launched[0]['end_cycle']
+        self.assertEqual(end['minAgeSeconds'], 120.0)
+        self.assertIn('120 s old', end['authorization'])
+
+    def test_the_registry_etag_is_pinned_and_the_note_says_there_is_no_wait(self):
+        code, output = self.run_up('--version', '0.10.1')
+        prep = json.loads((self.attempt_dir() / 'attempt-preparation.json').read_text())
+        self.assertEqual(prep['publicRegistryEtag'], '"etag-1"')
+        self.assertIn('no wait for the 00/06/12/18 UTC refresh', output)
+        self.assertTrue((self.attempt_dir() / 'registry_refresh.mjs').is_file())
+        self.assertTrue((self.attempt_dir() / 'registry_refresh.py').is_file())
 
     def test_skip_tests_and_failing_tests(self):
         self.run_up('--version', '0.10.1', '--skip-tests')
@@ -212,7 +226,7 @@ class Parser(unittest.TestCase):
     def test_default_command_is_run_and_subcommands_take_their_own_options(self):
         parser = up.build_parser()
         args = parser.parse_args(['--version', '0.10.1', '--check', '--end-cycle'])
-        self.assertEqual((args.command, args.version, args.check, args.end_cycle, args.end_cycle_min_age), (None, '0.10.1', True, True, 900.0))
+        self.assertEqual((args.command, args.version, args.check, args.end_cycle, args.end_cycle_min_age), (None, '0.10.1', True, True, 120.0))
         self.assertFalse(args.skip_tests)
         run = parser.parse_args(['run', '--version', '0.10.2'])
         self.assertEqual((run.command, run.version, run.end_cycle), ('run', '0.10.2', False))

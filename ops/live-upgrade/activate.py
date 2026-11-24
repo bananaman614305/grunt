@@ -188,6 +188,8 @@ def activate(timeout, *, retry_mode=False, attempt_number=1, overall_deadline=No
     hold=STATE/'execution-upgrade-hold';hold_bytes=('grunt-'+VERSION+'-'+stamp).encode()
     temp_drop=RUNTIME_DIR/'systemd/user/milo.service.d'/CONSENT_GUARD_NAME
     receipt={'version':VERSION,'startedAt':stamp,'success':False,'runtimes':[],'workResumed':False,'afterCycle':after_cycle}
+    try:receipt['registryCacheRefresh']=json.loads((ROOT/'registry-refresh.json').read_text())   # what the controller did to bring the live cache current before staging
+    except (OSError,ValueError):pass
     changed=[];frozen=None;owned=False;admission=None;admission_for_retry=None;retry_safe=False;partial=False;mutating=False;resumed=False;new_started=False;store_backup=None;drop_owned=False;hold_identity=None;drop_identity=None;registry_proof=None;collector_stopped=False;collector_stop_attempted=False;collector_checkpoint=None
     owner_state={'installed':False,'changed':[]}
     def owner_files_expected():
