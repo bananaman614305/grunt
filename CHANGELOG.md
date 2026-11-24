@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Operator: make the planned-pause live upgrade the one-command path for the Amazing Adventure host (`ops/live-upgrade`, `python3 ops/live-upgrade/upgrade.py --version X.Y.Z`): the release is tied to its CI artifact and a clean build, the helpers are copied and sealed per attempt with the version pair derived from the installed runtime, an optional owner-authorized `--end-cycle` ends a long cycle, and `status`/`verify` replace the hand-run poll and success scripts (which compared the status schema number with the package version). The 0.9.x Pi staging helpers in `ops/adventure-execution` are removed.
+
 ## 0.10.1 — 2026-11-24
 
 - Use the native DeepSeek output budget in Grunt-managed Pi profiles, pass the caller's budget through to Zro, and preserve Zro's finish reason so Pi can detect a truncated reply.

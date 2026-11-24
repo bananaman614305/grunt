@@ -18,6 +18,11 @@ see its [guide](ops/provider-scout/README.md). Verify it with
 `python3 -m unittest discover -s ops/provider-scout -p 'test_*.py'` and
 `node --test ops/provider-scout/test_probe.mjs ops/provider-scout/test_provision.mjs`. These fixtures use synthetic
 providers and local servers, not external provider accounts or publishing.
+The operator-only live upgrade of the Amazing Adventure host lives in `ops/live-upgrade`; see its
+[runbook](ops/live-upgrade/README.md). `python3 ops/live-upgrade/upgrade.py --version X.Y.Z` verifies the published
+release, prepares a sealed attempt and starts the planned-pause upgrade. Build first, then verify the helpers with
+`python3 -W error::ResourceWarning -m unittest discover -s ops/live-upgrade -p 'test_*.py'`; fixtures are synthetic and
+never signal or start anything.
 The [harness fixture notes](src/local/fixtures/README.md) describe recorded inputs.
 
 CI runs in GitHub Actions only while this repository is public. Use the standard

@@ -77,7 +77,15 @@ class CheckpointGate:
     def __init__(self, *, status_path, supervisor_pid, expected_backend_script,
                  expected_node, ports=(8792, 8793), proc_root=Path("/proc"),
                  status_reader=read_json, pool_reader=read_pool,
-                 clock=time.monotonic, sleep=time.sleep):
+                 clock=time.monotonic, sleep=time.sleep, after_cycle=None, host_idle=None):
+        if after_cycle is not None and (type(after_cycle) is not int or after_cycle < 0):
+            raise ValueError('Completed-cycle retry floor must be a nonnegative integer')
+        self.after_cycle = after_cycle
+        # Optional execution-host quiescence check (callable; returns truthy only for an idle host, may raise).
+        # The builder can leave `grunt-release verify` jobs running on the host after a cycle ends, so a builder
+        # checkpoint alone does not mean the host is idle. None keeps the pool-only behavior.
+        self.host_idle = host_idle
+        self.host_reason = None
         self.status_path = Path(status_path)
         self.supervisor_pid = supervisor_pid
         self.backend_script = str(Path(expected_backend_script))
@@ -119,20 +127,30 @@ class CheckpointGate:
         status = self.read_status(self.status_path)
         return (isinstance(status, dict)
                 and status.get("phase") in ("checkpoint", "waiting_for_free_pool")
-                and "workerPid" in status and status["workerPid"] is None)
+                and "workerPid" in status and status["workerPid"] is None
+                and (self.after_cycle is None or type(status.get("cycles")) is int and status["cycles"] > self.after_cycle))
 
     def _idle(self):
         for port in self.ports:
             pool = self.read_pool(port)
             if not isinstance(pool, dict):
                 return False
-            workers = pool.get("workers")
-            # Runtimes after 0.9.12 have no subworkers and omit the field; earlier ones must report it empty.
-            if (type(pool.get("activeRequests")) is not int or pool["activeRequests"] != 0
-                    or workers is not None and (not isinstance(workers, dict)
-                                                or workers.get("active") != [] or workers.get("queued") != [])):
+            if type(pool.get("activeRequests")) is not int or pool["activeRequests"] != 0:
                 return False
         return True
+
+    def _host_quiet(self):
+        """True when no host check is configured or the host reports idle. Any failure to prove it is "not yet"."""
+        if self.host_idle is None:
+            return True
+        try:
+            if self.host_idle():
+                self.host_reason = None
+                return True
+            self.host_reason = "execution host is not idle"
+        except Exception as error:
+            self.host_reason = str(error)[:200] or type(error).__name__
+        return False
 
     def _backend(self, pid):
         children = (self.proc / str(pid) / "task" / str(pid) / "children").read_text().split()
@@ -147,6 +165,32 @@ class CheckpointGate:
             raise GateError("Free-pool child executable does not match the trusted Node binary")
         return child
 
+    def _expired(self):
+        message = "No verified idle checkpoint; activation was not admitted"
+        return message + " (last execution host check: " + self.host_reason + ")" if self.host_reason else message
+
+    def verify_frozen(self, frozen):
+        """Planned maintenance pause: re-prove a supervisor this process froze earlier (via acquire() with no host check).
+
+        Runs the same post-freeze proofs acquire() runs after SIGSTOP (identity, still stopped, sole expected free-pool child,
+        checkpoint, idle pools) so that activation's admission begins from exactly the state a natural checkpoint would give.
+        The execution-host proof is deliberately left to the activation's own host_quiet_since() read, which raises the
+        retryable HostBusyError. Returns the handle unchanged so it can be used as a context manager."""
+        if not getattr(frozen, "stopped", False):
+            raise GateError("Paused supervisor handle is not frozen")
+        ticks, state = self._identity(frozen.pid)
+        if ticks != frozen.start_ticks:
+            raise GateError("Supervisor changed during planned pause")
+        if state not in ("T", "t"):
+            raise GateError("Supervisor is no longer frozen at the planned pause")
+        if self.supervisor_pid() != frozen.pid:
+            raise GateError("Supervisor changed during planned pause")
+        if self._backend(frozen.pid) != frozen.backend_pid:
+            raise GateError("Free-pool backend changed during planned pause")
+        if not self._checkpoint() or not self._idle():
+            raise GateError("Checkpoint or pool admission changed during planned pause")
+        return frozen
+
     def acquire(self, *, timeout_seconds=3600):
         """Wait for a real checkpoint; return a frozen handle or leave it running.
 
@@ -160,7 +204,8 @@ class CheckpointGate:
         while True:
             frozen = None
             try:
-                if self._checkpoint():
+                # A busy host is the same as "no verified idle checkpoint yet": do not freeze, wait for a later one.
+                if self._checkpoint() and self._host_quiet():
                     pid = self.supervisor_pid()
                     ticks, state = self._identity(pid)
                     if state not in ("R", "S", "D", "I"):
@@ -182,6 +227,8 @@ class CheckpointGate:
                     backend = self._backend(pid)
                     if not self._checkpoint() or not self._idle() or self.supervisor_pid() != pid:
                         raise GateError("Checkpoint or pool admission changed during freeze")
+                    if not self._host_quiet():
+                        raise GateError("Execution host became busy during freeze")
                     # Recheck children after all I/O. A prior model request being
                     # idle does not prove there is no foreground bash/tool child.
                     if self._backend(pid) != backend or not self._checkpoint():
@@ -196,7 +243,7 @@ class CheckpointGate:
                 if not isinstance(error, (OSError, ValueError, GateError)):
                     raise
                 if self.clock() >= deadline:
-                    raise GateError("No verified idle checkpoint; activation was not admitted") from None
+                    raise GateError(self._expired()) from None
             if self.clock() >= deadline:
-                raise GateError("No verified idle checkpoint; activation was not admitted")
+                raise GateError(self._expired())
             self.sleep(min(1, max(0, deadline - self.clock())))
