@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.10.3 — 2026-11-24
+
 - Fix tool conversations stalling on HTTP 429 "No tool-capable adapter": a Claude Code user message that held tool results plus text (system reminders, edited-file notices, queued commands) was decoded as the text first, so every tool bridge (Kilo, Reflection Beam, Mistral Vibe, Pollinations, 100milionseek, Perch, BeatAPI, Free-Pi) refused the conversation. Tool results now come first, then the text. Parallel Responses `function_call` items form one assistant turn and message items between a call and its output wait until after the outputs.
 - Make route retirement follow provider health. Local request-shape refusals (`request_*`, including the tool-bridge conversation check) no longer count toward retirement, set a cooldown or mark the source in error; HTTP 5xx replies with a Retry-After hint are cooldowns that never retire a route; a retired route reopens for one real request after 15 minutes (doubling to 4 hours on each failed trial) instead of waiting for the daily check. Quota behavior is unchanged. A route's first retirement wait is now 15 minutes rather than up to 2 hours.
 - Operator: the live upgrade accepts a publish run whose `build` job passed and whose package artifact survives even if the run failed at its final registry check (npm can accept an upload and stay invisible for minutes); the npm tarball, that artifact and a clean build must still be byte-identical. The publish workflow now waits up to 15 minutes for npm instead of 5.
