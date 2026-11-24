@@ -8,7 +8,7 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
   const operatorFiles = new Set([
     "ops/adventure-execution/MAINTENANCE.md",
     "ops/live-upgrade/README.md", "ops/live-upgrade/acquisition_guard.py", "ops/live-upgrade/activate.py", "ops/live-upgrade/attempt.py", "ops/live-upgrade/check_runtime_contract.mjs",
-    "ops/live-upgrade/checkpoint_gate.py", "ops/live-upgrade/collector_guard.py", "ops/live-upgrade/daemon_admission.py", "ops/live-upgrade/end_cycle.py", "ops/live-upgrade/host_metadata.py",
+    "ops/live-upgrade/checkpoint_gate.py", "ops/live-upgrade/collector_guard.py", "ops/live-upgrade/daemon_admission.py", "ops/live-upgrade/end_cycle.py", "ops/live-upgrade/host_metadata.py", "ops/live-upgrade/hostpaths.py",
     "ops/live-upgrade/maintenance_pause.py", "ops/live-upgrade/pause-and-activate.py", "ops/live-upgrade/preflight.py", "ops/live-upgrade/preparation.py", "ops/live-upgrade/quota_store.py",
     "ops/live-upgrade/registry_cache.py", "ops/live-upgrade/registry_cache_metadata.mjs", "ops/live-upgrade/release_pins.py", "ops/live-upgrade/release_proof.py",
     "ops/live-upgrade/rollout_checks.py", "ops/live-upgrade/rollout_config.py", "ops/live-upgrade/seed-routing-history.mjs", "ops/live-upgrade/source_transition.py",

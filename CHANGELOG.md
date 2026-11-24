@@ -3,7 +3,6 @@
 ## [Unreleased]
 
 - Operator: make the planned-pause live upgrade the one-command path for the Amazing Adventure host (`ops/live-upgrade`, `python3 ops/live-upgrade/upgrade.py --version X.Y.Z`): the release is tied to its CI artifact and a clean build, the helpers are copied and sealed per attempt with the version pair derived from the installed runtime, an optional owner-authorized `--end-cycle` ends a long cycle, and `status`/`verify` replace the hand-run poll and success scripts (which compared the status schema number with the package version). The 0.9.x Pi staging helpers in `ops/adventure-execution` are removed.
-
 - Setup prints the opt-in launch command for each connected coding tool, and `usegrunt status` repeats them, using the real configured paths.
 - The Claude Code profile blanks `ANTHROPIC_API_KEY`: Claude Code sent an exported key as `x-api-key` beside the placeholder token, so a real key reached grunt. Rerun `usegrunt setup` to rewrite the profile.
 
