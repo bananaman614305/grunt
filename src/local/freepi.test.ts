@@ -1,3 +1,4 @@
+import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -97,4 +98,12 @@ describe('Free-Pi guarded official API', () => {
     await expect(f.source.complete({ ...request(), tools: [{ type: 'function', function: { name: 'echo', parameters: { type: 'object' } } }] }, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
   });
 
+});
+describe('Free-Pi recorded Claude Code tools', () => {
+  it('accepts every tool of a recorded Claude Code request', async () => {
+    for (const index of [0, 1, 2] as const) {
+      const f = fixture(); await expect(f.source.complete({ ...claudeCodeRequest(index), publicContext: true }, AbortSignal.timeout(1000))).resolves.toMatchObject({ text: expect.any(String) });
+      expect(f.calls).toContain('/v1/chat/completions');
+    }
+  });
 });

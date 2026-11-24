@@ -1,3 +1,4 @@
+import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -306,4 +307,12 @@ it('strips only the leading complete thinking block', () => {
   expect(stripPollinationsThinking(' \n<think>private</think>\n'+final())).toBe(final());
   expect(stripPollinationsThinking('prefix <think>private</think>'+final())).toContain('prefix');
   expect(stripPollinationsThinking('<think>incomplete')).toBe('<think>incomplete');
+});
+it('bridges every tool of a recorded Claude Code request', async () => {
+  const path = await directory(), tools = claudeCodeRequest(0).tools;
+  for (const index of [0, 1, 2] as const) {
+    const fetcher = mock({ infer: () => completion(final('Done')) });
+    await expect(source({ directory: path, fetcher }).complete({ ...claudeCodeRequest(index, 'pollinations') }, AbortSignal.timeout(1000))).resolves.toMatchObject({ text: 'Done' });
+    expect(JSON.parse(JSON.parse(String(posts(fetcher).at(-1)![1]!.body)).messages[0].content.split('\n').at(-1)).tools).toEqual(tools);
+  }
 });

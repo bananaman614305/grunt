@@ -1,5 +1,5 @@
-import { Ajv } from 'ajv';
-import type { AnySchema, ValidateFunction } from 'ajv';
+import { compileToolSchemas } from './tool-schema.js';
+import type { ValidateFunction } from 'ajv';
 import { FreebuffTools } from './freebuff-tools.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
@@ -148,8 +148,8 @@ export class FreePi implements Source {
   async close() { this.shutdown.abort(); }
 }
 function prepareTools(request: ModelRequest) {
+  const messages: ModelRequest['messages'] = [];
   try {
-    const messages: ModelRequest['messages'] = [];
     for (const message of request.messages) {
       const previous = messages.at(-1);
       if (message.role === 'assistant' && message.content === '' && message.tool_calls?.length && !message.tool_call_id
@@ -158,11 +158,8 @@ function prepareTools(request: ModelRequest) {
     }
     // Validation only: never render a bridge prompt or execute a tool.
     new FreebuffTools({ ...request, messages });
-    const validators = new Map<string, ValidateFunction>();
-    const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
-    for (const tool of request.tools) { const fn = object(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
-    return { messages, validators };
   } catch { throw requestRefusal('Free-Pi rejected invalid tools or an uncorrelated conversation'); }
+  return { messages, validators: compileToolSchemas(request.tools, 'Free-Pi rejected a function tool schema') };
 }
 function validatedCalls(value: unknown, validators: Map<string, ValidateFunction>, request: ModelRequest): ToolCall[] {
   if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid Free-Pi tools');

@@ -4,8 +4,7 @@ import { access, lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } f
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { Ajv } from 'ajv';
-import type { AnySchema } from 'ajv';
+import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { SourceError, requestRefusal } from './source.js';
@@ -261,10 +260,10 @@ function validatedBridge(request: ModelRequest) {
         previous.tool_calls = [...previous.tool_calls, ...message.tool_calls];
       } else messages.push({ ...message });
     }
-    const normalized = { ...request, messages }, ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, validateFormats: true, addUsedSchema: false });
-    for (const tool of request.tools) ajv.compile(object(tool.function).parameters as AnySchema);
-    return new FreebuffTools(normalized);
-  } catch { throw requestRefusal('Perch rejected unsupported function definitions or an invalid tool conversation'); }
+    const bridge = new FreebuffTools({ ...request, messages });
+    compileToolSchemas(request.tools, 'Perch rejected a function tool schema');
+    return bridge;
+  } catch (error) { throw error instanceof SourceError ? error : requestRefusal('Perch rejected unsupported function definitions or an invalid tool conversation'); }
 }
 function outputBudget(value: number | undefined) {
   if (value === undefined) return PERCH_MAX_OUTPUT_TOKENS;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { Ajv } from 'ajv';
-import type { ValidateFunction, AnySchema } from 'ajv';
+import { ToolSchemaCompiler } from './tool-schema.js';
+import type { ValidateFunction } from 'ajv';
 import { SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, ToolCall } from './source.js';
 
@@ -20,12 +20,12 @@ export class FreebuffTools {
   constructor(private request: ModelRequest) {
     // Ajv retains schema objects in its cache. Keep that cache request-local.
     // Draft 7 only. No remote refs, coercion, defaults, or removal of extra properties.
-    const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, validateFormats: true, addUsedSchema: false });
+    const ajv = new ToolSchemaCompiler();
     for (const tool of request.tools) {
       const fn = tool.function;
       if (tool.type !== 'function' || !object(fn) || typeof fn.name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(fn.name) || this.validators.has(fn.name) || !object(fn.parameters)) throw refuse();
       // A schema Ajv cannot compile still reaches the model; Pi validates the call it receives.
-      try { this.validators.set(fn.name, ajv.compile(fn.parameters as AnySchema)); }
+      try { this.validators.set(fn.name, ajv.compile(fn.parameters)); }
       catch { this.validators.set(fn.name, Object.assign(() => true, { errors: null }) as unknown as ValidateFunction); }
     }
     // Results are data supplied by Pi, never model-authored bridge envelopes.

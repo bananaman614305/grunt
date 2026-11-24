@@ -1,3 +1,4 @@
+import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { chmod, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
@@ -251,5 +252,12 @@ it('rejects duplicate parallel call IDs and incomplete or duplicated results bef
   const result = (id: string) => ({ role: 'tool', content: 'result', tool_call_id: id });
   for (const messages of [[call('a'), call('a'), result('a')], [call('a'), call('b'), result('a')], [call('a'), call('b'), result('a'), result('a'), result('b')]]) {
     const f = fixture(); await expect(f.source.complete({ ...request(), messages }, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' }); expect(f.calls).toHaveLength(0);
+  }
+});
+it('accepts every tool of a recorded Claude Code request', async () => {
+  for (const index of [0, 1, 2] as const) {
+    const f = fixture(completion({ choices: [{ message: { content: 'Done' } }] }));
+    await expect(f.source.complete(claudeCodeRequest(index, 'beatapi'), new AbortController().signal)).resolves.toMatchObject({ text: 'Done' });
+    expect(f.calls.some(call => call.url.endsWith('/chat/completions') && JSON.parse(String(call.init?.body)).tools.length === claudeCodeRequest(0).tools.length)).toBe(true);
   }
 });
