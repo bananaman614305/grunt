@@ -23,7 +23,7 @@ def candidate(**changes):
     return {'provider': 'Synthetic', 'homepage': 'https://synthetic.example', 'model': 'synthetic-flash',
             'context_tokens': 210000, 'free_access': 'recurring', 'quality': 'target', 'signup_friction': 'low',
             'status': 'ready_for_review', 'reason': 'Synthetic only', 'primary_sources': ['https://synthetic.example/docs'],
-            'data_policy': 'Synthetic policy', 'setup_status': 'anonymous', 'proposal_url': None, 'release_request': None,
+            'data_policy': 'Synthetic policy', 'setup_status': 'anonymous', 'proposal_url': None, 'release_request': None, 'qualification_blocker': None,
             'probe': {'http_status': 200, 'source_id': 'synthetic', 'reply_received': True,
                       'attribution_verified': True, 'tool_call_verified': True, 'free_guard_verified': True,
                       'evidence_file': 'proof.json'}, **changes}

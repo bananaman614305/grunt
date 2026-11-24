@@ -222,7 +222,8 @@
           "setup_status",
           "probe",
           "proposal_url",
-          "release_request"
+          "release_request",
+          "qualification_blocker"
         ]
       }
     },
