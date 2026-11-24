@@ -11,7 +11,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { acquireFreePiAccountLease } from './freepi-lock.js';
 import { quotaRetryAfter } from './quota-timing.js';
 import { diagnosticFetch } from './diagnostics.js';
-import { SourceError } from './source.js';
+import { SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const FREEPI_ID = 'freepi';
@@ -162,7 +162,7 @@ function prepareTools(request: ModelRequest) {
     const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
     for (const tool of request.tools) { const fn = object(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
     return { messages, validators };
-  } catch { throw new SourceError('refused', 'Free-Pi rejected invalid tools or an uncorrelated conversation'); }
+  } catch { throw requestRefusal('Free-Pi rejected invalid tools or an uncorrelated conversation'); }
 }
 function validatedCalls(value: unknown, validators: Map<string, ValidateFunction>, request: ModelRequest): ToolCall[] {
   if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid Free-Pi tools');

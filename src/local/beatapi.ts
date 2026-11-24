@@ -9,7 +9,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { MetadataFlights } from './metadata-flight.js';
-import { SourceError } from './source.js';
+import { SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const BEATAPI_MODEL = 'deepseek-v4.1-flash-free';
@@ -162,7 +162,7 @@ function tools(request: ModelRequest) {
     const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
     for (const tool of request.tools) { const fn = obj(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
     return { validators, messages };
-  } catch { throw new SourceError('refused', 'BeatAPI rejected invalid function tools or an uncorrelated tool conversation'); }
+  } catch { throw requestRefusal('BeatAPI rejected invalid function tools or an uncorrelated tool conversation'); }
 }
 export class BeatAPI implements Source {
   readonly id = 'beatapi'; readonly supportsFunctionTools = true;

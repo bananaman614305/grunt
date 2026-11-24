@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { mergeRoutingBackoff, RoutingHistory, MAX_ADAPTIVE_BACKOFF_SECONDS, ROUTING_HISTORY_TTL_MS, withRoutingWorkload } from './routing-history.js';
+import { mergeRoutingBackoff, RoutingHistory, MAX_ADAPTIVE_BACKOFF_SECONDS, RETIRED_REOPEN_MS, ROUTING_HISTORY_TTL_MS, withRoutingWorkload } from './routing-history.js';
 import { SourceStatus } from './source-status.js';
 import { RETIRE_AFTER_FAILURES, StickyRouter } from './routing.js';
 import { SourceError } from './source.js';
@@ -93,8 +93,9 @@ it('uses finite escalating cooldowns for repeated identical failures and resets 
   for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
     await value.complete({ ...request, userMessages: ['task-' + i] }, AbortSignal.timeout(1000));
     const delay = value.cooldown('kilo')!.until - now;
-    expect(delay).toBe(Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, 900 * 2 ** i) * 1000);
-    now = value.cooldown('kilo')!.until + 1;
+    // Failures 1-4 back off adaptively; the 5th retires the route and its first reopen wait is 15 minutes.
+    expect(delay).toBe(i === RETIRE_AFTER_FAILURES - 1 ? RETIRED_REOPEN_MS : Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, 900 * 2 ** i) * 1000);
+    now = value.cooldown('kilo')!.until + (i === RETIRE_AFTER_FAILURES - 1 ? -1 : 1);
   }
   failing.complete.mockResolvedValue({ text: 'recovered' });
   await expect(value.complete({ ...request, model: 'kilo', userMessages: ['recover'] }, AbortSignal.timeout(1000))).rejects.toThrow();
@@ -325,7 +326,7 @@ it('rejects exhausted startup read contention without deleting durable observati
   expect((await (await open(path)).snapshot(11000)).performance.find(row => row.profile === 'all')!.value.samples).toBe(1);
 });
 
-it.each([false, true])('retires repeated HTTP 529 failures while preserving four-second retry hints (stored=%s)', async stored => {
+it.each([false, true])('honors a four-second HTTP 529 retry hint without ever counting toward retirement (stored=%s)', async stored => {
   let now = 10000;
   const path = await directory();
   const status = new SourceStatus(['runcrate', 'livekit'], () => now);
@@ -333,18 +334,18 @@ it.each([false, true])('retires repeated HTTP 529 failures while preserving four
   const failing = source('runcrate'), fallback = source('livekit');
   failing.complete.mockRejectedValue(new SourceError('upstream', 'Temporary overload', 4, undefined, { httpStatus: 529 }));
   const value = router([failing, fallback], status, () => now);
-  for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
+  for (let i = 0; i < RETIRE_AFTER_FAILURES * 2; i++) {
     await value.complete({ ...request, userMessages: [`hinted task ${i}`] }, AbortSignal.timeout(1000));
     expect(value.cooldown('runcrate')!.until - now).toBe(4000);
+    expect(value.retired('runcrate')).toBe(false);
     now += 4001;
   }
-  expect(value.retired('runcrate')).toBe(true);
-  await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['retired explicit request'] }, AbortSignal.timeout(1000))).rejects.toThrow();
-  expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
+  expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES * 2);
+  expect(status.routingBackoff('runcrate')!.streak).toBe(1);
   if (stored) {
     const restored = new SourceStatus(['runcrate', 'livekit'], () => now);
     await restored.setRoutingHistory(await open(path));
-    expect(router([failing, fallback], restored, () => now).retired('runcrate')).toBe(true);
+    expect(router([failing, fallback], restored, () => now).retired('runcrate')).toBe(false);
   }
 });
 
@@ -383,7 +384,7 @@ it.each([
       await restored.setRoutingHistory(await open(path));
       expect(router([one], restored, () => now).retired('runcrate')).toBe(true);
     }
-    now += 2 * 60 * 60 * 1000 + 1;
+    now = status.routingBackoff('runcrate')!.until - 1;
     await expect(value.complete({ ...request, model: 'runcrate', userMessages: ['after late failure'] }, AbortSignal.timeout(1000))).rejects.toThrow();
     expect(one.complete).toHaveBeenCalledTimes(6);
     value.verified('runcrate');
@@ -428,10 +429,10 @@ it.each([false, true])('counts five HTTP 502 failures after an admitted quota re
     expect(value.cooldown('runcrate')!.until).toBe(70000);
     for (let i = 1; i <= 5; i++) {
       now += 1000;
-      rejects[i]!(new SourceError('upstream', 'Temporary upstream error', 4, undefined, { httpStatus: 502 }));
+      rejects[i]!(new SourceError('upstream', 'Temporary upstream error', undefined, undefined, { httpStatus: 502 }));
       await turns[i];
-      expect(value.cooldown('runcrate')!.until).toBe(70000);
-      expect(status.routingBackoff('runcrate')).toMatchObject({ code: 'quota', signature: 'upstream:502::', streak: i });
+      expect(value.cooldown('runcrate')!.until).toBeGreaterThanOrEqual(70000);
+      expect(status.routingBackoff('runcrate')).toMatchObject({ code: 'quota', signature: 'upstream:502::', streak: i, quotaUntil: 70000 });
       expect(value.retired('runcrate')).toBe(i === 5);
     }
     now = 70001;
@@ -457,7 +458,7 @@ it.each([false, true])('a successful admitted reply clears the failure streak wh
   await status.failureBackoff('runcrate', new SourceError('quota', 'Daily reset'), 60, false);
   for (let i = 0; i < 5; i++) {
     now += 1000;
-    await status.failureBackoff('runcrate', new SourceError('upstream', 'Temporary error', 4, undefined, { httpStatus: 502 }), 4, false);
+    await status.failureBackoff('runcrate', new SourceError('upstream', 'Temporary error', undefined, undefined, { httpStatus: 502 }), 4, false);
   }
   expect(value.retired('runcrate')).toBe(true);
   now += 1000;

@@ -9,7 +9,7 @@ import { Ajv } from 'ajv';
 import type { AnySchema } from 'ajv';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { SourceError } from './source.js';
+import { SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { MetadataFlights } from './metadata-flight.js';
 
@@ -181,7 +181,7 @@ function requestBridge(request: ModelRequest): FreebuffTools {
       } else messages.push({ ...message });
     }
     return new FreebuffTools({ ...request, messages });
-  } catch { throw new SourceError('refused', 'Pollinations rejected unsupported tool definitions or an invalid tool conversation'); }
+  } catch { throw requestRefusal('Pollinations rejected unsupported tool definitions or an invalid tool conversation'); }
 }
 export function stripPollinationsThinking(text: string): string {
   return text.replace(/^\s*<think>[\s\S]*?<\/think>\s*/, '');

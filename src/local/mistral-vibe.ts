@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { SourceError } from './source.js';
+import { SourceError, requestRefusal } from './source.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
@@ -188,7 +188,7 @@ export class MistralVibe implements Source {
     if (!needsBridge) return await this.completeText(request, caller);
     let bridge: FreebuffTools;
     try { bridge = new FreebuffTools(request); }
-    catch { throw new SourceError('refused', 'Mistral Vibe rejected unsupported tool definitions or an invalid tool conversation'); }
+    catch { throw requestRefusal('Mistral Vibe rejected unsupported tool definitions or an invalid tool conversation'); }
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     let inputTokens = 0, outputTokens = 0;
     for (let attempt = 0; attempt < 2; attempt++) {

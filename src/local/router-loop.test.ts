@@ -37,7 +37,8 @@ async function failRepeatedly(routes: ReturnType<typeof pool>, times: number) {
   for (let i = 0; i < times; i++) {
     // A new task each time, so stickiness to the fallback route does not hide the failing one.
     await routes.sources.complete(ask(`task ${++tasks}`), AbortSignal.timeout(1000));
-    routes.advance(2 * 60 * 60 * 1000 + 1);
+    // A retired route reopens for one trial after 15 minutes, so stop advancing once it is retired.
+    if (!routes.sources.retired('opencode')) routes.advance(2 * 60 * 60 * 1000 + 1);
   }
 }
 
@@ -48,7 +49,7 @@ it(`retires a route on its ${RETIRE_AFTER_FAILURES}th consecutive identical fail
   await failRepeatedly(routes, 1);
   expect(routes.sources.retired('opencode')).toBe(true);
   const calls = vi.mocked(routes.a.complete).mock.calls.length;
-  routes.advance(24 * 60 * 60 * 1000);
+  routes.advance(10 * 60 * 1000);
   await expect(routes.sources.complete(ask('after retirement'), AbortSignal.timeout(1000))).resolves.toEqual({ text: 'kilo done' });
   expect(routes.a.complete).toHaveBeenCalledTimes(calls);
   // A newer registry listing it, or a passing daily check, gives it a fresh try.
@@ -62,6 +63,7 @@ it('brings a retired route back after a successful daily maintenance probe', asy
   const routes = pool(() => new SourceError('upstream', 'Synthetic outage'));
   await failRepeatedly(routes, RETIRE_AFTER_FAILURES);
   expect(routes.sources.retired('opencode')).toBe(true);
+  routes.advance(16 * 60 * 1000); // The maintenance probe waits out the cooldown (15 minutes after retirement).
   // The probe calls the source directly, so it can still reach a retired route.
   vi.mocked(routes.a.complete).mockResolvedValueOnce({ text: 'Hello from opencode.' });
   await expect(routes.sources.check('opencode', AbortSignal.timeout(5000))).resolves.toMatchObject({ outcome: 'passed', evidence: 'reply' });
@@ -358,7 +360,7 @@ it('shares retirement from main failures across mixed-pool request paths', async
     for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
       const request = ask(`failure ${i}`, true);
       await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'freellmapi done' });
-      now += 2 * 60 * 60 * 1000 + 1;
+      if (i < RETIRE_AFTER_FAILURES - 1) now += 2 * 60 * 60 * 1000 + 1;
     }
     expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
     expect(sources.retired('kilo')).toBe(true);

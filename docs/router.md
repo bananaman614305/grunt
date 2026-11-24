@@ -104,7 +104,9 @@ accepted, with `GRUNT_*` taking precedence.
   route for 15 minutes. Each identical repeat within 6 hours doubles that
   delay, up to 2 hours. An invalid function-call response starts at 30 seconds
   instead. Explicit HTTP 5xx retry hints bypass multiplication and are bounded
-  to 1 second–24 hours. Quota failures use the provider's reset time instead;
+  to 1 second–24 hours. Local request-shape refusals (`failureReason`
+  `request_*`: unsupported tools, a tool schema or tool conversation the
+  adapter refused before any provider was reached) set no back-off at all. Quota failures use the provider's reset time instead;
   successful recovery preserves that quota deadline. Missing installations
   and expired logins stay barred until a successful health check.
   On the first upgrade to Kilo's free-model rotation, routing history clears
@@ -112,12 +114,16 @@ accepted, with `GRUNT_*` taking precedence.
   Other holds and subsequent quota holds from exhausting the pool persist.
 - **Retirement.** On the **5th consecutive identical failure**, each within
   6 hours of the last, the route is retired. Quota failures never count
-  toward this; identical non-quota failures still count during a quota hold
-  and when retry hints set the delay. Later failures cannot clear established
-  retirement. A retired route gets no traffic, including explicitly named
-  requests, doesn't count as open (so the next pass
-  opens a replacement), and isn't re-signed up.
-- **Return.** Three things bring a retired route back:
+  toward this, and neither do local request-shape refusals or HTTP 5xx
+  failures that carry a Retry-After hint (those are only cooldowns). Identical
+  non-quota failures still count during a quota hold. A retired route gets no
+  traffic, including explicitly named requests, until it reopens (below),
+  doesn't count as open (so the next pass opens a replacement), and isn't
+  re-signed up.
+- **Return.** Four things bring a retired route back:
+  - a half-open trial: 15 minutes after retirement (or after the last failed
+    trial) the route may take exactly one real routed request. Success clears
+    the retirement; failure doubles the wait (15 min, 30, 60, 120, then 4 h);
   - a successful reply, which includes the daily access check (that check
     probes the source directly);
   - a newer registry publication that changes its entry (a weight-only change
