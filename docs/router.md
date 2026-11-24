@@ -104,7 +104,12 @@ accepted, with `GRUNT_*` taking precedence.
   benched) prefer routes with no active request and use a busy route only when
   no idle one is eligible. A fallback also waits for pending admission checks
   (each bounded at five seconds) before sharing a busy route. A healthy bound
-  task keeps its route even when it is busy.
+  task keeps its route even when it is busy. A draw claims its route in the same
+  tick, before any await (the fallback handoff runs git status and diff) and
+  until the attempt ends, so tasks starting together spread over distinct idle
+  routes; with fewer idle routes than tasks the rest share as before. The claim
+  is released when the attempt succeeds, fails or is cancelled, or the selection
+  is dropped.
 - **Back-off.** Upstream failures, timeouts and refusals normally bench the
   route for 15 minutes. Each identical repeat within 6 hours doubles that
   delay, up to 2 hours. An invalid function-call response starts at 30 seconds

@@ -63,6 +63,22 @@ export class StickyRouter {
   useRegistryScores(score: (id: string) => number | null | undefined) { this.registryScore = score; }
   // Routes allowed their one half-open trial request right now (see claimTrial).
   private trials = new Set<string>();
+  // Sources a task has drawn and not yet finished with. A draw claims its source in the same tick, before
+  // any await (handoff) and for the whole attempt, so concurrent new tasks see it as busy and spread out.
+  private reservations = new Map<string, number>();
+  // True while a request is active on the source or another selection holds it. `own` discounts the
+  // caller's own reservation.
+  busy(id: string, own = 0) { return this.observation.isBusy(id) || (this.reservations.get(id) ?? 0) > own; }
+  private reserve(id: string): () => void {
+    this.reservations.set(id, (this.reservations.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (this.reservations.get(id) ?? 1) - 1;
+      if (left > 0) this.reservations.set(id, left); else this.reservations.delete(id);
+    };
+  }
   // Retired and not yet due for a trial. A retired route reopens after a bounded wait (15 min, doubling to
   // 4 h per failed trial) for a single real request; success clears it, failure extends the wait.
   retired(id: string) {
@@ -162,7 +178,7 @@ export class StickyRouter {
     if (!needsFunctionTools(request) || this.sources.some(source => source.id === request.model)
       || task.lastPerformanceSwitchAt !== undefined && this.now() - task.lastPerformanceSwitchAt < 5 * 60 * 1000) return reset();
     const current = candidates.find(candidate => candidate.source.id === task.source);
-    if (!current || !toolCapable(current.source) || this.observation.isBusy(current.source.id)) return reset();
+    if (!current || !toolCapable(current.source) || this.busy(current.source.id)) return reset();
     const currentAdapter = adapters.find(adapter => adapter.id === current.source.id);
     const estimate = this.observation.routingContinuationEstimate(current.source.id, workload);
     if (!estimate || currentAdapter?.kind !== 'model') return reset();
@@ -173,7 +189,7 @@ export class StickyRouter {
     let best: Candidate | undefined, bestMs = estimate.expectedMs / 2;
     for (const candidate of candidates) {
       const adapter = adapters.find(adapter => adapter.id === candidate.source.id);
-      if (candidate === current || !toolCapable(candidate.source) || this.observation.isBusy(candidate.source.id)
+      if (candidate === current || !toolCapable(candidate.source) || this.busy(candidate.source.id)
         || adapter?.kind !== 'model' || adapter.fit === 'poor' || currentAdapter.fit === 'great' && adapter.fit !== 'great') continue;
       const alternate = this.observation.routingContinuationEstimate(candidate.source.id, workload);
       if (!alternate || alternate.reliability < .95 || alternate.reliability < estimate.reliability) continue;
@@ -279,7 +295,7 @@ export class StickyRouter {
           if (this.availability.hasPending()) { await this.availability.changed(signal); continue; }
           throw this.exhausted(toolsRequired, retryTimes);
         }
-        const idle = eligible.filter(candidate => !observation.isBusy(candidate.source.id));
+        const idle = eligible.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
         // prefer idle capacity but must not wait behind background work.
         const boundMain = eligible.some(candidate => candidate.source.id === task.source);
@@ -300,6 +316,9 @@ export class StickyRouter {
           let draw = (this.options.random ?? Math.random)() * ready.reduce((total, a) => total + a.weight, 0);
           selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;
         }
+        // Claim the source now, in the same tick as the draw: handoff below awaits, and concurrent tasks must
+        // not draw the same idle source meanwhile. Released when this attempt ends or the selection is dropped.
+        const unreserve = this.reserve(selected.source.id);
         const switched = task.switched || (!bound && task.source !== undefined);
         let release = () => {};
         try {
@@ -316,7 +335,7 @@ export class StickyRouter {
           const liveAdapter = this.options.registry().adapters.find(adapter => adapter.id === selected.source.id
             && this.registered(adapter.id) && adapter.modalities.includes('text') && (!request.imageInput || adapter.modalities.includes('image')));
           if (!liveAdapter || scoutRetired(liveAdapter, this.now()) || this.retired(selected.source.id) || this.trialBusy(selected.source.id) || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
-            || performanceSwitch && observation.isBusy(selected.source.id)) continue;
+            || performanceSwitch && this.busy(selected.source.id, 1)) continue;
           release = this.claimTrial(selected.source.id);
           task.source = selected.source.id;
           task.switched = switched;
@@ -333,7 +352,7 @@ export class StickyRouter {
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
           await this.recordFailure(selected.source.id, failure); task.switched = true;
-        } finally { release(); }
+        } finally { release(); unreserve(); }
       }
     } finally {
       task.busy = false;

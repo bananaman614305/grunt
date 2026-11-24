@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fix concurrent tasks drawing the same idle source. A pick only became visibly busy once its attempt started, and a fallback awaits its handoff (git status and diff in a checkout) in between, so tasks falling back together could all draw one idle source while others stayed idle. A draw now claims its source in the same tick, before any await, and holds the claim until the attempt ends (success, failure, cancellation) or the selection is dropped; the idle filter counts claims. Tasks starting together spread over distinct idle sources, and with fewer idle sources than tasks they share as before. Stickiness, weights, explicit models, handoff, cooldowns, retry hints, half-open trials and the pending-admission wait are unchanged. Tests also pin that `request_*` refusals never lower a source's routing weight, reliability, feedback or persisted history; a slow, partly failing source such as 100milionseek keeps its low weight only from real latency and upstream failures.
+
 ## 0.10.5 — 2026-11-24
 
 - Fix a fallback sharing a source another task was using while idle sources existed. After a source failed (for example a 529), the next pick drew only from sources whose admission metadata was fresh, so idle sources whose metadata had expired were left out and the fallback landed on a busy one (in a live test, four parallel subagents ended up on three sources). A fallback now waits for the pending metadata checks (each bounded at five seconds) and prefers an idle source, like a first draw, and only shares a busy source when no idle one remains. A healthy bound task still keeps its source, busy or not; weights, handoff, cooldowns, half-open trials and explicit-model routing are unchanged.
