@@ -341,8 +341,19 @@ it.each([true, false])('finishes at anonymous Kilo once grunt answers, leaving s
   expect(log.mock.calls.map(call => call[0])).toEqual([
     available ? '✓ harness: pi' : '… harness: Squire alone',
     '✓ data sharing: on, no new sources', '✓ local service: running on port 8788',
-    '✓ smoke test: grunt answered', '✓ Trusty Squire: already set up and signed in, skipped', '1 ready; 1 more continue in the background (usegrunt status)', 'Ready'
+    '✓ smoke test: grunt answered', '✓ Trusty Squire: already set up and signed in, skipped', '1 ready; 1 more continue in the background (usegrunt status)',
+    ...(available ? ['→ Pi on grunt: pi --provider grunt --model grunt'] : []), 'Ready'
   ]);
+});
+
+it('prints no launch line for a harness whose connection failed', async () => {
+  const stub = actions(['kilo', 'zro']);
+  const { HARNESSES } = await import('./harnesses.js');
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  await wizard(undefined, { ...stub, chooseHarness: async () => HARNESSES[0], connectHarness: vi.fn(async () => { throw new Error('check failed'); }) });
+  const lines = log.mock.calls.map(call => String(call[0]));
+  expect(lines.some(line => line.startsWith('→ '))).toBe(false);
+  expect(lines.at(-1)).toBe('Ready');
 });
 
 it('keeps a ready route when Squire bootstrap fails before the background handoff', async () => {

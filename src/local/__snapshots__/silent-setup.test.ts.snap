@@ -14,6 +14,9 @@ source  tokenharbor           ✓ ready
 source  perch                 skipped (setup failed)
 source  zro                   skipped (key test failed)
 3 ready
+→ Pi on grunt: pi --grunt
+→ Claude Code on grunt: claude --grunt
+→ OpenCode on grunt: opencode --grunt
 Ready
 "
 `;
@@ -32,6 +35,9 @@ source  tokenharbor           ✓ ready
 source  perch                 skipped (setup failed)
 source  zro                   ✓ ready
 4 ready
+→ Pi on grunt: pi --grunt
+→ Claude Code on grunt: claude --grunt
+→ OpenCode on grunt: opencode --grunt
 Ready
 "
 `;

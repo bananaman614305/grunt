@@ -396,7 +396,8 @@ and tree with the new `review-record` channel request; see
 
 `usegrunt status` prints one cached pool snapshot. `usegrunt status --watch`
 opens a live terminal view; `--json` prints a single structured snapshot.
-These commands read the local daemon's `GET /v1/status`; they do not start
+A plain snapshot ends with the same launch line for each coding tool that is
+installed and has its grunt file. These commands read the local daemon's `GET /v1/status`; they do not start
 the daemon or run provider health checks. A status read after setup releases
 its session can trigger [background acquisition](router.md#3-slow-loop-hot-add-and-scout-mapping),
 whose signup driver may consume inference.
@@ -602,8 +603,9 @@ the daemon as your own requests
 are. It then finishes the selected coding-tool configuration and bootstraps
 Squire for remaining account signups before returning. A bootstrap failure is
 reported; those account signups still need a working Squire connection.
-It prints `N ready; M more continue in the background (usegrunt status)`
-and `Ready`, and returns. Rows it did not reach show `background`. Setup then
+It prints `N ready; M more continue in the background (usegrunt status)`,
+one plain `→ <tool> on grunt: <launch command>` line for each coding tool it
+connected, and `Ready`, and returns. Rows it did not reach show `background`. Setup then
 releases its session, and, when background acquisition is enabled, the daemon
 starts its existing
 [route acquisition pass](router.md#1-greedy-first-pass-driver-cap) for the
@@ -1281,7 +1283,7 @@ targets the former 128,000 setting and preserves user-adjusted contexts. For an 
 
 ### Claude Code
 
-Tested with Claude Code 2.1.330. Setup writes `~/.claude/grunt.settings.json`
+Tested with Claude Code 2.1.331. Setup writes `~/.claude/grunt.settings.json`
 (or under `$CLAUDE_CONFIG_DIR`), which Claude Code layers over your own settings
 when you pass `--settings`; your `settings.json` is never edited:
 
@@ -1290,6 +1292,7 @@ when you pass `--settings`; your `settings.json` is never edited:
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8788",
     "ANTHROPIC_AUTH_TOKEN": "local",
+    "ANTHROPIC_API_KEY": "",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "grunt",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "grunt",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "grunt",
@@ -1306,7 +1309,17 @@ The four model variables make every alias a subagent might request (`sonnet`,
 `haiku`, `opus`, or an agent's own setting) resolve to `grunt`, so the `Agent`
 tool's subagents run on grunt. Without them a subagent asks for a Claude model
 grunt does not serve. Launch without `--settings` and Claude Code is unchanged.
-The same variables work exported in your shell. The placeholder token satisfies
+The same variables work exported in your shell (also `unset ANTHROPIC_API_KEY`).
+
+If your shell exports `ANTHROPIC_API_KEY`, Claude Code does not prefer it over
+`ANTHROPIC_AUTH_TOKEN`; it sends both, so your real key would arrive at grunt as
+`x-api-key` beside `Authorization: Bearer local`, and an interactive session
+asks whether to use the key. The empty `ANTHROPIC_API_KEY` in the profile
+overrides the shell and any value in your own `settings.json`, so only the
+placeholder token is sent and the prompt does not appear (checked against
+Claude Code 2.1.331). Setup rewrites an older profile to add it. Grunt never
+reads `Authorization` or `x-api-key` on `/v1/messages`, so a key that did
+arrive would not be forwarded, stored or logged. The placeholder token satisfies
 the client; the loopback daemon does not require a provider credential. Claude Code
 prints a harmless `[claude-code:unrecognized_model]` warning for the custom model.
 See [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway).

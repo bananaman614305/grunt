@@ -278,7 +278,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     } catch (error) { console.error(error instanceof Error ? error.message : 'Could not update grunt'); process.exitCode = 1; }
   } else if (process.argv[2] === 'status') {
     const { statusCommand } = await import('./dashboard.js');
-    try { await statusCommand(process.argv.slice(3)); }
+    const { HARNESSES } = await import('./harnesses.js');
+    try { await statusCommand(process.argv.slice(3), { harnesses: HARNESSES }); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
   } else if (process.argv[2] === 'efficiency') {
     try { const { efficiencyCommand } = await import('./efficiency-cli.js'); await efficiencyCommand(process.argv.slice(3)); }
