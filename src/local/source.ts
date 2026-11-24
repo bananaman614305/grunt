@@ -9,6 +9,10 @@ import type { RoutingHistory } from './routing-history.js';
 export class SourceError extends Error {
   constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string, public diagnostics?: SafeDiagnosticMetadata) { super(message); }
 }
+// The request's own shape (tools, schema, tool conversation) was refused before any provider was reached.
+// failureReason 'request_*' marks it so routing never counts it as provider health.
+export const requestRefusal = (message: string, failureReason: 'request_tools' | 'request_tool_schema' = 'request_tools') =>
+  new SourceError('refused', message, undefined, undefined, { failureReason });
 // The client sent something grunt cannot translate. This is a request problem,
 // not a source failure: it is raised before routing, so no source is tried and
 // none gets a cooldown. The API answers it with HTTP 400.
@@ -406,7 +410,7 @@ export class Sources {
     let attempted = false;
     for (const source of candidates) {
       signal.throwIfAborted();
-      if (this.pending.has(source.id) || this.retired(source.id)
+      if (this.pending.has(source.id) || this.retired(source.id) || this.registeredRouter?.trialBusy(source.id)
         || this.chainRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)) continue;
       if (source.acceptsRequest && !source.acceptsRequest(request)) {
         if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
@@ -417,6 +421,7 @@ export class Sources {
         ...(!automatic ? { reason: 'explicit' as const } : attempted || pool !== this.sources ? { reason: 'fallback' as const } : {}) });
       attempted = true; progress.attempted = true;
       let completion: Completion;
+      const release = this.registeredRouter?.claimTrial(source.id) ?? (() => {});
       try { completion = await this.attempt(source, request, signal); }
       catch (error) {
         if (signal.aborted || (error instanceof SourceError && error.code === 'cancelled')) {
@@ -430,7 +435,7 @@ export class Sources {
         // Only dots and OpenCode deadlines and first-output deadlines fall through; caller cancellation stops above.
         if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode' && !cutoffs.has(last)) throw last;
         continue;
-      }
+      } finally { release(); }
       console.error(`grunt source: ${source.id} answered model ${this.safeModel(request.model)}`);
       answeredBy.set(completion, source.id);
       return completion;

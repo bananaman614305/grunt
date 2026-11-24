@@ -5,7 +5,7 @@ import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore } from './diagnostics.js';
-import { currentRoutingWorkload, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
+import { currentRoutingWorkload, localRequestRefusal, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
 // Negative admission evidence may delay discovery, never authorize dispatch.
@@ -328,7 +328,9 @@ export class SourceStatus {
       return result;
     } catch (error) {
       const code = failureCode(error);
-      if (!signal.aborted && code !== 'cancelled' && (!guard || entry.revision === guard.revision)) {
+      // A request-shape refusal never reached the provider; it says nothing about this source's health.
+      const local = error instanceof SourceError && localRequestRefusal(error);
+      if (!signal.aborted && code !== 'cancelled' && !local && (!guard || entry.revision === guard.revision)) {
         const retry = error && typeof error === 'object' && 'retryAfter' in error ? error.retryAfter : undefined;
         this.failed(source.id, code, typeof retry === 'number' ? retry : undefined);
         if (guard) guard.acceptedRevision = entry.revision;

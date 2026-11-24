@@ -10,11 +10,16 @@ import type { ErrorCode, ModelRequest, SourceError } from './source.js';
 export const RETIRE_AFTER_FAILURES = 5;
 export const ROUTING_HISTORY_TTL_MS = 6 * 60 * 60 * 1000;
 export const MAX_ADAPTIVE_BACKOFF_SECONDS = 2 * 60 * 60;
+// A retired route is not dead forever: after a bounded wait it may take ONE real routed request.
+// Success clears the retirement; a failed trial doubles the next wait, up to the cap.
+export const RETIRED_REOPEN_MS = 15 * 60 * 1000;
+export const MAX_RETIRED_REOPEN_MS = 4 * 60 * 60 * 1000;
+export const retiredReopenDelay = (trials: number) => Math.min(MAX_RETIRED_REOPEN_MS, RETIRED_REOPEN_MS * 2 ** Math.min(Math.max(0, trials), 10));
 export const routingWorkloads = ['interactive-text', 'interactive-tools', 'background-text', 'background-tools'] as const;
 export type RoutingWorkload = typeof routingWorkloads[number];
 export type RoutingProfile = RoutingWorkload | 'all';
 export interface RoutingPerformance { samples: number; reliability: number; latencyMs: number; failureCostMs: number; at: number; lastSuccessAt?: number }
-export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number; quotaUntil?: number }
+export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number; quotaUntil?: number; trials?: number }
 export interface RoutingHistorySnapshot { performance: { source: string; profile: RoutingProfile; value: RoutingPerformance }[]; backoff: { source: string; value: RoutingBackoff }[] }
 const workloads = new AsyncLocalStorage<RoutingWorkload>();
 export const withRoutingWorkload = <T>(workload: RoutingWorkload, run: () => T) => workloads.run(workload, run);
@@ -43,6 +48,17 @@ export function nextRoutingPerformance(previous: RoutingPerformance | undefined,
     failureCostMs: old ? old.failureCostMs * .8 + (success ? 0 : duration) * .2 : success ? 0 : duration,
     at: observedAt, ...(success ? { lastSuccessAt: Math.max(at, old?.lastSuccessAt ?? 0) } : old?.lastSuccessAt !== undefined ? { lastSuccessAt: old.lastSuccessAt } : {}) };
 }
+// A request-shape refusal never reached the provider: the request or Grunt is at fault, not the route.
+export function localRequestRefusal(error: SourceError) {
+  return sanitizeSafeDiagnosticMetadata(error.diagnostics).failureReason?.startsWith('request_') === true;
+}
+// A 5xx carrying Retry-After is the provider asking for a pause (overloaded, restarting). It is a cooldown
+// that honors the hint, not evidence the route is broken.
+export function upstreamRetryHint(error: SourceError) {
+  const status = error.diagnostics?.httpStatus, retry = error.retryAfter;
+  return error.code === 'upstream' && status !== undefined && Number.isInteger(status) && status >= 500 && status < 600
+    && retry !== undefined && Number.isFinite(retry) && retry >= 0;
+}
 export function routingFailureSignature(error: SourceError) {
   const safe = sanitizeSafeDiagnosticMetadata(error.diagnostics);
   return [error.code, safe.httpStatus ?? '', safe.failureReason ?? '', safe.networkCode ?? ''].join(':').toLowerCase();
@@ -68,12 +84,24 @@ export function quotaAfterRecovery(value: RoutingBackoff): RoutingBackoff {
   return { ...value, until: value.quotaUntil ?? value.until, signature: 'quota:::', streak: 1 };
 }
 export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
+  if (previous && previous.streak >= RETIRE_AFTER_FAILURES && error.code !== 'quota') {
+    // Half-open: only a failure at or after the reopen time is a failed trial. Earlier stragglers change nothing.
+    if (at < previous.until) return previous;
+    if (upstreamRetryHint(error)) return { ...previous, until: Math.max(previous.until, at + seconds * 1000) };
+    const trials = (previous.trials ?? 0) + 1;
+    return { ...previous, at: Math.max(previous.at, at), until: at + retiredReopenDelay(trials), trials };
+  }
+  if (upstreamRetryHint(error)) {
+    const until = at + seconds * 1000;
+    return previous ? { ...previous, until: Math.max(previous.until, until) } : { code: error.code, signature: 'hint:::', streak: 1, at, until };
+  }
   const signature = routingFailureSignature(error);
   const repeated = error.code !== 'quota' && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
   const streak = repeated ? Math.min(RETIRE_AFTER_FAILURES, previous.streak + 1) : 1;
   // Explicit provider/reset hints bypass adaptive multiplication, including zero.
   const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
-  return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + delay * 1000 });
+  const retiring = error.code !== 'quota' && streak >= RETIRE_AFTER_FAILURES;
+  return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + (retiring ? RETIRED_REOPEN_MS : delay * 1000) });
 }
 function performanceValue(raw: unknown): RoutingPerformance | undefined {
   const value = object(raw);
@@ -89,7 +117,7 @@ function backoffValue(raw: unknown): RoutingBackoff | undefined {
     || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > RETIRE_AFTER_FAILURES
     || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000
     || value.quotaUntil !== undefined && (value.code !== 'quota' || !validTime(value.quotaUntil) || value.quotaUntil < value.at || value.quotaUntil > value.until)) return;
-  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number, ...(value.quotaUntil !== undefined ? { quotaUntil: value.quotaUntil as number } : {}) };
+  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number, ...(value.quotaUntil !== undefined ? { quotaUntil: value.quotaUntil as number } : {}), ...(Number.isSafeInteger(value.trials) && Number(value.trials) > 0 && Number(value.trials) <= 1000 ? { trials: Number(value.trials) } : {}) };
 }
 
 /** Only fixed source/workload IDs, bounded numbers and allowlisted failure classes. */

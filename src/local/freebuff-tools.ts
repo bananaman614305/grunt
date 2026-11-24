@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { Ajv } from 'ajv';
 import type { ValidateFunction, AnySchema } from 'ajv';
-import { SourceError } from './source.js';
+import { SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, ToolCall } from './source.js';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const refuse = () => requestRefusal('Freebuff JSON bridge rejected an invalid tool definition or tool conversation');
 const fail = () => new SourceError('upstream', 'Freebuff JSON bridge rejected an invalid envelope or tool conversation');
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
@@ -22,7 +23,7 @@ export class FreebuffTools {
     const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, validateFormats: true, addUsedSchema: false });
     for (const tool of request.tools) {
       const fn = tool.function;
-      if (tool.type !== 'function' || !object(fn) || typeof fn.name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(fn.name) || this.validators.has(fn.name) || !object(fn.parameters)) throw fail();
+      if (tool.type !== 'function' || !object(fn) || typeof fn.name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(fn.name) || this.validators.has(fn.name) || !object(fn.parameters)) throw refuse();
       // A schema Ajv cannot compile still reaches the model; Pi validates the call it receives.
       try { this.validators.set(fn.name, ajv.compile(fn.parameters as AnySchema)); }
       catch { this.validators.set(fn.name, Object.assign(() => true, { errors: null }) as unknown as ValidateFunction); }
@@ -30,25 +31,25 @@ export class FreebuffTools {
     // Results are data supplied by Pi, never model-authored bridge envelopes.
     const pending = new Set<string>();
     for (const message of request.messages) {
-      if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(message.role) || typeof message.content !== 'string') throw fail();
+      if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(message.role) || typeof message.content !== 'string') throw refuse();
       if (message.role === 'tool') {
-        if (!message.tool_call_id || !pending.delete(message.tool_call_id) || message.tool_calls?.length) throw fail();
+        if (!message.tool_call_id || !pending.delete(message.tool_call_id) || message.tool_calls?.length) throw refuse();
         continue;
       }
-      if (pending.size || message.tool_call_id) throw fail();
+      if (pending.size || message.tool_call_id) throw refuse();
       if (message.tool_calls?.length) {
-        if (message.role !== 'assistant') throw fail();
+        if (message.role !== 'assistant') throw refuse();
         for (const call of message.tool_calls) {
           // IDs correlate one pending call/result pair. Other providers can
           // reuse an ID after that pair has completed in an earlier turn.
-          if (call.type !== 'function' || !call.id || pending.has(call.id)) throw fail();
+          if (call.type !== 'function' || !call.id || pending.has(call.id)) throw refuse();
           // Historical tools need not still be available. Their arguments must be JSON.
-          try { if (!object(JSON.parse(call.function.arguments))) throw fail(); } catch { throw fail(); }
+          try { if (!object(JSON.parse(call.function.arguments))) throw refuse(); } catch { throw refuse(); }
           pending.add(call.id);
         }
       }
     }
-    if (pending.size) throw fail();
+    if (pending.size) throw refuse();
     this.fingerprint = createHash('sha256').update(canonical({ cwd: request.cwd, messages: request.messages, tools: request.tools })).digest('hex');
   }
   prompt(repair = false) {

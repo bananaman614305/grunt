@@ -12,7 +12,7 @@ import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import type { RoutingWorkload } from './routing-history.js';
-import { RETIRE_AFTER_FAILURES, routingWorkload, withRoutingWorkload } from './routing-history.js';
+import { RETIRE_AFTER_FAILURES, localRequestRefusal, routingWorkload, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
@@ -61,9 +61,24 @@ export class StickyRouter {
   }
   private now() { return (this.options.now ?? Date.now)(); }
   useRegistryScores(score: (id: string) => number | null | undefined) { this.registryScore = score; }
+  // Routes allowed their one half-open trial request right now (see claimTrial).
+  private trials = new Set<string>();
+  // Retired and not yet due for a trial. A retired route reopens after a bounded wait (15 min, doubling to
+  // 4 h per failed trial) for a single real request; success clears it, failure extends the wait.
   retired(id: string) {
     const backoff = this.observation.routingBackoff(id);
-    return !!backoff && backoff.streak >= RETIRE_AFTER_FAILURES;
+    if (!backoff || backoff.streak < RETIRE_AFTER_FAILURES) return false;
+    return this.now() < backoff.until;
+  }
+  // A due retired route whose single trial is already in flight.
+  trialBusy(id: string) { return this.trials.has(id) && (this.observation.routingBackoff(id)?.streak ?? 0) >= RETIRE_AFTER_FAILURES; }
+  // Synchronously claims the single trial of a due retired route; call it right after the retired() check
+  // and before dispatch. Returns a release to call when the attempt has settled, or a no-op otherwise.
+  claimTrial(id: string): () => void {
+    const backoff = this.observation.routingBackoff(id);
+    if (!backoff || backoff.streak < RETIRE_AFTER_FAILURES || this.trials.has(id)) return () => {};
+    this.trials.add(id);
+    return () => { this.trials.delete(id); };
   }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
@@ -84,6 +99,8 @@ export class StickyRouter {
   private benched(id: string) { return this.retired(id) || (this.cooldown(id)?.until ?? 0) > this.now(); }
   async recordFailure(id: string, failure: SourceError) {
     if (!this.registered(id) || failure.code === 'cancelled') return;
+    // Our own bug or the request's shape, never provider health: no retirement count, no cooldown.
+    if (localRequestRefusal(failure)) return;
     const wasBenched = this.benched(id);
     let until: number;
     if (failure.code === 'quota') {
@@ -93,13 +110,11 @@ export class StickyRouter {
     else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
     else {
       const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
-      const hasUpstreamHint = failure.code === 'upstream' && status !== undefined
-        && Number.isInteger(status) && status >= 500 && status < 600
-        && retry !== undefined && Number.isFinite(retry) && retry >= 0;
+      const hasUpstreamHint = upstreamRetryHint(failure);
       // A reply that arrived but held an invalid function call is a bad
       // sample, not an outage; bench the source only briefly.
       const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
-      const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry))
+      const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry ?? 1))
         : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
       until = (await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint)).until;
     }
@@ -226,7 +241,7 @@ export class StickyRouter {
           }
           if (this.options.pending?.has(source.id)) { skip(source.id, 'pending_setup'); continue; }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
-          if (this.retired(source.id)) { skip(source.id, 'cooldown'); continue; }
+          if (this.retired(source.id) || this.trialBusy(source.id)) { skip(source.id, 'cooldown'); continue; }
           const until = this.cooldown(source.id)?.until;
           if (until !== undefined && until > this.now()) {
             if (Number.isFinite(until)) retryTimes.push(until);
@@ -282,6 +297,7 @@ export class StickyRouter {
           selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;
         }
         const switched = task.switched || (!bound && task.source !== undefined);
+        let release = () => {};
         try {
           // A provider with a request scope guard may only receive the client-approved
           // payload. Handoff would append an unchecked local diff and prior output.
@@ -295,8 +311,9 @@ export class StickyRouter {
           // Keep this check and attempt dispatch synchronous.
           const liveAdapter = this.options.registry().adapters.find(adapter => adapter.id === selected.source.id
             && this.registered(adapter.id) && adapter.modalities.includes('text') && (!request.imageInput || adapter.modalities.includes('image')));
-          if (!liveAdapter || scoutRetired(liveAdapter, this.now()) || this.retired(selected.source.id) || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
+          if (!liveAdapter || scoutRetired(liveAdapter, this.now()) || this.retired(selected.source.id) || this.trialBusy(selected.source.id) || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
             || performanceSwitch && observation.isBusy(selected.source.id)) continue;
+          release = this.claimTrial(selected.source.id);
           task.source = selected.source.id;
           task.switched = switched;
           if (performanceSwitch) { task.lastPerformanceSwitchAt = this.now(); delete task.reassessment; }
@@ -312,7 +329,7 @@ export class StickyRouter {
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
           await this.recordFailure(selected.source.id, failure); task.switched = true;
-        }
+        } finally { release(); }
       }
     } finally {
       task.busy = false;

@@ -8,7 +8,7 @@ import { Ajv } from 'ajv';
 import type { AnySchema } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { FreebuffTools } from './freebuff-tools.js';
-import { SourceError } from './source.js';
+import { SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { openPerchACP, runPerchCommand, runPerchMemorySettings, verifyPerchCoreFiles } from './perch-process.js';
 import type { PerchProcessOptions, PerchProcesses } from './perch-process.js';
@@ -264,7 +264,7 @@ function validatedBridge(request: ModelRequest) {
     const normalized = { ...request, messages }, ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, validateFormats: true, addUsedSchema: false });
     for (const tool of request.tools) ajv.compile(object(tool.function).parameters as AnySchema);
     return new FreebuffTools(normalized);
-  } catch { throw new SourceError('refused', 'Perch rejected unsupported function definitions or an invalid tool conversation'); }
+  } catch { throw requestRefusal('Perch rejected unsupported function definitions or an invalid tool conversation'); }
 }
 function outputBudget(value: number | undefined) {
   if (value === undefined) return PERCH_MAX_OUTPUT_TOKENS;

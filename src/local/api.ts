@@ -24,19 +24,38 @@ function text(v: unknown): string {
     return [];
   }).join('\n');
 }
+// Responses input is a flat item list. Parallel function_call items form one assistant turn, and message
+// items that arrive while calls are unanswered wait until the matching outputs, so results stay adjacent.
+function responsesMessages(items: unknown[]): Message[] {
+  const out: Message[] = [], pending = new Set<string>(), held: Message[] = [];
+  const flush = () => { if (!pending.size) out.push(...held.splice(0)); };
+  for (const v of items) {
+    const m = object(v);
+    if (m.type === 'function_call_output') {
+      pending.delete(String(m.call_id));
+      out.push({ role: 'tool', content: typeof m.output === 'string' ? m.output : JSON.stringify(m.output) ?? '', tool_call_id: String(m.call_id) });
+      flush();
+    } else if (m.type === 'function_call') {
+      const call: ToolCall = { id: String(m.call_id), type: 'function', function: { name: typeof m.namespace === 'string' ? `${m.namespace}__${String(m.name)}` : String(m.name), arguments: String(m.arguments) } };
+      const last = out.at(-1);
+      if (last?.role === 'assistant' && last.tool_calls?.length && !held.length && !last.content) last.tool_calls.push(call);
+      else out.push({ role: 'assistant', content: '', tool_calls: [call] });
+      pending.add(call.id);
+    } else if (!m.type || m.type === 'message') {
+      const message = { role: String(m.role ?? 'user'), content: text(m.content) };
+      if (pending.size) held.push(message); else out.push(message);
+    }
+  }
+  out.push(...held);
+  return out;
+}
 export function decode(body: Obj, api: string, fallback?: string): ModelRequest & {
   cwdSource: 'request' | 'fallback' | 'scratch';
   responseNamespaces?: ReadonlyMap<string, { namespace: string; name: string }>;
 } {
   let messages: Message[];
   if (api === 'responses') {
-    messages = typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : array(body.input).flatMap((v): Message[] => {
-      const m = object(v);
-      if (m.type === 'function_call_output') return [{ role: 'tool', content: typeof m.output === 'string' ? m.output : JSON.stringify(m.output) ?? '', tool_call_id: String(m.call_id) }];
-      if (m.type === 'function_call') return [{ role: 'assistant', content: '', tool_calls: [{ id: String(m.call_id), type: 'function', function: { name: typeof m.namespace === 'string' ? `${m.namespace}__${String(m.name)}` : String(m.name), arguments: String(m.arguments) } }] }];
-      if (m.type && m.type !== 'message') return [];
-      return [{ role: String(m.role ?? 'user'), content: text(m.content) }];
-    });
+    messages = typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : responsesMessages(array(body.input));
     if (body.instructions) messages.unshift({ role: 'developer', content: text(body.instructions) });
   } else {
     messages = array(body.messages).flatMap(v => {
@@ -46,7 +65,9 @@ export function decode(body: Obj, api: string, fallback?: string): ModelRequest 
       const calls: ToolCall[] = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), type: 'function', function: { name: String(b.name), arguments: JSON.stringify(b.input) } }));
       const content = text(blocks.filter(b => b.type !== 'tool_use' && b.type !== 'tool_result'));
       const turn: Message[] = content || calls.length ? [{ role: String(m.role), content, ...(calls.length ? { tool_calls: calls } : {}) }] : [];
-      return [...turn, ...blocks.filter(b => b.type === 'tool_result').map(b => ({ role: 'tool', content: text(b.content), tool_call_id: String(b.tool_use_id) }))];
+      // Results answer the assistant's tool calls, so they must directly follow them. Claude Code adds
+      // reminders and queued commands as text blocks beside the results; that text comes after them.
+      return [...blocks.filter(b => b.type === 'tool_result').map(b => ({ role: 'tool', content: text(b.content), tool_call_id: String(b.tool_use_id) })), ...turn];
     });
     if (body.system) messages.unshift({ role: 'system', content: text(body.system) });
   }

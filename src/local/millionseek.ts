@@ -6,7 +6,7 @@ import { diagnosticFetch } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
-import { SourceError } from './source.js';
+import { SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const MILLIONSEEK_MODEL = 'deepseek-v4.1-flash-free';
@@ -86,7 +86,7 @@ export class MillionSeek implements Source {
       new FreebuffTools(request);
       const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
       for (const tool of request.tools) { const fn = object(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
-    } catch { throw new SourceError('refused', 'Invalid 100milionseek function definitions or tool conversation'); }
+    } catch { throw requestRefusal('Invalid 100milionseek function definitions or tool conversation'); }
     let grant: FreeApiGrant | undefined;
     try { grant = await this.checked(caller); } catch (e) { caller.throwIfAborted(); if (e instanceof SourceError) throw e; }
     caller.throwIfAborted();
