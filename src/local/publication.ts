@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative } from 'node:path';
+import { bindReview, parseReviewRecord } from './publication-review.js';
 
 const sha = /^[a-f0-9]{40}$/, digest = /^[a-f0-9]{64}$/, id = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const branch = /^(?!\/)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[a-zA-Z0-9][a-zA-Z0-9._/-]{0,120}(?<!\/)(?<!\.lock)$/;
@@ -21,9 +22,11 @@ export interface PublicationVerification {
   verified: true; id: string; projectRoot: string; head: string; treeDigest: string; artifactDigest: string;
   checkId: string; mode: 'release'; state: 'completed'; exitCode: 0; unchanged: true;
 }
+/** Review evidence recorded by the builder over the channel (the host runs no reviewer). Records written before that
+ * carry extra reviewer fields; only `verdict` is read from them. */
 export interface PublicationReview {
-  reviewerRunId: string; artifactId: string; verdict: 'approve' | 'changes_requested';
-  head: string; treeDigest: string; artifactDigest: string; independent: true; noEdits: true;
+  source: 'builder'; verdict: 'approve' | 'changes_requested'; head: string; gitTree: string;
+  treeDigest: string; artifactDigest: string; summary: string; recordedAt: number;
 }
 export interface PublicationRequest { head: string; branch: string; title: string; body: string; verificationIds: string[] }
 export type PublicationPhase = 'awaiting_review' | 'reviewing' | 'ready' | 'publishing' | 'pull_request' | 'merging' | 'deploying' | 'deployed' | 'blocked';
@@ -44,8 +47,8 @@ export interface PublicationOptions {
   capture(): Promise<PublicationSnapshot>;
   /** IDs resolve against host-owned signed receipt storage; callers cannot supply attestation JSON. */
   verification(id: string): Promise<PublicationVerification | undefined>;
-  /** Must execute/recover a separate Grunt reviewer, not accept an author-written review claim. */
-  review(record: PublicationRecord, signal?: AbortSignal): Promise<PublicationReview>;
+  /** Host-side screening of the exact candidate (private-looking paths) before a builder review may be recorded. */
+  screen?(record: PublicationRecord): Promise<void>;
   transport: PublicationTransport; now?: () => number;
 }
 
@@ -193,6 +196,26 @@ export class PublicationQueue {
       await this.save(value); return publicationView(value);
     });
   }
+  /** Records the builder's own review of the exact verified candidate. Recording is once per release; a repeat of the identical record is a no-op. */
+  async recordReview(releaseId: string, input: unknown) {
+    return this.locked(async () => {
+      const review = parseReviewRecord(input);
+      if (review.id !== releaseId) throw new Error('Invalid review record.');
+      const value = await read(this.path(releaseId));
+      if (value.version !== 1 || value.id !== releaseId || value.policyDigest !== this.policyDigest()) throw new Error('Invalid retained publication record or changed publication policy.');
+      if (value.review && value.review.source === 'builder' && value.review.verdict === review.verdict && value.review.head === review.head
+        && value.review.gitTree === review.gitTree && value.review.summary === review.summary) return publicationView(value);
+      if (value.phase !== 'awaiting_review' || value.review) throw new Error('A review can be recorded once, while the verified release awaits review.');
+      const bound = bindReview(value, review, (this.options.now ?? Date.now)());
+      const current = snapshot(await this.options.capture(), this.policy);
+      if (!equal(current, value.snapshot)) { value.phase = 'blocked'; value.reason = 'stale_evidence'; await this.save(value); return publicationView(value); }
+      if (!await this.verified(value)) { value.phase = 'blocked'; value.reason = 'verification_required'; await this.save(value); return publicationView(value); }
+      await this.options.screen?.(structuredClone(value));
+      value.review = bound;
+      if (bound.verdict === 'approve') value.phase = 'ready'; else { value.phase = 'blocked'; value.reason = 'changes_requested'; }
+      await this.save(value); return publicationView(value);
+    });
+  }
   async status(releaseId: string) { return publicationView(await read(this.path(releaseId))); }
   async advance(releaseId: string, signal?: AbortSignal) {
     return this.locked(async () => {
@@ -207,18 +230,8 @@ export class PublicationQueue {
       if (!equal(current, expected)) { value.phase = 'blocked'; value.reason = 'stale_evidence'; await this.save(value); return publicationView(value); }
       if (!await this.verified(value)) { value.phase = 'blocked'; value.reason = 'verification_required'; await this.save(value); return publicationView(value); }
       if (value.phase === 'reviewing') { value.phase = 'blocked'; value.reason = 'operation_interrupted'; await this.save(value); return publicationView(value); }
-      if (value.phase === 'awaiting_review') {
-        value.phase = 'reviewing'; await this.save(value);
-        const review = await this.options.review(structuredClone(value), signal);
-        if (!id.test(review.reviewerRunId) || !id.test(review.artifactId) || review.independent !== true || review.noEdits !== true
-          || review.head !== value.snapshot.head || review.treeDigest !== value.snapshot.treeDigest || review.artifactDigest !== value.snapshot.artifactDigest
-          || !['approve', 'changes_requested'].includes(review.verdict)) throw new Error('Independent reviewer evidence did not match the release.');
-        value.review = review;
-        if (!equal(snapshot(await this.options.capture(), this.policy), value.snapshot)) { value.phase = 'blocked'; value.reason = 'stale_evidence'; }
-        else if (review.verdict !== 'approve') { value.phase = 'blocked'; value.reason = 'changes_requested'; }
-        else value.phase = 'ready';
-        await this.save(value); return publicationView(value);
-      }
+      // Nothing runs here: the builder records its review with `recordReview`, then the release is ready or blocked.
+      if (value.phase === 'awaiting_review') return publicationView(value);
       if (value.review?.verdict !== 'approve') { value.phase = 'blocked'; value.reason = 'review_required'; await this.save(value); return publicationView(value); }
       if (value.phase === 'ready' || value.phase === 'publishing') {
         value.phase = 'publishing'; await this.save(value);

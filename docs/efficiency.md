@@ -4,45 +4,12 @@ These capabilities belong to the local Grunt runtime and apply to any configured
 project. Project instructions and the coding interface still determine what work
 is authorized. Grunt chooses tasks and providers through its existing interfaces.
 
-## Coordinate independent work
+## Coordinate independent work (removed)
 
-`usegrunt workers connect pi --agentic` prints a launch command enabling scoped
-workers, background jobs and checkpoints. `grunt_coordinate` accepts a main task
-and up to eight task declarations, with disjoint owned paths for independent work
-and explicit dependencies for work that must wait.
-Dispatch admits at most two independent workers when local status metadata leaves
-capacity for the main agent. It neither probes providers nor resets quotas.
-
-For example, declare ownership before dispatching through Pi's tools:
-
-```js
-grunt_coordinate({operation: "plan", main: {
-  task: "Update the usage guide", ownedPaths: ["docs/usage.md"]
-}, tasks: [{id: "empty-state", task: "Implement the empty-state component",
-  activity: "implementation", ownedPaths: ["src/empty-state.ts"]}]})
-grunt_coordinate({operation: "dispatch"})
-grunt_coordinate({operation: "status"})
-```
-
-`plan` records work; only `dispatch` starts it. An empty `tasks` list is valid
-when no independent work exists. Coordination plans belong to the current Pi
-session/project. Plans and completed summaries survive frontend restart when
-the coding interface restores the same Pi session identity and canonical project.
-They are stored in private `~/.cache/grunt/coordination` state; the trusted launch
-setting `GRUNT_COORDINATION_STATE_DIR` can select another absolute directory outside
-the project. Without a stable session identity, a new launch starts a separate plan.
-
-The main agent continues its own task, collects completed batches through
-`grunt_worker_result`, inspects artifacts and explicitly integrates their changes.
-Dependencies remain deferred until integration and a new plan. Failed, cancelled
-or unresolved batches are never replayed automatically. Completed summaries remain
-usable after the shared batch cache evicts their detailed results.
-
-Restored running batches whose live results cannot be recovered become unresolved.
-Grunt must inspect their retained IDs and artifacts before explicitly replanning.
-Dispatch records its intent before starting a batch, so an interrupted or concurrent
-frontend cannot silently repeat it. Saved summaries are advisory context, not proof
-of integration, passing checks or independent review.
+Grunt subworkers and `grunt_coordinate` were removed; use your harness's native
+subagents. See [removed subworkers](reference.md#subworkers-removed). Pi
+background jobs and checkpoints were removed too; see
+[their notice](reference.md#background-jobs-checkpoints-and-pi-release-tools-removed).
 
 ## Retain routing observations
 
@@ -107,29 +74,7 @@ process afresh. This bounds
 idle resource retention; it does not prevent memory growth during an active native
 request or disable inherited user MCP configuration.
 
-## Reuse scoped verification
-
-Add `verification: {mode: "scoped", checkId: "unit", artifactPaths: ["dist"]}`
-to a normal `grunt_job_start` command to bind its result to the command, timeout,
-environment, Git HEAD, tracked/nonignored untracked contents and named artifacts.
-An identical active job is deduplicated; successful unchanged results can be
-reused for fifteen minutes in the same session, including after restart. Changed
-inputs, expired results, failures and interruptions require a new run.
-
-```js
-grunt_job_start({command: "pnpm test", category: "test", timeoutSeconds: 900,
-  verification: {mode: "scoped", checkId: "unit", artifactPaths: ["dist"]}})
-// Continue independent work, then collect the returned job ID:
-grunt_job_result({id: "returned-job-id"})
-```
-
-Ignored files are outside the input snapshot unless included as named artifacts;
-external services are not captured. If those inputs change, use a new `checkId`
-to force a fresh scoped check.
-
-Long browser/mobile/e2e checks use managed jobs so the main agent can continue
-independent work. Scoped job receipts do not authorize a release. Required release
-checks run through the separately configured host authority below.
+## Verification input reads
 
 Verification reads at most four source files concurrently and avoids rereading a
 file named both by Git and an artifact root within one capture. Release-plan
@@ -207,24 +152,24 @@ runtime events before that activation; it cannot add spans those events lack.
 
 ### Attribute time to actual work
 
-Background jobs emit correlated setup, queue, capture, tool and collection spans.
-Host verification emits setup, queue, capture, tool and verification spans;
-checkpoint tools distinguish write, read and resume operations. Scoped verification
-marks fresh execution, reused results and deduplicated active work separately.
-Tool duration includes helper startup; unmanaged foreground tools and the supervisor's
-checkpoint lifecycle remain outside these spans. These observations never include commands, output, file paths, prompts or checkpoint
-content, and an observer failure cannot change execution or verification authority.
+Host verification emits correlated setup, queue, capture, tool and verification
+spans, and marks fresh execution, reused results and deduplicated active work
+separately. Tool duration includes helper startup; unmanaged foreground tools
+remain outside these spans. These observations never include commands, output,
+file paths or prompts, and an observer failure cannot change execution or
+verification authority. (The Pi background-job and checkpoint spans, including the
+checkpoint stage and operation labels, were removed with those features; older
+runtimes may still have recorded them.)
 
-Pi observations are stored privately under the jobs state directory's `efficiency`
-subdirectory. Host verification observations use the host state directory's
-`efficiency` subdirectory. Their stores are lazy and drained after work settles at
-shutdown. They are separate from daemon request metrics; the passive collector may
-read each database into separately identified state. No public worker command can
-declare that a feature has been independently verified.
+Host verification observations use the host state directory's `efficiency`
+subdirectory. Their store is lazy and drained after work settles at shutdown. It
+is separate from daemon request metrics; the passive collector may read each
+database into separately identified state. No public command can declare that a
+feature has been independently verified.
 
 The internal `createWorkTimingObserver`/`measureWorkTiming` API can record explicit
 task boundaries when a trusted task owner has an actual acceptance result. A
-successful request, returned tool call, checkpoint write or completed job is not
+successful request, returned tool call or completed check is not
 automatically a verified task. Correlated overlapping stage durations must not be
 summed and reported as exclusive wall-clock time. Ordinary tools outside these
 managed paths and autonomous feature acceptance remain outside this instrumentation.
@@ -291,50 +236,19 @@ per verified task are efficiency measures alongside throughput, not substitutes 
 correctness. Passive production observations corroborate controlled tests; they do
 not remove workload and provider confounding on their own.
 
-## Resume focused context
-
-`--grunt-checkpoints` enables `grunt_checkpoint_write`, `grunt_checkpoint_read`
-and `grunt_checkpoint_resume`. Save the original requirements, concise completed
-claims, pending job/worker/artifact IDs and the next action. Writes use revision
-checks; the harness binds the project/session and computes file hashes.
-
-For example, create a task at revision zero, then discover it and select context:
-
-```js
-grunt_checkpoint_write({taskId: "empty-state", expectedRevision: 0,
-  goal: "Add an empty state", requirements: ["Keep keyboard navigation usable"],
-  facts: [{id: "entry", text: "The component lives in src/empty-state.ts"}],
-  files: ["src/empty-state.ts"], nextAction: "Inspect the completed worker artifact"})
-grunt_checkpoint_read({})
-grunt_checkpoint_resume({taskId: "empty-state", factIds: ["entry"],
-  files: [{path: "src/empty-state.ts", startLine: 1, lineCount: 60}]})
-```
-
-Use the current revision returned by `grunt_checkpoint_read({taskId})` for later
-writes. State defaults to `~/.cache/grunt/checkpoints`; the trusted launch setting
-`GRUNT_CHECKPOINT_STATE_DIR` selects another absolute private directory.
-Discovery is limited to the same project and Pi session identity.
-
-On resumption, discover saved task IDs, revalidate saved files and reconcile
-pending results before rerunning work. Handoffs include only selected facts and
-excerpts within a bounded budget, while retaining every saved requirement.
-The default context budget is 32 KiB; `maxContextBytes` accepts 1–64 KiB.
-Credential paths are excluded. Checkpoint content is advisory task data; it never
-replaces instructions or supplies test/review authority.
-
 ## Configure a trusted publication host
 
 Publication is an operator opt-in. The private host policy selects the project,
 repository, branch prefix/base, Pages branch, static artifact directory, required
-check IDs, fixed check commands, independent review paths and merge/deploy
+check IDs, fixed check commands, the review path list and merge/deploy
 permissions. It also pins Git configuration and an isolated sandbox argv template.
 Keep the policy and authority directory outside the project and all worker mounts.
 An existing `core.hooksPath=/dev/null` is accepted; custom hooks and included
 Git configuration remain rejected.
 
 The host currently requires Linux, `/usr/bin/bwrap`, `/usr/bin/git`,
-`/usr/bin/gh`, host-side GitHub authentication and a running local Grunt daemon
-at the policy's `workerPort` for independent review. Use an ordinary Git checkout
+`/usr/bin/gh` and host-side GitHub authentication. The host runs no reviewer:
+Grunt reviews its own releases and records the outcome (see below). Use an ordinary Git checkout
 with a real `.git/config`; linked worktrees are unsupported. GitHub Pages must
 already use the configured Pages branch at its root.
 
@@ -343,11 +257,11 @@ The JSON policy has `version: 1` and these fields:
 | Field | Required value |
 | --- | --- |
 | `projectRoot`, `stateDirectory`, `channelDirectory` | Canonical absolute, separate directories; none may contain another. |
-| `workerPort` | Local Grunt daemon port, from 1024 to 65535. |
+| `workerPort` | Legacy (formerly the subworker port): still required from 1024 to 65535 but unused. |
 | `gitConfigSha256` | SHA-256 of the approved project's `.git/config` bytes. |
 | `plans` | Release plans with `version: 1`, `id`, `mode: "release"` and fixed `checks` containing `id`, `command`, optional `timeoutSeconds` and `artifactPaths`. Check IDs must be unique across plans. |
 | `sandboxArgv` | Operator-defined `/usr/bin/bwrap` argument array with `--unshare-all`, `--die-with-parent`, `--new-session`, `--clearenv` and exactly one `--bind $WORKSPACE $PROJECT`. `$WORKSPACE`, `$PROJECT` and `$COMMAND` substitutions must each occupy a whole argument. Include the required runtime/dependencies through permitted read-only mounts. |
-| `publication` | `version: 1`, matching `projectRoot`, `repository` (`owner/repo`), `base`, slash-terminated `headPrefix`, `requiredChecks`, `reviewPaths`, `artifactDirectory`, `pagesBranch`, `allowMerge` and `allowDeploy`. |
+| `publication` | `version: 1`, matching `projectRoot`, `repository` (`owner/repo`), `base`, slash-terminated `headPrefix`, `requiredChecks`, `reviewPaths` (still required, now unused: it named the paths the removed reviewer owned), `artifactDirectory`, `pagesBranch`, `allowMerge` and `allowDeploy`. |
 | `holdFiles` | Optional list of absolute paths; the existence of any one prevents admission of new host work. |
 
 Every check's `artifactPaths` must be exactly `[publication.artifactDirectory]`,
@@ -357,16 +271,20 @@ unchanged. Store policy/manifest files with owner-only permissions and private
 directories with mode `0700`. The host rejects symlinks and changed or
 execution-sensitive Git configuration.
 
-The worker receives only a read-only JSON channel manifest:
+The coding worker receives only a read-only JSON channel manifest:
 
 ```json
 {"version":1,"projectRoot":"/absolute/project","channelDirectory":"/private/worker-channels"}
 ```
 
 The trusted launcher sets `GRUNT_EXECUTION_CHANNEL_FILE` to that manifest and
-enables `--grunt-background-jobs --grunt-publication`. Manifest paths refer to
-the worker namespace; the host policy uses the corresponding host paths.
-Publication tools are absent without both the flag and configured channel.
+mounts it read-only. Manifest paths refer to the worker namespace; the host policy
+uses the corresponding host paths. The worker-side client reads it with
+`loadExecutionHostChannels` from `dist/local/efficiency-host.js`, which returns a
+verification-broker client and a publication channel over the private file
+channel. Grunt no longer ships tools for this protocol (the former
+`grunt_verify_release*` and `grunt_release_*`): a harness-native client, such as
+a release command run by Claude Code, Codex or OpenCode, is the supported caller.
 No checks, reviews or GitHub operations run merely because the service starts.
 
 Run the configured host explicitly:
@@ -384,19 +302,36 @@ the coding worker's deliberate pauses. Stopping the host cancels its owned child
 process groups. A stale process lease can be recovered without replaying
 interrupted checks.
 
-Grunt queues each configured check with
-`grunt_verify_release({planId, checkId})`, continues independent work and collects
-the result with `grunt_verify_release_result({id})`. The host runs only its fixed
-command in a private isolated snapshot. It signs successful unchanged results and
-rejects missing artifacts, changed inputs, interruptions and model-written claims.
+The release client queues each configured check through the verification
+channel, continues independent work and collects the result by its ID. The host
+runs only its fixed command in a private isolated snapshot. It signs successful
+unchanged results and rejects missing artifacts, changed inputs, interruptions and
+model-written claims.
 
 Commit a clean candidate before requesting the required checks. After collecting
-their IDs, Grunt requests
-`grunt_release_prepare({head, branch, title, body, verificationIds})`, then uses
-`grunt_release_advance({id})` and `grunt_release_status({id})`. Each advance request
-queues one stage; the host does not advance the whole release automatically.
-Status reads do not advance work. The durable queue requires an actual separate
-read-only Grunt reviewer and matching authenticated
+their IDs, the client requests publication `prepare` with `{head, branch, title,
+body, verificationIds}`. A release whose receipts verify waits in `awaiting_review`;
+the builder reviews it (for Grunt, with its own Claude Code subagent) and sends
+`review-record` with the release `id` and exactly `{id, head, gitTree, verdict,
+summary}`: the 40-hex commit and Git tree it reviewed, `verdict` of `approve` or
+`changes_requested`, and a summary of 1 to 2000 characters that the builder
+chooses. The host records only that summary. It refuses the record unless the
+release is still `awaiting_review` with no review, its verification receipts
+still authenticate, the project is still the exact verified candidate, the
+commit and tree match it and the changed paths pass the private-file screen. An
+approval makes the release `ready`; `changes_requested` blocks it with reason
+`changes_requested`, and a fix needs a new commit and a new `prepare`. A refused
+record leaves the release as it was and answers `review_not_recorded`. Repeating
+the identical record is harmless; a second, different verdict is refused.
+
+The host cannot know who reviewed, so the evidence is labelled `source:
+"builder"`. It proves the verdict named this exact commit and tree after the
+authenticated checks, not that the reviewer was independent of the author. Every
+other gate is unchanged. Then the client uses `advance` and `status` with the
+request `id`. Each advance request queues one stage; the host does not advance the
+whole release automatically (an advance while awaiting review changes nothing).
+Status reads do not advance work. The durable queue requires a recorded approving
+review and matching authenticated
 receipts. It merges the exact tested tree using a non-force compare-and-swap
 update, uploads the verified static artifact bytes and confirms the exact Pages
 build commit. New base work or changed evidence blocks publication. Private and
@@ -404,6 +339,6 @@ executable GitHub configuration paths are excluded from static uploads.
 
 Signing keys and GitHub credentials remain host-only. Worker-visible status is
 advisory; authority is rechecked privately at every release gate. Unresolved
-checks/reviews must be addressed before a new publication attempt. A configured
+checks and requested changes must be addressed before a new publication attempt. A configured
 publication path does not grant permission to skip checks or claim deployment
 before its verified build completes.

@@ -61,7 +61,8 @@ protocol repair, billing guards, routing and quota policies remain unchanged.
 A separate read-only minute collector can retain existing runtime observations
 without restarting an active worker. It records startup history loss explicitly;
 historical events without verified version attribution remain unknown. New runtime
-instrumentation additionally measures managed jobs, checkpoints and host verification.
+instrumentation additionally measured managed jobs, checkpoints and host verification
+(the job and checkpoint tools were later removed; host verification remains).
 Those observations live in separate private databases and do not automatically
 declare a feature complete.
 

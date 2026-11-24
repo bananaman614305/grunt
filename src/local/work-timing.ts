@@ -3,20 +3,19 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { DiagnosticEvent } from './diagnostics.js';
 
-export const workStages = ['task', 'queue', 'setup', 'tool', 'verification', 'checkpoint', 'collection', 'capture'] as const;
+export const workStages = ['task', 'queue', 'setup', 'tool', 'verification', 'collection', 'capture'] as const;
 export type WorkStage = typeof workStages[number];
 export type WorkOutcome = 'passed' | 'failed' | 'cancelled' | 'skipped';
 export type WorkDisposition = 'fresh' | 'reused' | 'deduplicated';
-export type WorkOperation = 'checkpoint_write' | 'checkpoint_read' | 'checkpoint_resume';
 export interface WorkTimingSpan {
   readonly id: string;
   finish(outcome: WorkOutcome): void;
   run<T>(operation: () => T): T;
 }
 export interface WorkTimingObserver {
-  start(stage: WorkStage, options?: { parentId?: string; workDisposition?: WorkDisposition; workOperation?: WorkOperation }): WorkTimingSpan;
+  start(stage: WorkStage, options?: { parentId?: string; workDisposition?: WorkDisposition }): WorkTimingSpan;
 }
-export interface WorkTimingOptions { timing?: WorkTimingObserver; parentId?: string; workDisposition?: WorkDisposition; workOperation?: WorkOperation }
+export interface WorkTimingOptions { timing?: WorkTimingObserver; parentId?: string; workDisposition?: WorkDisposition }
 interface ActiveSpan { id: string; observer: WorkTimingObserver }
 const active = new AsyncLocalStorage<ActiveSpan>();
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -43,7 +42,6 @@ export function createWorkTimingObserver(options: {
           options.sink.record({ version: 1, id: randomUUID(), at, requestId: id, type, kind: 'user', actor: 'worker',
             stage, ...(parentId && uuid.test(parentId) ? { parentId } : {}),
             ...(input.workDisposition && ['fresh', 'reused', 'deduplicated'].includes(input.workDisposition) ? { workDisposition: input.workDisposition } : {}),
-            ...(input.workOperation && ['checkpoint_write', 'checkpoint_read', 'checkpoint_resume'].includes(input.workOperation) ? { workOperation: input.workOperation } : {}),
             ...(options.runtimeVersion && version.test(options.runtimeVersion) ? { runtimeVersion: options.runtimeVersion } : {}),
             ...(outcome ? { outcome, durationMs: elapsed } : {}) });
         } catch { /* Recording is observation, never execution authority. */ }
@@ -63,7 +61,7 @@ export function startWorkTiming(stage: WorkStage, options: WorkTimingOptions = {
   let span: WorkTimingSpan | undefined, observer: WorkTimingObserver | undefined;
   try {
     observer = options.timing ?? active.getStore()?.observer;
-    span = observer?.start(stage, { ...(options.parentId ? { parentId: options.parentId } : {}), ...(options.workDisposition ? { workDisposition: options.workDisposition } : {}), ...(options.workOperation ? { workOperation: options.workOperation } : {}) });
+    span = observer?.start(stage, { ...(options.parentId ? { parentId: options.parentId } : {}), ...(options.workDisposition ? { workDisposition: options.workDisposition } : {}) });
   } catch { /* Even an injected observer cannot prevent work. */ }
   let id: string = randomUUID(), finished = false;
   try { if (span?.id && uuid.test(span.id)) id = span.id; } catch { /* An observer getter cannot prevent execution. */ }

@@ -45,6 +45,10 @@ class StageTests(unittest.TestCase):
         self.files = {"supervisor.py": SUPERVISOR.encode(), "free-pool.mjs": POOL.encode(), "worker-brief.md": BRIEF.encode()}
         for name, data in self.files.items():
             (self.owner / name).write_bytes(data)
+        self.runtime = self.owner / "runtime" / "dist" / "local"
+        self.runtime.mkdir(parents=True)
+        for name in ("worker-pool.js", "worker-runtime.js"):
+            (self.runtime / name).write_text("// synthetic runtime fixture\n")
         self.baseline = {name: module.digest(data) for name, data in self.files.items()}
         self.destination = self.root / "stage"
 
@@ -77,6 +81,14 @@ class StageTests(unittest.TestCase):
         self.assertIn("collect or cancel all jobs and subworkers", brief)
         self.assertIn("grunt_spawn", brief)
         self.assertEqual(json.loads((self.destination / "receipt.json").read_text()), receipt)
+
+    def test_refuses_a_runtime_without_subworkers_before_staging_anything(self):
+        (self.runtime / "worker-runtime.js").unlink()
+        with self.assertRaisesRegex(ValueError, "no subworkers.*worker-runtime.js"):
+            self.stage()
+        self.assertFalse(self.destination.exists())
+        for name, data in self.files.items():
+            self.assertEqual((self.owner / name).read_bytes(), data)
 
     def test_baseline_drift_fails_before_any_staging_or_live_changes(self):
         (self.owner / "free-pool.mjs").write_text("new owner configuration")

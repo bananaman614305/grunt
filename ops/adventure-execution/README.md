@@ -1,5 +1,15 @@
 # Owner continuation-runner upgrade
 
+> **Historical, for Grunt 0.9.x runtimes only.** Grunt removed its subworkers,
+> Pi background jobs and checkpoints after 0.9.12, and the Adventure builder now
+> runs on Claude Code. `stage.py` and `stage_maintenance.py` refuse, before
+> writing anything, an owner directory whose `runtime/dist/local` lacks
+> `worker-pool.js` or `worker-runtime.js`, and `stage_maintenance.py` also refuses
+> a launcher that already wires maintenance. `activate.py` treats a pool status
+> without a `workers` field as having none. Release review is now recorded by the
+> builder over the execution-host channel (see
+> [execution efficiency](../../docs/efficiency.md#configure-a-trusted-publication-host)).
+
 This operator-only staging helper upgrades the existing Adventure runner to use
 Grunt's scoped tool workers and session-owned background jobs. It does not touch
 game files, run game tests, send model requests, change accounts, restart a

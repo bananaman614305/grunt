@@ -25,7 +25,6 @@ export interface VerificationReceipt {
   state: 'completed' | 'failed'; exitCode?: number; completedAt: number; unchanged: boolean;
   before: VerificationState; after: VerificationState; environmentDigest: string; signature?: string;
 }
-export const VERIFICATION_MAX_CACHE_AGE_MS = 15 * 60_000;
 export function parseVerificationInput(value: unknown): VerificationInput {
   const v = object(value);
   if (Object.keys(v).some(k => !['checkId', 'mode', 'planId', 'artifactPaths'].includes(k)) || typeof v.checkId !== 'string' || !idPattern.test(v.checkId)
@@ -44,17 +43,6 @@ export function verificationPlanDigest(plan: VerificationPlan): string {
     ids.add(check.id);
   }
   return digest(plan);
-}
-export function verificationBinding(input: VerificationInput, command: string, timeoutSeconds: number, plans: readonly VerificationPlan[] = []) {
-  if (input.mode === 'scoped') {
-    if (input.planId) throw new Error('Scoped verification cannot claim a release plan.');
-    return { planDigest: digest({ mode: 'scoped', checkId: input.checkId, command, timeoutSeconds, artifactPaths: input.artifactPaths }), commandDigest: digest(command) };
-  }
-  const matches = plans.filter(p => p.id === input.planId);
-  if (matches.length !== 1) throw new Error('Release verification requires one trusted launch-policy plan.');
-  const plan = matches[0]!, planDigest = verificationPlanDigest(plan), check = plan.checks.find(c => c.id === input.checkId);
-  if (!check || check.command !== command || (check.timeoutSeconds ?? 900) !== timeoutSeconds || canonical([...(check.artifactPaths ?? [])].sort()) !== canonical(input.artifactPaths)) throw new Error('Command, timeout and artifact set must match the trusted release check exactly.');
-  return { planDigest, commandDigest: digest(command) };
 }
 export const verificationCommandDigest = (command: string) => digest(command);
 export function verificationEnvironmentDigest(env: NodeJS.ProcessEnv) { return digest({ env, node: process.version, executable: process.execPath, platform: process.platform, arch: process.arch }); }
@@ -147,7 +135,6 @@ export function assertVerificationArtifactContents(state: VerificationState, fil
   if (new Set(manifest.map(f => f.path)).size !== manifest.length || canonical(manifest) !== canonical(state.artifactFiles)) throw new Error('Uploaded artifact bytes do not match verified artifacts.');
 }
 export function sameVerificationState(a: VerificationState, b: VerificationState) { return canonical(a) === canonical(b); }
-export function verificationKey(input: VerificationInput, binding: { planDigest: string; commandDigest: string }, state: VerificationState, environmentDigest: string) { return digest({ input, binding, state, environmentDigest }); }
 function signingBody(receipt: VerificationReceipt) { const { signature: _signature, ...body } = receipt; return canonical(body); }
 /** Signing key belongs to a trusted host authority outside worker mounts; never store it with worker receipts. */
 export function signVerificationReceipt(receipt: VerificationReceipt, key: Uint8Array) {

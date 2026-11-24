@@ -47,7 +47,7 @@ it('offers curated Beam by default while keeping unqualified Vikey explicitly se
   } finally { await explicit.close(); await normal.close(); await optedIn.close(); }
 });
 
-it('keeps normal sticky routing and permits opt-ins in subworker routing', async () => {
+it('keeps normal sticky routing when opt-in sources are configured', async () => {
   const pool = configure({ GRUNT_SOURCES: 'kilo,antseed-vikey,reflection-beam' });
   const choose = vi.spyOn(Math, 'random').mockReturnValue(0);
   try {
@@ -55,20 +55,9 @@ it('keeps normal sticky routing and permits opt-ins in subworker routing', async
       vi.spyOn(source, 'available').mockResolvedValue(true);
       vi.spyOn(source, 'complete').mockResolvedValue({ text: source.id });
     }
-    const vik = pool.sources[1]!;
     await expect(pool.complete(req, signal)).resolves.toMatchObject({ text: 'kilo' });
     choose.mockReturnValue(0.99999);
     await expect(pool.complete(req, signal)).resolves.toMatchObject({ text: 'kilo' });
-    const onSource = vi.fn();
-    await expect(pool.complete({ ...req, worker: { id: 'beam', onSource } }, signal)).resolves.toMatchObject({ text: 'reflection-beam' });
-    expect(onSource).toHaveBeenCalledWith('reflection-beam');
-    // A mixed chain also gives its secondary worker router the local opt-ins.
-    const mixed = configure({ GRUNT_SOURCES: 'freellmapi', GRUNT_OPT_IN_SOURCES: 'antseed-vikey' });
-    try {
-      vi.spyOn(mixed.sources[1]!, 'available').mockResolvedValue(true);
-      vi.spyOn(mixed.sources[1]!, 'complete').mockResolvedValue({ text: vik.id });
-      await expect(mixed.complete({ ...req, worker: { id: 'vik', onSource } }, signal)).resolves.toMatchObject({ text: 'antseed-vikey' });
-    } finally { await mixed.close(); }
   } finally { choose.mockRestore(); await pool.close(); }
 });
 

@@ -1,6 +1,6 @@
 import { pairDots } from './dots-link.js';
 import { Hono } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
+import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -11,12 +11,6 @@ import { RequestError, SourceError, answeredBy } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
-import type { WorkerPool } from './worker-pool.js';
-import { WorkerScopes, WorkerScopeError } from './worker-scopes.js';
-import { getWorkerCapabilities } from './worker-workspace.js';
-import { WORKER_SNAPSHOT_TRANSPORT } from './worker-transport.js';
-import { validOwnedPath } from './worker-agent.js';
-import type { WorkerInitialFile } from './worker-agent.js';
 type Obj = Record<string, unknown>;
 const object = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
 const array = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
@@ -159,29 +153,11 @@ export function events(value: Obj, api: string, options: { includeUsage?: boolea
   }
   return out;
 }
-/** Strictly bounded transport data, not model-controlled filesystem authority. */
-function parseWorkerSnapshot(input: unknown): WorkerInitialFile[] | undefined {
-  if (!Array.isArray(input) || input.length > 5000) return;
-  const paths = new Set<string>();
-  let bytes = 0;
-  const files: WorkerInitialFile[] = [];
-  for (const value of input) {
-    const row = object(value);
-    if (Object.keys(row).some(key => !['path', 'content', 'binary', 'sha256'].includes(key)) || !validOwnedPath(row.path)
-      || paths.has(row.path) || typeof row.content !== 'string' || row.binary !== undefined && typeof row.binary !== 'boolean'
-      || row.sha256 !== undefined && (typeof row.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256))) return;
-    if (row.binary && (row.content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(row.content))) return;
-    const content = Buffer.from(row.content, row.binary ? 'base64' : 'utf8');
-    if (row.binary && content.toString('base64') !== row.content) return;
-    bytes += content.byteLength;
-    if (content.byteLength > WORKER_SNAPSHOT_TRANSPORT.maxFileBytes || bytes > WORKER_SNAPSHOT_TRANSPORT.maxSnapshotBytes
-      || row.sha256 && createHash('sha256').update(content).digest('hex') !== row.sha256) return;
-    paths.add(row.path);
-    files.push({ path: row.path, content: row.content, ...(row.binary === undefined ? {} : { binary: row.binary }), ...(row.sha256 === undefined ? {} : { sha256: row.sha256 as string }) });
-  }
-  return files;
-}
-export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; workers?: WorkerPool; workerScopes?: WorkerScopes } = {}) {
+const removedWorkers = (c: Context) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: false, code: 'unavailable', error: { type: 'removed', message: 'Grunt subworkers were removed. Use your coding harness\'s own subagents; update or stop the installed grunt_delegate/grunt_spawn tools.' } }, 410);
+};
+export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv } = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
@@ -209,86 +185,14 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     return tracked ? withDiagnosticContext(context, run) : run();
   });
   app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
-  const workers = options.workers;
   app.get('/v1/status', c => {
     c.header('Cache-Control', 'no-store');
-    return c.json({ ...sources.status(), ...(workers ? { workers: workers.status() } : {}) });
+    return c.json(sources.status());
   });
-  if (workers) {
-    const scopes = options.workerScopes ?? new WorkerScopes();
-    const token = (authorization: string | undefined) => authorization?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
-    const smallBody = bodyLimit({ maxSize: 8 * 1024, onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) });
-    app.use('/v1/workers/*', async (c, next) => {
-      c.header('Cache-Control', 'no-store');
-      try { await workers.ready(); } catch { return c.json({ ok: false, code: 'unavailable' }, 503); }
-      await next();
-    });
-    app.get('/v1/workers', c => {
-      c.header('Cache-Control', 'no-store');
-      return c.json(workers.status());
-    });
-    app.get('/v1/workers/capabilities', async c => c.json({ ...await getWorkerCapabilities(), snapshotTransport: WORKER_SNAPSHOT_TRANSPORT }));
-    app.post('/v1/workers/projects/challenge', smallBody, async c => {
-      try {
-        const body = object(await c.req.json());
-        if (Object.keys(body).length !== 1 || !('projectRoot' in body)) return c.json({ ok: false, code: 'invalid_task' }, 400);
-        return c.json(await scopes.challenge(body.projectRoot));
-      } catch (error) { return c.json({ ok: false, code: error instanceof WorkerScopeError ? error.code : 'invalid_task' }, error instanceof WorkerScopeError && error.code === 'busy' ? 429 : 400); }
-    });
-    app.post('/v1/workers/projects/register', smallBody, async c => {
-      try {
-        const body = object(await c.req.json());
-        if (Object.keys(body).length !== 1 || !('challengeId' in body)) return c.json({ ok: false, code: 'invalid_task' }, 400);
-        return c.json(await scopes.register(body.challengeId));
-      } catch (error) { return c.json({ ok: false, code: error instanceof WorkerScopeError ? error.code : 'invalid_task' }, error instanceof WorkerScopeError ? 403 : 400); }
-    });
-    app.post('/v1/workers/projects/revoke', smallBody, c => c.json({ ok: scopes.revoke(token(c.req.header('authorization'))) }));
-    app.get('/v1/workers/retained', async c => {
-      const scope = await scopes.resolve(token(c.req.header('authorization')));
-      if (!scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
-      return c.json({ retained: workers.retained(scope) });
-    });
-    app.get('/v1/workers/artifacts/:id', async c => {
-      const scope = await scopes.resolve(token(c.req.header('authorization')));
-      if (!scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
-      const artifact = workers.artifact(c.req.param('id'), scope), ownedPaths = workers.artifactOwnership(c.req.param('id'), scope);
-      return artifact && ownedPaths ? c.json({ artifact, ownedPaths }) : c.json({ ok: false, code: 'not_found' }, 404);
-    });
-    app.post('/v1/workers/artifacts/:id/discard', smallBody, async c => {
-      const scope = await scopes.resolve(token(c.req.header('authorization')));
-      if (!scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
-      const ok = await workers.discardArtifact(c.req.param('id'), scope);
-      return ok ? c.json({ ok }) : c.json({ ok: false, code: 'not_found' }, 404);
-    });
-    app.post('/v1/workers/run', async (c, next) => {
-      // Only an already proved project gets the larger complete-snapshot transport.
-      // Revalidate the lease below before authorizing execution; none of these
-      // transport fields grant filesystem or model-selected project authority.
-      const scope = await scopes.resolve(token(c.req.header('authorization')));
-      return bodyLimit({ maxSize: scope ? WORKER_SNAPSHOT_TRANSPORT.maxRequestBytes : 256 * 1024,
-        onError: c => c.json({ ok: false, code: 'invalid_task' }, 413) })(c, next);
-    }, async c => {
-      let input: unknown, raw: string;
-      try { raw = await c.req.text(); input = JSON.parse(raw); }
-      catch { return c.json({ ok: false, code: 'invalid_task' }, 400); }
-      const body = object(input), agent = body.mode === 'agent';
-      if (!agent && Buffer.byteLength(raw) > 256 * 1024) return c.json({ ok: false, code: 'invalid_task' }, 413);
-      const scope = agent ? await scopes.resolve(token(c.req.header('authorization'))) : undefined;
-      if (agent && !scope) return c.json({ ok: false, code: 'invalid_scope' }, 403);
-      let snapshot: WorkerInitialFile[] | undefined;
-      if (agent && body.initialSnapshot !== undefined) {
-        snapshot = parseWorkerSnapshot(body.initialSnapshot);
-        if (!snapshot) return c.json({ ok: false, code: 'invalid_snapshot' }, 400);
-      }
-      // Private transport fields never become part of the model's task input.
-      const task = agent ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'initialSnapshot')) : input;
-      const result = await workers.run(task, c.req.raw.signal, scope ? { ...scope, ...(snapshot === undefined ? {} : { initialSnapshot: snapshot }) } : undefined);
-      if (result.ok) return c.json(result);
-      const status = { invalid_task: 400, busy: 429, cancelled: 409, timeout: 504, quota: 429, unavailable: 503 } as const;
-      if (result.retryAfter !== undefined) c.header('Retry-After', String(result.retryAfter));
-      return c.json(result, status[result.code]);
-    });
-  }
+  // Grunt subworkers were removed. Older installed Pi extensions and MCP servers get a clear
+  // error shaped like their old failure response (code 'unavailable') instead of a bare 404.
+  app.all('/v1/workers/*', removedWorkers);
+  app.all('/v1/workers', removedWorkers);
   app.get('/v1/diagnostics/events', async c => {
     c.header('Cache-Control', 'no-store'); const store = sources.diagnosticStore();
     if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);

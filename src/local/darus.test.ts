@@ -151,7 +151,7 @@ it('cancels a pending response body and never returns partial output', async () 
   await expect(work).rejects.toBeDefined();
   expect(cancelled).toBe(true);
 });
-it('routes auto and worker requests through the exact configured native source', async () => {
+it('routes auto requests through the exact configured native source', async () => {
   await recordDataSharingConsent(directory, ['darus']);
   await writePrivateProviderGrant('darus', grant, directory);
   vi.stubGlobal('fetch', transport());
@@ -161,8 +161,6 @@ it('routes auto and worker requests through the exact configured native source',
     const result = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request().messages }) });
     expect(result.status).toBe(200);
     expect(result.headers.get('x-grunt-source')).toBe('darus');
-    const completion = await sources.complete({ ...request(), model: 'grunt', worker: { id: 'w1', onSource() {} } }, AbortSignal.timeout(2000));
-    expect(completion.text).toBe('Hello');
   } finally { await sources.close(); }
   expect(bundledRegistry.adapters.find(row => row.id === 'darus')?.model).toBe(DARUS_MODEL);
   expect(() => validateRegistry(bundledRegistry)).not.toThrow();

@@ -24,7 +24,7 @@ it('correlates nested stages with monotonic durations without recording work con
 it('records one terminal outcome for failure and cancellation while preserving the original error', async () => {
   const events: DiagnosticEvent[] = [], timing = createWorkTimingObserver({ sink: { record: e => events.push(e) } });
   const failure = new Error('private failure');
-  await expect(measureWorkTiming('checkpoint', async () => { throw failure; }, { timing })).rejects.toBe(failure);
+  await expect(measureWorkTiming('tool', async () => { throw failure; }, { timing })).rejects.toBe(failure);
   const controller = new AbortController();
   await expect(measureWorkTiming('collection', async () => { controller.abort(failure); throw failure; }, { timing, signal: controller.signal })).rejects.toBe(failure);
   expect(events.filter(e => e.type === 'work.finish').map(e => e.outcome)).toEqual(['failed', 'cancelled']);

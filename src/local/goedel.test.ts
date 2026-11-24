@@ -62,8 +62,6 @@ it.each([false, true])('skips Gödel before provider contact on unclassified tra
   mixed ? undefined : { registry, random: () => 0 });
   try {
     await expect(sources.complete(request(), AbortSignal.timeout(5000))).resolves.toMatchObject({ text: 'other' });
-    if (!mixed) await expect(sources.complete({ ...request(), publicContext: true, worker: { id: 'synthetic-worker', onSource() {} } },
-      AbortSignal.timeout(5000))).resolves.toMatchObject({ text: 'other' });
     expect(complete).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
   } finally { await sources.close(); }

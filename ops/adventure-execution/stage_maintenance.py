@@ -14,7 +14,12 @@ def replace_once(text, before, after):
     return text.replace(before, after, 1)
 
 
-def transform(source):
+def transform(source, runtime=None):
+    if b'createSourceMaintenance' in source:
+        raise ValueError('The owner helper already wires shared maintenance; nothing to stage')
+    if runtime is not None and not (runtime / 'worker-runtime.js').is_file():
+        raise ValueError('The installed Grunt runtime has no worker-runtime.js (subworkers were removed); '
+                         'this helper only upgrades the older launcher that imports it. Nothing was staged')
     text = source.decode('utf-8')
     text = replace_once(text,
         "import { createWorkerRuntime } from './runtime/dist/local/worker-runtime.js';",
@@ -39,7 +44,7 @@ def stage(source, destination):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 128 * 1024:
             raise ValueError('Unexpected owner helper')
         original = stream.read()
-    candidate = transform(original)
+    candidate = transform(original, source.parent / 'runtime' / 'dist' / 'local')
     destination.mkdir(mode=0o700)
     digest = lambda data: hashlib.sha256(data).hexdigest()
     receipt = {'schema': 'grunt-owner-maintenance-stage/v1', 'activated': False,

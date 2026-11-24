@@ -45,8 +45,8 @@ Environment:
 
 ## Behavior
 
-This section describes the hosted `/agent/*` chat service. The local daemon’s
-[proposal and tool-using subworkers](#subworkers) have separate limits and tools.
+This section describes the hosted `/agent/*` chat service. The local daemon has
+no subworkers; see [removed subworkers](#subworkers-removed).
 
 grunt answers quick questions and uses `dispatch`, `status`, `cancel`, and
 `remember` for longer work and durable preferences. Each message uses one front
@@ -170,8 +170,8 @@ process activity does not prove a completed game feature. Legacy work/downtime
 percentages remain, using measured time; monitoring gaps and older unclassified
 intervals are shown rather than invented.
 
-Two-slot worker utilization includes observed source waits and excludes recording
-gaps. Test/build delivery counts come from managed job exits; distinct revisions
+Legacy two-slot worker utilization, still reported by older daemons and the Adventure feed, includes observed source waits and excludes recording
+gaps. Test/build delivery counts come from the execution host's verification receipts and, for older runtimes, managed job exits; distinct revisions
 require successful checks on an unchanged clean Git HEAD. Published-build counts
 come from actual successful GitHub Pages deployment receipts with bounded lookup
 coverage. These counts are observed lower bounds, not proof of correctness,
@@ -319,218 +319,48 @@ that carries a non-function tool (such as Codex's hosted `web_search`) fails at
 once with HTTP 400 `invalid_request_error` naming the tool type. No source is
 tried and none enters cooldown; disable the hosted tool in the client.
 
-### Subworkers
+### Subworkers (removed)
 
-The local daemon has two subworker slots shared by all connected coding
-interfaces, alongside your main agent. Workers prefer separate idle registered
-free sources and honor source consent, billing guards and cooldowns. This
-permits up to three simultaneous model workers for one main-agent session;
-opening another interface does not create another pair of daemon slots.
+Grunt no longer provides its own parallelism: the proposal and tool-using
+subworkers, the `/v1/workers/*` routes, `usegrunt workers ...`, the
+`grunt_delegate`, `grunt_spawn`, `grunt_coordinate` and `grunt_worker_*` tools
+and the Pi `--grunt-agent-workers` flag are gone. Claude Code, Codex and
+OpenCode have native subagents, and they work through Grunt like any other
+agent loop: each subagent's model calls are ordinary requests that Grunt routes
+(a harness's own subagent notices keep the parent task on its source). Pi has no
+equivalent, so Pi users no longer get parallel workers.
 
-There are two modes:
+Compatibility for installed clients: every `/v1/workers` route answers HTTP 410
+`{"ok":false,"code":"unavailable","error":{"type":"removed",...}}`, `usegrunt
+workers ...` prints a removal notice and exits 1, and the Pi extension still
+loads from `dist/local/worker-pi.js` and ignores `--grunt-agent-workers` and
+`--grunt-worker-port`. `/v1/status` no longer includes `workers`. Artifacts a
+retired daemon retained under `worker-retention/` and `workers/` in the config
+directory are no longer managed or applied by Grunt; inspect or delete them by hand.
 
-| Mode | Enablement | Work and result |
-| --- | --- | --- |
-| Proposal | Default `grunt_delegate`, `workers run`, or `workers connect <interface>` | Sends the supplied task and excerpts to a model. No filesystem or shell access. The main agent reviews and applies its suggestions. |
-| Tool-using | Pi `--grunt-agent-workers`, or explicit `--agentic --project <absolute-directory>` for CLI/MCP | Uses a private, scoped project snapshot with filesystem tools and, where verified confinement is available, bounded commands. Returns retained edits for review and explicit application. |
+### Background jobs, checkpoints and Pi release tools (removed)
 
-Both accept one or two tasks per batch, with at most 8 KiB of task text and
-32 KiB of supplied context per task. Activity labels are `review`, `tests`,
-`implementation`, or `research`. Tasks and permitted project context go to the
-selected sources under their data-sharing policies. Workers never receive the
-parent's raw conversation automatically.
+Grunt no longer provides Pi background command jobs or execution checkpoints:
+the `grunt_job_*`, `grunt_checkpoint_*`, `grunt_verify_release*` and
+`grunt_release_*` Pi tools, `usegrunt jobs ...` and the `GRUNT_JOBS_STATE_DIR` and
+`GRUNT_CHECKPOINT_STATE_DIR` settings are gone. Pi is no longer a parallel or
+agentic platform for Grunt. Claude Code, Codex and OpenCode have their own
+background tasks and subagents, and they work through Grunt as ordinary routed
+requests.
 
-For proposal workers:
+Compatibility for installed launch commands: the Pi extension at
+`dist/local/execution-pi.js` (and `dist/local/worker-pi.js`) still loads and
+accepts and ignores `--grunt-agent-workers`, `--grunt-worker-port`,
+`--grunt-background-jobs`, `--grunt-checkpoints` and `--grunt-publication`, so an old
+launch line does not fail; it registers no tools. `usegrunt jobs ...` prints a
+removal notice and exits 1. State left under `~/.cache/grunt/jobs` and
+`~/.cache/grunt/checkpoints` is no longer read; delete it by hand.
 
-```bash
-npx usegrunt workers connect pi
-npx usegrunt workers run <<'JSON'
-{"tasks":[
-  {"activity":"review","task":"Review pagination for edge cases","context":"Paste the relevant excerpt here"},
-  {"activity":"tests","task":"Propose empty-state tests","context":"Paste the relevant contract here"}
-]}
-JSON
-```
-
-`workers run` waits and prints results in submission order. Pi/MCP
-`grunt_delegate` returns a batch ID immediately; keep working, then retrieve
-it with `grunt_worker_result` or cancel with `grunt_worker_cancel`.
-`grunt_worker_status` and `npx usegrunt workers status` show current sources
-and outcomes. Add `--port <port>` when the daemon uses a different port.
-
-#### Enable tool-using workers
-
-```bash
-npx usegrunt workers connect pi --agentic
-```
-
-Run the printed Pi command with the installed extension. It includes
-`--grunt-agent-workers`, `--grunt-background-jobs` and `--grunt-checkpoints`; each flag controls a
-separate capability and can be omitted independently.
-Without these trusted launch flags, the extension retains proposal workers and
-does not expose scoped edits or jobs.
-Pi supplies the current project directory; model tool arguments cannot select
-an arbitrary host project, runtime or credential scope.
-
-For the other interfaces, specify the project at registration:
-
-```bash
-npx usegrunt workers connect codex --agentic --project "$PWD"
-npx usegrunt workers connect claude --agentic --project "$PWD"
-npx usegrunt workers connect opencode --agentic --project "$PWD"
-# A compatible MCP client can launch the same project-scoped server:
-npx usegrunt workers mcp --agentic --project "$PWD"
-```
-
-Install the printed configuration for your chosen interface and restart it.
-The Claude Code command uses project scope. The registration enables
-`grunt_spawn` in addition to the proposal tools. Model calls supply tasks and
-one to 32 relative file or directory `ownedPaths`, while the frontend binds the
-trusted project and proves local access to it. The project lease remains private to the client.
-Custom tools such as `grunt_spawn` and `grunt_job_start` require their own
-approval policy; a rule that approves only a tool named `bash` does not cover
-them.
-
-A terminal can run the same scoped task synchronously:
-
-```bash
-npx usegrunt workers run --agentic --project "$PWD" <<'JSON'
-{"tasks":[
-  {"activity":"implementation","task":"Implement the empty-state component","ownedPaths":["src/empty-state.ts"]},
-  {"activity":"tests","task":"Add empty-state tests","ownedPaths":["src/empty-state.test.ts"]}
-]}
-JSON
-```
-
-`grunt_spawn` returns a batch ID without blocking the main agent. Collect it
-with `grunt_worker_result`. Results contain bounded text and artifact summaries:
-file paths, before/after hashes, counts and completeness flags, with truncated
-listings explicitly marked. Full file contents stay out of model tool results.
-The daemon retains the complete artifact for deliberate inspection.
-
-#### Review, apply and recover retained edits
-
-Use the individual **job ID** in a result or retained list, rather than the
-batch ID or artifact/workspace ID:
-
-```bash
-npx usegrunt workers retained --project "$PWD"
-npx usegrunt workers artifact <job-id> --project "$PWD"
-# Review the artifact, then run through the caller's approved shell:
-npx usegrunt workers apply <job-id> --project "$PWD"
-# After integration and testing, or deliberate abandonment:
-npx usegrunt workers discard <job-id> --project "$PWD"
-```
-
-`artifact` is the explicit inspection path and can include full changed-file
-contents. Review those contents before applying. Workers write only their
-owned paths in private copies. Applying happens in the caller's process under
-its filesystem permissions and sandbox; the daemon has no host apply endpoint
-and `grunt_spawn` cannot authorize integration.
-
-Application validates original ownership, file paths, before/after hashes and
-current project contents. It refuses incomplete/truncated artifacts, oversized
-changes and conflicting edits. Descriptor-relative filesystem operations keep
-writes anchored to the chosen project and fail closed when the required
-semantics are unavailable. A private journal stages new contents and retains
-originals for rollback. Inspect the returned conflict, rollback and journal
-information after any failed application; a partial rollback is not success.
-A successful apply leaves the artifact retained until explicit discard.
-
-Both completed and interrupted tool-using jobs retain inspectable work.
-After a daemon restart, reconnect to the same project and use `retained`;
-interrupted execution is not silently resumed. A quota failure preserves its
-retry hint and partial artifact. Review what was done, then dispatch a new task
-when useful work or capacity is available. Cancellation and session shutdown
-stop outstanding execution without discarding retained edits.
-
-Each job has five minutes including queue time. Tool-using jobs additionally
-stop at 24 model turns, 96 tool calls, 24,576 reported output tokens or their
-bounded context/artifact limits. The daemon has 16 waiting slots. Twenty
-retained artifacts plus outstanding scoped jobs trigger backpressure;
-inspect and discard integrated or abandoned work before dispatching more.
-Same-project editing tasks with overlapping ownership cannot run together,
-including while earlier overlapping artifacts remain retained.
-
-#### Worker sandbox and platform limits
-
-File tools exclude private/special paths and apply ownership rules to edits.
-`review` and `research` jobs are read-only; editing jobs need disjoint relative
-owned paths. Model inference runs in the daemon, outside the command sandbox;
-provider credentials are not passed to tool subprocesses.
-Worker commands require a successful Linux namespace probe and verified user
-cgroup memory/process limits. If that confinement is unavailable, capabilities
-report `commands: false` and only filesystem tools remain. This is not a promise
-that every operating system supports the whole scoped-worker workflow:
-frontend snapshot capture and application need supported descriptor-relative
-filesystem semantics, including a runtime probe on macOS. Automatic frontend
-capture is unsupported on Windows; proposal workers remain available.
-
-Command sandboxes have no network access and cannot download new dependencies.
-An existing dependency tree may be available as a sanitized, bounded private
-copy; it is never a live mount of host `node_modules`. Secret and special files
-are omitted, and internal links are kept only when they resolve to copied
-content. Dependency preparation has limits of 20,000 entries, 256 MiB total,
-16 MiB per file and fifteen seconds. Check command capabilities and any
-`dependencyWarning` returned by a failed worker command before assuming tests
-can run. If dependencies or commands are unavailable, the main agent can review
-retained edits and run checks through its
-own approved [background jobs](#background-command-jobs).
-
-Snapshot transport is negotiated separately from command support. Compatible
-clients and daemons support complete snapshots up to 32 MiB total decoded content,
-16 MiB per file and 48 MiB JSON request size after project-scope proof. Legacy
-daemons retain the previous 4 MiB snapshot/8 MiB request limits. Oversized snapshots
-fail explicitly; files are never silently omitted to fit a transport limit.
-
-### Background command jobs
-
-Pi's `--grunt-background-jobs` opt-in adds session-owned command jobs. These
-execute within the current coding interface's working directory and permissions;
-they do not grant worker sandbox permissions or bypass interface approval.
-They are POSIX process-group jobs, currently unsupported on Windows. The model
-cannot choose a different host working directory. Configure approval for
-`grunt_job_start` explicitly; custom tools do not inherit `bash`-name-only rules.
-
-| Tool | Behavior |
-| --- | --- |
-| `grunt_job_start` | Starts or queues a bounded command and returns its job ID immediately. Categories: `test`, `build`, `render`, `download`, `other`. |
-| `grunt_job_status` | Reads queued/running/recent metadata without command output. |
-| `grunt_job_result` | Collects one job's bounded stdout/stderr and exit status; a running job returns immediately. |
-| `grunt_job_wait` | Waits up to 120 seconds when all independent useful work is blocked. Timeout returns status without cancelling the job. |
-| `grunt_job_cancel` | Stops an owned job and its process group. |
-
-Start long tests, builds or renders, continue independent work, and collect the
-result before claiming success. The opt-in extension blocks simple foreground
-shell commands whose only purpose is more than ten seconds of explicit sleep;
-use managed jobs instead of sleep/poll loops. This is a narrow rule, not a
-promise to recognize every blocking shell program. If all useful work is
-blocked on a provider's known reset, checkpoint and let the supervisor wait.
-
-The explicit terminal interface is also available:
-
-```bash
-npx usegrunt jobs run --category test --timeout 900 -- pnpm test
-npx usegrunt jobs status
-npx usegrunt jobs result <job-id>
-npx usegrunt jobs cancel <job-id>
-```
-
-The CLI `run` waits for that command; Pi's start tool is the nonblocking path.
-There are two active command jobs and sixteen queued jobs per session, with a
-fifteen-minute default and thirty-minute maximum timeout. Output is bounded to
-64 KiB. Private state defaults to `~/.cache/grunt/jobs`; set
-`GRUNT_JOBS_STATE_DIR` to another absolute private directory when needed.
-No HTTP/MCP endpoint exposes these host commands. The tools are session-owned,
-so collect or cancel them before the final reply/checkpoint and session shutdown.
-Shutdown cancels outstanding jobs. Recovery marks interrupted jobs as
-interrupted rather than executing commands again automatically.
-
-For content-bound verification reuse, task checkpoint tools and an operator-owned
-host service for required checks, independent review and publication, see
-[execution efficiency](efficiency.md). These capabilities preserve the coding
-interface's approvals; worker-owned progress and scoped receipts cannot authorize
-a release.
+The operator-owned execution host (`usegrunt execution-host`) for required release
+checks and publication, and its read-only channel manifest, are kept. It no longer
+runs a reviewer: the builder records its own review of the exact verified commit
+and tree with the new `review-record` channel request; see
+[execution efficiency](efficiency.md).
 
 ### Source dashboard
 
@@ -969,7 +799,7 @@ Openference's Free account is on-demand only. The exact free aliases never
 consume subscription allowances or paid credits. This uses the on-demand path
 required by its unattended-workload terms, at verified zero catalog rates,
 with Grunt's own client identity. Subscription quotas and paid BYOK are not used.
-Automatic selection, subworkers and staggered maintenance can use both routes
+Automatic selection and staggered maintenance can use both routes
 while their guards pass.
 
 Primary sources: [Fikra free offer](https://fikraapi.co.ke/free-deepseek-api),
@@ -1632,7 +1462,7 @@ behaves differently: a source it preserves that has no registry entry, such as a
 earlier FreeLLMAPI route, does not turn off weighted, sticky routing for the rest.
 The daemon logs one `grunt routing:` line naming such sources. They are never drawn
 or tried first; model `freellmapi` still selects one alone, and model `grunt` tries
-it only after every routed source has failed. Subworkers never use it. The Fly personal-agent
+it only after every routed source has failed. The Fly personal-agent
 API remains separate from this local daemon.
 
 ### Retired sources
@@ -1704,7 +1534,7 @@ unnamed upstream's retention or training practices.
 `freepi` pins `deepseek-v4.1-flash` and verifies the observed upstream model.
 Use `npx usegrunt add freepi` for its GitHub device signup; setup automatically
 records the current material trace-sale policy. Every inference additionally requires
-`X-Grunt-Context: public`; worker, handoff and image requests are excluded.
+`X-Grunt-Context: public`; handoff and image requests are excluded.
 Ordinary Pi sessions do not add that header. All spendable wallets must be zero
 before and after inference, and the exact current free offer must remain valid.
 Synthetic qualification passed tools, 201,074 input tokens and actual Grunt

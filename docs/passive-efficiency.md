@@ -75,7 +75,7 @@ Markers never backfill or alter event attribution.
 ## Interpret the output
 
 Groups distinguish UTC hour, version, kind, actor, provider, event type, outcome,
-error class, failure reason, stage, checkpoint operation and fresh/reused/deduplicated work. Unknown
+error class, failure reason, stage, the legacy checkpoint operation recorded by older runtimes and fresh/reused/deduplicated work. Unknown
 providers collapse into `other`; other unsupported dimensions collapse into fixed
 unknown/none buckets. This is deliberately conservative and does not retain
 arbitrary diagnostic labels.

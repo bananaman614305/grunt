@@ -63,7 +63,6 @@ const detail: Record<SourceState, string> = {
 // snapshot never calls a provider, reads credentials, or stores request content.
 export class SourceStatus {
   private observations = new Map<string, Observation>();
-  private idleListeners = new Set<(source: string) => void>();
   private diagnostics: DiagnosticsStore | undefined;
   private history: RoutingHistory | undefined;
   private backoffs = new Map<string, RoutingBackoff>();
@@ -240,27 +239,6 @@ export class SourceStatus {
     } catch { /* Local routing stays functional during contention, corruption or disk failure. */ }
   }
   isBusy(id: string) { return (this.observations.get(id)?.active ?? 0) > 0; }
-  async waitForIdle(sources: readonly string[], signal: AbortSignal) {
-    signal.throwIfAborted();
-    if (sources.some(id => !this.isBusy(id))) return;
-    await new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        this.idleListeners.delete(idle);
-        signal.removeEventListener('abort', abort);
-      };
-      const idle = (source: string) => {
-        if (!sources.includes(source)) return;
-        cleanup();
-        resolve();
-      };
-      const abort = () => {
-        cleanup();
-        reject(signal.reason);
-      };
-      this.idleListeners.add(idle);
-      signal.addEventListener('abort', abort, { once: true });
-    });
-  }
   async available(source: Source, healthCheck = false): Promise<boolean> {
     const entry = this.entry(source.id), revision = entry.revision;
     // Retain only negative metadata. Explicit health checks and all adapter
@@ -360,7 +338,6 @@ export class SourceStatus {
       throw error;
     } finally {
       entry.active--;
-      if (!entry.active) for (const idle of this.idleListeners) idle(source.id);
     }
   }
   snapshot(options: {

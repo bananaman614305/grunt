@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { privateWorkerPath } from './worker-tool-helper.js';
+import { privateProjectPath } from './project-paths.js';
 import { VerificationBroker } from './verification-broker.js';
 import type { VerificationBrokerRunner } from './verification-broker.js';
 import { createVerificationBrokerFileClient, tickVerificationBroker } from './verification-broker-client.js';
@@ -13,7 +13,7 @@ import { PublicationQueue, publicationPolicy } from './publication.js';
 import type { PublicationPolicy, PublicationRecord, PublicationRequest } from './publication.js';
 import { GithubPublicationTransport, readPublicationArtifacts } from './publication-github.js';
 import type { PublicationGithubExec } from './publication-github.js';
-import { createPublicationReviewer } from './publication-review.js';
+import { parseReviewRecord } from './publication-review.js';
 import { runtimeWorkTiming } from './work-timing-store.js';
 import type { WorkTimingObserver } from './work-timing.js';
 
@@ -48,7 +48,7 @@ async function atomic(path: string, value: unknown) {
   finally { await rm(temporary, { force: true }); }
 }
 export interface ExecutionHostPolicy {
-  version: 1; projectRoot: string; stateDirectory: string; channelDirectory: string; workerPort: number; gitConfigSha256: string; holdFiles?: string[];
+  version: 1; projectRoot: string; stateDirectory: string; channelDirectory: string; /** Legacy subworker port: still required in existing policy files, otherwise unused. */ workerPort: number; gitConfigSha256: string; holdFiles?: string[];
   plans: VerificationPlan[];
   /** Host-owned bwrap argv. Only whole-argument substitutions are supported. */
   sandboxArgv: string[];
@@ -105,12 +105,13 @@ export async function loadExecutionHostPolicy(path: string) {
   return policy;
 }
 
-type Operation = 'prepare' | 'advance' | 'status';
+type Operation = 'prepare' | 'advance' | 'status' | 'review-record';
 interface Envelope { version: 1; id: string; operation: Operation; input: unknown }
 function envelope(value: unknown): Envelope {
   const e = object(value);
-  if (Object.keys(e).sort().join(',') !== 'id,input,operation,version' || e.version !== 1 || typeof e.id !== 'string' || !uuid.test(e.id) || !['prepare', 'advance', 'status'].includes(String(e.operation))) throw failure();
-  if (e.operation !== 'prepare') { const input = object(e.input); if (Object.keys(input).length !== 1 || typeof input.id !== 'string' || !uuid.test(input.id)) throw failure(); }
+  if (Object.keys(e).sort().join(',') !== 'id,input,operation,version' || e.version !== 1 || typeof e.id !== 'string' || !uuid.test(e.id) || !['prepare', 'advance', 'status', 'review-record'].includes(String(e.operation))) throw failure();
+  if (e.operation === 'review-record') { try { parseReviewRecord(e.input); } catch { throw failure(); } if (!uuid.test(String(object(e.input).id))) throw failure(); }
+  else if (e.operation !== 'prepare') { const input = object(e.input); if (Object.keys(input).length !== 1 || typeof input.id !== 'string' || !uuid.test(input.id)) throw failure(); }
   return e as unknown as Envelope;
 }
 const paths = (channelDirectory: string) => ({ verificationInbox: join(channelDirectory, 'verification-inbox'), verificationResults: join(channelDirectory, 'verification-results'), publicationInbox: join(channelDirectory, 'publication-inbox'), publicationResults: join(channelDirectory, 'publication-results'), releases: join(channelDirectory, 'releases') });
@@ -177,7 +178,6 @@ export interface ExecutionHostDependencies {
   exec?: HostExec;
   /** Dependency seams are programmatic, never accepted in JSON policy or worker intent. */
   runner?: VerificationBrokerRunner;
-  workers?: NonNullable<Parameters<typeof createPublicationReviewer>[0]['workers']>;
 }
 export async function openExecutionHost(input: ExecutionHostPolicy, dependencies: ExecutionHostDependencies = {}) {
   const policy = executionHostPolicy(input);
@@ -244,7 +244,7 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
     }
     for (const commit of new Set(commits)) if (!screenedCommits.has(commit)) {
       const listing = await git(['ls-tree', '-r', '--name-only', '-z', commit]);
-      if (listing.code || listing.stdout.split('\0').filter(Boolean).some(path => /[\x00-\x1f\x7f]/.test(path) || privateWorkerPath(path) || path === '.gitmodules')) throw new Error('Private-looking committed files cannot be reviewed or published.');
+      if (listing.code || listing.stdout.split('\0').filter(Boolean).some(path => /[\x00-\x1f\x7f]/.test(path) || privateProjectPath(path) || path === '.gitmodules')) throw new Error('Private-looking committed files cannot be reviewed or published.');
       screenedCommits.add(commit);
     }
     if (range) screenedRanges.add(range);
@@ -265,14 +265,12 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
     if (ancestry.code === 0) await publicSource(state.head, baseHead);
     return { ...state, branch: branch.stdout.trim(), gitTree: tree.stdout.trim(), baseHead, baseIsAncestor: ancestry.code === 0 };
   };
-  const reviewer = createPublicationReviewer({ port: policy.workerPort, ...(dependencies.workers ? { workers: dependencies.workers } : {}), context: async record => {
+  // The builder records its own review over the channel. The host still refuses private-looking commits and changed paths first.
+  const screen = async (record: PublicationRecord) => {
     await publicSource(record.snapshot.head, record.snapshot.baseHead);
     const changed = await git(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', record.snapshot.baseHead, record.snapshot.head, '--']);
-    if (changed.code || changed.stdout.split('\0').filter(Boolean).some(privateWorkerPath)) throw new Error('Private-looking changed paths cannot enter reviewer context.');
-    const result = await git(['diff', '--no-ext-diff', '--no-textconv', record.snapshot.baseHead, record.snapshot.head, '--']);
-    if (result.code || Buffer.byteLength(result.stdout) > 22000) throw new Error('Exact release diff is unavailable or exceeds independent review context.');
-    return result.stdout;
-  } });
+    if (changed.code || changed.stdout.split('\0').filter(Boolean).some(privateProjectPath)) throw new Error('Private-looking changed paths cannot be reviewed or published.');
+  };
   const transport = new GithubPublicationTransport({ exec: github,
     pushHead: async (record, publication, signal) => {
       await guardedConfig();
@@ -295,7 +293,7 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
       return files;
     } });
   const queue = await PublicationQueue.open({ directory: join(policy.stateDirectory, 'publication'), policy: policy.publication, capture,
-    verification: async id => { try { return await broker.verifiedReceipt(id); } catch { return undefined; } }, review: (record, signal) => reviewer(record, policy.publication, signal), transport });
+    verification: async id => { try { return await broker.verifiedReceipt(id); } catch { return undefined; } }, screen, transport });
   const ledger = join(policy.stateDirectory, 'publication-requests'); await directory(ledger);
   const publicationTick = async (signal?: AbortSignal) => {
     if (process.platform !== 'linux') throw new Error('Host publication channels require Linux directory descriptors.');
@@ -325,14 +323,16 @@ export async function openExecutionHost(input: ExecutionHostPolicy, dependencies
       let response: Record<string, unknown>;
       try {
         const releaseId = request.operation === 'prepare' ? request.id : String(object(request.input).id);
-        const result = request.operation === 'prepare' ? await queue.prepare(request.input, request.id) : request.operation === 'advance' ? await queue.advance(releaseId, signal) : await queue.status(releaseId);
+        const result = request.operation === 'prepare' ? await queue.prepare(request.input, request.id) : request.operation === 'advance' ? await queue.advance(releaseId, signal)
+          : request.operation === 'review-record' ? await queue.recordReview(releaseId, request.input) : await queue.status(releaseId);
         await atomic(join(pinned.releases!, releaseId + '.json'), result);
         response = { requestId, state: 'completed', release: result };
       } catch {
         const releaseId = request.operation === 'prepare' ? request.id : String(object(request.input).id);
-        response = { requestId, state: 'failed', code: 'release_not_advanced', releaseId };
+        const code = request.operation === 'review-record' ? 'review_not_recorded' : 'release_not_advanced';
+        response = { requestId, state: 'failed', code, releaseId };
         const current = await queue.status(releaseId).catch(() => ({ id: releaseId, phase: 'blocked', reason: 'release_not_advanced' }));
-        await atomic(join(pinned.releases!, releaseId + '.json'), { ...current, lastRequestError: 'release_not_advanced', requestId });
+        await atomic(join(pinned.releases!, releaseId + '.json'), { ...current, lastRequestError: code, requestId });
       }
       await atomic(saved, { version: 1, requestId, intentDigest, state: 'completed', response });
       await atomic(join(pinned.publicationResults!, name), response); await rm(path);

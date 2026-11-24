@@ -30,8 +30,6 @@ export interface ModelRequest {
   handoffPrompt?: string;
   // The local client reviewed the entire request for public-only providers.
   publicContext?: true;
-  // Local worker routing metadata is never decoded from a model API request.
-  worker?: { id: string; onSource: (source: string) => void; onWait?: () => void };
 }
 export interface Completion { text: string; calls?: ToolCall[]; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
@@ -75,7 +73,8 @@ export const FIRST_OUTPUT_MS = 60000;
 const cutoffs = new WeakSet<SourceError>();
 export class Sources {
   private router: StickyRouter | undefined;
-  private workerRouter: StickyRouter | undefined;
+  // Registry-aware retirement and back-off state for a fixed source chain (no routed pool).
+  private chainRouter: StickyRouter | undefined;
   private observation: SourceStatus;
   private checking = new Set<string>();
   private maintenance: (() => Record<string, MaintenanceEntry>) | undefined;
@@ -94,15 +93,15 @@ export class Sources {
     });
     if (routing) this.router = this.createRouter(routing);
   }
-  setWorkerRegistry(registry: RoutingOptions['registry'], localOptIns?: RoutingOptions['localOptIns']) {
-    // Mixed source configurations preserve their normal fixed route chain.
-    // Only subworkers use this secondary router over the same observations.
-    if (!this.router) this.workerRouter = this.createRouter({ registry, ...(localOptIns ? { localOptIns } : {}) });
+  setChainRegistry(registry: RoutingOptions['registry'], localOptIns?: RoutingOptions['localOptIns']) {
+    // Mixed source configurations preserve their normal fixed route chain. This router never
+    // draws or dispatches; it only tracks retirement and back-off over the shared observations.
+    if (!this.router) this.chainRouter = this.createRouter({ registry, ...(localOptIns ? { localOptIns } : {}) });
   }
   // A source outside the registry beside a routed pool (docs/router.md): it is
   // selectable by model id and tried only after every routed source fails.
   private unrouted(id: string) { return this.routing?.unrouted?.has(id) ?? false; }
-  private get registeredRouter() { return this.router ?? this.workerRouter; }
+  private get registeredRouter() { return this.router ?? this.chainRouter; }
   private createRouter(routing: RoutingOptions) {
     return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
       dropped: id => { if (this.observation.observedAvailable(id) !== false) this.dropped?.(id); },
@@ -194,7 +193,7 @@ export class Sources {
   setRoutingHistory(store: RoutingHistory) { return this.observation.setRoutingHistory(store); }
   setFeedback(feedback: Parameters<SourceStatus['setFeedback']>[0]) { this.observation.setFeedback(feedback); }
   // The registry's liveliness scores weight the routers' draw (docs/router.md).
-  setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.workerRouter]) router?.useRegistryScores(score); }
+  setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.chainRouter]) router?.useRegistryScores(score); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
   diagnosticStore() { return this.diagnostics; }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
@@ -330,9 +329,8 @@ export class Sources {
   private dropped: ((id: string) => void) | undefined;
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const parent = currentDiagnosticContext();
-    const actor = request.worker ? { actor: 'worker' as const, workerId: request.worker.id }
-      : parent?.actor ? { actor: parent.actor, ...(parent.actor === 'worker' && parent.workerId ? { workerId: parent.workerId } : {}) } : {};
-    const context: DiagnosticContext = { ...actor, requestId: parent?.requestId ?? randomUUID(), kind: !request.worker && this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
+    const actor = parent?.actor ? { actor: parent.actor } : {};
+    const context: DiagnosticContext = { ...actor, requestId: parent?.requestId ?? randomUUID(), kind: this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
     return withDiagnosticContext(context, async () => {
       const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
       if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
@@ -346,18 +344,13 @@ export class Sources {
         if (parent?.requestRecorded) parent.errorCode = signal.aborted ? 'cancelled' : error instanceof SourceError ? error.code : 'upstream';
         if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', outcome: signal.aborted ? 'cancelled' : 'failed', durationMs: Math.max(0, performance.now() - startedMono),
           errorCode: signal.aborted ? 'cancelled' : error instanceof SourceError ? error.code : 'upstream' });
-        if (!request.worker && error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
+        if (error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
         throw error;
       }
     });
   }
   private async route(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     signal.throwIfAborted();
-    if (request.worker) {
-      const router = this.registeredRouter;
-      if (!router) throw new SourceError('not_installed', 'Subworkers need the registered free model pool');
-      return router.complete({ ...request, model: 'grunt' }, signal);
-    }
     // Automatic selection translates function tools only. Naming a source keeps
     // that source's own behavior (OpenCode and Codex run their own tools).
     if (request.model === 'grunt' || request.model === 'milo' || !this.sources.some(source => source.id === request.model)) {
@@ -414,7 +407,7 @@ export class Sources {
     for (const source of candidates) {
       signal.throwIfAborted();
       if (this.pending.has(source.id) || this.retired(source.id)
-        || this.workerRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)) continue;
+        || this.chainRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)) continue;
       if (source.acceptsRequest && !source.acceptsRequest(request)) {
         if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
         continue;
@@ -432,7 +425,7 @@ export class Sources {
           throw error;
         }
         last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
-        await this.workerRouter?.recordFailure(source.id, last);
+        await this.chainRouter?.recordFailure(source.id, last);
         console.error(`grunt source: ${source.id} failed (${last.code}) for model ${this.safeModel(request.model)}`);
         // Only dots and OpenCode deadlines and first-output deadlines fall through; caller cancellation stops above.
         if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode' && !cutoffs.has(last)) throw last;
@@ -445,7 +438,7 @@ export class Sources {
     throw last;
   }
   async close() {
-    await Promise.all([this.router?.close(), this.workerRouter?.close()]);
+    await Promise.all([this.router?.close(), this.chainRouter?.close()]);
     await Promise.allSettled(this.sources.map(s => s.close?.()));
     await this.flushRoutingHistory();
   }

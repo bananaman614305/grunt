@@ -89,13 +89,13 @@ it.each(['fikra', 'openference'] as const)('%s blocks changed pricing, expiry an
   expect(await source(id, fresh, () => now, { base_url: 'https://untrusted.example', token: 'synthetic' }).available()).toBe(false);
   expect(fresh).not.toHaveBeenCalled();
 });
-it('Openference permits automatic and worker use of the zero-price on-demand offer', async () => {
+it('Openference permits automatic use of the zero-price on-demand offer', async () => {
   await recordDataSharingConsent(directory, ['openference']);
   const fetcher = transport('openference'), adapter = source('openference', fetcher);
-  for (const input of [{ ...request('openference'), model: 'grunt' }, { ...request('openference'), worker: { id: 'w1', onSource() {} } }]) {
+  for (const input of [{ ...request('openference'), model: 'grunt' }]) {
     await expect(adapter.complete(input, AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'Hello' });
   }
-  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(2);
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
 });
 it('Openference preserves provider daily reset without retrying or changing models', async () => {
   await recordDataSharingConsent(directory, ['openference']);

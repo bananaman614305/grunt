@@ -147,18 +147,17 @@ describe('low open routes', () => {
     await recovery.close();
   });
 
-  it.each(['primary', 'worker', 'fixed', 'maintenance'])('reports one quota hold before backoff in %s routing', async mode => {
+  it.each(['primary', 'fixed', 'maintenance'])('reports one quota hold before backoff in %s routing', async mode => {
     const ids = mode === 'primary' ? ['opencode', 'kilo'] : ['zro', 'livekit'];
     const registry = { ...bundledRegistry, adapters: ids.map(id => ({ ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5 })) };
     const limited: Source = { id: ids[0]!, available: async () => true, complete: async () => { throw new SourceError('quota', 'Quota exhausted', 120); } };
     const healthy: Source = { id: ids[1]!, available: async () => true, complete: async () => ({ text: 'ok' }) };
     const fixed = mode === 'fixed';
     const sources = new Sources([limited, healthy], fixed ? undefined : { registry: () => registry, random: () => 0 });
-    if (fixed) sources.setWorkerRegistry(() => registry);
+    if (fixed) sources.setChainRegistry(() => registry);
     const dropped = vi.fn();
     sources.setRouteDropped(dropped);
-    const request = { model: 'grunt', cwd: process.cwd(), messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false,
-      ...(mode === 'worker' ? { worker: { id: 'quota-worker', onSource: () => {} } } : {}) };
+    const request = { model: 'grunt', cwd: process.cwd(), messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false };
     try {
       if (mode === 'maintenance') {
         expect(await sources.check(limited.id, AbortSignal.timeout(1000))).toMatchObject({ outcome: 'failed', code: 'quota' });

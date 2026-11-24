@@ -9,7 +9,6 @@ import type { DiagnosticEvent } from './diagnostics.js';
 import { Sources, SourceError } from './source.js';
 import type { ModelRequest, Source, Completion } from './source.js';
 import { createLocalApp } from './api.js';
-import { bundledRegistry } from '../registry.js';
 
 const directories: string[] = [], stores: DiagnosticsStore[] = [];
 const event = (patch: Partial<DiagnosticEvent> = {}): DiagnosticEvent => ({ version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.finish', requestId: randomUUID(), kind: 'user', source: 'kilo', outcome: 'passed', ...patch });
@@ -263,28 +262,4 @@ it('persists only matching request attribution and does not leak it to unrelated
   expect(rows[0]).toMatchObject({ id: matching.id, actor: 'worker', workerId });
   expect(rows[1]).not.toHaveProperty('actor'); expect(rows[1]).not.toHaveProperty('workerId');
   expect(rows[2]).toMatchObject({ id: client.id, actor: 'client' }); expect(rows[2]).not.toHaveProperty('workerId');
-});
-
-it('attributes concurrent worker turns and client requests through transport and routing without private content', async () => {
-  const value = await store(), workerId = randomUUID(), clientId = randomUUID(), workerRequestIds = [randomUUID(), randomUUID()];
-  const fetcher = diagnosticFetch(async () => new Response('PRIVATE_BODY'), 'kilo', 'chat.completions');
-  const provider = source('kilo', async () => { await fetcher('https://secret.example'); return { text: 'PRIVATE_REPLY' }; });
-  const sources = new Sources([provider]); sources.setDiagnostics(value); sources.setWorkerRegistry(() => bundledRegistry);
-  try {
-    await Promise.all([
-      withDiagnosticContext({ requestId: clientId, kind: 'user', actor: 'client' }, () => sources.complete(request, new AbortController().signal)),
-      withDiagnosticContext({ requestId: workerRequestIds[0]!, kind: 'user', actor: 'client' }, () => sources.complete({ ...request, worker: { id: workerId, onSource: () => {} } }, new AbortController().signal))
-    ]);
-    await withDiagnosticContext({ requestId: workerRequestIds[1]!, kind: 'user', actor: 'client' }, () => sources.complete({ ...request, worker: { id: workerId, onSource: () => {} } }, new AbortController().signal));
-    const clientEvents = (await value.trace(clientId)).events;
-    expect(clientEvents.length).toBeGreaterThanOrEqual(5);
-    expect(clientEvents.every(row => row.actor === 'client' && row.workerId === undefined)).toBe(true);
-    for (const requestId of workerRequestIds) {
-      const events = (await value.trace(requestId)).events;
-      expect(events.some(row => row.type === 'transport.finish')).toBe(true);
-      expect(events.some(row => row.type === 'route.selection')).toBe(true);
-      expect(events.every(row => row.actor === 'worker' && row.workerId === workerId)).toBe(true);
-      expect(JSON.stringify(events)).not.toMatch(/SECRET|PRIVATE|secret\.example|\/private/);
-    }
-  } finally { await sources.close(); }
 });
