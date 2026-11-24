@@ -79,6 +79,13 @@ class CandidateError(ValueError):
         self.code = code
 
 
+class ReportError(ValueError):
+    """A worker report envelope is unusable; the fixed code is safe to persist."""
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
 def candidate_id(candidate):
     return canonical_candidate_id(candidate)
 
@@ -135,17 +142,26 @@ def qualify(candidate, workspace, smoke=False):
     return candidate['status']
 
 
-def ingest(report, ledger, workspace, smoke=False, diagnostics=None, scope=None):
+def ingest(report, ledger, workspace, smoke=False, diagnostics=None, scope=None, worker_searched=False):
+    # worker_searched: the worker supervisor already proved a real search event,
+    # so a narrow single-offer qualification need not self-report broad queries.
     queries = report.get('search_queries') if isinstance(report, dict) else None
-    if (not isinstance(report, dict) or report.get('web_search_used') is not True
-            or not isinstance(queries, list) or len(queries) < 2
-            or any(not isinstance(query, str) or not query.strip() for query in queries)):
-        raise ValueError('Scout must complete actual web research')
+    if not isinstance(report, dict):
+        raise ReportError('report_not_an_object')
+    if not isinstance(queries, list) or any(not isinstance(query, str) for query in queries):
+        raise ReportError('invalid_search_queries')
+    if not worker_searched:
+        if report.get('web_search_used') is not True:
+            raise ReportError('web_search_not_reported')
+        if len(queries) < 2 or any(not query.strip() for query in queries):
+            raise ReportError('insufficient_search_queries')
     candidates = report.get('candidates')
-    if not isinstance(candidates, list) or (smoke and len(candidates) > 3):
-        raise ValueError('Candidate budget exceeded')
+    if not isinstance(candidates, list):
+        raise ReportError('invalid_candidates')
+    if smoke and len(candidates) > 3:
+        raise ReportError('candidate_budget_exceeded')
     if smoke and any(isinstance(item, dict) and item.get('release_request') is not None for item in candidates):
-        raise ValueError('Integration budget exceeded')
+        raise ReportError('integration_budget_exceeded')
     updated = json.loads(json.dumps(ledger))
     canonicalize_ledger(updated, initialize_policy=False)
     stamp = now()
@@ -912,6 +928,7 @@ def run(root, smoke=False):
         snapshot = None
         output = directory / 'result.json'
         report_validated = False
+        failure_detail = None
         previous_handlers = {}
         def cancel(*_):
             raise ScoutCancelled()
@@ -1007,7 +1024,8 @@ def run(root, smoke=False):
                                    config, progress)
                 raw_report = result['result']
                 updated = ingest(raw_report, ledger, workspace, diagnostics=diagnostics,
-                                 scope={review: row for review, (_, row) in scope.items()})
+                                 scope={review: row for review, (_, row) in scope.items()},
+                                 worker_searched=True)
                 report = normalized_report(raw_report, updated, diagnostics)
                 finish_reviews(updated, raw_report, scope, diagnostics)
                 if pipeline:
@@ -1060,12 +1078,17 @@ def run(root, smoke=False):
             state.update(status='cancelled' if error.reason == 'worker_cancelled' else 'failed',
                          reason='worker timeout' if error.reason == 'worker_timeout' else error.reason,
                          tool_counts=error.tool_counts)
-        except (ValueError, OSError, KeyError, TypeError, ImportError):
-            state.update(status='failed', reason='worker, output or pipeline validation failed')
+        except (ValueError, OSError, KeyError, TypeError, ImportError) as error:
+            # Persist only a fixed code or the exception class name: messages
+            # can embed provider text, URLs, paths or model output.
+            failure_detail = error.code if isinstance(error, (ReportError, CandidateError)) else type(error).__name__
+            state.update(status='failed', reason='worker, output or pipeline validation failed',
+                         reason_code=failure_detail)
         finally:
             try:
                 if not report_validated and output.exists():
-                    atomic(output, {'status': 'quarantined', 'reason': 'report_validation_failed'})
+                    atomic(output, {'status': 'quarantined', 'reason': 'report_validation_failed',
+                                    **({'detail': failure_detail} if failure_detail else {})})
                 state['finished_at'] = now()
                 atomic(root / 'last-run.json', state)
             finally:
