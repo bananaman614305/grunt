@@ -25,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
 import attempt as attempts_lib  # noqa: E402
+import end_cycle as end_cycle_module  # noqa: E402
 import hostpaths  # noqa: E402
 import release_pins  # noqa: E402
 import stage  # noqa: E402   (pure constants and read-only helpers; importing it performs no action)
@@ -95,16 +96,16 @@ def run_upgrade(args, *, workspace=None, runtimes=None, owner=None, state_dir=No
     if expectations != attempts_lib.rollout_config.DEFAULT_EXPECTATIONS:
         log('NOTE: the candidate release serves a different provider-source set than the one reviewed for 0.10.0; the rehearsal checks it against the live pools.')
     attempts_lib.old_runtime_manifests(attempt, runtimes, previous)
-    registry_raw, registry_url = attempts_lib.fetch_public_registry()
+    registry_raw, registry_url, registry_etag = attempts_lib.fetch_public_registry()
     opencode_note = f'sha256 of the exact string {attempts_lib.OPENCODE_PROFILE}; {attempts_lib.OPENCODE_SOURCE} verified unchanged between the previous and the new release commit'
     unchanged = _opencode_unchanged(args, source, previous, pins)
     if not unchanged:
         raise AttemptError(f'{attempts_lib.OPENCODE_SOURCE} changed since {previous} (or the previous release commit could not be found): review it, then rerun with --opencode-profile-reviewed')
     cache_equal = attempts_lib.live_cache_equals(registry_raw, LIVE_CACHE)
     prep = attempts_lib.write_preparation(attempt, version=version, previous=previous, pins=pins, pins_path=pins_path, source=source, registry_raw=registry_raw, registry_url=registry_url,
-                                          opencode_sha=attempts_lib.opencode_profile_pin(), opencode_note=opencode_note, live_cache_equal=cache_equal, authorization=args.authorization)
+                                          opencode_sha=attempts_lib.opencode_profile_pin(), opencode_note=opencode_note, live_cache_equal=cache_equal, authorization=args.authorization, registry_etag=registry_etag)
     if not cache_equal:
-        log('NOTE: the live registry cache differs from the public registry; the controller waits (bounded) for the normal refresh at 00/06/12/18 UTC before pausing the builder.')
+        log('NOTE: the live registry cache differs from the public registry; the controller writes the approved public registry into it before staging (the installed runtime\'s own RegistrySync writer, old bytes kept), so there is no wait for the 00/06/12/18 UTC refresh.')
     attempts_lib.seal(attempt)
     if args.skip_tests:
         log('[5/7] helper tests SKIPPED (--skip-tests)')
@@ -239,7 +240,7 @@ def add_run_options(parser, *, suppress=False):
     parser.add_argument('--end-cycle', action='store_true', **s,
                         help='OWNER-AUTHORIZED: once the controller waits for the checkpoint, end a long-running cycle by SIGTERM to its worker process group '
                              '(the supervisor records a failed cycle and waits 60 s); never without this flag')
-    parser.add_argument('--end-cycle-min-age', type=float, help='only end a cycle at least this many seconds old (default 900)', **({'default': argparse.SUPPRESS} if suppress else {'default': 900.0}))
+    parser.add_argument('--end-cycle-min-age', type=float, help=f'only end a cycle at least this many seconds old (default {end_cycle_module.DEFAULT_MIN_AGE:g})', **({'default': argparse.SUPPRESS} if suppress else {'default': end_cycle_module.DEFAULT_MIN_AGE}))
     parser.add_argument('--payload', type=Path, help='directory with owner files to install with the runtimes: free-pool.mjs, claude/worker-brief.md, claude/bin/grunt-release', **s)
     parser.add_argument('--authorization', help='authorization note recorded in the attempt (default: the documented standard path)',
                         **({'default': argparse.SUPPRESS} if suppress else {'default': attempts_lib.DEFAULT_AUTHORIZATION}))

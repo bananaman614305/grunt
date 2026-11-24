@@ -34,7 +34,7 @@ conditions true on purpose, for about two minutes, between cycles.
    source-transition proof against the live pools) and the runner-contract check. A source check inside the startup window is only
    noted: the controller waits it out.
 6. **Launch.** The controller `pause-and-activate.py` starts as the transient unit `grunt-runtime-upgrade-<version>-<stamp>`:
-   - waits for the pinned registry cache, re-verifies the installed trees, stages, runs the preflight again;
+   - brings the live registry cache (`~/.config/milo/registry.json`) to the pinned public registry itself when it differs (see *Registry cache* below), re-verifies the installed trees, stages, runs the preflight again;
    - waits for the running cycle to end by itself (at most 3600 s), then freezes **only the supervisor** at that checkpoint and
      quiets the activity publisher (SIGSTOP of the same pinned process) and the overnight watcher timer;
    - settles, bounded to 1500 s, until for 20 s together: supervisor frozen at a checkpoint and no hold; both pools idle; execution
@@ -80,7 +80,7 @@ runtimes, owner files and SQLite families; there is **no** automatic rollback af
 ## Ending a long cycle (`--end-cycle`, owner-authorized)
 
 Cycles normally last 10-15 minutes but can run for hours. With `--end-cycle` the controller, once it is waiting for the checkpoint,
-sends one SIGTERM to the worker's process group for a cycle at least `--end-cycle-min-age` seconds old (default 900). The supervisor
+sends one SIGTERM to the worker's process group for a cycle at least `--end-cycle-min-age` seconds old (default 120; the owner accepts interrupting cycles). The supervisor
 records a failed cycle, waits about 60 s and reports `waiting_for_free_pool`, which is a usable checkpoint. The worker must be the
 supervisor's own child and its own process-group leader, with identity pinned by start ticks; no SIGKILL, no other signal. The
 authorization is written into `controller-config.json`. Never pass the flag without the owner's explicit say-so.
@@ -96,8 +96,19 @@ live launcher is still checked against the new package's modules.
 
 ## When something is wrong
 
-- **Registry**: the controller waits (bounded) until `~/.config/milo/registry.json` equals the public registry pinned at preparation.
-  The old daemon refreshes it at 00, 06, 12 and 18 UTC; if the public registry moved on, make a new attempt.
+- **Registry cache**: the controller does not wait for the daemon's own refresh (00, 06, 12 and 18 UTC). Before staging and before any pause
+  it makes `~/.config/milo/registry.json` equal the public registry pinned at preparation, so the protected-file digests and the
+  registry-cache transition proof are computed against the new bytes. The write is done by the installed runtime's own `RegistrySync`
+  (`registry_refresh.mjs`: its validator, its newer-publication-only rule, its canonical `{registry, etag}` shape, its atomic
+  temp-file rename, mode 0600) fed the pinned body and ETag, so a later normal refresh of the same publication writes the same bytes.
+  The running daemons keep the registry in memory and read the file only at startup, so the write changes no routing; the restart
+  inside the activation loads it. The previous bytes stay in `registry-cache-before-refresh.json`, and `registry-refresh.json` (copied into
+  the activation receipt as `registryCacheRefresh`) records what happened. Nothing is written when the cache already holds the pinned
+  publication. If the cache does not hold it right after the write (the daemon refreshed meanwhile) or the runtime refuses the write, the
+  public registry is fetched once more and the write retried once; a second failure is a clean give-up (exit 3, `registry_cache_not_current`,
+  nothing staged or paused; the cache is left as the runtime wrote it, never rolled back over someone else's newer write). A cache that
+  is newer than the public registry is refused, never downgraded. The cache is not reverted by a pre-start activation failure: it is
+  generated data that the daemon would write itself at its next refresh.
 - **Provider scout** (09:00 and 21:00 America/New_York, up to ~45 min) imports the runtime this upgrade swaps. `upgrade.py` warns
   when a scout start falls inside the window; prefer launching right after one ends.
 - **Provider-source set**: the gate pins the candidate's eligible set and the live pools must serve exactly it (apart from the
@@ -134,4 +145,4 @@ for the scheduler the upgrade must preserve.
 | `upgrade.py`, `attempt.py`, `release_pins.py` | the entry point and its tooling (run from the repository, never sealed into an attempt) |
 | `pause-and-activate.py`, `maintenance_pause.py`, `end_cycle.py` | the controller, the pause and the watchdog, the optional cycle end |
 | `activate.py`, `checkpoint_gate.py`, `daemon_admission.py`, `startup_gate*.{py,mjs}`, `source_transition.py`, `registry_cache*`, `quota_store.py`, `sqlite_families.py`, `host_metadata.py`, `collector_guard.py`, `acquisition_guard.py`, `release_proof.py`, `rollout_*.py`, `seed-routing-history.mjs` | the reviewed transaction and its proofs |
-| `stage.py`, `preflight.py`, `preparation.py`, `verify_success.py`, `check_runtime_contract.mjs` | staging, read-only preflight, registry wait, success verification, runner contract |
+| `stage.py`, `preflight.py`, `preparation.py`, `registry_refresh.{py,mjs}`, `verify_success.py`, `check_runtime_contract.mjs` | staging, read-only preflight, bringing the registry cache current, success verification, runner contract |

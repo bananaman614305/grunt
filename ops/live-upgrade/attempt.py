@@ -20,11 +20,12 @@ sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
 import hostpaths  # noqa: E402
 import release_pins  # noqa: E402
+import registry_refresh  # noqa: E402
 import rollout_config  # noqa: E402
 
 TOOLING = ('upgrade.py', 'attempt.py', 'release_pins.py')      # run from the repository; never copied into an attempt directory
 DEFAULT_WORKSPACE = Path(os.environ.get('XDG_STATE_HOME') or hostpaths.HOME / '.local/state') / 'usegrunt-upgrades'
-REGISTRY_URLS = ('https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry')   # same order as src/local/registry.ts
+REGISTRY_URLS = registry_refresh.REGISTRY_URLS   # same order as src/local/registry.ts
 OPENCODE_PROFILE = '{"permission":{"external_directory":"deny"}}'   # the managed native OpenCode child's pinned OPENCODE_CONFIG_CONTENT
 OPENCODE_SOURCE = 'src/local/opencode.ts'
 BUDGETS = {'overallSeconds': 7200, 'checkpointWaitSeconds': 3600, 'pauseSettleSeconds': 1500, 'activationSeconds': 900, 'verifySeconds': 900}
@@ -168,16 +169,11 @@ def build_payload(attempt, payload_dir, owner):
 # ----------------------------------------------------------------------------- the pinned public registry and baselines
 
 def fetch_public_registry(*, opener=urllib.request.urlopen):
-    last = None
-    for url in REGISTRY_URLS:
-        try:
-            with opener(url, timeout=20) as response:
-                raw = response.read(8 * 1024 * 1024)
-            json.loads(raw)
-            return raw, url
-        except Exception as error:   # the first host does not resolve from every network; fall back like the daemon does
-            last = error
-    raise AttemptError('The public registry could not be fetched: ' + str(last)[:200])
+    """(raw bytes, url, etag or None) of the public registry, from the first host that answers (like the daemon)."""
+    try:
+        return registry_refresh.fetch_public_registry(opener=opener)
+    except registry_refresh.RegistryRefreshError as error:
+        raise AttemptError(str(error)) from error
 
 
 def opencode_profile_pin():
@@ -243,7 +239,7 @@ def seal(attempt):
     return value
 
 
-def write_preparation(attempt, *, version, previous, pins, pins_path, source, registry_raw, registry_url, opencode_sha, opencode_note, live_cache_equal, authorization):
+def write_preparation(attempt, *, version, previous, pins, pins_path, source, registry_raw, registry_url, opencode_sha, opencode_note, live_cache_equal, authorization, registry_etag=None):
     registry = json.loads(registry_raw)
     approved = Path(attempt) / 'approved-registry-public.json'
     write_private(approved, registry_raw.decode(), exclusive=True)
@@ -252,6 +248,8 @@ def write_preparation(attempt, *, version, previous, pins, pins_path, source, re
              'source': str(source), 'releaseManifest': str(pins_path), 'opencodeProfileSha256': opencode_sha, 'opencodeProfileDerivation': opencode_note,
              'publicRegistrySha256': sha(registry_raw), 'publicRegistryPublication': registry['published'], 'publicRegistrySource': registry_url,
              'liveCacheEqualsApproved': live_cache_equal, 'noRuntimeChangesYet': True}
+    if registry_etag is not None:
+        value['publicRegistryEtag'] = registry_etag   # the controller writes the live cache with it, exactly as the daemon's own refresh would
     write_private(Path(attempt) / 'attempt-preparation.json', value)
     return value
 

@@ -44,6 +44,17 @@ class EndCycle(unittest.TestCase):
         self.assertEqual((result['action'], result['pid'], result['cycles']), ('sigterm_process_group', WORKER, 12))
         self.assertEqual(result['supervisorPid'], SUPERVISOR)
 
+    def test_the_default_minimum_age_is_two_minutes(self):
+        self.assertEqual(end_cycle.DEFAULT_MIN_AGE, 120.0)
+        run = lambda: end_cycle.end_running_cycle(read_status=lambda: self.status, supervisor_pid=lambda: SUPERVISOR, proc=self.proc, killpg=lambda pid, sig: self.signals.append((pid, sig)),
+                                                  wall=lambda: self.now, clock=lambda: 0.0, deadline=0.0, sleep=lambda s: self.fail('must not wait'), log=self.logs.append)
+        self.status['cycleStartedAt'] = self.now - 100      # 100 s old: under the default, and no time left to wait for it
+        self.assertEqual(run()['action'], 'none')
+        self.assertEqual(self.signals, [])
+        self.status['cycleStartedAt'] = self.now - 130      # 130 s old: ended
+        self.assertEqual(run()['action'], 'sigterm_process_group')
+        self.assertEqual(self.signals, [(WORKER, signal.SIGTERM)])
+
     def test_no_running_cycle_signals_nothing(self):
         for status in ({'phase': 'checkpoint', 'workerPid': None}, {'phase': 'waiting_for_free_pool'}, {'phase': 'paused', 'workerPid': None}, None):
             self.status = status

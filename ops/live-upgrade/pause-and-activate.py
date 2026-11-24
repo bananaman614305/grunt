@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Planned-maintenance-pause controller for the live upgrade (runs as a transient unit started by upgrade.py).
 
-Preparation (registry wait, installed-runtime check, stage, read-only preflight), then, instead of waiting for a lucky natural
+Preparation (live registry cache brought current, installed-runtime check, stage, read-only preflight), then, instead of waiting for a lucky natural
 checkpoint, pauses the builder between cycles (maintenance_pause.py), settles the host, pools,
 maintenance schedule and transports on purpose, and runs the UNCHANGED activation transaction (activate.activate) on the frozen
 supervisor. The builder and the two quieted pollers are resumed on every path. Exit codes: 0 activated and first cycle verified,
@@ -9,6 +9,7 @@ supervisor. The builder and the two quieted pollers are resumed on every path. E
 only what this run froze), 1 anything else (see activation-receipt.json / pause-outcome.json).
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -24,6 +25,7 @@ import stage
 import preflight
 import activate
 import maintenance_pause
+import registry_refresh
 from checkpoint_gate import CheckpointGate, GateError, read_json
 from startup_gate import MaintenanceWindowError
 from rollout_config import VERSION
@@ -152,16 +154,25 @@ def run(config, *, pauser_factory=None, activate_fn=None, verify=None, log=print
         if stage.sha(approved_path) != prep['publicRegistrySha256']:
             raise ValueError('Pinned public registry changed')
         approved = paa.private_json(approved_path)
+        approved_raw = approved_path.read_bytes()
+        if hashlib.sha256(approved_raw).hexdigest() != prep['publicRegistrySha256']:
+            raise ValueError('Pinned public registry changed')
         if approved.get('published') != prep['publicRegistryPublication']:
             raise ValueError('Pinned registry publication changed')
-        activate.save(ROOT / 'release-state.json', {'version': VERSION, 'state': 'waiting_for_normal_registry_refresh', 'mode': 'planned_pause',
+        activate.save(ROOT / 'release-state.json', {'version': VERSION, 'state': 'refreshing_live_registry_cache', 'mode': 'planned_pause',
                       'deadlineMonotonic': config['deadlineMonotonic'], 'publicRegistrySha256': prep['publicRegistrySha256'], 'at': time.time(), 'liveChanges': False, 'providerProbes': 0})
-        paa.wait_for_normal_registry(config['deadlineMonotonic'], approved)
         paa.preserve_pause()
         for row in paa.private_json(ROOT / 'old-runtime-manifests.json'):
             for name, digest in row['oldFiles'].items():
                 if stage.sha(Path(row['live']) / name) != digest:
                     raise RuntimeError('Previously verified installed runtime changed')
+        try:   # before staging, so the protected digests and the registry-cache transition proof are computed against the new bytes
+            refreshed = paa.bring_registry_current(ROOT, approved_raw, prep.get('publicRegistryEtag'), runtime=stage.RUNTIMES[0], node=stage.NODE, log=log)
+        except registry_refresh.RegistryRefreshError as error:
+            clean_outcome('registry_cache_not_current', error, None)
+            raise SystemExit(3) from error
+        log(f'[pause] live registry cache: {refreshed["action"]} (publication {refreshed.get("publication")})')
+        paa.preserve_pause()
         stage.stage(SimpleNamespace(archive=prep['archive'], source=prep['source'], release_manifest=prep['releaseManifest'], opencode_profile_sha256=prep['opencodeProfileSha256']))
         preflight_when_clear(config['deadlineMonotonic'], log=log)
         paa.preserve_pause()

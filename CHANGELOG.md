@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Operator: make the one-command live upgrade much faster. The controller no longer waits up to 6 hours for the daemon's own registry refresh: before staging and any pause it writes the approved public registry into `~/.config/milo/registry.json` itself, through the installed runtime's own `RegistrySync` (same validator, newer-publication rule, canonical shape and atomic write; the public ETag is kept so a later normal refresh writes the same bytes), keeps the old bytes in the attempt directory and records the change in the receipt. Running daemons hold the registry in memory, so nothing re-routes until the planned restart. If the cache is rewritten meanwhile the public registry is fetched once more and the write retried once, then the attempt gives up cleanly with nothing staged. Every other check, and the npm == CI artifact == clean-build proof, is unchanged.
+- Operator: `--end-cycle` now ends a builder cycle that is at least 120 seconds old by default (was 900; `--end-cycle-min-age` still overrides it).
+
 ## 0.10.3 — 2026-11-24
 
 - Fix tool conversations stalling on HTTP 429 "No tool-capable adapter": a Claude Code user message that held tool results plus text (system reminders, edited-file notices, queued commands) was decoded as the text first, so every tool bridge (Kilo, Reflection Beam, Mistral Vibe, Pollinations, 100milionseek, Perch, BeatAPI, Free-Pi) refused the conversation. Tool results now come first, then the text. Parallel Responses `function_call` items form one assistant turn and message items between a call and its output wait until after the outputs.
