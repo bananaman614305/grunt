@@ -26,9 +26,12 @@ codex --profile grunt
 OPENCODE_CONFIG=~/.config/opencode/grunt.opencode.json opencode
 ```
 
-Launch any of them without those options and nothing changes: your own
+Setup prints the launch line for each tool it connected, using your real paths
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`), and `usegrunt status`
+repeats them. Launch any of them without those options and nothing changes: your own
 settings, defaults and models are never edited. Claude Code works without a
-paid subscription when it points at grunt. Codex runs with `web_search`
+paid subscription when it points at grunt, and an exported `ANTHROPIC_API_KEY`
+is ignored there, so your real key is never sent to grunt. Codex runs with `web_search`
 disabled, because grunt returns 400 for hosted tools.
 
 Pi stays supported as a single-agent harness (`pi --provider grunt --model grunt`);

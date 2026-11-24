@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile, chmod, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -30,7 +30,7 @@ class Input extends EventEmitter {
 }
 const fetcher = () => vi.fn(async () => new Response(JSON.stringify(snapshot()), { headers: { 'Content-Type': 'application/json' } })) as unknown as typeof fetch;
 const directories: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 it.each([20, 40, 80, 120])('keeps the complete plain dashboard within %s columns', columns => {
   const view = renderDashboard(snapshot(), { width: columns, now });
@@ -288,4 +288,27 @@ it('exits a real child after q without leaving initially idle stdin resumed', as
     expect(output).toContain('WATCH-CLOSED');
     expect(output).toContain('\u001b[?25h\u001b[?1049l');
   } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
+});
+it('ends a plain status snapshot with a launch line for each installed, configured harness, never in --json', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-status-launch-')); directories.push(directory);
+  const bin = join(directory, 'bin'); await mkdir(bin);
+  await writeFile(join(bin, 'claude'), '#!/bin/sh\n'); await chmod(join(bin, 'claude'), 0o755);
+  const settings = join(directory, 'claude'); await mkdir(settings);
+  vi.stubEnv('CLAUDE_CONFIG_DIR', settings);
+  const { HARNESSES } = await import('./harnesses.js');
+  const run = async (args: string[], harnesses = HARNESSES) => {
+    const output = new Output(); output.isTTY = false;
+    await statusCommand(['--port', '8792', ...args], { env: { PATH: bin }, output, fetcher: fetcher(), harnesses });
+    return output.write.mock.calls.map(call => String(call[0])).join('');
+  };
+  // Installed but not configured, and configured but not asked for, print nothing extra.
+  expect(await run([])).not.toContain(' on grunt:');
+  await writeFile(join(settings, 'grunt.settings.json'), '{}');
+  const text = await run([]);
+  expect(text.trimEnd().split('\n').at(-1)).toBe(`→ Claude Code on grunt: claude --settings ${join(settings, 'grunt.settings.json')} --model grunt`);
+  expect(text).not.toMatch(/\u001b/);
+  expect(await run(['--json'])).not.toContain(' on grunt:');
+  const output = new Output(); output.isTTY = false;
+  await statusCommand(['--port', '8792'], { env: { PATH: bin }, output, fetcher: fetcher() });
+  expect(output.write.mock.calls.map(call => String(call[0])).join('')).not.toContain(' on grunt:');
 });

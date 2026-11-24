@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, copyFile, chmod, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, copyFile, chmod, mkdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
@@ -8,6 +8,7 @@ import { Freebuff, parseChat } from './freebuff.js';
 import { Gateway, Sources, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { configure, HOST } from './main.js';
+import { DiagnosticsStore } from './diagnostics.js';
 const fixture = async (name: string) => JSON.parse(await readFile(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'));
 const fake = (id = 'second-app'): Source => ({ id, supportsFunctionTools: true, available: async () => true, complete: async r => ({ text: r.messages.at(-1)!.content }) });
 const paths = ['chat/completions', 'messages', 'responses'];
@@ -442,4 +443,31 @@ it('translates Codex MCP namespaces through the completion and tool-result turns
   expect(result.output).toMatchObject([{ type: 'function_call', namespace: 'mcp__squire', name: tool.name, call_id: 'browser' }]);
   expect(decode({ ...body, input: [...result.output, { type: 'function_call_output', call_id: 'browser', output: 'needs_value' }] }, 'responses').messages)
     .toMatchObject([{ tool_calls: [{ function: { name } }] }, { role: 'tool', tool_call_id: 'browser', content: 'needs_value' }]);
+});
+it('never reads, forwards, stores or logs Authorization or x-api-key on /v1/messages', async () => {
+  // Claude Code sends an exported ANTHROPIC_API_KEY as x-api-key beside its Bearer token.
+  const secrets = ['sk-ant-test-0000', 'Bearer sk-ant-test-1111'];
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-credential-headers-'));
+  const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map(name => vi.spyOn(console, name).mockImplementation(() => {}));
+  const seen: ModelRequest[] = [];
+  const sources = new Sources([{ ...fake(), complete: async request => { seen.push(request); return { text: 'ok' }; } }]);
+  const store = await DiagnosticsStore.open({ directory });
+  sources.setDiagnostics(store);
+  try {
+    const app = createLocalApp(sources);
+    for (const stream of [false, true]) {
+      const response = await app.request('http://localhost:8788/v1/messages', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': secrets[0]!, Authorization: secrets[1]! },
+        body: JSON.stringify({ model: 'grunt', stream, messages: [{ role: 'user', content: 'hello' }] }) });
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect([...response.headers.values(), text].join('\n')).not.toMatch(/sk-ant-test/);
+    }
+    await store.flush();
+    expect(seen).toHaveLength(2);
+    expect(JSON.stringify(seen)).not.toMatch(/sk-ant-test/);
+    expect(JSON.stringify(spies.flatMap(spy => spy.mock.calls))).not.toMatch(/sk-ant-test/);
+    const files = await readdir(directory, { recursive: true });
+    for (const file of files) { const info = await stat(join(directory, file)); if (info.isFile()) expect(await readFile(join(directory, file), 'utf8')).not.toMatch(/sk-ant-test/); }
+  } finally { spies.forEach(spy => spy.mockRestore()); await store.close(); await rm(directory, { recursive: true, force: true }); }
 });

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile, mkdir, chmod, stat, symlink 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { HARNESSES, claudeProfilePath, configureClaude, configureCodex, configureOpenCode, configurePi, connectHarness, detectHarnesses, migrateManagedPiWorkingContext, opencodeProfilePath, runHarness } from './harnesses.js';
+import { HARNESSES, claudeProfilePath, configureClaude, configureCodex, configureOpenCode, configurePi, connectHarness, configuredHarnesses, detectHarnesses, launchLines, migrateManagedPiWorkingContext, opencodeProfilePath, runHarness } from './harnesses.js';
 
 let dir: string;
 afterEach(async () => { vi.unstubAllEnvs(); if (dir) await rm(dir, { recursive: true, force: true }); });
@@ -257,7 +257,7 @@ it('Claude Code: writes only its own settings file mapping every model alias to 
   expect(await configureClaude(19878)).toEqual({ changed: false });
   const profile = JSON.parse(await readFile(claudeProfilePath(), 'utf8'));
   expect(claudeProfilePath()).toBe(join(dir, 'grunt.settings.json'));
-  expect(profile).toEqual({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:19878', ANTHROPIC_AUTH_TOKEN: 'local',
+  expect(profile).toEqual({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:19878', ANTHROPIC_AUTH_TOKEN: 'local', ANTHROPIC_API_KEY: '',
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'grunt', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'grunt', ANTHROPIC_DEFAULT_OPUS_MODEL: 'grunt', CLAUDE_CODE_SUBAGENT_MODEL: 'grunt' } });
   expect((await stat(claudeProfilePath())).mode & 0o777).toBe(0o600);
   expect(await readFile(join(dir, 'settings.json'), 'utf8')).toBe(user);
@@ -274,6 +274,51 @@ it('opt-in launch lines point each harness at its Grunt-owned profile, with the 
   expect(launch('opencode')).toContain('OPENCODE_CONFIG="/x y/opencode/grunt.opencode.json" opencode');
   const claude = HARNESSES.find(h => h.id === 'claude')!.check(19878).env!;
   expect(claude).toMatchObject({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:19878', CLAUDE_CODE_SUBAGENT_MODEL: 'grunt', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'grunt' });
+});
+it('launch lines name each harness once, with only the command and the real configured paths', () => {
+  vi.stubEnv('CLAUDE_CONFIG_DIR', '/c');
+  vi.stubEnv('XDG_CONFIG_HOME', '/x');
+  vi.stubEnv('CODEX_HOME', '/codex');
+  expect(launchLines(HARNESSES, 19878)).toEqual([
+    '→ Pi on grunt: pi --provider grunt --model grunt',
+    '→ Codex on grunt: codex --profile grunt',
+    '→ OpenCode on grunt: OPENCODE_CONFIG=/x/opencode/grunt.opencode.json opencode',
+    '→ Claude Code on grunt: claude --settings /c/grunt.settings.json --model grunt'
+  ]);
+  expect(launchLines([], 19878)).toEqual([]);
+  // Plain text for pipes, NO_COLOR and terminals alike: no control characters.
+  expect(launchLines(HARNESSES, 19878).join('')).not.toMatch(/[\u0000-\u0009\u000b-\u001f]/);
+});
+it('lists only harnesses that are installed and whose Grunt-owned file exists', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-configured-test-'));
+  const bin = join(dir, 'bin');
+  await mkdir(bin);
+  for (const name of ['claude', 'codex', 'pi']) { await writeFile(join(bin, name), '#!/bin/sh\n'); await chmod(join(bin, name), 0o755); }
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(dir, 'claude'));
+  vi.stubEnv('CODEX_HOME', join(dir, 'codex'));
+  vi.stubEnv('XDG_CONFIG_HOME', join(dir, 'xdg'));
+  expect((await configuredHarnesses(HARNESSES, bin)).map(h => h.id)).toEqual([]);
+  await configureClaude(19878);
+  await configureCodex(19878);
+  await configureOpenCode(19878); // Written, but opencode is not on PATH.
+  // Pi has no Grunt-owned file, so it is never claimed as configured.
+  expect((await configuredHarnesses(HARNESSES, bin)).map(h => h.id)).toEqual(['codex', 'claude']);
+  expect((await configuredHarnesses(HARNESSES, join(dir, 'empty'))).map(h => h.id)).toEqual([]);
+});
+it('Claude Code: the profile blanks an exported ANTHROPIC_API_KEY and the check run never forwards one', async () => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-claude-key-test-'));
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(dir, 'config'));
+  // Claude Code 2.1.331 sends an exported key as x-api-key beside the auth token; an empty
+  // value in --settings env overrides it (docs/reference.md#claude-code).
+  await configureClaude(19878);
+  expect(JSON.parse(await readFile(claudeProfilePath(), 'utf8')).env.ANTHROPIC_API_KEY).toBe('');
+  const claude = join(dir, 'claude');
+  await writeFile(claude, `#!${process.execPath}\nconsole.log(JSON.stringify({ has: 'ANTHROPIC_API_KEY' in process.env, token: process.env.ANTHROPIC_AUTH_TOKEN }));\n`);
+  await chmod(claude, 0o755);
+  vi.stubEnv('PATH', dir);
+  vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-test-0000');
+  const { answer } = await connectHarness(HARNESSES.find(h => h.id === 'claude')!, 19878);
+  expect(JSON.parse(answer)).toEqual({ has: false, token: 'local' });
 });
 it('detects harnesses on PATH and checks one with a real non-interactive run', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-path-test-'));

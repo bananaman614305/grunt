@@ -239,9 +239,12 @@ export async function configureOpenCode(port = 8788): Promise<Change> {
 // Claude Code layers `claude --settings <file>` over the user's settings, and its `env` block
 // reaches the session and its subagents. Every model alias a subagent may ask for maps to grunt,
 // so nothing requests a model grunt does not serve.
+// Claude Code sends an exported ANTHROPIC_API_KEY as x-api-key beside the auth token, and
+// interactive sessions ask to approve it. An empty value in this file overrides the shell
+// (verified on 2.1.331), so the person's real key never reaches grunt.
 export const claudeProfilePath = () => join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'grunt.settings.json');
 const claudeEnv = (port: number) => ({
-  ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_AUTH_TOKEN: 'local',
+  ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_AUTH_TOKEN: 'local', ANTHROPIC_API_KEY: '',
   ANTHROPIC_DEFAULT_SONNET_MODEL: 'grunt', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'grunt', ANTHROPIC_DEFAULT_OPUS_MODEL: 'grunt', CLAUDE_CODE_SUBAGENT_MODEL: 'grunt'
 });
 export async function configureClaude(port = 8788): Promise<Change> {
@@ -257,24 +260,27 @@ export interface Harness {
   configure(port: number): Promise<Change | undefined>;
   // One non-interactive request through the harness itself.
   check(port: number): { args: string[]; env?: Record<string, string | undefined> };
+  // The command that opts one session into grunt, using the real configured paths.
   launch(port: number): string;
+  // Grunt-owned file `configure` writes, when the harness has one; Pi has none.
+  profile?(): string;
 }
 export const HARNESSES: Harness[] = [
   { id: 'pi', name: 'Pi', binary: 'pi', configure: configurePi,
     check: () => ({ args: ['-p', '--provider', 'grunt', '--model', 'grunt', '--no-session', prompt('Pi')] }),
-    launch: () => 'pi --provider grunt --model grunt   (or open /model in pi and choose grunt)' },
+    launch: () => 'pi --provider grunt --model grunt' },
   { id: 'codex', name: 'Codex', binary: 'codex', configure: configureCodex,
     check: port => ({ args: ['exec', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '-c', 'model="grunt"',
       '-c', 'model_provider="grunt"', '-c', 'model_providers.grunt.name="grunt"', '-c', 'model_providers.grunt.wire_api="responses"',
       '-c', `model_providers.grunt.base_url="http://127.0.0.1:${port}/v1"`, '-c', 'model_providers.grunt.request_max_retries=0', prompt('Codex')] }),
-    launch: () => 'codex --profile grunt   (main model and subagents use grunt)' },
+    launch: () => 'codex --profile grunt', profile: codexProfilePath },
   { id: 'opencode', name: 'OpenCode', binary: 'opencode', configure: configureOpenCode,
     // grunt's own OpenCode source sets OPENCODE_CONFIG; check the user's config without it.
     check: () => ({ args: ['run', '--pure', '-m', 'grunt/grunt', prompt('OpenCode')], env: { OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined } }),
-    launch: () => `OPENCODE_CONFIG=${quoted(opencodeProfilePath())} opencode   (main model, small model and subagents use grunt; or pick grunt with /models)` },
+    launch: () => `OPENCODE_CONFIG=${quoted(opencodeProfilePath())} opencode`, profile: opencodeProfilePath },
   { id: 'claude', name: 'Claude Code', binary: 'claude', configure: configureClaude,
-    check: port => ({ args: ['-p', '--model', 'grunt', prompt('Claude Code')], env: claudeEnv(port) }),
-    launch: () => `claude --settings ${quoted(claudeProfilePath())} --model grunt   (main model and subagents use grunt)` }
+    check: port => ({ args: ['-p', '--model', 'grunt', prompt('Claude Code')], env: { ...claudeEnv(port), ANTHROPIC_API_KEY: undefined } }),
+    launch: () => `claude --settings ${quoted(claudeProfilePath())} --model grunt`, profile: claudeProfilePath }
 ];
 
 export async function onPath(binary: string, path = process.env.PATH ?? '') {
@@ -286,6 +292,16 @@ export async function onPath(binary: string, path = process.env.PATH ?? '') {
 export async function detectHarnesses(harnesses = HARNESSES) {
   const found = await Promise.all(harnesses.map(harness => onPath(harness.binary)));
   return harnesses.filter((_, index) => found[index]);
+}
+// One plain line per harness: `→ Claude Code on grunt: claude --settings ... --model grunt`.
+export const launchLines = (harnesses: readonly Harness[], port: number) => harnesses.map(harness => `→ ${harness.name} on grunt: ${harness.launch(port)}`);
+// Harnesses on PATH whose Grunt-owned file exists, for `usegrunt status`. Pi has no such file.
+export async function configuredHarnesses(harnesses = HARNESSES, path = process.env.PATH ?? '') {
+  const ready = await Promise.all(harnesses.map(async harness => {
+    if (!harness.profile || !await onPath(harness.binary, path)) return false;
+    try { await access(harness.profile(), constants.R_OK); return true; } catch { return false; }
+  }));
+  return harnesses.filter((_, index) => ready[index]);
 }
 const FREE_LIMIT = /FreeUsageLimitError|Free usage limit reached|free_tier_limit/;
 // OpenCode's --print-logs line for a failed main-model request, which it then

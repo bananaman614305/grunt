@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Setup prints the opt-in launch command for each connected coding tool, and `usegrunt status` repeats them, using the real configured paths.
+- The Claude Code profile blanks `ANTHROPIC_API_KEY`: Claude Code sent an exported key as `x-api-key` beside the placeholder token, so a real key reached grunt. Rerun `usegrunt setup` to rewrite the profile.
+
 ## 0.10.1 — 2026-11-24
 
 - Use the native DeepSeek output budget in Grunt-managed Pi profiles, pass the caller's budget through to Zro, and preserve Zro's finish reason so Pi can detect a truncated reply.
