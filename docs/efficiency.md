@@ -261,8 +261,18 @@ The JSON policy has `version: 1` and these fields:
 | `gitConfigSha256` | SHA-256 of the approved project's `.git/config` bytes. |
 | `plans` | Release plans with `version: 1`, `id`, `mode: "release"` and fixed `checks` containing `id`, `command`, optional `timeoutSeconds` and `artifactPaths`. Check IDs must be unique across plans. |
 | `sandboxArgv` | Operator-defined `/usr/bin/bwrap` argument array with `--unshare-all`, `--die-with-parent`, `--new-session`, `--clearenv` and exactly one `--bind $WORKSPACE $PROJECT`. `$WORKSPACE`, `$PROJECT` and `$COMMAND` substitutions must each occupy a whole argument. Include the required runtime/dependencies through permitted read-only mounts. |
-| `publication` | `version: 1`, matching `projectRoot`, `repository` (`owner/repo`), `base`, slash-terminated `headPrefix`, `requiredChecks`, `reviewPaths` (still required, now unused: it named the paths the removed reviewer owned), `artifactDirectory`, `pagesBranch`, `allowMerge` and `allowDeploy`. |
+| `publication` | `version: 1`, matching `projectRoot`, `repository` (`owner/repo`), `base`, slash-terminated `headPrefix`, `requiredChecks`, `reviewPaths` (still required, now unused: it named the paths the removed reviewer owned), `artifactDirectory`, `pagesBranch`, `allowMerge`, `allowDeploy` and optionally `maxScreenedCommits` (integer 1 to 100000, default 10000). |
 | `holdFiles` | Optional list of absolute paths; the existence of any one prevents admission of new host work. |
+
+Before any release is prepared, reviewed or pushed the host screens the commits
+that would newly become public (reachable from the candidate but not from the
+pinned base) for private-looking file names: the candidate's whole tree plus
+every path added by any new commit, found with one `git log` pass, so a secret
+committed and later deleted is still refused. A range of more than
+`maxScreenedCommits` commits is refused with the policy field named in the
+release status's `lastRequestDetail`. Omitting the field changes nothing about an
+existing policy or its digest. The release also needs a named branch checkout
+under `headPrefix`; a detached `HEAD` is refused.
 
 Every check's `artifactPaths` must be exactly `[publication.artifactDirectory]`,
 and all `requiredChecks` must exist in the plans. Build the static artifact before
