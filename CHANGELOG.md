@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.10.5 — 2026-11-24
+
 - Fix a fallback sharing a source another task was using while idle sources existed. After a source failed (for example a 529), the next pick drew only from sources whose admission metadata was fresh, so idle sources whose metadata had expired were left out and the fallback landed on a busy one (in a live test, four parallel subagents ended up on three sources). A fallback now waits for the pending metadata checks (each bounded at five seconds) and prefers an idle source, like a first draw, and only shares a busy source when no idle one remains. A healthy bound task still keeps its source, busy or not; weights, handoff, cooldowns, half-open trials and explicit-model routing are unchanged.
 
 ## 0.10.4 — 2026-11-24
