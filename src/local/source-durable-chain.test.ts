@@ -24,7 +24,7 @@ async function restarted(now: number, until: number) {
   const store = await RoutingHistory.open(directory); stores.push(store);
   const legacy = fake('freellmapi'), held = fake('perch'), fallback = fake('kilo');
   const pool = new Sources([legacy, held, fallback]); pools.push(pool);
-  pool.setWorkerRegistry(() => ({ ...bundledRegistry, adapters: bundledRegistry.adapters.filter(row => ['perch', 'kilo'].includes(row.id)) }));
+  pool.setChainRegistry(() => ({ ...bundledRegistry, adapters: bundledRegistry.adapters.filter(row => ['perch', 'kilo'].includes(row.id)) }));
   await pool.setRoutingHistory(store);
   return { pool, legacy, held, fallback, store };
 }

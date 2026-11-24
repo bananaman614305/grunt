@@ -12,7 +12,7 @@ const hour = (at: number) => Math.floor(at / DIAGNOSTIC_METRIC_HOUR_MS) * DIAGNO
 export interface DiagnosticMetricDimensions {
   type: DiagnosticEvent['type'] | 'overflow'; kind?: DiagnosticEvent['kind']; actor?: DiagnosticEvent['actor'];
   runtimeVersion?: string; source?: string; outcome?: DiagnosticEvent['outcome']; errorCode?: DiagnosticEvent['errorCode'];
-  stage?: DiagnosticEvent['stage']; workDisposition?: DiagnosticEvent['workDisposition']; workOperation?: DiagnosticEvent['workOperation']; failureReason?: DiagnosticEvent['failureReason'];
+  stage?: DiagnosticEvent['stage']; workDisposition?: DiagnosticEvent['workDisposition']; failureReason?: DiagnosticEvent['failureReason'];
 }
 export interface DiagnosticMetricBucket {
   hour: number; dimensions: DiagnosticMetricDimensions; count: number;
@@ -49,7 +49,7 @@ export async function recordDiagnosticMetrics(tx: Transaction, events: Diagnosti
   for (const event of eligible) {
     if (!ids.delete(event.id)) continue;
     let dimensions: DiagnosticMetricDimensions = { type: event.type };
-    for (const key of ['kind', 'actor', 'runtimeVersion', 'source', 'outcome', 'errorCode', 'stage', 'workDisposition', 'workOperation', 'failureReason'] as const) {
+    for (const key of ['kind', 'actor', 'runtimeVersion', 'source', 'outcome', 'errorCode', 'stage', 'workDisposition', 'failureReason'] as const) {
       if (event[key] !== undefined) Object.assign(dimensions, { [key]: event[key] });
     }
     const atHour = hour(event.at);

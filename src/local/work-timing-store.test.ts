@@ -33,7 +33,7 @@ test('close flushes queued starts and finishes into private durable storage', as
 test('unsafe or unavailable observation cannot fail measured work', async () => {
   const root = await directory(); await writeFile(join(root, 'file'), '');
   const recorder = runtimeWorkTiming(join(root, 'file', 'metrics'));
-  const span = recorder.timing.start('checkpoint');
+  const span = recorder.timing.start('tool');
   expect(span.run(() => 42)).toBe(42); expect(() => span.finish('passed')).not.toThrow(); await recorder.close();
 });
 

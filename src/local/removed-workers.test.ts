@@ -26,11 +26,9 @@ it('answers every removed /v1/workers route with a clear 410 in the old failure 
   } finally { await pool.close(); }
 });
 
-it('keeps the Pi extension loadable from old launch commands and ignores the removed subworker flags', () => {
+it('keeps the Pi extension loadable from old launch commands and ignores the removed flags without registering any tool', () => {
   const flags: string[] = [];
-  const pi = { registerFlag: (name: string) => { flags.push(name); }, getFlag: () => true, registerTool: () => {},
-    exec: (async () => ({ stdout: '', stderr: '', code: 0, killed: false })) as never, on: (() => {}) as never };
-  gruntExecutionExtension(pi);
-  expect(flags).toEqual(expect.arrayContaining(['grunt-agent-workers', 'grunt-worker-port', 'grunt-background-jobs', 'grunt-checkpoints']));
+  gruntExecutionExtension({ registerFlag: (name: string) => { flags.push(name); } });
+  expect(flags).toEqual(['grunt-agent-workers', 'grunt-worker-port', 'grunt-background-jobs', 'grunt-checkpoints', 'grunt-publication']);
   expect(legacyEntry).toBe(gruntExecutionExtension);
 });

@@ -154,7 +154,7 @@ describe('low open routes', () => {
     const healthy: Source = { id: ids[1]!, available: async () => true, complete: async () => ({ text: 'ok' }) };
     const fixed = mode === 'fixed';
     const sources = new Sources([limited, healthy], fixed ? undefined : { registry: () => registry, random: () => 0 });
-    if (fixed) sources.setWorkerRegistry(() => registry);
+    if (fixed) sources.setChainRegistry(() => registry);
     const dropped = vi.fn();
     sources.setRouteDropped(dropped);
     const request = { model: 'grunt', cwd: process.cwd(), messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false };

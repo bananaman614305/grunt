@@ -98,8 +98,6 @@ export class Sources {
     // draws or dispatches; it only tracks retirement and back-off over the shared observations.
     if (!this.router) this.chainRouter = this.createRouter({ registry, ...(localOptIns ? { localOptIns } : {}) });
   }
-  /** @deprecated Former name, from when subworkers used this router. Kept so existing callers keep working. */
-  setWorkerRegistry(registry: RoutingOptions['registry'], localOptIns?: RoutingOptions['localOptIns']) { this.setChainRegistry(registry, localOptIns); }
   // A source outside the registry beside a routed pool (docs/router.md): it is
   // selectable by model id and tried only after every routed source fails.
   private unrouted(id: string) { return this.routing?.unrouted?.has(id) ?? false; }

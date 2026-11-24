@@ -171,7 +171,7 @@ percentages remain, using measured time; monitoring gaps and older unclassified
 intervals are shown rather than invented.
 
 Legacy two-slot worker utilization, still reported by older daemons and the Adventure feed, includes observed source waits and excludes recording
-gaps. Test/build delivery counts come from managed job exits; distinct revisions
+gaps. Test/build delivery counts come from the execution host's verification receipts and, for older runtimes, managed job exits; distinct revisions
 require successful checks on an unchanged clean Git HEAD. Published-build counts
 come from actual successful GitHub Pages deployment receipts with bounded lookup
 coverage. These counts are observed lower bounds, not proof of correctness,
@@ -338,57 +338,27 @@ loads from `dist/local/worker-pi.js` and ignores `--grunt-agent-workers` and
 retired daemon retained under `worker-retention/` and `workers/` in the config
 directory are no longer managed or applied by Grunt; inspect or delete them by hand.
 
-### Background command jobs
+### Background jobs, checkpoints and Pi release tools (removed)
 
-Pi's `--grunt-background-jobs` opt-in adds session-owned command jobs. Load the
-extension with `pi --provider grunt --model grunt --extension
-~/.config/grunt/runtime/dist/local/execution-pi.js --grunt-background-jobs`
-(add `--grunt-checkpoints` for [checkpoints](efficiency.md#resume-focused-context)).
-Jobs execute within the current coding interface's working directory and
-permissions; they do not bypass interface approval.
-They are POSIX process-group jobs, currently unsupported on Windows. The model
-cannot choose a different host working directory. Configure approval for
-`grunt_job_start` explicitly; custom tools do not inherit `bash`-name-only rules.
+Grunt no longer provides Pi background command jobs or execution checkpoints:
+the `grunt_job_*`, `grunt_checkpoint_*`, `grunt_verify_release*` and
+`grunt_release_*` Pi tools, `usegrunt jobs ...` and the `GRUNT_JOBS_STATE_DIR` and
+`GRUNT_CHECKPOINT_STATE_DIR` settings are gone. Pi is no longer a parallel or
+agentic platform for Grunt. Claude Code, Codex and OpenCode have their own
+background tasks and subagents, and they work through Grunt as ordinary routed
+requests.
 
-| Tool | Behavior |
-| --- | --- |
-| `grunt_job_start` | Starts or queues a bounded command and returns its job ID immediately. Categories: `test`, `build`, `render`, `download`, `other`. |
-| `grunt_job_status` | Reads queued/running/recent metadata without command output. |
-| `grunt_job_result` | Collects one job's bounded stdout/stderr and exit status; a running job returns immediately. |
-| `grunt_job_wait` | Waits up to 120 seconds when all independent useful work is blocked. Timeout returns status without cancelling the job. |
-| `grunt_job_cancel` | Stops an owned job and its process group. |
+Compatibility for installed launch commands: the Pi extension at
+`dist/local/execution-pi.js` (and `dist/local/worker-pi.js`) still loads and
+accepts and ignores `--grunt-agent-workers`, `--grunt-worker-port`,
+`--grunt-background-jobs`, `--grunt-checkpoints` and `--grunt-publication`, so an old
+launch line does not fail; it registers no tools. `usegrunt jobs ...` prints a
+removal notice and exits 1. State left under `~/.cache/grunt/jobs` and
+`~/.cache/grunt/checkpoints` is no longer read; delete it by hand.
 
-Start long tests, builds or renders, continue independent work, and collect the
-result before claiming success. The opt-in extension blocks simple foreground
-shell commands whose only purpose is more than ten seconds of explicit sleep;
-use managed jobs instead of sleep/poll loops. This is a narrow rule, not a
-promise to recognize every blocking shell program. If all useful work is
-blocked on a provider's known reset, checkpoint and let the supervisor wait.
-
-The explicit terminal interface is also available:
-
-```bash
-npx usegrunt jobs run --category test --timeout 900 -- pnpm test
-npx usegrunt jobs status
-npx usegrunt jobs result <job-id>
-npx usegrunt jobs cancel <job-id>
-```
-
-The CLI `run` waits for that command; Pi's start tool is the nonblocking path.
-There are two active command jobs and sixteen queued jobs per session, with a
-fifteen-minute default and thirty-minute maximum timeout. Output is bounded to
-64 KiB. Private state defaults to `~/.cache/grunt/jobs`; set
-`GRUNT_JOBS_STATE_DIR` to another absolute private directory when needed.
-No HTTP/MCP endpoint exposes these host commands. The tools are session-owned,
-so collect or cancel them before the final reply/checkpoint and session shutdown.
-Shutdown cancels outstanding jobs. Recovery marks interrupted jobs as
-interrupted rather than executing commands again automatically.
-
-For content-bound verification reuse, task checkpoint tools and an operator-owned
-host service for required checks, independent review and publication, see
-[execution efficiency](efficiency.md). These capabilities preserve the coding
-interface's approvals; worker-owned progress and scoped receipts cannot authorize
-a release.
+The operator-owned execution host (`usegrunt execution-host`) for required release
+checks, independent review and publication, and its read-only channel manifest,
+are unchanged; see [execution efficiency](efficiency.md).
 
 ### Source dashboard
 

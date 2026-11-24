@@ -9,9 +9,8 @@ import { diagnosticMetricSchema, pruneDiagnosticMetrics, readDiagnosticMetrics, 
 export type { DiagnosticMetrics, DiagnosticMetricBucket } from './diagnostic-metrics.js';
 
 export const diagnosticTypes = ['request.start', 'request.finish', 'attempt.start', 'attempt.finish', 'route.selection', 'route.skip', 'transport.finish', 'work.start', 'work.finish', 'release.marker'] as const;
-export const diagnosticStages = ['task', 'queue', 'setup', 'tool', 'verification', 'checkpoint', 'collection', 'capture'] as const;
+export const diagnosticStages = ['task', 'queue', 'setup', 'tool', 'verification', 'collection', 'capture'] as const;
 export const diagnosticWorkDispositions = ['fresh', 'reused', 'deduplicated'] as const;
-export const diagnosticWorkOperations = ['checkpoint_write', 'checkpoint_read', 'checkpoint_resume'] as const;
 export const diagnosticKinds = ['user', 'setup', 'maintenance', 'diagnostic'] as const;
 export const diagnosticReasons = ['not_listed', 'pending_setup', 'cooldown', 'tools_unsupported', 'input_unsupported', 'context_not_approved', 'unavailable', 'sticky', 'weighted', 'explicit', 'fallback', 'local'] as const;
 export const diagnosticErrors = ['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'] as const;
@@ -37,7 +36,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   reason?: typeof diagnosticReasons[number];
   actor?: 'client' | 'worker'; workerId?: string;
   stage?: typeof diagnosticStages[number]; parentId?: string; runtimeVersion?: string;
-  workDisposition?: typeof diagnosticWorkDispositions[number]; workOperation?: typeof diagnosticWorkOperations[number];
+  workDisposition?: typeof diagnosticWorkDispositions[number];
 }
 export type StoredDiagnosticEvent = DiagnosticEvent & { seq: number };
 export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
@@ -68,7 +67,6 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (typeof v.runtimeVersion === 'string' && runtimeVersion.test(v.runtimeVersion)) result.runtimeVersion = v.runtimeVersion;
   if (member(diagnosticStages, v.stage)) result.stage = v.stage;
   if (member(diagnosticWorkDispositions, v.workDisposition)) result.workDisposition = v.workDisposition;
-  if (member(diagnosticWorkOperations, v.workOperation)) result.workOperation = v.workOperation;
   if (typeof v.source === 'string' && identifier.test(v.source) && !secret.test(v.source)) result.source = v.source;
   if (typeof v.model === 'string' && publicModel.test(v.model) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(v.model) && !secret.test(v.model)) result.model = v.model;
   if (member(['passed', 'failed', 'cancelled', 'skipped'] as const, v.outcome)) result.outcome = v.outcome;

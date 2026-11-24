@@ -283,19 +283,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
   } else if (process.argv[2] === 'efficiency') {
     try { const { efficiencyCommand } = await import('./efficiency-cli.js'); await efficiencyCommand(process.argv.slice(3)); }
     catch { console.error('Grunt efficiency command failed; check arguments and local measurement availability.'); process.exitCode = 1; }
-  } else if (process.argv[2] === 'jobs') {
-    try { const { jobsCommand } = await import('./jobs-cli.js'); process.exitCode = await jobsCommand(process.argv.slice(3)); }
-    catch (error) { console.error(error instanceof Error ? error.message : 'Grunt jobs command failed'); process.exitCode = 1; }
   } else if (process.argv[2] === 'execution-host') {
     try {
       const { executionHostCommand } = await import('./efficiency-host.js');
       await executionHostCommand(process.argv.slice(3));
     } catch (error) { console.error(error instanceof Error ? error.message : 'Grunt execution host failed'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'jobs') {
+    console.error('Grunt background jobs were removed. Use your coding harness\'s own background tasks and subagents (Claude Code, Codex and OpenCode have them built in).');
+    process.exitCode = 1;
   } else if (process.argv[2] === 'workers') {
     console.error('Grunt subworkers were removed. Use your coding harness\'s own subagents (Claude Code, Codex and OpenCode have them built in). Retained worker artifacts, if any, are no longer managed by Grunt.');
     process.exitCode = 1;
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | jobs <run|status|result|cancel> | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool.');
   } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }

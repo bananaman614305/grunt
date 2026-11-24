@@ -74,23 +74,19 @@ OpenCode have native subagents that work through Grunt: each subagent is an
 ordinary model request that Grunt routes to a source. Pi has no subagents, so
 Pi users no longer get parallel workers.
 
-Pi keeps two opt-in local capabilities, off by default: `--grunt-background-jobs`
-runs long tests, builds and renders as managed [background jobs](docs/reference.md#background-command-jobs)
-that return control to the agent, and `--grunt-checkpoints` saves private progress
-checkpoints and focused handoffs. Load them with `--extension
-~/.config/grunt/runtime/dist/local/execution-pi.js`. Review your interface's
-custom-tool approval rules before enabling either. Content-bound verification
-jobs can reuse a recent successful result when the command and all inputs still
-match. Local routing performance and failure backoff persist across runtime restarts.
+Pi background jobs and checkpoints were removed along with the subworkers; Pi is no
+longer a parallel or agentic platform for Grunt (see the
+[reference](docs/reference.md#background-jobs-checkpoints-and-pi-release-tools-removed)).
+Local routing performance and failure backoff persist across runtime restarts.
 
 Operators can also configure a private execution host for required release
 checks, an independent reviewer, exact tested-tree merging and verified GitHub
-Pages publication. Its `--grunt-publication` flag and read-only channel manifest
-are explicit launch configuration; credentials and signing authority stay outside
+Pages publication. Its read-only channel manifest
+is explicit launch configuration; credentials and signing authority stay outside
 the coding interface. See [execution efficiency](docs/efficiency.md).
 
 `usegrunt efficiency metrics` reads durable hourly runtime measurements without
-probing providers. Managed job, checkpoint and host verification timings distinguish
+probing providers. Host verification timings distinguish
 execution from waiting and reuse. Offline fixed-workload, fallback-replay and
 metadata benchmarks compare trusted local checkouts with correctness checks and
 failures included. See [measurement commands and limits](docs/efficiency.md#measure-changes-offline)

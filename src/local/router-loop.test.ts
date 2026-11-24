@@ -353,7 +353,7 @@ it('shares retirement from main failures across mixed-pool request paths', async
   const custom = source('freellmapi');
   const listed: Registry = { ...bundledRegistry, adapters: [bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!] };
   const sources = new Sources([failing, custom]);
-  sources.setWorkerRegistry(() => listed);
+  sources.setChainRegistry(() => listed);
   try {
     for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
       const request = ask(`failure ${i}`, true);
