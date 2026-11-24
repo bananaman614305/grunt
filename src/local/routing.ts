@@ -283,6 +283,10 @@ export class StickyRouter {
         // Main requests may overlap a read-only/maintenance observation. They
         // prefer idle capacity but must not wait behind background work.
         const boundMain = eligible.some(candidate => candidate.source.id === task.source);
+        // A fallback (the bound source failed or is benched) prefers idle capacity like a first draw. Sources whose
+        // admission metadata is still being fetched may be idle, so wait briefly for those checks (each is deadline
+        // bounded) before sharing a source that is busy with another task. A healthy bound source never waits.
+        if (!boundMain && task.source !== undefined && !idle.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
         const ready = boundMain || !idle.length ? eligible : idle;
         let selected = ready.find(candidate => candidate.source.id === task.source);
         let performanceSwitch = false;

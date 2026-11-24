@@ -95,3 +95,65 @@ it('preserves an existing main task binding while that provider is busy with oth
     expect(idle.complete).not.toHaveBeenCalled();
   } finally { release(); await working; }
 });
+
+// Fallback after a failed source prefers idle capacity like a first draw; stickiness still wins when healthy.
+async function warm(value: Sources, items: Source[]) {
+  for (const item of items) await value.complete({ ...request, model: item.id, userMessages: [`warm ${item.id}`] }, AbortSignal.timeout(1000));
+  for (const item of items) vi.mocked(item.complete).mockClear();
+}
+function occupy(value: Sources, busy: ReturnType<typeof source>) {
+  let release!: () => void;
+  busy.complete.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ text: 'other work' }); }));
+  const working = value.complete({ ...request, model: busy.id, userMessages: ['other work'] }, AbortSignal.timeout(5000));
+  return { working, release: () => { release(); return working; } };
+}
+it('falls back to an idle source rather than one busy with another task', async () => {
+  const failing = source('kilo'), busy = source('livekit'), one = source('runcrate'), two = source('pollinations');
+  const items = [failing, busy, one, two], value = pool(items);
+  await warm(value, items);
+  failing.complete.mockRejectedValueOnce(new SourceError('upstream', 'overloaded', 4));
+  const other = occupy(value, busy);
+  try {
+    await vi.waitFor(() => expect(busy.complete).toHaveBeenCalledOnce());
+    const answer = await value.complete({ ...request, userMessages: ['new task'] }, AbortSignal.timeout(2000));
+    expect(failing.complete).toHaveBeenCalledOnce();
+    expect(answer.text).toBe(one.id);
+    expect(busy.complete).toHaveBeenCalledOnce();
+  } finally { await other.release(); }
+});
+it('does not fall back onto a busy source while idle sources still have pending admission checks', async () => {
+  const failing = source('kilo'), busy = source('livekit'), idle = source('runcrate');
+  const items = [failing, busy, idle], value = pool(items);
+  await warm(value, [failing, busy]);
+  idle.available.mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 100)); return true; });
+  failing.complete.mockRejectedValueOnce(new SourceError('upstream', 'overloaded', 4));
+  const other = occupy(value, busy);
+  try {
+    await vi.waitFor(() => expect(busy.complete).toHaveBeenCalledOnce());
+    const answer = await value.complete({ ...request, userMessages: ['new task'] }, AbortSignal.timeout(2000));
+    expect(answer.text).toBe(idle.id);
+    expect(busy.complete).toHaveBeenCalledOnce();
+  } finally { await other.release(); }
+});
+it('still falls back to a busy source when no idle source remains', async () => {
+  const failing = source('kilo'), busy = source('livekit'), items = [failing, busy], value = pool(items);
+  await warm(value, items);
+  failing.complete.mockRejectedValueOnce(new SourceError('upstream', 'overloaded', 4));
+  const other = occupy(value, busy);
+  try {
+    await vi.waitFor(() => expect(busy.complete).toHaveBeenCalledOnce());
+    const answer = await value.complete({ ...request, userMessages: ['new task'] }, AbortSignal.timeout(2000));
+    expect(answer.text).toBe(busy.id);
+  } finally { await other.release(); }
+});
+it('keeps a healthy bound task on its busy source rather than moving to idle capacity', async () => {
+  const bound = source('kilo'), idle = source('livekit'), items = [bound, idle], value = pool(items);
+  const main = { ...request, userMessages: ['sticky task'] };
+  await value.complete(main, AbortSignal.timeout(1000));
+  const other = occupy(value, bound);
+  try {
+    await vi.waitFor(() => expect(bound.complete).toHaveBeenCalledTimes(2));
+    expect((await value.complete(main, AbortSignal.timeout(1000))).text).toBe(bound.id);
+    expect(idle.complete).not.toHaveBeenCalled();
+  } finally { await other.release(); }
+});

@@ -100,6 +100,11 @@ accepted, with `GRUNT_*` taking precedence.
   (`GET /v1/registry/scores`, read after each registry sync): `0.5 + score/100`,
   so 0.5 at score 0, 1 at 50 and 1.5 at 100. A route with no score keeps
   factor 1.
+- **Idle first.** A first draw and a fallback (the bound source failed or is
+  benched) prefer routes with no active request and use a busy route only when
+  no idle one is eligible. A fallback also waits for pending admission checks
+  (each bounded at five seconds) before sharing a busy route. A healthy bound
+  task keeps its route even when it is busy.
 - **Back-off.** Upstream failures, timeouts and refusals normally bench the
   route for 15 minutes. Each identical repeat within 6 hours doubles that
   delay, up to 2 hours. An invalid function-call response starts at 30 seconds
