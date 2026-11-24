@@ -5,14 +5,14 @@ import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
 import { SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
-import type { Completion, ErrorCode, ModelRequest, Source } from './source.js';
+import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import type { RoutingWorkload } from './routing-history.js';
-import { RETIRE_AFTER_FAILURES, localRequestRefusal, routingWorkload, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
+import { RETIRE_AFTER_FAILURES, localRequestRefusal, routingWorkload, slowUpstreamFailure, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
@@ -113,6 +113,18 @@ export class StickyRouter {
     return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
   }
   private benched(id: string) { return this.retired(id) || (this.cooldown(id)?.until ?? 0) > this.now(); }
+  // Consecutive slow upstream failures per source (SlowUpstreamPolicy). A success since the last one resets the
+  // count; a failure inside the cooldown it earned (a parallel straggler) is the same episode and does not escalate.
+  private slow = new Map<string, { count: number; at: number; until: number }>();
+  private slowUpstreamSeconds(id: string, policy: SlowUpstreamPolicy) {
+    const at = this.now(), previous = this.slow.get(id);
+    const fresh = !previous || (this.observation.routingRecoveryAt(id) ?? 0) > previous.at;
+    if (previous && !fresh && at < previous.until) return Math.max(1, Math.ceil((previous.until - at) / 1000));
+    const count = fresh ? 1 : previous.count + 1;
+    const seconds = Math.min(policy.maxSeconds, policy.baseSeconds * 2 ** Math.min(count - 1, 20));
+    this.slow.set(id, { count, at, until: at + seconds * 1000 });
+    return seconds;
+  }
   async recordFailure(id: string, failure: SourceError) {
     if (!this.registered(id) || failure.code === 'cancelled') return;
     // Our own bug or the request's shape, never provider health: no retirement count, no cooldown.
@@ -130,9 +142,11 @@ export class StickyRouter {
       // A reply that arrived but held an invalid function call is a bad
       // sample, not an outage; bench the source only briefly.
       const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
+      const policy = hasUpstreamHint || badSample || !slowUpstreamFailure(failure) ? undefined : this.sources.find(source => source.id === id)?.slowUpstream;
       const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry ?? 1))
-        : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : DEFAULT_FAILURE_COOLDOWN_SECONDS;
-      until = (await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint)).until;
+        : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : policy ? this.slowUpstreamSeconds(id, policy) : DEFAULT_FAILURE_COOLDOWN_SECONDS;
+      // The policy already scales its own delay across consecutive slow failures of any kind.
+      until = (await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint && !policy)).until;
     }
     this.barAt.set(id, this.observation.routingBackoff(id)?.at ?? this.now());
     this.bars.set(id, until); this.barFailures.set(id, this.observation.routingBackoff(id)?.code ?? failure.code);

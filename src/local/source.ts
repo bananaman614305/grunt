@@ -39,6 +39,13 @@ export interface Completion { text: string; calls?: ToolCall[]; finishReason?: '
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
 export interface QuotaWindow { startedAt: number; resetAt: number }
+// A slow upstream failure (HTTP 502/503/504/524, connection reset, stream cut
+// short, or an output deadline) with no Retry-After hint benches the source for
+// baseSeconds, doubling on each consecutive slow failure up to maxSeconds. A
+// success resets the count. Retirement still follows the identical-failure
+// streak rules in docs/router.md; this only lengthens the cooldown, and a
+// provider's own Retry-After always wins.
+export interface SlowUpstreamPolicy { baseSeconds: number; maxSeconds: number }
 export interface Source {
   id: string;
   supportsFunctionTools?: boolean;
@@ -51,6 +58,15 @@ export interface Source {
   // This inference-stream capability opts into prompt cancellation settlement;
   // its reader cleanup must remain abort-safe after the caller has returned.
   reportsProgress?: boolean;
+  // Per-source deadlines, replacing the pool default: how long the source may
+  // take to produce its first output, and (for reportsProgress sources) how long
+  // it may stay silent once output has started. Use for providers whose healthy
+  // time to first token is long.
+  firstOutputMs?: number;
+  idleMs?: number;
+  // Opt-in cooldown policy for a congested provider whose failures are slow
+  // (5xx gateway errors, resets, first-output timeouts). See SlowUpstreamPolicy.
+  slowUpstream?: SlowUpstreamPolicy;
   availabilityTimeoutMs?: number;
   available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
@@ -141,13 +157,15 @@ export class Sources {
     const cutoff = new Promise<never>((_, reject) => {
       rejectCutoff = reject;
     });
+    const first = source.firstOutputMs ?? this.firstOutputMs, idle = source.idleMs ?? first;
     const arm = () => {
       clearTimeout(timer);
+      const limit = outputStarted ? idle : first;
       timer = setTimeout(() => {
         finished = true;
-        const error = new SourceError('timeout', `${source.id} produced no ${outputStarted ? 'further ' : ''}output within ${this.firstOutputMs / 1000} seconds`);
+        const error = new SourceError('timeout', `${source.id} produced no ${outputStarted ? 'further ' : ''}output within ${limit / 1000} seconds`);
         cutoffs.add(error); rejectCutoff(error); deadline.abort(error);
-      }, this.firstOutputMs);
+      }, limit);
     };
     const progress = () => {
       if (finished) return;

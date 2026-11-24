@@ -1575,6 +1575,21 @@ rate limits are honored; Grunt does not redeem reset vouchers or create accounts
 to bypass limits. The relay's stated privacy protections do not establish its
 unnamed upstream's retention or training practices.
 
+The provider is often congested (time to first token p50 about 11 s, p95 about
+48 s), so the adapter requests a streamed reply, with `stream_options.include_usage`,
+purely for liveness; Grunt still returns one whole reply. First output must arrive
+within 90 seconds and the stream may then stay silent for at most 45 seconds
+(headers, role-only events and keepalive comments are not output); a stalled
+request fails over early, a slow but steady one is left alone. The whole call is
+bounded at 5 minutes. A stream without a usage block is accepted with unknown
+token counts, a usage block is checked as before, and a provider that answers
+with a single JSON body is parsed as before. The `/api/status` and `/v1/models`
+entitlement check is reused for 60 seconds and discarded by any failed
+completion. Slow upstream failures (HTTP 502, 503, 504 or 524, a connection
+reset, a cut stream, or a missed output deadline) bench the route for 30
+minutes, doubling per consecutive one to 2 hours; a success resets the count and
+a provider Retry-After wins. Retirement is unchanged.
+
 `freepi` pins `deepseek-v4.1-flash` and verifies the observed upstream model.
 Use `npx usegrunt add freepi` for its GitHub device signup; setup automatically
 records the current material trace-sale policy. Every inference additionally requires
