@@ -1,3 +1,4 @@
+import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, chmod, symlink, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -297,5 +298,12 @@ it('cancels the owned PTY native group even when its child ignores terminal hang
   } finally {
     controller.abort(); await pending.catch(() => {}); if (pid) try { process.kill(pid, 'SIGKILL'); } catch { /* Already cleaned. */ }
     unrelated.kill('SIGKILL'); await new Promise(resolveExit => unrelated.once('close', resolveExit));
+  }
+});
+it('accepts every tool of a recorded Claude Code request', async () => {
+  for (const index of [0, 1, 2] as const) {
+    const f = fake(); await expect(source(f.processes).complete({ ...claudeCodeRequest(index, 'perch'), cwd: directory, maxTokens: 1024 }, AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'Hello.' });
+    const prompt = (f.requests.at(-1)!.params.prompt as { text: string }[])[0]!.text;
+    expect(JSON.parse(prompt.split('\n').at(-1)!).tools).toEqual(claudeCodeRequest(0).tools);
   }
 });

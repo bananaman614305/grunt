@@ -3,8 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { Ajv } from 'ajv';
-import type { AnySchema, ValidateFunction } from 'ajv';
+import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
@@ -144,7 +143,6 @@ export async function verifyBeatAPIModelAccess(grant: BeatAPIAccess, options: { 
   }
 }
 function tools(request: ModelRequest) {
-  const validators = new Map<string, ValidateFunction>();
   try {
     // Responses encodes parallel function calls as adjacent assistant items.
     // Reassemble their single native assistant turn before correlation checks
@@ -159,10 +157,8 @@ function tools(request: ModelRequest) {
     }
     // Validation only; this does not prompt a bridge or execute a function.
     new FreebuffTools({ ...request, messages });
-    const ajv = new Ajv({ strict: true, strictTypes: false, strictTuples: false, addUsedSchema: false });
-    for (const tool of request.tools) { const fn = obj(tool.function); validators.set(fn.name as string, ajv.compile(fn.parameters as AnySchema)); }
-    return { validators, messages };
-  } catch { throw requestRefusal('BeatAPI rejected invalid function tools or an uncorrelated tool conversation'); }
+    return { validators: compileToolSchemas(request.tools, 'BeatAPI rejected a function tool schema'), messages };
+  } catch (error) { throw error instanceof SourceError ? error : requestRefusal('BeatAPI rejected invalid function tools or an uncorrelated tool conversation'); }
 }
 export class BeatAPI implements Source {
   readonly id = 'beatapi'; readonly supportsFunctionTools = true;
