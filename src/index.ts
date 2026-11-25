@@ -22,6 +22,10 @@ export function agentRoutes(agent: GruntAgent, edgeSecret = process.env.GRUNT_CO
     await next();
   });
   app.use("/agent/*", bodyLimit({ maxSize: 32_768, onError: c => c.json({ error: "Message too large. Use at most 20,000 characters." }, 413) }));
+  app.post("/agent/register", async c => {
+    await agent.store.register(c.get("person"));
+    return c.json({ ok: true });
+  });
   app.get("/agent/state", async c => c.json(await agent.store.state(c.get("person"))));
   app.post("/agent/messages", async c => {
     let body: unknown;

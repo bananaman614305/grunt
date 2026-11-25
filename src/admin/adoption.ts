@@ -18,12 +18,12 @@ export async function adoption(db: Client, registry: Registry, period: Period, n
       SELECT account,SUM(measured_tokens) AS tokens,COUNT(*)-COUNT(measured_tokens) AS missing,
         MAX(CASE WHEN recency=1 THEN device END) AS device,MAX(CASE WHEN recency=1 THEN country END) AS country
       FROM attempts GROUP BY account ORDER BY tokens DESC,account`, args: range },
-    { sql: `WITH first_use AS (
-      SELECT person,MIN(ts) AS joined FROM messages WHERE role='user' GROUP BY person
-      HAVING joined>=MAX(?,(SELECT MIN(started_at) FROM account_metering)) AND joined<?),
+    { sql: `WITH registrations AS (
+      SELECT account AS person,registered_at AS joined FROM account_registrations
+      WHERE registered_at>=MAX(?,(SELECT MIN(started_at) FROM account_metering)) AND registered_at<?),
       progression AS (
         SELECT person,joined,MIN(c.ts) AS attempted,MIN(CASE WHEN c.outcome='ok' THEN c.ts END) AS success
-        FROM first_use LEFT JOIN account_attempts c ON c.account=person AND c.ts>=joined AND c.ts<joined+?
+        FROM registrations LEFT JOIN account_attempts c ON c.account=person AND c.ts>=joined AND c.ts<joined+?
         GROUP BY person,joined)
       SELECT COUNT(*) AS joined,COUNT(attempted) AS attempted,COUNT(success) AS succeeded,
         COUNT(CASE WHEN EXISTS (SELECT 1 FROM account_attempts c

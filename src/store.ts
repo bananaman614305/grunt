@@ -18,6 +18,8 @@ export class AgentStore {
       CREATE INDEX IF NOT EXISTS tasks_person ON tasks(person, created_at);
       CREATE TABLE IF NOT EXISTS notes (person TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL, UNIQUE(person, text));
       CREATE TABLE IF NOT EXISTS calls (model TEXT NOT NULL, kind TEXT NOT NULL, tokens_in INTEGER NOT NULL, tokens_out INTEGER NOT NULL, latency_ms INTEGER NOT NULL, outcome TEXT NOT NULL, cost REAL NOT NULL, ts INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS account_registrations(account TEXT PRIMARY KEY, registered_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS registrations_time ON account_registrations(registered_at);
       CREATE TABLE IF NOT EXISTS account_metering(started_at INTEGER NOT NULL PRIMARY KEY);
       INSERT INTO account_metering SELECT ${Date.now()} WHERE NOT EXISTS (SELECT 1 FROM account_metering);
       CREATE INDEX IF NOT EXISTS calls_time ON calls(ts);
@@ -50,6 +52,16 @@ export class AgentStore {
   }
   private async rows<T>(sql: string, args: InValue[] = []): Promise<T[]> {
     return (await this.db.execute({ sql, args })).rows as unknown as T[];
+  }
+  async register(account: string, registeredAt = Date.now()) {
+    // Accounts with earlier hosted activity have an unknown historical signup time.
+    await this.db.execute({
+      sql: `INSERT INTO account_registrations(account, registered_at)
+        SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM messages WHERE person=?)
+        AND NOT EXISTS (SELECT 1 FROM account_attempts WHERE account=?)
+        ON CONFLICT(account) DO NOTHING`,
+      args: [account, registeredAt, account, account]
+    });
   }
   async messages(person: string) { return (await this.rows<Message>("SELECT * FROM messages WHERE person=? ORDER BY rowid DESC LIMIT 20", [person])).reverse(); }
   async tasks(person: string) { return this.rows<Task>("SELECT * FROM tasks WHERE person=? AND status IN ('queued','running') UNION ALL SELECT * FROM (SELECT * FROM tasks WHERE person=? AND status NOT IN ('queued','running') ORDER BY created_at DESC LIMIT 30)", [person, person]); }

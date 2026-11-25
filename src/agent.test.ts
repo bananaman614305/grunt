@@ -46,6 +46,21 @@ async function setup(fake = new Fake(), dbUrl = ":memory:") {
   return { agent, app, send, fake };
 }
 
+it("records explicit hosted signup once before chat activity and excludes legacy accounts", async () => {
+  const { app, agent, send } = await setup();
+  const register = (headers?: HeadersInit) => app.request("/agent/register", {method:"POST", headers});
+  expect((await register()).status).toBe(401);
+  await send("hello", { ...AUTH, authorization:"Bearer legacy" });
+  expect((await register({authorization:"Bearer legacy"})).status).toBe(200);
+  expect((await register(AUTH)).status).toBe(200);
+  const registrations = () => agent.store.db.execute("SELECT account,registered_at FROM account_registrations");
+  const original = (await registrations()).rows;
+  expect(original).toEqual([{account:PERSON,registered_at:expect.any(Number)}]);
+  expect(await agent.store.messages(PERSON)).toHaveLength(0);
+  expect((await register(AUTH)).status).toBe(200);
+  expect((await registrations()).rows).toEqual(original);
+});
+
 describe("Grunt chat and background jobs", () => {
   it("returns an immediate dispatch response and answers follow-ups while the worker is unresolved", async () => {
     const { send, fake, agent } = await setup();

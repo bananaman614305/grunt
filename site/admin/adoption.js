@@ -53,8 +53,8 @@ function render(data) {
     <div class="cards"><div>Active users<b>${fmt(accounts.length)}</b></div><div>Global metered tokens<b>${fmt(data.tokens)}</b></div></div>
     <small>${fmt(accounts.reduce((n,a) => n+a.missing,0))} attempts lack complete token measurements.</small>
     <details><summary>Tokens by user · ${fmt(accounts.length)} active accounts</summary><div class="scroll">${table(['Account','Metered tokens','Unmetered attempts'],accounts.map(a => ['Account '+a.account.slice(0,16),fmt(a.tokens),fmt(a.missing)]))}</div></details>
-    <h3>First use to retention</h3>${bars([['First gateway use',cohort.joined],['Attempted a route',cohort.attempted],['First success',cohort.succeeded],['Returned later',cohort.retained]],cohort.joined)}
-    <small>Hosted accounts begin at their first message. Each cohort has seven full days to attempt a run, succeed, and succeed again on a later UTC day. Historical calls before account metering lack attribution.</small>
+    <h3>Signup to retention</h3>${bars([['Signed up',cohort.joined],['Attempted a route',cohort.attempted],['First success',cohort.succeeded],['Returned later',cohort.retained]],cohort.joined)}
+    <small>Signup is recorded when a hosted account completes chat setup. Each cohort has seven full days to attempt a run, succeed, and succeed again on a later UTC day. Historical calls before account metering lack attribution.</small>
     <div class="pair"><div><h3>Country</h3>${dimensions(accounts,'country')}</div><div><h3>Device type</h3>${dimensions(accounts,'device')}</div></div>
     <h3>Usage by route</h3>${bars(routes.filter(r => r.attempts>0).map(r => [r.id,r.attempts]),attempts)}
     <small>Anonymous router reports · ${fmt(attempts)} reported attempts, including retries. Cancellations are excluded.</small>

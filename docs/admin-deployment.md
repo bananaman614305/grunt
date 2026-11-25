@@ -220,8 +220,10 @@ The account's most recent attempt in the period supplies its reported country
 and coarse device class. Missing dimensions appear as Unknown. Only complete
 upstream input and output measurements contribute to metered tokens. New
 attribution starts with deployment. Historical routing estimates stay separate.
-There is no Grunt account registration or provider connection event on this
-path. The observable funnel starts with the first hosted message and follows
+Submitting the hosted chat setup form registers the key fingerprint once through
+`POST /agent/register`. Saved-key reconnects and direct message requests do
+not create signup events. Earlier activity has no known signup time. The funnel
+includes registered accounts that send no messages, and follows
 attempt, successful reply and later-day success within seven days. It excludes
 accounts whose observation window predates metering or has yet to finish.
 

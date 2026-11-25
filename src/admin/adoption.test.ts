@@ -39,13 +39,15 @@ it('reconciles windowed active accounts, metered tokens and latest distinct dime
     const joined = midnight-7*day;
     await store.db.execute({sql:'UPDATE account_metering SET started_at=?',args:[joined]});
     for (const [account,ts] of [['mature',joined],['immature',now-7*day+1],['reversed',joined]] as const) {
-      await store.db.execute({sql:"INSERT INTO messages VALUES (?,?, 'user','',?)",args:[randomUUID(),account,ts]});
+      await store.register(account,ts);
     }
+    await store.register('signup-only',joined);
+    await call(joined,'unregistered',0);
     await call(joined-1,'reversed',0);
     await call(joined,'mature',0);
     await call(joined+day,'mature',0);
     expect((await adoption(store.db,bundledRegistry,'day',now)).cohort)
-      .toMatchObject({joined:2,attempted:1,succeeded:1,retained:1});
+      .toMatchObject({joined:3,attempted:1,succeeded:1,retained:1});
   } finally { store.close(); }
 });
 
