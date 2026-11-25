@@ -378,6 +378,20 @@ or native output.
 Source/model labels do not establish a physical-model attestation. Unknown token
 usage stays absent and is counted separately from known zero usage.
 
+A successful `attempt.finish` can also carry content-free ending metadata, readable
+per attempt from the events and trace routes: `finishReason` (the provider's
+finish_reason mapped to `stop`, `length`, `tool_calls`, `content_filter`,
+`function_call` or `other`; an unrecognised value is recorded as `other`, never as
+the provider's text), `hadToolCalls` (whether the reply carried parsed tool calls)
+and `reasoningTokens` (only when the provider reports it). Adapters that do not
+report an ending record none. These fields stay in the local journal: hourly fleet
+uploads and the owner collector's allowlist do not include them. A reply from
+Kilo, Reflection Beam or any adapter that reports an ending, whose finish_reason
+says `tool_calls` or `function_call` but which holds no parsed call, is an invalid
+sample (`response_tools`): the task continues on another source after a brief
+cooldown. Kilo and Reflection Beam also ask once more first. A legitimate
+text-only `stop` reply is unchanged, and reply text is never parsed or altered.
+
 Openference reply diagnostics distinguish `stream_read` (transport read),
 `stream_format` (invalid SSE framing), `stream_incomplete` (missing completion)
 and `stream_cleanup` (reader cleanup). JSON, model, content and tool validation

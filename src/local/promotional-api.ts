@@ -5,7 +5,7 @@ import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import type { FreeApiGrant } from './free-api.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
-import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { completionEnding, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const PROMOTIONAL_PROVIDERS = {
@@ -121,7 +121,7 @@ export class PromotionalApi implements Source {
       if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, object(body.usage));
       const calls = message.tool_calls;
       if (calls !== undefined && !validCalls(calls) || typeof message.content !== 'string' && !(validCalls(calls) && calls.length)) throw new Error('Invalid completion');
-      return completion(typeof message.content === 'string' ? message.content : '', validCalls(calls) ? calls : [], object(body.usage));
+      return completion(typeof message.content === 'string' ? message.content : '', validCalls(calls) ? calls : [], object(body.usage), choice.finish_reason);
     } catch (error) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Promotional source closed');
@@ -143,9 +143,10 @@ function validCalls(value: unknown): value is ToolCall[] {
 function validArguments(value: string): boolean {
   try { const parsed: unknown = JSON.parse(value); return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed); } catch { return false; }
 }
-function completion(text: string, calls: ToolCall[], usage: Record<string, unknown>): Completion {
+function completion(text: string, calls: ToolCall[], usage: Record<string, unknown>, finish?: unknown): Completion {
   const inputTokens = count(usage.prompt_tokens), outputTokens = count(usage.completion_tokens);
-  return { text, ...(calls.length ? { calls } : {}), ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
+  return withEnding({ text, ...(calls.length ? { calls } : {}), ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) },
+    completionEnding(finish, usage, calls.length > 0));
 }
 
 // SSE is transport even when the harness requests a non-streamed completion.
@@ -168,7 +169,7 @@ export async function readPromotionalStream(response: Response, model: string, s
   const reader = observed('stream_read', () => response.body!.getReader()), decoder = new TextDecoder();
   let pending = '', text = '', size = 0, finished = false, done = false, seenModel = false;
   let usage: Record<string, unknown> = {};
-  let truncated = false;
+  let truncated = false, finishReason: unknown;
   const calls = new Map<number, ToolCall>();
   const event = (raw: string) => {
     const data = raw.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
@@ -212,7 +213,7 @@ export async function readPromotionalStream(response: Response, model: string, s
       }
       if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
         if (!['stop', 'tool_calls', 'length', 'max_tokens'].includes(String(choice.finish_reason))) throw invalid('stream_format', 'Invalid stream finish');
-        truncated = lengthLimited(choice.finish_reason);
+        truncated = lengthLimited(choice.finish_reason); finishReason = choice.finish_reason;
         finished = true;
       }
     }
@@ -242,6 +243,6 @@ export async function readPromotionalStream(response: Response, model: string, s
     signal.throwIfAborted();
     // The observer may reject usage it cannot accept; it never changes the reply.
     observe?.result?.(usage);
-    return truncated ? truncatedCompletion(text, usage) : completion(text, result, usage);
+    return truncated ? truncatedCompletion(text, usage) : completion(text, result, usage, finishReason);
   } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(cleanupFailed); observed('stream_cleanup', () => reader.releaseLock()); }
 }

@@ -10,7 +10,7 @@ import { configure } from './main.js';
 import { createLocalApp } from './api.js';
 import { withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent, DiagnosticsStore } from './diagnostics.js';
-import { Sources, SourceError } from './source.js';
+import { Sources, SourceError, endingOf } from './source.js';
 import { bundledRegistry, localOptInAdapters } from '../registry.js';
 
 const now = Date.parse('2026-11-20T03:00:00Z');
@@ -366,4 +366,16 @@ it('retains the existing fifteen-minute router cooldown for malformed streamed t
     await expect(sources.complete({ ...request('openference'), model: 'grunt' }, AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'fallback' });
     expect(sources.status().sources.find(row => row.id === 'openference')).toMatchObject({ errorCode: 'upstream', retryAt: now + 900000 });
   } finally { await sources.close(); }
+});
+
+it('records a content-free ending for a streamed reply and still refuses an unknown stream finish', async () => {
+  const stream = (finish: string) => new Response(sse([
+    { model: PROMOTIONAL_PROVIDERS.openference.model, choices: [{ index: 0, delta: { content: 'Hello' }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: finish }] },
+    { choices: [], usage: { prompt_tokens: 3, completion_tokens: 4, completion_tokens_details: { reasoning_tokens: 2 } } }
+  ]), { headers: { 'Content-Type': 'text/event-stream' } });
+  const stopped = await readPromotionalStream(stream('stop'), PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(2000));
+  expect(endingOf(stopped)).toEqual({ finish: 'stop', toolCalls: false, reasoningTokens: 2 });
+  expect(stopped).toEqual({ text: 'Hello', inputTokens: 3, outputTokens: 4 });
+  await expect(readPromotionalStream(stream('PRIVATE_REASON'), PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(2000))).rejects.toBeDefined();
 });

@@ -7,7 +7,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { readPromotionalStream } from './promotional-api.js';
-import { lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
+import { completionEnding, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, SlowUpstreamPolicy, Source, ToolCall } from './source.js';
 
 export const MILLIONSEEK_MODEL = 'deepseek-v4.1-flash-free';
@@ -162,7 +162,8 @@ export class MillionSeek implements Source {
             return { id: call.id, type: call.type as 'function', function: { name: fn.name, arguments: fn.arguments } };
           });
         }
-        reply = { text: typeof message.content === 'string' ? message.content : '', ...(calls?.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+        reply = withEnding({ text: typeof message.content === 'string' ? message.content : '', ...(calls?.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number },
+          completionEnding(choice.finish_reason, usage, !!calls?.length));
       }
       if (reply.finishReason === 'length') return reply;
       const calls: ToolCall[] = [], ids = new Set<string>();
@@ -174,7 +175,8 @@ export class MillionSeek implements Source {
         ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: call.function.name, arguments: call.function.arguments } });
       }
       if (!reply.text && !calls.length) throw new Error('Empty answer');
-      return { text: reply.text, ...(calls.length ? { calls } : {}), ...(reply.inputTokens === undefined ? {} : { inputTokens: reply.inputTokens }), ...(reply.outputTokens === undefined ? {} : { outputTokens: reply.outputTokens }) };
+      const ended = endingOf(reply), final = { text: reply.text, ...(calls.length ? { calls } : {}), ...(reply.inputTokens === undefined ? {} : { inputTokens: reply.inputTokens }), ...(reply.outputTokens === undefined ? {} : { outputTokens: reply.outputTokens }) };
+      return ended ? withEnding(final, { ...ended, toolCalls: calls.length > 0 }) : final;
     } catch (e) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', '100milionseek source closed');

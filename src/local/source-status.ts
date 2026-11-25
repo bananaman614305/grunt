@@ -1,5 +1,5 @@
 import type { Completion, ErrorCode, ModelRequest, QuotaWindow, Source } from './source.js';
-import { SourceError, guardToolCalls } from './source.js';
+import { SourceError, endingOf, guardToolCalls } from './source.js';
 import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
@@ -309,14 +309,17 @@ export class SourceStatus {
     this.diagnostics.record({ ...base, id: randomUUID(), at: started, type: 'attempt.start' });
     return withDiagnosticContext({ ...parent, attemptId, sink: this.diagnostics! }, async () => {
       try {
-        const result = await this.observedComplete(source, request, signal, guard);
+        const result = await this.observedComplete(source, request, signal, guard), ending = endingOf(result);
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
           ...(result.servedModel ? { model: result.servedModel } : {}),
           ...(typeof result.free === 'boolean' ? { free: result.free } : {}),
           ...(result.finishReason === 'length' ? { failureReason: 'length' } : {}),
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
-          ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });
+          ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }),
+          ...(ending?.finish ? { finishReason: ending.finish } : {}),
+          ...(ending?.toolCalls === undefined ? {} : { hadToolCalls: ending.toolCalls }),
+          ...(ending?.reasoningTokens === undefined ? {} : { reasoningTokens: ending.reasoningTokens }) });
         return result;
       } catch (error) {
         const value = error && typeof error === 'object' ? error as { diagnostics?: object; retryAfter?: unknown } : {};

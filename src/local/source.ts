@@ -3,7 +3,7 @@ import { knownAdapters } from '../registry.js';
 import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
 import type { SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
-import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
+import { currentDiagnosticContext, diagnosticFinishReasons, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext } from './diagnostics.js';
 import type { RoutingHistory } from './routing-history.js';
 import { localRequestRefusal } from './routing-history.js';
@@ -59,9 +59,9 @@ export function lengthLimited(reason: unknown) {
 // An unfinished tool call cannot be executed. Keep visible text and measured usage.
 export function truncatedCompletion(content: unknown, usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }): Completion {
   const input = usage?.prompt_tokens, output = usage?.completion_tokens;
-  return { text: typeof content === 'string' ? content : '', finishReason: 'length',
+  return withEnding({ text: typeof content === 'string' ? content : '', finishReason: 'length',
     ...(typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? { inputTokens: input } : {}),
-    ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {}) };
+    ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {}) }, completionEnding('length', usage, false));
 }
 
 // Arguments of a call the client will execute must be one JSON object. Blank arguments are the
@@ -78,7 +78,15 @@ function usableArguments(value: unknown): string | undefined {
 // text as a length-limited completion, whatever finish_reason the provider claimed. Anything else is
 // an invalid sample, so routing records a short bench and the task continues on another source.
 export function guardToolCalls(result: Completion, request: Pick<ModelRequest, 'maxTokens'>): Completion {
-  if (!result.calls?.length) return result;
+  if (!result.calls?.length) {
+    // A reply that says it ended in a tool call but carries none cannot be executed, and the client would treat the
+    // text as a finished answer. Only the provider's own finish_reason decides; text is never inspected or changed.
+    const finish = endingOf(result)?.finish, claimed = finish === 'tool_calls' || finish === 'function_call';
+    if (!claimed || result.finishReason === 'length') return result;
+    const budget = request.maxTokens;
+    if (budget !== undefined && result.outputTokens !== undefined && result.outputTokens >= budget) return withEnding({ ...result, finishReason: 'length' }, { ...endingOf(result), finish: 'length' });
+    throw new SourceError('upstream', 'Source ended in a tool call but returned none', undefined, undefined, { failureReason: 'response_tools', httpStatus: 200 });
+  }
   const fixed = result.calls.map(call => usableArguments(call?.function?.arguments));
   if (fixed.every(text => text !== undefined)) {
     result.calls.forEach((call, index) => { call.function.arguments = fixed[index]!; });
@@ -87,11 +95,27 @@ export function guardToolCalls(result: Completion, request: Pick<ModelRequest, '
   const budget = request.maxTokens;
   if (result.finishReason === 'length' || budget !== undefined && result.outputTokens !== undefined && result.outputTokens >= budget) {
     const { calls: _dropped, ...kept } = result;
-    return { ...kept, finishReason: 'length' };
+    return withEnding({ ...kept, finishReason: 'length' }, { ...endingOf(result), finish: 'length', toolCalls: false });
   }
   throw new SourceError('upstream', 'Source returned a tool call with unparseable arguments', undefined, undefined, { failureReason: 'response_tools', httpStatus: 200 });
 }
 
+// Content-free facts about how a reply ended, for local diagnostics only. `finish` is the provider's finish_reason
+// mapped to a fixed set (anything unrecognised is 'other', never the raw string); `toolCalls` says whether the reply
+// carried parsed calls. Nothing here is sent to a client, the registry or the fleet collector.
+export interface CompletionEnding { finish?: typeof diagnosticFinishReasons[number]; toolCalls?: boolean; reasoningTokens?: number }
+// Kept beside the reply, not on it, so the Completion shape every client and test sees is unchanged.
+const endings = new WeakMap<Completion, CompletionEnding>();
+export function withEnding<T extends Completion>(reply: T, ending: CompletionEnding): T { endings.set(reply, ending); return reply; }
+export const endingOf = (reply: Completion): CompletionEnding | undefined => endings.get(reply);
+export function completionEnding(finish: unknown, usage: unknown, toolCalls: boolean): CompletionEnding {
+  const known = typeof finish === 'string' ? (diagnosticFinishReasons as readonly string[]).includes(finish) ? finish as typeof diagnosticFinishReasons[number]
+    : finish === 'max_tokens' ? 'length' : 'other' : finish === undefined || finish === null ? undefined : 'other';
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const u = record(usage), details = record(u.completion_tokens_details ?? u.output_tokens_details), reasoning = details.reasoning_tokens;
+  return { ...(known ? { finish: known } : {}), toolCalls,
+    ...(typeof reasoning === 'number' && Number.isSafeInteger(reasoning) && reasoning >= 0 ? { reasoningTokens: reasoning } : {}) };
+}
 export interface Completion { servedModel?: string; free?: boolean; text: string; calls?: ToolCall[]; finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call'; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
