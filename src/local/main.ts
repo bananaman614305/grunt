@@ -165,7 +165,7 @@ export function start(env = process.env) {
   const feedback = new RouteFeedback({ directory, urls,
     ...(reportFleet ? { fleet: async (token: string) => {
       await diagnosticReady;
-      if (diagnostics) await uploadFleet(diagnostics, directory, urls, token);
+      if (diagnostics) await uploadFleet(diagnostics, directory, urls, token, Date.now(), fetch, gruntEnv('ADOPTION_REPORTING',env) === '1');
     } } : {}),
     listed: () => registry.adapters.map(adapter => adapter.id), retired: id => sources.retired(id), ...(runtimeVersion ? { client: runtimeVersion } : {}) });
   sources.setFeedback((id, outcome, latencyMs) => feedback.record(id, outcome, latencyMs));

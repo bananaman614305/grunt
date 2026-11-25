@@ -22,16 +22,24 @@ it('counts reporting installations in UTC windows and requires a complete observ
     for (let i=0;i<168;i++) {
       for (const install of ['active','idle','partial']) await saveHour(db,install,{
         hour:joined+i*HOUR,incomplete:install==='partial' && i===1,series:install!=='idle' && (i===0 || i===24)?series:[]
-      },now);
+      },now,true);
     }
-    await saveHour(db,'older',{hour:midnight-8*day,incomplete:false,series},now);
-    await saveHour(db,'new',{hour:midnight,incomplete:false,series},now);
+    await saveHour(db,'older',{hour:midnight-8*day,incomplete:false,series},now,true);
+    await saveHour(db,'new',{hour:midnight,incomplete:false,series},now,true);
+    // Earlier observations and a replay do not move the calendar cohort or double count it.
+    await saveHour(db,'active',{hour:joined-HOUR,incomplete:false,series:[]},now,true);
+    await saveHour(db,'active',{hour:joined,incomplete:false,series},now,true);
+    await saveHour(db,'no-consent',{hour:midnight,incomplete:false,series},now);
     for (const [period,count] of [['day',1],['week',3],['month',4],['all',4]] as const) {
       const result = await adoption(db,bundledRegistry,period,now);
       expect(result.activeInstallations).toBe(count);
       expect(result.cohort).toMatchObject({joined:2,attempted:1,succeeded:1,retained:1});
       expect(result.tokens).toBeNull();
+      if (period === 'day') expect(result.cohort!.observed).toBe(3);
     }
+    const expired = await adoption(db,bundledRegistry,'all',now+31*day);
+    expect(expired.cohort!.observed).toBe(0);
+    expect(expired.activeInstallations).toBe(0);
   } finally { db.close(); }
 });
 

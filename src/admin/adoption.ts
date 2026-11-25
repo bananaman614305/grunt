@@ -15,22 +15,24 @@ export async function adoption(db: Client, registry: Registry, period: Period, n
       json_extract(s.value,'$.failed') + json_extract(s.value,'$.cancelled'),0)>0) AS attempted,
     MAX(COALESCE(json_extract(s.value,'$.passed'),0)>0) AS succeeded
     FROM fleet_hours f LEFT JOIN json_each(f.series) s ON true
-    WHERE f.hour>=? AND f.hour+3600000<=? GROUP BY f.installation,f.hour`;
+    WHERE f.adoption_consent=1 AND f.hour>=? AND f.hour+3600000<=? GROUP BY f.installation,f.hour`;
   const [active, cohort, collectorUsage, feedback, diagnostics, metering] = await db.batch([
     { sql: `WITH hours AS (${hourlyActivity})
       SELECT COUNT(DISTINCT CASE WHEN attempted THEN installation END) AS active,
-      COUNT(DISTINCT installation) AS reporting FROM hours`, args: [start,now] },
-    { sql: `WITH hours AS (${hourlyActivity}), first_report AS (
-      SELECT installation,MIN(hour) AS joined FROM hours GROUP BY installation
-      HAVING MIN(hour)+? BETWEEN ? AND ?),
-      progression AS (
-        SELECT first_report.installation,joined,MIN(CASE WHEN attempted THEN hour END) AS attempted,
-          MIN(CASE WHEN succeeded THEN hour END) AS success,MAX(CASE WHEN succeeded THEN hour END) AS last_success
-        FROM first_report JOIN hours USING(installation) WHERE hour<joined+?
-        GROUP BY first_report.installation,joined HAVING COUNT(*)=168 AND MAX(incomplete)=0)
-      SELECT COUNT(*) AS joined,COUNT(attempted) AS attempted,COUNT(success) AS succeeded,
-        COUNT(CASE WHEN last_success/? > success/? THEN 1 END) AS retained FROM progression`,
-      args: [0,now,7*day,start,now,7*day,day,day] },
+      COUNT(DISTINCT installation) AS reporting FROM hours`, args: [Math.max(start,now-30*day),now] },
+    { sql: `WITH hours AS (${hourlyActivity}), weeks AS (
+        -- The Unix epoch was a Thursday, three days after Monday.
+        SELECT *,hour-((hour+3*?)%(7*?)) AS monday FROM hours),
+      observations AS (
+        SELECT installation,monday,COUNT(*)=168 AND MAX(incomplete)=0 AS eligible,
+          MAX(attempted) AS attempted,MIN(CASE WHEN succeeded THEN hour END) AS success,
+          MAX(CASE WHEN succeeded THEN hour END) AS last_success
+        FROM weeks WHERE monday>=? AND monday+? BETWEEN ? AND ? GROUP BY installation,monday)
+      SELECT COUNT(*) AS observed,COUNT(CASE WHEN eligible THEN 1 END) AS joined,
+        COUNT(CASE WHEN eligible AND attempted THEN 1 END) AS attempted,
+        COUNT(CASE WHEN eligible THEN success END) AS succeeded,
+        COUNT(CASE WHEN eligible AND last_success/? > success/? THEN 1 END) AS retained FROM observations`,
+      args: [Math.max(start-7*day,now-30*day),now,day,day,now-30*day,7*day,start,now,day,day] },
     { sql: `SELECT instance_id AS instance,SUM(input_tokens+output_tokens) AS tokens,
       COUNT(*)-COUNT(input_tokens+output_tokens) AS missing FROM admin_usage_observations
       WHERE at>=? AND at<? GROUP BY instance_id ORDER BY tokens DESC,instance_id`, args: range },
@@ -87,7 +89,7 @@ export async function adoption(db: Client, registry: Registry, period: Period, n
       configured: entry?.models ?? (entry?.model ? [entry.model] : []) };
   }).sort((a,b) => (b.attempts ?? -1)-(a.attempts ?? -1) || a.id.localeCompare(b.id));
   return { start, now, published: registry.published, activeInstallations: Number(active!.rows[0]!.active),
-    reportingInstallations: Number(active!.rows[0]!.reporting), collectors, cohort: cohort!.rows[0], routes,
+    reportingInstallations: Number(active!.rows[0]!.reporting), collectors, cohort: cohort!.rows[0], cohortHistoryStart: now-30*day, routes,
     tokens: collectors.some(a => a.tokens !== null) ? collectors.reduce((n,a) => n+(a.tokens ?? 0),0) : null,
     history: [...history].map(([bucket,counts]) => ({ bucket, counts })) };
 }

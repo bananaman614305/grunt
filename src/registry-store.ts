@@ -96,6 +96,10 @@ export class RegistryStore {
         quota INTEGER NOT NULL,auth INTEGER NOT NULL,latency_ms INTEGER NOT NULL,signup_ok INTEGER NOT NULL,signup_failed INTEGER NOT NULL,retired INTEGER NOT NULL,
         PRIMARY KEY(day,install,id));
     `);
+    const columns = await this.db.execute('PRAGMA table_info(fleet_hours)');
+    if (!columns.rows.some(row => row.name === 'adoption_consent')) {
+      await this.db.execute('ALTER TABLE fleet_hours ADD COLUMN adoption_consent INTEGER NOT NULL DEFAULT 0');
+    }
   }
   async recordWrite(login: string, id: string, before: unknown, after: unknown) {
     const result = await this.db.execute({ sql: 'INSERT INTO registry_writes VALUES (?,?,?,?,?)',

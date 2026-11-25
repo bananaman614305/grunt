@@ -216,9 +216,13 @@ login. The machine read token cannot retrieve account analytics.
 
 Day, week and month start at UTC midnight today, six days ago and twenty-nine
 days ago. Active installations have a user attempt start or outcome in a retained
-fleet hour. Installation cohorts start at the first retained fleet report and
-require seven days of complete consecutive hourly reports. The period selects
-windows ending in that period. Report history can expire after thirty days.
+fleet hour. Installation reporting for adoption requires `GRUNT_ADOPTION_REPORTING=1`
+on the daemon with fleet sharing enabled. Unmarked or historical uploads do not
+establish consent. Membership is one installation per fixed Monday-to-Monday
+UTC week ending in the selected period. Reports are keyed by installation and hour.
+Missing or incomplete hours exclude that installation-week from the funnel.
+Windows beginning before the thirty-day fleet cutoff are unavailable. Anonymous
+registry rollups retain route totals only and cannot extend cohort history.
 Collector tokens cover complete input and output measurements on successful
 user replies. Grunt has no account signup, country or device-class signal here.
 

@@ -59,6 +59,8 @@ Grunt also shares [route health counts](docs/router.md#4-route-feedback) with
 the registry by default to improve routing. The daily fleet review uses hourly
 counts of user attempts, failures and slow successes by route and release.
 Set `GRUNT_FLEET_REPORTING=0` in the daemon environment to disable fleet uploads.
+To include your installation in the owner dashboard’s activity and weekly retention
+counts, set `GRUNT_ADOPTION_REPORTING=1` while fleet uploads are enabled.
 Prompts, responses, paths and command output stay out of these reports.
 
 `npx usegrunt add <provider-or-base-URL>` adds a provider. https://grunt.run.

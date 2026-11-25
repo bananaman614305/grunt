@@ -44,7 +44,7 @@ it('audits a complete UTC day through route observations, signed intake and repl
         const observer = new SourceStatus(['kilo'],()=>now);
         observer.setDiagnostics(journal);
         const feedback = new RouteFeedback({ directory, urls:[url], listed:()=>['kilo'], retired:()=>false, now:()=>end,
-          fleet: token => uploadFleet(journal,directory,[url],token,end,fetcher), fetcher });
+          fleet: token => uploadFleet(journal,directory,[url],token,end,fetcher,installation==='first'), fetcher });
         for (let day=3;day>=1;day--) {
           for (let attempt=0;attempt<24;attempt++) {
             now = end-day*DAY + attempt*HOUR + 30000;
@@ -68,6 +68,9 @@ it('audits a complete UTC day through route observations, signed intake and repl
     }
     expect(uploads).toBe(144);
     expect((await api.request(replay!.clone())).status).toBe(204);
+    expect((await client.execute(`SELECT adoption_consent,COUNT(*) AS hours FROM fleet_hours
+      GROUP BY adoption_consent ORDER BY adoption_consent`)).rows)
+      .toEqual([{adoption_consent:0,hours:72},{adoption_consent:1,hours:72}]);
     const rejected = replay!.clone();
     rejected.headers.set('Authorization','Bearer '+ 'a'.repeat(97));
     expect((await api.request(rejected)).status).toBe(401);
@@ -117,7 +120,7 @@ it('keeps a shift toward a busier high-failure installation out of the backlog',
         const passed = 100*scale - failed;
         const row = { release:'1.2.3',route:'kilo',starts:100*scale,passed,failed,timed:passed,
           slow:(higher ? 30 : 1)*scale,quota:0,timeout:failed,cancelled:0 };
-        await db.execute({sql:'INSERT INTO fleet_hours VALUES(?,?,0,?)',
+        await db.execute({sql:'INSERT INTO fleet_hours(hour,installation,incomplete,series) VALUES(?,?,0,?)',
           args:[end-3*DAY+hour*HOUR,installation,JSON.stringify([row])]});
       }
     }
