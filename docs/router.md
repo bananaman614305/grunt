@@ -102,9 +102,15 @@ accepted, with `GRUNT_*` taking precedence.
   factor 1.
 - **Idle first.** A first draw and a fallback (the bound source failed or is
   benched) prefer routes with no active request and use a busy route only when
-  no idle one is eligible. A fallback also waits for pending admission checks
-  (each bounded at five seconds) before sharing a busy route. A healthy bound
-  task keeps its route even when it is busy. A draw claims its route in the same
+  no idle one is eligible. Both wait for pending admission checks of sources that
+  would join the draw (each check bounded at five seconds) before sharing a busy
+  route; a first draw waits at most `FIRST_DRAW_IDLE_WAIT_MS` (3 s) in total, and
+  a pending check of a bridged source does not hold a tools request. A healthy
+  bound task keeps its route even when it is busy and never waits. Admission
+  checks are cached for 30 s and start only while a request is routed, at most
+  four at a time, most promising first (answered positively most recently, then
+  never checked, then last denied), so parallel subagents that start on a cold
+  or half-expired cache still spread. A draw claims its route in the same
   tick, before any await (the fallback handoff runs git status and diff) and
   until the attempt ends, so tasks starting together spread over distinct idle
   routes; with fewer idle routes than tasks the rest share as before. The claim

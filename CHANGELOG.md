@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fix parallel subagents all landing on one busy source when the availability cache was cold or half expired (seen as two subagents and the main agent all on Kilo while other free sources were ready). A first draw whose only ready source is busy now waits up to 3 s for pending checks of sources that would join the draw, so it can claim an idle one; fallbacks and bound tasks are unchanged. Availability probes now start the most promising sources first (recently positive, then never checked, then last denied) instead of letting dead sources take the four slots every 30 s. The local status rows gain `checkedAgoSeconds` and `routable` (fresh evidence only; `state` is unchanged).
+
 ## 0.10.15 — 2026-11-25
 
 - Fix a conversation dying for good after an image. A tool result with an image (for example a Read of a PNG) set the image flag, no tool-capable source lists image input, and every later request failed at once with a misleading HTTP 429 while the image stayed in history. When no eligible source could take the image, each image block (in user content, tool results and history, on the Chat, Messages and Responses routes) is now replaced by a short deterministic text note with only its media type and size, and the request routes as text, so stuck sessions recover. Requests are unchanged when an eligible adapter lists image input (an image-capable source benched for no more than five minutes still keeps the image and answers a true 429). A request with an image that still reaches the router with no image-capable source now gets an invalid-request error (HTTP 400) instead of quota.
