@@ -100,6 +100,7 @@ class ReasoningMemory {
 export class Ifm implements Source {
   readonly id = 'ifm';
   readonly supportsFunctionTools = true;
+  readonly inferenceOnly = true;
   private verified: { key: string; at: number } | undefined;
   private shutdown = new AbortController();
   private memory = new ReasoningMemory();

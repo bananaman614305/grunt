@@ -220,3 +220,8 @@ it('is never recorded by naming the source: only its own listed approval records
   await record(directory, ['ifm']);
   expect(await readDataSharingConsent(directory, ['ifm'])).toEqual(['ifm']);
 });
+
+it('lets another source take over after an inference timeout', async () => {
+  // Routing treats a timeout as replayable only for inference-only sources; IFM runs no native work.
+  expect(source(api(() => Response.json(reply({ content: 'hi' })))).inferenceOnly).toBe(true);
+});

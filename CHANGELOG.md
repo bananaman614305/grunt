@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fail over to another source only when the first one's work can be replayed; a timed-out native agent turn no longer runs twice, and inference-only sources still fail over (#221).
 - Add IFM K2 Horizon as an experimental local opt-in (`usegrunt add ifm`), lowest weight, outside the registry and default onboarding. It connects a key you stored yourself, stays off until its material data-sharing notice is approved, and says plainly that price, terms, retention, training and quality are unverified; a 205,019-token needle was retrieved on the Cerebras route, other hosts behind IFM were not tested at that size.
 
 ## 0.10.9 — 2026-11-24
