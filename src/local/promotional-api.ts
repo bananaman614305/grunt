@@ -189,7 +189,8 @@ export async function readPromotionalStream(response: Response, model: string, s
       // healthy thinking without counting comments, role events or whitespace.
       if (!finished && ['reasoning_content', 'reasoning'].some(field => typeof delta[field] === 'string' && delta[field].trim().length > 0)) progressing = true;
       if (delta.content !== undefined && delta.content !== null) {
-        if (finished || typeof delta.content !== 'string') throw invalid('response_content', 'Invalid stream content');
+        // OpenRouter ends with a usage chunk whose delta is an empty content string after the finish chunk. Empty adds nothing.
+        if (typeof delta.content !== 'string' || finished && delta.content !== '') throw invalid('response_content', 'Invalid stream content');
         text += delta.content;
         if (delta.content.trim()) progressing = true;
       }

@@ -28,6 +28,7 @@ import { Kenari } from './kenari.js';
 import { PromotionalApi } from './promotional-api.js';
 import { CrowLLM } from './crowllm.js';
 import { Aperture } from './aperture.js';
+import { OpenRouterParticle } from './openrouter-particle.js';
 import { Darus } from './darus.js';
 import { Goedel } from './goedel.js';
 import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
@@ -80,7 +81,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
   const numesModel = gruntEnv('NUMES_MODEL', env);
   const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new OpenRouterParticle({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
   const curated = registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1')
@@ -132,7 +133,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     if (!source && id === 'reflection-beam') source = new Kilo({ directory: configDir(env), reflectionBeam: true });
     if (source && !registered.includes(source)) registered.push(source);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
-    const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
+    const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai', 'openrouter-particle'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
     return !routing && (knownAdapters.has(id) || localOptIns.has(id)) ? new RegistrySource(consent, routingRegistry) : consent;
   };
   const sources = new Sources(ids.map(build), routing, disabledAdapters);

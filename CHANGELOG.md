@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add optional OpenRouter Particle-1 Free (`npx usegrunt add openrouter-particle`), separate from Kilo's anonymous Particle route: it pins `particle-ai/particle-1:free` and its zero-price endpoint, never reaches a paid alias or fallback, refuses any reply that reports a cost, reuses only a key named Grunt Free, and needs its own data-sharing approval. It stays out of the default registry.
+
 ## 0.10.8 — 2026-11-24
 
 - Honor caller output budgets: free routes no longer cap replies at 4,096 tokens; unspecified limits are omitted so the provider's own limit applies, and provider truncation is reported as length (#212).

@@ -104,6 +104,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   url: 'https://crowllm.com/docs',
   approval: 'explicit'
 }, {
+  provider: 'openrouter-particle', name: 'OpenRouter Particle-1 Free', version: '2026-11-24',
+  disclosure: 'Prompts, code, tool definitions and tool results pass through OpenRouter to Particle AI, a US provider. OpenRouter says it does not store prompts or responses unless the account turns on prompt logging, and some models may store or train on inputs. Particle says standard synchronous inference is zero-retention with no training on customer content unless opted in, but OpenRouter does not mark this free endpoint as zero-retention, so that is not confirmed for this route. Particle calls free services provided for testing. This is separate from Kilo: Kilo approval does not carry over, and this route uses its own OpenRouter key.',
+  url: 'https://particle.ai/legal/terms',
+  approval: 'explicit'
+}, {
   provider: 'goedel', name: 'Gödel Machines DeepSeek V4.1 Flash Free', version: '2026-11-19',
   disclosure: 'The free tier stores prompts and responses in India, permits staff review and training, and retains content until deletion is requested. It forbids sending secrets, confidential business information, or other people’s personal data. Grunt requires the client to confirm the entire request is safe to share.',
   url: 'https://inference.goedelmachines.com/legal#free-tier',

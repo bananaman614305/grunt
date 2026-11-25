@@ -417,6 +417,20 @@ it('does not add unselected adapters when explicitly adding Kilo', async () => {
   await wizard('kilo', actions);
   expect(actions.installService).toHaveBeenCalledWith(['opencode', 'kilo']);
 });
+it.each([
+  ['kilo-only', ['kilo']],
+  ['mixed saved choices', ['opencode', 'kilo', 'zro']]
+])('adds OpenRouter Particle explicitly to a %s installation without selecting freellmapi or the default pool', async (_name, previous) => {
+  dir = await mkdtemp(join(tmpdir(), 'grunt-add-openrouter-particle-'));
+  await writeFile(join(dir, 'installed-sources.json'), JSON.stringify(previous), { mode: 0o600 });
+  const actions = stubActions([], { installedSources: () => installedSources(dir) });
+  await wizard('openrouter-particle', actions);
+  // Its own consent and setup, and only the saved choices plus the new source reach the service.
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['openrouter-particle'],
+    { dataSharingApproved: dataSharingPolicies([...previous, 'openrouter-particle', 'opencode']).map(policy => policy.provider) });
+  expect(actions.installService).toHaveBeenCalledWith([...previous, 'openrouter-particle']);
+  expect(actions.installService.mock.calls.flat(2)).not.toContain('freellmapi');
+});
 it('keeps registered API sources enabled across repeat service installs', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-sources-test-'));
   expect(await installedSources(dir)).toBe('opencode,kilo,zro');
