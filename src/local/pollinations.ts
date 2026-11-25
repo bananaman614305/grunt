@@ -183,6 +183,7 @@ export function stripPollinationsThinking(text: string): string {
   return text.replace(/^\s*<think>[\s\S]*?<\/think>\s*/, '');
 }
 export class Pollinations implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'pollinations';
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();

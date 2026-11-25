@@ -7,12 +7,36 @@ import { Sources } from './source.js';
 import { FreeApi, FREE_API_PROVIDERS, isDeepSeekV41Model, readFreeApiGrant } from './free-api.js';
 import type { FreeApiProvider } from './free-api.js';
 import { Zro, ZRO_DEEPSEEK } from './zro.js';
+import { RegistrySource } from './registry-source.js';
+import { bundledRegistry } from '../registry.js';
 
 const locations: string[] = [];
 const grant = { base_url: 'https://grant.test/egress/provider', token: 'synthetic-private-grant' };
 const request = { model: 'zro', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false };
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-free-api-')); locations.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(locations.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+
+it('fails over a buffered inference body timeout through the fixed registry chain (LIV-1)', async () => {
+  let cancelled = false;
+  const source = new FreeApi('zro', { loadGrant: async () => grant, timeout: 30, fetcher: async (_url, init) =>
+    new Response(new ReadableStream({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode('{"choices":['));
+        init!.signal!.addEventListener('abort', () => { cancelled = true; stream.error(init!.signal!.reason); }, { once: true });
+      }
+    })) });
+  const backup = vi.fn(async () => {
+    expect(cancelled).toBe(true);
+    return { text: 'backup' };
+  });
+  const pool = new Sources([new RegistrySource(source, () => bundledRegistry),
+    { id: 'backup', supportsFunctionTools: true, available: async () => true, complete: backup }]);
+  try {
+    const input = { ...request, model: 'grunt', stream: true, tools: [{ type: 'function', function: { name: 'save', parameters: {} } }] };
+    await expect(pool.complete(input, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'backup' });
+    expect(backup).toHaveBeenCalledOnce();
+  } finally { await pool.close(); }
+});
 
 it.each(Object.keys(FREE_API_PROVIDERS) as FreeApiProvider[])('pins %s to its exact provider model and endpoint through Grunt', async provider => {
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ model: FREE_API_PROVIDERS[provider].model,

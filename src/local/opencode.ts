@@ -8,12 +8,13 @@ import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
 import { loopback } from './freellmapi.js';
 import { ManagedOpenCodeProcess } from './managed-opencode-process.js';
-import { lengthLimited, SourceError } from './source.js';
+import { lengthLimited, preventReplay, replayTimeout, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
 export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle'] as const;
 const MODEL_QUOTA_COOLDOWN_MS = 60000;
 const MANAGED_IDLE_MS = 5 * 60000;
+const REQUEST_TIMEOUT_MS = 180000;
 class UnavailableModel extends SourceError {
   constructor() { super('upstream', 'OpenCode free model is unavailable'); }
 }
@@ -26,6 +27,16 @@ interface PromptAttempt { session?: string; messageID?: string; partID?: string;
 interface StoredMessage { info: { id: string; role: string }; parts: { id: string; type: string; text?: string }[] }
 interface TokenCounts { total?: number; input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
 interface ReplyPart { type: string; reason?: string; text?: string; tokens?: TokenCounts }
+
+async function waitForPreparation<T>(work: Promise<T>, signal: AbortSignal) {
+  let cancel!: () => void;
+  const cancelled = new Promise<never>((_, reject) => { cancel = () => reject(signal.reason); });
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal.aborted) cancel();
+    return await Promise.race([work, cancelled]);
+  } finally { signal.removeEventListener('abort', cancel); }
+}
 
 function sumTokens(counts: readonly unknown[]): number | undefined {
   let total = 0;
@@ -114,7 +125,7 @@ export class OpenCode implements Source {
         this.child = child;
         const managed = new ManagedOpenCodeProcess(child, grouped);
         this.managed = managed;
-        const timer = setTimeout(() => { this.retire(managed); reject(new SourceError('timeout', 'OpenCode server startup timed out')); }, 30000);
+        const timer = setTimeout(() => { this.retire(managed); reject(replayTimeout('OpenCode server startup timed out', true)); }, 30000);
         timer.unref();
         let output = '';
         child.stdout.on('data', (chunk: Buffer) => {
@@ -167,7 +178,7 @@ export class OpenCode implements Source {
     this.idleTimer.unref();
   }
   private async completeOnce(request: ModelRequest, caller: AbortSignal) {
-    const signal = AbortSignal.any([caller, this.shutdown.signal, ...(this.options.timeout ? [AbortSignal.timeout(this.options.timeout)] : [])]);
+    const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? REQUEST_TIMEOUT_MS)]);
     signal.throwIfAborted();
     const scalar = typeof this.options.model === 'function' ? this.options.model() : this.options.model;
     const configured = typeof this.options.models === 'function' ? this.options.models() : this.options.models;
@@ -196,7 +207,7 @@ export class OpenCode implements Source {
           }
           last = error;
           this.modelCooldowns.set(model, Date.now() + (error.retryAfter === undefined ? MODEL_QUOTA_COOLDOWN_MS : error.retryAfter * 1000));
-          if (!attempt.retryable) throw error;
+          if (!attempt.retryable || error.replay === 'unsafe') throw error;
         }
       }
       const retryAfter = Math.max(1, Math.ceil((Math.min(...models.map(model => this.modelCooldowns.get(model) ?? Date.now())) - Date.now()) / 1000));
@@ -218,7 +229,7 @@ export class OpenCode implements Source {
     const events = new AbortController();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let watching: Promise<never> | undefined;
-    let guardFailed = false;
+    let guardFailed = false, dispatched = false, effectFreeReply = false, reportedProviderFailure = false, replyUsedTools = false;
     const turnSignal = AbortSignal.any([signal, events.signal]);
     const headers = { 'Content-Type': 'application/json', 'x-opencode-directory': cwd,
       ...(process.env.OPENCODE_SERVER_PASSWORD ? { Authorization: `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? 'opencode'}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}` } : {}) };
@@ -236,7 +247,8 @@ export class OpenCode implements Source {
       return await res.json();
     };
     try {
-      base = await this.server(); signal.throwIfAborted();
+      base = await waitForPreparation(this.server(), signal);
+      signal.throwIfAborted();
       if (!this.options.url) {
         // Personal MCP catalogs can fill the model context before a task starts.
         // Disconnect them only in our own worker instance, once per directory.
@@ -260,11 +272,7 @@ export class OpenCode implements Source {
           const pending = prepared;
           void pending.catch(() => { if (this.prepared.get(cwd) === pending) this.prepared.delete(cwd); });
         }
-        let cancel!: () => void;
-        const cancellation = new Promise<never>((_, reject) => { cancel = () => reject(turnSignal.reason); });
-        turnSignal.addEventListener('abort', cancel, { once: true });
-        try { turnSignal.throwIfAborted(); await Promise.race([prepared, cancellation]); }
-        finally { turnSignal.removeEventListener('abort', cancel); }
+        await waitForPreparation(prepared, turnSignal);
       }
       session = continuation ?? (await call('/session', { title: 'grunt' })).id;
       if (!session || !/^[a-zA-Z0-9_-]+$/.test(session)) throw new SourceError('upstream', 'OpenCode returned an invalid session');
@@ -308,6 +316,8 @@ export class OpenCode implements Source {
           }
         }
       })().catch(error => { guardFailed = true; throw error; });
+      turnSignal.throwIfAborted();
+      dispatched = true;
       const reply = await Promise.race([watching, call(`/session/${session}/message`, {
         ...(attempt.messageID ? { messageID: attempt.messageID } : {}),
         model: { providerID: 'opencode', modelID }, parts: [{ ...(attempt.partID ? { id: attempt.partID } : {}), type: 'text', text: prompt }]
@@ -315,6 +325,10 @@ export class OpenCode implements Source {
       const parts: ReplyPart[] = reply.parts ?? [];
       const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (reply.info?.error) {
+        reportedProviderFailure = true;
+        // A settled reply can be handed off only when its parts rule out native tools.
+        effectFreeReply = Array.isArray(reply.parts) && parts.every(part => ['text', 'reasoning', 'step-start', 'step-finish'].includes(part.type));
+        replyUsedTools = parts.some(part => !['text', 'reasoning', 'step-start', 'step-finish'].includes(part.type));
         const error = reply.info.error;
         if (error.name === 'ProviderAuthError' || error.data?.statusCode === 401) throw new SourceError('logged_out', 'OpenCode free model requires sign-in');
         if (error.data?.statusCode === 429) throw new SourceError('quota', 'OpenCode free model quota exhausted', undefined, text);
@@ -333,10 +347,11 @@ export class OpenCode implements Source {
       if (signal.aborted) {
         caller.throwIfAborted();
         if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'OpenCode request cancelled during shutdown');
-        throw new SourceError('timeout', 'OpenCode request timed out');
+        throw replayTimeout('OpenCode request timed out', !dispatched);
       }
       // A free limit is never retried here, and the pending prompt is still sleeping.
-      if (error instanceof SourceError && !(error instanceof FreeLimit) && (error.code === 'quota' || error instanceof UnavailableModel) && session && base) {
+      const rejection = error instanceof SourceError && [401, 403, 429].includes(error.diagnostics?.httpStatus ?? 0) && !guardFailed;
+      if (error instanceof SourceError && !(error instanceof FreeLimit) && (error.code === 'quota' || error instanceof UnavailableModel) && session && base && (!dispatched || reportedProviderFailure || rejection)) {
         // A provider error can arrive after OpenCode has persisted the user
         // prompt. Reuse that prompt's IDs rather than appending it again. Never
         // replay a turn that already ran native tools, or whose state is unclear.
@@ -347,7 +362,7 @@ export class OpenCode implements Source {
           if (Array.isArray(messages)) {
             const userIndex = messages.findLastIndex(message => message.info?.role === 'user');
             const user = messages[userIndex];
-            const usedTools = messages.slice(Math.max(0, userIndex)).some(message => message.parts?.some(part => part.type === 'tool'));
+            const usedTools = replyUsedTools || messages.slice(Math.max(0, userIndex)).some(message => message.parts?.some(part => part.type === 'tool'));
             if (!usedTools && (messages.length === 0 || user?.info.id === this.sessionParents.get(session))) {
               attempt.session = session; delete attempt.messageID; delete attempt.partID; attempt.retryable = true;
             } else if (!usedTools && user?.parts?.length === 1 && user.parts[0]?.type === 'text' && user.parts[0].text === prompt
@@ -357,6 +372,7 @@ export class OpenCode implements Source {
           }
         } catch { /* Unknown persisted state is not safe to replay automatically. */ }
       }
+      if (dispatched && !effectFreeReply && !rejection && !attempt.retryable) throw preventReplay(error, 'OpenCode request failed after sending the prompt');
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'OpenCode request failed');
     } finally {

@@ -40,6 +40,7 @@ export async function writeTokenHarborGrant(grant: FreeApiGrant, location = dire
   } finally { await rm(temporary, { force: true }); }
 }
 export class TokenHarbor implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'tokenharbor';
   readonly supportsFunctionTools = true;
   private source: FreeApi;

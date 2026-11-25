@@ -38,6 +38,7 @@ async function json(response: Response, signal: AbortSignal, limit: number): Pro
 // The exact :free route is zero-priced independently of credit balances. Require
 // a Free account and fresh zero-price model metadata before every dispatch.
 export class Aperture implements Source {
+  readonly inferenceOnly = true;
   readonly id = APERTURE_ID;
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();

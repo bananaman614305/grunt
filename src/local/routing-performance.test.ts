@@ -30,6 +30,23 @@ it.each(['cold', 'warm'] as const)('answers from ready free capacity without awa
   } finally { pending.release(false); await result.catch(() => {}); }
 });
 
+it('admits a healthy backup beyond a wave of unresponsive metadata checks', async () => {
+  const hung = ['numes', 'livekit', 'runcrate', 'pollinations'].map(id => ({
+    ...source(id), availabilityTimeoutMs: 30
+  }));
+  const metadata = hung.map(() => hold());
+  hung.forEach((item, index) => item.available.mockReturnValue(metadata[index]!.promise));
+  const backup = source('kilo'), value = pool([...hung, backup]);
+  try {
+    await expect(value.complete(request, AbortSignal.timeout(1500))).resolves.toEqual({ text: 'kilo' });
+    for (const item of hung) {
+      expect(item.available).toHaveBeenCalledOnce();
+      expect(item.complete).not.toHaveBeenCalled();
+    }
+    expect(backup.complete).toHaveBeenCalledOnce();
+  } finally { metadata.forEach(item => item.release(false)); }
+});
+
 it('reuses only admission metadata and still runs the selected adapter live guard on each dispatch', async () => {
   const guarded = source('kilo'), fallback = source('livekit');
   let funded = false, liveChecks = 0, admitted = 0;

@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { executable, Tmux } from './multiplexer.js';
 import type { Multiplexer } from './multiplexer.js';
 import { userTurns } from './harness.js';
-import { SourceError } from './source.js';
+import { preventReplay, replayTimeout, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { FreebuffTools } from './freebuff-tools.js';
 
@@ -103,14 +103,14 @@ export class Freebuff implements Source {
       error => { console.error(`freebuff doctor after failure did not finish: ${error instanceof Error ? error.message : 'unknown error'}`); }
     ).finally(() => { this.doctorRun = undefined; });
   }
-  async complete(request: ModelRequest, caller: AbortSignal, output?: () => void) {
-    if (!this.options.toolBridge) return this.completeText(request, caller, false, output);
+  async complete(request: ModelRequest, caller: AbortSignal, output?: () => void, beforeNativeWork?: () => void) {
+    if (!this.options.toolBridge) return this.completeText(request, caller, false, output, beforeNativeWork);
     caller.throwIfAborted();
     const bridge = new FreebuffTools(request);
     const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeout ?? positive(gruntEnv('APP_TIMEOUT_MS'), 600000))]);
     for (let attempt = 0; attempt < 2; attempt++) {
       signal.throwIfAborted();
-      const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0) }, signal, true, output);
+      const result = await this.completeText({ ...request, handoffPrompt: bridge.prompt(attempt > 0) }, signal, true, output, beforeNativeWork);
       signal.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
       try { return bridge.parse(result.text); }
@@ -118,7 +118,7 @@ export class Freebuff implements Source {
     }
     throw new SourceError('upstream', 'Freebuff JSON bridge failed');
   }
-  private async completeText(request: ModelRequest, caller: AbortSignal, isolated = false, output?: () => void) {
+  private async completeText(request: ModelRequest, caller: AbortSignal, isolated = false, output?: () => void, beforeNativeWork?: () => void) {
     const binary = await executable('freebuff'); await executable('tmux');
     let diagnostics: string;
     try { diagnostics = (await exec(binary, ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536, signal: caller })).stdout; }
@@ -145,6 +145,7 @@ export class Freebuff implements Source {
     let creation: Pool | undefined;
     let creating = false;
     let partial = '';
+    let dispatched = false;
     const releaseCreation = () => { if (creating) { creation!.release(); creating = false; } };
     try {
       await pool.acquire(signal); acquired = true;
@@ -173,6 +174,9 @@ export class Freebuff implements Source {
       // Observe them concurrently, while still holding the creation lock.
       let sendComplete = false;
       let sendFailure: unknown;
+      signal.throwIfAborted();
+      beforeNativeWork?.();
+      dispatched = true;
       void this.mux.send(id, prompt).then(() => { sendComplete = true; }, error => { sendFailure = error; sendComplete = true; });
       let malformedSince: number | undefined;
       let selected = continuation;
@@ -224,8 +228,10 @@ export class Freebuff implements Source {
     } catch (error) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Freebuff request cancelled during shutdown');
-      if (signal.aborted) throw new SourceError('timeout', `Freebuff timed out after ${timeout}ms; check freebuff login and your free-hours balance`);
-      if (error instanceof SourceError) { if (partial && !isolated) error.output = partial; throw error; }
+      if (signal.aborted) throw replayTimeout(`Freebuff timed out after ${timeout}ms; check freebuff login and your free-hours balance`, !dispatched);
+      if (error instanceof SourceError && partial && !isolated) error.output = partial;
+      if (dispatched) throw preventReplay(error, 'Freebuff failed after sending the prompt');
+      if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', `Freebuff failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       try { await this.mux.stop(id); }

@@ -239,7 +239,7 @@ export class SourceStatus {
     } catch { /* Local routing stays functional during contention, corruption or disk failure. */ }
   }
   isBusy(id: string) { return (this.observations.get(id)?.active ?? 0) > 0; }
-  async available(source: Source, healthCheck = false): Promise<boolean> {
+  async available(source: Source, healthCheck = false, onRecovered?: () => void): Promise<boolean> {
     const entry = this.entry(source.id), revision = entry.revision;
     // Retain only negative metadata. Explicit health checks and all adapter
     // completion guards remain fresh; positive metadata is never reused here.
@@ -255,7 +255,10 @@ export class SourceStatus {
         if (!result) {
           if (entry.availabilityQuota) this.healthy(source.id);
           entry.revision++; entry.state = 'unavailable';
-        } else if (healthCheck || entry.availabilityQuota) this.healthy(source.id);
+        } else if (healthCheck || entry.availabilityQuota) {
+          this.healthy(source.id);
+          if (healthCheck) onRecovered?.();
+        }
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
         entry.available = result; entry.availabilityCheckedAt = this.now();
         this.notifyClosed(source.id, wasOpen);

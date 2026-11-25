@@ -26,6 +26,7 @@ export async function writeRuncrateGrant(grant: FreeApiGrant, location = provide
   await writePrivateProviderGrant('runcrate', value, location);
 }
 export class Runcrate implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'runcrate';
   readonly supportsFunctionTools = true;
   private source: FreeApi;

@@ -47,6 +47,7 @@ async function json(response: Response, signal: AbortSignal, limit = 1024 * 1024
 
 /** One free-only provider and alias. No wallet, account switching or paid route. */
 export class MillionSeek implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'millionseek';
   readonly supportsFunctionTools = true;
   readonly reportsOutput = true;

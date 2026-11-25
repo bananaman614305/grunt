@@ -59,6 +59,7 @@ const validCalls = (value: unknown): value is ToolCall[] => Array.isArray(value)
   && call.type === 'function' && typeof call.function?.name === 'string' && typeof call.function?.arguments === 'string');
 
 export class FreeApi implements Source {
+  readonly inferenceOnly = true;
   readonly id: FreeApiProvider;
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
