@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.10.15 — 2026-11-25
+
 - Fix a conversation dying for good after an image. A tool result with an image (for example a Read of a PNG) set the image flag, no tool-capable source lists image input, and every later request failed at once with a misleading HTTP 429 while the image stayed in history. When no eligible source could take the image, each image block (in user content, tool results and history, on the Chat, Messages and Responses routes) is now replaced by a short deterministic text note with only its media type and size, and the request routes as text, so stuck sessions recover. Requests are unchanged when an eligible adapter lists image input (an image-capable source benched for no more than five minutes still keeps the image and answers a true 429). A request with an image that still reaches the router with no image-capable source now gets an invalid-request error (HTTP 400) instead of quota.
 
 - Tool requests prefer sources that call tools natively, and the JSON bridge no longer says "Pi". Requests with function tools now draw a provider-native tool source on a first draw or fallback and use Mistral Vibe, Perch or Pollinations (the JSON-bridged sources) only when no native source is eligible, so a bridged model that once declined to use the Agent tool is no longer picked first. Weights, consent, quota, text-only and explicit requests, bound tasks and the parallel-subagent spreading are unchanged. The bridge prompt now tells the model that every listed tool can be called now, several at once, by the client's harness, and names no harness. Kilo's rotation leaves out `liquid/lfm-3-1.7b:free` (1.7B parameters; its card advises against agentic coding) for tool requests only.
