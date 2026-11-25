@@ -1,3 +1,4 @@
+import type { ModelRequest } from './source.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +32,9 @@ it('pins the exact free endpoint and base recurring allowance independently of b
   const s = source(fetcher); await expect(s.complete(req(), AbortSignal.timeout(1000))).resolves.toEqual({ text: 'Hello', inputTokens: 20, outputTokens: 2 });
   const [url, init] = fetcher.mock.calls.at(-1)!; expect(url).toBe('https://100milionseek.top/v1/chat/completions'); expect(init?.redirect).toBe('error');
   expect(JSON.parse(String(init?.body))).toEqual({ model: MILLIONSEEK_MODEL, messages: req().messages, stream: true, stream_options: { include_usage: true }, max_tokens: 128 });
+  const withoutLimit: ModelRequest = req(); delete withoutLimit.maxTokens;
+  await s.complete(withoutLimit, AbortSignal.timeout(1000));
+  expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]?.body))).not.toHaveProperty('max_tokens');
   expect(s.quotaWindow()).toEqual({ startedAt: Date.parse('2026-11-20T00:00:00Z'), resetAt: Date.parse(reset) });
 });
 it.each([

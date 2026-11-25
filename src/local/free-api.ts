@@ -2,7 +2,7 @@ import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 import { nousQuotaDelay, quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { diagnosticFetch } from './diagnostics.js';
@@ -88,7 +88,7 @@ export class FreeApi implements Source {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
         body: JSON.stringify({ model: this.spec.model, messages: request.messages,
           tools: request.tools.length ? request.tools : undefined, stream: false,
-          max_tokens: this.id === 'zro' ? request.maxTokens : Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
+          max_tokens: request.maxTokens })
       });
     } catch {
       caller.throwIfAborted();
@@ -120,9 +120,9 @@ export class FreeApi implements Source {
       const choice = body.choices?.[0], message = choice?.message;
       const finishReason = this.id === 'zro' ? finishReasons.find(reason => reason === choice?.finish_reason) : undefined;
       if (message?.refusal) throw new SourceError('refused', `${this.id} refused the request`);
+      if (lengthLimited(choice?.finish_reason)) return truncatedCompletion(message?.content, body.usage);
       const calls = message?.tool_calls;
-      const cutOff = finishReason === 'length' && message?.content == null;
-      if (!message || (typeof message.content !== 'string' && !cutOff && !(validCalls(calls) && calls.length)) || (calls !== undefined && !validCalls(calls))) throw new SourceError('upstream', `${this.id} returned an invalid completion`);
+      if (!message || (typeof message.content !== 'string' && !(validCalls(calls) && calls.length)) || (calls !== undefined && !validCalls(calls))) throw new SourceError('upstream', `${this.id} returned an invalid completion`);
       const inputTokens = tokens(body.usage?.prompt_tokens), outputTokens = tokens(body.usage?.completion_tokens);
       return { text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),
         ...(finishReason ? { finishReason } : {}),

@@ -40,7 +40,7 @@ it('rechecks live free quota and sends only the exact free model through Grunt',
   expect(fetcher).toHaveBeenCalledTimes(2);
   const [url, init] = fetcher.mock.calls[1]!;
   expect(url).toBe(`${grant.base_url}/v1/chat/completions`);
-  expect(JSON.parse(String(init?.body))).toMatchObject({ model: APINEX_DEEPSEEK, stream: false, max_tokens: 4096 });
+  expect(JSON.parse(String(init?.body))).toMatchObject({ model: APINEX_DEEPSEEK, stream: false, max_tokens: 80000 });
   await sources.close();
 });
 

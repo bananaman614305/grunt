@@ -162,6 +162,11 @@ it('preserves the user payload verbatim while clearly identifying the Grunt call
   const prompt = (params.prompt as { text: string }[])[0]!.text; expect(prompt).toContain('Grunt caller');
   const payload = JSON.parse(prompt.split('\n').at(-1)!); expect(payload.messages[0].content).toBe(content);
 });
+it('surfaces native truncation and omits the budget instruction by default', async () => {
+  const f = fake({ stopReason: 'max_tokens', envelope: '{"type":"calls",' });
+  await expect(source(f.processes).complete(request({ maxTokens: undefined }), AbortSignal.timeout(2000))).resolves.toMatchObject({ text: '', finishReason: 'length' });
+  expect(JSON.stringify(f.requests.find(r => r.method === 'session/prompt'))).not.toContain('Keep total output');
+});
 it('rejects unsupported images and oversized caller prompts before native startup', async () => {
   const f = fake(), s = source(f.processes);
   await expect(s.complete(request({ imageInput: true }), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused' });

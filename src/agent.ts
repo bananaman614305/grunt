@@ -60,7 +60,7 @@ export class GruntAgent {
     this.emit(person, { type: "message", data: message });
     return message;
   }
-  private async completion(key: string, model: string, kind: Kind, messages: unknown[], maxTokens: number, signal?: AbortSignal, tools = false) {
+  private async completion(key: string, model: string, kind: Kind, messages: unknown[], maxTokens: number | undefined, signal?: AbortSignal, tools = false) {
     const start = Date.now();
     let outcome: "ok" | "429" | "error" = "error";
     let usage: NonNullable<Completion["usage"]> = {};
@@ -70,7 +70,7 @@ export class GruntAgent {
     const abort = signal ? AbortSignal.any([parent, AbortSignal.timeout(this.options.timeoutMs ?? 60_000)]) : AbortSignal.any([parent, AbortSignal.timeout(this.options.timeoutMs ?? 25_000)]);
     try {
       const response = await this.client.chatCompletions({ headers: new Headers({ authorization: `Bearer ${key}` }), body: {
-        model, messages, max_tokens: maxTokens, stream: false, ...(tools ? { tools: TOOLS, tool_choice: "auto" } : {}),
+        model, messages, ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }), stream: false, ...(tools ? { tools: TOOLS, tool_choice: "auto" } : {}),
       }, signal: abort });
       if (!response.ok) { outcome = response.status === 429 ? "429" : "error"; await response.body?.cancel(); throw new UpstreamFailure(response.status); }
       const json = await response.json() as Completion;
@@ -198,7 +198,7 @@ export class GruntAgent {
         const running = await this.store.update(person, id, { status: "running", model: route.model, route_reason: route.reason });
         if (!running || running.status === "cancelled" || signal.aborted) return;
         this.emitTask(running);
-        const response = await this.completion(key, route.model, task.kind, messages, 4096, signal);
+        const response = await this.completion(key, route.model, task.kind, messages, undefined, signal);
         if (!response.content?.trim()) throw new UpstreamFailure(502);
         result = redact(response.content, key); break;
       } catch (err) {

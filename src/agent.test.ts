@@ -85,7 +85,7 @@ describe("Grunt chat and background jobs", () => {
     expect(input).toContain("I write TypeScript; keep answers short.");
     expect(input).not.toContain("MY PRIVATE CHAT HISTORY");
     expect(input).not.toContain(KEY); expect(body).not.toHaveProperty("tools");
-    expect(body.max_tokens).toBe(4096);
+    expect(body).not.toHaveProperty("max_tokens");
   });
   it.each([429, 503, 504])("retries a failed worker once on the next-best whitelisted model (%s)", async status => {
     const fake = new Fake(); let calls = 0;

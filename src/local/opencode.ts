@@ -8,7 +8,7 @@ import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
 import { loopback } from './freellmapi.js';
 import { ManagedOpenCodeProcess } from './managed-opencode-process.js';
-import { SourceError } from './source.js';
+import { lengthLimited, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
 export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle'] as const;
@@ -25,7 +25,7 @@ class FreeLimit extends SourceError {
 interface PromptAttempt { session?: string; messageID?: string; partID?: string; retryable: boolean }
 interface StoredMessage { info: { id: string; role: string }; parts: { id: string; type: string; text?: string }[] }
 interface TokenCounts { total?: number; input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
-interface ReplyPart { type: string; text?: string; tokens?: TokenCounts }
+interface ReplyPart { type: string; reason?: string; text?: string; tokens?: TokenCounts }
 
 function sumTokens(counts: readonly unknown[]): number | undefined {
   let total = 0;
@@ -321,11 +321,13 @@ export class OpenCode implements Source {
         if (error.data?.statusCode === 404 || error.data?.code === 'model_not_found' || ['ModelNotFoundError', 'ProviderModelNotFoundError'].includes(error.name)) throw new UnavailableModel();
         throw new SourceError('refused', 'OpenCode provider refused the request');
       }
-      if (!text) throw new SourceError('upstream', 'OpenCode returned no assistant text');
+      const finish = reply.info?.finish ?? parts.findLast(part => part.type === 'step-finish')?.reason;
+      const truncated = lengthLimited(finish);
+      if (!text && !truncated) throw new SourceError('upstream', 'OpenCode returned no assistant text');
       this.sessions.set(key(turns), session);
       this.sessionModels.set(session, modelID);
       if (typeof reply.info?.parentID === 'string') this.sessionParents.set(session, reply.info.parentID);
-      return { text, ...replyUsage(parts, reply.info?.tokens) };
+      return { text, ...(truncated ? { finishReason: 'length' as const } : {}), ...replyUsage(parts, reply.info?.tokens) };
     } catch (error) {
       if ((signal.aborted || guardFailed) && session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
       if (signal.aborted) {

@@ -45,7 +45,7 @@ export class AntseedVikey implements Source {
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${this.url}/chat/completions`, {
         method: 'POST', signal, redirect: 'error', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: `${seller}@${model}`, messages: request.messages, tools: request.tools.length ? request.tools : undefined,
-          stream: false, max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) }),
+          stream: false, max_tokens: request.maxTokens }),
       });
       if (response.status === 429) {
         const body = await readQuotaError(response), allowance = record(body.free_tier);

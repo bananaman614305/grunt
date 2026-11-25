@@ -7,7 +7,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { readPromotionalStream } from './promotional-api.js';
-import { SourceError, requestRefusal } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, SlowUpstreamPolicy, Source, ToolCall } from './source.js';
 
 export const MILLIONSEEK_MODEL = 'deepseek-v4.1-flash-free';
@@ -115,7 +115,7 @@ export class MillionSeek implements Source {
     caller.throwIfAborted();
     if (!grant) throw new SourceError('refused', '100milionseek free entitlement could not be verified');
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(MILLIONSEEK_TOTAL_MS)]);
-    const maxTokens = Math.min(4096, Math.max(1, Number.isFinite(request.maxTokens) ? Math.floor(request.maxTokens!) : 4096));
+    const maxTokens = request.maxTokens;
     // Streaming is for liveness only: Grunt still hands the client one whole reply.
     const payload = JSON.stringify({ model: MILLIONSEEK_MODEL, messages: request.messages, ...(request.tools.length ? { tools: request.tools } : {}), stream: true, stream_options: { include_usage: true }, max_tokens: maxTokens });
     if (Buffer.byteLength(payload) > 4 * 1024 * 1024) throw new SourceError('refused', '100milionseek request exceeds its documented body limit');
@@ -134,7 +134,7 @@ export class MillionSeek implements Source {
       this.quota(response.headers);
       // A usage block, when the provider sends one, is held to the same checks as a whole reply's.
       const usable = (usage: Record<string, unknown>) => {
-        if (!integer(usage.prompt_tokens) || usage.prompt_tokens < 1 || !integer(usage.completion_tokens) || usage.completion_tokens > maxTokens
+        if (!integer(usage.prompt_tokens) || usage.prompt_tokens < 1 || !integer(usage.completion_tokens) || maxTokens !== undefined && usage.completion_tokens > maxTokens
           || ['cost', 'total_cost', 'credits_charged'].some(k => k in usage && usage[k] !== 0)) throw new Error('Invalid completion');
       };
       let reply: Completion;
@@ -149,11 +149,12 @@ export class MillionSeek implements Source {
         const choice = object(body.choices[0]), message = object(choice.message);
         if (message.refusal) throw new SourceError('refused', '100milionseek refused the request');
         usable(usage);
-        if (!['stop', 'tool_calls', 'length'].includes(String(choice.finish_reason))
+        if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message.content, usage);
+        if (!['stop', 'tool_calls'].includes(String(choice.finish_reason))
           || !(message.content === undefined || message.content === null || typeof message.content === 'string')) throw new Error('Invalid completion');
         let calls: ToolCall[] | undefined;
         if (message.tool_calls !== undefined) {
-          if (!Array.isArray(message.tool_calls) || choice.finish_reason === 'length') throw new Error('Invalid tools');
+          if (!Array.isArray(message.tool_calls)) throw new Error('Invalid tools');
           calls = message.tool_calls.map(raw => {
             const call = object(raw), fn = object(call.function);
             if (typeof call.id !== 'string' || typeof fn.name !== 'string' || typeof fn.arguments !== 'string') throw new Error('Invalid tools');
@@ -162,6 +163,7 @@ export class MillionSeek implements Source {
         }
         reply = { text: typeof message.content === 'string' ? message.content : '', ...(calls?.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
       }
+      if (reply.finishReason === 'length') return reply;
       const calls: ToolCall[] = [], ids = new Set<string>();
       if (reply.calls && reply.calls.length > 16) throw new Error('Invalid tools');
       for (const call of reply.calls ?? []) {

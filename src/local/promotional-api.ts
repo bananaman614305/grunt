@@ -5,7 +5,7 @@ import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import type { FreeApiGrant } from './free-api.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
-import { SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const PROMOTIONAL_PROVIDERS = {
@@ -102,7 +102,7 @@ export class PromotionalApi implements Source {
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', 'User-Agent': 'grunt' },
         body: JSON.stringify({ model: this.spec.model, messages: request.messages, tools: request.tools.length ? request.tools : undefined,
           stream: this.id === 'openference', ...(this.id === 'openference' ? { stream_options: { include_usage: true } } : {}),
-          max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
+          max_tokens: request.maxTokens })
       });
       if (!response.ok) {
         const retry = nousQuotaDelay(response.headers, await readQuotaError(response), this.now);
@@ -115,8 +115,9 @@ export class PromotionalApi implements Source {
       } });
       const body = object(await response.json());
       if (body.model !== this.spec.model) throw new Error('Unexpected model');
-      const message = object(object(Array.isArray(body.choices) ? body.choices[0] : null).message);
+      const choice = object(Array.isArray(body.choices) ? body.choices[0] : null), message = object(choice.message);
       if (message.refusal) throw new SourceError('refused', 'Promotional request refused');
+      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, object(body.usage));
       const calls = message.tool_calls;
       if (calls !== undefined && !validCalls(calls) || typeof message.content !== 'string' && !(validCalls(calls) && calls.length)) throw new Error('Invalid completion');
       return completion(typeof message.content === 'string' ? message.content : '', validCalls(calls) ? calls : [], object(body.usage));
@@ -205,8 +206,8 @@ export async function readPromotionalStream(response: Response, model: string, s
         }
       }
       if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
-        if (!['stop', 'tool_calls', 'length'].includes(String(choice.finish_reason))) throw invalid('stream_format', 'Invalid stream finish');
-        truncated = choice.finish_reason === 'length';
+        if (!['stop', 'tool_calls', 'length', 'max_tokens'].includes(String(choice.finish_reason))) throw invalid('stream_format', 'Invalid stream finish');
+        truncated = lengthLimited(choice.finish_reason);
         finished = true;
       }
     }
@@ -231,11 +232,11 @@ export async function readPromotionalStream(response: Response, model: string, s
     }
     const result = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
     if (!done || !finished || !seenModel) throw invalid('stream_incomplete', 'Incomplete stream');
-    if (truncated && result.length > 0 || !validCalls(result)) throw invalid('response_tools', 'Incomplete stream');
-    if (!text && !result.length) throw invalid('stream_incomplete', 'Incomplete stream');
+    if (!truncated && !validCalls(result)) throw invalid('response_tools', 'Incomplete stream');
+    if (!truncated && !text && !result.length) throw invalid('stream_incomplete', 'Incomplete stream');
     signal.throwIfAborted();
     // The observer may reject usage it cannot accept; it never changes the reply.
     observe?.result?.(usage);
-    return completion(text, result, usage);
+    return truncated ? truncatedCompletion(text, usage) : completion(text, result, usage);
   } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(cleanupFailed); observed('stream_cleanup', () => reader.releaseLock()); }
 }

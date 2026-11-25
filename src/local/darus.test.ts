@@ -36,7 +36,8 @@ it('pins the free route and protects a nonempty wallet without drawing credit', 
   await expect(source(fetcher).complete(request(), AbortSignal.timeout(2000))).resolves.toEqual({ text: 'Hello', inputTokens: 201100, outputTokens: 2 });
   expect(fetcher.mock.calls.map(([url]) => String(url).split('/').at(-1))).toEqual(['models', 'tpd', 'completions']);
   const body = JSON.parse(String(fetcher.mock.calls.at(-1)![1]?.body));
-  expect(body).toMatchObject({ model: DARUS_MODEL, stream: false, max_tokens: 4096 });
+  expect(body).toMatchObject({ model: DARUS_MODEL, stream: false });
+  expect(body).not.toHaveProperty('max_tokens');
   expect(body).not.toHaveProperty('stream_options');
   expect(fetcher.mock.calls.some(([url]) => /check.?in|reward|wallet|topup/i.test(String(url)))).toBe(false);
 });

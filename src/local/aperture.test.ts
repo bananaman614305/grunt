@@ -43,7 +43,9 @@ it('checks the Free plan and zero-price exact alias before each native JSON requ
     'https://www.aperture-ai.run/auth/me', 'https://www.aperture-ai.run/api/v1/models', 'https://www.aperture-ai.run/api/v1/chat/completions'
   ]);
   expect(JSON.parse(String(fetcher.mock.calls[2]![1]?.body))).toEqual({ model: APERTURE_MODEL, messages: request().messages, stream: false, max_tokens: 1024 });
-  await adapter.complete({ ...request(), model: 'grunt' }, AbortSignal.timeout(2000));
+  const withoutLimit = request(); delete withoutLimit.maxTokens;
+  await adapter.complete({ ...withoutLimit, model: 'grunt' }, AbortSignal.timeout(2000));
+  expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]?.body))).not.toHaveProperty('max_tokens');
   expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/auth/me'))).toHaveLength(2);
 });
 it.each([{ valid: false, plan: 'free' }, { valid: true, plan: 'pro' }, { valid: true }, { plan: 'free' }, null])('blocks unverified or paid account metadata %j', async account => {
@@ -91,7 +93,9 @@ it.each([
   { choices: [{ finish_reason: 'length', message: { content: null, tool_calls: [{ id: 'bad', type: 'function', function: { name: 'probe', arguments: '{}' } }] } }] }
 ])('rejects wrong model and incomplete or malformed completions: %j', async change => {
   await recordDataSharingConsent(directory, [APERTURE_ID]);
-  await expect(source(transport(undefined, undefined, () => Response.json({ ...result(), ...change }))).complete(request(), AbortSignal.timeout(2000))).rejects.toMatchObject({ code: 'upstream' });
+  const reply = source(transport(undefined, undefined, () => Response.json({ ...result(), ...change }))).complete(request(), AbortSignal.timeout(2000));
+  if (change.choices?.[0]?.finish_reason === 'length') await expect(reply).resolves.toMatchObject({ text: '', finishReason: 'length' });
+  else await expect(reply).rejects.toMatchObject({ code: 'upstream' });
 });
 it.each([
   [{ error: { code: 'daily_quota_exceeded' } }, undefined, 70200],

@@ -114,3 +114,14 @@ it('retains unknown-usage knowledge through the encode/events helpers without ad
   expect(frames.at(-1)).toMatchObject({ choices: [], usage: null });
   expect(JSON.parse(JSON.stringify(value)).usage).toEqual({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
 });
+
+it('reports the provider cutoff in Messages and Responses terminal events', async () => {
+  const reply: Completion = { text: 'partial', finishReason: 'length' };
+  const messages = await localRequest(reply, {}, 'messages');
+  expect(await messages.response.text()).toContain('"stop_reason":"max_tokens"');
+  const responses = await localRequest(reply, {}, 'responses');
+  const wire = await responses.response.text();
+  expect(wire).toContain('event: response.incomplete');
+  expect(wire).toContain('"incomplete_details":{"reason":"max_output_tokens"}');
+  expect(wire).not.toContain('event: response.completed');
+});

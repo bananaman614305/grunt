@@ -5,7 +5,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { calendarQuotaDelay } from './quota-policy.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
-import { SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const APERTURE_ID = 'aperture-ai';
@@ -103,15 +103,16 @@ export class Aperture implements Source {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', 'User-Agent': 'grunt' },
         body: JSON.stringify({ model: APERTURE_MODEL, messages: request.messages, tools: request.tools.length ? request.tools : undefined,
-          stream: false, max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
+          stream: false, max_tokens: request.maxTokens })
       });
       if (!response.ok) return await this.responseFailure(response, 'chat.completions');
       const body = await json(response, signal, 4 * 1024 * 1024);
       if (body.model !== APERTURE_MODEL || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected completion');
       const choice = object(body.choices[0]), message = object(choice.message), usage = object(body.usage);
       if (message.refusal) throw new SourceError('refused', 'Aperture request refused');
+      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage);
       const calls = message.tool_calls;
-      if (!['stop', 'tool_calls', 'length'].includes(String(choice.finish_reason)) || choice.finish_reason === 'length' && Array.isArray(calls) && calls.length
+      if (!['stop', 'tool_calls'].includes(String(choice.finish_reason))
         || calls !== undefined && !validCalls(calls) || typeof message.content !== 'string' && !(validCalls(calls) && calls.length)
         || !message.content && !(validCalls(calls) && calls.length)) throw new Error('Invalid completion');
       return { text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),

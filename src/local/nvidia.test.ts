@@ -28,17 +28,18 @@ it('pins NVIDIA capabilities and configures its dedicated source', async () => {
   await sources.close();
 });
 
-it('sends the exact DeepSeek model directly through the NVIDIA-scoped grant', async () => {
+it.each([undefined, 100000])('sends the exact DeepSeek model directly through the NVIDIA-scoped grant with budget %s', async maxTokens => {
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ model: NVIDIA_DEEPSEEK, choices: [{ message: { content: 'Hello from NVIDIA' } }], usage: { prompt_tokens: 4, completion_tokens: 8 } }));
   const source = new Nvidia({ loadGrant: async () => grant, fetcher });
   const response = await createLocalApp(new Sources([source])).request('http://127.0.0.1:8788/v1/chat/completions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, max_tokens: 100000, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] })
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, max_tokens: maxTokens, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] })
   });
   expect(response.status).toBe(200); expect(response.headers.get('x-grunt-source')).toBe('nvidia');
   expect((await response.json()).choices[0].message.content).toBe('Hello from NVIDIA');
   expect(fetcher).toHaveBeenCalledOnce();
   expect(fetcher.mock.calls[0]![0]).toBe('https://grant.test/nvidia/v1/chat/completions');
-  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: NVIDIA_DEEPSEEK, max_tokens: 4096, tools: [{ function: { name: 'read' } }] });
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body)).max_tokens).toBe(maxTokens);
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: NVIDIA_DEEPSEEK, tools: [{ function: { name: 'read' } }] });
 });
 
 it.each([[401, 'logged_out'], [402, 'quota'], [403, 'refused'], [429, 'quota'], [503, 'upstream']] as const)('stops after NVIDIA HTTP %s without contacting another backend', async (status, code) => {
