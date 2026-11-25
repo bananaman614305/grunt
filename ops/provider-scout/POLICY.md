@@ -14,7 +14,9 @@ permission to release.
 
 ## Search and shortlist
 
-Three independent read-only discovery passes run before qualification. The
+Four independent read-only discovery passes run before qualification (direct
+providers, coding tools, gateways, and public lists plus Chinese-language
+first-party sources). The
 provided run context includes their merged new or changed offers and queries,
 along with the prior candidate ledger. Verify promising offers and pending
 qualifications using current first-party links. Reuse prior observations to
@@ -79,6 +81,17 @@ policy in `src/local/quota-policy.ts`. Keep recurring allowance exhaustion
 distinct from temporary throttling and capacity. Never infer an exact reset
 from a generic 429.
 
+Relay, mirror, resale and shared-key or key-pool sites (including Chinese
+中转站 and 共享号池 services) are not first-party providers: they resell or share
+other people's keys, which this policy's bans on account cycling and bypassing
+provider terms already exclude. Do not qualify them. The Chinese-language search
+targets first-party documentation and pricing only.
+
+Prefer models by capability, not by name. DeepSeek V4.1 Flash and GLM 5.3 Flash are
+reference points; a newer or unfamiliar model counts only when first-party evidence
+shows comparable or better coding quality (never infer it from a name), and it must
+still meet every other requirement above.
+
 Deduplicate existing provider/model offers. Revisit rejected offers only when
 their terms/models materially change; explain what changed. Prior decisions:
 Freebuff is disabled pending reliability/terms review; APInex lost its recurring
@@ -103,7 +116,16 @@ identifier and its prior decision where available. A previously reviewed offer
 requires a documented substantive change before fresh research. Supplied offers
 with `qualification_attempts` instead represent unfinished qualification:
 resume the recorded remaining step, reuse existing Squire sessions and account
-access, and do not repeat the broad search or signup from scratch. Return
+access, and do not repeat the broad search or signup from scratch. Each
+offer carries a `lane` and is listed in priority order. `finish`: resume the
+furthest-along candidate first; a `rework` object names a supervisor block to
+repair (or a stale proof to refresh for the same head), and you must resubmit a
+new exact head when code changes. `verify`: the offer was rejected only on a
+discoverer's own labels (`rejection_basis: claimed`); confirm or refute each
+failing gate with current first-party evidence and reject only with a citation.
+`reason_codes` lists the gates still unverified: resolve them with evidence or
+leave them unknown, and never weaken a requirement to clear one. If you find no new
+evidence for an offer, return it unchanged and move on. Return
 the review identifier after evaluating the evidence, even when the offer is
 still blocked. Leave unexamined offers queued. Reuse pending Squire workflows
 when a new review covers them.

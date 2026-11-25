@@ -38,6 +38,8 @@ if behavior.get('delay'):
 if behavior.get('fail'):
     print('PRIVATE_STDERR_SECRET',file=sys.stderr)
     sys.exit(7)
+if behavior.get('nooutput'):
+    sys.exit(0)
 output.write_text(behavior.get('raw',json.dumps(behavior.get('result',{'ok':True}))))
 '''
 
@@ -193,6 +195,29 @@ class WorkerTests(unittest.TestCase):
                 self.behavior(**behavior)
                 with self.assertRaises(worker.WorkerError):
                     worker.run_agent(self.request, self.config)
+
+    def test_output_failures_name_a_safe_specific_reason(self):
+        cases = ({'raw': 'not-json'}, 'worker_result_not_json'), ({'nooutput': True}, 'worker_result_missing'), \
+                ({'result': {'ok': 1}}, 'worker_result_schema_mismatch')
+        for behavior, reason in cases:
+            with self.subTest(reason=reason):
+                Path(self.request['output_path']).unlink(missing_ok=True)
+                self.behavior(**behavior)
+                with self.assertRaises(worker.WorkerError) as error:
+                    worker.run_agent(self.request, self.config)
+                self.assertEqual(error.exception.reason, reason)
+
+    def test_launch_failure_and_exit_status_are_distinct_safe_codes(self):
+        self.behavior(fail=True)
+        with self.assertRaises(worker.WorkerError) as error:
+            worker.run_agent(self.request, self.config)
+        self.assertEqual((error.exception.reason, error.exception.detail), ('worker_failed', 'exit_7'))
+        self.behavior()
+        with patch.object(worker.subprocess, 'Popen', side_effect=OSError('/secret/path')):
+            with self.assertRaises(worker.WorkerError) as error:
+                worker.run_agent(self.request, self.config)
+        self.assertEqual(error.exception.reason, 'worker_launch_failed')
+        self.assertNotIn('secret', str(error.exception) + str(error.exception.detail))
 
     def test_failure_does_not_expose_stderr(self):
         self.behavior(fail=True)
