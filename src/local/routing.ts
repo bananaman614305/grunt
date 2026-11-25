@@ -381,7 +381,7 @@ export class StickyRouter {
           if (localRequestRefusal(failure)) refused.add(selected.source.id);
           await this.recordFailure(selected.source.id, failure);
           signal.throwIfAborted();
-          if (explicit || !canReplay(failure)) throw failure;
+          if (!canReplay(failure)) throw failure;
           task.switched = true;
         } finally { release(); unreserve(); }
       }
