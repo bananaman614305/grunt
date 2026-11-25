@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fail over to another source only when the first one's work can be replayed; a timed-out native agent turn no longer runs twice, and inference-only sources still fail over (#221).
+- Add IFM K2 Horizon as an experimental local opt-in (`usegrunt add ifm`), lowest weight, outside the registry and default onboarding. It connects a key you stored yourself, stays off until its material data-sharing notice is approved, and says plainly that price, terms, retention, training and quality are unverified; a 205,019-token needle was retrieved on the Cerebras route, other hosts behind IFM were not tested at that size.
 - Operator: make the provider scout finish what it qualifies. Unfinished researched, setup and integration candidates are requeued (63 of 81 researched rows and all genuine integration rows were orphaned), furthest-along first, with bounded backoff and a park after two reviews without new evidence; supervisor-blocked heads go back to the worker with a safe reason; the ledger gains `released`, `retired` and `excluded` statuses reconciled from the registry and owner decisions (idempotent `migrate`, backed up, never drops a row); discovery label rejections are `claimed` and get a verification pass; stale proofs are refreshed instead of demoting; failures name their stage; budgets reserve the release stages; discovery diffs public lists, seeks newer models and Chinese first-party sources. Admission policy is unchanged.
 
 ## 0.10.9 — 2026-11-24
