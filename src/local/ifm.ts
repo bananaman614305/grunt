@@ -15,13 +15,17 @@ export const IFM_HOST = 'api.ifm.ai';
 export const IFM_SERVICE = 'ifm';
 /** The context window IFM documents and lists in its catalog. It is not a usable-input claim. */
 export const IFM_DOCUMENTED_CONTEXT = 524288;
-/** The largest prompt grunt has actually sent to this route (a retrieval check). */
-export const IFM_MEASURED_INPUT = 3412;
+/** The largest prompt grunt has sent to this route (a needle retrieved at 205,019 prompt tokens, Cerebras-routed). Other hosts behind IFM were not tested at this size. */
+export const IFM_MEASURED_INPUT = 205019;
 /** The documented daily token allowance of one key, prompt and completion tokens together. */
 export const IFM_DAILY_TOKENS = 10000000;
 // The catalog check is reused for this long; any failed completion discards it.
 export const IFM_PREFLIGHT_MS = 60000;
 export const IFM_TOTAL_MS = 300000;
+export const IFM_GUARD_BACKOFF_SECONDS = 30;
+// Every live response carried a request guard of 2 with a 1 s reset. Starts are spaced to stay inside it.
+export const IFM_GUARD_REQUESTS = 2;
+export const IFM_GUARD_WINDOW_MS = 1000;
 const MEMORY_LIMIT = 512;
 const day = 86400000;
 const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -56,8 +60,10 @@ export function ifmDuration(value: string | null): number | undefined {
 export function ifmRetryAfter(headers: Headers, now: number): number | undefined {
   const midnight = Math.max(1, Math.ceil((new Date(now).setUTCHours(24, 0, 0, 0) - now) / 1000));
   const delays = [quotaRetryAfter(headers.get('retry-after'), now)];
-  // IFM's docs name the daily counter -daily; live responses also carried a -day suffix.
-  if (['x-ratelimit-remaining-tokens-daily', 'x-ratelimit-remaining-tokens-day'].some(name => headers.get(name) === '0')) delays.push(midnight);
+  // Only the daily counter IFM documents counts. Live Cerebras-routed replies also carried -day, -hour and -minute
+  // counters (34.56B tokens a day, 14.4M requests a day) that never appeared on the Nebius or AWS routes; they
+  // describe a third-party host's own account, not this key's allowance, so they are ignored.
+  if (headers.get('x-ratelimit-remaining-tokens-daily') === '0') delays.push(midnight);
   for (const [remaining, reset] of [['x-ratelimit-remaining-requests', 'x-ratelimit-reset-requests'], ['x-ratelimit-remaining-tokens', 'x-ratelimit-reset-tokens']] as const) {
     if (headers.get(remaining) === '0') delays.push(ifmDuration(headers.get(reset)));
   }
@@ -98,6 +104,7 @@ export class Ifm implements Source {
   private shutdown = new AbortController();
   private memory = new ReasoningMemory();
   private window: { startedAt: number; resetAt: number } | undefined;
+  private starts: number[] = [];
   constructor(private options: { directory?: string; fetcher?: typeof fetch; now?: () => number; loadGrant?: () => Promise<FreeApiGrant> } = {}) {}
   private get now() { return (this.options.now ?? Date.now)(); }
   quotaWindow() { return this.window && { ...this.window }; }
@@ -125,6 +132,22 @@ export class Ifm implements Source {
     this.verified = { key, at: this.now };
     return grant;
   }
+  // At most IFM_GUARD_REQUESTS request starts per IFM_GUARD_WINDOW_MS, so a burst from parallel subagents queues
+  // for a moment here instead of drawing a 429 from the guard. In-flight requests are not limited.
+  private async admit(signal: AbortSignal) {
+    for (;;) {
+      signal.throwIfAborted();
+      const now = Date.now();
+      this.starts = this.starts.filter(at => now - at < IFM_GUARD_WINDOW_MS);
+      if (this.starts.length < IFM_GUARD_REQUESTS) { this.starts.push(now); return; }
+      const wait = IFM_GUARD_WINDOW_MS - (now - this.starts[0]!) + 5;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, wait);
+        const abort = () => { clearTimeout(timer); reject(signal.reason); };
+        signal.addEventListener('abort', abort, { once: true });
+      });
+    }
+  }
   async available() { try { return !!await this.checked(); } catch { return false; } }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     caller.throwIfAborted();
@@ -146,14 +169,17 @@ export class Ifm implements Source {
     const payload = JSON.stringify({ model: IFM_MODEL, messages, ...(request.tools.length ? { tools: request.tools } : {}), temperature: 1.0, top_p: 0.95, ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}) });
     if (Buffer.byteLength(payload) > 32 * 1024 * 1024) throw new SourceError('refused', 'IFM request is larger than grunt will send');
     try {
+      await this.admit(signal);
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json' }, body: payload });
       if (!response.ok) {
         await response.body?.cancel();
         // Payment or billing is never acceptable on a free-only route.
         if (response.status === 402) throw new SourceError('refused', 'IFM reported a payment or billing requirement; grunt will not continue', undefined, undefined, { httpStatus: 402, transport: 'http', endpointLabel: 'chat.completions' });
-        const retry = response.status === 429 ? ifmRetryAfter(response.headers, this.now) : quotaRetryAfter(response.headers.get('retry-after'), this.now);
-        if (response.status === 429 && ['x-ratelimit-remaining-tokens-daily', 'x-ratelimit-remaining-tokens-day'].some(name => response.headers.get(name) === '0')) this.markExhausted();
+        // A 429 with no usable signal (an unpublished per-second or per-minute guard) is a short local back-off, not
+        // a claim about when IFM resets, so a request-guard hit does not bench the source for the default hour.
+        const retry = response.status === 429 ? ifmRetryAfter(response.headers, this.now) ?? IFM_GUARD_BACKOFF_SECONDS : quotaRetryAfter(response.headers.get('retry-after'), this.now);
+        if (response.status === 429 && response.headers.get('x-ratelimit-remaining-tokens-daily') === '0') this.markExhausted();
         throw new SourceError(response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
           `IFM returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', endpointLabel: 'chat.completions' });
       }

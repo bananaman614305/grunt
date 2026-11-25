@@ -140,10 +140,32 @@ it('uses Retry-After on a 429, and the next UTC midnight when the daily counter 
   const now = Date.UTC(2026, 10, 25, 20, 0, 0);
   const limited = (headers: Record<string, string>) => source(api(() => new Response('{"error":{"type":"rate_limit_error"}}', { status: 429, headers })), () => now);
   await expect(limited({ 'retry-after': '37' }).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota', retryAfter: 37 });
+  // Third-party day counters (seen only on the Cerebras route) are not the key's allowance.
+  await expect(limited({ 'x-ratelimit-remaining-tokens-day': '0' }).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota', retryAfter: 30 });
   const daily = limited({ 'x-ratelimit-remaining-tokens-daily': '0' });
   await expect(daily.complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota', retryAfter: 4 * 3600 });
   expect(daily.quotaWindow()).toEqual({ startedAt: Date.UTC(2026, 10, 25), resetAt: Date.UTC(2026, 10, 26) });
   await expect(limited({ 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-reset-requests': '1s' }).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota', retryAfter: 1 });
+});
+
+it('gives a bare 429 only a short local back-off, never the default hour', async () => {
+  await approved();
+  await expect(source(api(() => new Response('{}', { status: 429 }))).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota', retryAfter: 30 });
+});
+
+it('spaces request starts to the observed guard of two per second and stays cancellable', async () => {
+  await approved();
+  const fetcher = api(() => Response.json(reply({ content: 'ok' })));
+  const client = source(fetcher);
+  const started = Date.now();
+  await Promise.all([1, 2, 3, 4, 5].map(() => client.complete(ask(), AbortSignal.timeout(10000))));
+  expect(Date.now() - started).toBeGreaterThanOrEqual(1900);
+  expect(posts(fetcher)).toHaveLength(5);
+  const stop = new AbortController();
+  const waiting = [1, 2, 3].map(() => client.complete(ask(), stop.signal).catch(error => error));
+  setTimeout(() => stop.abort(), 50);
+  const results = await Promise.all(waiting);
+  expect(results.some(result => result instanceof Error)).toBe(true);
 });
 
 it('infers no reset from a bare 429', () => {
@@ -177,7 +199,7 @@ it('is a local opt-in with the lowest weight, outside the bundled registry, and 
   const policy = DATA_SHARING_POLICIES.find(item => item.provider === 'ifm')!;
   expect(policy.approval).toBe('material');
   expect(policy.disclosure).toMatch(/unverified/);
-  expect(policy.disclosure).toMatch(/Cerebras and Nebius/);
+  expect(policy.disclosure).toMatch(/Cerebras, Nebius and AWS/);
   expect(providerQuotaPolicy('ifm')).toMatchObject({ refill: 'utc-daily' });
 });
 
