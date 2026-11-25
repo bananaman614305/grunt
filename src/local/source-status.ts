@@ -1,5 +1,5 @@
 import type { Completion, ErrorCode, ModelRequest, QuotaWindow, Source } from './source.js';
-import { SourceError } from './source.js';
+import { SourceError, guardToolCalls } from './source.js';
 import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
@@ -313,7 +313,7 @@ export class SourceStatus {
     const entry = this.entry(source.id), started = this.now();
     entry.active++;
     try {
-      const result = await source.complete(request, signal);
+      const result = guardToolCalls(await source.complete(request, signal), request);
       // A provider may finish after the caller cancelled. That is not evidence
       // of an admitted successful response, and must not resurrect readiness.
       if (!signal.aborted && (!guard || entry.revision === guard.revision)) {

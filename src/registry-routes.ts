@@ -1,6 +1,7 @@
+import { fleetPrincipal, fleetToken, saveHour, validHour } from './fleet.js';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Context } from 'hono';
@@ -12,7 +13,7 @@ import { FEEDBACK_MAX_BYTES, parseFeedback } from './registry-store.js';
 import type { RegistryStore } from './registry-store.js';
 import { registryInstructions } from './registry-instructions.js';
 
-export interface RegistryRouteOptions { path?: string; store?: RegistryStore; repo?: string; fetcher?: typeof fetch; now?: () => number; commit?: string }
+export interface RegistryRouteOptions { path?: string; store?: RegistryStore; repo?: string; fetcher?: typeof fetch; now?: () => number; commit?: string; fleetSecret?: string }
 const bearer = (value: string | undefined) => value?.match(/^Bearer ([A-Za-z0-9._~-]{32,8192})$/i)?.[1];
 const commitOf = (image: string | undefined) => image?.match(/:([0-9a-f]{40})$/)?.[1];
 
@@ -47,6 +48,7 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     await publish({ ...structuredClone(bundledRegistry), published: new Date(Math.max(now(), Date.parse(bundledRegistry.published) + 1)).toISOString() }, 'system');
   });
+  const fleetSecret = config.fleetSecret ?? process.env.GRUNT_FLEET_SIGNING_SECRET ?? process.env.GRUNT_ADMIN_SESSION_SECRET;
   const app = new Hono();
   app.get('/v1/registry', async c => {
     try {
@@ -99,10 +101,27 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
   app.post('/v1/registry/feedback', bodyLimit({ maxSize: FEEDBACK_MAX_BYTES, onError: c => c.json({ error: 'Report is too large' }, 413) }), async c => {
     if (!store) return c.json({ error: 'Feedback is unavailable' }, 503);
     const text = await c.req.text();
+    const proof = c.req.header('X-Grunt-Fleet') ?? '';
+    const enrolling = /^[a-f0-9]{64}$/.test(proof);
     let report;
-    try { report = parseFeedback(JSON.parse(text), await current(), now()); } catch { report = undefined; }
+    try { report = parseFeedback(JSON.parse(text), await current(), now(), enrolling); } catch { report = undefined; }
     if (!report) return c.json({ error: 'Invalid feedback report' }, 400);
     try { await store.recordFeedback(report); } catch { return c.json({ error: 'Feedback is unavailable' }, 503); }
+    if (enrolling && fleetSecret && fleetSecret.length >= 32) {
+      c.header('Cache-Control','no-store');
+      c.header('X-Grunt-Fleet-Token', fleetToken(createHash('sha256').update(proof).digest('hex'), fleetSecret));
+    }
+    return c.body(null, 204);
+  });
+  app.post('/v1/registry/fleet', bodyLimit({ maxSize: 65536 }), async c => {
+    const token = bearer(c.req.header('Authorization'));
+    const installation = fleetPrincipal(token ?? '',fleetSecret);
+    if (!installation) return c.body(null, 401);
+    if (!store) return c.body(null, 503);
+    const payload: unknown = await c.req.json().catch(() => null);
+    const at = now();
+    if (!validHour(payload, at)) return c.body(null, 400);
+    await saveHour(store.db, installation, payload, at);
     return c.body(null, 204);
   });
   app.get('/v1/registry/scores', async c => {
