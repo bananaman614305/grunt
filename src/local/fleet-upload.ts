@@ -4,11 +4,12 @@ import { join } from 'node:path';
 import { DAY, fleetHour, HOUR } from '../fleet.js';
 import type { DiagnosticsStore } from './diagnostics.js';
 
-export async function uploadFleet(store: DiagnosticsStore, directory: string, urls: readonly string[], token: string, now = Date.now(), fetcher = fetch) {
+export async function uploadFleet(store: DiagnosticsStore, directory: string, urls: readonly string[], token: string, now = Date.now(), fetcher = fetch, adoptionConsent = false) {
   const end = Math.floor(now / HOUR)*HOUR;
   const meta = await store.metrics({ since: end, until: end });
   if (!meta.coverage.available || !meta.coverage.startedAt || !meta.streamId) return;
 
+  const consentSince = adoptionConsent ? await store.adoptionConsentSince() : undefined;
   const checkpoint = join(directory,'fleet-hour-cursor');
   let start = Math.max(end-7*DAY, Math.floor(meta.coverage.startedAt/HOUR)*HOUR);
   const loss = meta.coverage.droppedEvents + meta.coverage.droppedLateEvents;
@@ -41,7 +42,7 @@ export async function uploadFleet(store: DiagnosticsStore, directory: string, ur
     for (const url of urls) {
       try {
         const response = await fetcher(url + '/fleet', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
-          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body });
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', ...(consentSince !== undefined && hour >= consentSince ? { 'X-Grunt-Adoption-Consent': '1' } : {}) }, body });
         await response.body?.cancel();
         if (response.status === 204) { acknowledged = true; break; }
       } catch { /* A mirror may still be available. */ }

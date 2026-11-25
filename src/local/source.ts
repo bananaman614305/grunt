@@ -92,7 +92,7 @@ export function guardToolCalls(result: Completion, request: Pick<ModelRequest, '
   throw new SourceError('upstream', 'Source returned a tool call with unparseable arguments', undefined, undefined, { failureReason: 'response_tools', httpStatus: 200 });
 }
 
-export interface Completion { text: string; calls?: ToolCall[]; finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call'; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
+export interface Completion { servedModel?: string; free?: boolean; text: string; calls?: ToolCall[]; finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call'; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
 export interface QuotaWindow { startedAt: number; resetAt: number }

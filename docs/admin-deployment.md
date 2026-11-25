@@ -204,6 +204,40 @@ needed. Do not delete the existing database, volume, provider grants or other
 projects' processes. Rotating the admin session secret invalidates owner sessions;
 rotating the ingestion key requires updating both ends of the collector link.
 
+## Adoption and registry dashboard
+
+The Fly image serves the dashboard at `/admin/adoption`. Requests for the root
+of `dashboard.grunt.run` on this app open that page. Attach the dashboard
+hostname to the existing Fly app, publish its Fly-issued DNS records, and
+register `https://dashboard.grunt.run/admin/auth/callback` on the dedicated
+Google web client. Keep existing callback URLs. The dashboard uses the existing
+confirmed owner allowlist and same-host HTTPS session. Test each owner's Google
+login. The machine read token cannot retrieve account analytics.
+
+Day, week and month start at UTC midnight today, six days ago and twenty-nine
+days ago. Active installations have a user attempt start or outcome in a retained
+fleet hour. Installation reporting for adoption requires `GRUNT_ADOPTION_REPORTING=1`
+on the daemon with fleet sharing enabled. Daemon startup persists the start of
+the current opt-in in its diagnostic journal. Only full UTC hours starting
+at or after that instant qualify, including on replay. Restarting with adoption
+or fleet sharing disabled clears the boundary. Unmarked or pre-opt-in uploads do not
+establish consent. Membership is one installation per fixed Monday-to-Monday
+UTC week ending in the selected period. Reports are keyed by installation and hour.
+Missing or incomplete hours exclude that installation-week from the funnel.
+Windows beginning before the thirty-day fleet cutoff are unavailable. Anonymous
+registry rollups retain route totals only and cannot extend cohort history.
+Collector tokens cover complete input and output measurements on successful
+user replies. Grunt has no account signup, country or device-class signal here.
+
+The registry reads the live published catalog. Anonymous router daily reports
+supply attempts, success counts and smoothed latency. Old reports are rolled up
+without installation IDs before normal expiry. History before retained reports
+cannot be recovered. Counts reflect delivered reports, including retries;
+cancelled calls and unsent router activity are outside coverage. Enrolled
+collector observations supply probe pass rate, confirmed free
+replies and observed models within retained diagnostic history. The collector lacks session boundaries, so session duration remains unreported. Kilo reports the model and zero billing after
+its existing response checks pass. A missing billing report remains unknown.
+
 ### Nightly fleet audit
 
 The existing HTTPS registry feedback exchange issues a scoped bearer to the

@@ -312,6 +312,8 @@ export class SourceStatus {
         const result = await this.observedComplete(source, request, signal, guard);
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
+          ...(result.servedModel ? { model: result.servedModel } : {}),
+          ...(typeof result.free === 'boolean' ? { free: result.free } : {}),
           ...(result.finishReason === 'length' ? { failureReason: 'length' } : {}),
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
           ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });

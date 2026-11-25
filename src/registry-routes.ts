@@ -121,7 +121,7 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     const payload: unknown = await c.req.json().catch(() => null);
     const at = now();
     if (!validHour(payload, at)) return c.body(null, 400);
-    await saveHour(store.db, installation, payload, at);
+    await saveHour(store.db, installation, payload, at, c.req.header('X-Grunt-Adoption-Consent') === '1');
     return c.body(null, 204);
   });
   app.get('/v1/registry/scores', async c => {
@@ -141,5 +141,5 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     c.header('Cache-Control', 'public, max-age=0, must-revalidate');
     return c.body(registryInstructions({ registry, scores, base, repo, now: at, ...(commit ? { commit } : {}) }));
   });
-  return Object.assign(app, { initialize });
+  return Object.assign(app, { initialize, published });
 }

@@ -1,4 +1,6 @@
 import { adminRoutes } from './admin/routes.js';
+import { adoption } from './admin/adoption.js';
+import { bundledRegistry } from './registry.js';
 import { AdminStore } from './admin/store.js';
 import { createClient } from '@libsql/client';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
@@ -44,7 +46,7 @@ it('audits a complete UTC day through route observations, signed intake and repl
         const observer = new SourceStatus(['kilo'],()=>now);
         observer.setDiagnostics(journal);
         const feedback = new RouteFeedback({ directory, urls:[url], listed:()=>['kilo'], retired:()=>false, now:()=>end,
-          fleet: token => uploadFleet(journal,directory,[url],token,end,fetcher), fetcher });
+          fleet: token => uploadFleet(journal,directory,[url],token,end,fetcher,installation==='first'), fetcher });
         for (let day=3;day>=1;day--) {
           for (let attempt=0;attempt<24;attempt++) {
             now = end-day*DAY + attempt*HOUR + 30000;
@@ -62,12 +64,35 @@ it('audits a complete UTC day through route observations, signed intake and repl
           }
         }
         journal.record({ version:1, id:randomUUID(),requestId:randomUUID(),at:now,source:'kilo',kind:'user',type:'attempt.start' });
+        // First opt-in occurs partway through an hour with two days of older activity.
+        const enabled = installation === 'first';
+        const transition = end-DAY+30000;
+        for (const timestamp of [transition,end]) {
+          const restarted = await DiagnosticsStore.open({directory,now:()=>timestamp,adoptionConsent:enabled});
+          await restarted.close();
+        }
         now=end;
         await feedback.exchange();
+        if (enabled) {
+          await rm(join(directory,'fleet-hour-cursor'));
+          await feedback.exchange();
+          const disabled = await DiagnosticsStore.open({directory,now:()=>end,adoptionConsent:false});
+          try { expect(await disabled.adoptionConsentSince()).toBeUndefined(); } finally { await disabled.close(); }
+          const resumed = await DiagnosticsStore.open({directory,now:()=>end+HOUR,adoptionConsent:true});
+          try { expect(await resumed.adoptionConsentSince()).toBe(end+HOUR); } finally { await resumed.close(); }
+        }
       } finally { await journal.close(); }
     }
-    expect(uploads).toBe(144);
+    expect(uploads).toBe(216);
     expect((await api.request(replay!.clone())).status).toBe(204);
+    expect((await client.execute(`SELECT adoption_consent,COUNT(*) AS hours FROM fleet_hours
+      GROUP BY adoption_consent ORDER BY adoption_consent`)).rows)
+      .toEqual([{adoption_consent:0,hours:121},{adoption_consent:1,hours:23}]);
+    expect((await client.execute('SELECT MIN(hour) AS first FROM fleet_hours WHERE adoption_consent=1')).rows[0]?.first)
+      .toBe(end-DAY+HOUR);
+    await new AdminStore(client,{now:()=>end}).init();
+    expect((await adoption(client,bundledRegistry,'week',end-DAY+HOUR)).activeInstallations).toBe(0);
+    expect((await adoption(client,bundledRegistry,'week',end)).activeInstallations).toBe(1);
     const rejected = replay!.clone();
     rejected.headers.set('Authorization','Bearer '+ 'a'.repeat(97));
     expect((await api.request(rejected)).status).toBe(401);
@@ -117,7 +142,7 @@ it('keeps a shift toward a busier high-failure installation out of the backlog',
         const passed = 100*scale - failed;
         const row = { release:'1.2.3',route:'kilo',starts:100*scale,passed,failed,timed:passed,
           slow:(higher ? 30 : 1)*scale,quota:0,timeout:failed,cancelled:0 };
-        await db.execute({sql:'INSERT INTO fleet_hours VALUES(?,?,0,?)',
+        await db.execute({sql:'INSERT INTO fleet_hours(hour,installation,incomplete,series) VALUES(?,?,0,?)',
           args:[end-3*DAY+hour*HOUR,installation,JSON.stringify([row])]});
       }
     }

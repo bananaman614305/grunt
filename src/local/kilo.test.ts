@@ -32,7 +32,7 @@ function fixture(options: { catalog?: unknown; catalogRows?: unknown[]; reflecti
 it('uses only fixed anonymous Particle with no inherited key, and checks live free metadata before inference', async () => {
   vi.stubEnv('KILO_API_KEY', 'synthetic-unrelated-private-key'); const f = fixture();
   expect(await f.source.available()).toBe(true); expect(f.posts()).toHaveLength(0);
-  expect(await f.source.complete({ ...request(), model: 'arbitrary-paid-alias', maxTokens: 10000 }, new AbortController().signal)).toEqual({ text: 'Hello.', inputTokens: 20, outputTokens: 5 });
+  expect(await f.source.complete({ ...request(), model: 'arbitrary-paid-alias', maxTokens: 10000 }, new AbortController().signal)).toEqual({ text: 'Hello.', inputTokens: 20, outputTokens: 5, free: true, servedModel: KILO_PARTICLE });
   expect(f.fetcher.mock.calls.map(([url]) => url)).toEqual([`${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/chat/completions`]);
   for (const [, init] of f.fetcher.mock.calls) { expect(init?.redirect).toBe('error'); expect(new Headers(init?.headers).has('authorization')).toBe(false); }
   expect(JSON.parse(f.posts()[0]![1]!.body as string)).toMatchObject({ model: KILO_PARTICLE, max_tokens: 10000, stream: false });

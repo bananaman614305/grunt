@@ -71,9 +71,10 @@ export function fleetPrincipal(token: string, secret: string | undefined) {
 }
 
 export const fleetSchema = 'CREATE TABLE IF NOT EXISTS fleet_hours(hour INTEGER, installation TEXT, incomplete INTEGER, series TEXT NOT NULL, PRIMARY KEY(hour,installation));';
-export async function saveHour(db: Client, installation: string, h: FleetHour, now: number) {
+export async function saveHour(db: Client, installation: string, h: FleetHour, now: number, adoptionConsent = false) {
   await db.batch([
-    { sql: 'INSERT OR REPLACE INTO fleet_hours VALUES(?,?,?,?)', args: [h.hour, installation, Number(h.incomplete), JSON.stringify(h.series)] },
+    { sql: 'INSERT OR REPLACE INTO fleet_hours(hour,installation,incomplete,series,adoption_consent) VALUES(?,?,?,?,?)',
+      args: [h.hour, installation, Number(h.incomplete), JSON.stringify(h.series), Number(adoptionConsent)] },
     { sql: 'DELETE FROM fleet_hours WHERE hour < ?', args: [now - 30 * DAY] }
   ], 'write');
 }

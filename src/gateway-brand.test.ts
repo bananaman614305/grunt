@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { GruntAgent, MiloAgent, defaultAgentDb } from './agent.js';
+import { defaultGatewayDb } from './gateway-db.js';
 import { DotsStore, hash } from './dots-store.js';
 import { DotsEvents } from './dots-events.js';
 import { dotsRelay } from './dots-relay.js';
@@ -24,15 +24,14 @@ async function fixture() {
   return { db, store, relay, rpc, origin };
 }
 
-it('exports GruntAgent and retains the old public class alias without abandoning gateway data', async () => {
-  expect(MiloAgent).toBe(GruntAgent);
+it('retains the existing gateway database for shared services', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-db-brand-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  expect(defaultAgentDb(directory)).toBe(`file:${join(directory, 'grunt.db')}`);
+  expect(defaultGatewayDb(directory)).toBe(`file:${join(directory, 'grunt.db')}`);
   await writeFile(join(directory, 'milo.db'), 'existing conversations');
-  expect(defaultAgentDb(directory)).toBe(`file:${join(directory, 'milo.db')}`);
+  expect(defaultGatewayDb(directory)).toBe(`file:${join(directory, 'milo.db')}`);
   await writeFile(join(directory, 'grunt.db'), 'current conversations');
-  expect(defaultAgentDb(directory)).toBe(`file:${join(directory, 'grunt.db')}`);
+  expect(defaultGatewayDb(directory)).toBe(`file:${join(directory, 'grunt.db')}`);
 });
 
 it('advertises Grunt MCP names while cached legacy tool calls still access the same scoped requests', async () => {

@@ -234,7 +234,7 @@ export class Kilo implements Source {
     const text = typeof message.content === 'string' ? message.content : '';
     if (lengthLimited(choice.finish_reason)) {
       if (request.model !== this.id && !text.trim()) throw unusable('Kilo stopped at the output limit without usable output', 'length');
-      return truncatedCompletion(text, usage);
+      return { ...truncatedCompletion(text, usage), servedModel: model, free: true };
     }
     const calls: ToolCall[] = [], ids = new Set<string>();
     if (message.tool_calls !== undefined) {
@@ -249,7 +249,7 @@ export class Kilo implements Source {
       }
     }
     if (!text.trim() && !calls.length) throw unusable('Kilo returned an empty completion', 'response_empty');
-    return { text, ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+    return { servedModel: model, free: true, text, ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
   }
   async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
 }

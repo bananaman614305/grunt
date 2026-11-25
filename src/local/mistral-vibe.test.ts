@@ -189,8 +189,14 @@ it('cancellation and shutdown stop only the owned CLI process group and remove t
     expect(pid).toBeGreaterThan(0); controller.abort(new Error('caller cancelled')); expect((await watched).message).toBe('caller cancelled');
     await f.source.close();
     if (process.platform === 'linux' && pid) {
-      const status = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => 'gone');
-      expect(status === 'gone' || /^\d+ \(.+\) Z /.test(status)).toBe(true);
+      // The wrapper can exit before Linux finishes delivering the signal to its child.
+      await expect.poll(async () => {
+        const status = await readFile(`/proc/${pid}/stat`, 'utf8').catch(error => {
+          if (error.code === 'ENOENT') return 'gone';
+          throw error;
+        });
+        return status === 'gone' || /^\d+ \(.+\) Z /.test(status);
+      }, { timeout: 2000 }).toBe(true);
     }
     const sent = JSON.parse(await readFile(f.snapshot, 'utf8')); await expect(readFile(sent.args[sent.args.indexOf('--prompt-file') + 1])).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await f.source.available()).toBe(false);
