@@ -14,7 +14,7 @@ import { uploadFleet } from './local/fleet-upload.js';
 import { RegistryStore } from './registry-store.js';
 import { registryRoutes } from './registry-routes.js';
 import { DAY, fleetAudit, HOUR } from './fleet.js';
-import { planFleetBacklog, renderFleetReport } from './fleet-report.js';
+import { planFleetBacklog, renderFleetHandoff, renderFleetReport } from './fleet-report.js';
 
 it('audits a complete UTC day through route observations, signed intake and replay', async () => {
   const end = Date.UTC(2026, 10, 24);
@@ -95,6 +95,10 @@ it('audits a complete UTC day through route observations, signed intake and repl
     expect(html).toContain('go fleet-kilo-slow');
     expect(renderFleetReport('2026-11-23',await fleetAudit(client,end),backlog)).toBe(html);
     expect(()=>renderFleetReport('2026-11-23',report)).toThrow(/Missing backlog item/);
+    const handoff = renderFleetHandoff(report, undefined, { 'fleet-kilo-failed': backlog['fleet-kilo-failed']! });
+    expect(handoff.split('\n')).toContain(`- kilo (12/48). ${report.findings[0]!.fix} Backlog fixture-fleet-kilo-failed.`);
+    expect(handoff).not.toContain('fixture-fleet-kilo-slow');
+    expect(handoff).toContain('Reply go to start fleet-kilo-failed.');
     expect((await fleetAudit(client,end+DAY)).findings).toEqual([]);
   } finally { perf.mockRestore(); client.close(); await rm(dir,{recursive:true,force:true}); }
 },30000);

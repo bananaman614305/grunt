@@ -449,7 +449,7 @@ dropped events instead of presenting incomplete history as complete.
 
 | Method | Loopback route | Result |
 | --- | --- | --- |
-| GET | `/v1/diagnostics/events` | Oldest-first events; supports `after` cursor, `source`, `requestId` and `limit` (1–500). |
+| GET | `/v1/diagnostics/events` | Oldest-first events. Supports `after` cursor, `source`, `requestId` and `limit` (1–500). Pass `details=1` to include eligibility, failure detection, accepted output and validated account availability. |
 | GET | `/v1/diagnostics/summary` | Request/attempt and reported-usage totals, unknown-usage counts, storage health and stream identity; optional `since` timestamp in milliseconds. |
 | GET | `/v1/diagnostics/metrics` | Durable hourly aggregates independent of raw-event retention; optional `since`/`until` Unix milliseconds, aligned window, histograms, limits and ingestion/coverage health. |
 | GET | `/v1/diagnostics/traces/:id` | Retained events correlated to one request ID. |

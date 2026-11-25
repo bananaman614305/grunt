@@ -1,4 +1,4 @@
-import { recordTransport } from './diagnostics.js';
+import { recordAttemptFailure, recordTransport } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { spawn } from 'node:child_process';
@@ -186,7 +186,7 @@ export class MistralVibe implements Source {
   }
   private async completeBridged(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     const needsBridge = request.tools.length > 0 || request.messages.some(message => message.role === 'tool' || message.tool_calls?.length);
-    if (!needsBridge) return await this.completeText(request, caller);
+    if (!needsBridge) return this.rejectEmptyTruncation(request, await this.completeText(request, caller));
     let bridge: FreebuffTools;
     try { bridge = new FreebuffTools(request); }
     catch { throw requestRefusal('Mistral Vibe rejected unsupported tool definitions or an invalid tool conversation'); }
@@ -194,13 +194,23 @@ export class MistralVibe implements Source {
     let inputTokens = 0, outputTokens = 0;
     for (let attempt = 0; attempt < 2; attempt++) {
       const handoffPrompt = bridge.prompt(attempt > 0).replace('native Freebuff tools', 'native Mistral Vibe tools');
-      const result = await this.completeText({ ...request, handoffPrompt }, signal);
+      const maxTokens = request.maxTokens === undefined ? undefined : request.maxTokens - outputTokens;
+      if (maxTokens === 0) return this.rejectEmptyTruncation(request, { text: '', finishReason: 'length', inputTokens, outputTokens });
+      const result = await this.completeText({ ...request, ...(maxTokens === undefined ? {} : { maxTokens }), handoffPrompt }, signal);
       inputTokens += result.inputTokens ?? 0; outputTokens += result.outputTokens ?? 0;
-      if (result.finishReason === 'length') return { text: '', finishReason: 'length', inputTokens, outputTokens };
+      if (result.finishReason === 'length') return this.rejectEmptyTruncation(request, { text: '', finishReason: 'length', inputTokens, outputTokens });
       try { return { ...bridge.parse(result.text), inputTokens, outputTokens }; }
       catch { if (attempt === 1) throw invalidCompletion('Mistral Vibe tool response failed validation after one repair attempt', 'completion_protocol'); }
     }
     throw new SourceError('upstream', 'Mistral Vibe tool protocol failed');
+  }
+  private rejectEmptyTruncation(request: ModelRequest, completion: Completion) {
+    if (request.model !== this.id && completion.finishReason === 'length' && !completion.text.trim()) {
+      const failure = invalidCompletion('Mistral Vibe stopped at the output limit without usable output', 'length');
+      recordAttemptFailure(this.id, failure.diagnostics, true);
+      throw failure;
+    }
+    return completion;
   }
   private async completeText(request: ModelRequest, caller: AbortSignal) {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);

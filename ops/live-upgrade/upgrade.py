@@ -95,6 +95,9 @@ def run_upgrade(args, *, workspace=None, runtimes=None, owner=None, state_dir=No
     expectations = attempts_lib.write_expectations(attempt, attempts_lib.derive_expectations(metadata))
     if expectations != attempts_lib.rollout_config.DEFAULT_EXPECTATIONS:
         log('NOTE: the candidate release serves a different provider-source set than the one reviewed for 0.10.0; the rehearsal checks it against the live pools.')
+    for port, ids in expectations['ownerOptIns'].items():
+        if ids:
+            log(f'NOTE: owner-approved opt-in source(s) {", ".join(ids)} for port {port} only: the launcher must name exactly the reviewed opt-ins (--payload when the installed one lacks them); consent for them is recorded after the upgrade, never before.')
     attempts_lib.old_runtime_manifests(attempt, runtimes, previous)
     registry_raw, registry_url, registry_etag = attempts_lib.fetch_public_registry()
     opencode_note = f'sha256 of the exact string {attempts_lib.OPENCODE_PROFILE}; {attempts_lib.OPENCODE_SOURCE} verified unchanged between the previous and the new release commit'
