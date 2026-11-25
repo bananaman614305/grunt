@@ -38,6 +38,7 @@ interface NumesOptions {
 }
 
 export class Numes implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'numes';
   readonly supportsFunctionTools = true;
   private directory: string;

@@ -24,6 +24,7 @@ export function freeConfig() {
   };
 }
 export class FreeLLMAPI implements Source {
+  readonly inferenceOnly = true;
   readonly id: string;
   readonly supportsFunctionTools = true;
   private url: string;

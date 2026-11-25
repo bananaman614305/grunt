@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { RequestError, SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
+import { RequestError, SourceError, answeredBy, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -158,21 +158,21 @@ export class StickyRouter {
   supportsInput(id: string, imageInput = false) {
     return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
   }
-  private async git(cwd: string, args: string[]) {
-    return (await exec('git', ['-C', cwd, ...args], { timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
+  private async git(cwd: string, args: string[], signal: AbortSignal) {
+    return (await exec('git', ['-C', cwd, ...args], { signal, timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
   }
-  private async createTask(request: ModelRequest): Promise<Task> {
+  private async createTask(request: ModelRequest, signal: AbortSignal): Promise<Task> {
     const task: Task = { original: taskTurns(request).at(-1) ?? '', output: '', switched: false, busy: false };
-    try { task.checkpoint = await this.git(request.cwd, ['stash', 'create']) || await this.git(request.cwd, ['rev-parse', 'HEAD']); }
+    try { task.checkpoint = await this.git(request.cwd, ['stash', 'create'], signal) || await this.git(request.cwd, ['rev-parse', 'HEAD'], signal); }
     catch { /* Non-git and unborn directories use prompt/output handoff only. */ }
     return task;
   }
-  private async handoff(request: ModelRequest, task: Task) {
+  private async handoff(request: ModelRequest, task: Task, signal: AbortSignal) {
     let work = '';
     if (task.checkpoint) {
       try {
-        const status = await this.git(request.cwd, ['status', '--short']);
-        const diff = await this.git(request.cwd, ['diff', task.checkpoint, '--']);
+        const status = await this.git(request.cwd, ['status', '--short'], signal);
+        const diff = await this.git(request.cwd, ['diff', task.checkpoint, '--'], signal);
         work = `\nWorking tree status:\n${status}\nChanges since task start:\n${diff}\n`;
       } catch { work = '\nWorking tree snapshot unavailable. Inspect the current files before continuing.\n'; }
     }
@@ -227,7 +227,7 @@ export class StickyRouter {
     if (!previous || previous.from !== current.source.id || previous.source !== best.source.id || estimate.samples < previous.samples || estimate.at <= previous.at) return;
     return best;
   }
-  async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+  async complete(request: ModelRequest, signal: AbortSignal, fallback?: (reason: SourceError, signal: AbortSignal) => Promise<Completion>): Promise<Completion> {
     signal = AbortSignal.any([signal, this.shutdown.signal]);
     signal.throwIfAborted();
     await this.observation.refreshRoutingHistory();
@@ -243,14 +243,14 @@ export class StickyRouter {
       // Reserve the task before asynchronous checkpoint creation to avoid two bindings.
       task = { original: '', output: '', switched: false, busy: true };
       this.tasks.set(key, task);
-      Object.assign(task, await this.createTask({ ...request, cwd }), { busy: true });
+      Object.assign(task, await this.createTask({ ...request, cwd }, signal), { busy: true });
     } else {
       if (task.busy) throw new SourceError('upstream', 'A request for this task is already running; retry when it finishes');
       task.busy = true;
     }
     // A turn bound to a source without Pi tool support switches (with handoff)
     // when Pi attaches tools, unless the caller named that source explicitly.
-    const toolsRequired = needsFunctionTools(request) && !this.sources.some(s => s.id === request.model);
+    const toolsRequired = needsFunctionTools(request) && !explicit;
     const attempted = new Set<string>(), refused = new Set<string>();
     let yieldedMetadata = false;
     const observation = this.observation;
@@ -269,7 +269,7 @@ export class StickyRouter {
           // Sources.complete() offers them only as a last resort.
           if (this.options.unrouted?.has(source.id)) continue;
           const adapter = adapters.find(a => a.id === source.id);
-          if (!task.source && this.sources.some(s => s.id === request.model) && source.id !== request.model) continue;
+          if (explicit && source.id !== request.model) continue;
           if (!adapter || this.options.disabled?.has(source.id) || scoutRetired(adapter, this.now())) {
             skip(source.id, 'not_listed');
             continue;
@@ -318,8 +318,11 @@ export class StickyRouter {
           continue;
         }
         if (!eligible.length) {
-          if (this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-          throw this.exhausted(toolsRequired, retryTimes, refused.size, transient);
+          if (unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
+          const failure = this.exhausted(toolsRequired, retryTimes, refused.size, transient);
+          // Keep the task reserved until its fallback has settled.
+          if (!explicit && fallback) return await fallback(failure, signal);
+          throw failure;
         }
         const idle = eligible.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
@@ -328,7 +331,7 @@ export class StickyRouter {
         // A fallback (the bound source failed or is benched) prefers idle capacity like a first draw. Sources whose
         // admission metadata is still being fetched may be idle, so wait briefly for those checks (each is deadline
         // bounded) before sharing a source that is busy with another task. A healthy bound source never waits.
-        if (!boundMain && task.source !== undefined && !idle.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
+        if (!boundMain && task.source !== undefined && !idle.length && unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
         const ready = boundMain || !idle.length ? eligible : idle;
         let selected = ready.find(candidate => candidate.source.id === task.source);
         let performanceSwitch = false;
@@ -350,7 +353,7 @@ export class StickyRouter {
         try {
           // A provider with a request scope guard may only receive the client-approved
           // payload. Handoff would append an unchecked local diff and prior output.
-          const input = switched && !selected.source.acceptsRequest ? await this.handoff({ ...request, cwd }, task) : { ...request, cwd };
+          const input = switched && !explicit && !selected.source.acceptsRequest ? await this.handoff({ ...request, cwd }, task, signal) : { ...request, cwd };
           // Availability and handoff can yield while maintenance records a newer cooldown.
           if ((this.cooldown(selected.source.id)?.until ?? 0) > this.now()) {
             skip(selected.source.id, 'cooldown');
@@ -369,6 +372,7 @@ export class StickyRouter {
           attempted.add(selected.source.id);
           this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
           const result = await withRoutingWorkload(workload, () => this.options.attempt ? this.options.attempt(selected.source, input, signal) : observation.complete(selected.source, input, signal));
+          signal.throwIfAborted();
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
           answeredBy.set(result, selected.source.id);
           return result;
@@ -378,7 +382,10 @@ export class StickyRouter {
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
           if (localRequestRefusal(failure)) refused.add(selected.source.id);
-          await this.recordFailure(selected.source.id, failure); task.switched = true;
+          await this.recordFailure(selected.source.id, failure);
+          signal.throwIfAborted();
+          if (!canReplay(failure)) throw failure;
+          task.switched = true;
         } finally { release(); unreserve(); }
       }
     } finally {

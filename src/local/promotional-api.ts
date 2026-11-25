@@ -37,6 +37,7 @@ export async function fikraFreeWindow(fetcher: typeof fetch = fetch, now = Date.
 // These offers are temporary, not recurring free tiers. Never change aliases or
 // use a wallet when a promotion ends. Both exact aliases passed live qualification.
 export class PromotionalApi implements Source {
+  readonly inferenceOnly = true;
   readonly supportsFunctionTools = true;
   get reportsProgress() { return this.id === 'openference'; }
   private shutdown = new AbortController();

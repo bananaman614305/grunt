@@ -195,9 +195,7 @@ it('a doctor that fails is logged and does not throw', async () => {
   await driver.close();
 });
 
-// Reproduction: Freebuff persists the user turn but never replies. Before this
-// change the request hung until the caller gave up; now it moves on.
-it.each([false, true])('a real Freebuff that never replies falls through and runs doctor without blocking (sticky=%s)', async sticky => {
+it.each([false, true])('cuts off a stalled native Freebuff turn without replay and runs doctor in the background (sticky=%s)', async sticky => {
   log = vi.spyOn(console, 'error').mockImplementation(() => {});
   const home = await mkdtemp(join(tmpdir(), 'grunt-hang-'));
   let finish!: (output: string) => void;
@@ -219,8 +217,10 @@ it.each([false, true])('a real Freebuff that never replies falls through and run
     await sources.models();
     const started = Date.now();
     // The doctor never finishes during this request; the answer must not wait for it.
-    expect(await sources.complete({ ...request, cwd: home }, new AbortController().signal)).toEqual({ text: 'next answer' });
+    await expect(sources.complete({ ...request, cwd: home }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'timeout', replay: 'unsafe' });
     expect(Date.now() - started).toBeLessThan(5000);
+    expect(after.complete).not.toHaveBeenCalled();
     expect(doctor).toHaveBeenCalledOnce();
     finish('Freebuff doctor\nall checks passed');
   } finally { await driver.close(); await rm(home, { recursive: true, force: true }); }

@@ -130,6 +130,7 @@ async function inferenceToken(binary: string, receipt: LiveKitFreeBuildReceipt, 
   return token;
 }
 export class LiveKit implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'livekit';
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();

@@ -12,6 +12,7 @@ const api = 'https://api.goedelmachines.com';
 const squire = 'https://trusty-squire-api.fly.dev';
 
 export class Goedel implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'goedel';
   readonly supportsFunctionTools = true;
   private readonly directory: string;

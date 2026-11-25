@@ -227,6 +227,7 @@ function isFreeModel(model: CatalogModel): boolean {
 }
 
 export class Nous implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'nous';
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();

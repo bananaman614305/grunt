@@ -8,7 +8,7 @@ import { basename, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { createLocalApp } from './api.js';
 import { positive } from './freebuff.js';
-import { Sources } from './source.js';
+import { SourceError, Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { MillionSeek } from './millionseek.js';
 import { FreePi } from './freepi.js';
@@ -209,15 +209,19 @@ export function start(env = process.env) {
     const adapter = registry.adapters.find(adapter => adapter.id === id);
     return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
   };
-  const configuredAccess = (source: Source) => routable(source.id) && sources.available(source).catch(() => false);
-  const live = async (source: Source) => await configuredAccess(source) && sources.openRoute(source.id);
+  const configuredAccess = async (source: Source) => {
+    if (!routable(source.id)) return false;
+    try { return await sources.available(source); }
+    catch (error) { return error instanceof SourceError && error.code === 'timeout' ? undefined : false; }
+  };
+  const live = async (source: Source) => await configuredAccess(source) === true && sources.openRoute(source.id);
   const recovery = new SourceRecovery({ directory, registry: () => registry,
     eligible: id => routable(id) && recommendedAdapters(registry).some(adapter => adapter.id === id),
     candidates: async () => {
       const ids: string[] = [];
       for (const adapter of recommendedAdapters(registry)) {
         const source = sources.sources.find(source => source.id === adapter.id);
-        if (source && routable(source.id) && !await configuredAccess(source)) ids.push(source.id);
+        if (source && routable(source.id) && await configuredAccess(source) === false) ids.push(source.id);
       }
       return ids;
     },

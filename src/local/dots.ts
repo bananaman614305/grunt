@@ -1,7 +1,7 @@
 import { gruntEnv } from '../brand.js';
 import { userTurns } from './harness.js';
 import { readDotsLink } from './dots-link.js';
-import { SourceError } from './source.js';
+import { replayTimeout, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const DOTS_INSTRUCTION = 'Answer here in this conversation. Do not start Codex or Work tasks.';
@@ -17,6 +17,7 @@ export class Dots implements Source {
     const result = await response.json() as { id?: string; text?: string; error?: string; linked?: boolean; subscribed?: boolean; pending?: boolean };
     if (!response.ok || result.error) {
       const code = response.status === 401 ? 'logged_out' : result.error === 'quota' ? 'quota' : response.status === 410 ? 'timeout' : response.status === 409 ? 'not_installed' : 'upstream';
+      if (code === 'timeout') throw replayTimeout('Dots relay request failed (timeout)', true);
       throw new SourceError(code, `Dots relay request failed (${code})`);
     }
     return result;
@@ -54,7 +55,10 @@ export class Dots implements Source {
         return { text: reply.text };
       }
     } catch (error) {
-      if (signal.aborted) throw new SourceError('timeout', 'Dots request timed out or was cancelled');
+      caller.throwIfAborted();
+      if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Dots stopped during shutdown');
+      // The relay's turn contract only returns a reply to Grunt.
+      if (signal.aborted) throw replayTimeout('Dots request timed out or was cancelled', true);
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'Dots relay is unavailable');
     } finally {

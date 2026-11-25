@@ -161,6 +161,7 @@ function tools(request: ModelRequest) {
   } catch (error) { throw error instanceof SourceError ? error : requestRefusal('BeatAPI rejected invalid function tools or an uncorrelated tool conversation'); }
 }
 export class BeatAPI implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'beatapi'; readonly supportsFunctionTools = true;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>(); private next = 0; private busy = false;
   private metadata = new MetadataFlights();
