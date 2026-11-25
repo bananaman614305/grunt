@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.10.14 — 2026-11-25
+
 - Record how a reply ended, and stop treating a missing tool call as an answer. Successful attempts in the local diagnostics journal now carry a content-free ending: the provider's finish reason mapped to a fixed set (unknown values become `other`), whether the reply had tool calls, and reasoning tokens when reported, for Kilo, Reflection Beam, the free-API sources, the promotional stream sources, IFM and 100milionseek. Nothing new is uploaded to the fleet or registry. A reply whose finish reason says `tool_calls` or `function_call` but which holds no parsed call (for example Reflection Beam ending in a tool call with only text) is now an invalid sample (`response_tools`) that retries (Kilo asks once more) and fails over after a brief cooldown, instead of reaching the client as a finished text answer; text-only `stop` replies are unchanged and reply text is never parsed or altered.
 - Add a private owner adoption dashboard (#213). It measures installations only from `GRUNT_ADOPTION_REPORTING=1` opt-in reports, counted from each installation's recorded consent hour; the hosted chat page and its routes are removed; the Kilo served model is now recorded in diagnostics.
 
