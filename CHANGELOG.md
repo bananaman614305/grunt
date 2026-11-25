@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.10.16 — 2026-11-25
+
 - Fix parallel subagents all landing on one busy source when the availability cache was cold or half expired (seen as two subagents and the main agent all on Kilo while other free sources were ready). A first draw whose only ready source is busy now waits up to 3 s for pending checks of sources that would join the draw, so it can claim an idle one; fallbacks and bound tasks are unchanged. Availability probes now start the most promising sources first (recently positive, then never checked, then last denied) instead of letting dead sources take the four slots every 30 s. The local status rows gain `checkedAgoSeconds` and `routable` (fresh evidence only; `state` is unchanged).
 
 ## 0.10.15 — 2026-11-25
