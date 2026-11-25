@@ -179,15 +179,16 @@ export class StickyRouter {
     const prompt = `Original task:\n${task.original}\n${work}\nPrevious adapter output (last 4 KB):\n${Buffer.from(task.output).subarray(-4096).toString('utf8')}\nContinue this task from the current state. Do not restart.`;
     return { ...request, messages: [...request.messages, { role: 'user', content: prompt }], handoffPrompt: prompt };
   }
-  private exhausted(toolsRequired: boolean, retryTimes: number[], refused = 0) {
+  private exhausted(toolsRequired: boolean, retryTimes: number[], refused = 0, transient = true) {
     const now = this.now();
     const next = Math.min(...retryTimes);
     const seconds = Number.isFinite(next) && next > now ? Math.ceil((next - now) / 1000) : undefined;
     // Sources that refused the request's own shape never contacted a provider and are not rate limited. Say
-    // so, and when none is waiting to recover, answer as an invalid request rather than a quota wait.
+    // so, and when nothing is merely waiting (cooling, limited, busy, pending, failed this call), answer as an
+    // invalid request rather than a quota wait. Any transient source keeps the retryable error.
     if (refused) {
       const detail = `${refused} adapter${refused === 1 ? '' : 's'} refused this conversation's tool definitions or tool history locally, before any provider was contacted`;
-      return seconds === undefined
+      return !transient
         ? new RequestError(`${detail}, and no other tool-capable adapter is available; this request cannot be served as sent`)
         : new SourceError('quota', `${detail}; the other tool-capable adapters are cooling down or limited; retry after the reset`, seconds);
     }
@@ -261,6 +262,7 @@ export class StickyRouter {
         const eligible: Candidate[] = [];
         const unknown: Source[] = [];
         const retryTimes: number[] = [];
+        let transient = false;
         for (const source of this.sources) {
           signal.throwIfAborted();
           // Sources outside the registry are never drawn or reported as skipped;
@@ -277,18 +279,18 @@ export class StickyRouter {
             skip(source.id, 'context_not_approved');
             continue;
           }
-          if (this.options.pending?.has(source.id)) { skip(source.id, 'pending_setup'); continue; }
+          if (this.options.pending?.has(source.id)) { transient = true; skip(source.id, 'pending_setup'); continue; }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
-          if (this.retired(source.id) || this.trialBusy(source.id)) { skip(source.id, 'cooldown'); continue; }
+          if (this.retired(source.id) || this.trialBusy(source.id)) { if (this.trialBusy(source.id)) transient = true; skip(source.id, 'cooldown'); continue; }
           const until = this.cooldown(source.id)?.until;
           if (until !== undefined && until > this.now()) {
-            if (Number.isFinite(until)) retryTimes.push(until);
+            if (Number.isFinite(until)) { retryTimes.push(until); transient = true; }
             skip(source.id, 'cooldown');
             continue;
           }
           if (attempted.has(source.id)) {
             // This call cannot repeat this source. The next call can try it now, unless it refused the request itself.
-            if (!refused.has(source.id)) retryTimes.push(this.now());
+            if (!refused.has(source.id)) { retryTimes.push(this.now()); transient = true; }
             continue;
           }
           const available = this.availability.peek(source.id);
@@ -298,6 +300,8 @@ export class StickyRouter {
             // This live allowance check can discover a reset the router did not know at entry.
             const checkedUntil = this.cooldown(source.id)?.until;
             if (checkedUntil !== undefined && checkedUntil > this.now() && Number.isFinite(checkedUntil)) retryTimes.push(checkedUntil);
+            // Unavailable without a known reset (limited, still checking) may recover; only a permanent bar cannot.
+            if (checkedUntil !== Infinity) transient = true;
             skip(source.id, 'unavailable');
           }
         }
@@ -315,7 +319,7 @@ export class StickyRouter {
         }
         if (!eligible.length) {
           if (this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-          throw this.exhausted(toolsRequired, retryTimes, refused.size);
+          throw this.exhausted(toolsRequired, retryTimes, refused.size, transient);
         }
         const idle = eligible.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
