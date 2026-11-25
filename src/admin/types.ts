@@ -20,7 +20,7 @@ export interface AdminDiagnosticEvent {
   version: 1; id: string; at: number; type: DiagnosticEventType; requestId: string; kind: DiagnosticKind;
   seq?: number; attemptId?: string; source?: string; model?: string; outcome?: DiagnosticOutcome;
   durationMs?: number; httpStatus?: number; errorCode?: DiagnosticErrorCode; retryAfterSeconds?: number;
-  inputTokens?: number; outputTokens?: number; transport?: 'http' | 'cli'; httpMethod?: 'GET' | 'POST';
+  inputTokens?: number; outputTokens?: number; free?: boolean; transport?: 'http' | 'cli'; httpMethod?: 'GET' | 'POST';
   endpointLabel?: 'chat.completions' | 'models' | 'account' | 'local.opencode' | 'cli'; networkCode?: string;
   exitCode?: number; reason?: string; actor?: 'client' | 'worker'; workerId?: string;
   failureReason?: typeof diagnosticFailureReasons[number];
@@ -104,6 +104,7 @@ export function validateAdminEvent(value: unknown, now = Date.now()): AdminDiagn
   optional(raw, 'source', v => isAdminSourceId(v) ? v : fail(), event);
   optional(raw, 'model', v => isAdminModelId(v) ? v : fail(), event);
   optional(raw, 'outcome', v => member(v, ['passed', 'failed', 'cancelled', 'skipped']), event);
+  if (typeof raw.free === 'boolean') event.free = raw.free;
   for (const key of ['inputTokens', 'outputTokens']) optional(raw, key, v => integer(v), event);
   for (const key of ['durationMs', 'retryAfterSeconds']) optional(raw, key, finite, event);
   optional(raw, 'httpStatus', v => integer(v, 100, 599), event);

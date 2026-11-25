@@ -62,7 +62,7 @@ it('fails closed without explicit owner and Google configuration', async () => {
 });
 it('requires authentication on every data and export endpoint', async () => {
   const f = await fixture();
-  for (const path of ['/api/session', '/api/overview', '/api/providers', '/api/requests', `/api/requests/${randomUUID()}`, '/api/runs', '/api/export']) {
+  for (const path of ['/api/session', '/api/adoption?period=day', '/api/overview', '/api/providers', '/api/requests', `/api/requests/${randomUUID()}`, '/api/runs', '/api/export']) {
     const response = await f.request(path); expect(response.status).toBe(401); expect(response.headers.get('Cache-Control')).toBe('no-store');
   }
 });
@@ -330,4 +330,20 @@ it('accepts measured work uptime without exposing it or accepting impossible dur
   const feed = await (await f.request('/api/activity', { headers: { Cookie: cookie } })).json();
   expect(feed.instances[0].activity.work).toEqual(work);
   expect(await (await f.request('/api/export', { headers: { Cookie: cookie } })).text()).not.toContain('providerWaitMs');
+});
+
+it('returns an owner to adoption after login and denies service-token analytics access', async () => {
+  const f = await fixture();
+  const start = await f.request('/auth/google?view=adoption');
+  const state = new URL(start.headers.get('Location')!).searchParams.get('state');
+  const response = await f.request('/auth/callback?code=test&state='+state, {
+    headers: { Cookie: start.headers.getSetCookie().map(v => v.split(';')[0]).join('; ') }
+  });
+  expect(response.headers.get('Location')).toBe(origin+'/admin/adoption');
+  expect((await f.request('/api/adoption?period=day', {
+    headers: { Authorization: 'Bearer '+env.GRUNT_ADMIN_READ_TOKEN }
+  })).status).toBe(403);
+  expect((await f.request('/api/adoption?period=invalid', {
+    headers: { Cookie: cookie(response,'__Secure-grunt_admin_session') }
+  })).status).toBe(400);
 });

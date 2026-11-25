@@ -32,7 +32,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   version: 1; id: string; at: number; type: typeof diagnosticTypes[number]; requestId: string;
   kind: typeof diagnosticKinds[number]; seq?: number; attemptId?: string; source?: string; model?: string;
   outcome?: 'passed' | 'failed' | 'cancelled' | 'skipped'; durationMs?: number;
-  errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number;
+  errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number; free?: boolean;
   reason?: typeof diagnosticReasons[number];
   actor?: 'client' | 'worker'; workerId?: string;
   stage?: typeof diagnosticStages[number]; parentId?: string; runtimeVersion?: string;
@@ -73,6 +73,7 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (member(diagnosticErrors, v.errorCode)) result.errorCode = v.errorCode;
   if (member(diagnosticReasons, v.reason)) result.reason = v.reason;
   Object.assign(result, sanitizeSafeDiagnosticMetadata(v));
+  if (typeof v.free === 'boolean') result.free = v.free;
   for (const field of ['inputTokens', 'outputTokens'] as const) if (integer(v[field])) result[field] = v[field];
   for (const field of ['durationMs', 'retryAfterSeconds'] as const) if (finite(v[field])) result[field] = v[field];
   return result;

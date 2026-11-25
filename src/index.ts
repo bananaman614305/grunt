@@ -27,7 +27,12 @@ export function agentRoutes(agent: GruntAgent) {
     try { body = await c.req.json(); } catch { return c.json({ error: "Send JSON with a text field." }, 400); }
     const text = typeof body === "object" && body !== null && "text" in body ? body.text : null;
     if (typeof text !== "string" || !text.trim() || text.length > 20_000) return c.json({ error: "Message must contain between 1 and 20,000 characters." }, 400);
-    return c.json(await agent.message(c.get("key"), text.trim()));
+    const agentHeader = c.req.header('User-Agent') ?? '';
+    const device = /ipad|tablet/i.test(agentHeader) ? 'Tablet' : /mobile|iphone|android/i.test(agentHeader) ? 'Mobile'
+      : /mozilla/i.test(agentHeader) ? 'Desktop' : 'Unknown';
+    // Store only a reported country code when available.
+    const country = c.req.header('CF-IPCountry') ?? '';
+    return c.json(await agent.message(c.get("key"), text.trim(), { device, country: /^[A-Z]{2}$/.test(country) ? country : 'Unknown' }));
   });
   app.post("/agent/tasks/:id/cancel", async c => {
     const task = await agent.cancel(c.get("person"), c.req.param("id"));

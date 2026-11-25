@@ -7,6 +7,10 @@ import { AdminDataError, isAdminSourceId } from './types.js';
 import { AgentActivityFeed } from './activity.js';
 import type { AdminStore } from './store.js';
 
+import { adoption, periods } from './adoption.js';
+import type { Period } from './adoption.js';
+import type { Registry } from '../registry.js';
+
 const sessionCookie = '__Secure-grunt_admin_session';
 const stateCookie = '__Secure-grunt_admin_oauth';
 const stateTtl = 10 * 60 * 1000;
@@ -15,12 +19,15 @@ const opaque = /^[A-Za-z0-9_-]{40,128}$/;
 type Principal = { kind: 'owner'; email: string; subject: string; token: string } | { kind: 'service' };
 type AdminEnv = { Variables: { principal: Principal } };
 type AdminContext = Context<AdminEnv>;
+export type AdminAsset = 'index.html' | 'admin.js' | 'admin.css' | 'grunt.svg' | 'favicon.svg'
+  | 'adoption.html' | 'adoption.js' | 'adoption.css' | 'adoption.mascot.svg' | 'adoption.wordmark.svg';
 export interface AdminRoutesOptions {
   env?: NodeJS.ProcessEnv;
   auth?: Pick<GoogleOAuth, 'begin' | 'exchange'>;
   now?: () => number;
   ready?: boolean;
-  assets?: (name: 'index.html' | 'admin.js' | 'admin.css' | 'grunt.svg' | 'favicon.svg') => Promise<string>;
+  registry?: () => Promise<Registry>;
+  assets?: (name: AdminAsset) => Promise<string>;
 }
 
 function failure(c: AdminContext, code: string, status: 400 | 401 | 403 | 404 | 409 | 413 | 429 | 503) {
@@ -79,7 +86,7 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
       c.header('Access-Control-Max-Age', '600');
       return c.body(null, 204);
     }
-    const publicAsset = c.req.method === 'GET' && ['/admin', '/admin/', '/admin/admin.js', '/admin/admin.css', '/admin/grunt.svg'].includes(c.req.path);
+    const publicAsset = c.req.method === 'GET' && ['/admin', '/admin/', '/admin/admin.js', '/admin/admin.css', '/admin/grunt.svg', '/admin/adoption', '/admin/adoption.js', '/admin/adoption.css'].includes(c.req.path);
     if (options.ready === false && !publicAsset) return failure(c, 'admin_storage_unavailable', 503);
     await next();
   });
@@ -88,11 +95,11 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
 
   // Only these packaged public assets are served. No request path ever becomes
   // a filesystem path, and only the public API origin is injected into HTML.
-  const asset = async (c: AdminContext, name: 'index.html' | 'admin.js' | 'admin.css' | 'grunt.svg' | 'favicon.svg') => {
+  const asset = async (c: AdminContext, name: AdminAsset) => {
     if (!options.assets || !publicUrl) return failure(c, 'admin_assets_unavailable', 503);
     try {
       let body = await options.assets(name);
-      if (name === 'index.html') {
+      if (name === 'index.html' || name === 'adoption.html') {
         const value = `${publicUrl}/admin`.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
         body = body.replace(/<meta\b(?=[^>]*\bname=["']grunt-admin-api["'])[^>]*>/i, `<meta name="grunt-admin-api" content="${value}">`);
         c.header('Content-Security-Policy', `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ${publicUrl}; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`);
@@ -106,6 +113,11 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
   app.get('/admin', c => c.redirect('/admin/', 308));
   app.get('/Admin', c => c.redirect('/admin/', 308));
   app.get('/admin/', c => asset(c, 'index.html'));
+  app.get('/admin/adoption', c => asset(c, 'adoption.html'));
+  app.get('/admin/adoption.js', c => asset(c, 'adoption.js'));
+  app.get('/admin/adoption.css', c => asset(c, 'adoption.css'));
+  app.get('/admin/adoption.mascot.svg', c => asset(c, 'adoption.mascot.svg'));
+  app.get('/admin/adoption.wordmark.svg', c => asset(c, 'adoption.wordmark.svg'));
   app.get('/admin/admin.js', c => asset(c, 'admin.js'));
   app.get('/admin/admin.css', c => asset(c, 'admin.css'));
   app.get('/admin/grunt.svg', c => asset(c, 'grunt.svg'));
@@ -120,6 +132,8 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
     await store.putState(hashToken(`state:${challenge.state}`, config.sessionSecret), {
       nonce: challenge.nonce, verifier: challenge.verifier, createdAt, expiresAt: createdAt + stateTtl
     });
+    if (c.req.query('view') === 'adoption') setCookie(c, '__Secure-grunt_adoption', challenge.state,
+      { httpOnly: true, secure: true, sameSite: 'Lax', path: '/admin/auth', maxAge: stateTtl / 1000 });
     setCookie(c, stateCookie, challenge.state, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/admin/auth', maxAge: stateTtl / 1000 });
     return c.redirect(challenge.authorizationUrl, 302);
   });
@@ -141,7 +155,9 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
         email: owner.email, subject: owner.subject, createdAt, expiresAt: createdAt + sessionTtl
       });
       setCookie(c, sessionCookie, token, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/admin', maxAge: sessionTtl / 1000 });
-      return c.redirect(`${config.uiOrigin}/admin/`, 303);
+      const view = getCookie(c, '__Secure-grunt_adoption') === state ? 'adoption' : '';
+      clearCookie(c, '__Secure-grunt_adoption', '/admin/auth');
+      return c.redirect(`${config.uiOrigin}/admin/${view}`, 303);
     } catch (error) { return denied(error instanceof AdminAuthError && error.code === 'owner_required'); }
   });
 
@@ -191,6 +207,14 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
       return failure(c, 'invalid_usage_window', 400);
     }
     return c.json(await store.sourceUsage(today, week, instance(c)));
+  });
+  app.get('/admin/api/adoption', async c => {
+    if (c.get('principal').kind !== 'owner') return failure(c, 'browser_session_required', 403);
+    const period = c.req.query('period') as Period;
+    if (!periods.includes(period)) return failure(c, 'invalid_usage_window', 400);
+    if (!options.registry) return failure(c, 'registry_unavailable', 503);
+    try { return c.json(await adoption(store.db, await options.registry(), period, now())); }
+    catch { return failure(c, 'report_unavailable', 503); }
   });
   app.get('/admin/api/activity', c => {
     if (c.get('principal').kind !== 'owner') return failure(c, 'browser_session_required', 403);

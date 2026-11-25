@@ -7,7 +7,7 @@ import { DotsStore } from "./dots-store.js";
 import { dotsRelay } from "./dots-relay.js";
 import { registryRoutes } from './registry-routes.js';
 import { AdminStore } from './admin/store.js';
-import { adminRoutes } from './admin/routes.js';
+import { adminRoutes, type AdminAsset } from './admin/routes.js';
 import { RegistryStore } from './registry-store.js';
 import { readFile } from 'node:fs/promises';
 
@@ -25,7 +25,7 @@ catch { adminReady = false; console.error('grunt admin storage is unavailable.')
 let registryStore: RegistryStore | undefined = new RegistryStore(agent.store.db);
 try { await registryStore.init(); }
 catch { registryStore = undefined; console.error('grunt registry storage is unavailable.'); }
-const adminAssets = async (name: 'index.html' | 'admin.js' | 'admin.css' | 'grunt.svg' | 'favicon.svg') => {
+const adminAssets = async (name: AdminAsset) => {
   const icon = name === 'grunt.svg' || name === 'favicon.svg';
   const packaged = new URL(icon ? `./${name}` : `./admin-public/${name}`, import.meta.url);
   try { return await readFile(packaged, 'utf8'); }
@@ -39,8 +39,19 @@ if (registryStore) {
   try { await registry.initialize(); }
   catch { console.error('grunt registry initialization is unavailable.'); }
 }
-const app = relay.app.route('/', adminRoutes(adminStore, { ready: adminReady, assets: adminAssets })).route('/', registry).route('/', agentRoutes(agent));
-const server = serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, () => console.log(`grunt is listening on port ${port}. Open /chat.`));
+const app = relay.app.route('/', adminRoutes(adminStore, { ready: adminReady, registry: registry.published, assets: adminAssets })).route('/', registry).route('/', agentRoutes(agent));
+// Keep both OAuth and the owner cookie on the dashboard's own HTTPS origin.
+const dashboardOrigin = 'https://dashboard.grunt.run';
+const dashboard = adminRoutes(adminStore, {
+  ready: adminReady, assets: adminAssets, registry: registry.published,
+  env: { ...process.env, GRUNT_ADMIN_UI_ORIGIN: dashboardOrigin, GRUNT_ADMIN_PUBLIC_URL: dashboardOrigin }
+});
+const server = serve({ fetch: request => {
+  const url = new URL(request.url);
+  if (url.hostname !== 'dashboard.grunt.run') return app.fetch(request);
+  if (url.pathname === '/' || url.pathname === '/admin/') return Response.redirect(dashboardOrigin+'/admin/adoption', 302);
+  return dashboard.fetch(request);
+}, port, hostname: "0.0.0.0" }, () => console.log(`grunt is listening on port ${port}. Open /chat.`));
 let stopping = false;
 async function stop() {
   if (stopping) return;

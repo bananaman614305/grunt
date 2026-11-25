@@ -18,6 +18,11 @@ export class AgentStore {
       CREATE INDEX IF NOT EXISTS tasks_person ON tasks(person, created_at);
       CREATE TABLE IF NOT EXISTS notes (person TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL, UNIQUE(person, text));
       CREATE TABLE IF NOT EXISTS calls (model TEXT NOT NULL, kind TEXT NOT NULL, tokens_in INTEGER NOT NULL, tokens_out INTEGER NOT NULL, latency_ms INTEGER NOT NULL, outcome TEXT NOT NULL, cost REAL NOT NULL, ts INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS account_metering(started_at INTEGER NOT NULL PRIMARY KEY);
+      INSERT INTO account_metering SELECT ${Date.now()} WHERE NOT EXISTS (SELECT 1 FROM account_metering);
+      CREATE TABLE IF NOT EXISTS account_attempts(call_id INTEGER PRIMARY KEY, account TEXT NOT NULL, measured_tokens INTEGER, device TEXT NOT NULL, country TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS account_attempts_account ON account_attempts(account,call_id);
+      CREATE INDEX IF NOT EXISTS calls_time ON calls(ts);
       UPDATE tasks SET status='failed', error='Gateway restarted before the task finished.', updated_at=${Date.now()} WHERE status IN ('queued','running');
     `);
     return new AgentStore(db);
@@ -46,7 +51,13 @@ export class AgentStore {
     await this.db.execute({ sql: `UPDATE tasks SET ${entries.map(([k]) => `${k}=?`).join(",")} WHERE person=? AND id=? AND status IN (${from.map(() => "?").join(",")})`, args: [...entries.map(([, v]) => v), person, id, ...from] });
     return this.task(person, id);
   }
-  async record(c: Call) { await this.db.execute({ sql: "INSERT INTO calls VALUES (?,?,?,?,?,?,?,?)", args: [c.model,c.kind,c.tokens_in,c.tokens_out,c.latency_ms,c.outcome,c.cost,c.ts] }); }
+  async record(c: Call, attribution?: { account: string; tokens: number | null; device: string; country: string }) {
+    const insert = { sql: "INSERT INTO calls VALUES (?,?,?,?,?,?,?,?)", args: [c.model,c.kind,c.tokens_in,c.tokens_out,c.latency_ms,c.outcome,c.cost,c.ts] };
+    if (!attribution) { await this.db.execute(insert); return; }
+    const { account, tokens, device, country } = attribution;
+    await this.db.batch([insert, { sql: "INSERT INTO account_attempts VALUES (last_insert_rowid(),?,?,?,?)",
+      args: [account, tokens, device, country] }], 'write');
+  }
   async state(person: string) {
     const [messages, tasks, notes] = await Promise.all([this.messages(person), this.tasks(person), this.notes(person)]);
     return { messages, tasks, notes };

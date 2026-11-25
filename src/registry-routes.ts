@@ -122,5 +122,5 @@ export function registryRoutes(options: string | RegistryRouteOptions = {}) {
     c.header('Cache-Control', 'public, max-age=0, must-revalidate');
     return c.body(registryInstructions({ registry, scores, base, repo, now: at, ...(commit ? { commit } : {}) }));
   });
-  return Object.assign(app, { initialize });
+  return Object.assign(app, { initialize, published });
 }

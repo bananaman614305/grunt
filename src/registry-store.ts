@@ -87,6 +87,8 @@ export class RegistryStore {
   constructor(readonly db: Client, private now: () => number = Date.now) {}
   async init() {
     await this.db.executeMultiple(`
+      CREATE TABLE IF NOT EXISTS registry_daily(day TEXT NOT NULL,id TEXT NOT NULL,attempts INTEGER NOT NULL,ok INTEGER NOT NULL,
+        latency_sum INTEGER NOT NULL,samples INTEGER NOT NULL,PRIMARY KEY(day,id));
       CREATE TABLE IF NOT EXISTS registry_writes(at INTEGER NOT NULL,login TEXT NOT NULL,id TEXT NOT NULL,before_json TEXT,after_json TEXT);
       CREATE TABLE IF NOT EXISTS registry_feedback(day TEXT NOT NULL,install TEXT NOT NULL,id TEXT NOT NULL,ok INTEGER NOT NULL,failed INTEGER NOT NULL,
         quota INTEGER NOT NULL,auth INTEGER NOT NULL,latency_ms INTEGER NOT NULL,signup_ok INTEGER NOT NULL,signup_failed INTEGER NOT NULL,retired INTEGER NOT NULL,
@@ -108,10 +110,18 @@ export class RegistryStore {
   // A report carries cumulative day totals, so a replay replaces rather than adds.
   async recordFeedback(report: FeedbackReport) {
     if (!report.routes.length) return;
+    const cutoff = utcDay(this.now() - RETENTION_DAYS * DAY_MS);
     await this.db.batch([
-      ...report.routes.map(route => ({ sql: 'INSERT OR REPLACE INTO registry_feedback VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      ...report.routes.map(route => ({ sql: `INSERT INTO registry_feedback VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(day,install,id) DO UPDATE SET ok=MAX(ok,excluded.ok),failed=MAX(failed,excluded.failed),
+          quota=MAX(quota,excluded.quota),auth=MAX(auth,excluded.auth),signup_ok=MAX(signup_ok,excluded.signup_ok),
+          signup_failed=MAX(signup_failed,excluded.signup_failed),latency_ms=CASE WHEN excluded.ok>=ok THEN excluded.latency_ms ELSE latency_ms END,
+          retired=excluded.retired`,
         args: [report.day, report.install, route.id, route.ok, route.failed, route.quota, route.auth, route.latency_ms, route.signup_ok, route.signup_failed, route.retired ? 1 : 0] })),
-      { sql: 'DELETE FROM registry_feedback WHERE day < ?', args: [utcDay(this.now() - RETENTION_DAYS * DAY_MS)] }
+      { sql: `INSERT OR REPLACE INTO registry_daily
+        SELECT day,id,SUM(ok+failed+quota+auth),SUM(ok),SUM(CASE WHEN ok>0 THEN latency_ms ELSE 0 END),SUM(ok>0)
+        FROM registry_feedback WHERE day < ? GROUP BY day,id`, args: [cutoff] },
+      { sql: 'DELETE FROM registry_feedback WHERE day < ?', args: [cutoff] }
     ], 'write');
   }
   async scores(registry: Registry): Promise<Scores> {

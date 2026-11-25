@@ -236,7 +236,7 @@ export class Kilo implements Source {
       }
     }
     if (!message.content && !calls.length) throw fail('upstream', 'Kilo returned an empty completion', 'response_content');
-    return { text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+    return { servedModel: model, free: true, text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
   }
   async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
 }

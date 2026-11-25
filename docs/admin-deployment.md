@@ -203,3 +203,35 @@ previous reviewed artifact. Stop only the newly owned collector service if
 needed. Do not delete the existing database, volume, provider grants or other
 projects' processes. Rotating the admin session secret invalidates owner sessions;
 rotating the ingestion key requires updating both ends of the collector link.
+
+## Adoption and registry dashboard
+
+The Fly image serves the dashboard at `/admin/adoption`. Requests for the root
+of `dashboard.grunt.run` on this app open that page. Attach the dashboard
+hostname to the existing Fly app, publish its Fly-issued DNS records, and
+register `https://dashboard.grunt.run/admin/auth/callback` on the dedicated
+Google web client. Keep existing callback URLs. The dashboard uses the existing
+confirmed owner allowlist and same-host HTTPS session. Test each owner's Google
+login. The machine read token cannot retrieve account analytics.
+
+Day, week and month start at UTC midnight today, six days ago and twenty-nine
+days ago. Hosted accounts are identified by the existing gateway key fingerprint.
+The account's most recent attempt in the period supplies its reported country
+and coarse device class. Missing dimensions appear as Unknown. Only complete
+upstream input and output measurements contribute to metered tokens. New
+attribution starts with deployment. Historical routing estimates stay separate.
+There is no Grunt account registration or provider connection event on this
+path. The observable funnel starts with the first hosted message and follows
+attempt, successful reply and later-day success within seven days. It excludes
+accounts whose observation window predates metering or has yet to finish.
+
+The registry reads the live published catalog. Anonymous router daily reports
+supply attempts, success counts and smoothed latency. Old reports are rolled up
+without installation IDs before normal expiry. History before retained reports
+cannot be recovered. Counts reflect delivered reports, including retries;
+cancelled calls and unsent router activity are outside coverage. Enrolled
+collector observations supply session duration, probe pass rate, confirmed free
+replies and observed models within retained diagnostic history. Sessions group
+same-instance, same-route user attempts with gaps of at most thirty minutes,
+clipped to the selected period. Kilo reports the model and zero billing after
+its existing response checks pass. A missing billing report remains unknown.
