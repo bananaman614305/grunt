@@ -14,6 +14,23 @@ import type { DiagnosticContext } from './diagnostics.js';
 type Obj = Record<string, unknown>;
 const object = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
 const array = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
+// A saved conversation can hold a call whose arguments were never a JSON object: a reply cut off by its
+// output limit and stored by the client, or an empty or non-object value. The client already ran or
+// rejected that call, so only the unusable arguments are replaced, by "{}"; id, name and result stay.
+// Valid arguments pass through byte for byte, so the same history always yields the same request.
+function historicalArguments(value: unknown): string {
+  if (typeof value === 'string') {
+    try { const parsed: unknown = JSON.parse(value); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return value; } catch { /* Replaced below. */ }
+  } else if (value && typeof value === 'object' && !Array.isArray(value)) return JSON.stringify(value);
+  return '{}';
+}
+function historicalCalls(calls: unknown): ToolCall[] | undefined {
+  if (!Array.isArray(calls)) return calls as ToolCall[] | undefined;
+  return calls.map(call => {
+    const fn = object(call).function;
+    return fn && typeof fn === 'object' && !Array.isArray(fn) ? { ...call, function: { ...fn, arguments: historicalArguments((fn as Obj).arguments) } } : call;
+  });
+}
 function text(v: unknown): string {
   if (typeof v === 'string') return v;
   return array(v).flatMap(b => {
@@ -36,7 +53,7 @@ function responsesMessages(items: unknown[]): Message[] {
       out.push({ role: 'tool', content: typeof m.output === 'string' ? m.output : JSON.stringify(m.output) ?? '', tool_call_id: String(m.call_id) });
       flush();
     } else if (m.type === 'function_call') {
-      const call: ToolCall = { id: String(m.call_id), type: 'function', function: { name: typeof m.namespace === 'string' ? `${m.namespace}__${String(m.name)}` : String(m.name), arguments: String(m.arguments) } };
+      const call: ToolCall = { id: String(m.call_id), type: 'function', function: { name: typeof m.namespace === 'string' ? `${m.namespace}__${String(m.name)}` : String(m.name), arguments: historicalArguments(m.arguments) } };
       const last = out.at(-1);
       if (last?.role === 'assistant' && last.tool_calls?.length && !held.length && !last.content) last.tool_calls.push(call);
       else out.push({ role: 'assistant', content: '', tool_calls: [call] });
@@ -60,9 +77,9 @@ export function decode(body: Obj, api: string, fallback?: string): ModelRequest 
   } else {
     messages = array(body.messages).flatMap(v => {
       const m = object(v);
-      if (api !== 'messages' || typeof m.content === 'string') return [{ role: String(m.role), content: text(m.content), ...(m.tool_calls ? { tool_calls: m.tool_calls as ToolCall[] } : {}), ...(m.tool_call_id ? { tool_call_id: String(m.tool_call_id) } : {}) }];
+      if (api !== 'messages' || typeof m.content === 'string') return [{ role: String(m.role), content: text(m.content), ...(m.tool_calls ? { tool_calls: historicalCalls(m.tool_calls)! } : {}), ...(m.tool_call_id ? { tool_call_id: String(m.tool_call_id) } : {}) }];
       const blocks = array(m.content).map(object);
-      const calls: ToolCall[] = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), type: 'function', function: { name: String(b.name), arguments: JSON.stringify(b.input) } }));
+      const calls: ToolCall[] = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), type: 'function', function: { name: String(b.name), arguments: historicalArguments(b.input) } }));
       const content = text(blocks.filter(b => b.type !== 'tool_use' && b.type !== 'tool_result'));
       const turn: Message[] = content || calls.length ? [{ role: String(m.role), content, ...(calls.length ? { tool_calls: calls } : {}) }] : [];
       // Results answer the assistant's tool calls, so they must directly follow them. Claude Code adds
