@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Operator: the live-upgrade controller now pins the Adventure builder's CPU limit at exactly four CPUs (`cpu.max` `400000 100000`), matching the owner's raised limit, instead of two; any other value still refuses the upgrade.
 - Tests: the router-loop and background-acquisition tests wait for the recovery pass to finish, with a bounded deadline, instead of a fixed 20 ms sleep and a 1 s default; no source change.
 
 ## 0.10.10 — 2026-11-25

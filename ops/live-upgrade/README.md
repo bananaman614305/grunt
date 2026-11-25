@@ -54,7 +54,7 @@ journalctl --user -u grunt-runtime-upgrade-0.10.1-<stamp>
 ```
 
 `verify` checks both runtime trees against the public pins, dependency digests, protected files, owner files, unit fingerprints,
-memory/CPU policy and the passive observer; that the hold and the temporary restart/consent guards are gone; that the three daemons
+memory policy, the exact four-CPU limit (`cpu.max` of `400000 100000`) and the passive observer; that the hold and the temporary restart/consent guards are gone; that the three daemons
 were restarted after the transaction began; and that both pools report an integer status schema (`/v1/status` `version` is the
 status schema number, **not** the package version) without the removed `workers` key.
 
