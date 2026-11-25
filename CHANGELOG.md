@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add Numes Kimi K3.1 Pro and GLM 5.3 free routes behind their own data-sharing approval, tried after DeepSeek Flash and before GLM 5.3 Flash. All Numes free routes share one account and endpoint, so this adds model choice, not capacity. DeepSeek 1017 free is no longer listed and is not added.
+
 ## 0.10.8 — 2026-11-24
 
 - Honor caller output budgets: free routes no longer cap replies at 4,096 tokens; unspecified limits are omitted so the provider's own limit applies, and provider truncation is reported as length (#212).

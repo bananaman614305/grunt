@@ -194,7 +194,7 @@ Nous uses `qwen/qwen4-max:free` on the Nous Portal Free plan. See the [Nous setu
 
 Kenari uses `ernie-5-5-flash-preview:free`. See the [provider setup reference](docs/reference.md#temporary-free-sources) for its dedicated Squire key and verification. You can also connect it with `npx usegrunt add kenari`. [Kenari free-model limits](https://kenari.id/en/docs/free-models)
 
-Numes uses `z-ai/glm-5.3-flash:free` and a dedicated Squire key with a $0 spending cap. Grunt checks the cap before each request and verifies the model and charge in each reply. Free capacity can vary. Use `npx usegrunt add numes` to connect it separately or resume setup. [Numes free routes](https://numes.ai/docs/models#free-models)
+Numes rotates its free DeepSeek, Kimi K3.1 Pro and GLM 5.3 routes ahead of `z-ai/glm-5.3-flash:free`, all on one account and one upstream endpoint, with a dedicated Squire key with a $0 spending cap. Grunt checks the cap before each request and verifies the model and charge in each reply. Free capacity can vary. Use `npx usegrunt add numes` to connect it separately or resume setup. [Numes free routes](https://numes.ai/docs/models#free-models)
 
 CrowLLM is an optional source connected with `npx usegrunt add crowllm`. Squire reuses a vaulted key named Grunt Free. The route pins `glm-5.3-flash:free` and verifies zero pricing before every request. It skips paid models and account welcome credit. Free capacity and request limits are unpublished. Context capacity and a live tool response remain unverified, so CrowLLM is outside default onboarding. [CrowLLM free model](https://crowllm.com/models/glm-5.3-flash:free)
 

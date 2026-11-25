@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { approveDataSharing, DATA_SHARING_POLICIES, NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent, recordDataSharingConsent, refreshDataSharingConsent } from './data-sharing.js';
+import { approveDataSharing, DATA_SHARING_POLICIES, NUMES_AMAZEE_MODELS_CONSENT, NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent, recordDataSharingConsent, refreshDataSharingConsent } from './data-sharing.js';
 import type { DataSharingPolicy } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), isCancel: (value: unknown) => typeof value === 'symbol' }));
@@ -11,9 +11,9 @@ const sharingIds = ['freebuff', 'opencode', 'kilo', 'tokenharbor', 'runcrate', '
 const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-data-sharing-')); directories.push(path); return path; }
 
-it('includes both Numes policies in grouped setup and revokes both on opt-out', async () => {
+it('includes all Numes policies in grouped setup and revokes them on opt-out', async () => {
   const path = await directory();
-  const providers = ['numes', NUMES_DEEPSEEK_FLASH_CONSENT];
+  const providers = ['numes', NUMES_DEEPSEEK_FLASH_CONSENT, NUMES_AMAZEE_MODELS_CONSENT];
   await recordDataSharingConsent(path, ['numes']);
   expect(await readDataSharingConsent(path, providers)).toEqual(['numes']);
   expect(await approveDataSharing({ directory: path, providers: ['numes'], env: {}, notice: () => {} }))
