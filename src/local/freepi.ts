@@ -70,6 +70,7 @@ export async function readFreePiJson(response: Response, signal: AbortSignal, li
 }
 
 export class FreePi implements Source {
+  readonly inferenceOnly = true;
   readonly id = FREEPI_ID;
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();

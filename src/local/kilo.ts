@@ -125,6 +125,7 @@ function conversation(request: ModelRequest) {
   return { messages, validators: compileToolSchemas(request.tools, 'Kilo rejected a function tool schema') };
 }
 export class Kilo implements Source {
+  readonly inferenceOnly = true;
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
   // The model that answered last is tried first; a quota reply moves on to the next.
   private preferred: string | undefined;

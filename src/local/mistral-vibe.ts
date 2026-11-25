@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { SourceError, requestRefusal } from './source.js';
+import { replayTimeout, SourceError, requestRefusal } from './source.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
@@ -180,7 +180,7 @@ export class MistralVibe implements Source {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Mistral Vibe request cancelled during shutdown');
       if (error instanceof SourceError) throw error;
-      if (error instanceof Error && error.name === 'TimeoutError') throw new SourceError('timeout', 'Mistral Vibe request timed out');
+      if (error instanceof Error && error.name === 'TimeoutError') throw replayTimeout('Mistral Vibe request timed out', true);
       throw new SourceError('upstream', 'Mistral Vibe request failed');
     } finally { this.pending.delete(task); }
   }
@@ -245,7 +245,7 @@ export class MistralVibe implements Source {
     } catch (error) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Mistral Vibe request cancelled during shutdown');
-      if (signal.aborted) throw new SourceError('timeout', 'Mistral Vibe request timed out');
+      if (signal.aborted) throw replayTimeout('Mistral Vibe request timed out', true);
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'Mistral Vibe request failed; rerun usegrunt setup');
     } finally { if (temporary) await rm(temporary, { recursive: true, force: true }); }

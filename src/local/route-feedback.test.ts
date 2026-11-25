@@ -104,9 +104,9 @@ it('counts routed replies by outcome for the feedback report', async () => {
   const pool = new Sources([failing, source('kilo')], { registry: () => bundledRegistry, random: () => 0 });
   cleanup.push(() => pool.close());
   pool.setFeedback((id, outcome) => outcomes.push([id, outcome]));
-  await pool.complete({ ...request, model: 'zro', userMessages: ['synthetic task'] }, AbortSignal.timeout(2000)).catch(() => {});
+  await pool.complete({ ...request, model: 'grunt', userMessages: ['synthetic task'] }, AbortSignal.timeout(2000));
   await pool.complete({ ...request, model: 'kilo', userMessages: ['synthetic task'] }, AbortSignal.timeout(2000));
-  // The failed explicit request falls back to kilo; each settled reply counts once.
+  // Automatic routing falls back to Kilo; each settled reply counts once.
   expect(outcomes).toEqual([['zro', 'upstream'], ['kilo', 'ok'], ['kilo', 'ok']]);
 });
 
