@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { bundledRegistry } from '../registry.js';
+import { createLocalApp } from './api.js';
 import { SourceError, Sources } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
@@ -45,6 +46,31 @@ it('admits a healthy backup beyond a wave of unresponsive metadata checks', asyn
     }
     expect(backup.complete).toHaveBeenCalledOnce();
   } finally { metadata.forEach(item => item.release(false)); }
+});
+
+it('keeps concurrent model listings available when another provider ignores its probe deadline', async () => {
+  const slow = { ...source('numes'), availabilityTimeoutMs: 20 }, healthy = source('kilo'), pending = hold();
+  slow.available.mockReturnValueOnce(pending.promise);
+  const value = pool([slow, healthy]), app = createLocalApp(value);
+  const models = async () => {
+    const result = await app.request('http://127.0.0.1:8788/v1/models');
+    expect(result.status).toBe(200);
+    return (await result.json()).data.map((row: { id: string }) => row.id);
+  };
+  try {
+    expect(await Promise.all([models(), models()])).toEqual([['grunt', healthy.id], ['grunt', healthy.id]]);
+    expect(slow.available).toHaveBeenCalledOnce();
+    expect(healthy.available).toHaveBeenCalledOnce();
+    expect(slow.available.mock.calls[0]?.[0].aborted).toBe(true);
+    expect(await models()).toEqual(['grunt', healthy.id]);
+    expect(slow.available).toHaveBeenCalledOnce();
+    pending.release(true);
+    await pending.promise;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(value.status().sources.find(row => row.id === slow.id)?.state).toBe('unknown');
+    expect(await models()).toEqual(['grunt', slow.id, healthy.id]);
+    expect(slow.available).toHaveBeenCalledTimes(2);
+  } finally { pending.release(false); }
 });
 
 it('reuses only admission metadata and still runs the selected adapter live guard on each dispatch', async () => {

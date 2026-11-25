@@ -13,7 +13,7 @@ export class MetadataFlights {
   private closed = false;
   constructor(private timeoutMs = 5000) {}
 
-  run<T>(key: string, read: (signal: AbortSignal) => Promise<T>, caller?: AbortSignal | null): Promise<T> {
+  run<T>(key: string, read: (signal: AbortSignal) => Promise<T>, caller?: AbortSignal | null, timeoutMs = this.timeoutMs): Promise<T> {
     caller?.throwIfAborted();
     if (this.closed) return Promise.reject(new SourceError('cancelled', 'Metadata checks stopped'));
     let flight = this.flights.get(key);
@@ -21,11 +21,15 @@ export class MetadataFlights {
       const controller = new AbortController();
       flight = { controller, result: Promise.resolve(), waiters: 0, settled: false };
       const owned = flight;
-      const timer = setTimeout(() => controller.abort(new SourceError('timeout', 'Metadata check timed out')), this.timeoutMs);
+      const timer = setTimeout(() => controller.abort(new SourceError('timeout', 'Metadata check timed out')), timeoutMs);
       timer.unref();
+      const clearDeadline = () => clearTimeout(timer);
+      controller.signal.addEventListener('abort', clearDeadline, { once: true });
       owned.result = Promise.resolve().then(() => { controller.signal.throwIfAborted(); return read(controller.signal); });
       const settled = () => {
-        clearTimeout(timer); owned.settled = true;
+        clearDeadline();
+        controller.signal.removeEventListener('abort', clearDeadline);
+        owned.settled = true;
         if (this.flights.get(key) === owned) this.flights.delete(key);
       };
       // Keep an aborted, uncooperative read in its slot until it really settles.

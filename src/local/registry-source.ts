@@ -10,7 +10,9 @@ export class RegistrySource extends DelegatingSource {
   constructor(source: Source, private registry: () => Registry) { super(source); }
   private listed() { return this.registry().adapters.some(adapter => adapter.id === this.id && !scoutRetired(adapter)); }
   async available(signal?: AbortSignal) { return this.listed() && await super.available(signal); }
-  async healthCheck() { return this.listed() && await (this.source.healthCheck?.() ?? this.source.available()); }
+  async healthCheck(signal?: AbortSignal) {
+    return this.listed() && await (this.source.healthCheck?.(signal) ?? super.available(signal));
+  }
   complete(request: ModelRequest, signal: AbortSignal, output?: () => void, beforeNativeWork?: () => void) {
     signal.throwIfAborted();
     if (!this.listed()) throw new SourceError('refused', `${this.id} is not in the current adapter registry`);

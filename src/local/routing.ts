@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { RequestError, RoutingExhausted, SourceError, answeredBy, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
+import { RequestError, SourceError, answeredBy, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -190,9 +190,9 @@ export class StickyRouter {
       const detail = `${refused} adapter${refused === 1 ? '' : 's'} refused this conversation's tool definitions or tool history locally, before any provider was contacted`;
       return !transient
         ? new RequestError(`${detail}, and no other tool-capable adapter is available; this request cannot be served as sent`)
-        : new RoutingExhausted('quota', `${detail}; the other tool-capable adapters are cooling down or limited; retry after the reset`, seconds);
+        : new SourceError('quota', `${detail}; the other tool-capable adapters are cooling down or limited; retry after the reset`, seconds);
     }
-    return new RoutingExhausted('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
+    return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
   }
   private fasterContinuation(task: Task, request: ModelRequest, candidates: Candidate[], adapters: Adapter[], workload: RoutingWorkload) {
     const reset = () => { delete task.reassessment; return undefined; };
@@ -227,7 +227,7 @@ export class StickyRouter {
     if (!previous || previous.from !== current.source.id || previous.source !== best.source.id || estimate.samples < previous.samples || estimate.at <= previous.at) return;
     return best;
   }
-  async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+  async complete(request: ModelRequest, signal: AbortSignal, fallback?: (reason: SourceError, signal: AbortSignal) => Promise<Completion>): Promise<Completion> {
     signal = AbortSignal.any([signal, this.shutdown.signal]);
     signal.throwIfAborted();
     await this.observation.refreshRoutingHistory();
@@ -319,7 +319,10 @@ export class StickyRouter {
         }
         if (!eligible.length) {
           if (unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-          throw this.exhausted(toolsRequired, retryTimes, refused.size, transient);
+          const failure = this.exhausted(toolsRequired, retryTimes, refused.size, transient);
+          // Keep the task reserved until its fallback has settled.
+          if (!explicit && fallback) return await fallback(failure, signal);
+          throw failure;
         }
         const idle = eligible.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They

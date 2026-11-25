@@ -87,10 +87,12 @@ export class OpenCode implements Source {
   }
   private get fetcher() { return diagnosticFetch(this.options.fetcher ?? fetch, 'opencode', 'local.opencode'); }
   async available() { if (this.options.url) return true; try { await executable('opencode'); return true; } catch { return false; } }
-  async healthCheck() {
+  async healthCheck(caller?: AbortSignal) {
     // Executable discovery cannot prove that the upstream login has recovered.
     try {
-      const result = await this.complete({ model: this.id, messages: [{ role: 'user', content: 'Reply OK. Do not use tools or edit files.' }], tools: [], cwd: tmpdir(), stream: false }, AbortSignal.timeout(30000));
+      const deadline = AbortSignal.timeout(30000);
+      const signal = caller ? AbortSignal.any([caller, deadline]) : deadline;
+      const result = await this.complete({ model: this.id, messages: [{ role: 'user', content: 'Reply OK. Do not use tools or edit files.' }], tools: [], cwd: tmpdir(), stream: false }, signal);
       return Boolean(result.text);
     } catch { return false; }
   }

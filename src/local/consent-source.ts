@@ -9,7 +9,11 @@ export class ConsentSource extends DelegatingSource {
   constructor(source: Source, private directory: string) { super(source); }
   private async approved() { return (await readDataSharingConsent(this.directory, [this.id])).includes(this.id); }
   async available(signal?: AbortSignal) { return await this.approved() && await super.available(signal); }
-  async healthCheck() { return await this.approved() && await (this.source.healthCheck?.() ?? this.source.available()); }
+  async healthCheck(signal?: AbortSignal) {
+    if (!await this.approved()) return false;
+    signal?.throwIfAborted();
+    return await (this.source.healthCheck?.(signal) ?? super.available(signal));
+  }
   async complete(request: ModelRequest, signal: AbortSignal, output?: () => void, beforeNativeWork?: () => void) {
     signal.throwIfAborted();
     if (!await this.approved()) throw new SourceError('refused', `${this.id} data sharing is not approved; rerun usegrunt setup`);

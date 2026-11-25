@@ -6,11 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext } from './diagnostics.js';
 import type { RoutingHistory } from './routing-history.js';
+import { localRequestRefusal } from './routing-history.js';
+import { MetadataFlights } from './metadata-flight.js';
 export class SourceError extends Error {
   replay?: 'safe' | 'unsafe';
   constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string, public diagnostics?: SafeDiagnosticMetadata) { super(message); }
 }
-export class RoutingExhausted extends SourceError {}
 export function canReplay(error: SourceError) {
   return error.code !== 'cancelled' && !(error instanceof RequestError)
     && (error.replay === 'safe' || error.replay === undefined && error.code !== 'timeout');
@@ -109,7 +110,8 @@ export interface Source {
   // Aborting may consume quota but cannot execute the caller's tools.
   inferenceOnly?: boolean;
   // A source that calls output() when it first produces output gets the
-  // first-output deadline. Other sources keep only their own timeouts.
+  // first-output deadline. An inference-only adapter can also be bounded
+  // while its entire response is buffered.
   reportsOutput?: boolean;
   // Streaming adapters may report every meaningful content, reasoning or tool
   // delta. They also receive an idle deadline after output has started.
@@ -131,7 +133,7 @@ export interface Source {
   acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;
   sellerQuota?(): SellerQuota | undefined;
-  healthCheck?(): Promise<boolean>;
+  healthCheck?(signal?: AbortSignal): Promise<boolean>;
   complete(request: ModelRequest, signal: AbortSignal, output?: () => void, beforeNativeWork?: () => void): Promise<Completion>;
   // Called after a failed request (not a cancellation). Must not block.
   failed?(error: SourceError): void;
@@ -154,6 +156,7 @@ export class Sources {
   // Registry-aware retirement and back-off state for a fixed source chain (no routed pool).
   private chainRouter: StickyRouter | undefined;
   private observation: SourceStatus;
+  private metadata = new MetadataFlights();
   private checking = new Set<string>();
   private maintenance: (() => Record<string, MaintenanceEntry>) | undefined;
   private diagnostics: DiagnosticsStore | undefined;
@@ -270,7 +273,9 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
-  available(source: Source) { return this.observation.available(source); }
+  available(source: Source) {
+    return this.metadata.run(source.id, signal => this.observation.available(source, false, undefined, signal), undefined, source.availabilityTimeoutMs);
+  }
   openRoute(id: string) { return this.observation.observedAvailable(id) !== false && this.dispatchEligible(id); }
   dispatchEligible(id: string, request?: ModelRequest) {
     const router = this.registeredRouter;
@@ -363,7 +368,7 @@ export class Sources {
       if (id === 'freepi') {
         guard = this.observation.guard(id);
         // Free-Pi must not publish new session traces during idle checks.
-        const available = await (source.healthCheck?.() ?? source.available());
+        const available = await (source.healthCheck?.(signal) ?? source.available(signal));
         signal.throwIfAborted();
         const newer = newerEvidence();
         if (newer) return newer;
@@ -410,9 +415,11 @@ export class Sources {
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.unrouted(s.id) && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
+      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.unrouted(s.id) && !this.router.listed(s.id)
+        || !await this.available(s).catch(() => false)) return null;
       if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck) {
-        await this.observation.available(s, true, () => this.registeredRouter?.healthy(s.id)).catch(() => false);
+        await this.metadata.run(`health:${s.id}`, signal => this.observation.available(s, true, () => this.registeredRouter?.healthy(s.id), signal),
+          undefined, s.availabilityTimeoutMs ?? 30000).catch(() => false);
       }
       return this.retired(s.id) ? null : s.id;
     }));
@@ -474,18 +481,18 @@ export class Sources {
       if (!unrouted.length) return this.router.complete(request, signal);
       // Naming an unrouted source selects it alone, as in the fixed chain.
       if (unrouted.some(source => source.id === request.model)) return this.chain(request, signal);
-      try { return await this.router.complete(request, signal); }
-      catch (error) {
-        signal.throwIfAborted();
-        if (this.sources.some(source => source.id === request.model) || !(error instanceof RoutingExhausted)) throw error;
+      return this.router.complete(request, signal, async (reason, signal) => {
         const fallback = { attempted: false };
         try { return await this.chain(request, signal, unrouted, fallback); }
         catch (failure) {
+          signal.throwIfAborted();
           // Report the routed pool's reason when no fallback source could run.
-          if (!fallback.attempted) throw error;
+          if (!fallback.attempted) throw reason;
+          if (reason instanceof RequestError && failure instanceof SourceError && failure.replay !== 'unsafe' &&
+            (failure instanceof RequestError || localRequestRefusal(failure) || ['not_installed', 'logged_out'].includes(failure.code))) throw reason;
           throw failure;
         }
-      }
+      });
     }
     return this.chain(request, signal);
   }
@@ -536,6 +543,7 @@ export class Sources {
     throw last;
   }
   async close() {
+    this.metadata.close();
     await Promise.all([this.router?.close(), this.chainRouter?.close()]);
     await Promise.allSettled(this.sources.map(s => s.close?.()));
     await this.flushRoutingHistory();
