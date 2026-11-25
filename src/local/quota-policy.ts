@@ -65,7 +65,7 @@ const policies: Readonly<Record<string, QuotaPolicy>> = {
   millionseek: { refill: 'utc-daily', limits: [{ amount: 100000000, unit: 'tokens', period: 'day', scope: 'account' }],
     detail: '100M combined input/output tokens renew at 00:00 UTC, with five concurrent requests. Temporary bonus tokens are not the recurring allowance. Named daily_quota_exceeded errors report the midnight reset; session_limit_reached and capacity errors retain their own retry signals. The exact free alias has the owner-approved 198K usable input exception. No paid model or wallet fallback.',
     documentation: 'https://100milionseek.top/docs' },
-  numes: { refill: 'provider-reported', detail: 'Free routes have separate limits. A Numes traffic cap includes Retry-After. An upstream 429 without it signals congestion without a published reset.',
+  numes: { refill: 'provider-reported', detail: 'Free routes share one account and one Amazee.ai endpoint, and no per-model allowance is published, so more models add no capacity. A Numes account cap includes Retry-After. An upstream 429 without it signals congestion without a published reset.',
     documentation: 'https://numes.ai/docs/routing/fallbacks' },
   'antseed-vikey': { refill: 'provider-reported', detail: 'The pinned seller controls the sliding free window and its buyer/IP limits. The Antseed buyer can return the remaining wait when a window is exhausted.',
     documentation: 'https://antseed.com/docs/staked-free-tier/' },

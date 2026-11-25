@@ -2,10 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { NUMES_DEEPSEEK_FLASH_CONSENT, recordDataSharingConsent } from './data-sharing.js';
+import { NUMES_AMAZEE_MODELS_CONSENT, NUMES_DEEPSEEK_FLASH_CONSENT, recordDataSharingConsent } from './data-sharing.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
 import { configure } from './main.js';
-import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
+import { Numes, NUMES_DEEPSEEK_FLASH_MODEL, NUMES_GLM_MODEL, NUMES_KIMI_MODEL } from './numes.js';
 
 const { model } = FREE_API_PROVIDERS.numes;
 const request = {
@@ -18,12 +18,12 @@ const deepSeekEndpoint = 'amazee-ai-5149fc8341b341f3a6ebe026ae44f7c7/token-facto
 const endpoint = { ...offer, tag: deepSeekEndpoint, billing_currency: 'USD', max_prompt_tokens: 917504, supported_parameters: ['tools', 'max_tokens'] };
 let directory: string;
 
-function source(fetcher: typeof fetch, deepSeekFlash = false) {
-  return new Numes({ directory, fetcher, deepSeekFlash, loadGrant: async () => ({ base_url: 'https://api.numes.ai', token: 'test-token' }) });
+function source(fetcher: typeof fetch, pinned?: string | boolean) {
+  return new Numes({ directory, fetcher, pinned: pinned === true ? NUMES_DEEPSEEK_FLASH_MODEL : pinned || undefined, loadGrant: async () => ({ base_url: 'https://api.numes.ai', token: 'test-token' }) });
 }
 
-function exactEndpoint(details = endpoint, capturedAt = Date.now(), stale = false) {
-  return Response.json({ data: { id: NUMES_DEEPSEEK_FLASH_MODEL, endpoints: [details] } }, {
+function exactEndpoint(details = endpoint, capturedAt = Date.now(), stale = false, id = NUMES_DEEPSEEK_FLASH_MODEL) {
+  return Response.json({ data: { id, endpoints: [details] } }, {
     headers: { 'X-Catalogue-Supply-Captured-At': new Date(capturedAt).toISOString(), 'X-Catalogue-Stale': String(stale) }
   });
 }
@@ -105,13 +105,15 @@ it('allows the private Flash selector only in an exact Numes configuration', asy
   const env = { GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'numes' };
   const primary = configure(env);
   const selected = configure({ ...env, GRUNT_NUMES_MODEL: NUMES_DEEPSEEK_FLASH_MODEL });
+  const kimi = configure({ ...env, GRUNT_NUMES_MODEL: NUMES_KIMI_MODEL });
   expect(primary.sources.map(adapter => adapter.id)).toEqual(['numes']);
   expect(selected.sources.map(adapter => adapter.id)).toEqual(['numes']);
   expect(primary.status().sources.find(adapter => adapter.id === 'numes')).toMatchObject({ model: 'Free model rotation' });
   expect(selected.status().sources.find(adapter => adapter.id === 'numes')).toMatchObject({ model: NUMES_DEEPSEEK_FLASH_MODEL });
+  expect(kimi.status().sources.find(adapter => adapter.id === 'numes')).toMatchObject({ model: NUMES_KIMI_MODEL });
   expect(() => configure({ ...env, GRUNT_NUMES_MODEL: NUMES_DEEPSEEK_FLASH_MODEL.slice(0, -5) })).toThrow('exact Numes-only');
   expect(() => configure({ ...env, GRUNT_SOURCES: 'numes,zro', GRUNT_NUMES_MODEL: NUMES_DEEPSEEK_FLASH_MODEL })).toThrow('exact Numes-only');
-  await Promise.all([primary.close(), selected.close()]);
+  await Promise.all([primary.close(), selected.close(), kimi.close()]);
 });
 
 it('requires the Flash disclosure separately from the GLM receipt', async () => {
@@ -238,4 +240,72 @@ it('keeps failed main catalog admission closed even when optional Flash consent 
     .mockResolvedValueOnce(new Response(null, { status: 503 }));
   const numes = source(fetcher); expect(await numes.available()).toBe(false);
   expect(fetcher).toHaveBeenCalledTimes(2); await numes.close();
+});
+
+const okReply = (name: string, text = 'hello') => Response.json({ model: name, choices: [{ message: { content: text } }], usage: { cost: 0 } });
+const sentModel = (fetcher: ReturnType<typeof vi.fn<typeof fetch>>, index: number) => JSON.parse(String(fetcher.mock.calls[index]?.[1]?.body)).model;
+
+it.each([NUMES_KIMI_MODEL, NUMES_GLM_MODEL])('pins %s to the exact Amazee endpoint under its own disclosure', async name => {
+  await recordDataSharingConsent(directory, [NUMES_DEEPSEEK_FLASH_CONSENT]);
+  const fetcher = vi.fn<typeof fetch>();
+  await expect(source(fetcher, name).available()).resolves.toBe(false);
+  await expect(source(fetcher, name).complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' });
+  expect(fetcher).not.toHaveBeenCalled();
+  await recordDataSharingConsent(directory, [NUMES_AMAZEE_MODELS_CONSENT]);
+  fetcher.mockResolvedValueOnce(Response.json({ data: zeroCap })).mockResolvedValueOnce(exactEndpoint(endpoint, Date.now(), false, name))
+    .mockResolvedValueOnce(okReply(name));
+  await expect(source(fetcher, name).complete(request, new AbortController().signal)).resolves.toMatchObject({ text: 'hello' });
+  expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toMatchObject({
+    model: name, provider: { max_price: { prompt: 0, completion: 0 }, require_parameters: true, only: [deepSeekEndpoint], allow_fallbacks: false }
+  });
+  expect(String(fetcher.mock.calls[1]?.[0])).toBe(`https://api.numes.ai/api/v1/models/${name}/endpoints`);
+});
+
+it('refuses a pinned route when the catalogue names a different model or the free endpoint is gone', async () => {
+  await recordDataSharingConsent(directory, [NUMES_AMAZEE_MODELS_CONSENT]);
+  for (const reply of [exactEndpoint(endpoint, Date.now(), false, NUMES_GLM_MODEL), new Response(null, { status: 404 })]) {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ data: zeroCap })).mockResolvedValueOnce(reply);
+    await expect(source(fetcher, NUMES_KIMI_MODEL).complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'upstream' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  }
+});
+
+it('rotates DeepSeek, Kimi, GLM 5.3 and then GLM Flash, skipping each backed-off route and unapproved disclosure', async () => {
+  await recordDataSharingConsent(directory, ['numes', NUMES_DEEPSEEK_FLASH_CONSENT, NUMES_AMAZEE_MODELS_CONSENT]);
+  const limited = () => Response.json({ error: { metadata: { error_type: 'rate_limited' } } }, { status: 429 });
+  const fetcher = vi.fn<typeof fetch>();
+  const attempt = (name: string, reply: () => Response) => {
+    fetcher.mockResolvedValueOnce(Response.json({ data: zeroCap })).mockResolvedValueOnce(exactEndpoint(endpoint, Date.now(), false, name)).mockResolvedValueOnce(reply());
+  };
+  attempt(NUMES_DEEPSEEK_FLASH_MODEL, limited);
+  attempt(NUMES_KIMI_MODEL, limited);
+  attempt(NUMES_GLM_MODEL, limited);
+  fetcher.mockResolvedValueOnce(Response.json({ data: zeroCap })).mockResolvedValueOnce(Response.json({ data: zeroCap }));
+  const numes = source(fetcher), signal = new AbortController().signal;
+  for (const [index, name] of [NUMES_DEEPSEEK_FLASH_MODEL, NUMES_KIMI_MODEL, NUMES_GLM_MODEL].entries()) {
+    await expect(numes.complete(request, signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 60 });
+    expect(sentModel(fetcher, index * 3 + 2)).toBe(name);
+  }
+  // All three strict routes are backed off: the default route answers without further catalogue reads.
+  fetcher.mockReset().mockResolvedValueOnce(Response.json({ data: zeroCap })).mockResolvedValueOnce(okReply(model));
+  await expect(numes.complete(request, signal)).resolves.toMatchObject({ text: 'hello' });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(sentModel(fetcher, 1)).toBe(model);
+});
+
+it('uses Kimi when only the shared Amazee disclosure is approved', async () => {
+  await recordDataSharingConsent(directory, ['numes', NUMES_AMAZEE_MODELS_CONSENT]);
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(exactEndpoint(endpoint, Date.now(), false, NUMES_KIMI_MODEL)).mockResolvedValueOnce(okReply(NUMES_KIMI_MODEL));
+  await expect(source(fetcher).complete(request, new AbortController().signal)).resolves.toMatchObject({ text: 'hello' });
+  expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+    'https://api.numes.ai/api/v1/key', `https://api.numes.ai/api/v1/models/${NUMES_KIMI_MODEL}/endpoints`, 'https://api.numes.ai/api/v1/chat/completions'
+  ]);
+});
+
+it('rejects a reply that names a different model than the pinned Kimi route', async () => {
+  await recordDataSharingConsent(directory, [NUMES_AMAZEE_MODELS_CONSENT]);
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(exactEndpoint(endpoint, Date.now(), false, NUMES_KIMI_MODEL)).mockResolvedValueOnce(okReply(NUMES_GLM_MODEL));
+  await expect(source(fetcher, NUMES_KIMI_MODEL).complete(request, new AbortController().signal)).rejects.toThrow('HTTP 502');
 });

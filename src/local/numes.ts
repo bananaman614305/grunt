@@ -1,6 +1,6 @@
 import { configRoot } from '../brand.js';
 import { createHash } from 'node:crypto';
-import { NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent } from './data-sharing.js';
+import { NUMES_AMAZEE_MODELS_CONSENT, NUMES_DEEPSEEK_FLASH_CONSENT, readDataSharingConsent } from './data-sharing.js';
 import { diagnosticFetch } from './diagnostics.js';
 import { FreeApi, FREE_API_PROVIDERS, readFreeApiGrant } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
@@ -10,10 +10,22 @@ import { MetadataFlights } from './metadata-flight.js';
 
 const { model, prefix } = FREE_API_PROVIDERS.numes;
 export const NUMES_DEEPSEEK_FLASH_MODEL = 'deepseek/deepseek-v4.1-flash:free';
+export const NUMES_KIMI_MODEL = 'moonshotai/kimi-k3.1-pro:free';
+export const NUMES_GLM_MODEL = 'z-ai/glm-5.3:free';
+// Every free route below, and the GLM 5.3 Flash default, resolves to the same
+// Amazee.ai endpoint under one Numes account. Numes publishes no per-model
+// allowance, so rotating models adds quality options, not capacity. The order
+// is the preference: the verified Flash route, then Kimi, then full GLM 5.3.
+export const NUMES_STRICT_ROUTES: readonly { model: string; consent: string }[] = [
+  { model: NUMES_DEEPSEEK_FLASH_MODEL, consent: NUMES_DEEPSEEK_FLASH_CONSENT },
+  { model: NUMES_KIMI_MODEL, consent: NUMES_AMAZEE_MODELS_CONSENT },
+  { model: NUMES_GLM_MODEL, consent: NUMES_AMAZEE_MODELS_CONSENT }
+];
+const strictRoute = (name: string | undefined) => NUMES_STRICT_ROUTES.find(route => route.model === name);
 const zeroPrice = { prompt: 0, completion: 0 };
 const preferredFreeEndpoint = 'amazee-ai-5149fc8341b341f3a6ebe026ae44f7c7/token-factory-df2d2988c4514d66a143237f387d4e64';
 const chatEndpoint = `${prefix}/chat/completions`;
-const DEEPSEEK_BACKOFF_MS = 15 * 60_000;
+const ROUTE_BACKOFF_MS = 15 * 60_000;
 interface Offer {
   id?: string; context_length?: number; pricing?: Record<string, unknown>; supported_parameters?: unknown;
 }
@@ -24,7 +36,7 @@ interface Key {
   disabled?: boolean; is_management_key?: boolean; limit?: number; limit_remaining?: number;
   billing_currency?: string; limit_reset?: string | null;
 }
-const deepSeekKey = (key: Key) => key.billing_currency === 'USD' && key.limit_reset === null;
+const strictKey = (key: Key) => key.billing_currency === 'USD' && key.limit_reset === null;
 const freeOffer = (entry: Offer) => Number(entry.context_length) >= 200_000
   && entry.pricing?.prompt === '0' && entry.pricing.completion === '0'
   && Object.values(entry.pricing).every(rate => rate === '0')
@@ -34,7 +46,8 @@ interface NumesOptions {
   directory?: string;
   fetcher?: typeof fetch;
   loadGrant?: () => Promise<FreeApiGrant>;
-  deepSeekFlash?: boolean;
+  // Qualification only: pin one strict route and never use the default.
+  pinned?: string | undefined;
 }
 
 export class Numes implements Source {
@@ -43,7 +56,7 @@ export class Numes implements Source {
   private directory: string;
   private client: FreeApi;
   private fetcher: typeof fetch;
-  private deepSeekRetryAt = 0;
+  private retryAt = new Map<string, number>();
   private metadata = new MetadataFlights();
 
   constructor(private options: NumesOptions = {}) {
@@ -56,7 +69,7 @@ export class Numes implements Source {
   }
 
   private approved() {
-    const policy = this.options.deepSeekFlash ? NUMES_DEEPSEEK_FLASH_CONSENT : this.id;
+    const policy = strictRoute(this.options.pinned)?.consent ?? this.id;
     return readDataSharingConsent(this.directory, [policy]).then(ids => ids.includes(policy));
   }
   private grant() { return this.options.loadGrant?.() ?? readFreeApiGrant(this.id, this.directory); }
@@ -64,10 +77,15 @@ export class Numes implements Source {
     return createHash('sha256').update(JSON.stringify([base, headers.get('Authorization'), path])).digest('hex');
   }
 
-  private async deepSeekAvailable(base: string, headers: Headers, signal?: AbortSignal | null) {
-    if (Date.now() < this.deepSeekRetryAt
-      || !(await readDataSharingConsent(this.directory, [NUMES_DEEPSEEK_FLASH_CONSENT])).includes(NUMES_DEEPSEEK_FLASH_CONSENT)) return false;
-    return this.hasDeepSeekOffer(base, headers, signal).catch(() => false);
+  // First approved strict route that is not backed off and has a fresh exact free endpoint.
+  private async strictAvailable(base: string, headers: Headers, signal?: AbortSignal | null) {
+    const approved = await readDataSharingConsent(this.directory, NUMES_STRICT_ROUTES.map(route => route.consent));
+    for (const route of NUMES_STRICT_ROUTES) {
+      if (Date.now() < (this.retryAt.get(route.model) ?? 0) || !approved.includes(route.consent)) continue;
+      signal?.throwIfAborted();
+      if (await this.hasOffer(route.model, base, headers, signal).catch(() => false)) return route.model;
+    }
+    return undefined;
   }
 
   private usableKey(base: string, headers: Headers, caller?: AbortSignal | null) {
@@ -86,11 +104,11 @@ export class Numes implements Source {
     return undefined;
   }
 
-  private hasDeepSeekOffer(base: string, headers: Headers, caller?: AbortSignal | null) {
-    return this.metadata.run(this.metadataKey(base, headers, NUMES_DEEPSEEK_FLASH_MODEL), signal => this.readDeepSeekOffer(base, headers, signal), caller);
+  private hasOffer(name: string, base: string, headers: Headers, caller?: AbortSignal | null) {
+    return this.metadata.run(this.metadataKey(base, headers, name), signal => this.readOffer(name, base, headers, signal), caller);
   }
-  private async readDeepSeekOffer(base: string, headers: Headers, signal: AbortSignal) {
-    const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models/${NUMES_DEEPSEEK_FLASH_MODEL}/endpoints`, {
+  private async readOffer(name: string, base: string, headers: Headers, signal: AbortSignal) {
+    const response = await diagnosticFetch(this.fetcher, this.id, 'models')(`${base}${prefix}/models/${name}/endpoints`, {
       headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])])
     });
     const captured = Date.parse(response.headers.get('X-Catalogue-Supply-Captured-At') ?? '');
@@ -100,7 +118,7 @@ export class Numes implements Source {
       return false;
     }
     const { data } = await response.json() as { data?: { id?: string; endpoints?: Endpoint[] } };
-    return data?.id === NUMES_DEEPSEEK_FLASH_MODEL && Array.isArray(data.endpoints) && data.endpoints.some(endpoint =>
+    return data?.id === name && Array.isArray(data.endpoints) && data.endpoints.some(endpoint =>
       endpoint.tag === preferredFreeEndpoint && endpoint.billing_currency === 'USD' && Number(endpoint.max_prompt_tokens) >= 200_000
       && freeOffer(endpoint) && Array.isArray(endpoint.supported_parameters) && endpoint.supported_parameters.includes('max_tokens'));
   }
@@ -126,11 +144,11 @@ export class Numes implements Source {
       const headers = new Headers({ Authorization: `Bearer ${grant.token}` });
       const key = await this.usableKey(base, headers, signal);
       if (!key) return false;
-      if (this.options.deepSeekFlash) return deepSeekKey(key) && await this.hasDeepSeekOffer(base, headers, signal);
+      if (this.options.pinned) return strictKey(key) && await this.hasOffer(this.options.pinned, base, headers, signal);
       const data = await this.offers(base, headers, signal);
       if (!data) return false;
       return data.some(entry => entry.id === model && freeOffer(entry))
-        || (deepSeekKey(key) && await this.deepSeekAvailable(base, headers, signal));
+        || (strictKey(key) && await this.strictAvailable(base, headers, signal) !== undefined);
     } catch { return false; }
   }
 
@@ -140,21 +158,21 @@ export class Numes implements Source {
     const base = url.slice(0, -chatEndpoint.length);
     const headers = new Headers(init.headers);
     const key = await this.usableKey(base, headers, init.signal);
-    if (!key || (this.options.deepSeekFlash && !deepSeekKey(key))) return new Response(null, { status: 403 });
-    const deepSeekFlash = deepSeekKey(key) && (this.options.deepSeekFlash
-      ? await this.hasDeepSeekOffer(base, headers, init.signal)
-      : await this.deepSeekAvailable(base, headers, init.signal));
-    if (this.options.deepSeekFlash && !deepSeekFlash) return new Response(null, { status: 503 });
+    if (!key || (this.options.pinned && !strictKey(key))) return new Response(null, { status: 403 });
+    const strict = !strictKey(key) ? undefined : this.options.pinned
+      ? (await this.hasOffer(this.options.pinned, base, headers, init.signal) ? this.options.pinned : undefined)
+      : await this.strictAvailable(base, headers, init.signal);
+    if (this.options.pinned && !strict) return new Response(null, { status: 503 });
     init.signal?.throwIfAborted();
     const body = JSON.parse(init.body) as Record<string, unknown>;
-    const selectedModel = deepSeekFlash ? NUMES_DEEPSEEK_FLASH_MODEL : model;
-    const routing = deepSeekFlash ? { only: [preferredFreeEndpoint], allow_fallbacks: false } : { order: [preferredFreeEndpoint] };
+    const selectedModel = strict ?? model;
+    const routing = strict ? { only: [preferredFreeEndpoint], allow_fallbacks: false } : { order: [preferredFreeEndpoint] };
     const response = await this.fetcher(url, {
       ...init,
       body: JSON.stringify({ ...body, model: selectedModel, provider: { max_price: zeroPrice, require_parameters: true, ...routing } })
     });
     if (!response.ok) {
-      if (deepSeekFlash && !this.options.deepSeekFlash) this.deepSeekRetryAt = Date.now() + DEEPSEEK_BACKOFF_MS;
+      if (strict && !this.options.pinned) this.retryAt.set(strict, Date.now() + ROUTE_BACKOFF_MS);
       return response;
     }
     const result = await response.clone().json() as { model?: string; usage?: { cost?: number } };

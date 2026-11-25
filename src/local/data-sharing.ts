@@ -14,6 +14,7 @@ export interface DataSharingPolicy {
 }
 
 export const NUMES_DEEPSEEK_FLASH_CONSENT = 'numes-deepseek-flash';
+export const NUMES_AMAZEE_MODELS_CONSENT = 'numes-amazee-models';
 
 // Keep these provider-specific. An unknown policy must not inherit consent to
 // another provider merely because both offer free inference.
@@ -80,6 +81,11 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
 }, {
   provider: NUMES_DEEPSEEK_FLASH_CONSENT, name: 'Numes DeepSeek V4.1 Flash Free', version: '2026-11-19',
   disclosure: 'Numes records request, usage and routing metadata and says it does not store prompts or responses. The Amazee.ai inference endpoint receives messages and tool context. Its retention, review and training policies are unverified.',
+  url: 'https://numes.ai/docs/privacy/data-retention',
+  approval: 'explicit'
+}, {
+  provider: NUMES_AMAZEE_MODELS_CONSENT, name: 'Numes Kimi K3.1 Pro and GLM 5.3 Free', version: '2026-11-25',
+  disclosure: 'Numes records request, usage and routing metadata and says it does not store prompts or responses. The Amazee.ai inference endpoint, the same one used by the Flash routes, receives messages and tool context. Its retention, review and training policies are unverified.',
   url: 'https://numes.ai/docs/privacy/data-retention',
   approval: 'explicit'
 }, {
@@ -209,7 +215,7 @@ export interface DataSharingApprovalOptions {
 
 // Setup records current policies automatically unless the existing opt-out applies.
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
-  const providers = options.providers.includes('numes') ? [...options.providers, NUMES_DEEPSEEK_FLASH_CONSENT] : options.providers;
+  const providers = options.providers.includes('numes') ? [...options.providers, NUMES_DEEPSEEK_FLASH_CONSENT, NUMES_AMAZEE_MODELS_CONSENT] : options.providers;
   const policies = dataSharingPolicies(providers);
   const saved = new Set(await readDataSharingConsent(options.directory, providers));
   const optOut = gruntEnv('SETUP_NO_DATA_SHARING', options.env) === '1';

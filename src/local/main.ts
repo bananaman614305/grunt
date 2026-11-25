@@ -30,7 +30,7 @@ import { CrowLLM } from './crowllm.js';
 import { Aperture } from './aperture.js';
 import { Darus } from './darus.js';
 import { Goedel } from './goedel.js';
-import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
+import { Numes, NUMES_STRICT_ROUTES } from './numes.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
@@ -79,8 +79,8 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   };
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
   const numesModel = gruntEnv('NUMES_MODEL', env);
-  const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const pinned = NUMES_STRICT_ROUTES.find(route => route.model === numesModel)?.model;
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), pinned }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
   const curated = registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1')
@@ -89,7 +89,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
     .filter(id => localOptInAdapters.some(adapter => adapter.id === id) || id === 'reflection-beam');
   const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
-  if (numesModel !== undefined && (!deepSeekFlash || ids.length !== 1 || ids[0] !== 'numes')) {
+  if (numesModel !== undefined && (!pinned || ids.length !== 1 || ids[0] !== 'numes')) {
     throw new Error('The Numes qualification model requires the exact Numes-only source');
   }
   const explicit = new Set([...(selection.explicit ?? declared ?? []), ...optedIn]);
@@ -99,8 +99,8 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     const current = registry();
     const adapters = current.adapters.filter(adapter => !localOptIns.has(adapter.id)).map(adapter => {
       if (adapter.id !== 'numes') return adapter;
-      if (deepSeekFlash) return { ...adapter, model: NUMES_DEEPSEEK_FLASH_MODEL };
-      const numes = { ...adapter, models: [NUMES_DEEPSEEK_FLASH_MODEL, FREE_API_PROVIDERS.numes.model] };
+      if (pinned) return { ...adapter, model: pinned };
+      const numes = { ...adapter, models: [...NUMES_STRICT_ROUTES.map(route => route.model), FREE_API_PROVIDERS.numes.model] };
       delete numes.model;
       return numes;
     });
