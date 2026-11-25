@@ -3,6 +3,8 @@ import { compileToolSchemas } from './tool-schema.js';
 import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { diagnosticFetch, diagnosticNetworks } from './diagnostics.js';
+import type { SafeDiagnosticMetadata } from './diagnostics.js';
+import { readPromotionalStream } from './promotional-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
@@ -21,7 +23,15 @@ export const IFM_MEASURED_INPUT = 205019;
 export const IFM_DAILY_TOKENS = 10000000;
 // The catalog check is reused for this long; any failed completion discards it.
 export const IFM_PREFLIGHT_MS = 60000;
-export const IFM_TOTAL_MS = 300000;
+// A reply streams for liveness. The first delta (usually reasoning) must arrive within 120 s, which covers the 2 to 6 s
+// seen on 50K-token prompts with a wide margin, and 60 s of silence after output starts is a stall. The overall bound
+// covers a 32K-token reply at the ~125 tokens a second measured, with margin.
+export const IFM_FIRST_OUTPUT_MS = 120000;
+export const IFM_IDLE_MS = 60000;
+export const IFM_TOTAL_MS = 600000;
+// Each streamed token is one ~240-byte event, so a 32K-token reply is ~8 MB; allow far more than the shared 4 MiB.
+export const IFM_STREAM_BYTES = 64 * 1024 * 1024;
+export const IFM_REASONING_CHARS = 2 * 1024 * 1024;
 export const IFM_GUARD_BACKOFF_SECONDS = 30;
 // Every live response carried a request guard of 2 with a 1 s reset. Starts are spaced to stay inside it.
 export const IFM_GUARD_REQUESTS = 2;
@@ -132,6 +142,10 @@ export class Ifm implements Source {
   readonly id = 'ifm';
   readonly supportsFunctionTools = true;
   readonly inferenceOnly = true;
+  readonly reportsOutput = true;
+  readonly reportsProgress = true;
+  readonly firstOutputMs = IFM_FIRST_OUTPUT_MS;
+  readonly idleMs = IFM_IDLE_MS;
   private verified: { key: string; at: number } | undefined;
   private shutdown = new AbortController();
   private memory = new ReasoningMemory();
@@ -181,7 +195,7 @@ export class Ifm implements Source {
     }
   }
   async available() { try { return !!await this.checked(); } catch { return false; } }
-  async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
+  async complete(request: ModelRequest, caller: AbortSignal, progress?: () => void): Promise<Completion> {
     caller.throwIfAborted();
     if (!['ifm', 'grunt', 'milo'].includes(request.model) || request.imageInput || request.tools.some(t => t.type !== 'function')) throw new SourceError('refused', 'IFM requires its exact K2 Horizon text route');
     try { new FreebuffTools(request); } catch { throw requestRefusal('Invalid IFM function definitions or tool conversation'); }
@@ -202,8 +216,15 @@ export class Ifm implements Source {
         ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}), ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}) };
     });
     // IFM recommends temperature 1.0 and top_p 0.95; reasoning effort "high" is the only level and the default.
-    const payload = JSON.stringify({ model: IFM_MODEL, messages, ...(request.tools.length ? { tools: request.tools.map(ifmTool) } : {}), temperature: 1.0, top_p: 0.95, ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}) });
+    const payload = JSON.stringify({ model: IFM_MODEL, messages, stream: true, stream_options: { include_usage: true }, ...(request.tools.length ? { tools: request.tools.map(ifmTool) } : {}), temperature: 1.0, top_p: 0.95, ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}) });
     if (Buffer.byteLength(payload) > 32 * 1024 * 1024) throw new SourceError('refused', 'IFM request is larger than grunt will send');
+    let streamFailure: SafeDiagnosticMetadata['failureReason'];
+    const maxTokens = request.maxTokens;
+    // Token counts must be whole numbers within the caller's budget, and a reported charge refuses the route.
+    const usable = (usage: Record<string, unknown>) => {
+      if (['cost', 'total_cost', 'credits_charged'].some(k => k in usage && usage[k] !== 0)) throw new SourceError('refused', 'IFM reported a charge; grunt will not continue');
+      return integer(usage.prompt_tokens) && integer(usage.completion_tokens) && (maxTokens === undefined || usage.completion_tokens <= maxTokens);
+    };
     try {
       await this.admit(signal);
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
@@ -225,40 +246,55 @@ export class Ifm implements Source {
       }
       const served = response.headers.get('ifm-served-model');
       if (served !== null && served !== IFM_MODEL) throw new Error('Unexpected model');
-      const body = await json(response, signal), usage = object(body.usage);
-      if (body.model !== IFM_MODEL || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected completion');
-      if (['cost', 'total_cost', 'credits_charged'].some(k => k in usage && usage[k] !== 0)) throw new SourceError('refused', 'IFM reported a charge; grunt will not continue');
-      const choice = object(body.choices[0]), message = object(choice.message);
-      if (message.refusal) throw new SourceError('refused', 'IFM refused the request');
-      // IFM's documents call the field reasoning_content; live responses named it reasoning. Keep whichever arrives.
-      const reasoning = typeof message.reasoning_content === 'string' ? message.reasoning_content : typeof message.reasoning === 'string' ? message.reasoning : undefined;
-      const prompt = usage.prompt_tokens, completion = usage.completion_tokens;
-      if (!integer(prompt) || !integer(completion) || request.maxTokens !== undefined && completion > request.maxTokens) throw new Error('Invalid completion');
-      if (lengthLimited(choice.finish_reason)) {
-        // A reply cut off by its token budget keeps its visible text; an unfinished tool call is dropped.
-        return truncatedCompletion(typeof message.content === 'string' ? message.content.replace(/^\n+/, '') : '', usage);
+      let reply: Completion, reasoning: string | undefined;
+      if (response.headers.get('content-type')?.includes('text/event-stream')) {
+        // Streaming is for liveness only: a long reasoning reply can take minutes, and each delta, reasoning included,
+        // keeps the first-output and idle deadlines satisfied. Grunt still hands the client one whole reply.
+        let thinking = '';
+        reply = await readPromotionalStream(response, IFM_MODEL, signal, { ...(progress ? { progress } : {}), failure: reason => { streamFailure ??= reason; }, cleanup: () => {},
+          maxBytes: IFM_STREAM_BYTES, reasoning: delta => { if (thinking.length < IFM_REASONING_CHARS) thinking += delta; },
+          // A stream without usage is not accepted: the token counts and the zero-charge check need it.
+          result: usage => { if (!usable(usage)) throw new Error('Invalid completion'); } });
+        reasoning = thinking;
+      } else {
+        // A host that ignores `stream` answers with one JSON body.
+        const body = await json(response, signal), usage = object(body.usage);
+        if (body.model !== IFM_MODEL || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected completion');
+        if (!usable(usage)) throw new Error('Invalid completion');
+        const choice = object(body.choices[0]), message = object(choice.message);
+        if (message.refusal) throw new SourceError('refused', 'IFM refused the request');
+        // IFM's documents call the field reasoning_content; live responses named it reasoning. Keep whichever arrives.
+        reasoning = typeof message.reasoning_content === 'string' ? message.reasoning_content : typeof message.reasoning === 'string' ? message.reasoning : undefined;
+        if (lengthLimited(choice.finish_reason)) reply = truncatedCompletion(message.content, usage);
+        else {
+          if (!['stop', 'tool_calls'].includes(String(choice.finish_reason)) || !(message.content === undefined || message.content === null || typeof message.content === 'string')) throw new Error('Invalid completion');
+          if (message.tool_calls !== undefined && message.tool_calls !== null && !Array.isArray(message.tool_calls)) throw new Error('Invalid tools');
+          const raw = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+          const calls = raw.map((value): ToolCall => {
+            const call = object(value), fn = object(call.function);
+            if (typeof call.id !== 'string' || call.type !== 'function' || typeof fn.name !== 'string' || typeof fn.arguments !== 'string') throw new Error('Invalid tools');
+            return { id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } };
+          });
+          reply = { text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+        }
       }
-      if (!['stop', 'tool_calls'].includes(String(choice.finish_reason)) || !(message.content === undefined || message.content === null || typeof message.content === 'string')) throw new Error('Invalid completion');
-      let calls: ToolCall[] = [];
-      if (message.tool_calls !== undefined && message.tool_calls !== null) {
-        if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) throw new Error('Invalid tools');
-        const ids = new Set<string>();
-        calls = message.tool_calls.map(raw => {
-          const call = object(raw), fn = object(call.function);
-          if (typeof call.id !== 'string' || call.type !== 'function' || typeof fn.name !== 'string' || typeof fn.arguments !== 'string') throw new Error('Invalid tools');
-          const args: unknown = JSON.parse(fn.arguments);
-          if (!call.id || ids.has(call.id) || request.messages.some(m => m.tool_calls?.some(old => old.id === call.id))
-            || !validators.get(fn.name)?.(args) || !args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid tools');
-          ids.add(call.id);
-          return { id: call.id, type: 'function' as const, function: { name: fn.name, arguments: fn.arguments } };
-        });
+      // A reply cut off by its token budget keeps its visible text; an unfinished tool call is dropped. The template's
+      // newline before the answer is not part of it.
+      if (reply.finishReason === 'length') return { ...reply, text: reply.text.replace(/^\n+/, '') };
+      const calls: ToolCall[] = [], ids = new Set<string>();
+      if (reply.calls && reply.calls.length > 16) throw new Error('Invalid tools');
+      for (const call of reply.calls ?? []) {
+        const args: unknown = JSON.parse(call.function.arguments);
+        if (!call.id || ids.has(call.id) || request.messages.some(m => m.tool_calls?.some(old => old.id === call.id))
+          || !validators.get(call.function.name)?.(args) || !args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid tools');
+        ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: call.function.name, arguments: call.function.arguments } });
       }
-      // The chat template puts a newline before the answer; it is not part of it.
-      const text = typeof message.content === 'string' ? message.content.replace(/^\n+/, '') : '';
+      const text = reply.text.replace(/^\n+/, '');
+      // Nothing but reasoning is an empty answer; the router treats it as a bad sample, not a reply.
       if (!text && !calls.length) throw new Error('Empty answer');
-      const reply = { text, ...(calls.length ? { calls } : {}) };
-      if (reasoning !== undefined) this.memory.remember(reply, reasoning);
-      return { ...reply, inputTokens: prompt, outputTokens: completion };
+      const answer = { text, ...(calls.length ? { calls } : {}) };
+      if (reasoning !== undefined) this.memory.remember(answer, reasoning);
+      return { ...answer, ...(reply.inputTokens === undefined ? {} : { inputTokens: reply.inputTokens }), ...(reply.outputTokens === undefined ? {} : { outputTokens: reply.outputTokens }) };
     } catch (e) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'IFM source closed');
@@ -268,7 +304,8 @@ export class Ifm implements Source {
       if (e instanceof SourceError) throw e;
       const cause = object(object(e).cause), code = object(e).code ?? cause.code;
       const networkCode = diagnosticNetworks.find(known => known === code);
-      throw new SourceError('upstream', 'IFM returned an invalid completion', undefined, undefined, networkCode ? { transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions', networkCode } : undefined);
+      throw new SourceError('upstream', 'IFM returned an invalid completion', undefined, undefined, streamFailure || networkCode
+        ? { transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions', ...(streamFailure ? { failureReason: streamFailure } : {}), ...(networkCode ? { networkCode } : {}) } : undefined);
     }
   }
   async close() { this.shutdown.abort(); }

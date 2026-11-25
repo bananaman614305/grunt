@@ -151,7 +151,9 @@ function completion(text: string, calls: ToolCall[], usage: Record<string, unkno
 // SSE is transport even when the harness requests a non-streamed completion.
 // Bound memory, assemble indexed function fragments, require an explicit finish,
 // and reject errors/truncated streams instead of passing partial output as success.
-export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void }): Promise<Completion> {
+export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void;
+  // Optional: receives each reasoning delta (one field per delta), and raises the 4 MiB stream cap for a long reply.
+  reasoning?: (delta: string) => void; maxBytes?: number }): Promise<Completion> {
   // Observers receive fixed reason codes only. Preserve thrown values (even
   // non-Error values), cancellation priority and all existing acceptance rules.
   const tagged = (error: unknown, reason: FailureReason) => {
@@ -189,6 +191,8 @@ export async function readPromotionalStream(response: Response, model: string, s
       // Providers may stream reasoning before visible answer text. Preserve
       // healthy thinking without counting comments, role events or whitespace.
       if (!finished && ['reasoning_content', 'reasoning'].some(field => typeof delta[field] === 'string' && delta[field].trim().length > 0)) progressing = true;
+      const thinking = ['reasoning_content', 'reasoning'].map(field => delta[field]).find((value): value is string => typeof value === 'string');
+      if (thinking !== undefined) { try { observe?.reasoning?.(thinking); } catch { /* Observation cannot alter stream validation. */ } }
       if (delta.content !== undefined && delta.content !== null) {
         if (finished || typeof delta.content !== 'string') throw invalid('response_content', 'Invalid stream content');
         text += delta.content;
@@ -224,7 +228,7 @@ export async function readPromotionalStream(response: Response, model: string, s
       try { chunk = await reader.read(); } catch (error) { throw tagged(error, 'stream_read'); }
       if (chunk.done) break;
       size += chunk.value.length;
-      if (size > 4 * 1024 * 1024) throw invalid('response_body', 'Stream too large');
+      if (size > (observe?.maxBytes ?? 4 * 1024 * 1024)) throw invalid('response_body', 'Stream too large');
       pending += observed('stream_format', () => decoder.decode(chunk.value, { stream: true }));
       // Normalize CRLF only after buffering, including split delimiters.
       pending = pending.replace(/\r\n/g, '\n');

@@ -295,3 +295,150 @@ it('sends the normalised schema but validates the model’s call against the ori
   expect(bodyOf(fetcher).tools[0].function.parameters).toEqual({ type: 'object', allOf: [{ properties: { x: { type: 'string' } } }] });
   expect(loose.function.parameters.required).toEqual(['x']);
 });
+
+// ---- Streaming. K2 is streamed purely for liveness: Grunt still returns one whole reply. ----
+const chunk = (delta: Record<string, unknown>, extra: Record<string, unknown> = {}, finish: string | null = null) =>
+  ({ id: 'chatcmpl-synthetic', object: 'chat.completion.chunk', model: IFM_MODEL, choices: [{ index: 0, delta, finish_reason: finish }], ...extra });
+const usageChunk = (prompt = 17, completion = 9, extra: Record<string, unknown> = {}) => ({ id: 'chatcmpl-synthetic', model: IFM_MODEL, choices: [], usage: { prompt_tokens: prompt, completion_tokens: completion, ...extra } });
+const sse = (events: (object | string)[], headers: Record<string, string> = {}) => new Response(new ReadableStream({ start(controller) {
+  for (const event of events) controller.enqueue(new TextEncoder().encode(`data: ${typeof event === 'string' ? event : JSON.stringify(event)}\n\n`));
+  controller.close();
+} }), { headers: { 'content-type': 'text/event-stream; charset=utf-8', ...headers } });
+const hello = [chunk({ role: 'assistant', content: '' }), chunk({ reasoning: 'Think ' }), chunk({ reasoning: 'more.' }), chunk({ content: '\n' }), chunk({ content: 'Hel' }), chunk({ content: 'lo' }),
+  chunk({}, { usage: { prompt_tokens: 17, completion_tokens: 9 } }, 'stop'), '[DONE]'];
+
+it('streams for liveness and returns one whole reply with usage, asking for usage in the stream', async () => {
+  await approved();
+  const fetcher = api(() => sse(hello, { 'ifm-served-model': IFM_MODEL }));
+  await expect(source(fetcher).complete(ask(), AbortSignal.timeout(5000))).resolves.toEqual({ text: 'Hello', inputTokens: 17, outputTokens: 9 });
+  expect(bodyOf(fetcher)).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+});
+
+it('accepts a finish chunk followed by a usage-only chunk with no choices', async () => {
+  await approved();
+  const events = [chunk({ role: 'assistant', content: '' }), chunk({ reasoning: 'r' }), chunk({ content: 'Hi' }), chunk({}, {}, 'stop'), usageChunk(), '[DONE]'];
+  await expect(source(api(() => sse(events))).complete(ask(), AbortSignal.timeout(5000))).resolves.toMatchObject({ text: 'Hi', inputTokens: 17, outputTokens: 9 });
+});
+
+it('counts reasoning deltas as progress, so a long thinking phase keeps the deadlines satisfied', async () => {
+  await approved();
+  const progress = vi.fn();
+  await source(api(() => sse(hello))).complete(ask(), AbortSignal.timeout(5000), progress);
+  expect(progress.mock.calls.length).toBeGreaterThanOrEqual(3);
+  const reasoningOnly = vi.fn();
+  const events = [chunk({ role: 'assistant' }), chunk({ reasoning: 'only thinking' }), chunk({}, { usage: { prompt_tokens: 5, completion_tokens: 3 } }, 'length'), '[DONE]'];
+  await source(api(() => sse(events))).complete(ask({ maxTokens: 3 }), AbortSignal.timeout(5000), reasoningOnly);
+  expect(reasoningOnly).toHaveBeenCalled();
+});
+
+it('replays the streamed reasoning (either field name) on the next turn', async () => {
+  await approved();
+  const fetcher = api(() => sse(hello));
+  const client = source(fetcher);
+  await client.complete(ask(), AbortSignal.timeout(5000));
+  await client.complete(ask({ messages: [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'Hello' }, { role: 'user', content: 'again' }] }), AbortSignal.timeout(5000));
+  expect(bodyOf(fetcher, 1).messages[1].reasoning_content).toBe('Think more.');
+});
+
+it('assembles parallel tool calls delivered whole or in indexed fragments', async () => {
+  await approved();
+  const two = { type: 'function' as const, function: { name: 'scout_probe_b', parameters: tool.function.parameters } };
+  const whole = [chunk({ role: 'assistant', content: '' }), chunk({ reasoning: 'plan' }), chunk({ tool_calls: [
+    { index: 0, id: 'a1', type: 'function', function: { name: 'scout_probe', arguments: '{"value": 1}' } },
+    { index: 1, id: 'b1', type: 'function', function: { name: 'scout_probe_b', arguments: '{"value": 2}' } }] }), chunk({}, { usage: { prompt_tokens: 40, completion_tokens: 20 } }, 'tool_calls'), '[DONE]'];
+  const replyWhole = await source(api(() => sse(whole))).complete(ask({ tools: [tool, two] }), AbortSignal.timeout(5000));
+  expect(replyWhole.calls?.map(call => [call.id, call.function.name, call.function.arguments])).toEqual([['a1', 'scout_probe', '{"value": 1}'], ['b1', 'scout_probe_b', '{"value": 2}']]);
+  const fragments = [chunk({ role: 'assistant' }), chunk({ tool_calls: [{ index: 0, id: 'a1', type: 'function', function: { name: 'scout_probe', arguments: '' } }] }),
+    chunk({ tool_calls: [{ index: 1, id: 'b1', type: 'function', function: { name: 'scout_probe_b', arguments: '' } }] }),
+    chunk({ tool_calls: [{ index: 0, function: { arguments: '{"value"' } }] }), chunk({ tool_calls: [{ index: 1, function: { arguments: '{"value": 2}' } }] }),
+    chunk({ tool_calls: [{ index: 0, function: { arguments: ': 1}' } }] }), chunk({}, { usage: { prompt_tokens: 40, completion_tokens: 20 } }, 'tool_calls'), '[DONE]'];
+  const replyParts = await source(api(() => sse(fragments))).complete(ask({ tools: [tool, two] }), AbortSignal.timeout(5000));
+  expect(replyParts.calls?.map(call => call.function.arguments)).toEqual(['{"value": 1}', '{"value": 2}']);
+  const bad = [chunk({ tool_calls: [{ index: 0, id: 'a1', type: 'function', function: { name: 'scout_probe', arguments: '{"value": "x"}' } }] }), chunk({}, { usage: { prompt_tokens: 4, completion_tokens: 2 } }, 'tool_calls'), '[DONE]'];
+  await expect(source(api(() => sse(bad))).complete(ask({ tools: [tool] }), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'upstream' });
+});
+
+it('reports a stream cut off by the output budget as length-limited, even with only reasoning', async () => {
+  await approved();
+  const cut = [chunk({ role: 'assistant' }), chunk({ reasoning: 'thinking without end' }), chunk({}, { usage: { prompt_tokens: 20, completion_tokens: 64 } }, 'length'), '[DONE]'];
+  await expect(source(api(() => sse(cut))).complete(ask({ maxTokens: 64 }), AbortSignal.timeout(5000)))
+    .resolves.toEqual({ text: '', finishReason: 'length', inputTokens: 20, outputTokens: 64 });
+});
+
+it.each([
+  ['an answer that is only reasoning', [chunk({ role: 'assistant' }), chunk({ reasoning: 'thought' }), chunk({}, { usage: { prompt_tokens: 5, completion_tokens: 3 } }, 'stop'), '[DONE]'], 'stream_incomplete'],
+  ['a stream without [DONE]', [chunk({ content: 'Hi' }), chunk({}, { usage: { prompt_tokens: 5, completion_tokens: 3 } }, 'stop')], 'stream_incomplete'],
+  ['a stream without a finish reason', [chunk({ content: 'Hi' }), usageChunk(), '[DONE]'], 'stream_incomplete'],
+  ['a chunk of another model', [{ ...chunk({ content: 'Hi' }), model: 'other/model' }, '[DONE]'], 'completion_model'],
+  ['an error event', [{ error: { message: 'x' } }, '[DONE]'], 'stream_format'],
+  ['a refusal delta', [chunk({ refusal: 'no' }), '[DONE]'], undefined]
+])('treats %s as a failed reply', async (_name, events, reason) => {
+  await approved();
+  const error = await source(api(() => sse(events as (object | string)[]))).complete(ask(), AbortSignal.timeout(5000)).catch(e => e);
+  expect(error).toBeInstanceOf(Error);
+  if (reason) expect(error).toMatchObject({ code: 'upstream', diagnostics: { failureReason: reason } });
+  else expect(error).toMatchObject({ code: 'refused' });
+});
+
+it('refuses a reported charge and a stream with no usage', async () => {
+  await approved();
+  const charged = [chunk({ content: 'Hi' }), chunk({}, { usage: { prompt_tokens: 5, completion_tokens: 3, cost: 0.02 } }, 'stop'), '[DONE]'];
+  await expect(source(api(() => sse(charged))).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'refused' });
+  const unmetered = [chunk({ content: 'Hi' }), chunk({}, {}, 'stop'), '[DONE]'];
+  await expect(source(api(() => sse(unmetered))).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'upstream' });
+  const over = [chunk({ content: 'Hi' }), chunk({}, { usage: { prompt_tokens: 5, completion_tokens: 99 } }, 'stop'), '[DONE]'];
+  await expect(source(api(() => sse(over))).complete(ask({ maxTokens: 10 }), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'upstream' });
+});
+
+it('cancels the stream reader when the caller aborts mid-reply', async () => {
+  await approved();
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk({ reasoning: 'x' }))}\n\n`)); }, cancel() { cancelled = true; } });
+  const fetcher = api(() => new Response(stream, { headers: { 'content-type': 'text/event-stream' } }));
+  const stop = new AbortController();
+  const pending = source(fetcher).complete(ask(), stop.signal).catch(e => e);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  stop.abort();
+  expect(await pending).toBeInstanceOf(Error);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(cancelled).toBe(true);
+});
+
+it('accepts a streamed reply well past the shared 4 MiB stream cap', async () => {
+  await approved();
+  const events: (object | string)[] = [chunk({ role: 'assistant' }), ...Array.from({ length: 24000 }, () => chunk({ content: 'word ' }, { created: 1795594223, logprobs: null, token_ids: null, extra: 'x'.repeat(40) })),
+    chunk({}, { usage: { prompt_tokens: 100, completion_tokens: 24000 } }, 'stop'), '[DONE]'];
+  const reply = await source(api(() => sse(events))).complete(ask({ maxTokens: 32000 }), AbortSignal.timeout(30000));
+  expect(reply.text.length).toBe(24000 * 5);
+  expect(reply.outputTokens).toBe(24000);
+});
+
+it('keeps the shape refusals and the rate guard when the reply would have been streamed', async () => {
+  await approved();
+  await expect(source(api(() => new Response('{}', { status: 422 }))).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_body' } });
+  await expect(source(api(() => new Response('{}', { status: 429, headers: { 'retry-after': '9' } }))).complete(ask(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota', retryAfter: 9 });
+});
+
+it('survives the pool first-output deadline on a reply that streams for longer than a minute', async () => {
+  await approved();
+  const realTimeout = globalThis.setTimeout;
+  const realSleep = (ms: number) => new Promise<void>(resolve => realTimeout(resolve, ms));
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+  try {
+    const { Sources } = await import('./source.js');
+    const encoder = new TextEncoder();
+    // Thinking for 90 s, one reasoning delta every 20 s, then a short answer: a non-streamed reply would be cut at 60 s.
+    const slow = new ReadableStream<Uint8Array>({ async start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk({ role: 'assistant', content: '' }))}\n\n`));
+      for (let i = 0; i < 4; i++) { await new Promise(resolve => setTimeout(resolve, 20000)); controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk({ reasoning: `step ${i} ` }))}\n\n`)); }
+      for (const event of [chunk({ content: 'Done.' }), chunk({}, { usage: { prompt_tokens: 7, completion_tokens: 5 } }, 'stop'), '[DONE]']) controller.enqueue(encoder.encode(`data: ${typeof event === 'string' ? event : JSON.stringify(event)}\n\n`));
+      controller.close();
+    } });
+    const pool = new Sources([source(api(() => new Response(slow, { headers: { 'content-type': 'text/event-stream' } })))]);
+    const result = pool.complete({ ...ask(), model: 'grunt' }, AbortSignal.timeout(900000));
+    // Let the request reach the stream in real time, then move the fake clock in ten-second steps.
+    for (let elapsed = 0; elapsed < 130000; elapsed += 10000) { await realSleep(15); await vi.advanceTimersByTimeAsync(10000); }
+    await expect(result).resolves.toMatchObject({ text: 'Done.' });
+    await pool.close();
+  } finally { vi.useRealTimers(); }
+});

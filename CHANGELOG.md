@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Stream IFM K2 Horizon replies (for liveness only; the client still gets one whole reply). A reasoning-heavy request needing more than 60 s was cut by the first-output deadline and benched the source for 15 minutes. Reasoning, answer and tool-call deltas now keep the deadlines satisfied (120 s first output, 60 s idle), the stream cap rises to 64 MiB for long replies, reasoning is still replayed on the next turn, and the shape refusals and request guard are unchanged. The shared SSE reader gains two optional hooks (a reasoning observer and a byte cap); other sources are unaffected.
+
 - Operator: the live-upgrade controller now pins the Adventure builder's CPU limit at exactly eight CPUs (`cpu.max` `800000 100000`).
 
 ## 0.10.11 — 2026-11-25
