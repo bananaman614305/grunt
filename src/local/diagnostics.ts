@@ -173,7 +173,12 @@ export class DiagnosticsStore {
   private constructor(private db: Client | undefined, private options: { maxEvents: number; maxAgeMs: number; now: () => number; runtimeVersion?: string }, private streamId: string | null = null, private writerKey?: string) {
     if (!db) this.error = 'storage_unavailable';
   }
-  static async open(options: { directory: string; maxEvents?: number; maxAgeMs?: number; now?: () => number; runtimeVersion?: string }) {
+  async adoptionConsentSince(): Promise<number | undefined> {
+    const result = await this.db?.execute("SELECT value FROM diagnostic_meta WHERE key='adoption_since'");
+    const since = Number(result?.rows[0]?.value);
+    return Number.isSafeInteger(since) && since > 0 ? since : undefined;
+  }
+  static async open(options: { directory: string; adoptionConsent?: boolean; maxEvents?: number; maxAgeMs?: number; now?: () => number; runtimeVersion?: string }) {
     if (options.runtimeVersion !== undefined && !runtimeVersion.test(options.runtimeVersion)) throw new Error('Invalid runtime version');
     const limits = { maxEvents: Math.min(100000, Math.max(100, options.maxEvents ?? 50000)), maxAgeMs: Math.min(90 * 86400000, Math.max(60000, options.maxAgeMs ?? 30 * 86400000)), now: options.now ?? Date.now, ...(options.runtimeVersion ? { runtimeVersion: options.runtimeVersion } : {}) };
     let db: Client | undefined;
@@ -207,6 +212,12 @@ export class DiagnosticsStore {
           CREATE INDEX IF NOT EXISTS diagnostic_events_source ON diagnostic_events(source,seq);
           ${diagnosticMetricSchema}`);
         await chmod(path, 0o600);
+        // Only daemon startup supplies a consent decision. Other journal readers leave it intact.
+        if (options.adoptionConsent === true) {
+          await db!.execute({ sql: "INSERT OR IGNORE INTO diagnostic_meta(key,value) VALUES('adoption_since',?)", args: [String(limits.now())] });
+        } else if (options.adoptionConsent === false) {
+          await db!.execute("DELETE FROM diagnostic_meta WHERE key='adoption_since'");
+        }
         await db!.execute({ sql: 'INSERT OR IGNORE INTO diagnostic_meta(key,value) VALUES(?,?)', args: ['stream_id', randomUUID()] });
         streamId = String((await db!.execute("SELECT value FROM diagnostic_meta WHERE key='stream_id'")).rows[0]?.value);
         if (!uuid.test(streamId)) throw new Error('invalid_diagnostic_identity');

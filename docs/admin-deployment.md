@@ -217,7 +217,10 @@ login. The machine read token cannot retrieve account analytics.
 Day, week and month start at UTC midnight today, six days ago and twenty-nine
 days ago. Active installations have a user attempt start or outcome in a retained
 fleet hour. Installation reporting for adoption requires `GRUNT_ADOPTION_REPORTING=1`
-on the daemon with fleet sharing enabled. Unmarked or historical uploads do not
+on the daemon with fleet sharing enabled. Daemon startup persists the start of
+the current opt-in in its diagnostic journal. Only full UTC hours starting
+at or after that instant qualify, including on replay. Restarting with adoption
+or fleet sharing disabled clears the boundary. Unmarked or pre-opt-in uploads do not
 establish consent. Membership is one installation per fixed Monday-to-Monday
 UTC week ending in the selected period. Reports are keyed by installation and hour.
 Missing or incomplete hours exclude that installation-week from the funnel.

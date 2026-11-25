@@ -157,15 +157,16 @@ export function start(env = process.env) {
   const directory = configDir(env);
   let diagnostics: DiagnosticsStore | undefined;
   const runtimeVersion = installedRuntimeVersion();
-  const diagnosticReady = DiagnosticsStore.open({ directory, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
-  const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
-  // Route health goes to the registry on each sync and its scores weight routing (docs/router.md).
   const urls = env.GRUNT_REGISTRY_URL ? [env.GRUNT_REGISTRY_URL] : REGISTRY_URLS;
   const reportFleet = gruntEnv('SETUP_NO_DATA_SHARING',env) !== '1' && gruntEnv('FLEET_REPORTING',env) !== '0' && urls.every(url => REGISTRY_URLS.includes(url));
+  const adoptionConsent = reportFleet && gruntEnv('ADOPTION_REPORTING',env) === '1';
+  const diagnosticReady = DiagnosticsStore.open({ directory, adoptionConsent, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
+  const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
+  // Route health goes to the registry on each sync and its scores weight routing (docs/router.md).
   const feedback = new RouteFeedback({ directory, urls,
     ...(reportFleet ? { fleet: async (token: string) => {
       await diagnosticReady;
-      if (diagnostics) await uploadFleet(diagnostics, directory, urls, token, Date.now(), fetch, gruntEnv('ADOPTION_REPORTING',env) === '1');
+      if (diagnostics) await uploadFleet(diagnostics, directory, urls, token, Date.now(), fetch, adoptionConsent);
     } } : {}),
     listed: () => registry.adapters.map(adapter => adapter.id), retired: id => sources.retired(id), ...(runtimeVersion ? { client: runtimeVersion } : {}) });
   sources.setFeedback((id, outcome, latencyMs) => feedback.record(id, outcome, latencyMs));
