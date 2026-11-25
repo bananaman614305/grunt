@@ -299,7 +299,10 @@ it('filters disabled, unavailable and unsupported image adapters before drawing'
   expect(a.complete).not.toHaveBeenCalled();
   const app = createLocalApp(sources);
   const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] }) });
-  expect(response.status).toBe(429); expect(b.complete).toHaveBeenCalledOnce();
+  // No registry adapter lists images, so the image becomes a text note and the conversation is served instead of failing.
+  expect(response.status).toBe(200); expect(b.complete).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(b.complete).mock.calls.at(-1)![0]).toMatchObject({ messages: [{ content: expect.stringContaining('[image omitted (image/png, 1 bytes)') }] });
+  expect(vi.mocked(b.complete).mock.calls.at(-1)![0].imageInput).toBeUndefined();
 });
 it('hands off the live working tree against a dirty task-start checkpoint', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'grunt-handoff-'));

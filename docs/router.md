@@ -134,6 +134,24 @@ accepted, with `GRUNT_*` taking precedence.
   Text-only requests, explicit source selection and routes with no tool support
   are unaffected. The switch is the `NATIVE_TOOL_SOURCES_FIRST` constant in
   `src/local/routing.ts`.
+- **Images.** Grunt forwards no image data to any source, and a request that
+  holds an image can only go to an adapter whose registry entry lists `image`
+  (none of the free pool does). When no source could take it, the local API
+  replaces each image block, including one inside a tool result and any in the
+  conversation history, with a short note such as `[image omitted (image/png,
+  3 bytes): no free source on this route accepts images; inspect it with tools
+  instead]`, then routes the request as text. Only the media type and decoded size
+  appear, never the data, a URL or a path, and the same image always gives the
+  same note, so the task key and caches do not move. A conversation poisoned by an
+  earlier image recovers on its next request. The image is kept, and the request
+  routed as sent, when an eligible adapter lists image input: for a tools request
+  one that is tool-capable, for an explicit model the named source. An
+  image-capable source that is benched for no more than five minutes
+  (`IMAGE_WAIT_SECONDS`) still counts, so the answer is a true 429 with its retry
+  time. Beyond that it is not worth holding the conversation for it and the image is
+  replaced. If a request with an image still reaches the router and no source lists
+  image input, the answer is an invalid-request error (HTTP 400) that names the
+  modality, not a quota error.
 - **Back-off.** Upstream failures, timeouts and refusals normally bench the
   route for 15 minutes. Each identical repeat within 6 hours doubles that
   delay, up to 2 hours. An invalid function-call response starts at 30 seconds

@@ -31,6 +31,39 @@ function historicalCalls(calls: unknown): ToolCall[] | undefined {
     return fn && typeof fn === 'object' && !Array.isArray(fn) ? { ...call, function: { ...fn, arguments: historicalArguments((fn as Obj).arguments) } } : call;
   });
 }
+// Image blocks of the three wire formats. Grunt forwards no image data to any source, so a conversation that holds an
+// image is only routable to a source that lists image input. When none does (the free registry today), each block is
+// replaced by a short, deterministic note instead of killing the whole conversation: the same bytes always give the
+// same note, and the note never carries data, a URL or a path.
+const IMAGE_BLOCKS = new Set(['image', 'input_image', 'image_url']);
+const isImage = (block: unknown) => IMAGE_BLOCKS.has(String(object(block).type));
+const hasImage = (content: unknown): boolean => Array.isArray(content) && content.some(block => isImage(block) || object(block).type === 'tool_result' && hasImage(object(block).content));
+function imageNote(block: unknown): string {
+  const b = object(block), source = object(b.source), ref = object(b.image_url);
+  const url = typeof b.image_url === 'string' ? b.image_url : typeof ref.url === 'string' ? ref.url : undefined;
+  const embedded = url === undefined ? undefined : /^data:([a-z]+\/[a-z0-9.+-]{1,40})?(?:;[^,;]*)*;base64,/i.exec(url);
+  const mediaType = typeof source.media_type === 'string' && /^[a-z]+\/[a-z0-9.+-]{1,40}$/i.test(source.media_type) ? source.media_type : embedded?.[1];
+  const data = typeof source.data === 'string' ? source.data : embedded && url ? url.slice(embedded[0].length) : undefined;
+  const bytes = data !== undefined && /^[A-Za-z0-9+/]*={0,2}$/.test(data) && data.length % 4 === 0 ? data.length / 4 * 3 - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0) : undefined;
+  const detail = [mediaType?.toLowerCase(), bytes === undefined ? undefined : `${bytes} bytes`].filter(Boolean).join(', ');
+  return `[image omitted${detail ? ` (${detail})` : ''}: no free source on this route accepts images; inspect it with tools instead]`;
+}
+function noImages(content: unknown): unknown {
+  if (!hasImage(content)) return content;
+  return (content as unknown[]).map(block => isImage(block) ? { type: 'text', text: imageNote(block) }
+    : object(block).type === 'tool_result' ? { ...object(block), content: noImages(object(block).content) } : block);
+}
+// Content positions only: tool arguments that happen to hold {"type":"image"} are never touched.
+function withoutImages(body: Obj, api: string): Obj {
+  const turns = api === 'responses' ? body.input : body.messages;
+  if (!Array.isArray(turns)) return body;
+  const swapped = turns.map(value => {
+    const m = object(value);
+    if (!hasImage(m.content) && !hasImage(m.output)) return value;
+    return { ...m, ...(hasImage(m.content) ? { content: noImages(m.content) } : {}), ...(hasImage(m.output) ? { output: text(noImages(m.output)) } : {}) };
+  });
+  return { ...body, [api === 'responses' ? 'input' : 'messages']: swapped };
+}
 function text(v: unknown): string {
   if (typeof v === 'string') return v;
   return array(v).flatMap(b => {
@@ -66,10 +99,13 @@ function responsesMessages(items: unknown[]): Message[] {
   out.push(...held);
   return out;
 }
-export function decode(body: Obj, api: string, fallback?: string): ModelRequest & {
+export function decode(original: Obj, api: string, fallback?: string, options: { omitImages?: boolean } = {}): ModelRequest & {
   cwdSource: 'request' | 'fallback' | 'scratch';
   responseNamespaces?: ReadonlyMap<string, { namespace: string; name: string }>;
 } {
+  // Only the messages are rewritten. The task key (userMessages) still comes from the original turns, so stickiness is the same
+  // with or without the note.
+  const body = options.omitImages ? withoutImages(original, api) : original;
   let messages: Message[];
   if (api === 'responses') {
     messages = typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : responsesMessages(array(body.input));
@@ -110,13 +146,13 @@ export function decode(body: Obj, api: string, fallback?: string): ModelRequest 
   const absolute = matches.filter(m => isAbsolute((m[1] ?? m[2] ?? '').trim()));
   const inferred = absolute.find(m => /^Primary working directory:/i.test(m[0])) ?? absolute[0];
   const namedCwd = typeof body.cwd === 'string' ? body.cwd : (inferred?.[1] ?? inferred?.[2])?.trim();
-  const rawTurns = api === 'responses' ? (typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : array(body.input)) : array(body.messages);
+  const rawTurns = api === 'responses' ? (typeof original.input === 'string' ? [{ role: 'user', content: original.input }] : array(original.input)) : array(original.messages);
   const userMessages = rawTurns.map(object).filter(m => (m.role === 'user' || (api === 'responses' && !m.role && !m.type))).map(m => typeof m.content === 'string' ? userText(m.content) : array(m.content).map(object).filter(b => b.type === 'text' || b.type === 'input_text').map(b => userText(String(b.text ?? ''))).filter(t => t.length > 0).join('\n')).filter(t => t.length > 0);
   const cwdSource = namedCwd !== undefined ? 'request' : fallback !== undefined ? 'fallback' : 'scratch';
   const cwd = namedCwd ?? fallback ?? join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'grunt/scratch', createHash('sha256').update(userMessages[0] ?? '').digest('hex').slice(0, 24));
   if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
-  const imageInput = /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
+  const imageInput = !options.omitImages && /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
   return { model: String(body.model ?? 'grunt'), messages, userMessages, tools, cwd, cwdSource, ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
@@ -272,6 +308,8 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       try {
         const body = object(await c.req.json());
         request = decode(body, api, options.cwd);
+        // Same conversation as text when no source could take the image. Otherwise it is routed as sent.
+        if (request.imageInput && !sources.acceptsImages(request)) request = decode(body, api, options.cwd, { omitImages: true });
         includeUsage = api === 'chat' && object(body.stream_options).include_usage === true;
       }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }

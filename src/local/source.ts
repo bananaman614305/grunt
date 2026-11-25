@@ -468,6 +468,16 @@ export class Sources {
   // A route left the open set, including an observed availability loss.
   setRouteDropped(dropped: (id: string) => void) { this.dropped = dropped; }
   private dropped: ((id: string) => void) | undefined;
+  // Whether some source could take this request with its image kept: one that lists image input, is set up, and is not
+  // benched for long (an explicitly named source only counts itself; a tools request needs a tool-capable one).
+  // Without a registry each source decides for itself, so this stays true and nothing is rewritten.
+  acceptsImages(request: ModelRequest): boolean {
+    const router = this.registeredRouter;
+    if (!router) return true;
+    const named = this.sources.some(source => source.id === request.model);
+    const toolsRequired = !named && needsFunctionTools(request);
+    return this.sources.some(source => (!named || source.id === request.model) && (!toolsRequired || toolCapable(source)) && !this.unrouted(source.id) && router.imageUsable(source.id));
+  }
   async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
     const parent = currentDiagnosticContext();
     const actor = parent?.actor ? { actor: parent.actor } : {};

@@ -45,6 +45,8 @@ export function registryScoreFactor(score: number | null | undefined) {
 // envelope and may decline. Only the draw set narrows: weights, consent, quota and cooldowns are untouched, and a
 // bridged source still serves when no native tool source is eligible. See docs/router.md.
 export const NATIVE_TOOL_SOURCES_FIRST = true;
+// An image-capable source benched for longer than this no longer keeps the image in the conversation (see imageUsable).
+export const IMAGE_WAIT_SECONDS = 300;
 
 export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
 interface Task {
@@ -164,6 +166,18 @@ export class StickyRouter {
   listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {
     return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
+  }
+  // An adapter that lists image input in the current registry, whatever its state right now.
+  private imageListed(id: string) {
+    return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && adapter.modalities.includes('image') && !scoutRetired(adapter, this.now()));
+  }
+  // An image-capable source that can serve soon: listed, set up, not retired, and not benched longer than
+  // IMAGE_WAIT_SECONDS. The caller keeps the image for it (a short wait or a true 429 retry is honest); beyond that
+  // the conversation is better served as text now than held for a source that is gone for hours.
+  imageUsable(id: string) {
+    if (!this.imageListed(id) || this.options.disabled?.has(id) || this.options.pending?.has(id) || this.retired(id)) return false;
+    const until = this.cooldown(id)?.until;
+    return until === undefined || until <= this.now() + IMAGE_WAIT_SECONDS * 1000;
   }
   private async git(cwd: string, args: string[], signal: AbortSignal) {
     return (await exec('git', ['-C', cwd, ...args], { signal, timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
@@ -355,7 +369,10 @@ export class StickyRouter {
         }
         if (!eligible.length) {
           if (unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-          const failure = this.exhausted(toolsRequired, retryTimes, refused.size, transient);
+          // No source lists image input at all: that is the request's shape, not quota, so say so as an invalid request.
+          const imageRefused = request.imageInput === true && !this.sources.some(source => (!explicit || source.id === request.model) && !this.options.unrouted?.has(source.id) && this.imageListed(source.id));
+          const failure = imageRefused ? new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text')
+            : this.exhausted(toolsRequired, retryTimes, refused.size, transient);
           // Keep the task reserved until its fallback has settled.
           if (!explicit && fallback) return await fallback(failure, signal);
           throw failure;

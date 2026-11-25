@@ -198,6 +198,12 @@ Set it only when the full text and tool
 payload can be retained, reviewed by staff and used for training, and contains
 no secrets, confidential business information or other people’s personal data.
 
+An image in a conversation (a user turn, a tool result such as a Read of a PNG, or
+older history) no longer ends the conversation: no free source takes images, so the
+local API replaces each image with a short text note and routes the request as text,
+unless an eligible adapter lists image input
+([details](router.md#2-score-back-off-retirement)).
+
 Automatic selection (`grunt`) sends requests containing function tools
 only to sources that return tool calls to the caller's harness. Native API
 sources forward function definitions; validated JSON bridges return correlated
