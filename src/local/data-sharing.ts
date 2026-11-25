@@ -11,6 +11,9 @@ export interface DataSharingPolicy {
   disclosure: string;
   url: string;
   approval?: 'explicit' | 'material';
+  // Setup never records this policy on its own, even when the source is named. The person approves it by
+  // listing the provider in GRUNT_APPROVE_DATA_SHARING, and a changed policy needs that approval again.
+  manual?: true;
 }
 
 export const NUMES_DEEPSEEK_FLASH_CONSENT = 'numes-deepseek-flash';
@@ -21,6 +24,10 @@ export const DATA_SHARING_POLICIES: readonly DataSharingPolicy[] = [{
   provider: 'millionseek', name: '100milionseek DeepSeek V4.1 Flash', version: '2026-11-20',
   disclosure: 'The relay says prompts and replies are not stored, logged, trained on or sold. An unnamed model provider receives prompts without email or account ID; that provider’s retention and training practices remain unverified. Account and quota metadata are retained separately.',
   url: 'https://100milionseek.top/privacy'
+}, {
+  provider: 'ifm', name: 'IFM K2 Horizon 375B (experimental, unverified terms)', version: '2026-11-25-unverified',
+  disclosure: 'Prompts, code, tool definitions and tool results go to IFM (MBZUAI), which forwards them to third-party inference hosts; live replies named Cerebras and Nebius. Grunt could not read IFM’s API terms of service, pricing, acceptable use or any statement about prompt retention, staff review or training: its platform and legal pages sit behind human verification, and the only linked privacy policy covers website data. Whether the key stays free, whether coding-agent use is permitted, and every data practice are unverified. Approve only after you have read IFM’s terms yourself, confirmed the account has no payment method, and accept that anything sent may be retained or trained on.',
+  url: 'https://mbzuai.ac.ae/privacy-policy', approval: 'material', manual: true
 }, {
   provider: 'freebuff', name: 'Freebuff', version: '2026-11-15',
   disclosure: 'Prompt, code, and project data may be retained and reviewed for safety, analyzed for advertising and ad-model training. For features marked for AI training, data may also be shared or sold for training and research.',
@@ -193,12 +200,14 @@ async function revokeDataSharingConsent(directory: string, providers: readonly s
 export async function refreshDataSharingConsent(directory: string, env?: NodeJS.ProcessEnv): Promise<string[]> {
   const saved = await receipt(directory), optOut = gruntEnv('SETUP_NO_DATA_SHARING', env) === '1';
   const stale = DATA_SHARING_POLICIES.filter(policy => Object.hasOwn(saved.approved, policy.provider)
-    && saved.approved[policy.provider]!.policy !== fingerprint(policy) && !(optOut && policy.approval !== undefined)).map(policy => policy.provider);
+    && saved.approved[policy.provider]!.policy !== fingerprint(policy) && !policy.manual && !(optOut && policy.approval !== undefined)).map(policy => policy.provider);
   await recordDataSharingConsent(directory, stale);
   return stale;
 }
 
+export const requiresManualDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider && policy.manual === true);
 export const DATA_SHARING_OPT_OUT = 'GRUNT_SETUP_NO_DATA_SHARING=1';
+export const DATA_SHARING_MANUAL_APPROVAL = 'GRUNT_APPROVE_DATA_SHARING';
 
 export interface DataSharingApprovalOptions {
   directory: string;
@@ -215,6 +224,10 @@ export async function approveDataSharing(options: DataSharingApprovalOptions): P
   const optOut = gruntEnv('SETUP_NO_DATA_SHARING', options.env) === '1';
   const skipped = optOut ? policies.filter(policy => policy.approval !== undefined).map(policy => policy.provider) : [];
   if (skipped.length) await revokeDataSharingConsent(options.directory, skipped);
+  // A manual policy is never recorded merely because its source was named: it needs its own listing.
+  const listed = new Set((gruntEnv('APPROVE_DATA_SHARING', options.env) ?? '').split(',').map(id => id.trim()).filter(Boolean));
+  const waiting = policies.filter(policy => policy.manual && !saved.has(policy.provider) && !listed.has(policy.provider)).map(policy => policy.provider);
+  skipped.push(...waiting);
   const approved = policies.map(policy => policy.provider).filter(provider => !skipped.includes(provider));
   const added = approved.filter(provider => !saved.has(provider));
   await recordDataSharingConsent(options.directory, added);

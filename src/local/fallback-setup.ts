@@ -272,6 +272,13 @@ export async function setupFallbacks(options: {
         failedSetup('openference', error);
         options.notify('openference: temporary free setup pending; other routes remain available.');
       } },
+      ifm: async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['ifm'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('ifm', error);
+        options.notify('IFM setup is pending: it needs a key you created yourself in Trusty Squire. Other routes remain available.');
+      } },
       crowllm: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['crowllm'], { squire: squire as SetupSquire, directory: options.directory,
           connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });

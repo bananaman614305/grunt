@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add IFM K2 Horizon as an experimental local opt-in (`usegrunt add ifm`), lowest weight, outside the registry and default onboarding. It connects a key you stored yourself, stays off until its material data-sharing notice is approved, and says plainly that price, terms, retention, training, quality and usable input beyond 3,412 tokens are unverified.
+
 ## 0.10.9 — 2026-11-24
 
 - Report hourly fleet diagnostics to the registry by default: counts of user attempts, failures, timeouts, quota errors and slow successes by route and release, under a per-install identity. Prompts, responses, paths and command output stay out. Set `GRUNT_FLEET_REPORTING=0` to turn it off; `GRUNT_SETUP_NO_DATA_SHARING=1` and custom registries also do (#219).

@@ -16,7 +16,7 @@ import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
 import { writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
-import { approveDataSharing, DATA_SHARING_OPT_OUT } from './data-sharing.js';
+import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, requiresManualDataSharing } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, launchLines, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import type { SignupAgent } from './signup-mcp.js';
@@ -492,7 +492,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
     let sharingNotice: string | undefined;
     const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: [...new Set([...sources, 'opencode'])], notice: line => { sharingNotice = line; } });
-    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${DATA_SHARING_OPT_OUT})`
+    const manualOff = consent.skipped.filter(requiresManualDataSharing);
+    console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${manualOff.length ? `${DATA_SHARING_MANUAL_APPROVAL}=${manualOff.join(',')} approves after you read its notice` : DATA_SHARING_OPT_OUT})`
       : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');
     squire?.approveDataSharing?.(consent.approved);
     const skipped = new Set(consent.skipped);
