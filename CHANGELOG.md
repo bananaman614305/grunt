@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Tests: the router-loop and background-acquisition tests wait for the recovery pass to finish, with a bounded deadline, instead of a fixed 20 ms sleep and a 1 s default; no source change.
+
 ## 0.10.10 — 2026-11-25
 
 - Kilo and Mistral Vibe replies that are empty, or cut off with no usable output, now fail over to another source; diagnostics record the failed attempt and backup admission (#223).
