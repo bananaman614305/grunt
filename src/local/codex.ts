@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
-import { SourceError } from './source.js';
+import { preventReplay, replayTimeout, SourceError } from './source.js';
 import type { ModelRequest } from './source.js';
 
 function failure(output: string) {
@@ -50,7 +50,14 @@ export class Codex {
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 600000)]);
-    const login = await this.run(['login', 'status'], undefined, signal);
+    let login: string;
+    try { login = await this.run(['login', 'status'], undefined, signal); }
+    catch (error) {
+      caller.throwIfAborted();
+      if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Codex stopped during shutdown');
+      if (signal.aborted) throw replayTimeout('Codex login check timed out', true);
+      throw error;
+    }
     if (!/Logged in using ChatGPT/i.test(login)) throw new SourceError('logged_out', 'Codex requires an existing ChatGPT login');
     const turns = userTurns(request), prompt = turns.at(-1);
     if (!prompt) throw new SourceError('upstream', 'No user text in this request');
@@ -76,6 +83,10 @@ export class Codex {
       if (thread || session) this.sessions.set(key(turns), thread ?? session!);
       console.error('grunt source: codex');
       return { text };
+    } catch (error) {
+      caller.throwIfAborted();
+      if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Codex stopped during shutdown');
+      throw preventReplay(error, 'Codex failed after starting the turn');
     } finally { if (session) this.busy.delete(session); }
   }
   async close() { this.shutdown.abort(); }

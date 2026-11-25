@@ -39,6 +39,7 @@ async function json(response: Response, signal: AbortSignal, limit = 1024 * 1024
 // The daily free token pool is distinct from wallet credit. Both the exact
 // -FREE alias and the server-side protectBalance switch are mandatory.
 export class Darus implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'darus';
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();

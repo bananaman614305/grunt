@@ -6,8 +6,25 @@ import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext } from './diagnostics.js';
 import type { RoutingHistory } from './routing-history.js';
+import { localRequestRefusal } from './routing-history.js';
+import { MetadataFlights } from './metadata-flight.js';
 export class SourceError extends Error {
+  replay?: 'safe' | 'unsafe';
   constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string, public diagnostics?: SafeDiagnosticMetadata) { super(message); }
+}
+export function canReplay(error: SourceError) {
+  return error.code !== 'cancelled' && !(error instanceof RequestError)
+    && (error.replay === 'safe' || error.replay === undefined && error.code !== 'timeout');
+}
+export function replayTimeout(message: string, safe: boolean) {
+  const error = new SourceError('timeout', message);
+  error.replay = safe ? 'safe' : 'unsafe';
+  return error;
+}
+export function preventReplay(error: unknown, message: string): SourceError {
+  const failure = error instanceof SourceError ? error : new SourceError('upstream', message);
+  failure.replay = 'unsafe';
+  return failure;
 }
 // The request's own shape (tools, schema, tool conversation) was refused before any provider was reached.
 // failureReason 'request_*' marks it so routing never counts it as provider health.
@@ -89,8 +106,12 @@ export interface SlowUpstreamPolicy { baseSeconds: number; maxSeconds: number }
 export interface Source {
   id: string;
   supportsFunctionTools?: boolean;
+  // Receives inference and returns buffered text or caller-owned tool calls.
+  // Aborting may consume quota but cannot execute the caller's tools.
+  inferenceOnly?: boolean;
   // A source that calls output() when it first produces output gets the
-  // first-output deadline. Other sources keep only their own timeouts.
+  // first-output deadline. An inference-only adapter can also be bounded
+  // while its entire response is buffered.
   reportsOutput?: boolean;
   // Streaming adapters may report every meaningful content, reasoning or tool
   // delta. They also receive an idle deadline after output has started.
@@ -102,18 +123,18 @@ export interface Source {
   // take to produce its first output, and (for reportsProgress sources) how long
   // it may stay silent once output has started. Use for providers whose healthy
   // time to first token is long.
-  firstOutputMs?: number;
-  idleMs?: number;
+  firstOutputMs?: number | undefined;
+  idleMs?: number | undefined;
   // Opt-in cooldown policy for a congested provider whose failures are slow
   // (5xx gateway errors, resets, first-output timeouts). See SlowUpstreamPolicy.
-  slowUpstream?: SlowUpstreamPolicy;
-  availabilityTimeoutMs?: number;
+  slowUpstream?: SlowUpstreamPolicy | undefined;
+  availabilityTimeoutMs?: number | undefined;
   available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;
   sellerQuota?(): SellerQuota | undefined;
-  healthCheck?(): Promise<boolean>;
-  complete(request: ModelRequest, signal: AbortSignal, output?: () => void): Promise<Completion>;
+  healthCheck?(signal?: AbortSignal): Promise<boolean>;
+  complete(request: ModelRequest, signal: AbortSignal, output?: () => void, beforeNativeWork?: () => void): Promise<Completion>;
   // Called after a failed request (not a cancellation). Must not block.
   failed?(error: SourceError): void;
   close?(): Promise<void>;
@@ -130,12 +151,12 @@ export const toolCapable = (source: Source) => source.supportsFunctionTools === 
 export const NO_TOOL_SOURCE = 'No tool-capable adapter is available for a request with function tools; finish setup or retry after quota resets';
 // A source that has not produced first output by this time counts as failed.
 export const FIRST_OUTPUT_MS = 60000;
-const cutoffs = new WeakSet<SourceError>();
 export class Sources {
   private router: StickyRouter | undefined;
   // Registry-aware retirement and back-off state for a fixed source chain (no routed pool).
   private chainRouter: StickyRouter | undefined;
   private observation: SourceStatus;
+  private metadata = new MetadataFlights();
   private checking = new Set<string>();
   private maintenance: (() => Record<string, MaintenanceEntry>) | undefined;
   private diagnostics: DiagnosticsStore | undefined;
@@ -176,7 +197,11 @@ export class Sources {
   private attempt = async (source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> => {
     if (this.retired(source.id)) throw new SourceError('not_installed', `${source.id} routing is retired`);
     const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s) => this.firstOutput(source, r, s) };
-    try { return await this.observation.complete(timed, request, signal); }
+    try {
+      const result = await this.observation.complete(timed, request, signal);
+      signal.throwIfAborted();
+      return result;
+    }
     catch (error) {
       if (!signal.aborted && error instanceof SourceError && error.code !== 'cancelled') {
         // The fixed chain below logs its own failures.
@@ -187,12 +212,14 @@ export class Sources {
     }
   };
   private firstOutput(source: Source, request: ModelRequest, caller: AbortSignal): Promise<Completion> {
-    if (!source.reportsOutput && !source.reportsProgress) return source.complete(request, caller);
+    const watchdog = source.reportsOutput || source.reportsProgress || source.inferenceOnly && request.model !== source.id;
+    const promptCancellation = source.inferenceOnly || source.reportsProgress;
+    if (!watchdog && !promptCancellation) return source.complete(request, caller);
     caller.throwIfAborted();
     const deadline = new AbortController();
     const signal = AbortSignal.any([caller, deadline.signal]);
     let timer: NodeJS.Timeout | undefined;
-    let finished = false, outputStarted = false;
+    let finished = false, outputStarted = false, nativeWork = false;
     let rejectCutoff: (reason: unknown) => void;
     const cutoff = new Promise<never>((_, reject) => {
       rejectCutoff = reject;
@@ -203,8 +230,9 @@ export class Sources {
       const limit = outputStarted ? idle : first;
       timer = setTimeout(() => {
         finished = true;
-        const error = new SourceError('timeout', `${source.id} produced no ${outputStarted ? 'further ' : ''}output within ${limit / 1000} seconds`);
-        cutoffs.add(error); rejectCutoff(error); deadline.abort(error);
+        const error = replayTimeout(`${source.id} produced no ${outputStarted ? 'further ' : ''}output within ${limit / 1000} seconds`, !nativeWork);
+        deadline.abort(error);
+        rejectCutoff(error);
       }, limit);
     };
     const progress = () => {
@@ -217,15 +245,23 @@ export class Sources {
       finished = true;
       // Legacy native-tool adapters own process/bridge cleanup. Let their
       // cancelled promise settle, preserving their existing initial watchdog.
-      if (source.reportsProgress) { clearTimeout(timer); rejectCutoff(caller.reason); }
+      if (promptCancellation) { clearTimeout(timer); rejectCutoff(caller.reason); }
     };
     caller.addEventListener('abort', cancel, { once: true });
     // Arm before invoking adapters: an adapter may synchronously report its
     // first output, or throw before returning its promise.
-    arm();
-    const work = Promise.resolve().then(() => {
+    if (watchdog) arm();
+    const work = Promise.resolve().then(async () => {
       signal.throwIfAborted();
-      return source.complete(request, signal, progress);
+      try {
+        return await source.complete(request, signal, progress, () => {
+          signal.throwIfAborted();
+          nativeWork = true;
+        });
+      } catch (error) {
+        if (error instanceof SourceError && error.code === 'timeout' && source.inferenceOnly && error.replay === undefined) error.replay = 'safe';
+        throw error;
+      }
     });
     // Do not wait for a hung source to clean up; it settles on its own.
     work.catch(() => {});
@@ -237,7 +273,9 @@ export class Sources {
   }
   private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
-  available(source: Source) { return this.observation.available(source); }
+  available(source: Source) {
+    return this.metadata.run(source.id, signal => this.observation.available(source, false, undefined, signal), undefined, source.availabilityTimeoutMs);
+  }
   openRoute(id: string) { return this.observation.observedAvailable(id) !== false && this.dispatchEligible(id); }
   dispatchEligible(id: string, request?: ModelRequest) {
     const router = this.registeredRouter;
@@ -330,7 +368,7 @@ export class Sources {
       if (id === 'freepi') {
         guard = this.observation.guard(id);
         // Free-Pi must not publish new session traces during idle checks.
-        const available = await (source.healthCheck?.() ?? source.available());
+        const available = await (source.healthCheck?.(signal) ?? source.available(signal));
         signal.throwIfAborted();
         const newer = newerEvidence();
         if (newer) return newer;
@@ -377,8 +415,16 @@ export class Sources {
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.unrouted(s.id) && !this.router.listed(s.id) || !await this.observation.available(s)) return null;
-      if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck && await this.observation.available(s, true).catch(() => false)) this.healthy(s.id);
+      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.unrouted(s.id) && !this.router.listed(s.id)) return null;
+      const available = await this.available(s).catch(error => {
+        if (error instanceof SourceError && error.code === 'timeout') return false;
+        throw error;
+      });
+      if (!available) return null;
+      if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck) {
+        await this.metadata.run(`health:${s.id}`, signal => this.observation.available(s, true, () => this.registeredRouter?.healthy(s.id), signal),
+          undefined, s.availabilityTimeoutMs ?? 30000).catch(() => false);
+      }
       return this.retired(s.id) ? null : s.id;
     }));
     return ['grunt', ...available.filter((id): id is string => id !== null)];
@@ -439,23 +485,12 @@ export class Sources {
       if (!unrouted.length) return this.router.complete(request, signal);
       // Naming an unrouted source selects it alone, as in the fixed chain.
       if (unrouted.some(source => source.id === request.model)) return this.chain(request, signal);
-      try { return await this.router.complete(request, signal); }
-      catch (error) {
-        signal.throwIfAborted();
-        if (!(error instanceof SourceError) || error.code === 'cancelled') throw error;
-        const fallback = { attempted: false };
-        try { return await this.chain(request, signal, unrouted, fallback); }
-        catch (failure) {
-          // Report the routed pool's reason when no fallback source could run.
-          if (!fallback.attempted) throw error;
-          throw failure;
-        }
-      }
+      return this.router.complete(request, signal, (reason, signal) => this.chain(request, signal, unrouted, reason));
     }
     return this.chain(request, signal);
   }
   // The fixed chain: first success in source order, or the named source alone.
-  private async chain(request: ModelRequest, signal: AbortSignal, pool: Source[] = this.sources, progress = { attempted: false }): Promise<Completion> {
+  private async chain(request: ModelRequest, signal: AbortSignal, pool: Source[] = this.sources, routedFailure?: SourceError): Promise<Completion> {
     await this.observation.refreshRoutingHistory();
     signal.throwIfAborted();
     const known = this.sources.some(s => s.id === request.model);
@@ -464,11 +499,15 @@ export class Sources {
     if (automatic && !['grunt', 'milo'].includes(request.model)) console.error('grunt model mapping: unrecognized model -> grunt');
     const toolsRequired = automatic && needsFunctionTools(request);
     const candidates = automatic ? pool.filter(s => !toolsRequired || toolCapable(s)) : pool.filter(s => s.id === request.model);
-    let last = toolsRequired ? new SourceError('not_installed', NO_TOOL_SOURCE) : new SourceError('not_installed', `No source for model ${this.safeModel(request.model)}`);
+    let last = routedFailure ?? new SourceError('not_installed', toolsRequired ? NO_TOOL_SOURCE : `No source for model ${this.safeModel(request.model)}`);
+    // A routed pool may report quota for general exhaustion without a retry
+    // hint. A concrete hint or an actual quota failure can guide the client.
+    let quota = routedFailure?.code === 'quota' && routedFailure.retryAfter !== undefined ? routedFailure : undefined;
     let attempted = false;
     for (const source of candidates) {
       signal.throwIfAborted();
       if (this.pending.has(source.id) || this.retired(source.id) || this.registeredRouter?.trialBusy(source.id)
+        || this.chainRouter?.listed(source.id) && !this.chainRouter.supportsInput(source.id, request.imageInput)
         || this.chainRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)) continue;
       if (source.acceptsRequest && !source.acceptsRequest(request)) {
         if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
@@ -477,7 +516,7 @@ export class Sources {
       const context = currentDiagnosticContext();
       if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.selection', source: source.id,
         ...(!automatic ? { reason: 'explicit' as const } : attempted || pool !== this.sources ? { reason: 'fallback' as const } : {}) });
-      attempted = true; progress.attempted = true;
+      attempted = true;
       let completion: Completion;
       const release = this.registeredRouter?.claimTrial(source.id) ?? (() => {});
       try { completion = await this.attempt(source, request, signal); }
@@ -487,20 +526,25 @@ export class Sources {
           signal.throwIfAborted();
           throw error;
         }
-        last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
-        await this.chainRouter?.recordFailure(source.id, last);
-        console.error(`grunt source: ${source.id} failed (${last.code}) for model ${this.safeModel(request.model)}`);
-        // Only dots and OpenCode deadlines and first-output deadlines fall through; caller cancellation stops above.
-        if (last.code === 'timeout' && source.id !== 'dots' && source.id !== 'opencode' && !cutoffs.has(last)) throw last;
+        const failure = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
+        await this.chainRouter?.recordFailure(source.id, failure);
+        signal.throwIfAborted();
+        console.error(`grunt source: ${source.id} failed (${failure.code}) for model ${this.safeModel(request.model)}`);
+        if (!canReplay(failure)) throw failure;
+        if (failure.code === 'quota' && (!quota || (failure.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity))) quota = failure;
+        if (!(routedFailure instanceof RequestError) || !(localRequestRefusal(failure) || ['not_installed', 'logged_out'].includes(failure.code))) {
+          last = failure;
+        }
         continue;
       } finally { release(); }
       console.error(`grunt source: ${source.id} answered model ${this.safeModel(request.model)}`);
       answeredBy.set(completion, source.id);
       return completion;
     }
-    throw last;
+    throw quota ?? last;
   }
   async close() {
+    this.metadata.close();
     await Promise.all([this.router?.close(), this.chainRouter?.close()]);
     await Promise.allSettled(this.sources.map(s => s.close?.()));
     await this.flushRoutingHistory();
@@ -509,6 +553,7 @@ export class Sources {
 export class Gateway implements Source {
   id = 'gateway';
   readonly supportsFunctionTools = true;
+  readonly inferenceOnly = true;
   private url: string;
   constructor(url: string, private key: string, private fetcher: typeof fetch = fetch) {
     const parsed = new URL(url);

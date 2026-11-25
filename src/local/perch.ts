@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { FreebuffTools } from './freebuff-tools.js';
-import { SourceError, requestRefusal } from './source.js';
+import { preventReplay, replayTimeout, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { openPerchACP, runPerchCommand, runPerchMemorySettings, verifyPerchCoreFiles } from './perch-process.js';
 import type { PerchProcessOptions, PerchProcesses } from './perch-process.js';
@@ -320,7 +320,9 @@ export class Perch implements Source {
       for (const notification of session.acp.notifications) {
         const params = object(notification.params), update = object(params.update), content = object(update.content);
         if (params.sessionId !== session.sessionId) throw new SourceError('upstream', 'Perch returned an uncorrelated session update');
-        if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') throw new SourceError('refused', 'Perch attempted an unexpected native action');
+        if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+          throw preventReplay(new SourceError('refused', 'Perch attempted an unexpected native action'), 'Perch native action');
+        }
         if (update.sessionUpdate === 'agent_message_chunk') {
           if (content.type !== 'text' || typeof content.text !== 'string') throw new SourceError('refused', 'Perch returned unsupported content');
           text += content.text;
@@ -341,7 +343,7 @@ export class Perch implements Source {
       if (!caller.aborted && !this.shutdown.signal.aborted && !signal.aborted && error instanceof SourceError && (error.code === 'logged_out' || (inferenceStarted && error.code === 'refused'))) await rm(perchPaths(this.directory).receipt, { force: true }).catch(() => {});
       if (caller.aborted) throw new SourceError('cancelled', 'Perch request cancelled');
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Perch stopped during shutdown');
-      if (signal.aborted) throw new SourceError('timeout', 'Perch request timed out');
+      if (signal.aborted) throw replayTimeout('Perch request timed out', !inferenceStarted);
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'Perch request failed; rerun usegrunt setup if native access needs repair');
     } finally {

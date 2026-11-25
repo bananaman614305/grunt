@@ -239,7 +239,8 @@ export class SourceStatus {
     } catch { /* Local routing stays functional during contention, corruption or disk failure. */ }
   }
   isBusy(id: string) { return (this.observations.get(id)?.active ?? 0) > 0; }
-  async available(source: Source, healthCheck = false): Promise<boolean> {
+  async available(source: Source, healthCheck = false, onRecovered?: () => void, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
     const entry = this.entry(source.id), revision = entry.revision;
     // Retain only negative metadata. Explicit health checks and all adapter
     // completion guards remain fresh; positive metadata is never reused here.
@@ -247,7 +248,8 @@ export class SourceStatus {
     if (!healthCheck && !entry.availabilityQuota && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
       && this.routingAvailability(source.id, 0, AVAILABILITY_NEGATIVE_MS) === false) return false;
     try {
-      const result = await (healthCheck ? source.healthCheck!() : source.available());
+      const result = await (healthCheck ? source.healthCheck!(signal) : source.available(signal));
+      signal?.throwIfAborted();
       // A reply or explicit recovery observed after this probe started is
       // newer evidence. The caller still receives the actual probe result.
       if (entry.revision === revision) {
@@ -255,13 +257,17 @@ export class SourceStatus {
         if (!result) {
           if (entry.availabilityQuota) this.healthy(source.id);
           entry.revision++; entry.state = 'unavailable';
-        } else if (healthCheck || entry.availabilityQuota) this.healthy(source.id);
+        } else if (healthCheck || entry.availabilityQuota) {
+          this.healthy(source.id);
+          if (healthCheck) onRecovered?.();
+        }
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
         entry.available = result; entry.availabilityCheckedAt = this.now();
         this.notifyClosed(source.id, wasOpen);
       }
       return result;
     } catch (error) {
+      signal?.throwIfAborted();
       // Caller/shutdown cancellation says nothing about provider availability.
       if (error instanceof SourceError && error.code === 'cancelled'
         || error instanceof Error && error.name === 'AbortError') throw error;

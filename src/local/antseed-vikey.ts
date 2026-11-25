@@ -10,6 +10,7 @@ import { object as record, selectedReply, selectedStatus } from './selected-chat
 const seller = 'e4c4129c86752a2a8d092ddb0eb1c27cc4933c7b';
 const model = 'deepseek/deepseek-v4.1-flash-free';
 export class AntseedVikey implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'antseed-vikey';
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();

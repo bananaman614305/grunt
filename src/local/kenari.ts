@@ -29,6 +29,7 @@ async function readGrant(directory: string) {
 }
 
 export class Kenari implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'kenari';
   readonly supportsFunctionTools = true;
   private directory: string;

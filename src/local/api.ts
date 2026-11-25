@@ -279,8 +279,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       options.log?.(`${request.cwd}; cwd=${request.cwdSource}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
       const complete = (signal: AbortSignal): Promise<Completion> => local === undefined ? sources.complete(request, signal) : Promise.resolve({ text: local });
       const controller = new AbortController();
-      const abort = () => controller.abort();
-      c.req.raw.signal.addEventListener('abort', abort, { once: true });
+      const signal = AbortSignal.any([c.req.raw.signal, controller.signal]);
       const failure = (e: unknown) => {
         const err = e instanceof SourceError ? e : new SourceError('upstream', 'grunt source failed');
         const invalid = err instanceof RequestError;
@@ -290,13 +289,14 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         // Agent adapters return final text, not incremental tokens. Resolve routing
         // before committing SSE headers so exhausted routes still return HTTP 429.
         if (request.cwdSource === 'scratch') await mkdir(request.cwd, { recursive: true });
-        const completion = await complete(controller.signal);
+        const completion = await complete(signal);
+        signal.throwIfAborted();
         const source = answeredBy.get(completion);
         if (source) c.header('X-Grunt-Source', source);
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
         const result = encode(completion, request.model, api, request.responseNamespaces);
         if (request.stream) return streamSSE(c, async stream => {
-          stream.onAbort(abort);
+          stream.onAbort(() => controller.abort());
           for (const event of events(result, api, { includeUsage })) await stream.writeSSE(event);
         });
         return c.json(result);
@@ -305,7 +305,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
         if (err.retryAfter !== undefined) c.header('Retry-After', String(Math.max(1, Math.ceil(err.retryAfter))));
         return c.json(body, err instanceof RequestError ? 400 : err.code === 'quota' ? 429 : err.code === 'timeout' ? 504 : 503);
-      } finally { c.req.raw.signal.removeEventListener('abort', abort); }
+      }
     });
   }
   return app;

@@ -34,6 +34,7 @@ export async function writeNvidiaGrant(grant: NvidiaGrant, directory = configDir
   } finally { await rm(temporary, { force: true }); }
 }
 export class Nvidia implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'nvidia';
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
