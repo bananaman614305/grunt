@@ -12,5 +12,5 @@ if (recovery && new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York' 
   throw new Error('Unexpected local recovery window');
 }
 if (output === '--plan') console.log(JSON.stringify(audit ? planFleetBacklog(audit,backlog) : []));
-else if (output === '--handoff') console.log(renderFleetHandoff(audit, recovery));
+else if (output === '--handoff') console.log(renderFleetHandoff(audit, recovery, backlog));
 else await writeFile(output, renderFleetReport(day, audit, backlog, recovery));

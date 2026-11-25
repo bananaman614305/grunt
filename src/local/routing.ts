@@ -10,6 +10,7 @@ import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
+import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import type { RoutingWorkload } from './routing-history.js';
 import { RETIRE_AFTER_FAILURES, localRequestRefusal, routingWorkload, slowUpstreamFailure, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
@@ -39,7 +40,7 @@ export function registryScoreFactor(score: number | null | undefined) {
   return typeof score === 'number' && Number.isFinite(score) ? 0.5 + Math.max(0, Math.min(100, score)) / 100 : 1;
 }
 
-export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string) => void; dropped?: (source: string) => void }
+export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
 interface Task {
   source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean;
   reassessment?: { from: string; source: string; samples: number; at: number };
@@ -253,9 +254,30 @@ export class StickyRouter {
     const toolsRequired = needsFunctionTools(request) && !explicit;
     const attempted = new Set<string>(), refused = new Set<string>();
     const observedEligible = new Set<string>();
+    const checking = new Map<string, Source>();
+    const context = currentDiagnosticContext(), observeEligible = this.options.observeEligible;
+    const reportEligible = (id: string, at: number) => {
+      if (!context?.sink || !observeEligible || observedEligible.has(id)) return;
+      observedEligible.add(id);
+      withDiagnosticContext(context, () => observeEligible(id, at));
+    };
     let yieldedMetadata = false;
     const observation = this.observation;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => this.options.observe?.(source, reason, true);
+    const dispatchBlocked = (id: string) => {
+      const adapter = this.options.registry().adapters.find(a => a.id === id
+        && this.registered(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
+      return !adapter || scoutRetired(adapter, this.now()) || this.retired(id) || this.trialBusy(id)
+        || this.options.disabled?.has(id) || this.options.pending?.has(id);
+    };
+    // Subscribe per request so a shared availability probe can identify
+    // eligible backups while the current attempt is still running.
+    const stopObserving = context?.sink && observeEligible ? observation.observePositiveAvailability((id, at) => {
+      const source = checking.get(id);
+      if (!source || signal.aborted || attempted.has(id) || dispatchBlocked(id)
+        || (this.cooldown(id)?.until ?? 0) > at || source.acceptsRequest && !source.acceptsRequest(request)) return;
+      reportEligible(id, at);
+    }) : undefined;
     try {
       for (;;) {
         signal.throwIfAborted();
@@ -297,10 +319,7 @@ export class StickyRouter {
           const available = this.availability.peek(source.id);
           if (source.id === task.source || available === true) {
             eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
-            if (available === true && !observedEligible.has(source.id)) {
-              observedEligible.add(source.id);
-              this.options.observeEligible?.(source.id);
-            }
+            if (available === true) reportEligible(source.id, this.now());
           }
           else if (available === undefined) unknown.push(source);
           else {
@@ -316,6 +335,10 @@ export class StickyRouter {
         // At most four read-only admission checks run together. A ready source
         // can answer immediately while unrelated checks finish in the background.
         // Checks never replace the selected adapter's fresh dispatch guards.
+        if (stopObserving) {
+          checking.clear();
+          for (const source of unknown) checking.set(source.id, source);
+        }
         const startedChecks = this.availability.start(unknown);
         // Admit already-settled metadata before drawing (including a just-reset
         // quota), without waiting for network or a slow unrelated provider.
@@ -368,10 +391,7 @@ export class StickyRouter {
           }
           signal.throwIfAborted();
           // Keep this check and attempt dispatch synchronous.
-          const liveAdapter = this.options.registry().adapters.find(adapter => adapter.id === selected.source.id
-            && this.registered(adapter.id) && adapter.modalities.includes('text') && (!request.imageInput || adapter.modalities.includes('image')));
-          if (!liveAdapter || scoutRetired(liveAdapter, this.now()) || this.retired(selected.source.id) || this.trialBusy(selected.source.id) || this.options.disabled?.has(selected.source.id) || this.options.pending?.has(selected.source.id)
-            || performanceSwitch && this.busy(selected.source.id, 1)) continue;
+          if (dispatchBlocked(selected.source.id) || performanceSwitch && this.busy(selected.source.id, 1)) continue;
           release = this.claimTrial(selected.source.id);
           task.source = selected.source.id;
           task.switched = switched;
@@ -396,6 +416,7 @@ export class StickyRouter {
         } finally { release(); unreserve(); }
       }
     } finally {
+      stopObserving?.();
       task.busy = false;
       if (this.tasks.size > 1024) for (const [oldKey, oldTask] of this.tasks) {
         if (oldKey !== key && !oldTask.busy) { this.tasks.delete(oldKey); break; }

@@ -253,8 +253,9 @@ spent in failed attempts within each completed successful request and then
 adds those request-level durations. Overlaps count once and time after accepted
 output is excluded. Request elapsed time comes from the terminal request event.
 Missing phases and unfinished requests are visible in the denominator and
-coverage. Eligibility means positively observed routing metadata for a request
-at a selection boundary. Dispatch still checks current access. Replay safety is
+coverage. Eligibility records when routing checks a compatible candidate or
+when its background probe succeeds while the candidate remains compatible.
+Dispatch still checks current access. Replay safety is
 reported for validated adapter failure points and explicit replay guards. First
 usable output records when the daemon has the validated buffered result. For
 older traces the successful attempt's finish is available as an acceptance time.

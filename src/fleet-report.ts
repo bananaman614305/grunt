@@ -24,12 +24,18 @@ function beatSummary(beat: RecoveryAudit['beatapi']) {
   return `BeatAPI observed account checks (${beat.checks}), ordinary HTTP 403 denials (${beat.ordinaryDenied}), HTTP 403 denials from other paths (${beat.otherDenied}), validated availability observations (${beat.verifiedAvailable}). ${rates} Restored-access rediscovery delay ${seconds(beat.rediscoveryMs)}.`;
 }
 
-export function renderFleetHandoff(audit?: Audit, recovery?: RecoveryAudit) {
+export function renderFleetHandoff(audit?: Audit, recovery?: RecoveryAudit, backlog: Record<string, string> = {}) {
   const lines = recovery ? [recoveryHeadline(recovery), recoveryCoverage(recovery),
     ...recovery.slowest.map(trace => '- ' + traceSummary(trace)), beatSummary(recovery.beatapi)] : ['Failed-attempt time before successful answers is unavailable for this run.'];
   if (!audit) lines.push('Fleet aggregates unavailable.');
   else if (!audit.defaultHandle) lines.push('No fleet cohort met the threshold for new work.');
-  else lines.push(...audit.findings.map(f => `- ${f.route} (${f.affected}/${f.denominator}). ${f.fix}`), `Reply go to start ${audit.defaultHandle}.`);
+  else {
+    for (const finding of audit.findings) {
+      const workId = backlog[finding.handle];
+      lines.push(`- ${finding.route} (${finding.affected}/${finding.denominator}). ${finding.fix}${workId ? ` Backlog ${workId}.` : ''}`);
+    }
+    lines.push(`Reply go to start ${audit.defaultHandle}.`);
+  }
   return lines.join('\n');
 }
 

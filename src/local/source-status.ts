@@ -66,8 +66,13 @@ export class SourceStatus {
   private diagnostics: DiagnosticsStore | undefined;
   private history: RoutingHistory | undefined;
   private backoffs = new Map<string, RoutingBackoff>();
+  private availabilityObservers = new Set<(id: string, at: number) => void>();
   private feedback: ((id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) => void) | undefined;
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
+  observePositiveAvailability(observer: (id: string, at: number) => void) {
+    this.availabilityObservers.add(observer);
+    return () => this.availabilityObservers.delete(observer);
+  }
   // Counts each settled reply for the registry's route feedback.
   setFeedback(feedback: (id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) => void) { this.feedback = feedback; }
   private report(id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) {
@@ -262,8 +267,12 @@ export class SourceStatus {
           if (healthCheck) onRecovered?.();
         }
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
-        entry.available = result; entry.availabilityCheckedAt = this.now();
+        const checkedAt = this.now();
+        entry.available = result; entry.availabilityCheckedAt = checkedAt;
         this.notifyClosed(source.id, wasOpen);
+        if (result) for (const observe of this.availabilityObservers) {
+          try { observe(source.id, checkedAt); } catch { /* Observation cannot change admission. */ }
+        }
       }
       return result;
     } catch (error) {

@@ -186,6 +186,50 @@ it('records the replay guard and leaves the backup idle after an unsafe failure'
   } finally { await pool.close(); }
 });
 
+it.each([false, true])('timestamps a backup probe during the primary attempt when allowed (setup pending: %s)', async pending => {
+  const startedAt = Date.now();
+  let now = startedAt;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const value = await store();
+  const primaryStarted = Promise.withResolvers<void>();
+  const failPrimary = Promise.withResolvers<void>();
+  const admitBackup = Promise.withResolvers<boolean>();
+  const primary = source('kilo', async () => {
+    primaryStarted.resolve();
+    await failPrimary.promise;
+    throw new SourceError('upstream', 'provider rejected the response');
+  });
+  const backup = { ...source('livekit'), available: vi.fn(() => admitBackup.promise) };
+  const registry = { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(a => [primary.id, backup.id].includes(a.id)) };
+  const pool = new Sources([primary, backup], { registry: () => registry, random: () => 0 });
+  pool.setDiagnostics(value);
+  await pool.available(primary);
+  const requestId = randomUUID(), cwd = await directory();
+  const completion = withDiagnosticContext({ requestId, kind: 'user', actor: 'client' },
+    () => pool.complete({ ...request, cwd }, AbortSignal.timeout(5000)));
+  const eligibility = async () => (await value.trace(requestId)).events.filter(e => e.type === 'route.eligible' && e.source === backup.id);
+  try {
+    await Promise.race([primaryStarted.promise, completion]);
+    expect(backup.available).toHaveBeenCalledOnce();
+    if (pending) pool.pending.add(backup.id);
+    now = startedAt + 1000;
+    admitBackup.resolve(true);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(await eligibility()).toEqual(pending ? [] : [expect.objectContaining({ at: now, actor: 'client' })]);
+    expect(backup.complete).not.toHaveBeenCalled();
+    now = startedAt + 2000;
+    pool.pending.delete(backup.id);
+    failPrimary.resolve();
+    await expect(completion).resolves.toMatchObject({ text: 'SECRET_ANSWER_CONTENT' });
+    expect(await eligibility()).toEqual([expect.objectContaining({ at: pending ? now : startedAt + 1000, actor: 'client' })]);
+  } finally {
+    admitBackup.resolve(false);
+    failPrimary.resolve();
+    await completion.catch(() => {});
+    await pool.close();
+  }
+});
+
 it('identifies maintenance and setup verification separately from user traffic', async () => {
   const value = await store(), sources = new Sources([source('good')]); sources.setDiagnostics(value);
   expect((await sources.check('good', new AbortController().signal)).outcome).toBe('passed');

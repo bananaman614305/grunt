@@ -186,9 +186,9 @@ export class Sources {
   private createRouter(routing: RoutingOptions) {
     return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
       dropped: id => { if (this.observation.observedAvailable(id) !== false) this.dropped?.(id); },
-      observeEligible: source => {
+      observeEligible: (source, at) => {
         const context = currentDiagnosticContext();
-        if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.eligible', source });
+        context?.sink?.record({ version: 1, id: randomUUID(), at, requestId: context.requestId, kind: context.kind, type: 'route.eligible', source });
       },
       observe: (source, reason, skipped) => {
         const context = currentDiagnosticContext();
