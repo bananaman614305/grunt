@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.10.8 — 2026-11-24
+
+- Honor caller output budgets: free routes no longer cap replies at 4,096 tokens; unspecified limits are omitted so the provider's own limit applies, and provider truncation is reported as length (#212).
+
 - Fix a release stranded in `publishing` when GitHub lagged after the push. `ensurePullRequest` pushed the reviewed head and then compared the head SHA GitHub listed for the existing pull request; GitHub can keep listing the previous head for a few seconds, so the check failed (`release_not_advanced`, no detail) even though the push had succeeded, and the release stayed `publishing` until the builder advanced it again. The transport now re-reads that pull request by number, up to six times 1.5 s apart, before refusing, and a head that never converges is refused with a fixed detail ("does not yet show the pushed head; advance the release again") visible in the worker's release status.
 
 ## 0.10.7 — 2026-11-24
