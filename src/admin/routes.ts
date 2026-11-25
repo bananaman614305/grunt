@@ -1,3 +1,4 @@
+import { DAY, fleetAudit } from '../fleet.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
@@ -193,6 +194,13 @@ export function adminRoutes(store: AdminStore, options: AdminRoutesOptions = {})
     if (value !== undefined && (!isAdminSourceId(value) || !allowedInstances.has(value))) throw new AdminDataError('invalid_instance');
     return value;
   };
+  app.get('/admin/api/fleet-audit', async c => {
+    const today = Math.floor(now()/DAY)*DAY;
+    const date = c.req.query('day');
+    const end = date === undefined ? today : Date.parse(date+'T00:00:00Z')+DAY;
+    if (!Number.isSafeInteger(end) || end > today || end < today-21*DAY || (date !== undefined && new Date(end-DAY).toISOString().slice(0,10) !== date)) return failure(c,'invalid_payload',400);
+    return c.json(await fleetAudit(store.db,end));
+  });
   app.get('/admin/api/overview', async c => c.json(await store.overview(instance(c))));
   app.get('/admin/api/providers', async c => c.json(await store.providers(instance(c))));
   app.get('/admin/api/source-usage', async c => {

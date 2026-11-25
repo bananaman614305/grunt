@@ -1,3 +1,4 @@
+import { fleetSchema } from './fleet.js';
 import type { Client } from '@libsql/client';
 import { ID_PATTERN } from './registry.js';
 import type { Registry } from './registry.js';
@@ -26,13 +27,13 @@ const count = (value: unknown, max: number) => Number.isSafeInteger(value) && (v
 
 // Only today's or yesterday's (UTC) counts. Routes this registry does not list
 // (a client release can ship one first) are dropped, not rejected.
-export function parseFeedback(value: unknown, registry: Registry, now: number): FeedbackReport | undefined {
+export function parseFeedback(value: unknown, registry: Registry, now: number, allowEmpty = false): FeedbackReport | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const report = value as Record<string, unknown>;
   if (!exactKeys(report, FEEDBACK_FIELDS) || report.version !== 1 || typeof report.install !== 'string' || !/^[0-9a-f]{32}$/.test(report.install)
     || typeof report.client !== 'string' || !/^[0-9A-Za-z.+-]{1,32}$/.test(report.client)
     || typeof report.day !== 'string' || ![utcDay(now), utcDay(now - DAY_MS)].includes(report.day)
-    || !Array.isArray(report.routes) || !report.routes.length || report.routes.length > 100) return;
+    || !Array.isArray(report.routes) || (!allowEmpty && !report.routes.length) || report.routes.length > 100) return;
   const listed = new Set(registry.adapters.map(adapter => adapter.id)), seen = new Set<string>(), routes: FeedbackRoute[] = [];
   for (const item of report.routes as unknown[]) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return;
@@ -89,6 +90,7 @@ export class RegistryStore {
     await this.db.executeMultiple(`
       CREATE TABLE IF NOT EXISTS registry_daily(day TEXT NOT NULL,id TEXT NOT NULL,attempts INTEGER NOT NULL,ok INTEGER NOT NULL,
         latency_sum INTEGER NOT NULL,samples INTEGER NOT NULL,PRIMARY KEY(day,id));
+      ${fleetSchema}
       CREATE TABLE IF NOT EXISTS registry_writes(at INTEGER NOT NULL,login TEXT NOT NULL,id TEXT NOT NULL,before_json TEXT,after_json TEXT);
       CREATE TABLE IF NOT EXISTS registry_feedback(day TEXT NOT NULL,install TEXT NOT NULL,id TEXT NOT NULL,ok INTEGER NOT NULL,failed INTEGER NOT NULL,
         quota INTEGER NOT NULL,auth INTEGER NOT NULL,latency_ms INTEGER NOT NULL,signup_ok INTEGER NOT NULL,signup_failed INTEGER NOT NULL,retired INTEGER NOT NULL,

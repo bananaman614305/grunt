@@ -47,6 +47,34 @@ export function truncatedCompletion(content: unknown, usage?: { prompt_tokens?: 
     ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {}) };
 }
 
+// Arguments of a call the client will execute must be one JSON object. Blank arguments are the
+// conventional empty call and become "{}", as the Messages encoding has always done.
+function usableArguments(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim() === '' ? '{}' : value;
+  try { const parsed: unknown = JSON.parse(text); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? text : undefined; }
+  catch { return undefined; }
+}
+// The one gate every source reply passes before routing or a client sees it. An unparseable call is
+// never returned as complete: the client would store it, and the unusable arguments then make every
+// later request of that conversation fail validation. A reply that hit its output budget keeps its
+// text as a length-limited completion, whatever finish_reason the provider claimed. Anything else is
+// an invalid sample, so routing records a short bench and the task continues on another source.
+export function guardToolCalls(result: Completion, request: Pick<ModelRequest, 'maxTokens'>): Completion {
+  if (!result.calls?.length) return result;
+  const fixed = result.calls.map(call => usableArguments(call?.function?.arguments));
+  if (fixed.every(text => text !== undefined)) {
+    result.calls.forEach((call, index) => { call.function.arguments = fixed[index]!; });
+    return result;
+  }
+  const budget = request.maxTokens;
+  if (result.finishReason === 'length' || budget !== undefined && result.outputTokens !== undefined && result.outputTokens >= budget) {
+    const { calls: _dropped, ...kept } = result;
+    return { ...kept, finishReason: 'length' };
+  }
+  throw new SourceError('upstream', 'Source returned a tool call with unparseable arguments', undefined, undefined, { failureReason: 'response_tools', httpStatus: 200 });
+}
+
 export interface Completion { servedModel?: string; free?: boolean; text: string; calls?: ToolCall[]; finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call'; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();

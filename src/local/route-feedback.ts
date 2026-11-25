@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { link, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ErrorCode } from './source.js';
 
@@ -17,6 +18,7 @@ export interface RouteFeedbackOptions {
   listed: () => readonly string[];
   retired: (id: string) => boolean;
   client?: string;
+  fleet?: (token: string) => Promise<void>;
   fetcher?: typeof fetch;
   now?: () => number;
 }
@@ -61,6 +63,28 @@ export class RouteFeedback {
       return id;
     }).catch(error => { this.install = undefined; throw error; });
   }
+  // The enrollment proof is separate from the ID stored with legacy feedback.
+  // Publish a fully written private file even when two daemons enroll at once.
+  private async fleetProof() {
+    const path = join(this.options.directory, 'fleet-enrollment');
+    const readProof = async () => {
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const info = await file.stat();
+        if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size !== 64) throw new Error('Unsafe fleet enrollment state');
+        return await file.readFile('utf8');
+      } finally { await file.close(); }
+    };
+    try { return await readProof(); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    const temporary = path + '.' + randomBytes(12).toString('hex');
+    try {
+      await writeFile(temporary, randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 });
+      try { await link(temporary, path); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
+    } finally { await rm(temporary, { force: true }); }
+    return readProof();
+  }
   payload(day: string, install: string) {
     const listed = new Set(this.options.listed());
     const routes = [...this.days.get(day) ?? []].filter(([id]) => listed.has(id)).map(([id, counts]) => ({
@@ -85,12 +109,19 @@ export class RouteFeedback {
     for (const day of this.days.keys()) if (day !== today && day !== yesterday) this.days.delete(day);
     try {
       const install = await this.installId();
+      const proof = this.options.fleet ? await this.fleetProof().catch(() => '') : '';
+      const fleetHeaders: Record<string,string> = /^[a-f0-9]{64}$/.test(proof) ? { 'X-Grunt-Fleet': proof } : {};
+      let fleetToken: string | undefined;
       for (const day of [yesterday, today]) {
-        const body = this.payload(day, install);
+        const body = this.payload(day, install) ?? (day === today && fleetHeaders['X-Grunt-Fleet'] && !fleetToken
+          ? { version: 1, install, client: this.options.client ?? 'unknown', day, routes: [] } : undefined);
         if (!body) continue;
-        const sent = await this.request('feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const sent = await this.request('feedback', { method: 'POST', headers: { 'Content-Type': 'application/json', ...fleetHeaders }, body: JSON.stringify(body) });
+        const issued = sent?.headers.get('X-Grunt-Fleet-Token');
+        if (issued && /^[0-9a-f]{64}\.[0-9a-f]{64}$/.test(issued)) fleetToken = issued;
         if (sent && day === yesterday) this.days.delete(day);
       }
+      if (fleetToken) await this.options.fleet?.(fleetToken);
     } catch { /* Feedback is advisory; routing never waits on it. */ }
     try {
       const response = await this.request('scores');
