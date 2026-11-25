@@ -18,7 +18,7 @@ import subprocess
 import time
 from typing import Callable
 
-from rollout_config import load_expectations
+from rollout_config import load_expectations, expected_port_sets
 
 TEMP_ENV_CONTENT = b'[Service]\nEnvironment=GRUNT_SETUP_NO_DATA_SHARING=1\n'
 MAX_HOLD_MS = 180000
@@ -26,6 +26,7 @@ DEFAULT_MARGIN_MS = 30000
 EXPECTATIONS = load_expectations()
 EXPECTED_DEFERRED = EXPECTATIONS['consentDeferred']
 EXPECTED_UNION = EXPECTATIONS['eligibleUnion']
+EXPECTED_PORTS = expected_port_sets(EXPECTATIONS)   # per pool: the union minus the owner opt-ins that belong to the other pool only
 RETIRED_PACKAGED = EXPECTATIONS['retiredPackagedSources']
 SETTINGS = ('CONFIG_DIR', 'PORT', 'SOURCES', 'DAEMON', 'OPT_IN_SOURCES', 'BACKGROUND_ACCOUNT_ACQUISITION', 'SETUP_NO_DATA_SHARING')
 ENV_KEYS = frozenset(f'{prefix}_{name}' for prefix in ('GRUNT', 'MILO') for name in SETTINGS)
@@ -117,7 +118,7 @@ class StartupGate:
 
     def _input(self, environment: dict, source_ids_per_port: dict | None) -> dict:
         value = {'runtimeDirectory': self.candidate_runtime, 'configDirectory': self.config_directory,
-                 'effectiveEnvironment': _selected(environment)}
+                 'effectiveEnvironment': _selected(environment), 'ownerOptIns': EXPECTATIONS['ownerOptIns']}
         if source_ids_per_port is not None:
             value['sourceIdsPerPort'] = source_ids_per_port
         return value
@@ -143,7 +144,7 @@ class StartupGate:
         if not isinstance(value, dict) or value.get('version') != 1 or value.get('retiredPackagedSources') != RETIRED_PACKAGED or value.get('eligibleUnion') != EXPECTED_UNION or value.get('consentDeferred') != EXPECTED_DEFERRED or value.get('staleOrdinaryPolicies') != [] or value.get('optOut') is not True or value.get('accountAcquisitionDisabled') is not True or value.get('primaryManagedAutomatic') is not True:
             _fail()
         expected_checks = [item for item in EXPECTED_UNION if item not in EXPECTED_DEFERRED]
-        if value.get('potentialChecks') != expected_checks or set(value.get('sourceIdsPerPort', {})) != {'8792', '8793'} or any(ids != EXPECTED_UNION for ids in value['sourceIdsPerPort'].values()):
+        if value.get('potentialChecks') != expected_checks or value.get('sourceIdsPerPort') != EXPECTED_PORTS or value.get('ownerOptIns') != EXPECTATIONS['ownerOptIns']:
             _fail()
         for name in ('consentSha256', 'policySha256', 'registrySha256', 'maintenanceSha256', 'probeEntriesSha256'):
             text = value.get(name)

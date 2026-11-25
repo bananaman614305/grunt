@@ -14,7 +14,7 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
     "ops/live-upgrade/rollout_checks.py", "ops/live-upgrade/rollout_config.py", "ops/live-upgrade/seed-routing-history.mjs", "ops/live-upgrade/source_transition.py",
     "ops/live-upgrade/sqlite_families.py", "ops/live-upgrade/stage.py", "ops/live-upgrade/startup_gate.py", "ops/live-upgrade/startup_gate_metadata.mjs", "ops/live-upgrade/test_admission_retry.py",
     "ops/live-upgrade/test_attempt.py", "ops/live-upgrade/test_checkpoint_floor.py", "ops/live-upgrade/test_controller.py", "ops/live-upgrade/test_daemon_admission.py",
-    "ops/live-upgrade/test_end_cycle.py", "ops/live-upgrade/test_maintenance_pause.py", "ops/live-upgrade/test_no_hand_edited_versions.py", "ops/live-upgrade/test_preparation_wait.py",
+    "ops/live-upgrade/test_end_cycle.py", "ops/live-upgrade/test_maintenance_pause.py", "ops/live-upgrade/test_no_hand_edited_versions.py", "ops/live-upgrade/test_owner_opt_ins.py", "ops/live-upgrade/test_preparation_wait.py",
     "ops/live-upgrade/test_registry_cache.py", "ops/live-upgrade/test_registry_refresh.py", "ops/live-upgrade/test_release_pins.py", "ops/live-upgrade/test_resource_policy.py", "ops/live-upgrade/test_source_transition.py",
     "ops/live-upgrade/test_sqlite_families.py", "ops/live-upgrade/test_startup_gate.py", "ops/live-upgrade/test_support.py", "ops/live-upgrade/test_upgrade.py",
     "ops/live-upgrade/test_upgrade_cli.py", "ops/live-upgrade/test_verify_success.py", "ops/live-upgrade/upgrade.py", "ops/live-upgrade/verify_success.py",

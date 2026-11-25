@@ -204,7 +204,7 @@ def old_runtime_manifests(attempt, runtimes, previous, *, stage_module=None):
 
 def run_metadata(node, source, config_dir, environment, *, run=subprocess.run):
     """The candidate's own startup metadata (read-only; the same script and input the startup gate uses)."""
-    request = {'runtimeDirectory': str(source), 'configDirectory': str(config_dir), 'effectiveEnvironment': environment}
+    request = {'runtimeDirectory': str(source), 'configDirectory': str(config_dir), 'effectiveEnvironment': environment, 'ownerOptIns': rollout_config.OWNER_OPT_INS}
     result = run([node, str(HERE / 'startup_gate_metadata.mjs')], input=json.dumps(request).encode(), capture_output=True, timeout=30,
                  env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/nonexistent'})
     if result.returncode != 0:
@@ -215,8 +215,12 @@ def run_metadata(node, source, config_dir, environment, *, run=subprocess.run):
 def derive_expectations(metadata):
     """The provider-source pins for this attempt, from the candidate release itself. The live pools are compared against them by the
     read-only rehearsal (source_transition.capture_before) before anything is paused, and again inside the transaction."""
-    value = {'eligibleUnion': sorted(metadata['eligibleUnion']), 'consentDeferred': sorted(metadata['consentDeferred']),
-             'retiredPackagedSources': sorted(metadata['retiredPackagedSources']), 'legacyAdvertisements': rollout_config.DEFAULT_EXPECTATIONS['legacyAdvertisements']}
+    union = sorted(metadata['eligibleUnion'])
+    # The owner-approved per-port opt-ins (a reviewed constant) apply only when the candidate really serves them; nothing else is derived into them.
+    owner = {port: [item for item in ids if item in union] for port, ids in rollout_config.OWNER_OPT_INS.items()}
+    value = {'eligibleUnion': union, 'consentDeferred': sorted(metadata['consentDeferred']),
+             'retiredPackagedSources': sorted(metadata['retiredPackagedSources']), 'legacyAdvertisements': rollout_config.DEFAULT_EXPECTATIONS['legacyAdvertisements'],
+             'ownerOptIns': owner}
     return value
 
 
