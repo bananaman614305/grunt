@@ -215,26 +215,12 @@ confirmed owner allowlist and same-host HTTPS session. Test each owner's Google
 login. The machine read token cannot retrieve account analytics.
 
 Day, week and month start at UTC midnight today, six days ago and twenty-nine
-days ago. Hosted accounts are identified by the existing gateway key fingerprint.
-The account's most recent attempt in the period supplies its reported country
-and coarse device class. Missing dimensions appear as Unknown. Only complete
-upstream input and output measurements contribute to metered tokens. New
-attribution starts with deployment. Historical routing estimates stay separate.
-Submitting the hosted chat setup form registers the key fingerprint once through
-`POST /agent/register`. Saved-key reconnects and direct message requests do
-not create signup events. Earlier activity has no known signup time. The funnel
-includes registered accounts that send no messages, and follows
-attempt, successful reply and later-day success within seven days. It excludes
-accounts whose observation window predates metering or has yet to finish.
-
-Country reporting requires a proxied Cloudflare route for exactly
-`api.grunt.run/agent/messages`. Deploy `src/edge/country.ts` as a Cloudflare
-Worker on that route. Provision the same dedicated random secret (at least
-32 characters) as `GRUNT_COUNTRY_INGRESS_SECRET` on the Worker and Fly app.
-The Worker replaces caller-supplied internal headers with Cloudflare's
-request geography and the private origin credential. Direct Fly requests,
-missing configuration and unavailable geography produce Unknown. Legacy
-country values are cleared when migrating previous attribution records.
+days ago. Active installations have a user attempt start or outcome in a retained
+fleet hour. Installation cohorts start at the first retained fleet report and
+require seven days of complete consecutive hourly reports. The period selects
+windows ending in that period. Report history can expire after thirty days.
+Collector tokens cover complete input and output measurements on successful
+user replies. Grunt has no account signup, country or device-class signal here.
 
 The registry reads the live published catalog. Anonymous router daily reports
 supply attempts, success counts and smoothed latency. Old reports are rolled up

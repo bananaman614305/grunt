@@ -10,25 +10,30 @@ export async function adoption(db: Client, registry: Registry, period: Period, n
   const midnight = Math.floor(now / day) * day;
   const start = period === 'all' ? 0 : midnight - ({ day: 0, week: 6, month: 29 }[period]) * day;
   const range = [start, now + 1];
-  const [active, cohort, feedback, diagnostics, metering] = await db.batch([
-    { sql: `WITH attempts AS (
-      SELECT account,measured_tokens,device,country,
-        ROW_NUMBER() OVER(PARTITION BY account ORDER BY ts DESC,id DESC) AS recency
-      FROM account_attempts WHERE ts>=? AND ts<?)
-      SELECT account,SUM(measured_tokens) AS tokens,COUNT(*)-COUNT(measured_tokens) AS missing,
-        MAX(CASE WHEN recency=1 THEN device END) AS device,MAX(CASE WHEN recency=1 THEN country END) AS country
-      FROM attempts GROUP BY account ORDER BY tokens DESC,account`, args: range },
-    { sql: `WITH registrations AS (
-      SELECT account AS person,registered_at AS joined FROM account_registrations
-      WHERE registered_at>=MAX(?,(SELECT MIN(started_at) FROM account_metering)) AND registered_at<?),
+  const hourlyActivity = `SELECT f.installation,f.hour,f.incomplete,
+    MAX(COALESCE(json_extract(s.value,'$.starts') + json_extract(s.value,'$.passed') +
+      json_extract(s.value,'$.failed') + json_extract(s.value,'$.cancelled'),0)>0) AS attempted,
+    MAX(COALESCE(json_extract(s.value,'$.passed'),0)>0) AS succeeded
+    FROM fleet_hours f LEFT JOIN json_each(f.series) s ON true
+    WHERE f.hour>=? AND f.hour+3600000<=? GROUP BY f.installation,f.hour`;
+  const [active, cohort, collectorUsage, feedback, diagnostics, metering] = await db.batch([
+    { sql: `WITH hours AS (${hourlyActivity})
+      SELECT COUNT(DISTINCT CASE WHEN attempted THEN installation END) AS active,
+      COUNT(DISTINCT installation) AS reporting FROM hours`, args: [start,now] },
+    { sql: `WITH hours AS (${hourlyActivity}), first_report AS (
+      SELECT installation,MIN(hour) AS joined FROM hours GROUP BY installation
+      HAVING MIN(hour)+? BETWEEN ? AND ?),
       progression AS (
-        SELECT person,joined,MIN(c.ts) AS attempted,MIN(CASE WHEN c.outcome='ok' THEN c.ts END) AS success
-        FROM registrations LEFT JOIN account_attempts c ON c.account=person AND c.ts>=joined AND c.ts<joined+?
-        GROUP BY person,joined)
+        SELECT first_report.installation,joined,MIN(CASE WHEN attempted THEN hour END) AS attempted,
+          MIN(CASE WHEN succeeded THEN hour END) AS success,MAX(CASE WHEN succeeded THEN hour END) AS last_success
+        FROM first_report JOIN hours USING(installation) WHERE hour<joined+?
+        GROUP BY first_report.installation,joined HAVING COUNT(*)=168 AND MAX(incomplete)=0)
       SELECT COUNT(*) AS joined,COUNT(attempted) AS attempted,COUNT(success) AS succeeded,
-        COUNT(CASE WHEN EXISTS (SELECT 1 FROM account_attempts c
-          WHERE c.account=person AND c.outcome='ok' AND c.ts/? > success/? AND c.ts<joined+?) THEN 1 END) AS retained
-      FROM progression`, args: [Math.max(0,start-7*day),now+1-7*day,7*day,day,day,7*day] },
+        COUNT(CASE WHEN last_success/? > success/? THEN 1 END) AS retained FROM progression`,
+      args: [0,now,7*day,start,now,7*day,day,day] },
+    { sql: `SELECT instance_id AS instance,SUM(input_tokens+output_tokens) AS tokens,
+      COUNT(*)-COUNT(input_tokens+output_tokens) AS missing FROM admin_usage_observations
+      WHERE at>=? AND at<? GROUP BY instance_id ORDER BY tokens DESC,instance_id`, args: range },
     { sql: `SELECT * FROM registry_daily WHERE day BETWEEN ? AND ?
       UNION ALL SELECT day,id,SUM(ok+failed+quota+auth),SUM(ok),SUM(CASE WHEN ok>0 THEN latency_ms ELSE 0 END),SUM(ok>0)
       FROM registry_feedback WHERE day BETWEEN ? AND ? GROUP BY day,id ORDER BY day,id`,
@@ -46,8 +51,8 @@ export async function adoption(db: Client, registry: Registry, period: Period, n
       SELECT source,SUM(tokens) AS tokens,MAX(CASE WHEN rank=(95*samples+99)/100 THEN latency END) AS p95
       FROM ranked GROUP BY source`, args: range }
   ], 'read');
-  const accounts = active!.rows.map(r => ({ account: String(r.account), tokens: r.tokens === null ? null : Number(r.tokens),
-    missing: Number(r.missing), device: String(r.device), country: String(r.country) }));
+  const collectors = collectorUsage!.rows.map(r => ({ instance: String(r.instance),
+    tokens: r.tokens === null ? null : Number(r.tokens), missing: Number(r.missing) }));
   const totals = new Map<string, { attempts: number; ok: number; latency: number; samples: number }>();
   const history = new Map<string, Record<string, number>>();
   for (const row of feedback!.rows) {
@@ -81,7 +86,8 @@ export async function adoption(db: Client, registry: Registry, period: Period, n
       models: [...new Set(observations.filter(r => r.kind === 'user' && r.outcome === 'passed' && r.model).map(r => String(r.model)))],
       configured: entry?.models ?? (entry?.model ? [entry.model] : []) };
   }).sort((a,b) => (b.attempts ?? -1)-(a.attempts ?? -1) || a.id.localeCompare(b.id));
-  return { start, now, published: registry.published, accounts, cohort: cohort!.rows[0], routes,
-    tokens: accounts.some(a => a.tokens !== null) ? accounts.reduce((n,a) => n+(a.tokens ?? 0),0) : null,
+  return { start, now, published: registry.published, activeInstallations: Number(active!.rows[0]!.active),
+    reportingInstallations: Number(active!.rows[0]!.reporting), collectors, cohort: cohort!.rows[0], routes,
+    tokens: collectors.some(a => a.tokens !== null) ? collectors.reduce((n,a) => n+(a.tokens ?? 0),0) : null,
     history: [...history].map(([bucket,counts]) => ({ bucket, counts })) };
 }

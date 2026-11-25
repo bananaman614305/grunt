@@ -12,11 +12,6 @@ const palette = ['#5ad1e6','#a78bfa','#f4b41a','#ed9465','#6cc591','#ebe0c9','#d
 function bars(rows, denominator) {
   return rows.map(([label, n]) => `<div class="bar"><span>${escapeText(label)}</span><b data-bar="${100*n/(denominator || 1)}"></b><strong>${fmt(n)}</strong></div>`).join('');
 }
-function dimensions(accounts, key) {
-  const tally = new Map();
-  for (const row of accounts) tally.set(row[key], (tally.get(row[key]) || 0)+1);
-  return bars([...tally].sort((a,b) => b[1]-a[1]), accounts.length) || '<small>No active accounts</small>';
-}
 function table(columns, rows) {
   return '<table><thead><tr>'+columns.map(x => '<th scope="col">'+escapeText(x)+'</th>').join('')+'</tr></thead><tbody>'+
     rows.map(row => '<tr>'+row.map(x => '<td>'+escapeText(x)+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
@@ -33,7 +28,7 @@ function historyChart(history, routes) {
       buckets.flatMap(b => Object.entries(b.counts).map(([id,n]) => [b.bucket,id,fmt(n)])))+'</div></details>';
 }
 function render(data) {
-  const {accounts, routes, cohort, history} = data;
+  const {collectors, routes, cohort, history} = data;
   const attempts = routes.reduce((n,r) => n+(r.attempts ?? 0),0);
   const columns = ['Route','Attempts','Served / rate','Tokens²','Avg session','P95 latency²','Probe uptime²','Free served²','Expiry','Models served²','Registry models','Reported latency¹'];
   const rows = routes.map(r => [r.id, fmt(r.attempts),
@@ -49,13 +44,13 @@ function render(data) {
     return `<article><div class="routehead"><strong>${escapeText(row[0])}</strong><span>${escapeText(row[2])} served</span></div>
       <div class="stats">${stats}</div><details><summary>Route details</summary><dl>${detail}</dl></details></article>`;
   }).join('');
-  return `<h1>User adoption</h1><p>${data.start ? date(data.start) : 'All recorded history'} – ${date(data.now)} UTC · Hosted gateway accounts with a recorded run attempt. One account per gateway key.</p>
-    <div class="cards"><div>Active users<b>${fmt(accounts.length)}</b></div><div>Global metered tokens<b>${fmt(data.tokens)}</b></div></div>
-    <small>${fmt(accounts.reduce((n,a) => n+a.missing,0))} attempts lack complete token measurements.</small>
-    <details><summary>Tokens by user · ${fmt(accounts.length)} active accounts</summary><div class="scroll">${table(['Account','Metered tokens','Unmetered attempts'],accounts.map(a => ['Account '+a.account.slice(0,16),fmt(a.tokens),fmt(a.missing)]))}</div></details>
-    <h3>Signup to retention</h3>${bars([['Signed up',cohort.joined],['Attempted a route',cohort.attempted],['First success',cohort.succeeded],['Returned later',cohort.retained]],cohort.joined)}
-    <small>Signup is recorded when a hosted account completes chat setup. Each cohort has seven full days to attempt a run, succeed, and succeed again on a later UTC day. Historical calls before account metering lack attribution.</small>
-    <div class="pair"><div><h3>Country</h3>${dimensions(accounts,'country')}</div><div><h3>Device type</h3>${dimensions(accounts,'device')}</div></div>
+  return `<h1>User adoption</h1><p>${data.start ? date(data.start) : 'All recorded history'} – ${date(data.now)} UTC · Closed UTC hours from reporting Grunt installations.</p>
+    <div class="cards"><div>Active installations<b>${fmt(data.reportingInstallations ? data.activeInstallations : null)}</b></div><div>Enrolled collector tokens<b>${fmt(data.tokens)}</b></div></div>
+    <small>${fmt(data.reportingInstallations)} reporting installation${data.reportingInstallations === 1 ? '' : 's'}. Active installations recorded a user route attempt.</small>
+    <details><summary>Tokens by enrolled collector</summary><div class="scroll">${table(['Collector','Measured tokens','Replies missing token counts'],collectors.map(c => [c.instance,fmt(c.tokens),fmt(c.missing)]))}</div></details>
+    <h3>Reporting installation cohort</h3>${bars([['First retained report',cohort.joined],['Attempt observed',cohort.attempted],['Success observed',cohort.succeeded],['Later-day success',cohort.retained]],cohort.joined)}
+    <small>Windows begin at the first retained fleet report and end in the selected period. Each installation must report seven complete days. Fleet and collector detail cover up to thirty days. Account signup, user counts and per-user tokens are unavailable.</small>
+    <div class="pair"><div><h3>Country</h3>Unreported</div><div><h3>Device type</h3>Unreported</div></div>
     <h3>Usage by route</h3>${bars(routes.filter(r => r.attempts>0).map(r => [r.id,r.attempts]),attempts)}
     <small>Anonymous router reports · ${fmt(attempts)} reported attempts, including retries. Cancellations are excluded.</small>
     <h2 id="registry">Registry</h2><p>${fmt(routes.reduce((n,r)=>n+(r.ok ?? 0),0))} successfully served · Registry published ${date(data.published)} UTC</p>
