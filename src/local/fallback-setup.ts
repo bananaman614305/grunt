@@ -272,6 +272,13 @@ export async function setupFallbacks(options: {
         failedSetup('openference', error);
         options.notify('openference: temporary free setup pending; other routes remain available.');
       } },
+      'openrouter-particle': async () => { try {
+        await (options.setupProvider ?? setup)(options.notify, ['openrouter-particle'], { squire: squire as SetupSquire, directory: options.directory,
+          connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });
+      } catch (error) {
+        failedSetup('openrouter-particle', error);
+        options.notify('OpenRouter Particle free setup is pending. Other routes remain available.');
+      } },
       crowllm: async () => { try {
         await (options.setupProvider ?? setup)(options.notify, ['crowllm'], { squire: squire as SetupSquire, directory: options.directory,
           connect, background: reuseOnly, dataSharingApproved: approved, ...(options.signal ? { signal: options.signal } : {}) });

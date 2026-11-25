@@ -1554,6 +1554,52 @@ Disconnecting the connector revokes the grant and stops subscriptions when ChatG
 
 References: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [ChatGPT plugin connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
 
+### OpenRouter Particle-1 Free (optional)
+
+`npx usegrunt add openrouter-particle` connects OpenRouter's `particle-ai/particle-1:free`
+alias. It is outside the default registry and separate from Kilo's anonymous
+Particle route: it uses the person's own OpenRouter key, that account's own free
+allowance and its own data-sharing receipt. Kilo approval does not carry over.
+
+The route cannot spend. Grunt sends only the exact `:free` model, with no model
+list or router, `provider.only` set to the free endpoint `particle-ai/us`,
+`allow_fallbacks: false`, `require_parameters: true` and a zero maximum price for
+prompt, completion, request and image. Before requests (checked again every
+minute and after any failure) it requires the endpoint metadata to list zero
+prices, tools and at least 200,000 tokens of context, and `GET /api/v1/key` to
+show an ordinary inference key (not a management or provisioning key) with free-model
+requests left. Each reply must name the exact model and report a cost of zero;
+a priced or unreported cost, another model or malformed tool arguments are
+refused. Setup reuses only a vault key labelled Grunt Free, scoped to
+`openrouter.ai`; other OpenRouter keys, such as an application's, are never
+reused. Setup asks Squire for a key with a credit limit of 0 where the form
+offers one, but OpenRouter does not document how a zero limit treats free models,
+so Grunt does not rely on it. A negative credit balance can block free models;
+the route never tops up.
+
+OpenRouter limits all free models on an account to 20 requests per minute and 50
+per UTC day until 10 credits have ever been purchased, then 1000 per day, and
+failed requests count. `GET /api/v1/key` reports the day's used, limit and
+remaining; a platform 429 carries `X-RateLimit-Reset` in epoch milliseconds.
+Particle's own shared free pool can answer 429 `fleet_capacity_exhausted` with no
+reset. Grunt treats that as a cooldown of at least 60 seconds (a longer provider
+hint wins), not as daily exhaustion, so the small allowance is not burnt on retries.
+The endpoint lists a 1,048,576-token context and 131,072 output tokens. That is
+the published capacity only: a live large-input check and a live tool call have
+not yet passed for this adapter, so treat usable input as unverified. The adapter streams for liveness only, validates tool schemas through
+the shared 2020-12-aware compiler, and passes the caller's output budget through.
+
+Content passes through OpenRouter to Particle AI (US). OpenRouter states it does
+not store prompts or responses unless the account opts in to logging, and that
+some models may store or train on inputs. Particle's terms state zero
+retention for standard synchronous inference and no training on customer content
+without opt-in, but OpenRouter does not mark this free endpoint zero-retention,
+so that is unconfirmed for this route. Particle's terms also call free services
+"provided for testing" and allow API use within one's own application but not
+standalone provision; Grunt serves the person's own work through their own key.
+See [OpenRouter limits](https://openrouter.ai/docs/api/reference/limits),
+[OpenRouter terms](https://openrouter.ai/terms) and [Particle terms](https://particle.ai/legal/terms).
+
 ## Curated sources and explicit selections
 
 The same curated registry applies to every Grunt installation. Reflection Beam
