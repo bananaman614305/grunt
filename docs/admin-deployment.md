@@ -228,5 +228,57 @@ before creating a backlog item. Store the confirmed Beeline ID against the handl
 Build and run `node scripts/fleet-report.mjs YYYY-MM-DD audit.json items.json report.html`
 with that handle-to-ID JSON object. Use `--plan` in place of the output filename
 to group evidence by stable handle. Only entries with a null work ID need
-reconciliation and creation; persist each confirmed mapping before continuing. For unavailable data pass a dash for both input
-files. The top-ranked handle is the default for a human reply of go.
+reconciliation and creation. Persist each confirmed mapping before continuing.
+The top-ranked handle is the default for a human reply of go.
+
+#### Overnight report and morning handoff
+
+Run the local trace reader during the existing #grunt overnight audit for the
+previous completed Eastern calendar day. Fleet comparisons use the UTC day of
+the same date. Use a built checkout on the authorized installation. For
+either fleet file that is unavailable, pass a dash. If the
+local daemon is unavailable, use a dash for `recovery.json` and preserve the
+fleet report. Keep the sanitized report inputs for the existing morning handoff.
+
+```sh
+node scripts/recovery-audit.mjs YYYY-MM-DD 8788 > recovery.json
+node scripts/fleet-report.mjs YYYY-MM-DD audit.json items.json report.html recovery.json
+node scripts/fleet-report.mjs YYYY-MM-DD audit.json items.json --handoff recovery.json
+```
+
+Use the existing morning schedule to attach the HTML, lead with the output of
+`--handoff`, and tag #grunt with findings and existing backlog links. The
+local evidence covers one installation. Its headline combines the intervals
+spent in failed attempts within each completed successful request and then
+adds those request-level durations. Overlaps count once and time after accepted
+output is excluded. Request elapsed time comes from the terminal request event.
+Missing phases and unfinished requests are visible in the denominator and
+coverage. Eligibility records when routing checks a compatible candidate or
+when its background probe succeeds while the candidate remains compatible.
+Dispatch still checks current access. Replay safety is
+reported for validated adapter failure points and explicit replay guards. First
+usable output records when the daemon has the validated buffered result. For
+older traces the successful attempt's finish is available as an acceptance time.
+The loopback reader requests detail events with `details=1`. Existing
+collectors continue to receive the original event types.
+
+#### BeatAPI follow-up on the same schedule
+
+Use the account-check coverage in the existing overnight and morning report to
+follow live denial rates and recovery. The collector only reads diagnostics.
+For a before/after comparison, provide a third argument to
+`scripts/recovery-audit.mjs` with independently verified intervals for the same
+installation and account. Each of `baseline` and `current` contains `since`,
+`until` (UTC epoch milliseconds on hour boundaries) and `runtimeVersion`.
+Use equal-length periods with comparable workload and polling opportunity,
+continuous verified denial, and the versions before and after activation. The
+measurement divides ordinary HTTP 403 account checks by those denied
+account-hours. Maintenance, setup and inference-guard calls are excluded from
+the ordinary comparison.
+
+For recovery, add an optional `recovery` object with the same interval fields
+and the independently observed `restoredAt` timestamp. The delay is from
+`restoredAt` to the first validated ordinary availability observation. An
+HTTP 200 alone can still fail the account guard. Missing matched coverage,
+restoration timestamps, or validated observations appear as unknown in the
+report.

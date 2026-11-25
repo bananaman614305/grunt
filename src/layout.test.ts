@@ -38,6 +38,7 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
     "ops/provider-scout/provision.mjs", "ops/provider-scout/test_provision.mjs"
   ]);
   files.add("scripts/fleet-report.mjs");
+  files.add("scripts/recovery-audit.mjs");
   files.add("docs/fleet-audit-proof/desktop.png");
   files.add("docs/fleet-audit-proof/phone.png");
   files.add("scripts/verification-benchmark.ts");

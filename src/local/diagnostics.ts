@@ -8,7 +8,9 @@ import type { Client, InValue } from '@libsql/client';
 import { diagnosticMetricSchema, pruneDiagnosticMetrics, readDiagnosticMetrics, recordDiagnosticMetrics } from './diagnostic-metrics.js';
 export type { DiagnosticMetrics, DiagnosticMetricBucket } from './diagnostic-metrics.js';
 
-export const diagnosticTypes = ['request.start', 'request.finish', 'attempt.start', 'attempt.finish', 'route.selection', 'route.skip', 'transport.finish', 'work.start', 'work.finish', 'release.marker'] as const;
+const detailTypes = ['request.output', 'attempt.failure', 'route.eligible', 'account.available'] as const;
+const traceDetailTypes = new Set<string>(detailTypes);
+export const diagnosticTypes = ['request.start', 'request.finish', 'attempt.start', 'attempt.finish', 'route.selection', 'route.skip', 'transport.finish', 'work.start', 'work.finish', 'release.marker', ...detailTypes] as const;
 export const diagnosticStages = ['task', 'queue', 'setup', 'tool', 'verification', 'collection', 'capture'] as const;
 export const diagnosticWorkDispositions = ['fresh', 'reused', 'deduplicated'] as const;
 export const diagnosticKinds = ['user', 'setup', 'maintenance', 'diagnostic'] as const;
@@ -18,7 +20,7 @@ export const diagnosticEndpoints = ['chat.completions', 'models', 'account', 'lo
 export const diagnosticNetworks = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'] as const;
 export const diagnosticFailureReasons = [
   'request_body', 'request_tools', 'request_tool_schema', 'request_size',
-  'response_body', 'response_json', 'response_choices', 'response_content', 'response_tools',
+  'response_body', 'response_json', 'response_choices', 'response_content', 'response_empty', 'response_tools',
   'completion_model', 'completion_billing', 'completion_usage', 'completion_attestation', 'completion_protocol',
   'stream_read', 'stream_format', 'stream_incomplete', 'stream_cleanup',
   'turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'
@@ -37,9 +39,10 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   actor?: 'client' | 'worker'; workerId?: string;
   stage?: typeof diagnosticStages[number]; parentId?: string; runtimeVersion?: string;
   workDisposition?: typeof diagnosticWorkDispositions[number];
+  replaySafe?: boolean;
 }
 export type StoredDiagnosticEvent = DiagnosticEvent & { seq: number };
-export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
+export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; incomplete?: boolean; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
 const context = new AsyncLocalStorage<DiagnosticContext>();
 export const currentDiagnosticContext = () => context.getStore();
 export const withDiagnosticContext = <T>(value: DiagnosticContext, fn: () => T): T => context.run(value, fn);
@@ -72,10 +75,22 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (member(['passed', 'failed', 'cancelled', 'skipped'] as const, v.outcome)) result.outcome = v.outcome;
   if (member(diagnosticErrors, v.errorCode)) result.errorCode = v.errorCode;
   if (member(diagnosticReasons, v.reason)) result.reason = v.reason;
+  if (result.type === 'attempt.failure' && typeof v.replaySafe === 'boolean') result.replaySafe = v.replaySafe;
   Object.assign(result, sanitizeSafeDiagnosticMetadata(v));
   for (const field of ['inputTokens', 'outputTokens'] as const) if (integer(v[field])) result[field] = v[field];
   for (const field of ['durationMs', 'retryAfterSeconds'] as const) if (finite(v[field])) result[field] = v[field];
   return result;
+}
+
+// Record the first validated failure or an explicit replay guard at the adapter
+// boundary. Untyped errors and ordinary transport observations carry no verdict.
+export function recordAttemptFailure(source: string, metadata: SafeDiagnosticMetadata | undefined, replaySafe: boolean) {
+  const current = currentDiagnosticContext();
+  if (!current?.sink || !current.attemptId) return;
+  try {
+    current.sink.record({ ...sanitizeSafeDiagnosticMetadata(metadata), version: 1, id: randomUUID(), at: Date.now(),
+      type: 'attempt.failure', requestId: current.requestId, kind: current.kind, attemptId: current.attemptId, source, replaySafe });
+  } catch { /* Observation cannot change an adapter failure. */ }
 }
 
 export function sanitizeSafeDiagnosticMetadata(input: unknown): SafeDiagnosticMetadata {
@@ -122,7 +137,7 @@ export function diagnosticFetch(fetcher: typeof fetch, source: string, endpointL
 }
 
 export interface DiagnosticHealth { enabled: true; available: boolean; queued: number; droppedEvents: number; lastWriteAt?: number; error?: 'storage_unavailable' | 'write_failed' | 'queue_full' }
-export interface DiagnosticListOptions { after?: string; limit?: number; source?: string; requestId?: string; outcome?: DiagnosticEvent['outcome'] }
+export interface DiagnosticListOptions { after?: string; limit?: number; source?: string; requestId?: string; outcome?: DiagnosticEvent['outcome']; includeDetails?: boolean }
 export interface DiagnosticList { events: StoredDiagnosticEvent[]; nextCursor: string | null; streamId: string | null }
 export interface DiagnosticAttemptSummary { total: number; succeeded: number; failed: number; cancelled: number; inputTokens: number; outputTokens: number; unknownInput: number; unknownOutput: number }
 export interface DiagnosticSummary {
@@ -251,7 +266,7 @@ export class DiagnosticsStore {
                 args: accepted.flatMap(event => [event.id, event.at, event.requestId, event.source ?? null, event.type, event.outcome ?? null, JSON.stringify(event)]) });
               const ids = new Set(inserted.rows.map(row => String(row.id)));
               const fresh = accepted.filter(event => ids.delete(event.id));
-              await recordDiagnosticMetrics(tx, fresh, this.options.now());
+              await recordDiagnosticMetrics(tx, fresh.filter(event => !traceDetailTypes.has(event.type)), this.options.now());
             }
             await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE at<? OR seq IN (SELECT seq FROM diagnostic_events ORDER BY seq DESC LIMIT -1 OFFSET ?)', args: [this.options.now() - this.options.maxAgeMs, this.options.maxEvents] });
             await pruneDiagnosticMetrics(tx, this.options.now());
@@ -290,6 +305,10 @@ export class DiagnosticsStore {
     if (!integer(limit) || limit < 1 || limit > 500 || (options.outcome !== undefined && !member(['passed', 'failed', 'cancelled', 'skipped'] as const, options.outcome))) throw new Error('Invalid diagnostic filter');
     const where = ['seq>?', 'at>=?'], args: InValue[] = [after, this.options.now() - this.options.maxAgeMs];
     for (const [key, value] of [['source', options.source], ['request_id', options.requestId], ['outcome', options.outcome]] as const) if (value !== undefined) { where.push(key + '=?'); args.push(value); }
+    if (options.includeDetails === false) {
+      where.push('type NOT IN (' + detailTypes.map(() => '?').join(',') + ')');
+      args.push(...detailTypes);
+    }
     args.push(limit);
     const events = await this.rows('SELECT seq,data FROM diagnostic_events WHERE ' + where.join(' AND ') + ' ORDER BY seq ASC LIMIT ?', args);
     return { events, nextCursor: events.length ? String(events.at(-1)!.seq) : options.after ?? null, streamId: this.streamId };

@@ -1,4 +1,4 @@
-import { diagnosticFetch } from './diagnostics.js';
+import { currentDiagnosticContext, diagnosticFetch } from './diagnostics.js';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -193,7 +193,13 @@ export class BeatAPI implements Source {
       if (this.busy || this.now() < this.next || !await this.approved()) return false;
       const grant = await this.grant(), usage = await this.preflightUsage(grant, signal);
       signal.throwIfAborted();
-      return usage.credit_balance === grant.baseline_balance;
+      if (usage.credit_balance !== grant.baseline_balance) return false;
+      const context = currentDiagnosticContext();
+      try {
+        context?.sink?.record({ version: 1, id: randomUUID(), at: Date.now(), type: 'account.available',
+          requestId: context.requestId, kind: context.kind, source: this.id });
+      } catch { /* Observation cannot change account eligibility. */ }
+      return true;
     } catch { return false; } })());
   }
   async healthCheck() { return this.available(); }

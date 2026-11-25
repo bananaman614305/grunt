@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mistralVibeEnvironment, MistralVibe, MISTRAL_VIBE_MODEL, MISTRAL_VIBE_WIRE_MODEL, mistralVibePaths, readMistralVibeFreePlanReceipt, writeMistralVibeFreePlanReceipt } from './mistral-vibe.js';
 import type { ModelRequest } from './source.js';
+import { Sources } from './source.js';
 const directories: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 const receipt = () => ({ version: 1 as const, plan: 'Free' as const, payAsYouGo: false as const, paymentMethodPresent: false as const, purchasedCredits: 0 as const, checkedAt: new Date().toISOString() });
@@ -83,8 +84,28 @@ it('allows one protocol repair and accounts for both native calls', async () => 
   const f = await fixture('repair');
   try {
     const tools = [{ type: 'function' as const, function: { name: 'read_file', parameters: { type: 'object' } } }];
-    await expect(f.source.complete({ ...request(), tools }, AbortSignal.timeout(5000))).resolves.toEqual({ text: 'repaired', inputTokens: 401686, outputTokens: 52 });
+    await expect(f.source.complete({ ...request(), tools, maxTokens: 60 }, AbortSignal.timeout(5000))).resolves.toEqual({ text: 'repaired', inputTokens: 401686, outputTokens: 52 });
+    expect(JSON.parse(await readFile(f.snapshot, 'utf8')).outputCap).toBe('34');
+    await expect(f.source.complete({ ...request(), tools, maxTokens: 26 }, AbortSignal.timeout(5000)))
+      .resolves.toMatchObject({ text: '', finishReason: 'length', outputTokens: 26 });
+    expect(JSON.parse(await readFile(f.snapshot, 'utf8')).prompt).not.toContain('only repair attempt');
   } finally { await f.source.close(); }
+});
+
+it('falls back from a truncated bridge result without exposing its partial tool protocol', async () => {
+  const f = await fixture('tools', 'length');
+  const backup = { id: 'backup', supportsFunctionTools: true, available: async () => true,
+    complete: vi.fn(async () => ({ text: 'usable answer' })) };
+  const pool = new Sources([f.source, backup]);
+  const tools = [{ type: 'function' as const, function: { name: 'read_file', parameters: { type: 'object' } } }];
+  const payload = { ...request(' word'.repeat(35_000)), model: 'grunt', tools, maxTokens: 4096 };
+  try {
+    await expect(pool.complete(payload, AbortSignal.timeout(5000))).resolves.toEqual({ text: 'usable answer' });
+    expect(backup.complete).toHaveBeenCalledExactlyOnceWith(payload, expect.any(AbortSignal));
+    await expect(pool.complete({ ...payload, model: f.source.id }, AbortSignal.timeout(5000)))
+      .resolves.toMatchObject({ text: '', finishReason: 'length', outputTokens: 26 });
+    expect(backup.complete).toHaveBeenCalledOnce();
+  } finally { await pool.close(); }
 });
 
 it.each([

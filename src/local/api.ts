@@ -218,7 +218,8 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
           const httpStatus = status ?? c.res.status, source = c.res.headers.get('X-Grunt-Source');
           store?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId, kind: context.kind, type: 'request.finish', httpStatus,
             durationMs: Math.max(0, performance.now() - startedMono), outcome: c.req.raw.signal.aborted ? 'cancelled' : httpStatus >= 400 ? 'failed' : 'passed',
-            ...(source ? { source } : {}), ...(context.local ? { reason: 'local' } : {}), ...(context.errorCode ? { errorCode: context.errorCode } : {}) });
+            ...(source ? { source } : {}), ...(context.local ? { reason: 'local' } : {}), ...(context.errorCode ? { errorCode: context.errorCode } : {}),
+            ...(context.incomplete ? { failureReason: 'length' } : {}) });
         }
       }
     };
@@ -238,7 +239,8 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     if (!store) return c.json({ error: 'Diagnostics are not enabled' }, 503);
     try {
       const after = c.req.query('after'), source = c.req.query('source'), requestId = c.req.query('requestId'), limit = c.req.query('limit');
-      return c.json(await store.list({ ...(after === undefined ? {} : { after }), ...(source === undefined ? {} : { source }), ...(requestId === undefined ? {} : { requestId }), ...(limit === undefined ? {} : { limit: Number(limit) }) }));
+      return c.json(await store.list({ ...(after === undefined ? {} : { after }), ...(source === undefined ? {} : { source }), ...(requestId === undefined ? {} : { requestId }),
+        ...(limit === undefined ? {} : { limit: Number(limit) }), includeDetails: c.req.query('details') === '1' }));
     } catch { return c.json({ error: 'Invalid diagnostic filter' }, 400); }
   });
   app.get('/v1/diagnostics/summary', async c => {
