@@ -8,7 +8,7 @@ import { recordDataSharingConsent } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
 import { createLocalApp } from './api.js';
-import { Sources } from './source.js';
+import { Sources, endingOf, guardToolCalls } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 let directory: string;
 const sources: Kilo[] = [];
@@ -265,6 +265,45 @@ it('asks once more when Particle samples an invalid function call, then reports 
   await expect(repeated.source.complete({ ...request(), tools: [tool] }, new AbortController().signal))
     .rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_tools' } });
   expect(repeated.posts()).toHaveLength(2);
+});
+const endingReply = (finish: unknown, message: Record<string, unknown>, usagePatch: Record<string, unknown> = {}, served = KILO_PARTICLE) =>
+  Response.json(result({ model: served, choices: [{ finish_reason: finish, message: { role: 'assistant', ...message } }], usage: { ...usage(), ...usagePatch } }));
+const route = (reflectionBeam: boolean) => ({ reflectionBeam, ...(reflectionBeam ? { catalog: model(KILO_BEAM) } : {}) });
+it.each([false, true])('records a content-free ending for a normal text stop and keeps it a normal reply (reflection beam %s)', async reflectionBeam => {
+  await recordDataSharingConsent(directory, ['reflection-beam']);
+  const f = fixture({ ...route(reflectionBeam), infer: () => endingReply('stop', { content: 'Done, no call needed.' }, { completion_tokens_details: { reasoning_tokens: 3 } }, reflectionBeam ? KILO_BEAM : KILO_PARTICLE) });
+  const reply = await f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal);
+  expect(reply.text).toBe('Done, no call needed.'); expect(reply.calls).toBeUndefined();
+  expect(endingOf(reply)).toEqual({ finish: 'stop', toolCalls: false, reasoningTokens: 3 });
+  expect(guardToolCalls(reply, {})).toBe(reply);
+  expect(f.posts()).toHaveLength(1);
+});
+it('records a tool-call ending with its parsed call, and an unknown finish as other', async () => {
+  const f = fixture({ infer: () => endingReply('tool_calls', { content: null, tool_calls: [call] }) });
+  expect(endingOf(await f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal))).toEqual({ finish: 'tool_calls', toolCalls: true });
+  const g = fixture({ infer: () => endingReply('PRIVATE_NEW_REASON', { content: 'ok' }) });
+  expect(endingOf(await g.source.complete(request(), new AbortController().signal))).toEqual({ finish: 'other', toolCalls: false });
+});
+it.each([false, true])('treats a tool_calls or function_call ending without a parsed call as an invalid sample, retried once then reported as response_tools (reflection beam %s)', async reflectionBeam => {
+  await recordDataSharingConsent(directory, ['reflection-beam']);
+  const served = reflectionBeam ? KILO_BEAM : KILO_PARTICLE;
+  const cases: [string, () => Response][] = [
+    ['tool_calls with markup text', () => endingReply('tool_calls', { content: '<tool_call>{"name":"nonce"}</tool_call>' }, {}, served)],
+    ['tool_calls with empty call list', () => endingReply('tool_calls', { content: 'I will call it', tool_calls: [] }, {}, served)],
+    ['tool_calls with no text', () => endingReply('tool_calls', { content: null }, {}, served)],
+    ['function_call finish with text', () => endingReply('function_call', { content: 'Calling now' }, {}, served)],
+    ['legacy function_call object with text', () => endingReply('stop', { content: 'Calling now', function_call: { name: 'nonce', arguments: '{"nonce":"synthetic"}' } }, {}, served)]
+  ];
+  for (const [name, infer] of cases) {
+    const f = fixture({ ...route(reflectionBeam), infer });
+    await expect(f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal), name).rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_tools', httpStatus: 200 } });
+    expect(f.posts(), name).toHaveLength(2);
+  }
+});
+it('recovers when the retry after a tool-call ending without a call returns the call', async () => {
+  const replies = [() => endingReply('tool_calls', { content: 'about to call' }), () => endingReply('tool_calls', { content: null, tool_calls: [call] })];
+  const f = fixture({ infer: () => replies.shift()!() });
+  await expect(f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal)).resolves.toMatchObject({ calls: [call] });
 });
 const rotation = () => [model('kilo-auto/free'), model('nvidia/nemotron-3.5-lightning:free'), { ...model('vendor/paid:free'), isFree: false }, model(KILO_BEAM), model(), model('openrouter/free')];
 const sentModel = (init?: RequestInit) => JSON.parse(String(init?.body)).model as string;

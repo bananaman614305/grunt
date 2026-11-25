@@ -9,7 +9,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { quotaRetryAfter, quotaSeconds } from './quota-timing.js';
-import { lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
+import { completionEnding, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, Message, ModelRequest, Source, ToolCall } from './source.js';
 
 export const IFM_MODEL = 'IFM/K2-Horizon-375B-A23B';
@@ -275,7 +275,8 @@ export class Ifm implements Source {
             if (typeof call.id !== 'string' || call.type !== 'function' || typeof fn.name !== 'string' || typeof fn.arguments !== 'string') throw new Error('Invalid tools');
             return { id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } };
           });
-          reply = { text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+          reply = withEnding({ text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number },
+            completionEnding(choice.finish_reason, usage, calls.length > 0));
         }
       }
       // A reply cut off by its token budget keeps its visible text; an unfinished tool call is dropped. The template's
@@ -294,7 +295,8 @@ export class Ifm implements Source {
       if (!text && !calls.length) throw new Error('Empty answer');
       const answer = { text, ...(calls.length ? { calls } : {}) };
       if (reasoning !== undefined) this.memory.remember(answer, reasoning);
-      return { ...answer, ...(reply.inputTokens === undefined ? {} : { inputTokens: reply.inputTokens }), ...(reply.outputTokens === undefined ? {} : { outputTokens: reply.outputTokens }) };
+      const ended = endingOf(reply), final = { ...answer, ...(reply.inputTokens === undefined ? {} : { inputTokens: reply.inputTokens }), ...(reply.outputTokens === undefined ? {} : { outputTokens: reply.outputTokens }) };
+      return ended ? withEnding(final, { ...ended, toolCalls: calls.length > 0 }) : final;
     } catch (e) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'IFM source closed');

@@ -7,6 +7,7 @@ import { Ifm, ifmDuration, ifmRetryAfter, IFM_MODEL } from './ifm.js';
 import { bundledRegistry, localOptInAdapters } from '../registry.js';
 import { providerQuotaPolicy } from './quota-policy.js';
 import type { ModelRequest } from './source.js';
+import { endingOf, guardToolCalls } from './source.js';
 import { decode } from './api.js';
 import { localRequestRefusal } from './routing-history.js';
 import { ifmSchema } from './ifm.js';
@@ -442,4 +443,14 @@ it('survives the pool first-output deadline on a reply that streams for longer t
     await expect(result).resolves.toMatchObject({ text: 'Done.' });
     await pool.close();
   } finally { vi.useRealTimers(); }
+});
+
+it('records a content-free ending, and a tool_calls ending without a call is an invalid sample for the shared gate', async () => {
+  await approved();
+  const stopped = await source(api(() => Response.json(reply({ content: 'Hello' }, { usage: { prompt_tokens: 17, completion_tokens: 9, completion_tokens_details: { reasoning_tokens: 4 } } })))).complete(ask(), AbortSignal.timeout(5000));
+  expect(endingOf(stopped)).toEqual({ finish: 'stop', toolCalls: false, reasoningTokens: 4 });
+  expect(guardToolCalls(stopped, {})).toBe(stopped);
+  const claimed = await source(api(() => Response.json(reply({ content: 'I will call it' }, { choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: 'I will call it' } }] })))).complete(ask(), AbortSignal.timeout(5000));
+  expect(endingOf(claimed)).toEqual({ finish: 'tool_calls', toolCalls: false });
+  expect(() => guardToolCalls(claimed, {})).toThrow(expect.objectContaining({ code: 'upstream', diagnostics: { failureReason: 'response_tools', httpStatus: 200 } }));
 });

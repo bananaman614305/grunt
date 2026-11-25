@@ -25,6 +25,8 @@ export const diagnosticFailureReasons = [
   'stream_read', 'stream_format', 'stream_incomplete', 'stream_cleanup',
   'turn_limit', 'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'
 ] as const;
+// How a successful reply ended, as a fixed set. Any other provider value is recorded as 'other', never as text.
+export const diagnosticFinishReasons = ['stop', 'length', 'tool_calls', 'content_filter', 'function_call', 'other'] as const;
 export interface SafeDiagnosticMetadata {
   httpStatus?: number; transport?: 'http' | 'cli'; httpMethod?: 'GET' | 'POST';
   endpointLabel?: typeof diagnosticEndpoints[number]; networkCode?: typeof diagnosticNetworks[number]; exitCode?: number;
@@ -35,6 +37,8 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   kind: typeof diagnosticKinds[number]; seq?: number; attemptId?: string; source?: string; model?: string;
   outcome?: 'passed' | 'failed' | 'cancelled' | 'skipped'; durationMs?: number;
   errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number; free?: boolean;
+  // Content-free reply ending on a successful attempt.finish: mapped finish_reason, whether the reply held tool calls, reasoning tokens when reported.
+  finishReason?: typeof diagnosticFinishReasons[number]; hadToolCalls?: boolean; reasoningTokens?: number;
   reason?: typeof diagnosticReasons[number];
   actor?: 'client' | 'worker'; workerId?: string;
   stage?: typeof diagnosticStages[number]; parentId?: string; runtimeVersion?: string;
@@ -78,7 +82,9 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (result.type === 'attempt.failure' && typeof v.replaySafe === 'boolean') result.replaySafe = v.replaySafe;
   Object.assign(result, sanitizeSafeDiagnosticMetadata(v));
   if (typeof v.free === 'boolean') result.free = v.free;
-  for (const field of ['inputTokens', 'outputTokens'] as const) if (integer(v[field])) result[field] = v[field];
+  for (const field of ['inputTokens', 'outputTokens', 'reasoningTokens'] as const) if (integer(v[field])) result[field] = v[field];
+  if (member(diagnosticFinishReasons, v.finishReason)) result.finishReason = v.finishReason;
+  if (typeof v.hadToolCalls === 'boolean') result.hadToolCalls = v.hadToolCalls;
   for (const field of ['durationMs', 'retryAfterSeconds'] as const) if (finite(v[field])) result[field] = v[field];
   return result;
 }

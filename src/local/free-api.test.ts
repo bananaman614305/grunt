@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createLocalApp } from './api.js';
-import { Sources } from './source.js';
+import { Sources, endingOf } from './source.js';
 import { FreeApi, FREE_API_PROVIDERS, isDeepSeekV41Model, readFreeApiGrant } from './free-api.js';
 import type { FreeApiProvider } from './free-api.js';
 import { Zro, ZRO_DEEPSEEK } from './zro.js';
@@ -197,4 +197,12 @@ it('preserves function calls and refuses explicit provider refusals', async () =
   expect(await source.complete(request, AbortSignal.timeout(1000))).toMatchObject({ text: '', calls: [call] });
   const refusal = new FreeApi('zro', { loadGrant: async () => grant, fetcher: async () => Response.json({ choices: [{ message: { refusal: 'private provider reason' } }] }) });
   await expect(refusal.complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused', message: 'zro refused the request' });
+});
+
+it('records a content-free ending on a free-API reply', async () => {
+  const reply = { choices: [{ finish_reason: 'PRIVATE_NEW_REASON', message: { content: 'hi' } }], usage: { prompt_tokens: 3, completion_tokens: 2, completion_tokens_details: { reasoning_tokens: 1 } } };
+  const source = new FreeApi('zro', { loadGrant: async () => grant, fetcher: async () => Response.json(reply) });
+  const result = await source.complete(request, AbortSignal.timeout(1000));
+  expect(result).toEqual({ text: 'hi', inputTokens: 3, outputTokens: 2 });
+  expect(endingOf(result)).toEqual({ finish: 'other', toolCalls: false, reasoningTokens: 1 });
 });

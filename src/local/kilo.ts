@@ -3,7 +3,7 @@ import type { ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
-import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { completionEnding, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import { diagnosticFetch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -248,8 +248,14 @@ export class Kilo implements Source {
         ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } });
       }
     }
+    // A reply that ends in a tool call (or carries a legacy function_call) but has no parsed call is an invalid sample,
+    // not a finished text answer. The text is not parsed or changed.
+    if (!calls.length && (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call' || message.function_call !== undefined && message.function_call !== null)) {
+      throw fail('upstream', 'Kilo ended in a tool call but returned none', 'response_tools');
+    }
     if (!text.trim() && !calls.length) throw unusable('Kilo returned an empty completion', 'response_empty');
-    return { servedModel: model, free: true, text, ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+    return withEnding({ servedModel: model, free: true, text, ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number },
+      completionEnding(choice.finish_reason, usage, calls.length > 0));
   }
   async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
 }
