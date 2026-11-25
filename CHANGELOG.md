@@ -4,7 +4,8 @@
 
 ## 0.10.9 — 2026-11-24
 
-- Stop a cut-off tool call from poisoning a conversation. Every source reply now passes one gate: a tool call whose arguments are not one JSON object is never returned as complete (a reply that reached its output budget is reported as length-limited; any other is an invalid sample and the task continues on another source). Saved conversations that already hold such a call recover: unusable historical arguments are replaced by `{}` at request translation on all three routes, keeping each call's id, name and result, so no source refuses the history. A request that every tool-capable adapter refused locally is now answered as an invalid request (HTTP 400) with an honest message, instead of a quota wait.
+- Report hourly fleet diagnostics to the registry by default: counts of user attempts, failures, timeouts, quota errors and slow successes by route and release, under a per-install identity. Prompts, responses, paths and command output stay out. Set `GRUNT_FLEET_REPORTING=0` to turn it off; `GRUNT_SETUP_NO_DATA_SHARING=1` and custom registries also do (#219).
+- Stop a cut-off tool call from poisoning a conversation. Every source reply now passes one gate: a tool call whose arguments are not one JSON object is never returned as complete (a reply that reached its output budget is reported as length-limited; any other is an invalid sample and the task continues on another source). Saved conversations that already hold such a call recover: unusable historical arguments are replaced by `{}` at request translation on all three routes, keeping each call's id, name and result, so no source refuses the history. A request that every tool-capable adapter refused locally is now answered as an invalid request (HTTP 400) with an honest message, instead of a quota wait (#216).
 
 ## 0.10.8 — 2026-11-24
 
