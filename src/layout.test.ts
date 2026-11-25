@@ -36,6 +36,7 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
     "ops/provider-scout/publish.mjs",
     "ops/provider-scout/provision.mjs", "ops/provider-scout/test_provision.mjs"
   ]);
+  for (const image of ["desktop", "registry", "phone"]) files.add(`docs/dashboard-proof/${image}.png`);
   files.add("scripts/verification-benchmark.ts");
   for (const path of ["docs/efficiency-round3-results.md", "docs/efficiency-empirical-results.md", "docs/passive-efficiency.md", "scripts/metadata-benchmark.ts", "scripts/routing-replay-benchmark.ts", "scripts/passive-efficiency-collector.py", "scripts/test_passive_efficiency_collector.py"]) files.add(path);
   expect(paths.length).toBeGreaterThan(15);
