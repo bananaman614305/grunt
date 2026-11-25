@@ -1,5 +1,5 @@
 export type Kind = "chat" | "code" | "research" | "writing";
-export type Status = "queued" | "running" | "done" | "failed" | "cancelled";
+export type Status = "queued" | "running" | "done" | "truncated" | "failed" | "cancelled";
 export type Task = {
   id: string; person: string; title: string; brief: string; kind: Kind; status: Status;
   model: string | null; route_reason: string | null; result: string | null; error: string | null;
