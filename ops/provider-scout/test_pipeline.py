@@ -192,7 +192,8 @@ class PipelineTests(unittest.TestCase):
         def fail(*args):
             raise ValueError('SECRET_UPSTREAM_BODY')
         result = self.make(validate=fail).process(self.candidate)
-        self.assertEqual(result, {'status': 'blocked', 'reason': 'candidate_validation_failed'})
+        self.assertEqual(result, {'status': 'blocked', 'reason': 'candidate_validation_failed',
+                                  'stage': 'validate', 'detail': 'value_error'})
         self.assertNotIn('SECRET', json.dumps(result))
         self.assertEqual(self.calls, [])
 
@@ -209,6 +210,77 @@ class PipelineTests(unittest.TestCase):
                     self.assertEqual(result['reason'], 'pipeline_stage_failed')
                     self.assertNotIn('SECRET', self.checkpoint().read_text())
                     self.assertNotIn('promote', self.calls)
+
+    def test_exceptions_name_the_failed_stage_and_a_safe_code(self):
+        expected = {'review': 'review_pre', 'checks': 'checks', 'probe': 'probe', 'promote': 'promotion'}
+        for stage, name in expected.items():
+            with self.subTest(stage=stage):
+                with tempfile.TemporaryDirectory(dir=self.base) as root:
+                    self.root = Path(root)
+                    self.calls.clear()
+                    def fail(*args, **kwargs):
+                        raise RuntimeError('SECRET_CREDENTIAL_AND_RAW_PROVIDER_BODY')
+                    result = self.make(**{stage: fail}).process(self.candidate)
+                    self.assertEqual((result['status'], result['reason'], result['stage'], result['detail']),
+                                     ('blocked', 'pipeline_stage_failed', name, 'runtime_error'))
+                    self.assertNotIn('SECRET', json.dumps(result) + self.checkpoint().read_text())
+
+    def test_validation_error_codes_come_from_our_fixed_messages(self):
+        def stale(*args):
+            raise pipeline.ValidationError('Candidate evidence is stale or in the future')
+        result = self.make(validate=stale).process(self.candidate)
+        self.assertEqual((result['reason'], result['stage'], result['detail']),
+                         ('candidate_validation_failed', 'validate', 'candidate_evidence_is_stale_or_in_the_future'))
+
+    def test_worker_outage_defers_a_stage_then_blocks_after_bounded_retries(self):
+        def down(receipt, directory, agent):
+            raise pipeline.WorkerError('worker_timeout')
+        supervisor = self.make(review=down)
+        for attempt in (1, 2):
+            result = supervisor.process(self.candidate)
+            self.assertEqual((result['status'], result['reason'], result['stage'], result['detail']),
+                             ('deferred', 'stage_worker_unavailable', 'review_pre', 'worker_timeout'), attempt)
+        result = supervisor.process(self.candidate)
+        self.assertEqual((result['status'], result['reason']), ('blocked', 'stage_retries_exhausted'))
+        self.assertNotIn('promote', self.calls)
+
+    def test_reviewer_integration_violation_is_never_retried(self):
+        def violation(receipt, directory, agent):
+            raise pipeline.WorkerError('reviewer_integration_violation')
+        result = self.make(review=violation).process(self.candidate)
+        self.assertEqual((result['status'], result['reason'], result['detail']),
+                         ('blocked', 'pipeline_stage_failed', 'reviewer_integration_violation'))
+
+    def test_review_rejection_names_only_fixed_failed_checks(self):
+        def review(receipt, directory, agent):
+            return {'review_id': 'r1', 'verdict': 'reject', 'head_sha': receipt['head_sha'],
+                    'checks': {'model': True, 'free_access': False, 'terms': False, 'not_a_check': False},
+                    'reasons': ['SECRET reviewer prose']}
+        result = self.make(review=review).process(self.candidate)
+        self.assertEqual((result['reason'], result['stage'], result['detail']),
+                         ('pre_execution_review_not_approved', 'review_pre', 'unconfirmed_free_access_terms'))
+        self.assertNotIn('SECRET', json.dumps(result))
+
+    def test_unchanged_blocked_resubmission_does_not_repeat_the_reviews(self):
+        self.pre_verdict = 'reject'
+        first = self.make().process(self.candidate)
+        self.assertEqual(first['status'], 'blocked')
+        self.calls.clear()
+        again = self.make().process(dict(self.candidate))
+        self.assertEqual(again, first)
+        self.assertEqual(self.calls, ['validate'])  # no review burned with nothing new to judge
+
+    def test_flaky_local_checks_get_exactly_one_unchanged_retry(self):
+        outcomes = iter([False, False, True])
+        def checks(receipt, *, run):
+            self.calls.append('checks')
+            return {**receipt, 'checks': {'passed': next(outcomes)}}
+        supervisor = self.make(checks=checks)
+        self.assertEqual(supervisor.process(self.candidate)['reason'], 'local_checks_not_passed')
+        self.assertEqual(supervisor.process(self.candidate)['reason'], 'local_checks_not_passed')
+        self.assertEqual(self.calls.count('checks'), 2)
+        self.assertEqual(supervisor.process(self.candidate)['reason'], 'local_checks_not_passed')
+        self.assertEqual(self.calls.count('checks'), 2)  # third identical submission is not retried
 
     def test_both_reviews_must_approve_and_are_independent(self):
         for phase, verdict in (('pre', 'reject'), ('pre', 'needs_approval'),

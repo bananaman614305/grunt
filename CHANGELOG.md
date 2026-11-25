@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Operator: make the provider scout finish what it qualifies. Unfinished researched, setup and integration candidates are requeued (63 of 81 researched rows and all genuine integration rows were orphaned), furthest-along first, with bounded backoff and a park after two reviews without new evidence; supervisor-blocked heads go back to the worker with a safe reason; the ledger gains `released`, `retired` and `excluded` statuses reconciled from the registry and owner decisions (idempotent `migrate`, backed up, never drops a row); discovery label rejections are `claimed` and get a verification pass; stale proofs are refreshed instead of demoting; failures name their stage; budgets reserve the release stages; discovery diffs public lists, seeks newer models and Chinese first-party sources. Admission policy is unchanged.
+
 ## 0.10.8 — 2026-11-24
 
 - Honor caller output budgets: free routes no longer cap replies at 4,096 tokens; unspecified limits are omitted so the provider's own limit applies, and provider truncation is reported as length (#212).

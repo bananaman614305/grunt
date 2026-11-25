@@ -34,10 +34,11 @@ SQUIRE_TOOLS = (
 class WorkerError(RuntimeError):
     """A safe reason code suitable for operator status, never raw stderr."""
 
-    def __init__(self, reason, tool_counts=None):
+    def __init__(self, reason, tool_counts=None, detail=None):
         super().__init__(reason)
         self.reason = reason
         self.tool_counts = dict(tool_counts or {})
+        self.detail = detail  # fixed code or exit status only, never output
 
 
 def _private_directory(path):
@@ -319,6 +320,7 @@ def run_agent(request, config, progress=None):
     violation = threading.Event()
     rejected = 0
     previous_handlers = {}
+    phase = 'command'
     try:
         cancelled = request.get('cancel_event')
         if cancelled is not None and cancelled.is_set():
@@ -334,6 +336,7 @@ def run_agent(request, config, progress=None):
         lock_fd = request.get('lock_fd')
         if lock_fd is not None and (isinstance(lock_fd, bool) or not isinstance(lock_fd, int) or lock_fd < 0):
             raise WorkerError('invalid_worker_lock')
+        phase = 'launch'
         worker = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                   text=True, encoding='utf-8', errors='replace', env=env, start_new_session=True,
                                   pass_fds=() if lock_fd is None else (lock_fd,))
@@ -356,6 +359,7 @@ def run_agent(request, config, progress=None):
                 except (ValueError, TypeError, AttributeError):
                     pass
 
+        phase = 'run'
         reader = threading.Thread(target=consume, daemon=True)
         reader.start()
 
@@ -398,9 +402,10 @@ def run_agent(request, config, progress=None):
         if code in (124, 137):
             raise WorkerError('worker_timeout', counts)
         if code != 0:
-            raise WorkerError('worker_failed', counts)
+            raise WorkerError('worker_failed', counts, detail='exit_%d' % code if 0 <= code < 256 else 'exit_signal')
         if request.get('require_web_search', False) and not counts['web_search'] and not counts['web_search_call']:
             raise WorkerError('worker_did_not_search', counts)
+        phase = 'result'
         result = _read_result(output, schema)
         return {'result': result, 'tool_counts': dict(counts), 'approval_rejections': rejected,
                 'exit_code': code, 'output_path': str(output)}
@@ -408,8 +413,13 @@ def run_agent(request, config, progress=None):
         raise
     except InterruptedError:
         raise WorkerError('worker_cancelled', counts) from None
+    except json.JSONDecodeError:
+        raise WorkerError('worker_result_not_json', counts) from None
+    except FileNotFoundError:
+        raise WorkerError('worker_result_missing' if phase == 'result' else 'worker_' + phase + '_failed', counts) from None
     except (OSError, ValueError, TypeError, KeyError):
-        raise WorkerError('worker_execution_or_output_failed', counts) from None
+        # The phase says where it broke; the exception text could carry paths or output.
+        raise WorkerError({'result': 'worker_result_unreadable'}.get(phase, 'worker_' + phase + '_failed'), counts) from None
     finally:
         for number in previous_handlers:
             signal.signal(number, signal.SIG_IGN)

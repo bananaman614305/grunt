@@ -14,6 +14,7 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
+import lifecycle
 spec = importlib.util.spec_from_file_location('scout', Path(__file__).with_name('scout.py'))
 scout = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scout)
@@ -493,7 +494,7 @@ class ScoutTests(unittest.TestCase):
         old = candidate(homepage='https://openrouter.ai', model='known-flash')
         ledger = {'version': 1, 'candidates': {scout.candidate_id(old): old}}
         shared = candidate(homepage='https://new-provider.example')
-        barrier = threading.Barrier(3)
+        barrier = threading.Barrier(len(scout.DISCOVERY_LANES))
 
         def worker(request, _config):
             lane = Path(request['output_path']).stem
@@ -514,12 +515,13 @@ class ScoutTests(unittest.TestCase):
         with patch.object(scout, 'run_agent', side_effect=worker):
             result = scout.discover_lanes(root, directory, root, {}, ledger, {}, {}, time.monotonic()+10, 0)
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['tool_counts'], {'web_search': 6})
+        self.assertEqual(result['tool_counts'], {'web_search': 2 * len(scout.DISCOVERY_LANES)})
         self.assertEqual([row['homepage'] for row in result['candidates']], ['https://new-provider.example', 'https://another-gateway.example'])
         self.assertEqual(result['lanes']['tools']['duplicate_offers'], 1)
+        self.assertEqual(result['lanes']['lists']['duplicate_offers'], 2)
         self.assertEqual(result['lanes']['direct']['repeat_queries'], 1)
         self.assertEqual(result['lanes']['gateways']['duplicate_offers'], 1)
-        self.assertEqual(len(result['search_queries']), 4)
+        self.assertEqual(len(result['search_queries']), 5)
         self.assertEqual(ledger['candidates'][scout.candidate_id(old)], old)
         self.assertEqual(set(row['status'] for row in result['candidates']), {'researched'})
         self.assertTrue(all(not row['probe']['reply_received'] for row in result['candidates']))
@@ -581,11 +583,14 @@ class ScoutTests(unittest.TestCase):
             self.assertEqual(scout.load(root / 'ledger.json')['discovery_pending'][key]['context_tokens'], 500000)
             self.assertEqual(scout.run(root), 0)
             self.assertEqual(scout.run(root), 0)
-        self.assertEqual([[row['context_tokens'] for row in offers] for offers in supplied], [[500000], [500000]])
+            self.assertEqual(scout.run(root), 0)
+        # The second review changed the facts (progress), so the finish lane resumes it at once.
+        self.assertEqual([[row['context_tokens'] for row in offers] for offers in supplied], [[500000], [500000], [210000]])
         self.assertEqual(supplied[0][0]['homepage'], old['homepage'])
         stored = scout.load(root / 'ledger.json')
         self.assertEqual(stored['discovery_pending'][key]['status'], 'integration_pending')
-        self.assertEqual(stored['discovery_pending'][key]['qualification_attempts'], 1)
+        self.assertEqual(stored['discovery_pending'][key]['qualification_attempts'], 2)
+        # The third review changed nothing: it backs off instead of repeating.
         self.assertEqual(scout.qualification_scope(stored), {})
         self.assertIn(supplied[0][0]['review_id'], stored['reviewed_discoveries'])
         self.assertEqual(stored['candidates'][key]['context_tokens'], 210000)
@@ -594,7 +599,7 @@ class ScoutTests(unittest.TestCase):
     def test_previously_rejected_alias_with_relabelled_facts_does_not_restart_qualification(self):
         self.worker_fixture()
         root = self.workspace
-        old = candidate(context_tokens=42000, homepage='https://openrouter.ai', status='rejected')
+        old = candidate(context_tokens=42000, homepage='https://openrouter.ai', status='rejected', sightings=3)
         changed = candidate(context_tokens=900000, homepage='https://docs.openrouter.ai')
         key = scout.candidate_id(old)
         scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {key: old}})
@@ -607,9 +612,11 @@ class ScoutTests(unittest.TestCase):
 
         with patch.object(scout, 'run_agent', side_effect=worker) as agent, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(scout.run(root), 0)
-        self.assertEqual(agent.call_count, 3)
+        self.assertEqual(agent.call_count, len(scout.DISCOVERY_LANES))
         saved = scout.load(root / 'ledger.json')
-        self.assertEqual(saved['candidates'], {key: old})
+        self.assertEqual({name: value for name, value in saved['candidates'][key].items()
+                          if name not in ('rejection_basis', 'reason_codes')}, old)
+        self.assertEqual(saved['candidates'][key]['rejection_basis'], 'verified')
         self.assertEqual(saved['discovery_pending'], {})
         self.assertEqual(scout.load(root / 'last-run.json')['qualification_offers'], 0)
 
@@ -656,8 +663,8 @@ class ScoutTests(unittest.TestCase):
             self.assertEqual(scout.run(self.workspace, smoke=True), 0)
         state = scout.load(self.workspace / 'last-run.json')
         self.assertEqual(state['status'], 'completed')
-        self.assertEqual(state['tool_counts']['web_search'], 3)
-        self.assertEqual(set(state['discovery']['lanes']), {'direct', 'tools', 'gateways'})
+        self.assertEqual(state['tool_counts']['web_search'], len(scout.DISCOVERY_LANES))
+        self.assertEqual(set(state['discovery']['lanes']), {'direct', 'tools', 'gateways', 'lists'})
         self.assertEqual(len(scout.load(self.workspace / 'ledger.json')['candidates']), 1)
         saved = scout.load(Path(state['report']))
         self.assertEqual(saved['candidates'][0]['status'], 'researched')
@@ -1078,6 +1085,95 @@ class ScoutTests(unittest.TestCase):
             self.assertEqual((target / name).stat().st_mode & 0o777, 0o600)
         self.assertEqual(list(target.glob('test_*')), [])
         self.assertEqual(config['squire_proxy'], str(target / 'squire_proxy.py'))
+
+    def finish_lane_run(self, rows, *, extra=None):
+        """One scout run with synthetic discovery and a recording qualification worker."""
+        self.worker_fixture()
+        root = self.workspace
+        ledger = {'version': 1, 'candidates': {scout.candidate_id(item): item for item in rows}}
+        scout.atomic(root / 'ledger.json', ledger)
+        seen = []
+
+        def agent(request, *_args):
+            context = json.loads(request['prompt'].split('## This run\n', 1)[1])
+            seen.append(context['new_or_changed_offers'])
+            report = {'summary': 'fixture', 'web_search_used': True, 'search_queries': ['one', 'two'],
+                      'candidates': [], 'blockers': []}
+            return {'result': report, 'tool_counts': {'web_search': 1}}
+
+        def discover(*_args):
+            return {'status': 'completed', 'lanes': {}, 'tool_counts': {}, 'candidates': [], 'search_queries': []}
+
+        with patch.object(scout, 'discover_lanes', side_effect=discover), patch.object(scout, 'run_agent', side_effect=agent), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(root), 0)
+            first = scout.load(root / 'ledger.json', max_bytes=None)
+            self.assertEqual(scout.run(root), 0)
+        return ledger, first, seen
+
+    def test_run_migrates_once_backs_up_and_resumes_the_furthest_along_candidate_first(self):
+        orphans = [candidate(homepage=f'https://orphan{n}.example', status='researched', free_access='unclear',
+                             setup_status='not_attempted') for n in range(4)]
+        stuck = candidate(homepage='https://stuck.example', status='integration_pending', setup_status='signed_up')
+        shipped = candidate(homepage='https://shipped.example', status='integration_pending', pipeline_status='released')
+        original, stored, seen = self.finish_lane_run([*orphans, stuck, shipped])
+        # One backup, taken before the first rewrite, holding the original bytes.
+        backups = list(self.workspace.glob('ledger.json.pre-lifecycle-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(json.loads(backups[0].read_text()), original)
+        self.assertEqual(stored['lifecycle_version'], 1)
+        by = {item['homepage']: item for item in stored['candidates'].values()}
+        self.assertEqual(by['https://shipped.example']['status'], 'released')
+        self.assertNotIn(scout.candidate_id(shipped), stored['discovery_pending'])
+        # Orphans are queued again, and the signed-up integration is offered ahead of them.
+        self.assertEqual(len(stored['discovery_pending']), 5)
+        first_run = seen[0]
+        self.assertEqual(first_run[0]['homepage'], 'https://stuck.example')
+        self.assertEqual(first_run[0]['lane'], 'finish')
+        self.assertLessEqual(len(first_run), lifecycle.SCOPE_PER_RUN)
+        self.assertEqual(scout.load(self.workspace / 'last-run.json')['qualification_lanes'], {'finish': 1, 'new': 4})
+        # An unreturned offer is counted so peers rotate in instead of the same row repeating.
+        offered = {item['homepage']: item.get('qualification_offered', 0) for item in stored['discovery_pending'].values()}
+        self.assertTrue(all(count == 1 for count in offered.values()), offered)
+
+    def test_run_sends_a_blocked_head_back_to_the_worker_with_the_safe_reason(self):
+        blocked = candidate(status='ready_for_review', pipeline_status='blocked', pipeline_reason='local_checks_not_passed',
+                            pipeline_stage='checks', release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40})
+        _original, stored, seen = self.finish_lane_run([blocked])
+        offer = seen[0][0]
+        self.assertEqual((offer['lane'], offer['rework']['reason'], offer['rework']['stage']), ('finish', 'local_checks_not_passed', 'checks'))
+        row = stored['candidates'][scout.candidate_id(blocked)]
+        self.assertEqual((row['status'], row['rework_count']), ('integration_pending', 1))
+
+    def test_short_remaining_budget_skips_research_but_the_run_still_completes(self):
+        self.worker_fixture()
+        scout.atomic(self.workspace / 'ledger.json', {'version': 1, 'candidates': {}})
+        plan = {'total': 5, 'resume': 0, 'release': 4.99, 'discovery': 1, 'qualification': 1, 'minimum_stage': 0.5}
+        with patch.object(lifecycle, 'plan_budget', return_value=plan), \
+                patch.object(scout, 'run_agent', side_effect=AssertionError('no worker may start')), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(self.workspace), 0)
+        state = scout.load(self.workspace / 'last-run.json')
+        self.assertEqual((state['status'], state['discovery']['status'], state['qualification']), ('completed', 'skipped', 'skipped_budget'))
+        self.assertEqual(sorted(state['blockers']), ['discovery_skipped_budget', 'qualification_skipped_budget'])
+
+    def test_released_pipeline_result_sets_the_released_status_and_safe_reason_fields(self):
+        item = candidate(release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40}, status='ready_for_review')
+        key = scout.candidate_id(item)
+        ledger = {'candidates': {key: dict(item)}}
+        scout.record_pipeline_result(ledger, {'status': 'blocked', 'reason': 'pipeline_stage_failed', 'stage': 'probe',
+                                              'detail': 'runtime_error'}, item)
+        row = ledger['candidates'][key]
+        self.assertEqual((row['pipeline_stage'], row['pipeline_detail']), ('probe', 'runtime_error'))
+        scout.record_pipeline_result(ledger, {'status': 'blocked', 'reason': 'x', 'stage': 'probe',
+                                              'detail': 'Provider said SECRET'}, item)
+        self.assertNotIn('pipeline_detail', row)
+        scout.record_pipeline_result(ledger, {'status': 'released', 'reason': 'verified', 'source_id': 'synthetic'}, item)
+        self.assertEqual((row['status'], row['terminal_reason'], row['pipeline_status']), ('released', 'released_verified', 'released'))
+        self.assertEqual(row['released_at'], row['pipeline_updated_at'])
+
+    def test_install_default_budget_leaves_room_for_the_release_stages(self):
+        self.assertGreaterEqual(lifecycle.plan_budget(9000, True)['release'], lifecycle.MIN_CANDIDATE_SECONDS)
 
 
 if __name__ == '__main__':

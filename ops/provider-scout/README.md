@@ -133,6 +133,71 @@ New users receive its bundled registry with the new npm release when they run
 provider-specific setup and consent still apply. These pipeline tests do not
 claim that a newly discovered real provider has passed live qualification.
 
+## Finishing candidates
+
+Every run reconciles the ledger with the fetched registry and the owner
+decisions, then offers the qualification worker a bounded, ordered set of
+offers. Trusted lifecycle code (`lifecycle.py`) owns all of this; a worker
+report cannot set it, and the report schema has no `released`, `retired` or
+`excluded` status.
+
+- **Ledger-only statuses.** `released` is a source the supervisor shipped or that
+  the registry lists (matching signup host and exact model); `retired` is a
+  source removed from Grunt (a released row whose provider left a usable
+  registry, or an operator decision); `excluded` is an owner exclusion. The
+  previous status is kept as `status_before` and restored if the decision is
+  lifted. Rows are re-labelled, never removed.
+- **Finish lane.** Due offers are ordered furthest-along first (supervisor rework,
+  then integration with an account, then other integration, setup, researched),
+  and rotate by how often each was offered, so one stuck candidate cannot starve
+  an equal peer. At most 2 finish, 1 verify and 6 offers in total go to the worker
+  each run; new discoveries come before the backlog. Everything else stays due.
+  A candidate offered six times without a returned review is parked.
+- **No re-review without new evidence.** A review that changes the structured
+  facts (status, setup, context, gates, sources, head, probe flags) resumes at the
+  next run. Rewording prose is not evidence: an unchanged review backs off, a
+  second parks the candidate for 14 days, and ten reviews park it regardless. New
+  first-party change evidence from discovery reopens it.
+- **Rework.** A head the supervisor blocked or superseded goes back to the worker
+  (`rework` carries the safe reason, stage and detail) up to three times. A
+  resubmission with the same head, evidence and facts is not reviewed again; the
+  stored result is returned. A flaky `local_checks_not_passed` gets one retry. A
+  worker outage during a stage defers it (three times, then
+  `stage_retries_exhausted`) rather than blocking the head.
+- **Claimed or verified.** Discovery labels are claims. A label-only rejection from
+  discovery (one-time credit, below baseline, high friction, context under the
+  minimum) is kept as `rejected` with basis `claimed`, but is queued for the verify
+  lane, which asks the worker to confirm or refute the failing gate with
+  first-party evidence. Admission policy (200,000 usable input tokens, recurring
+  free access, coding quality) is unchanged; only `POLICY.md` owner decisions
+  change it. Unclear or unverified quality or context stays `researched` with
+  `reason_codes` such as `quality_unverified`, and is retried only within the
+  bounds above.
+- **Safe reasons.** Supervisor results carry `stage` (validate, review_pre, checks,
+  probe, review_post, promotion) and a fixed `detail`: our own worker reason or
+  validation message slug, or an exception class name. Provider text, paths and
+  reviewer prose are never persisted. Worker failures name their phase
+  (`worker_launch_failed`, `worker_result_not_json`, `worker_result_missing`, ...).
+- **Budgets.** `timeout_seconds` (new installs: 9000, never more than 10800, so a
+  run cannot overlap the next four-hour cron) is split: half of the release share
+  resumes earlier pending promotions, half is held for new candidates, and
+  discovery (up to 600 s) and qualification (up to 2400 s) are clipped to what the
+  release stages leave. A stage with less than its minimum left is skipped and
+  reported (`discovery_skipped_budget`, `qualification_skipped_budget`), and no
+  release candidate starts with under ten minutes left. Existing installs keep
+  their configured `timeout_seconds` (2700 yields a tight plan; raise it).
+
+`usegrunt-scout migrate [--registry PATH] [--write]` runs the reconciliation as a
+dry run unless `--write`, prints before and after counts, and on `--write` copies
+the ledger to `ledger.json.pre-lifecycle-<time>` (mode 0600) first. It is
+idempotent and refuses to finish if a candidate row would disappear. A scheduled
+run performs the same migration automatically, with one backup the first time.
+`usegrunt-scout retire --homepage URL --reason TEXT` (and `unretire`) record a
+source removed from Grunt, distinct from an owner exclusion; Clixad is retired by
+default. Discovery runs four passes; the fourth diffs public free-LLM lists
+against every host already in the ledger, sweeps for newer models, and runs
+Chinese-language first-party queries, excluding relay, mirror and shared-key sites.
+
 ## Protected state and blocked work
 
 Whole runs do not overlap. The concurrent discovery workers have no Squire
@@ -175,13 +240,16 @@ identity. Historical `www`/known gateway aliases are merged; resolving a generic
 models or replacing a protected release identity. Revisiting an offer requires a first-party source and specific
 before-and-after facts about allowance, usable context, quality, signup,
 permitted use, or supply. Qualification receives only new offers or documented
-changes. Rejected findings are terminal until such a change. Unexamined work
+changes. A rejection confirmed by a qualification review is terminal until such
+a change. A rejection that rests only on the discovery pass's own labels is
+recorded as `rejection_basis: claimed` and earns one verification pass (see
+[Finishing candidates](#finishing-candidates)). Unexamined work
 stays queued. Examined but unfinished research, setup and integration work also
-stays queued, with its last review and next retry time. Retryable qualification
-starts with a 12-hour delay (24 hours for blocked setup) and backs off to at most
-seven days between retries; there is no limit on the number of viable offers.
-The supervisor migrates older completed-review records that discarded this
-unfinished work. A retry resumes the remaining account/probe/integration step,
+stays queued, with its last review and next retry time. A review that changed
+nothing starts a 12-hour delay (24 hours for blocked setup), doubling to at most
+seven days; a second review with no new structured evidence parks the candidate
+for 14 days. The supervisor migrates older completed-review records that
+discarded this unfinished work. A retry resumes the remaining account/probe/integration step,
 rather than asking discovery to find the provider again. Approval-held and
 CAPTCHA/human-verification-held work has no automatic retry time. The status
 command distinguishes total pending work from currently due reviews.
