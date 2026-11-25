@@ -415,8 +415,12 @@ export class Sources {
   }
   async models() {
     const available = await Promise.all(this.sources.map(async s => {
-      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.unrouted(s.id) && !this.router.listed(s.id)
-        || !await this.available(s).catch(() => false)) return null;
+      if (this.retired(s.id) || this.pending.has(s.id) || this.router && !this.unrouted(s.id) && !this.router.listed(s.id)) return null;
+      const available = await this.available(s).catch(error => {
+        if (error instanceof SourceError && error.code === 'timeout') return false;
+        throw error;
+      });
+      if (!available) return null;
       if (this.registeredRouter?.needsHealthCheck(s.id) && s.healthCheck) {
         await this.metadata.run(`health:${s.id}`, signal => this.observation.available(s, true, () => this.registeredRouter?.healthy(s.id), signal),
           undefined, s.availabilityTimeoutMs ?? 30000).catch(() => false);
