@@ -37,7 +37,7 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
     "ops/provider-scout/publish.mjs",
     "ops/provider-scout/provision.mjs", "ops/provider-scout/test_provision.mjs"
   ]);
-  for (const image of ["desktop", "registry", "phone"]) files.add(`docs/dashboard-proof/${image}.png`);
+  for (const image of ["desktop", "registry", "phone", "signup-phone"]) files.add(`docs/dashboard-proof/${image}.png`);
   files.add("scripts/fleet-report.mjs");
   files.add("scripts/recovery-audit.mjs");
   files.add("docs/fleet-audit-proof/desktop.png");
