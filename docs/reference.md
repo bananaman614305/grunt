@@ -784,7 +784,14 @@ then the adapter sends nothing, and approval for another source never carries ov
 rest briefly; untested above two in flight), passes your
 output budget through without a cap of its own, stops on HTTP 402 or any reported charge, reads `Retry-After` and the
 documented daily counter on 429 (a bare 429 gets a 30-second local back-off, not an inferred reset), reports a reply cut off by its budget as length-limited, and
-replays each reply's reasoning verbatim on the matching assistant turn from process memory.
+replays each reply's reasoning verbatim on the matching assistant turn from process memory. History that another
+source produced has no remembered reasoning, and IFM's gateway answers HTTP 422 to an assistant turn that has text and
+no thinking field (checked on synthetic requests: a tool-call turn with empty text passes, a plain text turn fails, and
+the refusal comes before any host is chosen). Every assistant turn therefore carries `reasoning_content`, the empty
+string when nothing is remembered, which IFM documents as valid. HTTP 400, 413 and 422 are request-shape refusals, not
+provider health: no cooldown or retirement, and the task moves to another source. Tool schemas whose `required` names
+the host's template cannot find in `properties` (for example when `allOf` supplies them) are sent without those names;
+the model's calls are still checked against the original schema.
 
 ### Darus daily free source
 

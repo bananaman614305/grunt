@@ -71,6 +71,36 @@ export function ifmRetryAfter(headers: Headers, now: number): number | undefined
   return known.length ? Math.max(...known) : undefined;
 }
 
+type Json = Record<string, unknown>;
+const isObject = (v: unknown): v is Json => v !== null && typeof v === 'object' && !Array.isArray(v);
+/**
+ * IFM's chat template rejects, with HTTP 400, a tool schema whose "required" list is not backed by "properties": a
+ * non-empty list with no properties outside a oneOf/anyOf variant, or a name that "properties" does not define.
+ * Harness tools do carry such schemas (an MCP tool that lists required inputs without declaring them). The model
+ * is sent the schema minus the unbacked names; Grunt still validates the model's call against the original.
+ */
+export function ifmSchema(spec: unknown, inVariant = false): unknown {
+  if (!isObject(spec)) return spec;
+  const out: Json = { ...spec };
+  const properties = isObject(spec.properties) && Object.keys(spec.properties).length ? spec.properties : undefined;
+  if ('required' in out) {
+    if (!Array.isArray(out.required)) delete out.required;
+    else if (!out.required.length) { /* An empty list is accepted as it is. */ }
+    else if (properties) out.required = out.required.filter(name => typeof name === 'string' && Object.hasOwn(properties, name));
+    else if (!inVariant || out.required.some(name => typeof name !== 'string')) delete out.required;
+  }
+  if (isObject(out.properties)) out.properties = Object.fromEntries(Object.entries(out.properties).map(([key, child]) => [key, ifmSchema(child)]));
+  if ('items' in out) out.items = ifmSchema(out.items);
+  for (const key of ['oneOf', 'anyOf'] as const) if (Array.isArray(out[key])) out[key] = out[key].map(variant => ifmSchema(variant, true));
+  if (isObject(out.additionalProperties)) out.additionalProperties = ifmSchema(out.additionalProperties);
+  if (isObject(out.patternProperties)) out.patternProperties = Object.fromEntries(Object.entries(out.patternProperties).map(([key, child]) => [key, ifmSchema(child)]));
+  return out;
+}
+const ifmTool = (tool: ModelRequest['tools'][number]) => {
+  const fn = (tool as { function?: unknown }).function;
+  return isObject(fn) && isObject(fn.parameters) ? { ...tool, function: { ...fn, parameters: ifmSchema(fn.parameters) } } : tool;
+};
+
 const callKey = (calls: readonly ToolCall[]) => createHash('sha256').update(JSON.stringify(calls.map(call => [call.id, call.function.name, call.function.arguments]))).digest('hex');
 const textKey = (text: string) => createHash('sha256').update(text).digest('hex');
 
@@ -78,7 +108,8 @@ const textKey = (text: string) => createHash('sha256').update(text).digest('hex'
  * K2 Horizon returns its reasoning beside the answer and asks for it back, verbatim, on the next turn.
  * Harnesses keep only the visible text and tool calls, so the adapter remembers each reply's reasoning
  * for the process lifetime, keyed by the exact tool calls (or answer text), and puts it back on the
- * matching assistant turn. Without a match the turn is sent as the harness has it, which IFM accepts.
+ * matching assistant turn. Without a match the turn carries an empty thinking field: IFM answers HTTP 422 to an
+ * assistant turn that has text and no thinking field at all.
  */
 class ReasoningMemory {
   private entries = new Map<string, string>();
@@ -161,13 +192,17 @@ export class Ifm implements Source {
     if (!grant) throw new SourceError('refused', 'IFM route could not be verified; it needs current data-sharing approval and its vaulted key');
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(IFM_TOTAL_MS)]);
     // The caller's output budget is passed through unchanged. Without one IFM's own default (the remaining context) applies.
+    // Only the OpenAI chat fields are sent. IFM's gateway answers HTTP 422 to any assistant turn that carries text and
+    // no thinking field, so every assistant turn gets one: the remembered reasoning when this process produced the
+    // reply, otherwise the empty string, which IFM documents as valid (history that came from another source).
     const messages = request.messages.map(message => {
       const role = message.role === 'developer' ? 'system' : message.role;
-      const reasoning = role === 'assistant' ? this.memory.recall(message) : undefined;
-      return reasoning === undefined ? { ...message, role } : { ...message, role, reasoning_content: reasoning };
+      return { role, content: typeof message.content === 'string' ? message.content : '',
+        ...(role === 'assistant' ? { reasoning_content: this.memory.recall(message) ?? '' } : {}),
+        ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}), ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}) };
     });
     // IFM recommends temperature 1.0 and top_p 0.95; reasoning effort "high" is the only level and the default.
-    const payload = JSON.stringify({ model: IFM_MODEL, messages, ...(request.tools.length ? { tools: request.tools } : {}), temperature: 1.0, top_p: 0.95, ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}) });
+    const payload = JSON.stringify({ model: IFM_MODEL, messages, ...(request.tools.length ? { tools: request.tools.map(ifmTool) } : {}), temperature: 1.0, top_p: 0.95, ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}) });
     if (Buffer.byteLength(payload) > 32 * 1024 * 1024) throw new SourceError('refused', 'IFM request is larger than grunt will send');
     try {
       await this.admit(signal);
@@ -179,6 +214,10 @@ export class Ifm implements Source {
         if (response.status === 402) throw new SourceError('refused', 'IFM reported a payment or billing requirement; grunt will not continue', undefined, undefined, { httpStatus: 402, transport: 'http', endpointLabel: 'chat.completions' });
         // A 429 with no usable signal (an unpublished per-second or per-minute guard) is a short local back-off, not
         // a claim about when IFM resets, so a request-guard hit does not bench the source for the default hour.
+        // A request IFM refuses for its shape (400, 413, 422) is not provider health: no cooldown, no retirement, and the
+        // router moves this task to another source. The error body is never read or kept.
+        if ([400, 413, 422].includes(response.status)) throw new SourceError('refused', `IFM rejected the request shape (HTTP ${response.status})`, undefined, undefined,
+          { httpStatus: response.status, transport: 'http', endpointLabel: 'chat.completions', failureReason: response.status === 413 ? 'request_size' : 'request_body' });
         const retry = response.status === 429 ? ifmRetryAfter(response.headers, this.now) ?? IFM_GUARD_BACKOFF_SECONDS : quotaRetryAfter(response.headers.get('retry-after'), this.now);
         if (response.status === 429 && response.headers.get('x-ratelimit-remaining-tokens-daily') === '0') this.markExhausted();
         throw new SourceError(response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : response.status === 403 ? 'refused' : 'upstream',

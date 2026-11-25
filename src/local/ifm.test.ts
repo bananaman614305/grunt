@@ -7,6 +7,9 @@ import { Ifm, ifmDuration, ifmRetryAfter, IFM_MODEL } from './ifm.js';
 import { bundledRegistry, localOptInAdapters } from '../registry.js';
 import { providerQuotaPolicy } from './quota-policy.js';
 import type { ModelRequest } from './source.js';
+import { decode } from './api.js';
+import { localRequestRefusal } from './routing-history.js';
+import { ifmSchema } from './ifm.js';
 
 let directory: string;
 const grant = { base_url: 'https://api.ifm.ai', token: 'synthetic-key' };
@@ -109,7 +112,7 @@ it('replays reasoning verbatim on the matching assistant turn and only there', a
   const other = [{ role: 'user', content: 'Other.' }, { role: 'assistant', content: '', tool_calls: [{ ...first.calls![0]!, function: { name: 'scout_probe', arguments: '{"value": 8}' } }] },
     { role: 'tool', tool_call_id: 'call-1', content: '{"ok":true}' }];
   await client.complete(ask({ tools: [tool], messages: other }), AbortSignal.timeout(5000));
-  expect(bodyOf(fetcher, 2).messages[1]).not.toHaveProperty('reasoning_content');
+  expect(bodyOf(fetcher, 2).messages[1].reasoning_content).toBe('');
 });
 
 it('accepts the documented reasoning_content field name too', async () => {
@@ -224,4 +227,71 @@ it('is never recorded by naming the source: only its own listed approval records
 it('lets another source take over after an inference timeout', async () => {
   // Routing treats a timeout as replayable only for inference-only sources; IFM runs no native work.
   expect(source(api(() => Response.json(reply({ content: 'hi' })))).inferenceOnly).toBe(true);
+});
+
+// Regression for the first live builder request: IFM's gateway answered HTTP 422 to a conversation whose history came
+// from other sources, because its assistant turns had no thinking field. Bodies below are synthetic and shaped like the
+// Anthropic Messages request Claude Code sends.
+const claudeCodeShape = {
+  system: [{ type: 'text', text: 'Synthetic system prompt.' }],
+  tools: [{ name: 'Read', description: 'Read.', input_schema: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', additionalProperties: false, properties: { path: { type: 'string' } }, required: ['path'] } }],
+  max_tokens: 32000,
+  messages: [
+    { role: 'user', content: 'Synthetic task.' },
+    { role: 'assistant', content: [{ type: 'text', text: 'Looking.' }, { type: 'tool_use', id: 'toolu_01AAA', name: 'Read', input: { path: 'a' } }, { type: 'tool_use', id: 'call_other_source_1', name: 'Read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_01AAA', content: '' }, { type: 'tool_result', tool_use_id: 'call_other_source_1', content: 'ok' }, { type: 'text', text: '<system-reminder>synthetic</system-reminder>' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'Plain text turn from another source.' }] },
+    { role: 'user', content: 'Continue.' }
+  ]
+};
+
+it('gives every assistant turn a thinking field, including history another source produced', async () => {
+  await approved();
+  const fetcher = api(() => Response.json(reply({ content: 'ok' })));
+  const request = { ...decode(claudeCodeShape, 'messages'), model: 'ifm' } as ModelRequest;
+  await source(fetcher).complete({ ...request, messages: [...request.messages, { role: 'user', content: 'Handoff prompt.' }], handoffPrompt: 'Handoff prompt.' }, AbortSignal.timeout(5000));
+  const sent = bodyOf(fetcher);
+  const assistants = sent.messages.filter((m: { role: string }) => m.role === 'assistant');
+  expect(assistants).toHaveLength(2);
+  for (const message of assistants) expect(message.reasoning_content).toBe('');
+  expect(sent.max_tokens).toBe(32000);
+  for (const message of sent.messages) expect(Object.keys(message).every(key => ['role', 'content', 'reasoning_content', 'tool_calls', 'tool_call_id'].includes(key))).toBe(true);
+  expect(sent.messages.at(-1)).toEqual({ role: 'user', content: 'Handoff prompt.' });
+});
+
+it.each([[400, 'request_body'], [422, 'request_body'], [413, 'request_size']])('treats HTTP %i as a request-shape refusal, not provider health', async (status, reason) => {
+  await approved();
+  const client = source(api(() => Response.json({ error: { type: 'invalid_request_error', message: 'synthetic detail that must not be kept' } }, { status })));
+  const error = await client.complete(ask(), AbortSignal.timeout(5000)).catch(e => e);
+  expect(error).toMatchObject({ code: 'refused', diagnostics: { httpStatus: status, failureReason: reason } });
+  expect(localRequestRefusal(error)).toBe(true);
+  expect(error.message).not.toMatch(/synthetic detail/);
+});
+
+it('other 4xx and 5xx statuses still count as provider failures', async () => {
+  await approved();
+  for (const status of [404, 500, 502]) {
+    const error = await source(api(() => new Response('{}', { status }))).complete(ask(), AbortSignal.timeout(5000)).catch(e => e);
+    expect(error).toMatchObject({ code: 'upstream' });
+    expect(localRequestRefusal(error)).toBe(false);
+  }
+});
+
+it('drops "required" entries the schema does not back, as IFM rejects them, and keeps valid schemas intact', () => {
+  expect(ifmSchema({ type: 'object', required: ['x'] })).toEqual({ type: 'object' });
+  expect(ifmSchema({ type: 'object', properties: {}, required: [] })).toEqual({ type: 'object', properties: {}, required: [] });
+  expect(ifmSchema({ type: 'object', properties: { a: { type: 'string' } }, required: ['a', 'b'] })).toEqual({ type: 'object', properties: { a: { type: 'string' } }, required: ['a'] });
+  const nested = { type: 'object', properties: { list: { type: 'array', items: { type: 'object', required: ['k'] } }, pick: { anyOf: [{ type: 'object', required: ['z'] }, { type: 'null' }] } }, required: ['list'] };
+  expect(ifmSchema(nested)).toEqual({ type: 'object', properties: { list: { type: 'array', items: { type: 'object' } }, pick: { anyOf: [{ type: 'object', required: ['z'] }, { type: 'null' }] } }, required: ['list'] });
+  const valid = { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', additionalProperties: false, properties: { p: { type: 'string', format: 'uri' } }, required: ['p'] };
+  expect(ifmSchema(valid)).toEqual(valid);
+});
+
+it('sends the normalised schema but validates the model’s call against the original', async () => {
+  await approved();
+  const loose = { type: 'function' as const, function: { name: 'loose', parameters: { type: 'object', allOf: [{ properties: { x: { type: 'string' } } }], required: ['x'] } } };
+  const fetcher = api(() => Response.json(reply({ content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'loose', arguments: '{"y":1}' } }] })));
+  await expect(source(fetcher).complete(ask({ tools: [loose] }), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'upstream' });
+  expect(bodyOf(fetcher).tools[0].function.parameters).toEqual({ type: 'object', allOf: [{ properties: { x: { type: 'string' } } }] });
+  expect(loose.function.parameters.required).toEqual(['x']);
 });
