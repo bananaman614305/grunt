@@ -179,3 +179,28 @@ describe("Grunt chat and background jobs", () => {
     expect(fake.requests).toHaveLength(0);
   });
 });
+
+it('records edge-derived country only on authenticated ingress and ignores forged geography', async () => {
+  const {agent} = await setup();
+  const secret = 'synthetic-country-ingress-test-only';
+  const app = agentRoutes(agent,secret);
+  const url = 'https://api.grunt.run/agent/messages';
+  const forged = {...AUTH,'CF-IPCountry':'CA','X-Grunt-Edge-Country':'CA','X-Grunt-Edge-Auth':'forged'};
+  const request = (target = url, headers = forged) => new Request(target, {
+    method:'POST',headers,body:JSON.stringify({text:'hello'})
+  });
+  const edge = (await import('./edge/country.js')).default;
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async input => app.fetch(input as Request);
+    for (const cf of [{country:'GB'}, {country:'XX'}, {}]) {
+      const result = await edge.fetch(Object.assign(request(),{cf}), {GRUNT_COUNTRY_INGRESS_SECRET:secret});
+      expect(result.status).toBe(200);
+    }
+    expect((await app.fetch(request())).status).toBe(200);
+    expect((await app.fetch(request('https://milo-gateway.fly.dev/agent/messages',
+      {...forged,'X-Grunt-Edge-Auth':secret}))).status).toBe(200);
+    const rows = (await agent.store.db.execute('SELECT country FROM account_attempts ORDER BY id')).rows;
+    expect(rows.map(row=>row.country)).toEqual(['GB','Unknown','Unknown','Unknown','Unknown']);
+  } finally { globalThis.fetch=original; }
+});

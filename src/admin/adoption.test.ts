@@ -1,4 +1,8 @@
 import { expect, it } from 'vitest';
+import { createClient } from '@libsql/client';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { AgentStore } from '../store.js';
 import { RegistryStore, utcDay } from '../registry-store.js';
@@ -45,7 +49,7 @@ it('reconciles windowed active accounts, metered tokens and latest distinct dime
   } finally { store.close(); }
 });
 
-it('reconciles replayed daily reports, archived history, probe samples, measured billing and observed sessions', async () => {
+it('reconciles replayed daily reports, archived history, probe samples, measured billing and independent requests on the same route', async () => {
   const store = await AgentStore.open(':memory:');
   try {
     let clock = now-20*day;
@@ -61,14 +65,47 @@ it('reconciles replayed daily reports, archived history, probe samples, measured
     await send('opencode',0,0);
     const events = ['user','maintenance','maintenance'].map((kind,i) => ({version:1,id:randomUUID(),requestId:randomUUID(),
       at:now,type:'attempt.finish',source:'kilo',model:'reported',durationMs:1000,inputTokens:1,outputTokens:2,kind,free:true,outcome:i===2?'failed':'passed'}));
+    events.push({...events[0]!,id:randomUUID(),requestId:randomUUID(),at:now-20*60000});
     const batch = {version:1,instanceId:'chad',observedAt:now,snapshot:null,events};
     await admin.ingest(batch); await admin.ingest(batch);
     const result = await adoption(store.db,bundledRegistry,'all',now);
     expect(result.routes[0]).toMatchObject({id:'kilo',attempts:6,ok:3,latency:200,uptime:0.5,probes:2,
-      tokens:3,p95:1000,sessionMs:1000,free:1,models:['reported']});
+      tokens:6,p95:1000,sessionMs:null,free:2,models:['reported']});
     expect(result.routes.find(r=>r.id==='opencode')).toMatchObject({attempts:0,free:null});
     expect(result.routes.find(r=>r.id==='zro')).toMatchObject({attempts:null});
     expect(result.history.reduce((n,b)=>n+(b.counts.kilo ?? 0),0)).toBe(6);
     expect((await adoption(store.db,bundledRegistry,'day',now)).routes[0]?.attempts).toBe(2);
   } finally { store.close(); }
+});
+
+it('preserves legacy attribution across rowid gaps, vacuum and restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(),'grunt-attribution-'));
+  const url = 'file:'+join(directory,'test.db');
+  try {
+    const legacy = createClient({url});
+    try {
+      await legacy.executeMultiple(`
+        CREATE TABLE calls(model TEXT,kind TEXT,tokens_in INTEGER,tokens_out INTEGER,latency_ms INTEGER,outcome TEXT,cost REAL,ts INTEGER);
+        INSERT INTO calls VALUES ('m','chat',0,0,10,'ok',0,1),('m','chat',0,0,10,'error',0,2),('m','chat',0,0,10,'ok',0,3);
+        DELETE FROM calls WHERE rowid=2;
+        CREATE TABLE account_attempts(call_id INTEGER PRIMARY KEY,account TEXT,measured_tokens INTEGER,device TEXT,country TEXT);
+        INSERT INTO account_attempts VALUES(3,'legacy',17,'Desktop','CA');
+      `);
+    } finally { legacy.close(); }
+    const migrated = await AgentStore.open(url);
+    try { await migrated.db.execute('VACUUM'); } finally { migrated.close(); }
+    const reopened = await AgentStore.open(url);
+    try {
+      await reopened.record({model:'m',kind:'chat',tokens_in:1,tokens_out:1,latency_ms:1,outcome:'ok',cost:0,ts:4},
+        {account:'new',tokens:2,device:'Mobile',country:'GB'});
+      await new RegistryStore(reopened.db).init();
+      await new AdminStore(reopened.db).init();
+      const report = await adoption(reopened.db,bundledRegistry,'all',now);
+      expect(report.accounts).toEqual([
+        {account:'legacy',tokens:17,missing:0,device:'Desktop',country:'Unknown'},
+        {account:'new',tokens:2,missing:0,device:'Mobile',country:'GB'}
+      ]);
+      expect(report.tokens).toBe(19);
+    } finally { reopened.close(); }
+  } finally { await rm(directory,{recursive:true,force:true}); }
 });

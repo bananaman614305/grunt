@@ -53,7 +53,7 @@ function render(data) {
     <div class="cards"><div>Active users<b>${fmt(accounts.length)}</b></div><div>Global metered tokens<b>${fmt(data.tokens)}</b></div></div>
     <small>${fmt(accounts.reduce((n,a) => n+a.missing,0))} attempts lack complete token measurements.</small>
     <details><summary>Tokens by user · ${fmt(accounts.length)} active accounts</summary><div class="scroll">${table(['Account','Metered tokens','Unmetered attempts'],accounts.map(a => ['Account '+a.account.slice(0,16),fmt(a.tokens),fmt(a.missing)]))}</div></details>
-    <h3>Signup to retention</h3>${bars([['First gateway use',cohort.joined],['Attempted a route',cohort.attempted],['First success',cohort.succeeded],['Returned later',cohort.retained]],cohort.joined)}
+    <h3>First use to retention</h3>${bars([['First gateway use',cohort.joined],['Attempted a route',cohort.attempted],['First success',cohort.succeeded],['Returned later',cohort.retained]],cohort.joined)}
     <small>Hosted accounts begin at their first message. Each cohort has seven full days to attempt a run, succeed, and succeed again on a later UTC day. Historical calls before account metering lack attribution.</small>
     <div class="pair"><div><h3>Country</h3>${dimensions(accounts,'country')}</div><div><h3>Device type</h3>${dimensions(accounts,'device')}</div></div>
     <h3>Usage by route</h3>${bars(routes.filter(r => r.attempts>0).map(r => [r.id,r.attempts]),attempts)}
@@ -61,7 +61,7 @@ function render(data) {
     <h2 id="registry">Registry</h2><p>${fmt(routes.reduce((n,r)=>n+(r.ok ?? 0),0))} successfully served · Registry published ${date(data.published)} UTC</p>
     <h3>Attempts by route over time</h3><div class="history">${history.length ? historyChart(history,routes) : '<small>No reports for this period.</small>'}</div>
     <h3>Routes by attempts</h3><div class="wide" tabindex="0">${table(columns,rows)}</div><div class="mobile">${mobile}</div>
-    <p>¹ Mean of reporting routers’ daily smoothed success latencies. ² Tokens, successful reply latency, probe pass rate, free replies and served models cover retained enrolled-collector observations. Sessions group enrolled route activity within the period until thirty minutes of inactivity. Free usage counts observed replies with confirmed zero billing. All time includes available history.</p>`;
+    <p>¹ Mean of reporting routers’ daily smoothed success latencies. ² Tokens, successful reply latency, probe pass rate, free replies and served models cover retained enrolled-collector observations. Session duration is unreported because the collector observes individual attempts only. Free usage counts observed replies with confirmed zero billing. All time includes available history.</p>`;
 }
 let version = 0;
 async function load() {

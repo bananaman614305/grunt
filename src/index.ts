@@ -2,13 +2,14 @@ import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
+import { secureEqual } from "./admin/auth.js";
 import { personId } from "./agent.js";
 import type { GruntAgent } from "./agent.js";
 export { GruntAgent, MiloAgent, personId, workerMessages } from "./agent.js";
 export { pick, DEFAULT_WHITELIST } from "./router.js";
 export type { AgentConfig, ModelPrior } from "./types.js";
 
-export function agentRoutes(agent: GruntAgent) {
+export function agentRoutes(agent: GruntAgent, edgeSecret = process.env.GRUNT_COUNTRY_INGRESS_SECRET) {
   const app = new Hono<{ Variables: { key: string; person: string } }>();
   app.get("/", c => c.redirect("/chat"));
   app.get("/health", c => c.json({ status: "ok" }));
@@ -30,9 +31,11 @@ export function agentRoutes(agent: GruntAgent) {
     const agentHeader = c.req.header('User-Agent') ?? '';
     const device = /ipad|tablet/i.test(agentHeader) ? 'Tablet' : /mobile|iphone|android/i.test(agentHeader) ? 'Mobile'
       : /mozilla/i.test(agentHeader) ? 'Desktop' : 'Unknown';
-    // Store only a reported country code when available.
-    const country = c.req.header('CF-IPCountry') ?? '';
-    return c.json(await agent.message(c.get("key"), text.trim(), { device, country: /^[A-Z]{2}$/.test(country) ? country : 'Unknown' }));
+    const code = c.req.header('X-Grunt-Edge-Country') ?? '';
+    const trusted = new URL(c.req.url).hostname === 'api.grunt.run' && edgeSecret && edgeSecret.length >= 32
+      && secureEqual(edgeSecret, c.req.header('X-Grunt-Edge-Auth') ?? '');
+    const country = trusted && /^[A-Z]{2}$/.test(code) && code !== 'XX' ? code : 'Unknown';
+    return c.json(await agent.message(c.get("key"), text.trim(), { device, country }));
   });
   app.post("/agent/tasks/:id/cancel", async c => {
     const task = await agent.cancel(c.get("person"), c.req.param("id"));

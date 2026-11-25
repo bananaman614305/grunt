@@ -20,11 +20,32 @@ export class AgentStore {
       CREATE TABLE IF NOT EXISTS calls (model TEXT NOT NULL, kind TEXT NOT NULL, tokens_in INTEGER NOT NULL, tokens_out INTEGER NOT NULL, latency_ms INTEGER NOT NULL, outcome TEXT NOT NULL, cost REAL NOT NULL, ts INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS account_metering(started_at INTEGER NOT NULL PRIMARY KEY);
       INSERT INTO account_metering SELECT ${Date.now()} WHERE NOT EXISTS (SELECT 1 FROM account_metering);
-      CREATE TABLE IF NOT EXISTS account_attempts(call_id INTEGER PRIMARY KEY, account TEXT NOT NULL, measured_tokens INTEGER, device TEXT NOT NULL, country TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS account_attempts_account ON account_attempts(account,call_id);
       CREATE INDEX IF NOT EXISTS calls_time ON calls(ts);
       UPDATE tasks SET status='failed', error='Gateway restarted before the task finished.', updated_at=${Date.now()} WHERE status IN ('queued','running');
     `);
+    // Keep the timestamp and outcome on the attribution itself: calls.rowid can change during VACUUM.
+    const tx = await db.transaction('write');
+    try {
+      const legacy = (await tx.execute("PRAGMA table_info(account_attempts)")).rows.some(row => row.name === 'call_id');
+      if (legacy) await tx.execute("ALTER TABLE account_attempts RENAME TO account_attempts_legacy");
+      await tx.execute(`CREATE TABLE IF NOT EXISTS account_attempts(
+        id INTEGER PRIMARY KEY, account TEXT NOT NULL, measured_tokens INTEGER, device TEXT NOT NULL,
+        country TEXT NOT NULL, ts INTEGER NOT NULL, outcome TEXT NOT NULL)`);
+      if (legacy) {
+        // Previous country values came from unverified request headers.
+        await tx.execute(`INSERT INTO account_attempts(id,account,measured_tokens,device,country,ts,outcome)
+          SELECT a.call_id,a.account,a.measured_tokens,a.device,'Unknown',c.ts,c.outcome
+          FROM account_attempts_legacy a JOIN calls c ON c.rowid=a.call_id`);
+        await tx.execute("DROP TABLE account_attempts_legacy");
+      }
+      await tx.execute("CREATE INDEX IF NOT EXISTS account_attempts_account ON account_attempts(account,ts)");
+      await tx.execute("CREATE INDEX IF NOT EXISTS account_attempts_time ON account_attempts(ts)");
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      db.close();
+      throw error;
+    }
     return new AgentStore(db);
   }
   private async rows<T>(sql: string, args: InValue[] = []): Promise<T[]> {
@@ -55,8 +76,8 @@ export class AgentStore {
     const insert = { sql: "INSERT INTO calls VALUES (?,?,?,?,?,?,?,?)", args: [c.model,c.kind,c.tokens_in,c.tokens_out,c.latency_ms,c.outcome,c.cost,c.ts] };
     if (!attribution) { await this.db.execute(insert); return; }
     const { account, tokens, device, country } = attribution;
-    await this.db.batch([insert, { sql: "INSERT INTO account_attempts VALUES (last_insert_rowid(),?,?,?,?)",
-      args: [account, tokens, device, country] }], 'write');
+    await this.db.batch([insert, { sql: "INSERT INTO account_attempts(account,measured_tokens,device,country,ts,outcome) VALUES (?,?,?,?,?,?)",
+      args: [account, tokens, device, country, c.ts, c.outcome] }], 'write');
   }
   async state(person: string) {
     const [messages, tasks, notes] = await Promise.all([this.messages(person), this.tasks(person), this.notes(person)]);

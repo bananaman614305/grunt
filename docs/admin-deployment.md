@@ -225,13 +225,20 @@ path. The observable funnel starts with the first hosted message and follows
 attempt, successful reply and later-day success within seven days. It excludes
 accounts whose observation window predates metering or has yet to finish.
 
+Country reporting requires a proxied Cloudflare route for exactly
+`api.grunt.run/agent/messages`. Deploy `src/edge/country.ts` as a Cloudflare
+Worker on that route. Provision the same dedicated random secret (at least
+32 characters) as `GRUNT_COUNTRY_INGRESS_SECRET` on the Worker and Fly app.
+The Worker replaces caller-supplied internal headers with Cloudflare's
+request geography and the private origin credential. Direct Fly requests,
+missing configuration and unavailable geography produce Unknown. Legacy
+country values are cleared when migrating previous attribution records.
+
 The registry reads the live published catalog. Anonymous router daily reports
 supply attempts, success counts and smoothed latency. Old reports are rolled up
 without installation IDs before normal expiry. History before retained reports
 cannot be recovered. Counts reflect delivered reports, including retries;
 cancelled calls and unsent router activity are outside coverage. Enrolled
-collector observations supply session duration, probe pass rate, confirmed free
-replies and observed models within retained diagnostic history. Sessions group
-same-instance, same-route user attempts with gaps of at most thirty minutes,
-clipped to the selected period. Kilo reports the model and zero billing after
+collector observations supply probe pass rate, confirmed free
+replies and observed models within retained diagnostic history. The collector lacks session boundaries, so session duration remains unreported. Kilo reports the model and zero billing after
 its existing response checks pass. A missing billing report remains unknown.
