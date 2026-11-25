@@ -84,12 +84,23 @@ export async function fleetAudit(db: Client, end: number) {
     coalesce(sum(incomplete),0) partial FROM fleet_hours WHERE hour>=? AND hour<?`, args: [start,end] });
   const rows = await db.execute({ sql: `WITH expanded AS (
     SELECT hour,hour>=? AS current, installation, incomplete, value AS s FROM fleet_hours,json_each(series) WHERE hour>=? AND hour<?
-  ), members AS (
-    SELECT DISTINCT installation,json_extract(s,'$.release') release,json_extract(s,'$.route') route,current FROM expanded
+  ), per_install AS (
+    SELECT installation,json_extract(s,'$.release') release,json_extract(s,'$.route') route,current,
+      sum(json_extract(s,'$.passed')+json_extract(s,'$.failed')) terminal,sum(json_extract(s,'$.failed')) failed,
+      sum(json_extract(s,'$.timed')) timed,sum(json_extract(s,'$.slow')) slow
+    FROM expanded GROUP BY installation,release,route,current
+  ), expected AS (
+    SELECT today.release,today.route,
+      CASE WHEN sum(today.terminal>0 AND prior.terminal=0)=0 THEN
+        sum(today.terminal * 1.0 * prior.failed / nullif(prior.terminal,0)) END expectedFailed,
+      CASE WHEN sum(today.timed>0 AND prior.timed=0)=0 THEN
+        sum(today.timed * 1.0 * prior.slow / nullif(prior.timed,0)) END expectedSlow
+    FROM per_install today JOIN per_install prior USING(installation,release,route)
+    WHERE today.current=1 AND prior.current=0 GROUP BY today.release,today.route
   ), matched AS (
-    SELECT installation,release,route FROM members GROUP BY installation,release,route HAVING count(*)=2
+    SELECT installation,release,route FROM per_install GROUP BY installation,release,route HAVING count(*)=2
   ) SELECT current, json_extract(s,'$.release') release,json_extract(s,'$.route') route,
-    count(DISTINCT expanded.installation) installs,
+    expected.expectedFailed,expected.expectedSlow,count(DISTINCT expanded.installation) installs,
     count(DISTINCT matched.installation) comparable,count(DISTINCT hour) observedHours,count(DISTINCT hour/86400000) days,sum(incomplete) partial,
     count(DISTINCT CASE WHEN json_extract(s,'$.failed')>0 THEN expanded.installation END) failingInstalls,
     count(DISTINCT CASE WHEN json_extract(s,'$.slow')>0 THEN expanded.installation END) slowInstalls,
@@ -98,6 +109,7 @@ export async function fleetAudit(db: Client, end: number) {
     sum(json_extract(s,'$.cancelled')) cancelled,sum(json_extract(s,'$.slow')) slow,sum(json_extract(s,'$.timed')) timed
     FROM expanded LEFT JOIN matched ON expanded.installation=matched.installation
       AND json_extract(s,'$.release')=matched.release AND json_extract(s,'$.route')=matched.route
+    LEFT JOIN expected ON expected.release=json_extract(s,'$.release') AND expected.route=json_extract(s,'$.route')
     GROUP BY current,json_extract(s,'$.release'),json_extract(s,'$.route') ORDER BY release,route`, args: [start,since,end] });
   const findings = [];
   for (const row of rows.rows.filter(r => r.current === 1)) {
@@ -106,11 +118,16 @@ export async function fleetAudit(db: Client, end: number) {
       || Number(row.observedHours)<6 || Number(base.observedHours)<12 || Number(row.installs)<2 || Number(base.installs)<2 || Number(base.days)<2) continue;
     for (const kind of ['failed','slow'] as const) {
       const denominator = (r: typeof row) => kind === 'failed' ? Number(r.passed)+Number(r.failed) : Number(r.timed);
-      const n = denominator(row), b = denominator(base), rate = Number(row[kind])/n, prior = Number(base[kind])/b;
+      const n = denominator(row), b = denominator(base);
+      const expected = kind === 'failed' ? row.expectedFailed : row.expectedSlow;
+      if (expected == null || !n) continue;
+      // Apply today's installation shares to both windows. Missing historical
+      // denominators leave the comparison unknown for that metric.
+      const rate = Number(row[kind]) / n, prior = Number(expected) / n;
       if (Number(kind === 'slow' ? row.slowInstalls : row.failingInstalls) < 2 || n<20 || b<40 || Number(row[kind])<5 || rate-prior<0.1 || rate<2*prior) continue;
       findings.push({ handle: 'fleet-'+row.route+'-'+kind, route: row.route, release: row.release, kind,
         affected: Number(row[kind]), denominator: n, baselineAffected: Number(base[kind]), baselineDenominator: b,
-        excess: Math.round(n*(rate-prior)), confidence: 'Observed on multiple installations in a matched release and route cohort.',
+        rate, standardizedBaselineRate: prior, excess: Math.round(Number(row[kind]) - Number(expected)), confidence: 'Observed on multiple installations in a matched release and route cohort.',
         fix: kind === 'slow' ? 'Instrument time to first output on this adapter and isolate the wait before the first successful chunk.'
           : Number(row.timeout) > Number(row.failed)/2 ? 'Check the adapter timeout against first-output timing and repair the stalled wait.'
           : Number(row.quota) > Number(row.failed)/2 ? 'Compare quota failures with retry-after handling and correct the route cooldown.'

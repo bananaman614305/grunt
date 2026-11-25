@@ -27,7 +27,7 @@ export function renderFleetReport(day: string, audit?: Audit, backlog: Record<st
         const item = backlog[f.handle];
         if (!item) throw new Error('Missing backlog item for '+f.handle);
         body.push(`<article><h3>${escape(f.route)} · ${f.kind === 'failed' ? 'Failure rate increased' : 'More successful calls exceeded ten seconds'}</h3>
-          <p>Release ${escape(f.release)}. ${f.affected} of ${f.denominator} observed today, compared with ${f.baselineAffected} of ${f.baselineDenominator} during the preceding week.</p>
+          <p>Release ${escape(f.release)}. ${f.affected} of ${f.denominator} observed today, compared with ${f.baselineAffected} of ${f.baselineDenominator} during the preceding week. Using today’s installation shares for both windows, the rate moved from ${(100*f.standardizedBaselineRate).toFixed(1)}% to ${(100*f.rate).toFixed(1)}%.</p>
           <p>${escape(f.fix)} ${escape(f.verification)}</p><p>Confidence · ${escape(f.confidence)}</p>
           <p>Backlog <code>${escape(item)}</code> · <code>go ${escape(f.handle)}</code></p></article>`);
       }

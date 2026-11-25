@@ -220,7 +220,10 @@ registry destinations. Offline, unenrolled and earlier clients have unknown cove
 The scheduled reader uses its existing admin read bearer on
 `GET https://milo-gateway.fly.dev/admin/api/fleet-audit?day=YYYY-MM-DD`
 (the custom API domain uses the same path). The date defaults to yesterday UTC.
-Match each returned handle against existing #grunt work, including completed work,
+Failure and slow-success comparisons apply the audit day's per-installation
+denominator shares to both windows. A contributing installation with no baseline
+denominator makes that metric ineligible. Raw counts remain visible alongside
+the adjusted rate. Match each returned handle against existing #grunt work, including completed work,
 before creating a backlog item. Store the confirmed Beeline ID against the handle.
 Build and run `node scripts/fleet-report.mjs YYYY-MM-DD audit.json items.json report.html`
 with that handle-to-ID JSON object. Use `--plan` in place of the output filename
