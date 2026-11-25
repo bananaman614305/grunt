@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, open, readdir, stat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { publicationMarker, safeRelative } from './publication.js';
+import { HostRefusal, publicationMarker, safeRelative } from './publication.js';
 import type { PublicationPolicy, PublicationRecord, PublicationTransport } from './publication.js';
 import { privateProjectPath } from './project-paths.js';
 
@@ -71,6 +71,12 @@ export function publicationArtifactDigest(files: readonly PublicationArtifact[])
   return createHash('sha256').update(JSON.stringify(files.map(file => ({ path: file.path, sha256: createHash('sha256').update(file.content).digest('hex') })).sort((a, b) => a.path.localeCompare(b.path)))).digest('hex');
 }
 
+const pause = (ms: number, signal?: AbortSignal) => new Promise<void>((done, fail) => {
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); done(); }, ms);
+  const abort = () => { clearTimeout(timer); fail(signal!.reason); };
+  if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+});
+
 export class GithubPublicationTransport implements PublicationTransport {
   constructor(private options: {
     exec: PublicationGithubExec;
@@ -78,6 +84,8 @@ export class GithubPublicationTransport implements PublicationTransport {
     pushHead(record: PublicationRecord, policy: PublicationPolicy, signal?: AbortSignal): Promise<void>;
     /** The trusted verifier must bind these bytes to its artifactDigest before any upload. */
     artifacts(record: PublicationRecord, policy: PublicationPolicy): Promise<PublicationArtifact[]>;
+    /** GitHub reports a pushed head on its pull request a moment after the push; bounded re-reads absorb that lag. Tests inject a no-op sleep. */
+    pullRequestSettle?: { attempts?: number; delayMs?: number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void> };
   }) {}
   private async api(policy: PublicationPolicy, path: string, method = 'GET', body?: unknown, signal?: AbortSignal, missing = false): Promise<Json | Json[]> {
     if (path !== '' && !/^\/[A-Za-z0-9_./?=&%:-]+$/.test(path) || path.includes('..')) throw new Error('Invalid fixed GitHub API path.');
@@ -113,8 +121,16 @@ export class GithubPublicationTransport implements PublicationTransport {
     const owner = policy.repository.split('/')[0]!, query = '/pulls?state=open&head=' + encodeURIComponent(owner + ':' + value.request.branch) + '&base=' + encodeURIComponent(policy.base);
     const existing = await this.api(policy, query, 'GET', undefined, signal);
     if (!Array.isArray(existing) || existing.length > 1) throw new Error('Ambiguous publication pull request.');
-    const row = existing[0] ?? object(await this.api(policy, '/pulls', 'POST', { head: value.request.branch, base: policy.base, title: value.request.title, body: value.request.body, draft: false }, signal));
+    let row = existing[0] ?? object(await this.api(policy, '/pulls', 'POST', { head: value.request.branch, base: policy.base, title: value.request.title, body: value.request.body, draft: false }, signal));
+    // Right after a push GitHub can keep listing the pull request at its previous head for a few seconds. Re-read the same
+    // pull request by number before concluding the head is wrong; a head that never converges is still refused.
+    const settle = this.options.pullRequestSettle, attempts = settle?.attempts ?? 6, delayMs = settle?.delayMs ?? 1500;
+    for (let attempt = 1; object(row.head).sha !== value.snapshot.head && Number.isSafeInteger(row.number) && attempt < attempts; attempt++) {
+      await (settle?.sleep ?? pause)(delayMs, signal);
+      row = object(await this.api(policy, '/pulls/' + Number(row.number), 'GET', undefined, signal));
+    }
     const head = object(row.head), base = object(row.base);
+    if (head.sha !== value.snapshot.head && head.ref === value.request.branch && sha(head.sha)) throw new HostRefusal('The pull request does not yet show the pushed head; advance the release again.');
     if (head.sha !== value.snapshot.head || head.ref !== value.request.branch || base.ref !== policy.base || object(base.repo).full_name !== policy.repository || !Number.isSafeInteger(row.number)
       || object(head.repo).full_name !== policy.repository || row.html_url !== `https://github.com/${policy.repository}/pull/${row.number}`) throw new Error('Pull request does not match the reviewed release.');
     return { number: Number(row.number), url: String(row.html_url) };
