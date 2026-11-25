@@ -78,6 +78,8 @@ it('bridges only validated caller function tools and never returns native reason
     const completion = await f.source.complete({ ...request('read the file'), tools }, AbortSignal.timeout(5000));
     expect(completion.text).toBe(''); expect(completion.calls).toHaveLength(1); expect(completion.calls![0]!.function).toEqual({ name: 'read_file', arguments: '{"path":"src/example.ts"}' });
     const sent = JSON.parse(await readFile(f.snapshot, 'utf8')); expect(sent.prompt).toContain('native Mistral Vibe tools'); expect(sent.prompt).toContain(JSON.stringify(tools));
+    // The model is told plainly that the listed tools can be called now, and is never shown another harness's name.
+    expect(sent.prompt.split('\n').slice(0, -1).join('\n')).not.toMatch(/\bPi\b/); expect(sent.prompt).toContain('is available to you now'); expect(f.source.jsonToolBridge).toBe(true);
   } finally { await f.source.close(); }
 });
 it('allows one protocol repair and accounts for both native calls', async () => {

@@ -3,13 +3,20 @@ import type { ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
-import { completionEnding, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { completionEnding, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
 import { diagnosticFetch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const KILO_PARTICLE = 'particle-ai/particle-1:free';
 export const KILO_BEAM = 'reflection/beam-free';
+// Free models left out of the rotation for requests that carry function tools, for lack of credibility as a coding
+// agent. Each needs evidence, not a hunch; everything else stays. Checked against Kilo's public catalog and the
+// vendors' own cards on 2026-11-25.
+// - liquid/lfm-3-1.7b: 1.73B parameters, 8192-token output cap in the catalog, and its model card says it is not
+//   recommended for agentic coding or complex multi-step reasoning due to its small size.
+// Text-only requests still use the whole rotation, and so does a tools request if this would leave nothing.
+export const KILO_NOT_FOR_TOOL_WORK: ReadonlySet<string> = new Set(['liquid/lfm-3-1.7b:free']);
 export const KILO_ORIGIN = 'https://ai-gateway.kilo.ai/api/v1';
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -180,7 +187,9 @@ export class Kilo implements Source {
       signal.throwIfAborted();
       const grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();
       const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
-      const order = this.preferred && models.includes(this.preferred) ? [this.preferred, ...models.filter(id => id !== this.preferred)] : models;
+      const agentic = needsFunctionTools(request) ? models.filter(id => !KILO_NOT_FOR_TOOL_WORK.has(id)) : models;
+      const rotation = agentic.length ? agentic : models;
+      const order = this.preferred && rotation.includes(this.preferred) ? [this.preferred, ...rotation.filter(id => id !== this.preferred)] : rotation;
       let quota: SourceError | undefined, last: SourceError | undefined;
       for (const model of order) {
         try {

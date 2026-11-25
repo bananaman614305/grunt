@@ -4,10 +4,12 @@ import type { ModelRequest, Source, SourceError } from './source.js';
 export class DelegatingSource implements Source {
   readonly acceptsRequest?: NonNullable<Source['acceptsRequest']>;
   readonly supportsFunctionTools?: boolean;
+  readonly jsonToolBridge?: boolean;
 
   constructor(readonly source: Source) {
     if (source.acceptsRequest) this.acceptsRequest = source.acceptsRequest.bind(source);
     if (source.supportsFunctionTools !== undefined) this.supportsFunctionTools = source.supportsFunctionTools;
+    if (source.jsonToolBridge !== undefined) this.jsonToolBridge = source.jsonToolBridge;
   }
 
   get id() { return this.source.id; }

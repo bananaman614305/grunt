@@ -29,9 +29,9 @@ process.stdin.on('data', chunk => {
   const file = path.join(dir, 'chat-messages.json');
   const messages = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
   let reply = (testEnv('UNIQUE') || prompt === 'UNIQUE_REPLY') ? chatId : prompt;
-  if (testEnv('JSON_BRIDGE') && prompt.startsWith('You are answering a Pi tool protocol')) {
+  if (testEnv('JSON_BRIDGE') && prompt.startsWith('You are answering a tool-calling request')) {
     const payload = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
-    if (!JSON.stringify(payload.messages).includes('Never invent the nonce.')) throw new Error('Pi skill context was lost');
+    if (!JSON.stringify(payload.messages).includes('Never invent the nonce.')) throw new Error('Skill context was lost');
     const result = payload.messages.filter(m => m.role === 'tool').at(-1);
     reply = JSON.stringify(result ? {version:1,type:'final',text:result.content} : {version:1,type:'calls',calls:[{name:'read',arguments:{path:'nonce.txt'}}]});
   }

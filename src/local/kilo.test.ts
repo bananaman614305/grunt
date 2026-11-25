@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Kilo, KILO_BEAM, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
+import { Kilo, KILO_BEAM, KILO_NOT_FOR_TOOL_WORK, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
@@ -315,6 +315,34 @@ it('lists exact free models with Particle, then Reflection Beam, then catalog or
     'liquid/lfm-3-1.7b:free', 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', 'vendor/tiny-8b:free', 'nvidia/nemotron-3-ultra-550b-a55b:free']);
   expect(await verifyKiloAccess({ fetcher, reflectionBeam: true })).toEqual([KILO_BEAM]);
   expect(await verifyKiloAccess({ fetcher: async () => Response.json({ data: [model('nvidia/nemotron-3.5-lightning:free')] }) })).toEqual(['nvidia/nemotron-3.5-lightning:free']);
+});
+const LFM = 'liquid/lfm-3-1.7b:free';
+const toolRotation = () => [model(LFM), model('nvidia/nemotron-3.5-lightning:free'), model(KILO_BEAM), model()];
+it('keeps the 1.7B liquid model out of the rotation for tool requests only, with evidence recorded', async () => {
+  expect([...KILO_NOT_FOR_TOOL_WORK]).toEqual([LFM]);
+  const sent = async (tools: unknown[]) => {
+    const f = fixture({ catalogRows: toolRotation(), infer: () => new Response('limited', { status: 429, headers: { 'retry-after': '60' } }) });
+    await expect(f.source.complete({ ...request(), tools: tools as ModelRequest['tools'] }, new AbortController().signal)).rejects.toMatchObject({ code: 'quota' });
+    return f.posts().map(([, init]) => sentModel(init));
+  };
+  // Every model limited: a tool request never reaches the small model, a text request still does (the old rotation).
+  expect(await sent([tool])).toEqual([KILO_PARTICLE, KILO_BEAM, 'nvidia/nemotron-3.5-lightning:free']);
+  expect(await sent([])).toEqual([KILO_PARTICLE, KILO_BEAM, LFM, 'nvidia/nemotron-3.5-lightning:free']);
+});
+it('falls back to the whole rotation for a tool request when only excluded models remain', async () => {
+  const f = fixture({ catalogRows: [model(LFM)], infer: init => Response.json(result({ model: sentModel(init) })) });
+  await expect(f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal)).resolves.toMatchObject({ servedModel: LFM });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([LFM]);
+});
+it('does not change the listed free models or availability, and never selects the small model as the remembered first choice for tools', async () => {
+  const rows = toolRotation(), fetcher = async () => Response.json({ data: rows });
+  expect(await verifyKiloAccess({ fetcher })).toContain(LFM);
+  // A text request answered by the small model makes it the remembered first choice; a later tool request skips it.
+  const f = fixture({ catalogRows: [model(LFM), model(KILO_PARTICLE)], infer: init => sentModel(init) === KILO_PARTICLE ? new Response('limited', { status: 429, headers: { 'retry-after': '60' } }) : Response.json(result({ model: sentModel(init) })) });
+  await f.source.complete(request(), new AbortController().signal);
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, LFM]);
+  await expect(f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal)).rejects.toMatchObject({ code: 'quota' });
+  expect(f.posts().slice(2).map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE]);
 });
 it('moves to the next free Kilo model when Particle returns 429, and keeps the model that answered first', async () => {
   const f = fixture({ catalogRows: rotation(), infer: init => sentModel(init) === KILO_PARTICLE

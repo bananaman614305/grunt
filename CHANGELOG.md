@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Tool requests prefer sources that call tools natively, and the JSON bridge no longer says "Pi". Requests with function tools now draw a provider-native tool source on a first draw or fallback and use Mistral Vibe, Perch or Pollinations (the JSON-bridged sources) only when no native source is eligible, so a bridged model that once declined to use the Agent tool is no longer picked first. Weights, consent, quota, text-only and explicit requests, bound tasks and the parallel-subagent spreading are unchanged. The bridge prompt now tells the model that every listed tool can be called now, several at once, by the client's harness, and names no harness. Kilo's rotation leaves out `liquid/lfm-3-1.7b:free` (1.7B parameters; its card advises against agentic coding) for tool requests only.
+
 ## 0.10.14 — 2026-11-25
 
 - Record how a reply ended, and stop treating a missing tool call as an answer. Successful attempts in the local diagnostics journal now carry a content-free ending: the provider's finish reason mapped to a fixed set (unknown values become `other`), whether the reply had tool calls, and reasoning tokens when reported, for Kilo, Reflection Beam, the free-API sources, the promotional stream sources, IFM and 100milionseek. Nothing new is uploaded to the fleet or registry. A reply whose finish reason says `tool_calls` or `function_call` but which holds no parsed call (for example Reflection Beam ending in a tool call with only text) is now an invalid sample (`response_tools`) that retries (Kilo asks once more) and fails over after a brief cooldown, instead of reaching the client as a finished text answer; text-only `stop` replies are unchanged and reply text is never parsed or altered.

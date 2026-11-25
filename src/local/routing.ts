@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { RequestError, SourceError, answeredBy, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
+import { RequestError, SourceError, answeredBy, bridgedTools, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -39,6 +39,12 @@ export function recommendedAdapters(registry: Registry, now = Date.now()) {
 export function registryScoreFactor(score: number | null | undefined) {
   return typeof score === 'number' && Number.isFinite(score) ? 0.5 + Math.max(0, Math.min(100, score)) / 100 : 1;
 }
+
+// A request with function tools draws from sources that call tools through the provider's own interface before it
+// draws from JSON-bridged ones (Source.jsonToolBridge), whose model is only asked, in prose, to answer with a tool
+// envelope and may decline. Only the draw set narrows: weights, consent, quota and cooldowns are untouched, and a
+// bridged source still serves when no native tool source is eligible. See docs/router.md.
+export const NATIVE_TOOL_SOURCES_FIRST = true;
 
 export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
 interface Task {
@@ -197,7 +203,7 @@ export class StickyRouter {
   }
   private fasterContinuation(task: Task, request: ModelRequest, candidates: Candidate[], adapters: Adapter[], workload: RoutingWorkload) {
     const reset = () => { delete task.reassessment; return undefined; };
-    // Native agents retain private tool/session state. Only Pi tool routes carry
+    // Native agents retain private tool/session state. Only function-tool routes carry
     // the complete continuation transcript across this safe request boundary.
     if (!needsFunctionTools(request) || this.sources.some(source => source.id === request.model)
       || task.lastPerformanceSwitchAt !== undefined && this.now() - task.lastPerformanceSwitchAt < 5 * 60 * 1000) return reset();
@@ -249,8 +255,8 @@ export class StickyRouter {
       if (task.busy) throw new SourceError('upstream', 'A request for this task is already running; retry when it finishes');
       task.busy = true;
     }
-    // A turn bound to a source without Pi tool support switches (with handoff)
-    // when Pi attaches tools, unless the caller named that source explicitly.
+    // A turn bound to a source without function-tool support switches (with handoff)
+    // when the client attaches tools, unless the caller named that source explicitly.
     const toolsRequired = needsFunctionTools(request) && !explicit;
     const attempted = new Set<string>(), refused = new Set<string>();
     const observedEligible = new Set<string>();
@@ -354,15 +360,25 @@ export class StickyRouter {
           if (!explicit && fallback) return await fallback(failure, signal);
           throw failure;
         }
-        const idle = eligible.filter(candidate => !this.busy(candidate.source.id));
+        const boundMain = eligible.some(candidate => candidate.source.id === task.source);
+        // A task that is not bound yet (a first draw or a fallback) takes a native tool source when one is eligible, so
+        // a model that must be asked in prose to call tools is not drawn while a provider-native one could answer. A
+        // bound task keeps its source: it is mid-session, and leaving costs a handoff for no known failure.
+        const native = NATIVE_TOOL_SOURCES_FIRST && toolsRequired && !boundMain && eligible.some(candidate => !bridgedTools(candidate.source));
+        const draw = native ? eligible.filter(candidate => !bridgedTools(candidate.source)) : eligible;
+        // Only bridged sources are ready, but a native one is still being checked: wait for that check (deadline
+        // bounded) instead of drawing a bridged source on a cold cache.
+        if (NATIVE_TOOL_SOURCES_FIRST && toolsRequired && !boundMain && !native && unknown.some(source => toolCapable(source) && !bridgedTools(source)) && this.availability.hasPending()) {
+          await this.availability.changed(signal); continue;
+        }
+        const idle = draw.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
         // prefer idle capacity but must not wait behind background work.
-        const boundMain = eligible.some(candidate => candidate.source.id === task.source);
         // A fallback (the bound source failed or is benched) prefers idle capacity like a first draw. Sources whose
         // admission metadata is still being fetched may be idle, so wait briefly for those checks (each is deadline
         // bounded) before sharing a source that is busy with another task. A healthy bound source never waits.
         if (!boundMain && task.source !== undefined && !idle.length && unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-        const ready = boundMain || !idle.length ? eligible : idle;
+        const ready = boundMain || !idle.length ? draw : idle;
         let selected = ready.find(candidate => candidate.source.id === task.source);
         let performanceSwitch = false;
         if (selected && !attempted.size) {

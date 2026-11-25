@@ -130,6 +130,10 @@ export interface SlowUpstreamPolicy { baseSeconds: number; maxSeconds: number }
 export interface Source {
   id: string;
   supportsFunctionTools?: boolean;
+  // Function tools reach the model as a JSON envelope inside a prompt (FreebuffTools) instead of the provider's own
+  // tool-calling interface. Such a model can only be told, not made, to call tools, so routing tries sources with
+  // native tool calling first. See docs/router.md.
+  jsonToolBridge?: boolean;
   // Receives inference and returns buffered text or caller-owned tool calls.
   // Aborting may consume quota but cannot execute the caller's tools.
   inferenceOnly?: boolean;
@@ -163,7 +167,7 @@ export interface Source {
   failed?(error: SourceError): void;
   close?(): Promise<void>;
 }
-// A request that carries Pi's function tools expects tool calls back, so Pi
+// A request that carries the client's function tools expects tool calls back, so the client
 // keeps the agent loop. Automatic selection skips sources that run their own
 // tools instead (OpenCode). A source the caller names explicitly stays eligible.
 export const needsFunctionTools = (request: ModelRequest) => request.tools.some(tool => tool.type === 'function');
@@ -172,6 +176,7 @@ export const needsFunctionTools = (request: ModelRequest) => request.tools.some(
 export const unsupportedToolTypes = (request: ModelRequest) =>
   [...new Set(request.tools.filter(tool => tool.type !== 'function').map(tool => /^[\w.-]{1,64}$/.test(String(tool.type)) ? String(tool.type) : 'unknown'))].slice(0, 5);
 export const toolCapable = (source: Source) => source.supportsFunctionTools === true;
+export const bridgedTools = (source: Source) => source.jsonToolBridge === true;
 export const NO_TOOL_SOURCE = 'No tool-capable adapter is available for a request with function tools; finish setup or retry after quota resets';
 // A source that has not produced first output by this time counts as failed.
 export const FIRST_OUTPUT_MS = 60000;

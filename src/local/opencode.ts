@@ -64,7 +64,7 @@ function replyUsage(parts: readonly ReplyPart[], messageTokens?: TokenCounts): P
 
 export class OpenCode implements Source {
   readonly id = 'opencode';
-  // OpenCode runs its own coding tools and never returns Pi's tool calls.
+  // OpenCode runs its own coding tools and never returns the client's tool calls.
   readonly supportsFunctionTools = false;
   private child: ChildProcess | undefined;
   private managed: ManagedOpenCodeProcess | undefined;
