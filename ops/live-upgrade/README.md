@@ -54,7 +54,7 @@ journalctl --user -u grunt-runtime-upgrade-0.10.1-<stamp>
 ```
 
 `verify` checks both runtime trees against the public pins, dependency digests, protected files, owner files, unit fingerprints,
-memory/CPU policy and the passive observer; that the hold and the temporary restart/consent guards are gone; that the three daemons
+memory policy, the exact eight-CPU limit (`cpu.max` of `800000 100000`) and the passive observer; that the hold and the temporary restart/consent guards are gone; that the three daemons
 were restarted after the transaction began; and that both pools report an integer status schema (`/v1/status` `version` is the
 status schema number, **not** the package version) without the removed `workers` key.
 
@@ -94,6 +94,28 @@ and restored with them on a pre-start failure. The stage refuses a payload that 
 manifest, or a launcher importing a runtime module the new package lacks. Without `--payload` the owner files are left alone, and the
 live launcher is still checked against the new package's modules.
 
+## Owner-approved per-port opt-in sources
+
+An opt-in source (not in the public registry, manual consent) can be approved by the owner for **one pool only**. The approval is the reviewed
+constant `OWNER_OPT_INS` in `rollout_config.py` (today: `ifm` on the owner pool 8793, never on the primary 8792). It is not derived from a release,
+so a release cannot add a source to a pool by itself; changing it takes a reviewed change. Every check stays exact:
+
+- `upgrade.py` derives the pins from the candidate and writes the approved opt-ins that the candidate really serves into `source-expectations.json`
+  (`ownerOptIns`). The gate then requires 8793 to serve the union and 8792 the union without them (`startup_gate.EXPECTED_PORTS`); the candidate's metadata
+  is computed with the approved opt-ins on 8793 only, so an opt-in that reaches the primary's unit environment, or any other extra or missing source on
+  either pool, fails closed.
+- The live pools are compared per pool: the first release that adds the source sees 8793 without it (exactly the approved additions are expected
+  afterwards, and the other pool must not gain them); a later release sees 8793 already serving it. All or none, nothing else, and the raw status rows
+  (disabled tombstones included) must differ only by the approved addition.
+- `stage.py` refuses a launcher (the payload's, else the installed one) whose `GRUNT_OPT_IN_SOURCES` literal is not exactly the base opt-ins plus the
+  approved ones, so a wrong launcher is found before anything is paused, not after the restart.
+- The consent receipt is a protected file and the source is **consent-deferred** during the upgrade (no receipt, like Free-Pi or Gödel): the new
+  daemon lists it, answers its maintenance check with `deferred/consent` and sends nothing to the provider. Record the receipt and install the grant
+  **after** the upgrade is verified (they are read per request, no restart or pause needed). A current receipt before the upgrade makes the source
+  probe-eligible with no schedule entry yet, which the gate refuses (a first check due at startup would race the held checks).
+- `GRUNT_SETUP_NO_DATA_SHARING=1` (the startup guard) never revokes a manual receipt at startup or renewal (`refreshDataSharingConsent` skips manual
+  policies), but `approveDataSharing` (setup, recovery) does revoke material policies under that flag: never run setup for the source with the flag set.
+
 ## When something is wrong
 
 - **Registry cache**: the controller does not wait for the daemon's own refresh (00, 06, 12 and 18 UTC). Before staging and before any pause
@@ -112,8 +134,8 @@ live launcher is still checked against the new package's modules.
 - **Provider scout** (every four hours from 01:00 America/New_York, up to ~45 min) imports the runtime this upgrade swaps. `upgrade.py` warns
   when a scout start falls inside the window; prefer launching right after one ends.
 - **Provider-source set**: the gate pins the candidate's eligible set and the live pools must serve exactly it (apart from the
-  retired Clixad tombstone and the owner's `freellmapi` advertisement on 8792). A release that adds or removes a source fails the
-  rehearsal (nothing is paused); review it and extend `source_transition.py` before upgrading.
+  retired Clixad tombstone, the owner's `freellmapi` advertisement on 8792 and the owner-approved per-port opt-ins above). A release that
+  adds or removes any other source fails the rehearsal (nothing is paused); review it and extend `source_transition.py` before upgrading.
 - **After `startup-attempted.json` or `work-may-resume.json`**: no automatic rollback, by design. If the receipt has
   `promptRootRecoveryRequired` or `operatorRecoveryRequiredByMs` (earliest possible maintenance minus 60 s), act before that time.
   Manual rollback only while the hold is still present: stop the execution host, supervisor, primary daemon and collector units;

@@ -8,7 +8,7 @@ import { basename, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { createLocalApp } from './api.js';
 import { positive } from './freebuff.js';
-import { Sources } from './source.js';
+import { SourceError, Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
 import { MillionSeek } from './millionseek.js';
 import { FreePi } from './freepi.js';
@@ -27,6 +27,7 @@ import { Nous } from './nous.js';
 import { Kenari } from './kenari.js';
 import { PromotionalApi } from './promotional-api.js';
 import { CrowLLM } from './crowllm.js';
+import { Ifm } from './ifm.js';
 import { Aperture } from './aperture.js';
 import { Darus } from './darus.js';
 import { Goedel } from './goedel.js';
@@ -81,7 +82,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
   const numesModel = gruntEnv('NUMES_MODEL', env);
   const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new Ifm({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
   const curated = registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
   const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1')
@@ -208,15 +209,19 @@ export function start(env = process.env) {
     const adapter = registry.adapters.find(adapter => adapter.id === id);
     return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
   };
-  const configuredAccess = (source: Source) => routable(source.id) && sources.available(source).catch(() => false);
-  const live = async (source: Source) => await configuredAccess(source) && sources.openRoute(source.id);
+  const configuredAccess = async (source: Source) => {
+    if (!routable(source.id)) return false;
+    try { return await sources.available(source); }
+    catch (error) { return error instanceof SourceError && error.code === 'timeout' ? undefined : false; }
+  };
+  const live = async (source: Source) => await configuredAccess(source) === true && sources.openRoute(source.id);
   const recovery = new SourceRecovery({ directory, registry: () => registry,
     eligible: id => routable(id) && recommendedAdapters(registry).some(adapter => adapter.id === id),
     candidates: async () => {
       const ids: string[] = [];
       for (const adapter of recommendedAdapters(registry)) {
         const source = sources.sources.find(source => source.id === adapter.id);
-        if (source && routable(source.id) && !await configuredAccess(source)) ids.push(source.id);
+        if (source && routable(source.id) && await configuredAccess(source) === false) ids.push(source.id);
       }
       return ids;
     },

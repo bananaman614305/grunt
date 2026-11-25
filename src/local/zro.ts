@@ -41,6 +41,7 @@ export async function writeZroGrant(grant: FreeApiGrant, location = directory())
   } finally { await rm(temporary, { force: true }); }
 }
 export class Zro implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'zro';
   readonly availabilityTimeoutMs = 30000;
   readonly supportsFunctionTools = true;

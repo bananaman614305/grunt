@@ -4,7 +4,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
-import { diagnosticFetch } from './diagnostics.js';
+import { diagnosticFetch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -125,6 +125,7 @@ function conversation(request: ModelRequest) {
   return { messages, validators: compileToolSchemas(request.tools, 'Kilo rejected a function tool schema') };
 }
 export class Kilo implements Source {
+  readonly inferenceOnly = true;
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
   // The model that answered last is tried first; a quota reply moves on to the next.
   private preferred: string | undefined;
@@ -209,6 +210,13 @@ export class Kilo implements Source {
       headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
     const fail = (code: 'upstream' | 'refused', message: string, reason: NonNullable<SafeDiagnosticMetadata['failureReason']>) =>
       responseFailure(response, 'chat.completions', code, message, reason);
+    const unusable = (message: string, reason: 'response_content' | 'response_empty' | 'length') => {
+      // Keep the existing attempt code for older collectors. The opt-in trace
+      // detail can distinguish an empty reply from an invalid content field.
+      const failure = fail('upstream', message, reason === 'response_empty' ? 'response_content' : reason);
+      recordAttemptFailure(this.id, { ...failure.diagnostics, failureReason: reason }, true);
+      return failure;
+    };
     const result = await json(response, signal, 2 * 1024 * 1024, 'chat.completions'), usage = object(result.usage), details = object(usage.cost_details);
     if (result.model !== model) throw fail('refused', 'Kilo returned an unverified model', 'completion_model');
     const unverifiedUsage = 'Kilo returned unverified free usage or exceeded the output budget';
@@ -222,8 +230,12 @@ export class Kilo implements Source {
     if (!Array.isArray(result.choices) || result.choices.length !== 1) throw fail('upstream', 'Kilo returned an empty completion', 'response_choices');
     const choice = object(result.choices[0]), message = object(choice.message);
     if (message.refusal) throw fail('refused', 'Kilo refused the request', 'refusal');
-    if (!(message.content === undefined || message.content === null || typeof message.content === 'string')) throw fail('upstream', 'Kilo returned invalid completion content', 'response_content');
-    if (lengthLimited(choice.finish_reason)) return { ...truncatedCompletion(message.content, usage), servedModel: model, free: true };
+    if (!(message.content === undefined || message.content === null || typeof message.content === 'string')) throw unusable('Kilo returned invalid completion content', 'response_content');
+    const text = typeof message.content === 'string' ? message.content : '';
+    if (lengthLimited(choice.finish_reason)) {
+      if (request.model !== this.id && !text.trim()) throw unusable('Kilo stopped at the output limit without usable output', 'length');
+      return { ...truncatedCompletion(text, usage), servedModel: model, free: true };
+    }
     const calls: ToolCall[] = [], ids = new Set<string>();
     if (message.tool_calls !== undefined) {
       if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
@@ -236,8 +248,8 @@ export class Kilo implements Source {
         ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } });
       }
     }
-    if (!message.content && !calls.length) throw fail('upstream', 'Kilo returned an empty completion', 'response_content');
-    return { servedModel: model, free: true, text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+    if (!text.trim() && !calls.length) throw unusable('Kilo returned an empty completion', 'response_empty');
+    return { servedModel: model, free: true, text, ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
   }
   async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
 }

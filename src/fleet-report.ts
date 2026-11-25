@@ -1,8 +1,54 @@
 import type { fleetAudit } from './fleet.js';
+import type { RecoveryAudit } from './recovery-audit.js';
 
 type Audit = Awaited<ReturnType<typeof fleetAudit>>;
 const escape = (v: unknown) => String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const utc = (ms: number) => new Date(ms).toISOString().slice(0,10);
+const seconds = (ms: number | null) => ms === null ? 'unknown' : (ms / 1000).toFixed(2) + ' s';
+const windowFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York',
+  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+const recoveryHeadline = (a: RecoveryAudit) => `${seconds(a.failedMs)} in failed attempts before successful answers`;
+const recoveryCoverage = (a: RecoveryAudit) => `${a.recovered} recovered of ${a.passed} observed successful provider requests. Classified traces (${a.classified}), still open at day end (${a.unfinished}), cancelled (${a.cancelled}), marked incomplete (${a.truncated}). Local diagnostics from one installation, ${windowFormatter.format(a.since)} to ${windowFormatter.format(a.until)}. ${a.countsMatch ? 'Request and attempt finish counts match local metrics.' : 'Event coverage is partial or unverified.'}`;
+const traceSummary = (row: RecoveryAudit['slowest'][number]) => `${seconds(row.failedMs)} before recovery in ${seconds(row.elapsedMs)} elapsed. ${row.attempts.map(a => `${a.source} ${a.outcome}${a.failure ? ' (' + a.failure + ')' : ''} ${seconds(a.durationMs)}`).join(' → ')}.`;
+function failureTiming(attempt: RecoveryAudit['slowest'][number]['attempts'][number]) {
+  if (attempt.outcome !== 'failed') return '';
+  const replay = attempt.replayBlockedMs !== null ? 'Replay blocked at ' + seconds(attempt.replayBlockedMs)
+    : attempt.replaySafeMs !== null ? 'Known safe to replay at ' + seconds(attempt.replaySafeMs) : 'Replay safety unknown';
+  return ` Failure observed by ${seconds(attempt.failureObservedMs)}. ${replay}.`;
+}
+function beatSummary(beat: RecoveryAudit['beatapi']) {
+  const { comparison } = beat;
+  const rates = comparison
+    ? `Matched ordinary denial rates per denied account-hour. Before ${comparison.before.checksPerDeniedAccountHour.toFixed(2)} (${comparison.before.denied}/${comparison.before.deniedAccountHours} hours). After ${comparison.after.checksPerDeniedAccountHour.toFixed(2)} (${comparison.after.denied}/${comparison.after.deniedAccountHours} hours).`
+    : 'Matched denied account-hours are unknown.';
+  return `BeatAPI observed account checks (${beat.checks}), ordinary HTTP 403 denials (${beat.ordinaryDenied}), HTTP 403 denials from other paths (${beat.otherDenied}), validated availability observations (${beat.verifiedAvailable}). ${rates} Restored-access rediscovery delay ${seconds(beat.rediscoveryMs)}.`;
+}
+
+export function renderFleetHandoff(audit?: Audit, recovery?: RecoveryAudit, backlog: Record<string, string> = {}) {
+  const lines = recovery ? [recoveryHeadline(recovery), recoveryCoverage(recovery),
+    ...recovery.slowest.map(trace => '- ' + traceSummary(trace)), beatSummary(recovery.beatapi)] : ['Failed-attempt time before successful answers is unavailable for this run.'];
+  if (!audit) lines.push('Fleet aggregates unavailable.');
+  else if (!audit.defaultHandle) lines.push('No fleet cohort met the threshold for new work.');
+  else {
+    for (const finding of audit.findings) {
+      const workId = backlog[finding.handle];
+      lines.push(`- ${finding.route} (${finding.affected}/${finding.denominator}). ${finding.fix}${workId ? ` Backlog ${workId}.` : ''}`);
+    }
+    lines.push(`Reply go to start ${audit.defaultHandle}.`);
+  }
+  return lines.join('\n');
+}
+
+function renderRecoveryEvidence(a: RecoveryAudit) {
+  return `<section><h2>${escape(recoveryHeadline(a))}</h2><p>${escape(recoveryCoverage(a))}</p>
+    <p>Observed runtimes · ${escape(a.versions.join(', ') || 'unknown')}. Overlapping failed attempts count once within a request. Time after accepted output is excluded. Older runtimes may omit incomplete-output markers.</p>
+    ${a.slowest.length ? '<h3>Slowest recovered requests by failed-attempt time</h3>' : ''}
+    ${a.slowest.map(row => `<article><h3>${escape(traceSummary(row))}</h3>
+      <p><code>${escape(row.requestId)}</code> · ${escape(row.runtimeVersion ?? 'unknown runtime')}</p>
+      <p>First usable output ${seconds(row.firstUsableMs)}. Successful attempt accepted at ${seconds(row.acceptedMs)} from request start.</p>
+      <ul>${row.attempts.map(attempt => `<li><strong>${escape(attempt.source)}</strong> observed eligible at ${seconds(attempt.firstEligibleMs)}, dispatched at ${seconds(attempt.startedMs)}, finished at ${seconds(attempt.endedMs)}.${failureTiming(attempt)}</li>`).join('')}</ul></article>`).join('')}
+    <h3>BeatAPI account checks</h3><p>${escape(beatSummary(a.beatapi))}</p></section>`;
+}
 
 // A single backlog task can carry evidence from several affected releases.
 export function planFleetBacklog(audit: Audit, backlog: Record<string,string>) {
@@ -15,8 +61,8 @@ export function planFleetBacklog(audit: Audit, backlog: Record<string,string>) {
   }));
 }
 
-export function renderFleetReport(day: string, audit?: Audit, backlog: Record<string,string> = {}) {
-  const body: string[] = [];
+export function renderFleetReport(day: string, audit?: Audit, backlog: Record<string,string> = {}, recovery?: RecoveryAudit) {
+  const body: string[] = [recovery ? renderRecoveryEvidence(recovery) : '<section><h2>Failed-attempt time before successful answers</h2><p>Local request traces are unavailable for this run.</p></section>'];
   if (audit) {
     const coverage = audit.coverage;
     body.push(`<section><h2>Participation</h2><p><strong>${escape(coverage?.installs ?? 0)}</strong> reporting installations · ${escape(coverage?.hours ?? 0)} installation-hours · ${escape(coverage?.partial ?? 0)} flagged partial hours</p>
@@ -49,5 +95,5 @@ export function renderFleetReport(day: string, audit?: Audit, backlog: Record<st
   h1,h2,h3,p{margin:.5rem 0}h1{font-size:clamp(2rem,6vw,3.5rem)}h2{font-size:1.45rem}section{margin:1.75rem 0}
   article{background:#242526;border:1px solid #444;border-radius:3px;padding:1rem;margin:.75rem 0}
   strong,code{color:#ead29d}code{overflow-wrap:anywhere}footer{border-top:1px solid #555;padding-top:1rem;color:#ccc}
-  </style><main><header><h1>Grunt daily audit</h1><p>${escape(day)} · complete UTC day</p></header>${body.join('')}</main></html>`;
+  </style><main><header><h1>Grunt daily audit</h1><p>${escape(day)} · fleet window in UTC</p></header>${body.join('')}</main></html>`;
 }

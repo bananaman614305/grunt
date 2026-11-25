@@ -66,23 +66,24 @@ it('passes exact text and cwd, parses only the final agent text, and resumes thr
   ]);
   expect(invocations.every(c => c.cwd === dir)).toBe(true);
 });
-it('maps usage limits to quota and falls through only for grunt', async () => {
+it('maps a usage limit after Codex dispatch to quota without replaying uncertain work', async () => {
   vi.stubEnv('FAKE_CODEX_MODE', 'quota');
   const source = new Codex(), free = vi.fn(async () => ({ text: 'free answer' }));
   await expect(source.complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota' });
   const sources = new Sources([source, { id: 'free', available: async () => true, complete: free }]);
-  expect(await sources.complete({ ...request(), model: 'grunt' }, AbortSignal.timeout(5000))).toEqual({ text: 'free answer' });
+  await expect(sources.complete({ ...request(), model: 'grunt' }, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota', replay: 'unsafe' });
   await expect(sources.complete(request(), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'quota' });
-  expect(free).toHaveBeenCalledTimes(1);
+  expect(free).not.toHaveBeenCalled();
 });
 it('kills the child on cancellation', async () => {
   vi.stubEnv('FAKE_CODEX_MODE', 'wait');
   const controller = new AbortController();
   const pending = new Codex().complete(request(), controller.signal);
-  const rejected = expect(pending).rejects.toMatchObject({ code: 'timeout' });
+  const rejected = expect(pending).rejects.toBeInstanceOf(DOMException);
   await vi.waitFor(async () => expect((await calls()).length).toBe(1));
   const pid = (await calls())[0].pid;
   controller.abort(); await rejected;
+  await expect(pending).rejects.toBe(controller.signal.reason);
   expect(() => process.kill(pid, 0)).toThrow();
 });
 it('does not open files in Codex home from the grunt process', async () => {

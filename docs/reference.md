@@ -449,7 +449,7 @@ dropped events instead of presenting incomplete history as complete.
 
 | Method | Loopback route | Result |
 | --- | --- | --- |
-| GET | `/v1/diagnostics/events` | Oldest-first events; supports `after` cursor, `source`, `requestId` and `limit` (1–500). |
+| GET | `/v1/diagnostics/events` | Oldest-first events. Supports `after` cursor, `source`, `requestId` and `limit` (1–500). Pass `details=1` to include eligibility, failure detection, accepted output and validated account availability. |
 | GET | `/v1/diagnostics/summary` | Request/attempt and reported-usage totals, unknown-usage counts, storage health and stream identity; optional `since` timestamp in milliseconds. |
 | GET | `/v1/diagnostics/metrics` | Durable hourly aggregates independent of raw-event retention; optional `since`/`until` Unix milliseconds, aligned window, histograms, limits and ingestion/coverage health. |
 | GET | `/v1/diagnostics/traces/:id` | Retained events correlated to one request ID. |
@@ -746,6 +746,57 @@ unverified. Setup reuses the person's Squire key and verifies the exact
 validity and requires zero input, output and per-request price. A missing,
 changed or unavailable price blocks inference. The source uses normal Grunt
 cooldowns and fallback. The account's welcome credit is separate from this route.
+
+### IFM K2 Horizon experimental source
+
+IFM (MBZUAI's Institute of Foundation Models) serves `IFM/K2-Horizon-375B-A23B` at `https://api.ifm.ai/v1`, an
+OpenAI-compatible API. Grunt ships an adapter for it as a local opt-in, not a registry entry: nothing enrolls it, it has
+the lowest routing weight of any source (0.001), and naming it (`npx usegrunt add ifm` or `GRUNT_OPT_IN_SOURCES=ifm`) is the only way to select it. Setup never
+signs up. You create the account and one key yourself, store it in Trusty Squire as service `ifm`, label `Grunt Free`,
+host `api.ifm.ai`, and Grunt connects it through a scoped grant.
+
+What is established and what is not, as of November 25, 2026:
+
+- Documented by IFM: a 524,288-token context, 10 million prompt plus completion tokens per key per day resetting at
+  00:00 UTC, HTTP 429 with `Retry-After` past the cap, OpenAI-style function tools, and `reasoning_content` that must be
+  replayed on later turns.
+- Observed with a key the owner supplied, through the adapter and a Squire egress grant: a 200 reply with the exact
+  model, a native tool call, a tool loop that accepted replayed reasoning, a needle plus tool call retrieved at 145,396
+  prompt tokens (6.3 s wall) and a needle retrieved at 205,019 prompt tokens (10.5 s wall). Both large requests were
+  routed to Cerebras. That clears the 200,000-token floor for the Cerebras route only: requests are also served by
+  Nebius and AWS, and nothing above 4K tokens was sent to them, so a request routed there may behave differently.
+  524,288 is IFM's catalog figure, not a tested claim.
+- Unverified: price and whether the key stays free (IFM's docs never say; its platform and legal pages sit behind human
+  verification and Grunt does not bypass it), terms for coding-agent use, retention, staff review and training. The only
+  linked privacy policy covers MBZUAI website data. Live rate-limit headers disagree with the documentation: every route
+  reports a request guard of 2 with a 1 s reset and a 30M-token counter that fell by about the tokens used (the
+  documentation says 10M a day and calls it informational); only Cerebras-routed replies add -day, -hour and -minute
+  counters (34.56B tokens a day), which describe that host's account, not this key, and are ignored. Reasoning counts
+  against the output budget: a 6,000-token budget on a small coding task was spent entirely on reasoning and returned an
+  empty length-limited reply, while the same task finished in 813 tokens on a retry, so give coding turns a generous budget.
+- Quality is unproven. IFM's own Terminal-Bench 2.1 score for this model (70.2, or 66.9 after its reward-hacking audit)
+  is below the vendor figures for DeepSeek V4.1 Flash and GLM 5.3 Flash, and no independent coding result was found.
+
+The data-sharing policy uses material approval and says all of the above. It is marked manual: naming the source in
+`usegrunt add ifm` does not record it, and neither does the setup default or a daily renewal. You approve the current
+text yourself with `GRUNT_APPROVE_DATA_SHARING=ifm npx usegrunt add ifm`, and a changed policy needs that again. Until
+then the adapter sends nothing, and approval for another source never carries over. Grunt sends only the exact model, spaces request starts to the observed guard of two per second (it queues the
+rest briefly; untested above two in flight), passes your
+output budget through without a cap of its own, stops on HTTP 402 or any reported charge, reads `Retry-After` and the
+documented daily counter on 429 (a bare 429 gets a 30-second local back-off, not an inferred reset), reports a reply cut off by its budget as length-limited, and
+replays each reply's reasoning verbatim on the matching assistant turn from process memory. History that another
+source produced has no remembered reasoning, and IFM's gateway answers HTTP 422 to an assistant turn that has text and
+no thinking field (checked on synthetic requests: a tool-call turn with empty text passes, a plain text turn fails, and
+the refusal comes before any host is chosen). Every assistant turn therefore carries `reasoning_content`, the empty
+string when nothing is remembered, which IFM documents as valid. Replies are streamed (`stream` with usage) purely for liveness and returned whole: a reasoning-heavy reply can think for
+minutes and take about a minute at 125 tokens a second on one host (another host answered 15,561 tokens in 18 s), so a
+non-streamed call was cut by the pool's 60-second first-output deadline. Each reasoning, answer or tool-call delta now
+keeps the first-output (120 s) and idle (60 s) deadlines satisfied, and an answer that is only reasoning is a failed
+sample. The reply must carry the exact model on every chunk, a finish reason, a closing marker and usage with no
+charge. HTTP 400, 413 and 422 are request-shape refusals, not
+provider health: no cooldown or retirement, and the task moves to another source. Tool schemas whose `required` names
+the host's template cannot find in `properties` (for example when `allOf` supplies them) are sent without those names;
+the model's calls are still checked against the original schema.
 
 ### Darus daily free source
 

@@ -1,4 +1,4 @@
-import { recordTransport } from './diagnostics.js';
+import { recordAttemptFailure, recordTransport } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { spawn } from 'node:child_process';
@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { SourceError, requestRefusal } from './source.js';
+import { replayTimeout, SourceError, requestRefusal } from './source.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
@@ -180,13 +180,13 @@ export class MistralVibe implements Source {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Mistral Vibe request cancelled during shutdown');
       if (error instanceof SourceError) throw error;
-      if (error instanceof Error && error.name === 'TimeoutError') throw new SourceError('timeout', 'Mistral Vibe request timed out');
+      if (error instanceof Error && error.name === 'TimeoutError') throw replayTimeout('Mistral Vibe request timed out', true);
       throw new SourceError('upstream', 'Mistral Vibe request failed');
     } finally { this.pending.delete(task); }
   }
   private async completeBridged(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     const needsBridge = request.tools.length > 0 || request.messages.some(message => message.role === 'tool' || message.tool_calls?.length);
-    if (!needsBridge) return await this.completeText(request, caller);
+    if (!needsBridge) return this.rejectEmptyTruncation(request, await this.completeText(request, caller));
     let bridge: FreebuffTools;
     try { bridge = new FreebuffTools(request); }
     catch { throw requestRefusal('Mistral Vibe rejected unsupported tool definitions or an invalid tool conversation'); }
@@ -194,13 +194,23 @@ export class MistralVibe implements Source {
     let inputTokens = 0, outputTokens = 0;
     for (let attempt = 0; attempt < 2; attempt++) {
       const handoffPrompt = bridge.prompt(attempt > 0).replace('native Freebuff tools', 'native Mistral Vibe tools');
-      const result = await this.completeText({ ...request, handoffPrompt }, signal);
+      const maxTokens = request.maxTokens === undefined ? undefined : request.maxTokens - outputTokens;
+      if (maxTokens === 0) return this.rejectEmptyTruncation(request, { text: '', finishReason: 'length', inputTokens, outputTokens });
+      const result = await this.completeText({ ...request, ...(maxTokens === undefined ? {} : { maxTokens }), handoffPrompt }, signal);
       inputTokens += result.inputTokens ?? 0; outputTokens += result.outputTokens ?? 0;
-      if (result.finishReason === 'length') return { text: '', finishReason: 'length', inputTokens, outputTokens };
+      if (result.finishReason === 'length') return this.rejectEmptyTruncation(request, { text: '', finishReason: 'length', inputTokens, outputTokens });
       try { return { ...bridge.parse(result.text), inputTokens, outputTokens }; }
       catch { if (attempt === 1) throw invalidCompletion('Mistral Vibe tool response failed validation after one repair attempt', 'completion_protocol'); }
     }
     throw new SourceError('upstream', 'Mistral Vibe tool protocol failed');
+  }
+  private rejectEmptyTruncation(request: ModelRequest, completion: Completion) {
+    if (request.model !== this.id && completion.finishReason === 'length' && !completion.text.trim()) {
+      const failure = invalidCompletion('Mistral Vibe stopped at the output limit without usable output', 'length');
+      recordAttemptFailure(this.id, failure.diagnostics, true);
+      throw failure;
+    }
+    return completion;
   }
   private async completeText(request: ModelRequest, caller: AbortSignal) {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
@@ -245,7 +255,7 @@ export class MistralVibe implements Source {
     } catch (error) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Mistral Vibe request cancelled during shutdown');
-      if (signal.aborted) throw new SourceError('timeout', 'Mistral Vibe request timed out');
+      if (signal.aborted) throw replayTimeout('Mistral Vibe request timed out', true);
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'Mistral Vibe request failed; rerun usegrunt setup');
     } finally { if (temporary) await rm(temporary, { recursive: true, force: true }); }

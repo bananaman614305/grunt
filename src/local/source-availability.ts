@@ -27,9 +27,9 @@ export class SourceAvailability {
     if (this.closed) return 0;
     let started = 0;
     for (const source of sources) {
-      // A source that ignores cancellation keeps its slot until it really
-      // settles. Do not spawn more native checks to replace a hung process.
-      if (this.unsettled.size >= MAX_PROBES) break;
+      // Bound foreground admission waits and keep at most one underlying
+      // probe per source. A hung probe cannot hide other routes indefinitely.
+      if (this.active.size >= MAX_PROBES) break;
       if (this.active.has(source.id) || this.unsettled.has(source.id) || this.peek(source.id) !== undefined) continue;
       this.unsettled.add(source.id);
       started++;

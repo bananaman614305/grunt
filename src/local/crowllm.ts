@@ -14,6 +14,7 @@ interface Offer {
 }
 
 export class CrowLLM implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'crowllm';
   readonly supportsFunctionTools = true;
   private readonly directory: string;

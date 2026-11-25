@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir, copyFile, chmod } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { Sources, SourceError } from './source.js';
+import { RequestError, Sources, replayTimeout, requestRefusal, SourceError } from './source.js';
 import { StickyRouter } from './routing.js';
 import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -20,6 +20,73 @@ const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', conte
 const source = (id: string): Source => ({ id, available: vi.fn(async () => true), complete: vi.fn(async () => ({ text: `${id} done` })) });
 function routed(random = () => 0) { const a = source('opencode'), b = source('kilo'); return { a, b, sources: new Sources([a, b], { registry: () => launchRegistry, random }) }; }
 const piTools = [{ type: 'function' as const, function: { name: 'read', parameters: {} } }];
+
+it.each(['explicit', 'ambiguous', 'concurrent', 'concurrent-fallback', 'exhausted'] as const)('only an exhausted automatic routed pool tries the legacy fallback (%s)', async mode => {
+  const primary = source('opencode'), legacy = source('legacy');
+  const pool = new Sources([primary, legacy], { registry: () => launchRegistry, unrouted: new Set([legacy.id]) });
+  const controller = new AbortController();
+  try {
+    if (mode === 'concurrent' || mode === 'concurrent-fallback') {
+      const running = mode === 'concurrent' ? primary : legacy;
+      if (running === legacy) vi.mocked(primary.complete).mockRejectedValueOnce(new SourceError('quota', 'reset later', 60));
+      let finish!: () => void;
+      vi.mocked(running.complete).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ text: 'first' }); }));
+      const first = pool.complete(request, controller.signal);
+      await vi.waitFor(() => expect(running.complete).toHaveBeenCalledOnce());
+      try {
+        await expect(pool.complete(request, controller.signal)).rejects.toThrow('already running');
+      } finally { finish(); await first; }
+    } else {
+      vi.mocked(primary.complete).mockRejectedValueOnce(mode === 'ambiguous' ? replayTimeout('ambiguous', false) : new SourceError('quota', 'reset later', 60));
+      const input = mode === 'explicit' ? { ...request, model: primary.id } : request;
+      if (mode === 'exhausted') await expect(pool.complete(input, controller.signal)).resolves.toEqual({ text: 'legacy done' });
+      else await expect(pool.complete(input, controller.signal)).rejects.toMatchObject({ code: mode === 'explicit' ? 'quota' : 'timeout' });
+    }
+    expect(legacy.complete).toHaveBeenCalledTimes(mode === 'exhausted' || mode === 'concurrent-fallback' ? 1 : 0);
+  } finally { await pool.close(); }
+});
+
+it.each(['healthy', 'ineligible', 'refused', 'not-installed', 'explicit'] as const)('handles a pool-local tool refusal with a legacy backup (%s, LIV-2)', async mode => {
+  const primary = { ...source('kilo'), supportsFunctionTools: true };
+  const legacy = { ...source('legacy'), supportsFunctionTools: mode !== 'ineligible' };
+  vi.mocked(primary.complete).mockRejectedValue(requestRefusal('primary rejected schema locally', 'request_tool_schema'));
+  if (mode === 'refused') vi.mocked(legacy.complete).mockRejectedValue(requestRefusal('legacy rejected schema locally'));
+  if (mode === 'not-installed') vi.mocked(legacy.complete).mockRejectedValue(new SourceError('not_installed', 'legacy missing'));
+  const sources = new Sources([primary, legacy], { registry: () => launchRegistry, unrouted: new Set([legacy.id]) });
+  const input = { ...request, model: mode === 'explicit' ? primary.id : 'grunt', tools: piTools };
+  try {
+    const completion = sources.complete(input, AbortSignal.timeout(1000));
+    if (mode === 'healthy') await expect(completion).resolves.toEqual({ text: 'legacy done' });
+    else {
+      await expect(completion).rejects.toBeInstanceOf(RequestError);
+      await expect(completion).rejects.toThrow(/refused this conversation's tool definitions/);
+    }
+    expect(primary.complete).toHaveBeenCalledOnce();
+    expect(legacy.complete).toHaveBeenCalledTimes(['healthy', 'refused', 'not-installed'].includes(mode) ? 1 : 0);
+  } finally { await sources.close(); }
+});
+
+it.each(['quota-first', 'refusal-first', 'routed-quota'] as const)('preserves the earliest quota hint through mixed exhaustion (%s)', async order => {
+  const primary = { ...source('kilo'), supportsFunctionTools: true };
+  const quota = { ...source('legacy-quota'), supportsFunctionTools: true };
+  const refusal = { ...source('legacy-refusal'), supportsFunctionTools: true };
+  vi.mocked(primary.complete).mockRejectedValue(order === 'routed-quota'
+    ? new SourceError('quota', 'Routed quota', 30)
+    : requestRefusal('Primary rejected tool schema locally', 'request_tool_schema'));
+  vi.mocked(quota.complete).mockRejectedValue(new SourceError('quota', 'Legacy quota', 60));
+  vi.mocked(refusal.complete).mockRejectedValue(requestRefusal('Legacy rejected tool schema locally', 'request_tool_schema'));
+  const legacy = order === 'refusal-first' ? [refusal, quota] : [quota, refusal];
+  const sources = new Sources([primary, ...legacy], { registry: () => launchRegistry, unrouted: new Set(legacy.map(item => item.id)), now: () => 1000 });
+  try {
+    const response = await createLocalApp(sources).request('http://127.0.0.1:8788/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, tools: piTools })
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toBe(order === 'routed-quota' ? '30' : '60');
+    expect((await response.json()).error.code).toBe('quota');
+    for (const item of [primary, ...legacy]) expect(item.complete).toHaveBeenCalledOnce();
+  } finally { await sources.close(); }
+});
 // An explicitly named source keeps Pi tools, even one that runs its own tools.
 it.each([false, true])('honors an explicitly named native-tool agent with Pi tools (sticky=%s)', async sticky => {
   const nativeAgent = { ...source('opencode'), supportsFunctionTools: false };
@@ -120,7 +187,7 @@ it('switches only after 429, carries task and previous output, and bars until Re
 it.each(['upstream', 'timeout'] as const)('switches on the first %s failure and returns after the bar expires', async code => {
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
   const { a, b, sources } = routed();
-  vi.mocked(a.complete).mockRejectedValue(new SourceError(code, 'failed'));
+  vi.mocked(a.complete).mockRejectedValue(code === 'timeout' ? replayTimeout('failed', true) : new SourceError(code, 'failed'));
   expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
   expect(b.complete).toHaveBeenCalledTimes(1);
   vi.mocked(a.complete).mockResolvedValue({ text: 'restored' });
@@ -281,7 +348,7 @@ it('keeps actual OpenCode login bars through an unhealthy models check', async (
   await sources.models();
   expect(await run('fourth')).toEqual({ text: 'ready' });
 });
-it('hands off current persisted Freebuff output when quota is already logged', async () => {
+it('does not hand off a native Freebuff turn with partial output and an ambiguous quota failure', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'grunt-current-output-'));
   try {
     await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(cwd, 'freebuff')); await chmod(join(cwd, 'freebuff'), 0o755);
@@ -304,8 +371,9 @@ it('hands off current persisted Freebuff output when quota is already logged', a
     // This test exercises an already-admitted native route's partial handoff,
     // rather than racing its filesystem admission against a ready mock.
     await sources.models();
-    await sources.complete({ ...request, cwd }, AbortSignal.timeout(2000));
-    expect(vi.mocked(next.complete).mock.calls[0]![0].handoffPrompt).toContain('CURRENT PARTIAL WORK');
+    await expect(sources.complete({ ...request, cwd }, AbortSignal.timeout(2000)))
+      .rejects.toMatchObject({ code: 'quota', output: 'CURRENT PARTIAL WORK', replay: 'unsafe' });
+    expect(next.complete).not.toHaveBeenCalled();
   } finally { vi.unstubAllEnvs(); await rm(cwd, { recursive: true, force: true }); }
 });
 

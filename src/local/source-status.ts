@@ -3,7 +3,7 @@ import { SourceError, guardToolCalls } from './source.js';
 import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
-import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
+import { currentDiagnosticContext, recordAttemptFailure, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore } from './diagnostics.js';
 import { currentRoutingWorkload, localRequestRefusal, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
@@ -66,8 +66,13 @@ export class SourceStatus {
   private diagnostics: DiagnosticsStore | undefined;
   private history: RoutingHistory | undefined;
   private backoffs = new Map<string, RoutingBackoff>();
+  private availabilityObservers = new Set<(id: string, at: number) => void>();
   private feedback: ((id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) => void) | undefined;
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
+  observePositiveAvailability(observer: (id: string, at: number) => void) {
+    this.availabilityObservers.add(observer);
+    return () => this.availabilityObservers.delete(observer);
+  }
   // Counts each settled reply for the registry's route feedback.
   setFeedback(feedback: (id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) => void) { this.feedback = feedback; }
   private report(id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) {
@@ -239,7 +244,8 @@ export class SourceStatus {
     } catch { /* Local routing stays functional during contention, corruption or disk failure. */ }
   }
   isBusy(id: string) { return (this.observations.get(id)?.active ?? 0) > 0; }
-  async available(source: Source, healthCheck = false): Promise<boolean> {
+  async available(source: Source, healthCheck = false, onRecovered?: () => void, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
     const entry = this.entry(source.id), revision = entry.revision;
     // Retain only negative metadata. Explicit health checks and all adapter
     // completion guards remain fresh; positive metadata is never reused here.
@@ -247,7 +253,8 @@ export class SourceStatus {
     if (!healthCheck && !entry.availabilityQuota && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
       && this.routingAvailability(source.id, 0, AVAILABILITY_NEGATIVE_MS) === false) return false;
     try {
-      const result = await (healthCheck ? source.healthCheck!() : source.available());
+      const result = await (healthCheck ? source.healthCheck!(signal) : source.available(signal));
+      signal?.throwIfAborted();
       // A reply or explicit recovery observed after this probe started is
       // newer evidence. The caller still receives the actual probe result.
       if (entry.revision === revision) {
@@ -255,13 +262,21 @@ export class SourceStatus {
         if (!result) {
           if (entry.availabilityQuota) this.healthy(source.id);
           entry.revision++; entry.state = 'unavailable';
-        } else if (healthCheck || entry.availabilityQuota) this.healthy(source.id);
+        } else if (healthCheck || entry.availabilityQuota) {
+          this.healthy(source.id);
+          if (healthCheck) onRecovered?.();
+        }
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
-        entry.available = result; entry.availabilityCheckedAt = this.now();
+        const checkedAt = this.now();
+        entry.available = result; entry.availabilityCheckedAt = checkedAt;
         this.notifyClosed(source.id, wasOpen);
+        if (result) for (const observe of this.availabilityObservers) {
+          try { observe(source.id, checkedAt); } catch { /* Observation cannot change admission. */ }
+        }
       }
       return result;
     } catch (error) {
+      signal?.throwIfAborted();
       // Caller/shutdown cancellation says nothing about provider availability.
       if (error instanceof SourceError && error.code === 'cancelled'
         || error instanceof Error && error.name === 'AbortError') throw error;
@@ -299,11 +314,15 @@ export class SourceStatus {
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
           ...(result.servedModel ? { model: result.servedModel } : {}),
           ...(typeof result.free === 'boolean' ? { free: result.free } : {}),
+          ...(result.finishReason === 'length' ? { failureReason: 'length' } : {}),
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
           ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });
         return result;
       } catch (error) {
         const value = error && typeof error === 'object' ? error as { diagnostics?: object; retryAfter?: unknown } : {};
+        if (!signal.aborted && error instanceof SourceError && error.replay !== undefined) {
+          recordAttemptFailure(source.id, error.diagnostics, error.replay === 'safe');
+        }
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(value.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
           outcome: signal.aborted ? 'cancelled' : 'failed', errorCode: signal.aborted ? 'cancelled' : failureCode(error),
           durationMs: Math.max(0, performance.now() - startedMono), ...(typeof value.retryAfter === 'number' ? { retryAfterSeconds: value.retryAfter } : {}) });

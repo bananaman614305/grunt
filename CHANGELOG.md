@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## 0.10.12 — 2026-11-25
+
+- Stream IFM K2 Horizon replies (for liveness only; the client still gets one whole reply). A reasoning-heavy request needing more than 60 s was cut by the first-output deadline and benched the source for 15 minutes. Reasoning, answer and tool-call deltas now keep the deadlines satisfied (120 s first output, 60 s idle), the stream cap rises to 64 MiB for long replies, reasoning is still replayed on the next turn, and the shape refusals and request guard are unchanged. The shared SSE reader gains two optional hooks (a reasoning observer and a byte cap); other sources are unaffected.
+
+- Operator: the live-upgrade controller now pins the Adventure builder's CPU limit at exactly eight CPUs (`cpu.max` `800000 100000`).
+
+## 0.10.11 — 2026-11-25
+
+- Fix IFM K2 Horizon failing with HTTP 422 on the first real request after a failover: IFM's gateway rejects any assistant turn that has text and no thinking field, and history from other sources has none. Every assistant turn now carries `reasoning_content` (remembered reasoning, else the empty string), only OpenAI chat fields are sent, tool schemas get unbacked `required` names dropped for the host's template, and a 400, 413 or 422 is a request-shape refusal that no longer benches the source for 15 minutes.
+
+- Operator: the live-upgrade controller now pins the Adventure builder's CPU limit at exactly four CPUs (`cpu.max` `400000 100000`), matching the owner's raised limit, instead of two; any other value still refuses the upgrade.
+- Tests: the router-loop and background-acquisition tests wait for the recovery pass to finish, with a bounded deadline, instead of a fixed 20 ms sleep and a 1 s default; no source change.
+
+## 0.10.10 — 2026-11-25
+
+- Kilo and Mistral Vibe replies that are empty, or cut off with no usable output, now fail over to another source; diagnostics record the failed attempt and backup admission (#223).
+- Fail over to another source only when the first one's work can be replayed; a timed-out native agent turn no longer runs twice, and inference-only sources still fail over (#221).
+- Add IFM K2 Horizon as an experimental local opt-in (`usegrunt add ifm`), lowest weight, outside the registry and default onboarding. It connects a key you stored yourself, stays off until its material data-sharing notice is approved, and says plainly that price, terms, retention, training and quality are unverified; a 205,019-token needle was retrieved on the Cerebras route, other hosts behind IFM were not tested at that size.
+- Operator: make the provider scout finish what it qualifies. Unfinished researched, setup and integration candidates are requeued (63 of 81 researched rows and all genuine integration rows were orphaned), furthest-along first, with bounded backoff and a park after two reviews without new evidence; supervisor-blocked heads go back to the worker with a safe reason; the ledger gains `released`, `retired` and `excluded` statuses reconciled from the registry and owner decisions (idempotent `migrate`, backed up, never drops a row); discovery label rejections are `claimed` and get a verification pass; stale proofs are refreshed instead of demoting; failures name their stage; budgets reserve the release stages; discovery diffs public lists, seeks newer models and Chinese first-party sources. Admission policy is unchanged.
+- Let the live upgrade accept an owner-approved opt-in source on one pool only (IFM K2 Horizon on the owner pool 8793, never the primary). The approval is a reviewed constant, the gate and the source-transition proof stay exact per pool, the launcher's opt-in list is pinned before anything is paused, and the source stays consent-deferred during the upgrade so its consent receipt and grant are installed afterwards.
+
 ## 0.10.9 — 2026-11-24
 
 - Report hourly fleet diagnostics to the registry by default: counts of user attempts, failures, timeouts, quota errors and slow successes by route and release, under a per-install identity. Prompts, responses, paths and command output stay out. Set `GRUNT_FLEET_REPORTING=0` to turn it off; `GRUNT_SETUP_NO_DATA_SHARING=1` and custom registries also do (#219).

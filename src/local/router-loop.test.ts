@@ -17,7 +17,18 @@ import type { SignupAgent } from './signup-mcp.js';
 const dirs: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 const directory = async () => { const dir = await mkdtemp(join(tmpdir(), 'grunt-router-loop-')); dirs.push(dir); return dir; };
-const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+// Resolves when the recovery pass that trigger() started has finished, not after a fixed
+// sleep: close() aborts a pass in flight, so a short sleep under load cut passes short.
+// The deadline only bounds a hung pass; it never stands in for the condition.
+const PASS_DEADLINE_MS = 15_000;
+async function finished(recovery: SourceRecovery) {
+  const running = (recovery as unknown as { running?: Promise<void> }).running;
+  expect(running, 'trigger() should have started a pass').toBeDefined();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([running, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('recovery pass did not finish')), PASS_DEADLINE_MS); })]);
+  } finally { clearTimeout(timer); }
+}
 // Every candidate below has its data-sharing consent recorded, as setup would.
 const consented = async (ids: string[]) => { const dir = await directory(); await recordDataSharingConsent(dir, ids.filter(id => requiresDataSharing(id))); return dir; };
 const registry: Registry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(id => ({ ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5 })) };
@@ -115,7 +126,7 @@ it(`stops at N = ${MAX_OPEN_ROUTES} open routes when the registry lists more`, a
   const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus', 'fikra', 'openference'];
   const run = pass(ids, 2, () => true);
   const recovery = new SourceRecovery({ directory: await consented(ids), ...run.options });
-  recovery.trigger(); await settle(); await recovery.close();
+  recovery.trigger(); await finished(recovery); await recovery.close();
   expect(run.order.map(entry => entry.id)).toEqual(ids.slice(0, MAX_OPEN_ROUTES - 2));
 });
 
@@ -123,7 +134,7 @@ it('lets the first route that signs up drive the rest, and makes at most N attem
   const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus'];
   const run = pass(ids, 0, id => id === 'runcrate');
   const recovery = new SourceRecovery({ directory: await consented(ids), ...run.options });
-  recovery.trigger(); await settle(); await recovery.close();
+  recovery.trigger(); await finished(recovery); await recovery.close();
   expect(run.order).toEqual(ids.slice(0, MAX_OPEN_ROUTES).map((id, index) => ({ id, agent: index > 1 })));
 });
 
@@ -131,9 +142,9 @@ it('moves last pass\'s failed signups to the end so they cannot starve the rest'
   const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus'];
   const run = pass(ids, 0, () => false);
   const recovery = new SourceRecovery({ directory: await consented(ids), ...run.options });
-  recovery.trigger(); await settle();
+  recovery.trigger(); await finished(recovery);
   expect(run.order).toHaveLength(MAX_OPEN_ROUTES);
-  recovery.trigger(); await settle();
+  recovery.trigger(); await finished(recovery);
   expect(run.order).toHaveLength(2 * MAX_OPEN_ROUTES);
   expect(run.order.slice(MAX_OPEN_ROUTES, MAX_OPEN_ROUTES + 2).map(entry => entry.id)).toEqual(['goedel', 'darus']);
   await recovery.close();
@@ -145,7 +156,7 @@ it('skips the pass while foreground setup owns signups', async () => {
   const session = await beginSetupSession(dir, ['zro']);
   const recovery = new SourceRecovery({ directory: dir, ...run.options });
   try {
-    recovery.trigger(); await settle(); await recovery.close();
+    recovery.trigger(); await finished(recovery); await recovery.close();
     expect(run.setup).not.toHaveBeenCalled();
   } finally { await session.close(); }
 });
@@ -235,8 +246,8 @@ it('reaches every candidate across capped passes with persistent failures', asyn
   try {
     for (let i = 1; i <= 5; i++) {
       recovery.trigger();
-      await vi.waitFor(() => expect(run.order).toHaveLength(i * MAX_OPEN_ROUTES));
-      await vi.waitFor(async () => expect(await readSetupSession(dir)).toBeUndefined());
+      await vi.waitFor(() => expect(run.order).toHaveLength(i * MAX_OPEN_ROUTES), { timeout: PASS_DEADLINE_MS });
+      await vi.waitFor(async () => expect(await readSetupSession(dir)).toBeUndefined(), { timeout: PASS_DEADLINE_MS });
     }
     expect(run.order.slice(0, ids.length).map(entry => entry.id)).toEqual(ids);
     expect(run.order.slice(ids.length, 2 * ids.length).map(entry => entry.id)).toEqual(ids);
@@ -267,8 +278,8 @@ it.each(['earlier signup', 'driver discovery', 'expiry'] as const)('rechecks rec
     }, setup: setup as never, notify: () => {} });
   try {
     recovery.trigger();
-    await vi.waitFor(() => expect(setup).toHaveBeenCalledOnce());
-    await vi.waitFor(async () => expect(await readSetupSession(dir)).toBeUndefined());
+    await vi.waitFor(() => expect(setup).toHaveBeenCalledOnce(), { timeout: PASS_DEADLINE_MS });
+    await vi.waitFor(async () => expect(await readSetupSession(dir)).toBeUndefined(), { timeout: PASS_DEADLINE_MS });
     expect(setup.mock.calls.map(([options]) => options.adapters)).toEqual([['zro']]);
   } finally { await recovery.close(); }
 });
