@@ -11,6 +11,8 @@ import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfil
 // Negative admission evidence may delay discovery, never authorize dispatch.
 // Share one bounded window across routing, model-list and recovery metadata reads.
 export const AVAILABILITY_NEGATIVE_MS = 30000;
+// A positive admission check is reused for routing this long.
+export const AVAILABILITY_POSITIVE_MS = 30000;
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
 export interface SourceSnapshot {
@@ -21,6 +23,10 @@ export interface SourceSnapshot {
   active: number;
   lastReplyMs?: number;
   lastSuccessAt?: number;
+  // Age in whole seconds of the last admission or reply evidence, and whether it is fresh enough for routing to admit
+  // the source without a new check. Content-free; `state` keeps its meaning and neither is a dispatch guarantee.
+  checkedAgoSeconds?: number;
+  routable?: boolean;
   retryAt?: number;
   supportsFunctionTools?: boolean;
   quotaWindow?: QuotaWindow;
@@ -126,6 +132,10 @@ export class SourceStatus {
     this.notifyClosed(id, wasOpen);
   }
   quotaRetryAt(id: string) { return this.observations.get(id)?.retryAt; }
+  availabilityEvidence(id: string): { available: boolean; at: number } | undefined {
+    const entry = this.entry(id);
+    return entry.availabilityCheckedAt === undefined || entry.available === undefined ? undefined : { available: entry.available, at: entry.availabilityCheckedAt };
+  }
   routingAvailability(id: string, positiveAgeMs: number, negativeAgeMs: number): boolean | undefined {
     const entry = this.entry(id), now = this.now();
     if (entry.availabilityCheckedAt === undefined || entry.available === undefined) return;
@@ -396,6 +406,8 @@ export class SourceStatus {
       else if (entry.retryAt !== undefined && entry.retryAt > now) row.retryAt = entry.retryAt;
       else if (entry.retryAt !== undefined && entry.state === 'limited') row.state = 'available';
       if (row.state !== 'disabled' && options.retired?.(id)) row.state = 'unavailable';
+      if (entry.availabilityCheckedAt !== undefined) row.checkedAgoSeconds = Math.max(0, Math.floor((now - entry.availabilityCheckedAt) / 1000));
+      row.routable = (row.state === 'available' || row.state === 'ready' || row.state === 'answering') && this.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS) === true;
       row.detail = `${detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
       return row;
     });

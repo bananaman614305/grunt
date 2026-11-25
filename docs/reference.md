@@ -345,7 +345,11 @@ completion pauses unfinished signups; verified daemon routes remain usable.
 `/v1/status` uses the same loopback Host/Origin restrictions as inference and
 `Cache-Control: no-store`. Its version-1 JSON contains the snapshot timestamp,
 active call count and per-source observations, including safe failure codes,
-last success/timing and finite retry timestamps when known. Observations reset
+last success/timing and finite retry timestamps when known. `checkedAgoSeconds`
+is the age of the last admission or reply evidence and `routable` is true only
+when that evidence is a fresh (30 s) positive and the state is open; `state`
+alone can read `available` for a source routing would first have to re-check, and
+neither field guarantees dispatch. Observations reset
 when the daemon restarts, then rebuild from normal runtime activity.
 
 ### Persistent local diagnostics

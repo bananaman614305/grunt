@@ -45,6 +45,9 @@ export function registryScoreFactor(score: number | null | undefined) {
 // envelope and may decline. Only the draw set narrows: weights, consent, quota and cooldowns are untouched, and a
 // bridged source still serves when no native tool source is eligible. See docs/router.md.
 export const NATIVE_TOOL_SOURCES_FIRST = true;
+// A first draw whose ready sources are all busy waits at most this long for the admission checks of sources that
+// may be idle (a fallback waits for them as long as they run). Probes take 0.1 to 2.5 s; each is bounded at 5 s.
+export const FIRST_DRAW_IDLE_WAIT_MS = 3000;
 // An image-capable source benched for longer than this no longer keeps the image in the conversation (see imageUsable).
 export const IMAGE_WAIT_SECONDS = 300;
 
@@ -281,7 +284,7 @@ export class StickyRouter {
       observedEligible.add(id);
       withDiagnosticContext(context, () => observeEligible(id, at));
     };
-    let yieldedMetadata = false;
+    let yieldedMetadata = false, idleWaitEnds: number | undefined;
     const observation = this.observation;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => this.options.observe?.(source, reason, true);
     const dispatchBlocked = (id: string) => {
@@ -391,10 +394,18 @@ export class StickyRouter {
         const idle = draw.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
         // prefer idle capacity but must not wait behind background work.
-        // A fallback (the bound source failed or is benched) prefers idle capacity like a first draw. Sources whose
-        // admission metadata is still being fetched may be idle, so wait briefly for those checks (each is deadline
-        // bounded) before sharing a source that is busy with another task. A healthy bound source never waits.
-        if (!boundMain && task.source !== undefined && !idle.length && unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
+        // A first draw and a fallback (the bound source failed or is benched) prefer idle capacity. Sources whose
+        // admission metadata is still being fetched may be idle, so wait for those checks (each is deadline bounded;
+        // a first draw's total wait is FIRST_DRAW_IDLE_WAIT_MS) before sharing a source that is busy with another
+        // task. A healthy bound source never waits.
+        // A first draw waits too, but only a bounded time, and only for sources that would join the draw (a native tool
+        // source is not worth waiting for on behalf of a bridged one, nor the reverse).
+        const joining = native ? unknown.filter(source => !bridgedTools(source)) : unknown;
+        if (!boundMain && !idle.length && joining.length && this.availability.hasPending()) {
+          idleWaitEnds ??= Date.now() + (task.source === undefined ? FIRST_DRAW_IDLE_WAIT_MS : Infinity);
+          const left = idleWaitEnds - Date.now();
+          if (left > 0) { await this.availability.changed(signal, Number.isFinite(left) ? left : undefined); continue; }
+        }
         const ready = boundMain || !idle.length ? draw : idle;
         let selected = ready.find(candidate => candidate.source.id === task.source);
         let performanceSwitch = false;

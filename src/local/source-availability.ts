@@ -2,10 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import { SourceError } from './source.js';
 import type { Source } from './source.js';
-import { AVAILABILITY_NEGATIVE_MS, type SourceStatus } from './source-status.js';
-export { AVAILABILITY_NEGATIVE_MS } from './source-status.js';
+import { AVAILABILITY_NEGATIVE_MS, AVAILABILITY_POSITIVE_MS, type SourceStatus } from './source-status.js';
+export { AVAILABILITY_NEGATIVE_MS, AVAILABILITY_POSITIVE_MS } from './source-status.js';
 
-export const AVAILABILITY_POSITIVE_MS = 30000;
 export const AVAILABILITY_DEADLINE_MS = 5000;
 const MAX_PROBES = 4;
 
@@ -23,10 +22,22 @@ export class SourceAvailability {
     return this.observation.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS);
   }
 
+  // Probe order for the few foreground slots: sources that last answered positively (most recent first), then
+  // sources never checked, then sources last denied. A dead source's denial expires on the same 30 s cycle as a live
+  // source's approval and must not take the slots first every time. Ties keep the caller's (source list) order.
+  private promising(sources: readonly Source[]) {
+    const rank = (id: string) => {
+      const evidence = this.observation.availabilityEvidence(id);
+      return evidence === undefined ? { tier: 1, at: 0 } : evidence.available ? { tier: 0, at: evidence.at } : { tier: 2, at: 0 };
+    };
+    return sources.map((source, index) => ({ source, index, ...rank(source.id) }))
+      .sort((a, b) => a.tier - b.tier || b.at - a.at || a.index - b.index).map(item => item.source);
+  }
+
   start(sources: readonly Source[]) {
     if (this.closed) return 0;
     let started = 0;
-    for (const source of sources) {
+    for (const source of this.promising(sources)) {
       // Bound foreground admission waits and keep at most one underlying
       // probe per source. A hung probe cannot hide other routes indefinitely.
       if (this.active.size >= MAX_PROBES) break;
@@ -66,15 +77,18 @@ export class SourceAvailability {
 
   hasPending() { return this.active.size > 0; }
 
-  async changed(signal: AbortSignal) {
+  // Resolves when a check settles, the caller aborts (rejects), or `maxMs` passes (resolves, so the caller can stop waiting).
+  async changed(signal: AbortSignal, maxMs?: number) {
     signal.throwIfAborted();
     if (!this.active.size || this.closed) return;
     await new Promise<void>((resolve, reject) => {
-      const cleanup = () => { this.waiting.delete(wake); signal.removeEventListener('abort', abort); };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => { clearTimeout(timer); this.waiting.delete(wake); signal.removeEventListener('abort', abort); };
       const wake = () => { cleanup(); resolve(); };
       const abort = () => { cleanup(); reject(signal.reason); };
       this.waiting.add(wake);
       signal.addEventListener('abort', abort, { once: true });
+      if (maxMs !== undefined) { timer = setTimeout(wake, Math.max(0, maxMs)); timer.unref(); }
     });
   }
 
