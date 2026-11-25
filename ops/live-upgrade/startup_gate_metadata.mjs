@@ -31,11 +31,16 @@ try {
   const configured = gruntEnv('SOURCES', env)?.split(',').map(x => x.trim()).filter(Boolean);
   if (!configured?.length) fail();
   const selection = automaticPoolSelection(directory, configured, curated, gruntEnv('DAEMON', env) === '1');
+  // Owner-approved per-port opt-in additions (rollout_config.OWNER_OPT_INS, passed in by the helper). Only the owner pool (8793) can carry one:
+  // its launcher names the opt-ins. The primary's come from its own unit environment and are never extended here.
+  const owner = input.ownerOptIns ?? { '8792': [], '8793': [] };
+  if (!owner || typeof owner !== 'object' || Object.keys(owner).sort().join(',') !== '8792,8793' || !Array.isArray(owner['8792']) || owner['8792'].length
+    || !Array.isArray(owner['8793']) || owner['8793'].length > 20 || owner['8793'].some(id => typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(id))) fail();
   const optins = (gruntEnv('OPT_IN_SOURCES', env) ?? '').split(',').map(x => x.trim()).filter(Boolean);
   if (optins.some(id => !registry.localOptInAdapterIds.has(id) && id !== 'reflection-beam')) fail();
   const primary = [...new Set([...selection.sources, ...optins])].filter(id => !registry.disabledAdapters.has(id));
   // Exact owner free-pool launcher uses these two explicit opt-ins and curated models.
-  const custom = [...new Set([...curated.filter(id => !registry.disabledAdapters.has(id)), 'antseed-vikey', 'reflection-beam'])];
+  const custom = [...new Set([...curated.filter(id => !registry.disabledAdapters.has(id)), 'antseed-vikey', 'reflection-beam', ...owner['8793']])];
   const eligible = ids => [...new Set(ids.filter(id => !registry.disabledAdapters.has(id)
     && (registry.knownAdapters.has(id) || registry.localOptInAdapterIds.has(id))))].sort();
   const perPort = { '8792': eligible(primary), '8793': eligible(custom) };
@@ -43,8 +48,10 @@ try {
     if (!input.sourceIdsPerPort || Object.keys(input.sourceIdsPerPort).sort().join(',') !== '8792,8793') fail();
     for (const port of ['8792', '8793']) {
       const ids = input.sourceIdsPerPort[port];
-      if (!Array.isArray(ids) || ids.length > 100 || ids.some(id => typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(id))
-        || JSON.stringify(eligible(ids)) !== JSON.stringify(perPort[port])) fail();
+      if (!Array.isArray(ids) || ids.length > 100 || ids.some(id => typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(id))) fail();
+      // The live pool serves exactly the candidate's set, or, before the release that adds an owner-approved opt-in, exactly that set without it.
+      const served = JSON.stringify(eligible(ids));
+      if (served !== JSON.stringify(perPort[port]) && !(owner[port].length && served === JSON.stringify(perPort[port].filter(id => !owner[port].includes(id))))) fail();
     }
   }
   const union = [...new Set(Object.values(perPort).flat())].sort();
@@ -77,5 +84,5 @@ try {
     sourceIdsPerPort: perPort, eligibleUnion: union, consentDeferred: blocked, potentialChecks,
     staleOrdinaryPolicies: staleOrdinary, nextCheckAt: deadlines, maintenanceSha256: schedule.hash,
     probeEntriesSha256: digest(JSON.stringify(potentialChecks.map(id => [id, schedule.value.entries[id]]))),
-    primaryManagedAutomatic: selection.automatic, optOut: true, accountAcquisitionDisabled: true }));
+    ownerOptIns: owner, primaryManagedAutomatic: selection.automatic, optOut: true, accountAcquisitionDisabled: true }));
 } catch { process.stderr.write('Startup metadata preflight failed closed.\n'); process.exitCode = 1; }

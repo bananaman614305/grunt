@@ -6,8 +6,9 @@ from unittest.mock import patch
 import stage,activate,quota_store,host_metadata,base64,collector_guard
 from daemon_admission import AdmissionError, OwnedDaemonAdmission as KernelAdmission
 from rollout_config import helper_files
-from startup_gate import StartupGate,GateError,MaintenanceWindowError,EXPECTED_UNION,EXPECTED_DEFERRED
+from startup_gate import StartupGate,GateError,MaintenanceWindowError,EXPECTED_UNION,EXPECTED_DEFERRED,EXPECTED_PORTS,EXPECTATIONS
 HERE=Path(__file__).resolve().parent
+OPT_INS="const options={GRUNT_OPT_IN_SOURCES:'antseed-vikey,reflection-beam'};\n"   # the launcher's reviewed opt-in literal; stage refuses any other
 REAL_HOST_QUIET,REAL_HOST_QUIET_SINCE,REAL_HOST_IDLE=getattr(activate,'host_quiet',None),getattr(activate,'host_quiet_since',None),activate.host_idle  # before any fixture patching
 class Upgrade(unittest.TestCase):
  def setUp(self):
@@ -18,7 +19,7 @@ class Upgrade(unittest.TestCase):
   self.policy=self.config/'execution-host-adventure.json';self.policy.write_text(json.dumps({'stateDirectory':str(self.state/'execution-host'),'channelDirectory':str(self.state/'channel')}))
   (self.owner/'supervisor.py').write_text('trusted owner supervisor.py');(self.owner/'free-pool.mjs').write_text("import { createWorkerRuntime } from './runtime/dist/local/worker-pool.js';\n")
   assets={'worker-brief.md':b'old brief','settings.json':b'settings','hooks/stop_gate.py':b'hook','bin/grunt-release':b'old release cli','bin/claude':b'binary'}
-  payload_files={'free-pool.mjs':b"import { configure } from './runtime/dist/local/main.js';\n",'claude/worker-brief.md':b'new brief','claude/bin/grunt-release':b'new release cli'}
+  payload_files={'free-pool.mjs':b"import { configure } from './runtime/dist/local/main.js';\n"+OPT_INS.encode(),'claude/worker-brief.md':b'new brief','claude/bin/grunt-release':b'new release cli'}
   for name,body in assets.items():(self.owner/'claude'/name).parent.mkdir(parents=True,exist_ok=True);(self.owner/'claude'/name).write_bytes(body);(self.owner/'claude'/name).chmod(0o700 if name.startswith('bin/') else 0o600)
   (self.owner/'claude/assets.json').write_text(json.dumps({'files':{n:hashlib.sha256(b).hexdigest() for n,b in assets.items()}},indent=1)+'\n');(self.owner/'claude/assets.json').chmod(0o600)
   self.payload=self.root/'payload'
@@ -76,7 +77,7 @@ class Upgrade(unittest.TestCase):
   self.stack.enter_context(patch.object(activate.subprocess,'run',return_value=SimpleNamespace(returncode=0)));self.stack.enter_context(patch.object(activate.subprocess,'check_output',return_value='{"performanceUnchanged":true}'))
   original=StartupGate.capture
   def capture(**kw):
-   def metadata(value):return {'version':1,'retiredPackagedSources':['clixad'],'eligibleUnion':EXPECTED_UNION,'consentDeferred':EXPECTED_DEFERRED,'staleOrdinaryPolicies':[],'optOut':True,'accountAcquisitionDisabled':True,'primaryManagedAutomatic':True,'sourceIdsPerPort':{'8792':EXPECTED_UNION,'8793':EXPECTED_UNION},**{k:'a'*64 for k in ('consentSha256','policySha256','registrySha256','maintenanceSha256','probeEntriesSha256')},'potentialChecks':[k for k in EXPECTED_UNION if k not in EXPECTED_DEFERRED],'nextCheckAt':{k:self.maint for k in EXPECTED_UNION if k not in EXPECTED_DEFERRED}}
+   def metadata(value):return {'version':1,'retiredPackagedSources':['clixad'],'eligibleUnion':EXPECTED_UNION,'consentDeferred':EXPECTED_DEFERRED,'staleOrdinaryPolicies':[],'optOut':True,'accountAcquisitionDisabled':True,'primaryManagedAutomatic':True,'sourceIdsPerPort':EXPECTED_PORTS,'ownerOptIns':EXPECTATIONS['ownerOptIns'],**{k:'a'*64 for k in ('consentSha256','policySha256','registrySha256','maintenanceSha256','probeEntriesSha256')},'potentialChecks':[k for k in EXPECTED_UNION if k not in EXPECTED_DEFERRED],'nextCheckAt':{k:self.maint for k in EXPECTED_UNION if k not in EXPECTED_DEFERRED}}
    return original(**kw,metadata_reader=metadata)
   self.stack.enter_context(patch.object(StartupGate,'capture',side_effect=capture));self.stack.enter_context(patch.object(StartupGate,'assert_process_environment',return_value={}))
  def run_upgrade(self):
@@ -98,14 +99,14 @@ class Upgrade(unittest.TestCase):
   shutil.rmtree(self.root/'staged');(self.root/'runtime-stage.json').unlink();shutil.rmtree(self.payload)
   with patch.object(stage.subprocess,'check_output',return_value='a'*40),contextlib.redirect_stdout(io.StringIO()):return stage.stage(SimpleNamespace(archive=self.archive,source=self.source,release_manifest=self.pins,opencode_profile_sha256='f'*64))
  def test_an_attempt_without_a_payload_leaves_every_owner_file_alone(self):
-  (self.owner/'free-pool.mjs').write_text("import { configure } from './runtime/dist/local/main.js';\n")   # the installed launcher already runs on the removal release
+  (self.owner/'free-pool.mjs').write_text("import { configure } from './runtime/dist/local/main.js';\n"+OPT_INS)   # the installed launcher already runs on the removal release
   before={n:(self.owner/n).read_bytes() for n in stage.OWNER_FILES}
   plan=self.restage_without_payload();self.assertEqual(plan['ownerFiles'],[])
   receipt=self.run_upgrade();self.assertTrue(receipt['success']);self.assertEqual(receipt['ownerFiles'],[])
   self.assertEqual({n:(self.owner/n).read_bytes() for n in stage.OWNER_FILES},before);self.assertFalse([p for p in self.owner.rglob('*.before-*') if p.is_file()])
   self.assertEqual(json.loads((self.runtimes[0]/'package.json').read_text())['version'],stage.VERSION)
  def test_without_a_payload_the_live_launcher_must_still_import_modules_the_new_package_has(self):
-  (self.owner/'free-pool.mjs').write_text("import { x } from './runtime/dist/local/removed-by-this-release.js';\n")
+  (self.owner/'free-pool.mjs').write_text("import { x } from './runtime/dist/local/removed-by-this-release.js';\n"+OPT_INS)
   with self.assertRaisesRegex(RuntimeError,'lacks'):self.restage_without_payload()
  def test_a_payload_manifest_must_accompany_exactly_a_changed_brief_or_release_cli(self):
   shutil.rmtree(self.root/'staged');(self.root/'runtime-stage.json').unlink()
@@ -124,12 +125,31 @@ class Upgrade(unittest.TestCase):
   shutil.rmtree(self.root/'staged');(self.root/'runtime-stage.json').unlink()
   (self.payload/'free-pool.mjs').write_text("import { createWorkerRuntime } from './runtime/dist/local/main.js';\n")
   with patch.object(stage.subprocess,'check_output',return_value='a'*40),self.assertRaisesRegex(RuntimeError,'removed subworker'):stage.stage(SimpleNamespace(archive=self.archive,source=self.source,release_manifest=self.pins,opencode_profile_sha256='f'*64))
-  (self.payload/'free-pool.mjs').write_text("import { configure } from './runtime/dist/local/main.js';\n");shutil.rmtree(self.root/'staged',ignore_errors=True)
+  (self.payload/'free-pool.mjs').write_text("import { configure } from './runtime/dist/local/main.js';\n"+OPT_INS);shutil.rmtree(self.root/'staged',ignore_errors=True)
   (self.payload/'claude/worker-brief.md').write_text('different brief')
   with patch.object(stage.subprocess,'check_output',return_value='a'*40),self.assertRaisesRegex(RuntimeError,'assets.json'):stage.stage(SimpleNamespace(archive=self.archive,source=self.source,release_manifest=self.pins,opencode_profile_sha256='f'*64))
   shutil.rmtree(self.root/'staged',ignore_errors=True)
-  (self.payload/'claude/worker-brief.md').write_text('new brief');(self.payload/'free-pool.mjs').write_text("import { x } from './runtime/dist/local/missing.js';\n")
+  (self.payload/'claude/worker-brief.md').write_text('new brief');(self.payload/'free-pool.mjs').write_text("import { x } from './runtime/dist/local/missing.js';\n"+OPT_INS)
   with patch.object(stage.subprocess,'check_output',return_value='a'*40),self.assertRaisesRegex(RuntimeError,'lacks'):stage.stage(SimpleNamespace(archive=self.archive,source=self.source,release_manifest=self.pins,opencode_profile_sha256='f'*64))
+ def stage_with_launcher(self,text,*,expectations=None):
+  shutil.rmtree(self.root/'staged',ignore_errors=True)
+  if (self.root/'runtime-stage.json').exists():(self.root/'runtime-stage.json').unlink()
+  (self.payload/'free-pool.mjs').write_text(text)
+  with contextlib.ExitStack() as stack:
+   stack.enter_context(patch.object(stage.subprocess,'check_output',return_value='a'*40));stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+   if expectations is not None:stack.enter_context(patch.object(stage,'load_expectations',return_value=expectations))
+   return stage.stage(SimpleNamespace(archive=self.archive,source=self.source,release_manifest=self.pins,opencode_profile_sha256='f'*64))
+ def test_stage_pins_the_launcher_opt_in_sources_to_the_reviewed_set_including_owner_additions(self):
+  imports="import { configure } from './runtime/dist/local/main.js';\n"
+  owner={**EXPECTATIONS,'ownerOptIns':{'8792':[],'8793':['ifm']}}
+  literal=lambda ids:imports+"const options={GRUNT_OPT_IN_SOURCES:'"+ids+"'};\n"
+  for name,text,pins in (('an unreviewed extra opt-in',literal('antseed-vikey,reflection-beam,ifm'),None),('a missing opt-in',literal('antseed-vikey'),None),('the owner addition without approval',literal('antseed-vikey,ifm,reflection-beam'),EXPECTATIONS),
+                         ('an approved pin but a launcher still without it',literal('antseed-vikey,reflection-beam'),owner),('a duplicate',literal('antseed-vikey,antseed-vikey,reflection-beam'),None),
+                         ('no literal',imports,None),('two literals',literal('antseed-vikey,reflection-beam')+literal('antseed-vikey,reflection-beam'),None),('a different extra with the approved one',literal('antseed-vikey,crowllm,ifm,reflection-beam'),owner)):
+   with self.subTest(name),self.assertRaisesRegex(RuntimeError,'GRUNT_OPT_IN_SOURCES'):self.stage_with_launcher(text,expectations=pins)
+  self.assertTrue(self.stage_with_launcher(literal('antseed-vikey,reflection-beam'))['ownerFiles'])
+  plan=self.stage_with_launcher(literal('reflection-beam,ifm,antseed-vikey'),expectations=owner)   # order is free, content is exact
+  self.assertIn('free-pool.mjs',{Path(r['dest']).name for r in plan['ownerFiles']})
  def test_real_startup_gate_wiring_preserves_schema_two(self):
   receipt=self.run_upgrade();self.assertTrue(receipt['success']);self.assertFalse((self.state/'execution-upgrade-hold').exists());self.assertTrue(receipt['schemaProof']['rawRowsPreserved']);self.assertEqual(receipt['schemaProof']['schemaBefore'],2);quota_store.assert_future(self.config,receipt['preservedCooldowns'],int(time.time()*1000));self.assertEqual((self.state/'worker/claude/projects/game/fixture.jsonl').read_text(),'saved history\n')
  def test_backend_clixad_already_disabled_preserves_raw_future_row_and_completes(self):

@@ -1,12 +1,17 @@
-"""Pure status projection for the one reviewed packaged adapter retirement.
+"""Pure status projection for the one reviewed packaged adapter retirement and the owner-approved per-port opt-in additions.
 
 Raw source advertisements remain exact, including disabled tombstones. This module
 never selects providers or changes source configuration, quota stores, or deadlines.
+
+An owner-approved opt-in (rollout_config.OWNER_OPT_INS) belongs to one pool only. The pool that carries it may be seen with it already
+served (a later release) or without it (the release that first adds it): all or none of that pool's additions, nothing else added,
+removed or moved, and the other pool must never serve it.
 """
-from startup_gate import EXPECTATIONS, EXPECTED_UNION
+from startup_gate import EXPECTATIONS, EXPECTED_UNION, EXPECTED_PORTS
 
 PORTS = ('8792', '8793')
 RETIRED = EXPECTATIONS['retiredPackagedSources']
+OWNER_OPT_INS = EXPECTATIONS['ownerOptIns']
 # Existing owner-configured primary advertisement is not a packaged adapter.
 # Its exact port and enablement are preserved; no other unknown source is ignored.
 LEGACY_ADVERTISEMENTS = EXPECTATIONS['legacyAdvertisements']
@@ -29,9 +34,9 @@ def capture_before(snapshots, candidate):
     """Pin old raw/eligible sets and the exact candidate catalog projection."""
     if candidate.get('retiredPackagedSources') != RETIRED or candidate.get('eligibleUnion') != EXPECTED_UNION:
         raise RuntimeError('Candidate package retirement proof changed')
-    if set(snapshots) != set(PORTS) or set(candidate.get('sourceIdsPerPort', {})) != set(PORTS):
+    if set(snapshots) != set(PORTS) or candidate.get('sourceIdsPerPort') != EXPECTED_PORTS:
         raise RuntimeError('Expected both managed pool source projections')
-    raw, old_eligible, new_eligible, legacy = {}, {}, {}, {}
+    raw, old_eligible, new_eligible, legacy, added = {}, {}, {}, {}, {}
     for port in PORTS:
         rows = _rows(snapshots[port])
         if any(key not in rows for key in LEGACY_ADVERTISEMENTS[port]):
@@ -43,14 +48,25 @@ def capture_before(snapshots, candidate):
         # one old pool, independently of its installed runtime package version.
         if any(key not in rows or rows[key]['state'] == 'disabled' and rows[key].get('active', 0) != 0 for key in RETIRED):
             raise RuntimeError('Retired adapter advertisement missing or active')
-        previous = sorted(EXPECTED_UNION + [key for key in RETIRED if rows[key]['state'] != 'disabled'])
-        retiring = sorted(set(previous) - set(EXPECTED_UNION))
-        if eligible != previous or new != EXPECTED_UNION or sorted(set(eligible) - set(new)) != retiring or set(new) - set(eligible):
-            raise RuntimeError('Only the pinned packaged-source retirement is authorized: ' + ','.join(RETIRED))
-        raw[port], old_eligible[port], new_eligible[port] = sorted(rows), eligible, list(new)
+        # The owner-approved opt-ins of this pool: all already served, or none yet. Only the missing ones are an authorized addition.
+        approved = OWNER_OPT_INS[port]
+        served = [key for key in approved if key in eligible]
+        if served not in ([], approved):
+            raise RuntimeError('Owner-approved opt-in sources are only partly served: ' + ','.join(approved))
+        previous = sorted([key for key in new if key not in approved or key in served] + [key for key in RETIRED if rows[key]['state'] != 'disabled'])
+        retiring = sorted(set(previous) - set(new))
+        additions = sorted(set(approved) - set(served))
+        if eligible != previous or new != EXPECTED_PORTS[port] or sorted(set(eligible) - set(new)) != retiring or sorted(set(new) - set(eligible)) != additions:
+            raise RuntimeError('Only the pinned packaged-source retirement and the owner-approved per-port opt-ins are authorized: ' + ','.join(RETIRED + [key for ids in OWNER_OPT_INS.values() for key in ids]))
+        raw[port], old_eligible[port], new_eligible[port], added[port] = sorted(rows), eligible, list(new), additions
     return {'retiredPackagedSources': list(RETIRED), 'rawSourceSetsBefore': raw,
             'legacyAdvertisements': legacy, 'eligibleSourceSetsBefore': old_eligible, 'eligibleSourceSetsAfter': new_eligible,
+            'ownerOptIns': copy_ids(OWNER_OPT_INS), 'ownerOptInAdditions': added,
             'retiredRawCooldownRowsRequired': True}
+
+
+def copy_ids(value):
+    return {port: list(ids) for port, ids in value.items()}
 
 
 def assert_after(snapshot, port, proof):
@@ -62,7 +78,9 @@ def assert_after(snapshot, port, proof):
     if legacy != proof['legacyAdvertisements'][port]:
         raise RuntimeError('Pre-existing legacy source enablement changed')
     eligible = sorted(key for key, row in rows.items() if row['state'] != 'disabled' and key not in LEGACY_ADVERTISEMENTS[port])
-    if sorted(rows) != proof['rawSourceSetsBefore'][port] or eligible != proof['eligibleSourceSetsAfter'][port]:
+    if proof.get('ownerOptIns') != OWNER_OPT_INS or set(proof.get('ownerOptInAdditions', {})) != set(PORTS):
+        raise RuntimeError('Unexpected owner opt-in scope')
+    if sorted(rows) != sorted({*proof['rawSourceSetsBefore'][port], *proof['ownerOptInAdditions'][port]}) or eligible != proof['eligibleSourceSetsAfter'][port]:
         raise RuntimeError('Installed source set changed beyond packaged retirement')
     for key in RETIRED:
         if rows[key]['state'] != 'disabled' or rows[key].get('active', 0) != 0:

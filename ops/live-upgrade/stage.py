@@ -3,7 +3,7 @@
 import argparse,base64,hashlib,json,os,re,shutil,subprocess,tarfile
 from pathlib import Path,PurePosixPath
 from release_proof import tree_digest,assert_profile
-from rollout_config import VERSION,PREVIOUS_VERSION,helper_files
+from rollout_config import VERSION,PREVIOUS_VERSION,helper_files,load_expectations,launcher_opt_ins
 import hostpaths
 ROOT=Path(__file__).resolve().parent
 OWNER=hostpaths.OWNER;STATE=hostpaths.STATE;CONFIG=hostpaths.CONFIG
@@ -133,6 +133,10 @@ def stage(args):
   rows.append({'live':str(live),'new':str(new),'oldFiles':files,'dependenciesSha256':digest})
  owner=owner_rows(staged)
  launcher=((ROOT/'payload/free-pool.mjs') if (ROOT/'payload/free-pool.mjs').is_file() else OWNER/'free-pool.mjs').read_text()   # the launcher that will run: the payload's, else the live one
+ # The launcher alone decides which opt-in sources 8793 serves; the gate pins that set (the owner-approved per-port additions included), so a
+ # launcher that names more, fewer or other opt-ins is refused here, before anything is paused, not discovered after the restart.
+ literals=re.findall(r"GRUNT_OPT_IN_SOURCES\s*:\s*'([^']*)'",launcher);expected=launcher_opt_ins(load_expectations())
+ if len(literals)!=1 or sorted(literals[0].split(','))!=expected or len(set(literals[0].split(',')))!=len(literals[0].split(',')):raise RuntimeError('Launcher GRUNT_OPT_IN_SOURCES must be exactly the reviewed opt-ins: '+','.join(expected))
  for target in sorted(set(re.findall(r"from '\./runtime/([^']+)'",launcher))):
   if not (staged/'1'/target).is_file():raise RuntimeError('Launcher imports a module the staged runtime lacks: '+target)
  helpers={p.name:sha(p) for p in helper_files(ROOT)}

@@ -66,7 +66,27 @@ DEFAULT_EXPECTATIONS = {
     'consentDeferred': ['freepi', 'goedel', 'kilo'],
     'retiredPackagedSources': ['clixad'],
     'legacyAdvertisements': {'8792': ['freellmapi'], '8793': []},
+    'ownerOptIns': {'8792': [], '8793': []},
 }
+
+# Owner-approved per-port opt-in additions: a source the owner explicitly allowed on ONE pool only, beyond the common set both pools serve.
+# This is a reviewed constant, not derived from the candidate release: a release can never add a source to a port by itself, and changing
+# what the owner allows takes a reviewed change here. Only the owner pool (8793) can carry one: its launcher names the opt-ins, while the
+# primary (8792) takes its opt-ins from its unit, which must never serve these. IFM K2 Horizon: opt-in, manual consent, owner-approved for 8793 only.
+OWNER_OPT_INS = {'8792': [], '8793': ['ifm']}
+# What the 8793 launcher (free-pool.mjs) passes as GRUNT_OPT_IN_SOURCES before any owner addition. startup_gate_metadata.mjs mirrors it.
+LAUNCHER_BASE_OPT_INS = ('antseed-vikey', 'reflection-beam')
+
+
+def expected_port_sets(expectations):
+    """The exact eligible set each pool must serve: the union, minus the owner opt-ins that belong to the other port only."""
+    union, owner = expectations['eligibleUnion'], expectations['ownerOptIns']
+    return {port: [item for item in union if not any(item in ids for other, ids in owner.items() if other != port)] for port in ('8792', '8793')}
+
+
+def launcher_opt_ins(expectations):
+    """The exact GRUNT_OPT_IN_SOURCES set the 8793 launcher must carry: the base list plus the owner-approved additions."""
+    return sorted({*LAUNCHER_BASE_OPT_INS, *expectations['ownerOptIns']['8793']})
 
 
 def load_expectations(directory=None):
@@ -85,4 +105,12 @@ def load_expectations(directory=None):
     legacy = value['legacyAdvertisements']
     if not isinstance(legacy, dict) or set(legacy) != {'8792', '8793'} or any(not isinstance(ids, list) for ids in legacy.values()):
         raise ValueError('source-expectations.json legacy advertisements are malformed')
+    owner = value['ownerOptIns']
+    if not isinstance(owner, dict) or set(owner) != {'8792', '8793'}:
+        raise ValueError('source-expectations.json owner opt-ins are malformed')
+    for port, ids in owner.items():
+        if not isinstance(ids, list) or ids != sorted(set(ids)) or any(type(item) is not str for item in ids):
+            raise ValueError('source-expectations.json owner opt-ins must be sorted unique ids')
+        if not set(ids) <= set(OWNER_OPT_INS[port]) or not set(ids) <= set(value['eligibleUnion']):
+            raise ValueError('source-expectations.json owner opt-ins must be reviewed, owner-approved and eligible')
     return value

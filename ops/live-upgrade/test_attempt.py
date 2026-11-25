@@ -229,10 +229,10 @@ class Expectations(Base):
     def test_a_scoped_attempt_directory_loads_its_own_pins_into_the_startup_gate(self):
         path = self.attempt()
         at.install_helpers(path)
-        at.write_expectations(path, {'eligibleUnion': ['a', 'b'], 'consentDeferred': ['b'], 'retiredPackagedSources': [], 'legacyAdvertisements': {'8792': [], '8793': []}})
-        result = subprocess.run(['python3', '-c', 'import startup_gate, source_transition as s; print(startup_gate.EXPECTED_UNION, startup_gate.EXPECTED_DEFERRED, s.RETIRED, s.PREVIOUS_ELIGIBLE)'],
+        at.write_expectations(path, {'eligibleUnion': ['b', 'ifm'], 'consentDeferred': ['b'], 'retiredPackagedSources': [], 'legacyAdvertisements': {'8792': [], '8793': []}, 'ownerOptIns': {'8792': [], '8793': ['ifm']}})
+        result = subprocess.run(['python3', '-c', 'import startup_gate, source_transition as s; print(startup_gate.EXPECTED_UNION, startup_gate.EXPECTED_DEFERRED, s.RETIRED, s.PREVIOUS_ELIGIBLE, startup_gate.EXPECTED_PORTS)'],
                                 cwd=path, capture_output=True, text=True, env={'PATH': os.environ['PATH'], 'PYTHONDONTWRITEBYTECODE': '1'})
-        self.assertEqual(result.stdout.strip(), "['a', 'b'] ['b'] [] ['a', 'b']", result.stderr)
+        self.assertEqual(result.stdout.strip(), "['b', 'ifm'] ['b'] [] ['b', 'ifm'] {'8792': ['b'], '8793': ['b', 'ifm']}", result.stderr)
 
     def test_the_candidate_metadata_runner_uses_the_gate_input_and_fails_closed(self):
         seen = {}
@@ -241,7 +241,7 @@ class Expectations(Base):
             seen.update(command=command, input=json.loads(kw['input']), env=kw['env'])
             return SimpleNamespace(returncode=0, stdout=json.dumps(self.metadata).encode(), stderr=b'')
         self.assertEqual(at.run_metadata('/node', '/src', '/cfg', {'GRUNT_PORT': '8792'}, run=run), self.metadata)
-        self.assertEqual(seen['input'], {'runtimeDirectory': '/src', 'configDirectory': '/cfg', 'effectiveEnvironment': {'GRUNT_PORT': '8792'}})
+        self.assertEqual(seen['input'], {'runtimeDirectory': '/src', 'configDirectory': '/cfg', 'effectiveEnvironment': {'GRUNT_PORT': '8792'}, 'ownerOptIns': rc.OWNER_OPT_INS})
         self.assertEqual(seen['env']['HOME'], '/nonexistent')
         with self.assertRaises(at.AttemptError):
             at.run_metadata('/node', '/src', '/cfg', {}, run=lambda c, **kw: SimpleNamespace(returncode=1, stdout=b'', stderr=b''))
