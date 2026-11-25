@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.10.13 — 2026-11-25
+
+- IFM K2 Horizon now has the same routing weight as the other opt-in sources (0.01, was 0.001). It remains opt-in with its own manual data-sharing approval.
+
 - Operator: the live-upgrade controller again pins the Adventure builder's CPU limit at exactly two CPUs (`cpu.max` `200000 100000`).
 
 ## 0.10.12 — 2026-11-25

@@ -194,9 +194,10 @@ it('refuses images and hosted tools before any request', async () => {
   expect(fetcher).not.toHaveBeenCalled();
 });
 
-it('is a local opt-in with the lowest weight, outside the bundled registry, and states what is unverified', () => {
+it('is a local opt-in at the same low weight as the other opt-ins, outside the bundled registry, and states what is unverified', () => {
   const entry = localOptInAdapters.find(adapter => adapter.id === 'ifm')!;
-  expect(entry.weight).toBeLessThan(Math.min(...localOptInAdapters.filter(adapter => adapter.id !== 'ifm').map(adapter => adapter.weight)));
+  expect(entry.weight).toBe(0.01);
+  for (const other of localOptInAdapters) expect(other.weight).toBe(entry.weight);
   expect(entry.weight).toBeLessThan(Math.min(...bundledRegistry.adapters.map(adapter => adapter.weight)));
   expect(bundledRegistry.adapters.some(adapter => adapter.id === 'ifm')).toBe(false);
   const policy = DATA_SHARING_POLICIES.find(item => item.provider === 'ifm')!;

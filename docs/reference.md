@@ -751,7 +751,7 @@ cooldowns and fallback. The account's welcome credit is separate from this route
 
 IFM (MBZUAI's Institute of Foundation Models) serves `IFM/K2-Horizon-375B-A23B` at `https://api.ifm.ai/v1`, an
 OpenAI-compatible API. Grunt ships an adapter for it as a local opt-in, not a registry entry: nothing enrolls it, it has
-the lowest routing weight of any source (0.001), and naming it (`npx usegrunt add ifm` or `GRUNT_OPT_IN_SOURCES=ifm`) is the only way to select it. Setup never
+the same low routing weight as the other opt-in sources (0.01), and naming it (`npx usegrunt add ifm` or `GRUNT_OPT_IN_SOURCES=ifm`) is the only way to select it. Setup never
 signs up. You create the account and one key yourself, store it in Trusty Squire as service `ifm`, label `Grunt Free`,
 host `api.ifm.ai`, and Grunt connects it through a scoped grant.
 
