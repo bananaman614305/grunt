@@ -198,6 +198,7 @@ it.each([
   ['upstream', 'response_json', () => new Response('private malformed JSON')],
   ['upstream', 'response_choices', () => Response.json(result({ choices: [] }))],
   ['upstream', 'response_content', () => Response.json(result({ choices: [{ message: { content: 42 } }] }))],
+  ['upstream', 'response_content', () => Response.json(result({ choices: [{ message: { content: '   ' } }] }))],
   ['upstream', 'response_tools', () => Response.json(result({ choices: [{ message: { tool_calls: [call] } }] }))],
   ['refused', 'completion_model', () => Response.json(result({ model: 'unverified' }))],
   ['refused', 'completion_billing', () => Response.json(result({ usage: { ...usage(), cost: 1 } }))],
@@ -212,6 +213,27 @@ it.each([
   });
   // An invalid function call is sampled once more; every other failure is final.
   expect(f.posts()).toHaveLength(failureReason === 'response_tools' ? 2 : 1);
+});
+it.each([null, 'partial answer'])('keeps usable truncated text and falls back only for empty truncation (%s)', async text => {
+  const f = fixture({ infer: () => Response.json(result({ choices: [{ finish_reason: 'length', message: { content: text, tool_calls: [call] } }] })) });
+  const backup = { id: 'backup', supportsFunctionTools: true, available: async () => true,
+    complete: vi.fn(async () => ({ text: 'usable answer' })) };
+  const pool = new Sources([f.source, backup]);
+  const payload = { ...request(), model: 'grunt', maxTokens: 4096, tools: [tool], messages: [{ role: 'user', content: ' word'.repeat(35_000) }] };
+  try {
+    const response = await pool.complete(payload, AbortSignal.timeout(5000));
+    if (text) {
+      expect(response).toMatchObject({ text, finishReason: 'length' });
+      expect(response.calls).toBeUndefined();
+      expect(backup.complete).not.toHaveBeenCalled();
+    } else {
+      expect(response).toEqual({ text: 'usable answer' });
+      expect(backup.complete).toHaveBeenCalledExactlyOnceWith(payload, expect.any(AbortSignal));
+      await expect(pool.complete({ ...payload, model: f.source.id }, AbortSignal.timeout(5000)))
+        .resolves.toMatchObject({ text: '', finishReason: 'length' });
+    }
+    expect(JSON.parse(String(f.posts()[0]![1]?.body))).toMatchObject({ max_tokens: 4096, tools: [tool] });
+  } finally { await pool.close(); }
 });
 it('bounds completion bytes and does not expose provider payloads', async () => {
   const f = fixture({ infer: () => new Response('private upstream body', { headers: { 'content-length': '999999999' } }) });

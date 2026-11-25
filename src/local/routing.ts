@@ -39,7 +39,7 @@ export function registryScoreFactor(score: number | null | undefined) {
   return typeof score === 'number' && Number.isFinite(score) ? 0.5 + Math.max(0, Math.min(100, score)) / 100 : 1;
 }
 
-export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; dropped?: (source: string) => void }
+export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string) => void; dropped?: (source: string) => void }
 interface Task {
   source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean;
   reassessment?: { from: string; source: string; samples: number; at: number };
@@ -252,6 +252,7 @@ export class StickyRouter {
     // when Pi attaches tools, unless the caller named that source explicitly.
     const toolsRequired = needsFunctionTools(request) && !explicit;
     const attempted = new Set<string>(), refused = new Set<string>();
+    const observedEligible = new Set<string>();
     let yieldedMetadata = false;
     const observation = this.observation;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => this.options.observe?.(source, reason, true);
@@ -294,7 +295,13 @@ export class StickyRouter {
             continue;
           }
           const available = this.availability.peek(source.id);
-          if (source.id === task.source || available === true) eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
+          if (source.id === task.source || available === true) {
+            eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
+            if (available === true && !observedEligible.has(source.id)) {
+              observedEligible.add(source.id);
+              this.options.observeEligible?.(source.id);
+            }
+          }
           else if (available === undefined) unknown.push(source);
           else {
             // This live allowance check can discover a reset the router did not know at entry.

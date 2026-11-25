@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { DiagnosticsStore, diagnosticFetch, sanitizeDiagnosticEvent, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
+import { DiagnosticsStore, diagnosticFetch, recordAttemptFailure, sanitizeDiagnosticEvent, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent } from './diagnostics.js';
-import { Sources, SourceError } from './source.js';
+import { Sources, SourceError, preventReplay } from './source.js';
 import type { ModelRequest, Source, Completion } from './source.js';
 import { createLocalApp } from './api.js';
+import { bundledRegistry } from '../registry.js';
 
 const directories: string[] = [], stores: DiagnosticsStore[] = [];
 const event = (patch: Partial<DiagnosticEvent> = {}): DiagnosticEvent => ({ version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.finish', requestId: randomUUID(), kind: 'user', source: 'kilo', outcome: 'passed', ...patch });
@@ -126,6 +127,7 @@ it('correlates failed HTTP attempts, automatic fallback, final delivery and safe
   expect(events.filter(item => item.type === 'attempt.finish').map(item => [item.source, item.outcome])).toEqual([['limited', 'failed'], ['good', 'passed']]);
   expect(events.find(item => item.type === 'transport.finish')).toMatchObject({ httpStatus: 429, retryAfterSeconds: 12, httpMethod: 'POST' });
   expect(events.find(item => item.type === 'request.finish')).toMatchObject({ source: 'good', outcome: 'passed' });
+  expect(events.find(item => item.type === 'request.output')).toMatchObject({ source: 'good' });
   expect(JSON.stringify(events)).not.toMatch(/SECRET|Bearer|egress\.example|\/private/);
   expect((await value.summary()).attempts).toMatchObject({ total: 2, succeeded: 1, failed: 1, inputTokens: 150, outputTokens: 12, unknownInput: 1 });
 });
@@ -137,9 +139,51 @@ it('keeps concurrent requests in independent contexts', async () => {
   const requests = ids.map(requestId => withDiagnosticContext({ requestId, kind: 'user' }, () => sources.complete(request, new AbortController().signal)));
   await vi.waitFor(() => expect(resolve).toHaveLength(2)); resolve[1]!({ text: 'second' }); resolve[0]!({ text: 'first' }); await Promise.all(requests);
   for (const id of ids) {
-    const events = (await value.trace(id)).events; expect(events).toHaveLength(5); expect(new Set(events.map(row => row.requestId))).toEqual(new Set([id]));
+    const events = (await value.trace(id)).events; expect(events).toHaveLength(6); expect(new Set(events.map(row => row.requestId))).toEqual(new Set([id]));
     const attempts = events.filter(row => row.attemptId); expect(new Set(attempts.map(row => row.attemptId)).size).toBe(1);
   }
+});
+
+it('records known eligibility, replayable failure, backup dispatch and accepted output in order', async () => {
+  const value = await store();
+  const primary = source('kilo', async () => {
+    const metadata = { failureReason: 'response_empty', httpStatus: 200 } as const;
+    recordAttemptFailure('kilo', metadata, true);
+    throw new SourceError('upstream', 'PRIVATE', undefined, undefined, metadata);
+  });
+  const backup = source('livekit');
+  const registry = { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(a => [primary.id, backup.id].includes(a.id)) };
+  const pool = new Sources([primary, backup], { registry: () => registry, random: () => 0 });
+  pool.setDiagnostics(value);
+  try {
+    // Seed successful availability evidence for both routes before dispatch.
+    await pool.available(primary);
+    await pool.available(backup);
+    await pool.complete({ ...request, cwd: await directory() }, AbortSignal.timeout(5000));
+    const { events } = await value.list();
+    const details = events.filter(e => ['route.eligible', 'attempt.start', 'attempt.failure', 'request.output'].includes(e.type));
+    expect(details.map(e => [e.type, e.source])).toEqual([
+      ['route.eligible', 'kilo'], ['route.eligible', 'livekit'],
+      ['attempt.start', 'kilo'], ['attempt.failure', 'kilo'],
+      ['attempt.start', 'livekit'], ['request.output', 'livekit']
+    ]);
+    expect(details[3]).toMatchObject({ attemptId: details[2]!.attemptId, replaySafe: true, failureReason: 'response_empty' });
+    expect(JSON.stringify(events)).not.toContain('PRIVATE');
+  } finally { await pool.close(); }
+});
+
+it('records the replay guard and leaves the backup idle after an unsafe failure', async () => {
+  const value = await store();
+  const first = source('opencode', async () => { throw preventReplay(new Error('PRIVATE'), 'Native work failed'); });
+  const backup = source('livekit'), pool = new Sources([first, backup]);
+  pool.setDiagnostics(value);
+  try {
+    await expect(pool.complete(request, AbortSignal.timeout(5000))).rejects.toMatchObject({ replay: 'unsafe' });
+    const { events } = await value.list();
+    expect(events.find(e => e.type === 'attempt.failure')).toMatchObject({ replaySafe: false, source: 'opencode' });
+    expect(backup.complete).not.toHaveBeenCalled();
+    expect(JSON.stringify(events)).not.toContain('PRIVATE');
+  } finally { await pool.close(); }
 });
 
 it('identifies maintenance and setup verification separately from user traffic', async () => {
@@ -199,7 +243,11 @@ it('exposes cached diagnostics through protected loopback routes without new pro
   expect((await app.request('http://127.0.0.1:8788/v1/diagnostics/events?limit=99999')).status).toBe(400);
   const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'good', cwd: '/tmp', messages: [{ role: 'user', content: 'hello' }], stream: false }) });
   expect(response.status).toBe(200); const id = response.headers.get('x-grunt-request-id'); expect(id).toMatch(/^[a-f0-9-]{36}$/);
-  const trace = await app.request('http://127.0.0.1:8788/v1/diagnostics/traces/' + id); expect((await trace.json()).events).toHaveLength(5);
+  const trace = await app.request('http://127.0.0.1:8788/v1/diagnostics/traces/' + id); expect((await trace.json()).events).toHaveLength(6);
+  const legacy = await app.request('http://127.0.0.1:8788/v1/diagnostics/events');
+  expect((await legacy.json()).events.map((e: DiagnosticEvent) => e.type)).not.toContain('request.output');
+  const detailed = await app.request('http://127.0.0.1:8788/v1/diagnostics/events?details=1');
+  expect((await detailed.json()).events.map((e: DiagnosticEvent) => e.type)).toContain('request.output');
   expect((await value.summary()).requests).toMatchObject({ total: 1, succeeded: 1 });
 });
 

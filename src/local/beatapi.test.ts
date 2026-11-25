@@ -1,7 +1,7 @@
 import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { chmod, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BeatAPI, BEATAPI_GLM_MODEL, BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, writeBeatAPIGrant } from './beatapi.js';
@@ -9,6 +9,10 @@ import type { BeatAPIGrant } from './beatapi.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { Sources } from './source.js';
 import { createLocalApp } from './api.js';
+import { SourceStatus } from './source-status.js';
+import { SourceAvailability } from './source-availability.js';
+import { DiagnosticsStore, withDiagnosticContext } from './diagnostics.js';
+import { randomUUID } from 'node:crypto';
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-beatapi-test-')); await recordDataSharingConsent(directory, ['beatapi']); });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); vi.useRealTimers(); });
@@ -17,6 +21,34 @@ const poolGrant = (): Extract<BeatAPIGrant, { version: 2 }> => ({ ...grant(), ve
 const request = () => ({ model: 'beatapi', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false, maxTokens: 99999 });
 const usage = (balance = 2, settled = 0, extra = {}) => ({ data: { object: 'usage', credit_balance: balance, credits_settled: settled, ...extra } });
 const completion = (extra = {}) => ({ model: BEATAPI_MODEL, choices: [{ message: { content: 'hello' } }], usage: { prompt_tokens: 210081, completion_tokens: 12 }, ...extra });
+
+it('bounds ordinary denied account checks and rediscovers restored access at the next eligible poll', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const start = Date.now(), restoredAt = start + 10_000;
+  const fetcher = vi.fn(async () => Date.now() < restoredAt ? new Response(null, { status: 403 }) : Response.json(usage()));
+  const beat = new BeatAPI({ directory, loadGrant: async () => grant(), fetcher });
+  const store = await DiagnosticsStore.open({ directory: join(await realpath(directory), 'diagnostics'), runtimeVersion: '0.10.9' });
+  const status = new SourceStatus([beat.id]), admission = new SourceAvailability(status);
+  try {
+    await withDiagnosticContext({ requestId: randomUUID(), kind: 'diagnostic', sink: store }, async () => {
+      expect(await status.available(beat)).toBe(false);
+      for (let second = 1; second < 30; second++) {
+        vi.setSystemTime(start + second * 1000);
+        expect(await status.available(beat)).toBe(false);
+        expect(admission.start([beat])).toBe(0);
+      }
+      vi.setSystemTime(start + 30_000);
+      expect(admission.start([beat])).toBe(1);
+      await admission.changed(AbortSignal.timeout(1000));
+      expect(admission.peek(beat.id)).toBe(true);
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const events = (await store.list()).events;
+    expect(events.filter(e => e.endpointLabel === 'account').map(e => e.httpStatus)).toEqual([403, 200]);
+    expect(events.find(e => e.type === 'account.available')?.at).toBe(restoredAt + 20_000);
+  } finally { await admission.close(); await beat.close(); await store.close(); }
+});
+
 function fixture(answer: unknown = completion(), balances = [usage(), usage()]) {
   const calls: { url: string; init?: RequestInit }[] = [];
   const fetcher = vi.fn(async (url: unknown, init?: RequestInit) => { calls.push({ url: String(url), ...(init ? { init } : {}) }); return new Response(JSON.stringify(String(url).endsWith('/usage') ? balances.shift() ?? usage() : answer), { status: 200 }); }) as unknown as typeof fetch;

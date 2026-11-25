@@ -3,7 +3,7 @@ import { SourceError, guardToolCalls } from './source.js';
 import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
-import { currentDiagnosticContext, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
+import { currentDiagnosticContext, recordAttemptFailure, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore } from './diagnostics.js';
 import { currentRoutingWorkload, localRequestRefusal, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
@@ -303,11 +303,15 @@ export class SourceStatus {
         const result = await this.observedComplete(source, request, signal, guard);
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
+          ...(result.finishReason === 'length' ? { failureReason: 'length' } : {}),
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
           ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });
         return result;
       } catch (error) {
         const value = error && typeof error === 'object' ? error as { diagnostics?: object; retryAfter?: unknown } : {};
+        if (!signal.aborted && error instanceof SourceError && error.replay !== undefined) {
+          recordAttemptFailure(source.id, error.diagnostics, error.replay === 'safe');
+        }
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(value.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
           outcome: signal.aborted ? 'cancelled' : 'failed', errorCode: signal.aborted ? 'cancelled' : failureCode(error),
           durationMs: Math.max(0, performance.now() - startedMono), ...(typeof value.retryAfter === 'number' ? { retryAfterSeconds: value.retryAfter } : {}) });

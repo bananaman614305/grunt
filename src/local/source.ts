@@ -186,6 +186,10 @@ export class Sources {
   private createRouter(routing: RoutingOptions) {
     return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
       dropped: id => { if (this.observation.observedAvailable(id) !== false) this.dropped?.(id); },
+      observeEligible: source => {
+        const context = currentDiagnosticContext();
+        if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.eligible', source });
+      },
       observe: (source, reason, skipped) => {
         const context = currentDiagnosticContext();
         if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
@@ -444,8 +448,13 @@ export class Sources {
       if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
       try {
         const result = await this.route(request, signal);
+        const source = answeredBy.get(result);
+        if (parent?.requestRecorded && result.finishReason === 'length') parent.incomplete = true;
+        if (!signal.aborted && source && result.finishReason !== 'length' && (result.text.trim() || result.calls?.length)) {
+          this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.output', source });
+        }
         if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
-          ...(answeredBy.get(result) ? { source: answeredBy.get(result)! } : {}),
+          ...(source ? { source } : {}), ...(result.finishReason === 'length' ? { failureReason: 'length' as const } : {}),
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }), ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });
         return result;
       } catch (error) {
