@@ -27,7 +27,7 @@ WORKER_STATUSES = ('researched', 'rejected', 'needs_approval', 'setup_blocked',
 DEFAULT_RETIRED = {'clixad.io': 'Removed from Grunt in PR 170; do not requalify.'}
 
 # Fields owned by the operator, carried across a worker re-report of the same row.
-OPERATOR_FIELDS = ('rework', 'rework_count', 'status_before', 'terminal_reason', 'terminal_at', 'released_at')
+OPERATOR_FIELDS = ('rework', 'rework_count', 'rebase_count', 'outage_requeues', 'status_before', 'terminal_reason', 'terminal_at', 'released_at')
 
 MAX_NO_PROGRESS = 2      # consecutive reviews with unchanged facts before parking
 MAX_ATTEMPTS = 10        # total reviews before parking
@@ -46,7 +46,25 @@ SCOPE_PER_RUN = 6
 MIN_REGISTRY_ADAPTERS = 5
 
 # Supervisor reasons a worker cannot repair: a human gate or an owner decision.
-NOT_REWORKABLE = frozenset({'owner_excluded', 'qualification_held'})
+NOT_REWORKABLE = frozenset({'owner_excluded', 'qualification_held', 'stage_retries_exhausted'})
+# Safety stops: never retried and never sent back for rework.
+SAFETY_STOPS = frozenset({'reviewer_integration_violation', 'worker_cancelled',
+                          'missing_or_writable_squire_guard', 'workspace_sandbox_preflight_failed'})
+# Only a block before promotion starts can be repaired by a new head. Promotion and
+# publication own merge/npm retries (and may already have merged).
+REWORK_STAGES = frozenset({'validate', 'review_pre', 'checks', 'probe', 'review_post', 'proof'})
+# Rows blocked before stages were recorded: only these reasons are known to precede promotion.
+PRE_PROMOTION_REASONS = frozenset({
+    'candidate_validation_failed', 'candidate_changed_requires_fresh_review', 'pre_execution_review_not_approved',
+    'post_validation_review_not_approved', 'local_checks_not_passed', 'trusted_probe_not_passed',
+    'trusted_probe_binding_failed', 'reviews_not_independent'})
+# A superseded head (main advanced) is a rebase, not a failure: counted apart, still bounded.
+REBASE_REASONS = frozenset({'main_changed_requires_fresh_review', 'npm_version_requires_fresh_review'})
+MAX_REBASE = 8
+# Worker outages block a head after three failed stage attempts; that says nothing about the
+# head, so an unchanged one is retried after a cool-down, a bounded number of times.
+MAX_OUTAGE_RETRIES = 3
+OUTAGE_RETRY_SECONDS = 6 * 3600
 
 # Owner rule: Grunt never routes to a Google model, so such a row is never requeued.
 GOOGLE_MODEL = re.compile(r'(?i)(?<![a-z])(gemini|gemma)(?![a-z])')
@@ -273,14 +291,16 @@ def _restore(row):
     row.pop('terminal_at', None)
 
 
-def reconcile(ledger, registry, *, stamp):
+def reconcile(ledger, registry, *, stamp, authoritative=True):
     """Make released/retired/excluded reflect the registry and owner decisions.
 
-    Idempotent and non-destructive: rows are re-labelled, never removed.
+    Idempotent and non-destructive: rows are re-labelled, never removed. Only an
+    authoritative registry (the fetched main snapshot) may retire a row: a stale
+    working-tree copy can say a shipped source is absent.
     """
     counts = collections.Counter()
     entries = registry_entries(registry)
-    usable = entries is not None and len(entries) >= MIN_REGISTRY_ADAPTERS
+    usable = authoritative and entries is not None and len(entries) >= MIN_REGISTRY_ADAPTERS
     for row in ledger.get('candidates', {}).values():
         host = provider_host(row['homepage'])
         model = row['model'].strip().casefold()
@@ -292,6 +312,8 @@ def reconcile(ledger, registry, *, stamp):
             entry['host'] and host_related(entry['host'], host) or not entry['host'] and model in entry['models']
             for entry in entries)
         shipped = row.get('pipeline_status') == 'released' or row.get('status') == 'released'
+        if in_registry and row.get('pipeline_status') == 'publication_pending':
+            continue  # merged, not yet published: only the supervisor marks it released
         if in_registry:
             counts['released'] += _set(row, 'released', 'released_verified'
                                        if row.get('pipeline_status') == 'released' else 'released_registry', stamp)
@@ -326,19 +348,47 @@ def plan_rework(ledger, stamp):
                 or row.get('pipeline_status') not in ('blocked', 'superseded')):
             continue
         reason = row.get('pipeline_reason') if isinstance(row.get('pipeline_reason'), str) else ''
-        if reason in NOT_REWORKABLE:
+        stage = row.get('pipeline_stage')
+        if (reason in NOT_REWORKABLE or row.get('pipeline_detail') in SAFETY_STOPS
+                or row.get('pipeline_merge_sha') or row.get('pipeline_status') == 'publication_pending'):
             continue
-        count = row.get('rework_count', 0)
-        if count >= MAX_REWORK:
+        rebase = row.get('pipeline_status') == 'superseded' and reason in REBASE_REASONS
+        if not rebase and (stage not in REWORK_STAGES if stage else reason not in PRE_PROMOTION_REASONS):
+            continue  # promotion/publication (or unknown) blocks keep their own checkpoint's retries
+        counter, limit = ('rebase_count', MAX_REBASE) if rebase else ('rework_count', MAX_REWORK)
+        count = row.get(counter, 0)
+        if count >= limit:
             counts['rework_exhausted'] += 1
             continue
         safe = reason if SAFE_CODE.fullmatch(reason) else 'pipeline_blocked'
         row['status_before'] = row['status']
         row['status'] = 'integration_pending'
-        row['rework_count'] = count + 1
+        row[counter] = count + 1
         row['rework'] = {'reason': safe, 'stage': row.get('pipeline_stage'), 'detail': row.get('pipeline_detail'),
                          'head_sha': request.get('head_sha'), 'at': stamp}
         counts['rework'] += 1
+    return counts
+
+
+def retry_outage_blocks(ledger, stamp):
+    """Hand an outage-blocked head back to the supervisor after the cool-down.
+
+    Nothing in the head changed, so this does not go to the worker: the row is
+    marked deferred and the controller re-runs it (bounded by MAX_OUTAGE_RETRIES).
+    """
+    counts = collections.Counter()
+    for row in ledger.get('candidates', {}).values():
+        if (row.get('status') != 'ready_for_review' or not isinstance(row.get('release_request'), dict)
+                or row.get('pipeline_status') != 'blocked' or row.get('pipeline_reason') != 'stage_retries_exhausted'
+                or row.get('outage_requeues', 0) >= MAX_OUTAGE_RETRIES or qualification_hold(row)):
+            continue
+        try:
+            age = (parse_time(stamp) - parse_time(row['pipeline_updated_at'])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if age >= OUTAGE_RETRY_SECONDS:
+            row.update(pipeline_status='deferred', pipeline_reason='outage_retry', outage_requeues=row.get('outage_requeues', 0) + 1)
+            counts['outage_retry'] += 1
     return counts
 
 
@@ -410,14 +460,15 @@ def ledger_counts(ledger):
                 key=lambda item: str(item[0])))}
 
 
-def migrate(ledger, registry, review_of, *, stamp):
+def migrate(ledger, registry, review_of, *, stamp, authoritative=True):
     """One idempotent pass: reconcile, rework, label rejections, requeue.
 
     Raises if any candidate row would be lost.
     """
     keys = set(ledger.get('candidates', {}))
     summary = collections.Counter()
-    summary.update(reconcile(ledger, registry, stamp=stamp))
+    summary.update(reconcile(ledger, registry, stamp=stamp, authoritative=authoritative))
+    summary.update(retry_outage_blocks(ledger, stamp))
     summary.update(plan_rework(ledger, stamp))
     summary.update(backfill_basis(ledger))
     summary.update(requeue(ledger, review_of))

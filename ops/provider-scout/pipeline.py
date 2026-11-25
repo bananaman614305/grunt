@@ -27,7 +27,9 @@ from owner_policy import canonical_candidate_id, owner_exclusion, qualification_
 SHA = re.compile(r'^[a-f0-9]{40}$')
 MAX_TRANSIENT = 3
 # A worker error that is a safety stop, not a flaky stage: never retried automatically.
-FATAL_WORKER = frozenset({'reviewer_integration_violation'})
+FATAL_WORKER = lifecycle.SAFETY_STOPS
+MAX_OUTAGE_RETRIES = lifecycle.MAX_OUTAGE_RETRIES
+OUTAGE_RETRY_SECONDS = lifecycle.OUTAGE_RETRY_SECONDS
 # One automatic retry of an unchanged submission: sandbox timeouts are host load, not evidence.
 RETRY_ONCE = frozenset({'local_checks_not_passed'})
 
@@ -112,12 +114,19 @@ class Pipeline:
 
     def _agent(self, request):
         self._budget()
-        request = {**request, 'timeout_seconds': min(request['timeout_seconds'], max(1, int(self.deadline - time.monotonic())))}
+        wanted = request['timeout_seconds']
+        request = {**request, 'timeout_seconds': min(wanted, max(1, int(self.deadline - time.monotonic())))}
         if request.get('role') == 'reviewer':
             request['require_web_search'] = True
         if self.config.get('_lock_fd') is not None:
             request['lock_fd'] = self.config['_lock_fd']
-        return run_agent(request, self.config)
+        try:
+            return run_agent(request, self.config)
+        except WorkerError as error:
+            if error.reason == 'worker_timeout' and request['timeout_seconds'] < wanted:
+                # The run budget cut the worker short: not evidence the worker is down.
+                raise TimeoutError('pipeline_budget_exhausted') from None
+            raise
 
     def _runner(self):
         if self.check_runner is None:
@@ -148,8 +157,14 @@ class Pipeline:
         env.update(NPM_CONFIG_USERCONFIG='/dev/null', CI='1')
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, env=env, start_new_session=True)
+        limit = min(360, max(1, self.deadline - time.monotonic()))
         try:
-            code = process.wait(timeout=min(360, max(1, self.deadline - time.monotonic())))
+            try:
+                code = process.wait(timeout=limit)
+            except subprocess.TimeoutExpired:
+                if limit < 360:
+                    raise TimeoutError('pipeline_budget_exhausted') from None  # clamped by the run budget
+                raise
         finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -273,7 +288,8 @@ class Pipeline:
                     # it would prevent the worker's rebased candidate advancing.
                     checkpoint['phase'] = 'superseded'
                     result['status'] = 'superseded'
-            return self._result(checkpoint, result.pop('status'), **{key: value for key, value in result.items() if key not in ('source_id', 'head_sha')})
+            return self._result(checkpoint, result.pop('status'), **{'stage': 'promotion', **{
+                key: value for key, value in result.items() if key not in ('source_id', 'head_sha')}})
         except TimeoutError:
             return self._result(checkpoint, 'deferred', 'pipeline_budget_exhausted', stage=stage)
         except Exception as error:
@@ -313,7 +329,9 @@ class Pipeline:
                         return checkpoint['result']
                     checkpoint = {'version': 1, 'candidate': candidate, 'receipt': receipt, 'phase': 'validated', 'directory': str(directory),
                                   **({'unchanged_retries': checkpoint.get('unchanged_retries', 0) + 1}
-                                     if checkpoint['result'].get('reason') in RETRY_ONCE else {})}
+                                     if checkpoint['result'].get('reason') in RETRY_ONCE else {}),
+                                  **({'outage_retries': checkpoint.get('outage_retries', 0) + 1}
+                                     if checkpoint['result'].get('reason') == 'stage_retries_exhausted' else {})}
                     _write(path, checkpoint)
             else:
                 checkpoint = {'version': 1, 'candidate': candidate, 'receipt': receipt, 'phase': 'validated', 'directory': str(directory)}
@@ -328,8 +346,20 @@ class Pipeline:
         result = checkpoint.get('result', {})
         if result.get('status') != 'blocked':
             return False
+        if result.get('reason') == 'stage_retries_exhausted':
+            # Worker outages are not a verdict on the head. After a cool-down an
+            # unchanged healthy resubmission may try again, a bounded number of times.
+            try:
+                age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(checkpoint['updated_at'])).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                age = 0
+            return not (age >= OUTAGE_RETRY_SECONDS and checkpoint.get('outage_retries', 0) < MAX_OUTAGE_RETRIES) \
+                and self._same_submission(checkpoint, candidate, receipt)
         if result.get('reason') in RETRY_ONCE and checkpoint.get('unchanged_retries', 0) < 1:
             return False
+        return self._same_submission(checkpoint, candidate, receipt)
+
+    def _same_submission(self, checkpoint, candidate, receipt):
         try:
             old, old_receipt = checkpoint['candidate'], checkpoint['receipt']
             return (lifecycle.fingerprint(old) == lifecycle.fingerprint(candidate)

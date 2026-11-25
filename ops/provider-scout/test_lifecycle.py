@@ -341,6 +341,70 @@ class ReworkTests(unittest.TestCase):
         self.assertEqual(item['rework']['reason'], 'pipeline_blocked')
 
 
+class ReworkBoundaryTests(unittest.TestCase):
+    blocked = ReworkTests.blocked
+
+    def test_promotion_publication_and_merged_blocks_are_never_reworked(self):
+        for changes in ({'pipeline_stage': 'promotion', 'pipeline_reason': 'pipeline_stage_failed'},
+                        {'pipeline_merge_sha': 'c' * 40}, {'pipeline_status': 'publication_pending'},
+                        {'pipeline_stage': None, 'pipeline_reason': 'pipeline_stage_failed'}):  # legacy, phase unknown
+            with self.subTest(changes=changes):
+                item = self.blocked(**changes)
+                lifecycle.plan_rework(ledger_of(item), STAMP)
+                self.assertEqual(item['status'], 'ready_for_review')
+
+    def test_safety_stops_are_not_reworked(self):
+        for detail in sorted(lifecycle.SAFETY_STOPS):
+            item = self.blocked(pipeline_stage='review_pre', pipeline_detail=detail)
+            lifecycle.plan_rework(ledger_of(item), STAMP)
+            self.assertEqual(item['status'], 'ready_for_review', detail)
+
+    def test_main_advancing_does_not_burn_the_lifetime_rework_count_but_stays_bounded(self):
+        item = self.blocked(pipeline_status='superseded', pipeline_reason='main_changed_requires_fresh_review',
+                            pipeline_stage=None, rework_count=lifecycle.MAX_REWORK)
+        ledger = ledger_of(item)
+        for number in range(lifecycle.MAX_REBASE):
+            item.update(status='ready_for_review', pipeline_status='superseded')
+            lifecycle.plan_rework(ledger, STAMP)
+            self.assertEqual(item['status'], 'integration_pending', number)
+        self.assertEqual((item['rebase_count'], item['rework_count']), (lifecycle.MAX_REBASE, lifecycle.MAX_REWORK))
+        item.update(status='ready_for_review', pipeline_status='superseded')
+        lifecycle.plan_rework(ledger, STAMP)
+        self.assertEqual(item['status'], 'ready_for_review')  # a loop is still stopped
+
+    def test_outage_blocked_head_is_retried_by_the_supervisor_after_the_cooldown_a_bounded_number_of_times(self):
+        item = self.blocked(pipeline_reason='stage_retries_exhausted', pipeline_stage='review_pre',
+                            pipeline_updated_at='2026-11-24T00:00:00+00:00')
+        ledger = ledger_of(item)
+        lifecycle.retry_outage_blocks(ledger, '2026-11-24T05:00:00+00:00')
+        self.assertEqual(item['pipeline_status'], 'blocked')  # still cooling down
+        for number in range(lifecycle.MAX_OUTAGE_RETRIES):
+            item.update(pipeline_status='blocked', pipeline_reason='stage_retries_exhausted',
+                        pipeline_updated_at='2026-11-24T00:00:00+00:00')
+            lifecycle.retry_outage_blocks(ledger, '2026-11-24T07:00:00+00:00')
+            self.assertEqual((item['pipeline_status'], item['outage_requeues']), ('deferred', number + 1))
+        item.update(pipeline_status='blocked', pipeline_reason='stage_retries_exhausted')
+        lifecycle.retry_outage_blocks(ledger, '2026-11-24T07:00:00+00:00')
+        self.assertEqual(item['pipeline_status'], 'blocked')
+        lifecycle.plan_rework(ledger, STAMP)
+        self.assertEqual(item['status'], 'ready_for_review')  # nothing for the worker to repair
+
+
+class ReconcileBoundaryTests(unittest.TestCase):
+    def test_non_authoritative_registry_cannot_retire_and_publication_pending_is_not_released(self):
+        shipped = row('shipped.example', status='integration_pending', pipeline_status='released')
+        ledger = ledger_of(shipped)
+        stale = registry({'id': 'x', 'signup': 'https://other.example/', 'model': 'm'})
+        lifecycle.reconcile(ledger, stale, stamp=STAMP, authoritative=False)
+        self.assertEqual(shipped['status'], 'released')
+        lifecycle.reconcile(ledger, stale, stamp=STAMP)
+        self.assertEqual(shipped['status'], 'retired')
+        merging = row('live.example', model='live-model', status='ready_for_review', pipeline_status='publication_pending')
+        live = registry({'id': 'live', 'signup': 'https://live.example/', 'model': 'live-model'})
+        lifecycle.reconcile(ledger_of(merging), live, stamp=STAMP)
+        self.assertEqual(merging['status'], 'ready_for_review')
+
+
 class RequeueTests(unittest.TestCase):
     def test_orphaned_unfinished_candidates_return_and_terminal_ones_leave_the_queue(self):
         orphan = row('a.example', status='researched')

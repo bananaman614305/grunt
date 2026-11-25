@@ -158,12 +158,25 @@ report cannot set it, and the report schema has no `released`, `retired` or
   next run. Rewording prose is not evidence: an unchanged review backs off, a
   second parks the candidate for 14 days, and ten reviews park it regardless. New
   first-party change evidence from discovery reopens it.
-- **Rework.** A head the supervisor blocked or superseded goes back to the worker
-  (`rework` carries the safe reason, stage and detail) up to three times. A
-  resubmission with the same head, evidence and facts is not reviewed again; the
-  stored result is returned. A flaky `local_checks_not_passed` gets one retry. A
-  worker outage during a stage defers it (three times, then
-  `stage_retries_exhausted`) rather than blocking the head.
+- **Rework.** A head the supervisor blocked before promotion (validate, review,
+  checks, probe) goes back to the worker (`rework` carries the safe reason, stage
+  and detail) up to three times. Promotion and publication blocks, anything with a
+  merge, and the safety stops (`reviewer_integration_violation`, `worker_cancelled`,
+  `missing_or_writable_squire_guard`, `workspace_sandbox_preflight_failed`) are never
+  sent back or retried: their own checkpoint owns them. A head superseded because
+  main advanced is a rebase, counted separately (up to eight) so it does not use up
+  the three. A resubmission with the same head, evidence and facts is not reviewed
+  again; the stored result is returned. A flaky `local_checks_not_passed` gets one
+  retry. A worker outage during a stage defers it (three strikes, then
+  `stage_retries_exhausted`); a worker timeout caused by the run budget cutting the
+  stage short is not a strike. After six hours an unchanged outage-blocked head is
+  handed back to the supervisor (not the worker), at most three times.
+- **A relabel is not eligibility.** The verify and finish lanes only ask a worker
+  to bring evidence. Whatever it returns still passes `qualify()`: a failing gate is
+  rejected (now verified), an unclear gate stays `researched`, and
+  `ready_for_review` needs a valid, fresh, exact-head proof and release request. The
+  supervisor then repeats both independent reviews, the sandboxed checks and the
+  trusted probe. No lane, status or reason code lowers any of those gates.
 - **Claimed or verified.** Discovery labels are claims. A label-only rejection from
   discovery (one-time credit, below baseline, high friction, context under the
   minimum) is kept as `rejected` with basis `claimed`, but is queued for the verify
@@ -191,7 +204,14 @@ report cannot set it, and the report schema has no `released`, `retired` or
 dry run unless `--write`, prints before and after counts, and on `--write` copies
 the ledger to `ledger.json.pre-lifecycle-<time>` (mode 0600) first. It is
 idempotent and refuses to finish if a candidate row would disappear. A scheduled
-run performs the same migration automatically, with one backup the first time.
+run performs the same migration automatically, with one backup the first time
+(an existing `pre-lifecycle` backup is reused if a run fails before saving). Only
+the fetched main snapshot may retire a row; when release is disabled the scout
+falls back to the working-tree registry, which can be stale, and that fallback can
+mark rows released but never retired. A merged head still awaiting publication
+(`publication_pending`) is not labelled released by the registry; only the
+supervisor does that. An offer counts toward rotation or parking only after the
+worker completed a run, so a worker outage never parks candidates it did not see.
 `usegrunt-scout retire --homepage URL --reason TEXT` (and `unretire`) record a
 source removed from Grunt, distinct from an owner exclusion; Clixad is retired by
 default. Discovery runs four passes; the fourth diffs public free-LLM lists

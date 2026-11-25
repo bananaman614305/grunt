@@ -814,13 +814,14 @@ def migrate_state(root, registry_path=None, *, write):
             registry = read_source_snapshot(config['source_repo'])['registry']
         canonicalize_ledger(ledger)
         before = lifecycle.ledger_counts(ledger)
-        summary = lifecycle.migrate(ledger, registry, review_id, stamp=now())
+        summary = lifecycle.migrate(ledger, registry, review_id, stamp=now(), authoritative=True)
         after = lifecycle.ledger_counts(ledger)
         if after['candidates'] != before['candidates']:
             raise ValueError('lifecycle_migration_would_drop_rows')
         backup = None
         if write:
-            backup = backup_ledger(root).name
+            backup = backup_ledger(root)
+            backup = backup.name if backup else None
             atomic(root / 'ledger.json', ledger)
     return {'written': write, 'backup': backup, 'changes': summary, 'before': before, 'after': after}
 
@@ -907,6 +908,9 @@ def record_pipeline_result(ledger, result, candidate=None):
         row = ledger['candidates'][item_key]
         row.update(pipeline_status=result['status'], pipeline_reason=result.get('reason', ''),
                    pipeline_updated_at=now())
+        merge = result.get('merge_sha')
+        if isinstance(merge, str) and re.fullmatch(r'[0-9a-f]{40}', merge):
+            row['pipeline_merge_sha'] = merge  # a merged head can never be reworked
         for name in ('stage', 'detail'):
             if isinstance(result.get(name), str) and lifecycle.SAFE_CODE.fullmatch(result[name]):
                 row['pipeline_' + name] = result[name]
@@ -1033,11 +1037,21 @@ def read_source_snapshot(source_repo, timeout=60):
     return {'base_sha': head, 'registry': registry}
 
 
-def backup_ledger(root, label='pre-lifecycle'):
-    """Copy the ledger once before a migration rewrites it. Never overwrites a backup."""
+def backup_ledger(root, label='pre-lifecycle', *, once=False):
+    """Copy the ledger before a migration rewrites it. Never overwrites a backup.
+
+    once: an existing backup with this label already holds the pre-migration
+    state, so a run that failed before saving does not pile up copies.
+    """
     source = root / 'ledger.json'
-    if not source.exists() or source.is_symlink():
+    if source.is_symlink():
+        raise ValueError('Unsafe scout state file')
+    if not source.exists():
         return None
+    if once:
+        existing = sorted(root.glob('ledger.json.' + label + '-*'))
+        if existing:
+            return existing[0]
     target = root / ('ledger.json.' + label + '-' + dt.datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ'))
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'wb') as out, open(source, 'rb') as original:
@@ -1068,8 +1082,6 @@ def run(root, smoke=False):
         atomic(root / 'last-run.json', state)
         # The trusted ledger aggregates multiple already bounded worker reports.
         ledger = load(root / 'ledger.json', {'version': 1, 'candidates': {}}, max_bytes=None)
-        if not smoke and ledger.get('lifecycle_version', 0) < lifecycle.LIFECYCLE_VERSION and ledger.get('candidates'):
-            state['ledger_backup'] = backup_ledger(root).name
         canonicalize_ledger(ledger)
         resume_unfinished_reviews(ledger)
         pipeline = None
@@ -1083,6 +1095,11 @@ def run(root, smoke=False):
         for number in (signal.SIGTERM, signal.SIGINT):
             previous_handlers[number] = signal.signal(number, cancel)
         try:
+            if not smoke and ledger.get('lifecycle_version', 0) < lifecycle.LIFECYCLE_VERSION and ledger.get('candidates'):
+                # Inside the guarded block: a backup that cannot be taken fails the
+                # run with a fixed code instead of leaving it marked running.
+                backup = backup_ledger(root, once=True)
+                state['ledger_backup'] = backup.name if backup else None
             if not smoke and config.get('release_enabled') is True:
                 from pipeline import Pipeline
                 pipeline = Pipeline({**config, '_deadline_monotonic': deadline, '_lock_fd': lock.fileno(),
@@ -1102,7 +1119,8 @@ def run(root, smoke=False):
             schema = load(Path(__file__).parent / 'report.schema.json')
             if not smoke:
                 canonicalize_ledger(ledger)
-                state['lifecycle'] = lifecycle.migrate(ledger, registry, review_id, stamp=now())
+                state['lifecycle'] = lifecycle.migrate(ledger, registry, review_id, stamp=now(),
+                                                          authoritative=snapshot is not None)
                 if ledger['candidates']:
                     atomic(root / 'ledger.json', ledger)
             state['discovery'] = {'status': 'running'}
@@ -1145,11 +1163,6 @@ def run(root, smoke=False):
             else:
                 fresh = {row['review_id'] for row in discovery['candidates']}
                 scope = lifecycle.plan_scope(qualification_scope(ledger), fresh)
-                offered = now()
-                for key, _ in scope.values():
-                    lifecycle.record_offer(ledger['discovery_pending'][key], offered)
-                if scope:
-                    atomic(root / 'ledger.json', ledger)
             state['qualification_offers'] = len(scope)
             state['qualification_lanes'] = dict(collections.Counter(lifecycle.lane(item) for _, item in scope.values()))
             if scope:
@@ -1212,6 +1225,14 @@ def run(root, smoke=False):
                                  worker_searched=True)
                 report = normalized_report(raw_report, updated, diagnostics)
                 finish_reviews(updated, raw_report, scope, diagnostics)
+                # An offer counts only once the worker completed the run: an outage
+                # (timeouts, failed launches) must not park candidates it never saw.
+                returned = {row['review_id'] for index, row in enumerate(raw_report['candidates'])
+                            if index not in {item['row'] for item in diagnostics}}
+                offered = now()
+                for review, (key, _) in scope.items():
+                    if review not in returned and key in updated['discovery_pending']:
+                        lifecycle.record_offer(updated['discovery_pending'][key], offered)
                 if pipeline:
                     pipeline.set_qualification_holds(qualification_holds(updated))
             else:

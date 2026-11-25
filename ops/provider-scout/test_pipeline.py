@@ -282,6 +282,68 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(supervisor.process(self.candidate)['reason'], 'local_checks_not_passed')
         self.assertEqual(self.calls.count('checks'), 2)  # third identical submission is not retried
 
+    def test_safety_stops_are_fatal_never_retried(self):
+        for reason in ('worker_cancelled', 'missing_or_writable_squire_guard', 'workspace_sandbox_preflight_failed',
+                       'reviewer_integration_violation'):
+            with self.subTest(reason=reason):
+                with tempfile.TemporaryDirectory(dir=self.base) as root:
+                    self.root = Path(root)
+                    def stop(receipt, directory, agent):
+                        raise pipeline.WorkerError(reason)
+                    result = self.make(review=stop).process(self.candidate)
+                    self.assertEqual((result['status'], result['reason'], result['detail']), ('blocked', 'pipeline_stage_failed', reason))
+
+    def test_run_budget_clamped_worker_timeout_is_not_an_outage_strike(self):
+        timeouts = []
+        def short(request, config):
+            timeouts.append(request['timeout_seconds'])
+            raise pipeline.WorkerError('worker_timeout')
+        self.config['_deadline_monotonic'] = time.monotonic() + 5
+        supervisor = self.make(agent=None)
+        agent = supervisor._agent  # the real, budget-clamping wrapper
+        def review(receipt, directory, _agent):
+            return agent({'role': 'reviewer', 'prompt': 'p', 'timeout_seconds': 600})
+        supervisor.review = review
+        with patch.object(pipeline, 'run_agent', side_effect=short):
+            for _ in range(5):
+                result = supervisor.process(self.candidate)
+                self.assertEqual((result['status'], result['reason']), ('deferred', 'pipeline_budget_exhausted'))
+        self.assertTrue(all(value <= 5 for value in timeouts))
+        self.assertNotIn('transient_failures', pipeline._read(self.checkpoint()))
+
+    def test_an_outage_block_retries_an_unchanged_healthy_head_after_the_cooldown_and_is_bounded(self):
+        broken = {'down': True}
+        def review(receipt, directory, agent):
+            if broken['down']:
+                raise pipeline.WorkerError('worker_timeout')
+            return self.review(receipt, directory, agent)
+        supervisor = self.make(review=review)
+        for _ in range(pipeline.MAX_TRANSIENT):
+            result = supervisor.process(self.candidate)
+        self.assertEqual(result['reason'], 'stage_retries_exhausted')
+        broken['down'] = False
+        self.assertEqual(supervisor.process(self.candidate)['reason'], 'stage_retries_exhausted')  # still cooling down
+        def age():
+            saved = pipeline._read(self.checkpoint())
+            saved['updated_at'] = (pipeline.dt.datetime.now(pipeline.dt.timezone.utc)
+                                   - pipeline.dt.timedelta(seconds=pipeline.OUTAGE_RETRY_SECONDS + 1)).isoformat()
+            pipeline._write(self.checkpoint(), saved)
+        age()
+        self.assertEqual(supervisor.process(self.candidate)['status'], 'released')
+        # Bounded: an outage that keeps coming back stops being retried.
+        with tempfile.TemporaryDirectory(dir=self.base) as root:
+            self.root = Path(root)
+            broken['down'] = True
+            supervisor = self.make(review=review)
+            for number in range(pipeline.MAX_OUTAGE_RETRIES + 1):
+                for _ in range(pipeline.MAX_TRANSIENT):
+                    last = supervisor.process(self.candidate)
+                self.assertEqual(last['reason'], 'stage_retries_exhausted')
+                age()
+            self.calls.clear()
+            self.assertEqual(supervisor.process(self.candidate)['reason'], 'stage_retries_exhausted')
+            self.assertNotIn('pre-review', self.calls)
+
     def test_both_reviews_must_approve_and_are_independent(self):
         for phase, verdict in (('pre', 'reject'), ('pre', 'needs_approval'),
                                ('post', 'reject'), ('post', 'needs_approval')):

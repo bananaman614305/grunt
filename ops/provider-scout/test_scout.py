@@ -1175,6 +1175,99 @@ class ScoutTests(unittest.TestCase):
     def test_install_default_budget_leaves_room_for_the_release_stages(self):
         self.assertGreaterEqual(lifecycle.plan_budget(9000, True)['release'], lifecycle.MIN_CANDIDATE_SECONDS)
 
+    def test_a_worker_outage_does_not_count_offers_or_park_candidates(self):
+        self.worker_fixture()
+        root = self.workspace
+        items = [candidate(homepage=f'https://outage{n}.example', status='researched', free_access='unclear',
+                           setup_status='not_attempted') for n in range(3)]
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {scout.candidate_id(i): i for i in items}})
+
+        def down(request, *_args):
+            raise scout.WorkerError('worker_timeout')
+
+        def discover(*_args):
+            return {'status': 'completed', 'lanes': {}, 'tool_counts': {}, 'candidates': [], 'search_queries': []}
+
+        with patch.object(scout, 'discover_lanes', side_effect=discover), patch.object(scout, 'run_agent', side_effect=down), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(lifecycle.MAX_OFFERS + 2):  # a day of failed runs
+                self.assertEqual(scout.run(root), 1)
+        stored = scout.load(root / 'ledger.json', max_bytes=None)
+        for row in stored['discovery_pending'].values():
+            self.assertEqual(row.get('qualification_offered', 0), 0)
+            self.assertNotIn('qualification_parked', row)
+        self.assertEqual(len(scout.qualification_scope(stored)), 3)
+
+    def test_an_unusable_ledger_backup_fails_the_run_cleanly_instead_of_leaving_it_running(self):
+        self.worker_fixture()
+        root = self.workspace
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {scout.candidate_id(candidate()): candidate(status='researched')}})
+        with patch.object(scout, 'backup_ledger', side_effect=OSError('disk full: /secret/path')), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(root), 1)
+        state = scout.load(root / 'last-run.json')
+        self.assertEqual((state['status'], state['reason_code']), ('failed', 'OSError'))
+        self.assertNotIn('secret', json.dumps(state))
+        with patch.object(scout, 'backup_ledger', return_value=None), patch.object(scout, 'discover_lanes', side_effect=scout.WorkerError('worker_timeout')), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(root), 1)  # a missing source is not an AttributeError crash
+        self.assertEqual(scout.load(root / 'last-run.json')['status'], 'failed')
+        real = root / 'real-ledger.json'
+        scout.atomic(real, {'version': 1, 'candidates': {}})
+        (root / 'ledger.json').unlink()
+        (root / 'ledger.json').symlink_to(real)
+        with self.assertRaises(ValueError):
+            scout.backup_ledger(root)
+        (root / 'ledger.json').unlink()
+        self.assertIsNone(scout.backup_ledger(root))
+
+    def test_a_run_that_fails_before_saving_does_not_pile_up_backups(self):
+        self.worker_fixture()
+        root = self.workspace
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {scout.candidate_id(candidate()): candidate(status='researched')}})
+        with patch.object(scout.lifecycle, 'migrate', side_effect=ValueError('boom')), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(3):
+                self.assertEqual(scout.run(root), 1)  # fails before the migration is saved
+        self.assertEqual(len(list(root.glob('ledger.json.pre-lifecycle-*'))), 1)
+
+    def test_stale_working_tree_registry_never_retires_a_shipped_row(self):
+        self.worker_fixture()  # release disabled: no fetched snapshot, only the working tree
+        root = self.workspace
+        source = Path(scout.load(root / 'config.json')['source_repo'])
+        scout.atomic(source / 'registry/adapters.json', {'version': 1, 'adapters': [
+            {'id': 'other%d' % n, 'signup': 'https://other%d.example/' % n, 'model': 'm'} for n in range(6)]})
+        shipped = candidate(homepage='https://shipped.example', status='integration_pending', pipeline_status='released')
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {scout.candidate_id(shipped): shipped}})
+
+        def discover(*_args):
+            return {'status': 'completed', 'lanes': {}, 'tool_counts': {}, 'candidates': [], 'search_queries': []}
+
+        with patch.object(scout, 'discover_lanes', side_effect=discover), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scout.run(root), 0)
+        row = scout.load(root / 'ledger.json', max_bytes=None)['candidates'][scout.candidate_id(shipped)]
+        self.assertEqual(row['status'], 'released')
+
+    def test_a_worker_relabel_never_makes_a_row_eligible_without_the_existing_gates(self):
+        claimed = candidate(homepage='https://claimed.example', status='rejected', signup_friction='high',
+                            rejection_basis='claimed', sightings=1)
+        key = scout.candidate_id(claimed)
+        base = {'version': 1, 'candidates': {key: claimed}}
+        # The verify pass relabels everything as passing and asks for review without any proof.
+        claim = candidate(homepage='https://claimed.example', status='ready_for_review', setup_status='anonymous',
+                          release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40})
+        report = {'web_search_used': True, 'search_queries': ['one', 'two'], 'candidates': [claim]}
+        stored = scout.ingest(report, base, self.workspace)['candidates'][key]
+        self.assertEqual(stored['status'], 'integration_pending')  # no valid proof: not ready
+        # Still-failing gates stay rejected, now verified; unclear gates never reach ready.
+        still = candidate(homepage='https://claimed.example', status='researched', signup_friction='high')
+        stored = scout.ingest({**report, 'candidates': [still]}, base, self.workspace)['candidates'][key]
+        self.assertEqual((stored['status'], stored['rejection_basis']), ('rejected', 'verified'))
+        unclear = candidate(homepage='https://claimed.example', status='ready_for_review', quality='unclear',
+                            setup_status='anonymous', release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40})
+        stored = scout.ingest({**report, 'candidates': [unclear]}, base, self.workspace)['candidates'][key]
+        self.assertEqual(stored['status'], 'researched')
+
 
 if __name__ == '__main__':
     unittest.main()
