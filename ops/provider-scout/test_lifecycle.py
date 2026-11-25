@@ -405,6 +405,74 @@ class ReconcileBoundaryTests(unittest.TestCase):
         self.assertEqual(merging['status'], 'ready_for_review')
 
 
+class FailedRunTests(unittest.TestCase):
+    def test_a_failure_rotates_a_row_but_parks_only_with_proof_it_is_the_row(self):
+        ledger = {'qualification_completed_runs': 0}
+        item = {}
+        for number in range(lifecycle.MAX_FAILED_OFFERS * 3):
+            lifecycle.record_failed_offer(ledger, item, STAMP)
+        self.assertNotIn('qualification_parked', item)  # a pure outage never parks
+        self.assertEqual(item['qualification_failed_offers'], lifecycle.MAX_FAILED_OFFERS * 3)
+        self.assertEqual(item['qualification_last_offered_at'], STAMP)
+        ledger['qualification_completed_runs'] = 1  # a run completed elsewhere meanwhile
+        lifecycle.record_failed_offer(ledger, item, STAMP)
+        self.assertEqual(item['qualification_parked'], 'failed_with_healthy_peers')
+        self.assertEqual(item['qualification_retry_at'], '2026-12-09T00:00:00+00:00')
+
+    def test_a_streak_that_began_after_the_last_completed_run_is_not_parked(self):
+        ledger = {'qualification_completed_runs': 5}
+        item = {}
+        for number in range(lifecycle.MAX_FAILED_OFFERS + 2):
+            lifecycle.record_failed_offer(ledger, item, STAMP)
+        self.assertNotIn('qualification_parked', item)
+
+    def test_suspect_rows_run_after_healthy_ones_and_alone(self):
+        def due(*items):
+            return {scout.review_id(i): (canonical_candidate_id(i), {**i, 'review_id': scout.review_id(i)}) for i in items}
+        healthy = row('h.example', status='integration_pending', setup_status='signed_up', qualification_attempts=1)
+        sick = row('s.example', status='integration_pending', setup_status='signed_up', qualification_attempts=1,
+                   qualification_failed_offers=1)
+        also = row('t.example', status='integration_pending', setup_status='signed_up', qualification_attempts=1,
+                   qualification_failed_offers=1)
+        self.assertEqual([i['homepage'] for _, i in lifecycle.plan_scope(due(healthy, sick, also)).values()], ['https://h.example'])
+        planned = lifecycle.plan_scope(due(sick, also))
+        self.assertEqual(len(planned), 1)  # one suspect alone, never two together
+
+    def test_failed_offers_count_in_rotation_and_a_review_clears_them(self):
+        item = row(status='integration_pending', qualification_attempts=1, qualification_failed_offers=4,
+                   qualification_failed_since_run=0)
+        outcome = lifecycle.review_outcome(item, {**item, 'setup_status': 'signed_up'}, STAMP)
+        self.assertEqual((outcome['qualification_failed_offers'], outcome['qualification_failed_since_run']), (0, None))
+
+
+class StuckReportTests(unittest.TestCase):
+    def test_terminal_and_parked_conditions_are_counted_with_ids_and_fixed_codes_only(self):
+        spent = row('a.example', status='ready_for_review', pipeline_status='blocked', pipeline_reason='local_checks_not_passed',
+                    release_request={'head_sha': 'a' * 40}, rework_count=lifecycle.MAX_REWORK)
+        promotion = row('b.example', status='ready_for_review', pipeline_status='blocked', pipeline_stage='promotion',
+                        pipeline_reason='pipeline_stage_failed', release_request={'head_sha': 'a' * 40})
+        outage = row('c.example', status='ready_for_review', pipeline_status='blocked', pipeline_reason='stage_retries_exhausted',
+                     outage_requeues=lifecycle.MAX_OUTAGE_RETRIES, release_request={'head_sha': 'a' * 40})
+        safety = row('d.example', status='ready_for_review', pipeline_status='blocked', pipeline_detail='worker_cancelled',
+                     pipeline_reason='pipeline_stage_failed', release_request={'head_sha': 'a' * 40})
+        fresh = row('e.example', status='ready_for_review', pipeline_status='blocked', pipeline_reason='local_checks_not_passed',
+                    release_request={'head_sha': 'a' * 40})
+        parked = row('f.example', status='researched')
+        ledger = ledger_of(spent, promotion, outage, safety, fresh, parked)
+        key = canonical_candidate_id(parked)
+        ledger['discovery_pending'][key] = {**parked, 'qualification_parked': 'no_new_evidence',
+                                            'qualification_retry_at': '2026-12-09T00:00:00+00:00'}
+        report = lifecycle.stuck_report(ledger, STAMP)
+        self.assertEqual(report['blocked_terminal']['count'], 4)
+        self.assertEqual({item['code'] for item in report['blocked_terminal']['candidates']},
+                         {'rework_exhausted', 'promotion_blocked', 'outage_retries_exhausted', 'safety_stop'})
+        self.assertNotIn(canonical_candidate_id(fresh), {item['id'] for item in report['blocked_terminal']['candidates']})
+        self.assertEqual(report['parked'], {'count': 1, 'candidates': [{'id': key, 'code': 'no_new_evidence'}]})
+        expired = lifecycle.stuck_report(ledger, '2027-01-01T00:00:00+00:00')
+        self.assertEqual(expired['parked']['count'], 0)  # past its date it is due again, not stuck
+        self.assertNotIn('http', json.dumps(report))
+
+
 class RequeueTests(unittest.TestCase):
     def test_orphaned_unfinished_candidates_return_and_terminal_ones_leave_the_queue(self):
         orphan = row('a.example', status='researched')

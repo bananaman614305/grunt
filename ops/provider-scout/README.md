@@ -212,6 +212,15 @@ mark rows released but never retired. A merged head still awaiting publication
 (`publication_pending`) is not labelled released by the registry; only the
 supervisor does that. An offer counts toward rotation or parking only after the
 worker completed a run, so a worker outage never parks candidates it did not see.
+A run that fails still rotates the offered rows behind their peers
+(`qualification_failed_offers`), runs the rows that have not failed first and
+a suspect row alone, and parks nothing on its own: a row is parked
+(`failed_with_healthy_peers`, 14 days) only after 12 failed offers and only if a
+qualification run completed elsewhere in between. A back-to-back backup is reused
+only when the ledger still matches it byte for byte. `usegrunt-scout status` lists
+under `stuck` a count plus candidate ids and fixed codes (`rework_exhausted`,
+`promotion_blocked`, `outage_retries_exhausted`, `safety_stop`, `rebase_exhausted`) for
+heads that will not move on their own, and the parked candidates.
 `usegrunt-scout retire --homepage URL --reason TEXT` (and `unretire`) record a
 source removed from Grunt, distinct from an owner exclusion; Clixad is retired by
 default. Discovery runs four passes; the fourth diffs public free-LLM lists

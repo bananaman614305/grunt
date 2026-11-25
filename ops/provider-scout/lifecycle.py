@@ -31,7 +31,8 @@ OPERATOR_FIELDS = ('rework', 'rework_count', 'rebase_count', 'outage_requeues', 
 
 MAX_NO_PROGRESS = 2      # consecutive reviews with unchanged facts before parking
 MAX_ATTEMPTS = 10        # total reviews before parking
-MAX_OFFERS = 6           # selections without a returned review before parking
+MAX_OFFERS = 6           # selections in completed runs without a returned review before parking
+MAX_FAILED_OFFERS = 12   # offers in failed runs before parking, and only with proof it is the row
 PARK_DAYS = 14           # a parked candidate is reconsidered only after this
 MAX_REWORK = 3           # supervisor blocks that may be sent back to the worker
 BACKOFF_BASE_HOURS = {'setup_blocked': 24}
@@ -180,17 +181,28 @@ def plan_scope(due, fresh=frozenset()):
     for review, (key, row) in due.items():
         groups[lane(row)].append((review, key, row))
 
+    def turns(row):
+        # Offers in failed runs rotate a row behind its peers too, so a row that makes the
+        # worker fail cannot be offered every run while equal peers never are seen.
+        return row.get('qualification_offered', 0) + row.get('qualification_failed_offers', 0)
+
     def rotation(item):
         row = item[2]
-        return (-stage_rank(row), row.get('qualification_offered', 0),
-                str(row.get('qualification_last_offered_at') or ''), item[1])
+        return (-stage_rank(row), turns(row), str(row.get('qualification_last_offered_at') or ''), item[1])
 
     finish = sorted(groups['finish'], key=rotation)[:FINISH_PER_RUN]
-    verify = sorted(groups['verify'], key=lambda item: (item[2].get('qualification_offered', 0),
+    verify = sorted(groups['verify'], key=lambda item: (turns(item[2]),
                                                          str(item[2].get('qualification_last_offered_at') or ''), item[1]))[:VERIFY_PER_RUN]
     room = max(0, SCOPE_PER_RUN - len(finish) - len(verify))
     new = sorted(groups['new'], key=lambda item: (item[0] not in fresh, *rotation(item)))[:room]
-    return {review: (key, row) for review, key, row in (*finish, *new, *verify)}
+    chosen = [*finish, *new, *verify]
+    failed = [item for item in chosen if item[2].get('qualification_failed_offers', 0) > 0]
+    if failed:
+        # A failed run cannot say which offered row broke it. Run the rows that have not
+        # failed first, and otherwise one suspect alone, so a healthy row is never kept
+        # failing next to a poison one.
+        chosen = [item for item in chosen if item not in failed] or failed[:1]
+    return {review: (key, row) for review, key, row in chosen}
 
 
 def backoff_hours(row, no_progress):
@@ -210,6 +222,7 @@ def review_outcome(item, result, stamp):
     no_progress = 0 if progressed else item.get('qualification_no_progress', 0) + 1
     outcome = {'qualification_attempts': attempts, 'qualification_no_progress': no_progress,
                'qualification_last_reviewed_at': stamp, 'qualification_offered': 0,
+               'qualification_failed_offers': 0, 'qualification_failed_since_run': None,
                'qualification_parked': None}
     parked = ('no_new_evidence' if no_progress >= MAX_NO_PROGRESS
               else 'attempts_exhausted' if attempts >= MAX_ATTEMPTS else None)
@@ -234,6 +247,28 @@ def record_offer(row, stamp, *, hold=False):
         row['qualification_parked'] = 'offered_without_result'
         row['qualification_retry_at'] = (parse_time(stamp) + dt.timedelta(days=PARK_DAYS)).isoformat()
         row['qualification_offered'] = 0
+
+
+def record_failed_offer(ledger, row, stamp):
+    """A qualification run failed while this row was offered.
+
+    The row rotates behind its peers (last offered, failed_offers) but nothing is
+    parked on a failure alone: a pure outage must never park anything. A row is
+    bounded only after MAX_FAILED_OFFERS failures with at least one qualification
+    run completing elsewhere meanwhile (the worker works, so the row is suspect).
+    """
+    completed = ledger.get('qualification_completed_runs', 0)
+    failed = row.get('qualification_failed_offers', 0)
+    if failed == 0:
+        row['qualification_failed_since_run'] = completed
+    failed += 1
+    row['qualification_failed_offers'] = failed
+    row['qualification_last_offered_at'] = stamp
+    if failed >= MAX_FAILED_OFFERS and completed > (row.get('qualification_failed_since_run') or 0):
+        row['qualification_parked'] = 'failed_with_healthy_peers'
+        row['qualification_retry_at'] = (parse_time(stamp) + dt.timedelta(days=PARK_DAYS)).isoformat()
+        row['qualification_failed_offers'] = 0
+        row['qualification_failed_since_run'] = None
 
 
 # -- reconciliation -----------------------------------------------------------
@@ -446,6 +481,36 @@ def apply_reason_codes(ledger):
         codes = reason_codes(row)
         if codes != row.get('reason_codes'):
             row['reason_codes'] = codes
+
+
+def stuck_report(ledger, stamp=None):
+    """Terminal or parked conditions as a count plus candidate ids and fixed codes."""
+    terminal, parked = [], []
+    for key, row in ledger.get('candidates', {}).items():
+        reason = row.get('pipeline_reason') if isinstance(row.get('pipeline_reason'), str) else ''
+        if row.get('status') == 'ready_for_review' and row.get('pipeline_status') == 'blocked':
+            if row.get('pipeline_detail') in SAFETY_STOPS:
+                why = 'safety_stop'
+            elif row.get('pipeline_stage') == 'promotion' or row.get('pipeline_merge_sha'):
+                why = 'promotion_blocked'
+            elif reason == 'stage_retries_exhausted':
+                why = 'outage_retries_exhausted' if row.get('outage_requeues', 0) >= MAX_OUTAGE_RETRIES else None
+            elif reason in NOT_REWORKABLE:
+                why = reason
+            else:
+                why = 'rework_exhausted' if row.get('rework_count', 0) >= MAX_REWORK else None
+            if why:
+                terminal.append({'id': key, 'code': why, 'reason': reason if SAFE_CODE.fullmatch(reason) else None})
+        elif row.get('status') == 'ready_for_review' and row.get('pipeline_status') == 'superseded' \
+                and row.get('rebase_count', 0) >= MAX_REBASE:
+            terminal.append({'id': key, 'code': 'rebase_exhausted', 'reason': reason if SAFE_CODE.fullmatch(reason) else None})
+    for key, item in ledger.get('discovery_pending', {}).items():
+        retry = item.get('qualification_retry_at')
+        if isinstance(item.get('qualification_parked'), str) and not (
+                stamp and isinstance(retry, str) and parse_time(retry) <= parse_time(stamp)):
+            parked.append({'id': key, 'code': item['qualification_parked']})
+    return {'blocked_terminal': {'count': len(terminal), 'candidates': sorted(terminal, key=lambda x: x['id'])},
+            'parked': {'count': len(parked), 'candidates': sorted(parked, key=lambda x: x['id'])}}
 
 
 def ledger_counts(ledger):

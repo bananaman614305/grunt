@@ -1049,9 +1049,11 @@ def backup_ledger(root, label='pre-lifecycle', *, once=False):
     if not source.exists():
         return None
     if once:
-        existing = sorted(root.glob('ledger.json.' + label + '-*'))
-        if existing:
-            return existing[0]
+        current = hashlib.sha256(source.read_bytes()).hexdigest()
+        for existing in sorted(root.glob('ledger.json.' + label + '-*')):
+            # Reuse only a backup of this very ledger; one of older content is stale.
+            if not existing.is_symlink() and hashlib.sha256(existing.read_bytes()).hexdigest() == current:
+                return existing
     target = root / ('ledger.json.' + label + '-' + dt.datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ'))
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'wb') as out, open(source, 'rb') as original:
@@ -1059,6 +1061,18 @@ def backup_ledger(root, label='pre-lifecycle', *, once=False):
         out.flush()
         os.fsync(out.fileno())
     return target
+
+
+def note_failed_offers(root, ledger, scope):
+    """Rotate the offered rows behind their peers after a failed qualification run.
+
+    A failure is no evidence about a row, so it parks nothing by itself.
+    """
+    stamp = now()
+    for key, _ in scope.values():
+        if key in ledger.get('discovery_pending', {}):
+            lifecycle.record_failed_offer(ledger, ledger['discovery_pending'][key], stamp)
+    atomic(root / 'ledger.json', ledger)
 
 
 def run(root, smoke=False):
@@ -1121,6 +1135,8 @@ def run(root, smoke=False):
                 canonicalize_ledger(ledger)
                 state['lifecycle'] = lifecycle.migrate(ledger, registry, review_id, stamp=now(),
                                                           authoritative=snapshot is not None)
+                stuck = lifecycle.stuck_report(ledger, now())
+                state['stuck'] = {name: stuck[name]['count'] for name in stuck}
                 if ledger['candidates']:
                     atomic(root / 'ledger.json', ledger)
             state['discovery'] = {'status': 'running'}
@@ -1213,17 +1229,26 @@ def run(root, smoke=False):
 
                 qualification_schema = with_review_field(schema, 'review_id',
                                                          {'type': 'string', 'pattern': '^[a-f0-9]{64}$'}, required=True)
-                result = run_agent({'role': 'implementer', 'prompt': prompt,
-                                    'schema': qualification_schema,
-                                    'cwd': str(workspace), 'output_path': str(output),
-                                    'timeout_seconds': duration, 'lock_fd': lock.fileno(),
-                                    'smoke': False, 'web_search': True, 'require_web_search': True},
-                                   config, progress)
-                raw_report = result['result']
-                updated = ingest(raw_report, ledger, workspace, diagnostics=diagnostics,
-                                 scope={review: row for review, (_, row) in scope.items()},
-                                 worker_searched=True)
+                try:
+                    result = run_agent({'role': 'implementer', 'prompt': prompt,
+                                        'schema': qualification_schema,
+                                        'cwd': str(workspace), 'output_path': str(output),
+                                        'timeout_seconds': duration, 'lock_fd': lock.fileno(),
+                                        'smoke': False, 'web_search': True, 'require_web_search': True},
+                                       config, progress)
+                    raw_report = result['result']
+                    updated = ingest(raw_report, ledger, workspace, diagnostics=diagnostics,
+                                     scope={review: row for review, (_, row) in scope.items()},
+                                     worker_searched=True)
+                except WorkerError as error:
+                    if error.reason != 'worker_cancelled':
+                        note_failed_offers(root, ledger, scope)
+                    raise
+                except (ValueError, KeyError, TypeError, OSError):
+                    note_failed_offers(root, ledger, scope)
+                    raise
                 report = normalized_report(raw_report, updated, diagnostics)
+                updated['qualification_completed_runs'] = updated.get('qualification_completed_runs', 0) + 1
                 finish_reviews(updated, raw_report, scope, diagnostics)
                 # An offer counts only once the worker completed the run: an outage
                 # (timeouts, failed launches) must not park candidates it never saw.
@@ -1350,6 +1375,7 @@ def main():
                           'pending_reviews': len(ledger.get('discovery_pending', {})),
                           'due_reviews': len(qualification_scope(ledger)),
                           'ledger': lifecycle.ledger_counts(ledger),
+                          'stuck': lifecycle.stuck_report(ledger, now()),
                           'owner_exclusions': ledger['owner_exclusions']}, indent=2))
         return 0
     try:

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sys
 import tempfile
 import threading
 import time
@@ -1231,6 +1232,34 @@ class ScoutTests(unittest.TestCase):
                 self.assertEqual(scout.run(root), 1)  # fails before the migration is saved
         self.assertEqual(len(list(root.glob('ledger.json.pre-lifecycle-*'))), 1)
 
+    def test_backup_reuse_requires_the_same_ledger_content(self):
+        root = self.workspace
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {'x': candidate()}})
+        first = scout.backup_ledger(root, once=True)
+        self.assertEqual(scout.backup_ledger(root, once=True), first)  # same ledger: reused
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {'x': candidate(), 'y': candidate(model='other')}})
+        second = scout.backup_ledger(root, once=True)
+        self.assertNotEqual(second, first)  # the ledger changed since: a stale backup is not enough
+        self.assertEqual(json.loads(second.read_text()), scout.load(root / 'ledger.json', max_bytes=None))
+        self.assertEqual(json.loads(first.read_text())['candidates'].keys(), {'x'})
+        self.assertEqual(scout.backup_ledger(root, once=True), second)
+
+    def test_status_shows_terminal_and_parked_candidates_by_id(self):
+        root = self.workspace
+        spent = candidate(status='ready_for_review', pipeline_status='blocked', pipeline_reason='local_checks_not_passed',
+                          release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40}, rework_count=lifecycle.MAX_REWORK)
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': {scout.candidate_id(spent): spent}})
+        out = io.StringIO()
+        umask = os.umask(0o022)
+        os.umask(umask)
+        self.addCleanup(os.umask, umask)  # main() tightens the process umask
+        with patch.object(sys, 'argv', ['scout', '--state', str(root), 'status']), contextlib.redirect_stdout(out):
+            scout.main()
+        stuck = json.loads(out.getvalue())['stuck']
+        self.assertEqual(stuck['blocked_terminal']['count'], 1)
+        self.assertEqual(stuck['blocked_terminal']['candidates'][0]['id'], scout.candidate_id(spent))
+        self.assertEqual(stuck['blocked_terminal']['candidates'][0]['code'], 'rework_exhausted')
+
     def test_stale_working_tree_registry_never_retires_a_shipped_row(self):
         self.worker_fixture()  # release disabled: no fetched snapshot, only the working tree
         root = self.workspace
@@ -1267,6 +1296,83 @@ class ScoutTests(unittest.TestCase):
                             setup_status='anonymous', release_request={'source_id': 'synthetic', 'head_sha': 'a' * 40})
         stored = scout.ingest({**report, 'candidates': [unclear]}, base, self.workspace)['candidates'][key]
         self.assertEqual(stored['status'], 'researched')
+
+    def rotation_world(self):
+        self.worker_fixture()
+        root = self.workspace
+        rows, pending, names = {}, {}, {}
+        for name in 'ABCD':
+            item = candidate(status='integration_pending', setup_status='anonymous', homepage=f'https://{name.lower()}.example',
+                             model=f'm-{name}', primary_sources=[f'https://{name.lower()}.example/docs'])
+            key = scout.candidate_id(item)
+            rows[key] = item
+            pending[key] = {**item, 'review_id': scout.review_id(item), 'qualification_attempts': 1,
+                            'qualification_retry_at': None}
+            names[item['homepage'][8]] = key
+        scout.atomic(root / 'ledger.json', {'version': 1, 'candidates': rows, 'discovery_pending': pending})
+        return root, names
+
+    def run_rotation(self, root, count, behave):
+        seen = []
+
+        def worker(request, _config, _progress=None):
+            if request['role'] != 'implementer':
+                return {'result': {'summary': 'x', 'web_search_used': True, 'search_queries': ['a', 'b'],
+                                   'candidates': [], 'blockers': []}, 'tool_counts': {'web_search': 1}}
+            context = json.loads(request['prompt'].split('## This run\n', 1)[1])
+            offers = context['new_or_changed_offers']
+            seen.append(sorted(offer['homepage'][8].upper() for offer in offers))
+            return behave(offers)
+
+        def discover(*_args):
+            return {'status': 'completed', 'lanes': {}, 'tool_counts': {}, 'candidates': [], 'search_queries': []}
+
+        with patch.object(scout, 'discover_lanes', side_effect=discover), patch.object(scout, 'run_agent', side_effect=worker), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(count):
+                scout.run(root)
+        return seen
+
+    def test_a_failing_row_cannot_starve_equal_peers_and_an_outage_parks_nothing(self):
+        root, names = self.rotation_world()
+
+        def down(_offers):
+            raise scout.WorkerError('worker_timeout')
+
+        seen = self.run_rotation(root, 100, down)  # each row is offered far past the park thresholds
+        self.assertEqual(set(sum(seen, [])), set('ABCD'))
+        stored = scout.load(root / 'ledger.json', max_bytes=None)
+        failed = [row.get('qualification_failed_offers', 0) for row in stored['discovery_pending'].values()]
+        self.assertLessEqual(max(failed) - min(failed), 1)  # fair rotation
+        self.assertGreater(min(failed), lifecycle.MAX_FAILED_OFFERS)
+        for row in stored['discovery_pending'].values():
+            self.assertNotIn('qualification_parked', row)
+            self.assertEqual(row.get('qualification_offered', 0), 0)
+        self.assertEqual(stored.get('qualification_completed_runs', 0), 0)
+        self.assertEqual(len(scout.qualification_scope(stored)), 4)
+
+    def test_a_poison_row_is_bounded_only_when_peers_complete_elsewhere(self):
+        root, names = self.rotation_world()
+        poison = 'https://a.example'
+
+        def behave(offers):
+            if any(offer['homepage'] == poison for offer in offers):
+                raise scout.WorkerError('worker_timeout')
+            rows = [candidate(status='integration_pending', setup_status='anonymous', homepage=offer['homepage'],
+                              model=offer['model'], primary_sources=offer['primary_sources'], review_id=offer['review_id'])
+                    for offer in offers]
+            return {'result': {'summary': 'x', 'web_search_used': True, 'search_queries': ['a', 'b'],
+                               'candidates': rows, 'blockers': []}, 'tool_counts': {'web_search': 1}}
+
+        seen = self.run_rotation(root, 60, behave)
+        stored = scout.load(root / 'ledger.json', max_bytes=None)
+        pending = stored['discovery_pending']
+        self.assertEqual(pending[names['a']]['qualification_parked'], 'failed_with_healthy_peers')
+        self.assertGreater(stored['qualification_completed_runs'], 0)
+        for name in 'bcd':  # peers were reviewed and never parked by the failure rule
+            self.assertNotEqual(pending[names[name]].get('qualification_parked'), 'failed_with_healthy_peers')
+            self.assertGreaterEqual(pending[names[name]].get('qualification_attempts', 0), 2)
+        self.assertGreaterEqual(sum('A' in offer for offer in seen), lifecycle.MAX_FAILED_OFFERS)
 
 
 if __name__ == '__main__':
