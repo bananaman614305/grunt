@@ -47,6 +47,14 @@ export class GruntAgent {
     if (!whitelist(options).length) throw new Error("Agent whitelist has no permitted models.");
     return new GruntAgent(await AgentStore.open(options.dbUrl ?? defaultAgentDb()), options, options.client ?? new OpenRouterClient());
   }
+  async register(key: string) {
+    let valid: boolean;
+    try { valid = await this.client.validateKey(key); }
+    catch { return "unavailable"; }
+    if (!valid) return "invalid";
+    await this.store.register(personId(key));
+    return "registered";
+  }
   subscribe(person: string, listener: (e: AgentEvent) => void) {
     const set = this.listeners.get(person) ?? new Set();
     set.add(listener); this.listeners.set(person, set);

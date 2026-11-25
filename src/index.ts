@@ -23,7 +23,9 @@ export function agentRoutes(agent: GruntAgent, edgeSecret = process.env.GRUNT_CO
   });
   app.use("/agent/*", bodyLimit({ maxSize: 32_768, onError: c => c.json({ error: "Message too large. Use at most 20,000 characters." }, 413) }));
   app.post("/agent/register", async c => {
-    await agent.store.register(c.get("person"));
+    const result = await agent.register(c.get("key"));
+    if (result === "invalid") return c.json({ error: "OpenRouter rejected this key." }, 401);
+    if (result === "unavailable") return c.json({ error: "Could not verify the key with OpenRouter. Please try again." }, 503);
     return c.json({ ok: true });
   });
   app.get("/agent/state", async c => c.json(await agent.store.state(c.get("person"))));

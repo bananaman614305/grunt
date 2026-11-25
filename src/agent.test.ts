@@ -27,7 +27,13 @@ class Fake {
     this.held.promise.then(resolve, reject);
     signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
   });
-  fetch: typeof fetch = async (_url, init) => {
+  fetch: typeof fetch = async (url, init) => {
+    if (url === "https://openrouter.ai/api/v1/key") {
+      const authorization = new Headers(init?.headers).get("authorization");
+      if (authorization === "Bearer unavailable") throw new Error("offline");
+      if (authorization !== AUTH.authorization && authorization !== "Bearer legacy") return new Response(null, { status: 401 });
+      return Response.json({ data: { label: "test" } });
+    }
     const body = JSON.parse(String(init?.body)); this.requests.push(body);
     const messages = body.messages as { role: string; content: string }[];
     const system = messages[0]!.content;
@@ -49,11 +55,14 @@ async function setup(fake = new Fake(), dbUrl = ":memory:") {
 it("records explicit hosted signup once before chat activity and excludes legacy accounts", async () => {
   const { app, agent, send } = await setup();
   const register = (headers?: HeadersInit) => app.request("/agent/register", {method:"POST", headers});
+  const registrations = () => agent.store.db.execute("SELECT account,registered_at FROM account_registrations");
+  expect((await register({ authorization: "Bearer rejected" })).status).toBe(401);
+  expect((await register({ authorization: "Bearer unavailable" })).status).toBe(503);
+  expect((await registrations()).rows).toEqual([]);
   expect((await register()).status).toBe(401);
   await send("hello", { ...AUTH, authorization:"Bearer legacy" });
   expect((await register({authorization:"Bearer legacy"})).status).toBe(200);
   expect((await register(AUTH)).status).toBe(200);
-  const registrations = () => agent.store.db.execute("SELECT account,registered_at FROM account_registrations");
   const original = (await registrations()).rows;
   expect(original).toEqual([{account:PERSON,registered_at:expect.any(Number)}]);
   expect(await agent.store.messages(PERSON)).toHaveLength(0);
