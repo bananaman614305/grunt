@@ -38,6 +38,9 @@ export class MetadataFlights {
       this.flights.set(key, owned);
     }
     const shared = flight;
+    // An expired read can stay pending indefinitely. New callers must not
+    // attach callbacks to it while it holds the slot.
+    if (shared.controller.signal.aborted) return Promise.reject(shared.controller.signal.reason);
     shared.waiters++;
     return new Promise<T>((resolve, reject) => {
       let done = false;
@@ -56,7 +59,6 @@ export class MetadataFlights {
       shared.controller.signal.addEventListener('abort', stopped, { once: true });
       void shared.result.then(value => finish(true, value), error => finish(false, error));
       if (caller?.aborted) cancelled();
-      else if (shared.controller.signal.aborted) stopped();
     });
   }
 

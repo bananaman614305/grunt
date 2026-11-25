@@ -62,7 +62,12 @@ it('keeps concurrent model listings available when another provider ignores its 
     expect(slow.available).toHaveBeenCalledOnce();
     expect(healthy.available).toHaveBeenCalledOnce();
     expect(slow.available.mock.calls[0]?.[0].aborted).toBe(true);
-    expect(await models()).toEqual(['grunt', healthy.id]);
+    // A probe can remain unresolved forever. Verify clients do not subscribe
+    // to its promise again even though they continue to receive replies.
+    const { metadata } = value as unknown as { metadata: { flights: Map<string, { result: Promise<unknown> }> } };
+    const subscribe = vi.spyOn(metadata.flights.get(slow.id)!.result, 'then');
+    for (let poll = 0; poll < 50; poll++) expect(await models()).toEqual(['grunt', healthy.id]);
+    expect(subscribe).not.toHaveBeenCalled();
     expect(slow.available).toHaveBeenCalledOnce();
     pending.release(true);
     await pending.promise;

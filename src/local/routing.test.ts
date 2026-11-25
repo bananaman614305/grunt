@@ -65,6 +65,28 @@ it.each(['healthy', 'ineligible', 'refused', 'not-installed', 'explicit'] as con
     expect(legacy.complete).toHaveBeenCalledTimes(['healthy', 'refused', 'not-installed'].includes(mode) ? 1 : 0);
   } finally { await sources.close(); }
 });
+
+it.each(['quota-first', 'refusal-first', 'routed-quota'] as const)('preserves the earliest quota hint through mixed exhaustion (%s)', async order => {
+  const primary = { ...source('kilo'), supportsFunctionTools: true };
+  const quota = { ...source('legacy-quota'), supportsFunctionTools: true };
+  const refusal = { ...source('legacy-refusal'), supportsFunctionTools: true };
+  vi.mocked(primary.complete).mockRejectedValue(order === 'routed-quota'
+    ? new SourceError('quota', 'Routed quota', 30)
+    : requestRefusal('Primary rejected tool schema locally', 'request_tool_schema'));
+  vi.mocked(quota.complete).mockRejectedValue(new SourceError('quota', 'Legacy quota', 60));
+  vi.mocked(refusal.complete).mockRejectedValue(requestRefusal('Legacy rejected tool schema locally', 'request_tool_schema'));
+  const legacy = order === 'refusal-first' ? [refusal, quota] : [quota, refusal];
+  const sources = new Sources([primary, ...legacy], { registry: () => launchRegistry, unrouted: new Set(legacy.map(item => item.id)), now: () => 1000 });
+  try {
+    const response = await createLocalApp(sources).request('http://127.0.0.1:8788/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, tools: piTools })
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toBe(order === 'routed-quota' ? '30' : '60');
+    expect((await response.json()).error.code).toBe('quota');
+    for (const item of [primary, ...legacy]) expect(item.complete).toHaveBeenCalledOnce();
+  } finally { await sources.close(); }
+});
 // An explicitly named source keeps Pi tools, even one that runs its own tools.
 it.each([false, true])('honors an explicitly named native-tool agent with Pi tools (sticky=%s)', async sticky => {
   const nativeAgent = { ...source('opencode'), supportsFunctionTools: false };

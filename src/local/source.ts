@@ -485,23 +485,12 @@ export class Sources {
       if (!unrouted.length) return this.router.complete(request, signal);
       // Naming an unrouted source selects it alone, as in the fixed chain.
       if (unrouted.some(source => source.id === request.model)) return this.chain(request, signal);
-      return this.router.complete(request, signal, async (reason, signal) => {
-        const fallback = { attempted: false };
-        try { return await this.chain(request, signal, unrouted, fallback); }
-        catch (failure) {
-          signal.throwIfAborted();
-          // Report the routed pool's reason when no fallback source could run.
-          if (!fallback.attempted) throw reason;
-          if (reason instanceof RequestError && failure instanceof SourceError && failure.replay !== 'unsafe' &&
-            (failure instanceof RequestError || localRequestRefusal(failure) || ['not_installed', 'logged_out'].includes(failure.code))) throw reason;
-          throw failure;
-        }
-      });
+      return this.router.complete(request, signal, (reason, signal) => this.chain(request, signal, unrouted, reason));
     }
     return this.chain(request, signal);
   }
   // The fixed chain: first success in source order, or the named source alone.
-  private async chain(request: ModelRequest, signal: AbortSignal, pool: Source[] = this.sources, progress = { attempted: false }): Promise<Completion> {
+  private async chain(request: ModelRequest, signal: AbortSignal, pool: Source[] = this.sources, routedFailure?: SourceError): Promise<Completion> {
     await this.observation.refreshRoutingHistory();
     signal.throwIfAborted();
     const known = this.sources.some(s => s.id === request.model);
@@ -510,7 +499,10 @@ export class Sources {
     if (automatic && !['grunt', 'milo'].includes(request.model)) console.error('grunt model mapping: unrecognized model -> grunt');
     const toolsRequired = automatic && needsFunctionTools(request);
     const candidates = automatic ? pool.filter(s => !toolsRequired || toolCapable(s)) : pool.filter(s => s.id === request.model);
-    let last = toolsRequired ? new SourceError('not_installed', NO_TOOL_SOURCE) : new SourceError('not_installed', `No source for model ${this.safeModel(request.model)}`);
+    let last = routedFailure ?? new SourceError('not_installed', toolsRequired ? NO_TOOL_SOURCE : `No source for model ${this.safeModel(request.model)}`);
+    // A routed pool may report quota for general exhaustion without a retry
+    // hint. A concrete hint or an actual quota failure can guide the client.
+    let quota = routedFailure?.code === 'quota' && routedFailure.retryAfter !== undefined ? routedFailure : undefined;
     let attempted = false;
     for (const source of candidates) {
       signal.throwIfAborted();
@@ -524,7 +516,7 @@ export class Sources {
       const context = currentDiagnosticContext();
       if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.selection', source: source.id,
         ...(!automatic ? { reason: 'explicit' as const } : attempted || pool !== this.sources ? { reason: 'fallback' as const } : {}) });
-      attempted = true; progress.attempted = true;
+      attempted = true;
       let completion: Completion;
       const release = this.registeredRouter?.claimTrial(source.id) ?? (() => {});
       try { completion = await this.attempt(source, request, signal); }
@@ -534,17 +526,22 @@ export class Sources {
           signal.throwIfAborted();
           throw error;
         }
-        last = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
-        await this.chainRouter?.recordFailure(source.id, last);
-        console.error(`grunt source: ${source.id} failed (${last.code}) for model ${this.safeModel(request.model)}`);
-        if (!canReplay(last)) throw last;
+        const failure = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
+        await this.chainRouter?.recordFailure(source.id, failure);
+        signal.throwIfAborted();
+        console.error(`grunt source: ${source.id} failed (${failure.code}) for model ${this.safeModel(request.model)}`);
+        if (!canReplay(failure)) throw failure;
+        if (failure.code === 'quota' && (!quota || (failure.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity))) quota = failure;
+        if (!(routedFailure instanceof RequestError) || !(localRequestRefusal(failure) || ['not_installed', 'logged_out'].includes(failure.code))) {
+          last = failure;
+        }
         continue;
       } finally { release(); }
       console.error(`grunt source: ${source.id} answered model ${this.safeModel(request.model)}`);
       answeredBy.set(completion, source.id);
       return completion;
     }
-    throw last;
+    throw quota ?? last;
   }
   async close() {
     this.metadata.close();
