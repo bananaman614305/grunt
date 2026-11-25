@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
+import { RequestError, SourceError, answeredBy, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -179,10 +179,18 @@ export class StickyRouter {
     const prompt = `Original task:\n${task.original}\n${work}\nPrevious adapter output (last 4 KB):\n${Buffer.from(task.output).subarray(-4096).toString('utf8')}\nContinue this task from the current state. Do not restart.`;
     return { ...request, messages: [...request.messages, { role: 'user', content: prompt }], handoffPrompt: prompt };
   }
-  private exhausted(toolsRequired: boolean, retryTimes: number[]) {
+  private exhausted(toolsRequired: boolean, retryTimes: number[], refused = 0) {
     const now = this.now();
     const next = Math.min(...retryTimes);
     const seconds = Number.isFinite(next) && next > now ? Math.ceil((next - now) / 1000) : undefined;
+    // Sources that refused the request's own shape never contacted a provider and are not rate limited. Say
+    // so, and when none is waiting to recover, answer as an invalid request rather than a quota wait.
+    if (refused) {
+      const detail = `${refused} adapter${refused === 1 ? '' : 's'} refused this conversation's tool definitions or tool history locally, before any provider was contacted`;
+      return seconds === undefined
+        ? new RequestError(`${detail}, and no other tool-capable adapter is available; this request cannot be served as sent`)
+        : new SourceError('quota', `${detail}; the other tool-capable adapters are cooling down or limited; retry after the reset`, seconds);
+    }
     return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
   }
   private fasterContinuation(task: Task, request: ModelRequest, candidates: Candidate[], adapters: Adapter[], workload: RoutingWorkload) {
@@ -242,7 +250,7 @@ export class StickyRouter {
     // A turn bound to a source without Pi tool support switches (with handoff)
     // when Pi attaches tools, unless the caller named that source explicitly.
     const toolsRequired = needsFunctionTools(request) && !this.sources.some(s => s.id === request.model);
-    const attempted = new Set<string>();
+    const attempted = new Set<string>(), refused = new Set<string>();
     let yieldedMetadata = false;
     const observation = this.observation;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => this.options.observe?.(source, reason, true);
@@ -279,8 +287,8 @@ export class StickyRouter {
             continue;
           }
           if (attempted.has(source.id)) {
-            // This call cannot repeat this source. The next call can try it now.
-            retryTimes.push(this.now());
+            // This call cannot repeat this source. The next call can try it now, unless it refused the request itself.
+            if (!refused.has(source.id)) retryTimes.push(this.now());
             continue;
           }
           const available = this.availability.peek(source.id);
@@ -307,7 +315,7 @@ export class StickyRouter {
         }
         if (!eligible.length) {
           if (this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-          throw this.exhausted(toolsRequired, retryTimes);
+          throw this.exhausted(toolsRequired, retryTimes, refused.size);
         }
         const idle = eligible.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
@@ -365,6 +373,7 @@ export class StickyRouter {
           const failure = error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
+          if (localRequestRefusal(failure)) refused.add(selected.source.id);
           await this.recordFailure(selected.source.id, failure); task.switched = true;
         } finally { release(); unreserve(); }
       }
