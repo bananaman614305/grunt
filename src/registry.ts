@@ -53,8 +53,8 @@ export const pinnedModels: Readonly<Record<string, string>> = { 'aperture-ai': '
 export const localOptInAdapters: readonly Adapter[] = [
   { id: 'crowllm', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:crowllm', model: 'glm-5.3-flash:free' },
   { id: 'antseed-vikey', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:antseed-vikey' },
-  // Unverified price, terms and quality: the lowest weight of any source, and only by explicit selection.
-  { id: 'ifm', kind: 'model', tier: 'experimental', weight: 0.001, modalities: ['text'], install: 'builtin:ifm', model: 'IFM/K2-Horizon-375B-A23B' },
+  // Unverified price, terms and quality: the same low weight as the other opt-ins, and only by explicit selection.
+  { id: 'ifm', kind: 'model', tier: 'experimental', weight: 0.01, modalities: ['text'], install: 'builtin:ifm', model: 'IFM/K2-Horizon-375B-A23B' },
 ];
 export const localOptInAdapterIds = new Set(localOptInAdapters.map(adapter => adapter.id));
 // Keep retired IDs as tombstones for saved selections and explicit requests.
