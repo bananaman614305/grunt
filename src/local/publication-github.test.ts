@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { GithubPublicationTransport, readPublicationArtifacts } from './publication-github.js';
+import { HostRefusal } from './publication.js';
 import type { PublicationPolicy, PublicationRecord } from './publication.js';
 const head = 'a'.repeat(40), base = 'b'.repeat(40), gitTree = 'c'.repeat(40), oldPages = 'd'.repeat(40);
 const policy: PublicationPolicy = { version: 1, projectRoot: '/synthetic/project', repository: 'synthetic/project', base: 'main', headPrefix: 'grunt/', requiredChecks: ['tests'], reviewPaths: ['src'], artifactDirectory: 'dist', pagesBranch: 'gh-pages', allowMerge: true, allowDeploy: true };
@@ -12,8 +13,8 @@ function fixture() {
   const refs = new Map([['main', base], ['gh-pages', oldPages]]), commits = new Map<string, Record<string, unknown>>([
     [head, { sha: head, tree: { sha: gitTree }, message: 'candidate' }], [base, { sha: base, tree: { sha: '0'.repeat(40) }, message: 'base' }], [oldPages, { sha: oldPages, tree: { sha: '1'.repeat(40) }, message: 'old pages' }]
   ]);
-  let counter = 10, privateRepo = false, race = false, pagesRace = false, buildStatus = 'building';
-  const pr = () => ({ number: 7, html_url: 'https://github.com/synthetic/project/pull/7', state: 'open', draft: false, head: { sha: head, ref: 'grunt/test', repo: { full_name: policy.repository } }, base: { ref: 'main', sha: base, repo: { full_name: policy.repository } } });
+  let counter = 10, stale = 0, privateRepo = false, race = false, pagesRace = false, buildStatus = 'building';
+  const pr = () => ({ number: 7, html_url: 'https://github.com/synthetic/project/pull/7', state: 'open', draft: false, head: { sha: stale-- > 0 ? 'e'.repeat(40) : head, ref: 'grunt/test', repo: { full_name: policy.repository } }, base: { ref: 'main', sha: base, repo: { full_name: policy.repository } } });
   const calls: { path: string; method: string; body?: Record<string, unknown> }[] = [];
   const exec = vi.fn(async (args: string[], input?: string) => {
     expect(args[0]).toBe('api'); expect(args[1]).toBe('--method');
@@ -42,12 +43,24 @@ function fixture() {
     return { code: 0, stdout: JSON.stringify(result) };
   });
   const pushHead = vi.fn(async () => {}), artifacts = vi.fn(async () => [{ path: 'index.html', content: Buffer.from('fixture') }]);
-  const transport = new GithubPublicationTransport({ exec, pushHead, artifacts });
-  return { value, transport, calls, refs, commits, pushHead, artifacts, private: () => { privateRepo = true; }, race: () => { race = true; }, pagesRace: () => { pagesRace = true; }, built: () => { buildStatus = 'built'; } };
+  const sleep = vi.fn(async () => {}), transport = new GithubPublicationTransport({ exec, pushHead, artifacts, pullRequestSettle: { sleep } });
+  return { value, transport, sleep, stale: (reads: number) => { stale = reads; }, calls, refs, commits, pushHead, artifacts, private: () => { privateRepo = true; }, race: () => { race = true; }, pagesRace: () => { pagesRace = true; }, built: () => { buildStatus = 'built'; } };
 }
 it('publishes only the exact public repository pull request and keeps credential execution host supplied', async () => {
   const f = fixture(); expect(await f.transport.ensurePullRequest(f.value, policy)).toEqual({ number: 7, url: 'https://github.com/synthetic/project/pull/7' }); expect(f.pushHead).toHaveBeenCalledTimes(1);
   f.private(); await expect(f.transport.ensurePullRequest(f.value, policy)).rejects.toThrow('public repository'); expect(f.pushHead).toHaveBeenCalledTimes(1);
+});
+it('waits for GitHub to show the pushed head on the pull request instead of failing a release whose push succeeded', async () => {
+  const f = fixture(); f.stale(3);
+  expect(await f.transport.ensurePullRequest(f.value, policy)).toEqual({ number: 7, url: 'https://github.com/synthetic/project/pull/7' });
+  expect(f.pushHead).toHaveBeenCalledTimes(1); expect(f.sleep).toHaveBeenCalledTimes(3);
+  expect(f.calls.filter(c => c.path === '/pulls/7')).toHaveLength(3);
+});
+it('refuses with a fixed operator-readable detail when the pull request never shows the pushed head', async () => {
+  const f = fixture(); f.stale(100);
+  await expect(f.transport.ensurePullRequest(f.value, policy)).rejects.toBeInstanceOf(HostRefusal);
+  await expect(f.transport.ensurePullRequest(f.value, policy)).rejects.toThrow('does not yet show the pushed head');
+  expect(f.sleep).toHaveBeenCalledTimes(10); expect(f.calls.some(c => c.method === 'POST')).toBe(false);
 });
 it('merges the exact tested tree with pinned parents through a non-force fast-forward ref update', async () => {
   const f = fixture(), merged = await f.transport.merge(f.value, policy);
