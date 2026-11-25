@@ -203,3 +203,27 @@ previous reviewed artifact. Stop only the newly owned collector service if
 needed. Do not delete the existing database, volume, provider grants or other
 projects' processes. Rotating the admin session secret invalidates owner sessions;
 rotating the ingestion key requires updating both ends of the collector link.
+
+### Nightly fleet audit
+
+The existing HTTPS registry feedback exchange issues a scoped bearer to the
+reporting installation. The gateway signs the digest of a separate private installation proof with
+`GRUNT_FLEET_SIGNING_SECRET` (or the configured admin session secret, using a
+separate HMAC context). Clients receive only the scoped bearer, and request it
+only at the owned registry endpoints. Rotating the secret invalidates issued
+tokens. Installation identity proves continuity, not a distinct human user.
+The daemon's registry sync uploads closed UTC hours from its
+bounded diagnostics store, catching up at most seven days. The fleet upload
+honors `GRUNT_FLEET_REPORTING=0`, `GRUNT_SETUP_NO_DATA_SHARING=1` and custom
+registry destinations. Offline, unenrolled and earlier clients have unknown coverage.
+
+The scheduled reader uses its existing admin read bearer on
+`GET https://milo-gateway.fly.dev/admin/api/fleet-audit?day=YYYY-MM-DD`
+(the custom API domain uses the same path). The date defaults to yesterday UTC.
+Match each returned handle against existing #grunt work, including completed work,
+before creating a backlog item. Store the confirmed Beeline ID against the handle.
+Build and run `node scripts/fleet-report.mjs YYYY-MM-DD audit.json items.json report.html`
+with that handle-to-ID JSON object. Use `--plan` in place of the output filename
+to group evidence by stable handle. Only entries with a null work ID need
+reconciliation and creation; persist each confirmed mapping before continuing. For unavailable data pass a dash for both input
+files. The top-ranked handle is the default for a human reply of go.

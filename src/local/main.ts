@@ -44,6 +44,7 @@ import { toolCapable } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Adapter, Registry } from '../registry.js';
 import { REGISTRY_URLS, RegistrySync } from './registry.js';
+import { uploadFleet } from './fleet-upload.js';
 import { RouteFeedback } from './route-feedback.js';
 import { isDeepStrictEqual } from 'node:util';
 import { configDir } from './wizard.js';
@@ -158,7 +159,13 @@ export function start(env = process.env) {
   const diagnosticReady = DiagnosticsStore.open({ directory, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
   const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
   // Route health goes to the registry on each sync and its scores weight routing (docs/router.md).
-  const feedback = new RouteFeedback({ directory, urls: env.GRUNT_REGISTRY_URL ? [env.GRUNT_REGISTRY_URL] : REGISTRY_URLS,
+  const urls = env.GRUNT_REGISTRY_URL ? [env.GRUNT_REGISTRY_URL] : REGISTRY_URLS;
+  const reportFleet = gruntEnv('SETUP_NO_DATA_SHARING',env) !== '1' && gruntEnv('FLEET_REPORTING',env) !== '0' && urls.every(url => REGISTRY_URLS.includes(url));
+  const feedback = new RouteFeedback({ directory, urls,
+    ...(reportFleet ? { fleet: async (token: string) => {
+      await diagnosticReady;
+      if (diagnostics) await uploadFleet(diagnostics, directory, urls, token);
+    } } : {}),
     listed: () => registry.adapters.map(adapter => adapter.id), retired: id => sources.retired(id), ...(runtimeVersion ? { client: runtimeVersion } : {}) });
   sources.setFeedback((id, outcome, latencyMs) => feedback.record(id, outcome, latencyMs));
   sources.setRegistryScores(id => feedback.score(id));
