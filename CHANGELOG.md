@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Operator: the live-upgrade controller now pins the Adventure builder's CPU limit at exactly eight CPUs (`cpu.max` `800000 100000`).
+
 ## 0.10.11 — 2026-11-25
 
 - Fix IFM K2 Horizon failing with HTTP 422 on the first real request after a failover: IFM's gateway rejects any assistant turn that has text and no thinking field, and history from other sources has none. Every assistant turn now carries `reasoning_content` (remembered reasoning, else the empty string), only OpenAI chat fields are sent, tool schemas get unbacked `required` names dropped for the host's template, and a 400, 413 or 422 is a request-shape refusal that no longer benches the source for 15 minutes.
