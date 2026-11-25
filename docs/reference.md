@@ -788,7 +788,12 @@ replays each reply's reasoning verbatim on the matching assistant turn from proc
 source produced has no remembered reasoning, and IFM's gateway answers HTTP 422 to an assistant turn that has text and
 no thinking field (checked on synthetic requests: a tool-call turn with empty text passes, a plain text turn fails, and
 the refusal comes before any host is chosen). Every assistant turn therefore carries `reasoning_content`, the empty
-string when nothing is remembered, which IFM documents as valid. HTTP 400, 413 and 422 are request-shape refusals, not
+string when nothing is remembered, which IFM documents as valid. Replies are streamed (`stream` with usage) purely for liveness and returned whole: a reasoning-heavy reply can think for
+minutes and take about a minute at 125 tokens a second on one host (another host answered 15,561 tokens in 18 s), so a
+non-streamed call was cut by the pool's 60-second first-output deadline. Each reasoning, answer or tool-call delta now
+keeps the first-output (120 s) and idle (60 s) deadlines satisfied, and an answer that is only reasoning is a failed
+sample. The reply must carry the exact model on every chunk, a finish reason, a closing marker and usage with no
+charge. HTTP 400, 413 and 422 are request-shape refusals, not
 provider health: no cooldown or retirement, and the task moves to another source. Tool schemas whose `required` names
 the host's template cannot find in `properties` (for example when `allOf` supplies them) are sent without those names;
 the model's calls are still checked against the original schema.
