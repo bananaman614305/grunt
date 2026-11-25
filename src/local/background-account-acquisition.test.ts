@@ -27,6 +27,9 @@ import { BrowserSquire } from './setup.js';
 import { bundledRegistry } from '../registry.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 
+// vi.waitFor defaults to a 1 s deadline, which a loaded CI runner can miss while the daemon
+// reads its state files; wait on the same conditions with a bounded but generous deadline.
+const WAIT = { timeout: 15_000 };
 const directories: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks(); vi.clearAllMocks();
@@ -56,8 +59,8 @@ it.each([
   const original = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
   const running = start({ GRUNT_SOURCES: 'pollinations', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: '18794', ...settings });
   try {
-    await vi.waitFor(() => expect(daemon.started).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(check).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(daemon.started).toHaveBeenCalledOnce(), WAIT);
+    await vi.waitFor(() => expect(check).toHaveBeenCalledOnce(), WAIT);
     expect(check).toHaveBeenCalledWith('pollinations', expect.any(AbortSignal));
     expect(trigger).toHaveBeenCalledTimes(enabled ? 1 : 0);
     // Exercise the actual callbacks installed for both later registry syncs
@@ -92,7 +95,7 @@ it('starts the route pass once foreground setup releases its session, and only t
   const original = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
   const running = start({ GRUNT_SOURCES: 'pollinations', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: '18795' });
   try {
-    await vi.waitFor(() => expect(daemon.started).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(daemon.started).toHaveBeenCalledOnce(), WAIT);
     const { fetch } = daemon.serve.mock.calls[0]![0] as { fetch: (request: Request) => Promise<Response> };
     const status = async () => (await fetch(new Request('http://127.0.0.1:18795/v1/status'))).json() as Promise<{ sources: { id: string; state: string }[] }>;
     // The startup pass runs into the held session; a status read while setup holds it starts nothing.
