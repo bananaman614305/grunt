@@ -367,7 +367,7 @@ it('prefers first absolute Primary working directory and ignores relative hints'
 it('caps gateway completions when max tokens are omitted and preserves explicit limits',async()=>{
   const fetcher=vi.fn<typeof fetch>(async()=>Response.json({choices:[{message:{content:'ok'}}]}));
   const gateway=new Gateway('https://configured.invalid/v1','synthetic',fetcher);
-  for(const maxTokens of [undefined,123]) {await gateway.complete({...decode({input:'hi'},'responses','/tmp'),maxTokens},new AbortController().signal);expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]!.body)).max_tokens).toBe(maxTokens ?? 4096);}
+  for(const maxTokens of [undefined,123]) {await gateway.complete({...decode({input:'hi'},'responses','/tmp'),maxTokens},new AbortController().signal);expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]!.body)).max_tokens).toBe(maxTokens);}
 });
 it('matches saved user turns with normalized newlines and surrounding whitespace',()=>{
   expect(parseChat([{variant:'user',textAttachments:[{content:'  first\nsecond\nthird  '}]},{variant:'ai',isComplete:true,blocks:[{type:'text',content:'ok'}]}],'first\r\nsecond\rthird')).toBe('ok');

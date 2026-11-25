@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { SourceError, requestRefusal } from './source.js';
+import { lengthLimited, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { MetadataFlights } from './metadata-flight.js';
 
@@ -229,7 +229,7 @@ export class Pollinations implements Source {
           method: 'POST', redirect: 'error', signal,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
           body: JSON.stringify({ model: POLLINATIONS_WIRE_MODEL, messages: [{ role: 'user', content: bridge.prompt(attempt > 0) }],
-            tools: [], stream: false, max_tokens: Math.min(4096, Math.max(1, Number.isFinite(request.maxTokens) ? Math.floor(request.maxTokens!) : 4096)) })
+            tools: [], stream: false, max_tokens: request.maxTokens })
         });
         status(response);
         if (response.headers.get('x-model-requested') !== POLLINATIONS_MODEL || response.headers.get('x-model-used') !== POLLINATIONS_MODEL) {
@@ -239,20 +239,22 @@ export class Pollinations implements Source {
         const body = object(await readJSON(response, signal, 2 * 1024 * 1024));
         signal.throwIfAborted();
         if (body.model !== POLLINATIONS_RETURNED_MODEL) throw invalidCompletion('Pollinations returned an unverified model identity', 'completion_model');
-        const choices = body.choices, message = object(Array.isArray(choices) && choices.length === 1 ? object(choices[0]).message : undefined);
+        const choices = body.choices, choice = object(Array.isArray(choices) && choices.length === 1 ? choices[0] : undefined), message = object(choice.message);
         if (message.refusal) throw new SourceError('refused', 'Pollinations refused the request');
         if (message.function_call !== undefined || (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length))) {
           throw new SourceError('refused', 'Pollinations attempted unsupported native API tools', undefined, undefined,
             { transport: 'http', endpointLabel: 'chat.completions', failureReason: 'response_tools' });
         }
         const usage = object(body.usage);
-        if (typeof message.content !== 'string') throw invalidCompletion('Pollinations returned an invalid completion or usage', 'response_content');
+
         if (!Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 0
           || !Number.isSafeInteger(usage.completion_tokens) || Number(usage.completion_tokens) < 0) {
           throw invalidCompletion('Pollinations returned an invalid completion or usage', 'completion_usage');
         }
         inputTokens += usage.prompt_tokens as number; outputTokens += usage.completion_tokens as number;
         if (!Number.isSafeInteger(inputTokens) || !Number.isSafeInteger(outputTokens)) throw invalidCompletion('Pollinations returned invalid usage', 'completion_usage');
+        if (lengthLimited(choice.finish_reason)) return { text: '', finishReason: 'length', inputTokens, outputTokens };
+        if (typeof message.content !== 'string') throw invalidCompletion('Pollinations returned an invalid completion or usage', 'response_content');
         try {
           const result = bridge.parse(stripPollinationsThinking(message.content));
           if (!result.text.trim() && !result.calls?.length) throw new Error('Empty answer');

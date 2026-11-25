@@ -113,7 +113,7 @@ it('routes a Grunt request through the explicit singleton candidate with capped 
   expect(posts(fetcher)).toHaveLength(1);
   const [url, init] = posts(fetcher)[0]!, body = JSON.parse(String(init?.body));
   expect(url).toBe(`${access.base_url}/v1/chat/completions`); expect(init?.redirect).toBe('error');
-  expect(body).toMatchObject({ model: POLLINATIONS_WIRE_MODEL, tools: [], max_tokens: 4096, stream: false });
+  expect(body).toMatchObject({ model: POLLINATIONS_WIRE_MODEL, tools: [], max_tokens: 100000, stream: false });
   expect(body.model).toBe(`${POLLINATIONS_MODEL},`);
   expect(JSON.parse(body.messages[0].content.split('\n').at(-1))).toMatchObject({ messages: request.messages, tools: [] });
 });
@@ -156,11 +156,11 @@ it('repairs malformed protocol once without echoing rejected text, rechecks guar
   expect(repair.messages[0].content).toContain('only repair attempt'); expect(repair.messages[0].content).not.toContain('synthetic-private-rejected-content');
 });
 
-it.each([1, 17, 512, 1024, 4096, 100000])('honors a caller output-token hard cap of %s without increasing it for protocol overhead', async maxTokens => {
+it.each([undefined, 1, 17, 512, 1024, 4096, 100000])('honors a caller output-token hard cap of %s without increasing it for protocol overhead', async maxTokens => {
   const path = await directory(), fetcher = mock();
   await source({ directory: path, fetcher }).complete({ ...request, maxTokens }, AbortSignal.timeout(1000));
   expect(posts(fetcher)).toHaveLength(1);
-  expect(JSON.parse(String(posts(fetcher)[0]![1]?.body)).max_tokens).toBe(Math.min(4096, maxTokens));
+  expect(JSON.parse(String(posts(fetcher)[0]![1]?.body)).max_tokens).toBe(maxTokens);
 });
 
 it.each(['<think>incomplete '+final(), final()+' trailing text', '```json\n'+final()+'\n```', '<think>first</think><think>second</think>'+final(), final('')])('never loosely recovers JSON from invalid output %s', async text => {

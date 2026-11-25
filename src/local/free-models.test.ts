@@ -26,15 +26,16 @@ beforeEach(async () => {
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(stateDir, { recursive: true, force: true }); });
 const request = { model: 'freellmapi', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false };
 
-it('routes the daemon free API through loopback FreeLLMAPI, preserves tools and caps tokens', async () => {
+it.each([undefined, 100000])('routes the daemon free API through loopback FreeLLMAPI, preserves tools with budget %s', async maxTokens => {
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: 'routed reply' } }] }));
   const app = createLocalApp(new Sources([new FreeLLMAPI({ key: 'synthetic', fetcher })]));
-  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, max_tokens: 100000, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] }) });
+  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, max_tokens: maxTokens, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] }) });
   expect(response.status).toBe(200);
   expect((await response.json()).choices[0].message.content).toBe('routed reply');
   expect(fetcher.mock.calls).toHaveLength(1);
   expect(fetcher.mock.calls[0]![0]).toBe('http://127.0.0.1:3001/v1/chat/completions');
-  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: 'auto', max_tokens: 4096, tools: [{ function: { name: 'read' } }] });
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body)).max_tokens).toBe(maxTokens);
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: 'auto', tools: [{ function: { name: 'read' } }] });
   expect(configure({ GRUNT_GATEWAY_URL: 'https://openrouter.ai/api/v1' }).sources.map(s => s.id)).not.toContain('gateway');
   for (const url of ['https://openrouter.ai/api/v1', 'http://example.com/v1', 'http://localhost:3001/v1']) {
     expect(() => new FreeLLMAPI({ url })).toThrow('loopback');
@@ -63,12 +64,12 @@ it('types the exact latest OpenCode fixture message and reuses the session for f
     const path = new URL(String(url)).pathname;
     if (path === '/event') return idleEvents();
     calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-    return Response.json(path === '/session' ? { id: 'session_one' } : { info: { role: 'assistant' }, parts: [{ type: 'text', text: 'bridge works 42' }] });
+    return Response.json(path === '/session' ? { id: 'session_one' } : { info: { role: 'assistant', finish: 'length' }, parts: [{ type: 'text', text: 'bridge works 42' }] });
   };
   const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher, model: 'big-pickle' });
   const app = createLocalApp(new Sources([driver]));
   fixture.cwd = '/tmp'; fixture.model = 'opencode'; fixture.stream = false; fixture.tools = [];
-  expect((await (await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) })).json()).choices[0].message.content).toBe('bridge works 42');
+  expect((await (await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) })).json()).choices[0]).toMatchObject({ finish_reason: 'length', message: { content: 'bridge works 42' } });
   fixture.messages.push({ role: 'assistant', content: 'bridge works 42' }, { role: 'user', content: '  Repeat it.\n' });
   await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fixture) });
   expect(calls.filter(c => c.path === '/session')).toHaveLength(1);

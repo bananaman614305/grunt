@@ -3,7 +3,7 @@ import type { ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
-import { SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import { diagnosticFetch } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -166,7 +166,7 @@ export class Kilo implements Source {
       signal.throwIfAborted();
       if (request.imageInput) throw requestFailure('This Kilo route supports text inputs', 'request_body');
       if (request.maxTokens !== undefined && (!Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1)) throw requestFailure('Kilo requires a positive integer output-token budget', 'request_body');
-      const limit = Math.min(4096, request.maxTokens ?? 4096), { messages, validators } = conversation(request);
+      const limit = request.maxTokens, { messages, validators } = conversation(request);
       if (!await this.approved()) throw new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
       signal.throwIfAborted();
       const wire = (model: string) => {
@@ -204,7 +204,7 @@ export class Kilo implements Source {
     }
   }
   private async ask(model: string, body: string, origin: string, grant: { token: string } | undefined, request: ModelRequest, messages: ModelRequest['messages'],
-    validators: Map<string, ValidateFunction>, limit: number, signal: AbortSignal): Promise<Completion> {
+    validators: Map<string, ValidateFunction>, limit: number | undefined, signal: AbortSignal): Promise<Completion> {
     const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${origin}/chat/completions`, { method: 'POST', redirect: 'error', signal,
       headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
     const fail = (code: 'upstream' | 'refused', message: string, reason: NonNullable<SafeDiagnosticMetadata['failureReason']>) =>
@@ -218,11 +218,12 @@ export class Kilo implements Source {
       throw fail('refused', unverifiedUsage, 'completion_billing');
     }
     if (!Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 1 || !Number.isSafeInteger(usage.completion_tokens)
-      || Number(usage.completion_tokens) < 1 || Number(usage.completion_tokens) > limit) throw fail('refused', unverifiedUsage, 'completion_usage');
+      || Number(usage.completion_tokens) < 1 || limit !== undefined && Number(usage.completion_tokens) > limit) throw fail('refused', unverifiedUsage, 'completion_usage');
     if (!Array.isArray(result.choices) || result.choices.length !== 1) throw fail('upstream', 'Kilo returned an empty completion', 'response_choices');
     const choice = object(result.choices[0]), message = object(choice.message);
     if (message.refusal) throw fail('refused', 'Kilo refused the request', 'refusal');
     if (!(message.content === undefined || message.content === null || typeof message.content === 'string')) throw fail('upstream', 'Kilo returned invalid completion content', 'response_content');
+    if (lengthLimited(choice.finish_reason)) return { ...truncatedCompletion(message.content, usage), servedModel: model, free: true };
     const calls: ToolCall[] = [], ids = new Set<string>();
     if (message.tool_calls !== undefined) {
       if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');

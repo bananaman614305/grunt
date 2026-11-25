@@ -35,6 +35,18 @@ export interface ModelRequest {
   // The local client reviewed the entire request for public-only providers.
   publicContext?: true;
 }
+export function lengthLimited(reason: unknown) {
+  return reason === 'length' || reason === 'max_tokens';
+}
+
+// An unfinished tool call cannot be executed. Keep visible text and measured usage.
+export function truncatedCompletion(content: unknown, usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }): Completion {
+  const input = usage?.prompt_tokens, output = usage?.completion_tokens;
+  return { text: typeof content === 'string' ? content : '', finishReason: 'length',
+    ...(typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? { inputTokens: input } : {}),
+    ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {}) };
+}
+
 export interface Completion { servedModel?: string; free?: boolean; text: string; calls?: ToolCall[]; finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call'; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
@@ -483,12 +495,13 @@ export class Gateway implements Source {
       response = await this.fetcher(this.url, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.key}` },
-        body: JSON.stringify({ model: 'grunt', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: request.maxTokens ?? 4096 })
+        body: JSON.stringify({ model: 'grunt', messages: request.messages, tools: request.tools.length ? request.tools : undefined, stream: false, max_tokens: request.maxTokens })
       });
     } catch { signal.throwIfAborted(); throw new SourceError('upstream', 'grunt gateway is unavailable'); }
     if (!response.ok) throw new SourceError(response.status === 401 || response.status === 403 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `grunt gateway returned HTTP ${response.status}`);
-    const body = await response.json() as { choices?: { message?: { content?: string | null; tool_calls?: ToolCall[] } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const body = await response.json() as { choices?: { finish_reason?: unknown; message?: { content?: string | null; tool_calls?: ToolCall[] } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const message = body.choices?.[0]?.message;
+    if (lengthLimited(body.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, body.usage);
     if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'grunt gateway returned an invalid completion');
     return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}),
       ...(body.usage?.prompt_tokens === undefined ? {} : { inputTokens: body.usage.prompt_tokens }), ...(body.usage?.completion_tokens === undefined ? {} : { outputTokens: body.usage.completion_tokens }) };

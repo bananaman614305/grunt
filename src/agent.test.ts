@@ -85,7 +85,18 @@ describe("Grunt chat and background jobs", () => {
     expect(input).toContain("I write TypeScript; keep answers short.");
     expect(input).not.toContain("MY PRIVATE CHAT HISTORY");
     expect(input).not.toContain(KEY); expect(body).not.toHaveProperty("tools");
-    expect(body.max_tokens).toBe(4096);
+    expect(body).not.toHaveProperty("max_tokens");
+  });
+  it.each(["length", "max_tokens"])("keeps the partial worker result and reports the %s cutoff", async reason => {
+    const { agent, send, fake } = await setup();
+    fake.worker = () => Response.json({ choices: [{ finish_reason: reason, message: { content: "First part of the plan" } }] });
+    await send("write a plan");
+    await until(async () => (await agent.store.messages(PERSON)).length === 3);
+    const { tasks, messages } = await agent.store.state(PERSON);
+    expect(tasks[0]).toMatchObject({ status: "truncated", result: "First part of the plan" });
+    expect(messages.at(-1)!.text).toContain("output limit");
+    expect(messages.at(-1)!.text).toContain("partial result");
+    expect(fake.requests).toHaveLength(2);
   });
   it.each([429, 503, 504])("retries a failed worker once on the next-best whitelisted model (%s)", async status => {
     const fake = new Fake(); let calls = 0;

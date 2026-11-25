@@ -69,7 +69,7 @@ it('runs the CLI with an explicit verified project in an isolated empty config, 
   const [url, init] = fetcher.mock.calls[0]!;
   expect(url).toBe(`${LIVEKIT_GATEWAY}/v1/chat/completions`);
   expect(init?.headers).toMatchObject({ Authorization: `Bearer ${syntheticToken}` });
-  expect(JSON.parse(String(init?.body))).toMatchObject({ model: LIVEKIT_DEEPSEEK, max_tokens: 4096, stream: false });
+  expect(JSON.parse(String(init?.body))).toMatchObject({ model: LIVEKIT_DEEPSEEK, max_tokens: 100000, stream: false });
   expect(init?.redirect).toBe('error');
 });
 

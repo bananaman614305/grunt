@@ -8,7 +8,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { MetadataFlights } from './metadata-flight.js';
-import { SourceError, requestRefusal } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const BEATAPI_MODEL = 'deepseek-v4.1-flash-free';
@@ -213,7 +213,7 @@ export class BeatAPI implements Source {
       awaitingInferenceResponse = true;
       const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'beatapi', 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` }, body: JSON.stringify({ model, messages,
-          ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: Math.min(4096, Math.max(1, Number.isFinite(request.maxTokens) ? Math.floor(request.maxTokens!) : 4096)) }) }), signal);
+          ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: request.maxTokens }) }), signal);
       awaitingInferenceResponse = false;
       if (response.ok || response.status >= 500) this.next = this.now() + FREE_REQUEST_COOLDOWN_MS;
       if (grant.version === 2 && (response.status === 404 || response.status === 410)) {
@@ -229,8 +229,9 @@ export class BeatAPI implements Source {
       if (message.refusal) throw new SourceError('refused', 'BeatAPI refused the request');
       if (!(message.content === undefined || message.content === null || typeof message.content === 'string') || !Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 0
         || !Number.isSafeInteger(usage.completion_tokens) || Number(usage.completion_tokens) < 0 || ['cost', 'total_cost', 'credits_charged'].some(key => key in usage && usage[key] !== 0)) throw new SourceError('upstream', 'BeatAPI returned an invalid completion or usage');
+      const truncated = lengthLimited(choice.finish_reason);
       const calls: ToolCall[] = [], ids = new Set<string>();
-      if (message.tool_calls !== undefined) {
+      if (!truncated && message.tool_calls !== undefined) {
         if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) throw new SourceError('upstream', 'BeatAPI returned invalid function calls');
         for (const raw of message.tool_calls) {
           const c = obj(raw), fn = obj(c.function); let args: unknown; try { args = JSON.parse(String(fn.arguments)); } catch { throw new SourceError('upstream', 'BeatAPI returned invalid function arguments'); }
@@ -239,9 +240,10 @@ export class BeatAPI implements Source {
           ids.add(c.id); calls.push({ id: c.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } });
         }
       }
-      if (!message.content && !calls.length) throw new SourceError('upstream', 'BeatAPI returned an empty completion');
+      if (!truncated && !message.content && !calls.length) throw new SourceError('upstream', 'BeatAPI returned an empty completion');
       this.next = this.now() + FREE_REQUEST_COOLDOWN_MS;
       this.nextModel = grant.version === 2 && model === BEATAPI_MODEL ? 1 : 0;
+      if (truncated) return truncatedCompletion(message.content, usage);
       return { text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
     } catch (error) {
       // A transport failure can still leave an inference completing upstream.

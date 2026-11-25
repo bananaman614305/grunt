@@ -130,7 +130,8 @@ export function parseMistralVibeCompletion(stdout: string, exported: unknown): C
       || selected.max_context_length !== 262144 || selected.auto_compact_threshold !== 202144
       || object(config.compaction_model).name !== MISTRAL_VIBE_WIRE_MODEL || object(config.compaction_model).provider !== 'mistral'
       || provider?.api_base !== 'https://api.mistral.ai/v1') throw invalidCompletion('Mistral Vibe did not use the vetted Free GLM model', 'completion_model');
-  if (run.outcome !== 'finished' || run.exit_code !== 0 || run.error) throw nativeFailure(run);
+  const truncated = run.exit_code === 3 && ['length', 'token_limit', 'max_tokens'].includes(String(run.outcome));
+  if ((!truncated && (run.outcome !== 'finished' || run.exit_code !== 0)) || run.error) throw nativeFailure(run);
   let history: unknown;
   try { history = JSON.parse(stdout); } catch { throw invalidCompletion('Mistral Vibe returned invalid completion JSON', 'response_json'); }
   if (!Array.isArray(history)) throw invalidCompletion('Mistral Vibe returned invalid completion history', 'response_body');
@@ -143,10 +144,10 @@ export function parseMistralVibeCompletion(stdout: string, exported: unknown): C
     && object(entry.outcome).type !== 'discarded' && Array.isArray(entry.content));
   const text = Array.isArray(answer?.content) ? answer.content.map(object).filter(part => part.type === 'text' && typeof part.text === 'string').map(part => part.text).join('\n\n') : '';
   const usage = object(run.usage);
-  if (!text.trim()) throw invalidCompletion('Mistral Vibe returned no complete answer or valid native usage', 'response_content');
+  if (!text.trim() && !truncated) throw invalidCompletion('Mistral Vibe returned no complete answer or valid native usage', 'response_content');
   if (!Number.isSafeInteger(usage.input_tokens) || Number(usage.input_tokens) < 0 || !Number.isSafeInteger(usage.output_tokens) || Number(usage.output_tokens) < 0)
     throw invalidCompletion('Mistral Vibe returned no complete answer or valid native usage', 'completion_usage');
-  return { text, inputTokens: usage.input_tokens as number, outputTokens: usage.output_tokens as number };
+  return { text, ...(truncated ? { finishReason: 'length' as const } : {}), inputTokens: usage.input_tokens as number, outputTokens: usage.output_tokens as number };
 }
 export class MistralVibe implements Source {
   readonly id = 'mistral-vibe';
@@ -195,6 +196,7 @@ export class MistralVibe implements Source {
       const handoffPrompt = bridge.prompt(attempt > 0).replace('native Freebuff tools', 'native Mistral Vibe tools');
       const result = await this.completeText({ ...request, handoffPrompt }, signal);
       inputTokens += result.inputTokens ?? 0; outputTokens += result.outputTokens ?? 0;
+      if (result.finishReason === 'length') return { text: '', finishReason: 'length', inputTokens, outputTokens };
       try { return { ...bridge.parse(result.text), inputTokens, outputTokens }; }
       catch { if (attempt === 1) throw invalidCompletion('Mistral Vibe tool response failed validation after one repair attempt', 'completion_protocol'); }
     }
@@ -212,7 +214,7 @@ export class MistralVibe implements Source {
       if (!prompt.trim()) throw new SourceError('upstream', 'No text in the Mistral Vibe request');
       const promptFile = join(temporary, 'prompt.txt'), output = join(temporary, 'export');
       await writeFile(promptFile, prompt, { mode: 0o600, flag: 'wx' });
-      const cap = Math.min(4096, Math.max(1, Number.isFinite(request.maxTokens) ? Math.floor(request.maxTokens!) : 4096));
+      const cap = request.maxTokens;
       const env: NodeJS.ProcessEnv = { ...mistralVibeEnvironment(this.options.directory),
         VIBE_ACTIVE_MODEL: MISTRAL_VIBE_MODEL, VIBE_ALLOWED_MODELS: JSON.stringify([MISTRAL_VIBE_WIRE_MODEL]),
         // These are the authenticated native Free preset's actual limits. Pin
@@ -221,7 +223,7 @@ export class MistralVibe implements Source {
         VIBE_COMPACTION_MODEL: JSON.stringify({ name: MISTRAL_VIBE_WIRE_MODEL, alias: MISTRAL_VIBE_MODEL, provider: 'mistral', max_context_length: 262144, auto_compact_threshold: 202144, thinking: 'high', thinking_levels: ['low', 'high', 'max'] }),
         VIBE_UTILITY_MODELS: '{"title":"active","smart_approve":"active"}',
         VIBE_PROVIDERS: JSON.stringify([{ name: 'mistral', api_base: 'https://api.mistral.ai/v1', api_key_env_var: 'MISTRAL_API_KEY', backend: 'mistral', api_style: 'openai' }]),
-        VIBE_AGENT_MAX_OUTPUT_TOKENS: String(cap), VIBE_OUTPUT_LIMIT_RETRIES: '0', VIBE_ENABLE_UPDATE_CHECKS: 'false',
+        ...(cap === undefined ? {} : { VIBE_AGENT_MAX_OUTPUT_TOKENS: String(cap) }), VIBE_OUTPUT_LIMIT_RETRIES: '0', VIBE_ENABLE_UPDATE_CHECKS: 'false',
         VIBE_ENABLE_MCP: 'false', VIBE_ENABLE_CONNECTORS: 'false', VIBE_ENABLE_SUBAGENTS: 'false', VIBE_DISABLED_TOOLS: '["*"]',
         VIBE_SESSION_LOGGING: '{"enabled":false,"generate_titles":false}' };
       // Vibe counts assistant history entries, including intermediate entries
@@ -235,9 +237,9 @@ export class MistralVibe implements Source {
         try { if ((await file.stat()).size > 1024 * 1024) throw new Error('Oversized export'); exported = JSON.parse(await file.readFile('utf8')); }
         finally { await file.close(); }
       } catch { throw new SourceError('upstream', 'Mistral Vibe produced no readable completion export'); }
-      if (result.code !== 0) throw nativeFailure(object(exported), result.code);
+      if (result.code !== object(exported).exit_code || (result.code !== 0 && result.code !== 3)) throw nativeFailure(object(exported), result.code);
       const completion = parseMistralVibeCompletion(result.stdout, exported);
-      if (completion.outputTokens! > cap) throw new SourceError('upstream', 'Mistral Vibe exceeded the aggregate output budget', undefined, undefined,
+      if (cap !== undefined && completion.outputTokens! > cap) throw new SourceError('upstream', 'Mistral Vibe exceeded the aggregate output budget', undefined, undefined,
         { transport: 'cli', endpointLabel: 'cli', failureReason: 'token_limit' });
       return completion;
     } catch (error) {

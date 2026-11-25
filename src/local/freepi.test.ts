@@ -32,6 +32,7 @@ function fixture(overrides: { account?: Record<string, unknown>; catalog?: unkno
 describe('Free-Pi guarded official API', () => {
   it('checks every account and catalog before inference, postchecks wallets, and keeps text/usage', async () => {
     const f = fixture(); const r = await f.source.complete(request(), AbortSignal.timeout(1000));
+    expect(JSON.parse(String(f.fetcher.mock.calls[2]![1]?.body))).not.toHaveProperty('max_tokens');
     expect(r).toEqual({ text: 'Synthetic hello. Sponsored content unchanged.', inputTokens: 40, outputTokens: 19 });
     expect(f.calls).toEqual(['/client-version', '/me/stats', '/v1/chat/completions', '/me/stats']);
     await f.source.complete(request(), AbortSignal.timeout(1000)); expect(f.calls).toHaveLength(8);
@@ -87,7 +88,9 @@ describe('Free-Pi guarded official API', () => {
     const f = fixture({ reply: { ...reply(), choices: [{ finish_reason: row.finish, message: { content: null, tool_calls: [call] } }] } });
     const r = request(); r.tools = [{ type: 'function', function: { name: 'echo', parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false } } }];
     if (row.historical) r.messages = [{ role: 'user', content: 'Synthetic history' }, { role: 'assistant', content: '', tool_calls: [call] }, { role: 'tool', content: 'Synthetic result', tool_call_id: call.id }, { role: 'user', content: 'Continue' }];
-    await expect(f.source.complete(r, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'upstream' });
+    const completion = f.source.complete(r, AbortSignal.timeout(1000));
+    if (row.finish === 'length') await expect(completion).resolves.toMatchObject({ text: '', finishReason: 'length' });
+    else await expect(completion).rejects.toMatchObject({ code: 'upstream' });
   });
   it('rejects an invalid advertised schema before any network call', async () => {
     const f = fixture(); await expect(f.source.complete({ ...request(), tools: [{ type: 'function', function: { name: 'bad', parameters: { type: 'not-a-json-schema-type' } } }] }, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused' }); expect(f.calls).toEqual([]);

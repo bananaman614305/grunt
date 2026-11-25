@@ -29,7 +29,6 @@ export const PERCH_CORE_SHA256 = {
 } as const;
 export const PERCH_RECEIPT_MAX_AGE_MS = 30 * 86400000;
 export const PERCH_TIMEOUT_MS = 175000;
-export const PERCH_MAX_OUTPUT_TOKENS = 4096;
 // These public vendor prompts are inline rC in the pinned, hashed CLI bundle.
 // They are NOT user SKILL.md files. Preflight guarantees gre(cwd).meta is null:
 // mIe then passes no userSkills to zle, so user files cannot shadow these IDs.
@@ -235,7 +234,7 @@ async function readSnapshot(request: string, sessionId: string, signal: AbortSig
   }
   throw new SourceError('upstream', 'Perch returned no authoritative native usage');
 }
-function snapshotUsage(snapshot: Record<string, unknown>, limit: number) {
+function snapshotUsage(snapshot: Record<string, unknown>, limit: number | undefined) {
   const sections = object(snapshot.sectionBreakdown), tools = snapshot.toolCallsByType;
   if (snapshot.modelId !== PERCH_MODEL_ID || snapshot.modelLabel !== PERCH_MODEL_LABEL || snapshot.cliLocalTools !== false
     || !Array.isArray(snapshot.selectedSkills) || snapshot.selectedSkills.some(skill => typeof skill !== 'string' || !builtinSkills.has(skill))
@@ -248,7 +247,7 @@ function snapshotUsage(snapshot: Record<string, unknown>, limit: number) {
   if (keys.some(key => !Number.isSafeInteger(usage[key]) || Number(usage[key]) < 0)
     || (usage.cacheReadInputTokens !== undefined && (!Number.isSafeInteger(usage.cacheReadInputTokens) || Number(usage.cacheReadInputTokens) < 0))) throw new SourceError('upstream', 'Perch returned invalid native usage');
   const inputTokens = Number(usage.inputTokens) + Number(usage.cacheReadInputTokens ?? 0), outputTokens = Number(usage.outputTokens);
-  if (!Number.isSafeInteger(inputTokens) || inputTokens < 1 || outputTokens < 1 || outputTokens > limit || usage.totalTokens !== inputTokens + outputTokens) throw new SourceError('upstream', 'Perch returned invalid or over-budget native usage');
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < 1 || outputTokens < 1 || limit !== undefined && outputTokens > limit || usage.totalTokens !== inputTokens + outputTokens) throw new SourceError('upstream', 'Perch returned invalid or over-budget native usage');
   return { inputTokens, outputTokens };
 }
 function validatedBridge(request: ModelRequest) {
@@ -266,9 +265,9 @@ function validatedBridge(request: ModelRequest) {
   } catch (error) { throw error instanceof SourceError ? error : requestRefusal('Perch rejected unsupported function definitions or an invalid tool conversation'); }
 }
 function outputBudget(value: number | undefined) {
-  if (value === undefined) return PERCH_MAX_OUTPUT_TOKENS;
+  if (value === undefined) return;
   if (!Number.isSafeInteger(value) || value < 1) throw new SourceError('refused', 'Perch requires a positive integer output budget');
-  return Math.min(value, PERCH_MAX_OUTPUT_TOKENS);
+  return value;
 }
 export class Perch implements Source {
   readonly id = 'perch'; readonly supportsFunctionTools = true;
@@ -305,7 +304,7 @@ export class Perch implements Source {
       const limit = outputBudget(request.maxTokens), bridge = validatedBridge(request);
       const lines = bridge.prompt().split('\n'), payload = lines.pop();
       // Change only our adapter instructions. The caller's JSON payload stays byte-for-byte intact.
-      const prompt = `This is a Grunt caller request using the account owner's official Perch CLI. Keep total output, including the JSON envelope, below ${limit} tokens.\n`
+      const prompt = `This is a Grunt caller request using the account owner's official Perch CLI.${limit === undefined ? '' : ` Keep total output, including the JSON envelope, below ${limit} tokens.`}\n`
         + lines.map(line => line.replaceAll('Pi', 'Grunt caller').replaceAll('Freebuff', 'Perch')).join('\n') + '\n' + payload;
       if (Buffer.byteLength(prompt) > 2 * 1024 * 1024) throw new SourceError('refused', 'Perch prompt exceeds the supported size');
       const r = await this.ready(signal);
@@ -316,7 +315,7 @@ export class Perch implements Source {
       inferenceStarted = true;
       const result = object(await session.acp.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: prompt }] }));
       signal.throwIfAborted();
-      if (result.stopReason !== 'end_turn') throw new SourceError('upstream', 'Perch did not return a complete response');
+      if (result.stopReason !== 'end_turn' && result.stopReason !== 'max_tokens') throw new SourceError('upstream', 'Perch did not return a complete response');
       let text = '';
       for (const notification of session.acp.notifications) {
         const params = object(notification.params), update = object(params.update), content = object(update.content);
@@ -329,6 +328,7 @@ export class Perch implements Source {
         }
       }
       const usage = snapshotUsage(await readSnapshot(workspace.request, session.sessionId, signal), limit);
+      if (result.stopReason === 'max_tokens') return { text: '', finishReason: 'length', ...usage };
       // The CLI has no hard upstream output-token option. This validates returned
       // usage after generation; monthly allowance can already have been consumed.
       // No repair generation is attempted, so the caller budget is cumulative.

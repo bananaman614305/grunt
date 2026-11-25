@@ -77,11 +77,13 @@ it('pins Vikey and declines a nonzero catalog price before inference', async () 
   await expect(source.complete(req, signal)).rejects.toMatchObject({ code: 'not_installed' });
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect(source.sellerQuota()).toBeUndefined();
-  await expect(source.complete(req, signal)).resolves.toMatchObject({ text: 'hello' });
+  const withoutLimit = { ...req }; delete withoutLimit.maxTokens;
+  await expect(source.complete(withoutLimit, signal)).resolves.toMatchObject({ text: 'hello' });
   const [url, init] = fetcher.mock.calls[2]!;
   expect(source.sellerQuota()).toEqual({ perAddress: 10, perIp: 100, windowSeconds: 86400 });
   expect(url).toBe('http://127.0.0.1:8381/v1/chat/completions');
-  expect(JSON.parse(String(init?.body))).toMatchObject({ model: `${seller}@${vik}`, max_tokens: 32 });
+  expect(JSON.parse(String(init?.body))).toMatchObject({ model: `${seller}@${vik}` });
+  expect(JSON.parse(String(init?.body))).not.toHaveProperty('max_tokens');
 });
 
 it('passes through Vikey quota cooldown and rejects a different seller', async () => {

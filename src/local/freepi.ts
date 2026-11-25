@@ -11,7 +11,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { acquireFreePiAccountLease } from './freepi-lock.js';
 import { quotaRetryAfter } from './quota-timing.js';
 import { diagnosticFetch } from './diagnostics.js';
-import { SourceError, requestRefusal } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const FREEPI_ID = 'freepi';
@@ -125,15 +125,16 @@ export class FreePi implements Source {
     try {
       await this.guard(token, signal);
       const body = await this.read('/v1/chat/completions', signal, token, { model: FREEPI_MODEL, messages: prepared.messages,
-        ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) });
+        ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: request.maxTokens });
       // Preserve provider-sponsored text exactly; never hide or rewrite ads.
       assertFreePiAccount(await this.read('/me/stats', signal, token), (this.options.now ?? Date.now)(), true);
       if (body.model !== 'deepseek-ai/deepseek-v41-flash-1017' || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected Free-Pi model');
       const choice = object(body.choices[0]), message = object(choice.message), usage = object(body.usage), calls = message.tool_calls;
       if (message.refusal) throw new SourceError('refused', 'Free-Pi refused this request');
       if (message.content !== undefined && message.content !== null && typeof message.content !== 'string') throw new Error('Invalid Free-Pi content');
+      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage);
       const checkedCalls = calls == null ? [] : validatedCalls(calls, prepared.validators, request);
-      if (!['stop', 'tool_calls', 'length'].includes(String(choice.finish_reason)) || choice.finish_reason === 'length' && checkedCalls.length
+      if (!['stop', 'tool_calls'].includes(String(choice.finish_reason))
         || choice.finish_reason === 'tool_calls' && !checkedCalls.length || typeof message.content !== 'string' && !checkedCalls.length || !message.content && !checkedCalls.length) throw new Error('Invalid Free-Pi completion');
       return { text: typeof message.content === 'string' ? message.content : '', ...(checkedCalls.length ? { calls: checkedCalls } : {}),
         ...(count(usage.prompt_tokens) ? { inputTokens: usage.prompt_tokens } : {}), ...(count(usage.completion_tokens) ? { outputTokens: usage.completion_tokens } : {}) };

@@ -29,7 +29,7 @@ it('persists only a private free-account/top-ups-disabled receipt and checks the
   expect(fetcher).toHaveBeenCalledOnce(); expect(fetcher.mock.calls[0]![0]).toBe(`${grant.base_url}/v1/models`);
 });
 
-it('routes Grunt through only the pinned Runcrate model with capped output', async () => {
+it('routes Grunt through only the pinned Runcrate model with the requested output budget', async () => {
   const path = await directory(); await writeRuncrateGrant(grant, path);
   const fetcher = vi.fn<typeof fetch>(async () => reply());
   const sources = new Sources([new Runcrate({ directory: path, fetcher })]);
@@ -39,7 +39,7 @@ it('routes Grunt through only the pinned Runcrate model with capped output', asy
   expect(response.status).toBe(200); expect(response.headers.get('x-grunt-source')).toBe('runcrate');
   expect(fetcher).toHaveBeenCalledOnce();
   expect(fetcher.mock.calls[0]![0]).toBe(`${grant.base_url}/v1/chat/completions`);
-  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: RUNCRATE_DEEPSEEK, max_tokens: 4096, stream: false });
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: RUNCRATE_DEEPSEEK, max_tokens: 90000, stream: false });
   await sources.close();
 });
 

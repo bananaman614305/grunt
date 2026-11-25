@@ -55,6 +55,7 @@ it.each(['fikra', 'openference'] as const)('%s pins free alias, records usage, a
   const fetcher = transport(id);
   await expect(source(id, fetcher).complete(request(id), AbortSignal.timeout(2000))).resolves.toEqual({ text: 'Hello', inputTokens: 200123, outputTokens: 2 });
   const body = JSON.parse(String(fetcher.mock.calls.at(-1)![1]?.body));
+  expect(body).not.toHaveProperty('max_tokens');
   expect(body.model).toBe(PROMOTIONAL_PROVIDERS[id].model);
   expect(body.stream).toBe(id === 'openference');
   expect(fetcher.mock.calls.some(([url]) => String(url).includes('/quote'))).toBe(false);
@@ -245,7 +246,9 @@ it('Openference maintenance retains the free-price guard', async () => {
 it.each(['length', 'tool_calls'])('rejects incomplete function JSON with finish %s', async finish => {
   const response = streamResponse(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model, choices: [{ index: 0,
     delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write_file', arguments: '{"path":' } }] }, finish_reason: finish }] }]));
-  await expect(readPromotionalStream(response, PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(2000))).rejects.toBeDefined();
+  const reply = readPromotionalStream(response, PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(2000));
+  if (finish === 'length') await expect(reply).resolves.toEqual({ text: '', finishReason: 'length' });
+  else await expect(reply).rejects.toBeDefined();
 });
 
 it('Openference streams native tools through Grunt HTTP and automatic selection', async () => {
