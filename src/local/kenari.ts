@@ -99,7 +99,7 @@ export class Kenari implements Source {
       return new Response(null, { status: 502 });
     });
     try {
-      return await client.complete({ ...request, maxTokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) }, signal);
+      return await client.complete(request, signal);
     } catch (error) {
       if (error instanceof SourceError && error.code === 'quota') {
         throw new SourceError('quota', 'Kenari free quota is temporarily unavailable', retryAfter);

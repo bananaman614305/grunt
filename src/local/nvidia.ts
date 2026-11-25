@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
 
 export const NVIDIA_DEEPSEEK = 'deepseek-ai/deepseek-v4.1-flash';
@@ -64,7 +64,7 @@ export class Nvidia implements Source {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
         body: JSON.stringify({ model: NVIDIA_DEEPSEEK, messages: request.messages, tools: request.tools.length ? request.tools : undefined,
-          stream: false, max_tokens: Math.min(4096, Math.max(1, request.maxTokens ?? 4096)) })
+          stream: false, max_tokens: request.maxTokens })
       });
     } catch {
       caller.throwIfAborted();
@@ -79,9 +79,10 @@ export class Nvidia implements Source {
         `NVIDIA returned HTTP ${response.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined);
     }
     try {
-      const result = await response.json() as { choices?: { message?: { content?: string | null; tool_calls?: ToolCall[]; refusal?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      const result = await response.json() as { choices?: { finish_reason?: unknown; message?: { content?: string | null; tool_calls?: ToolCall[]; refusal?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       const message = result.choices?.[0]?.message;
       if (message?.refusal) throw new SourceError('refused', 'NVIDIA refused the request');
+      if (lengthLimited(result.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, result.usage);
       if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'NVIDIA returned an invalid completion');
       return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), inputTokens: result.usage?.prompt_tokens ?? 0, outputTokens: result.usage?.completion_tokens ?? 0 };
     } catch (error) {

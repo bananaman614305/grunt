@@ -7,7 +7,7 @@ import { readPromotionalStream } from './promotional-api.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import { MetadataFlights } from './metadata-flight.js';
-import { SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const DARUS_MODEL = 'darus/deepseek-v4.1-flash-1017-FREE';
@@ -101,10 +101,10 @@ export class Darus implements Source {
     caller.throwIfAborted();
     if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Darus source closed');
     if (!checked || checked.day !== new Date(this.now).toISOString().slice(0, 10)) throw new SourceError('refused', 'Darus protected daily free allowance could not be verified');
-    const maxTokens = Math.min(4096, Math.max(1, request.maxTokens ?? 4096));
+    const maxTokens = request.maxTokens;
     // UTF-8 bytes plus framing are a conservative input-token bound, not a
     // tokenizer estimate. Protect Balance remains the authoritative hard stop.
-    const budget = Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools }), 'utf8') + 4096 + maxTokens;
+    const budget = Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools }), 'utf8') + 4096 + (maxTokens ?? 0);
     if (checked.remaining < budget) throw new SourceError('quota', 'Darus free allowance is insufficient for this bounded request',
       Math.max(1, Math.ceil(((this.window?.resetAt ?? this.now + dayMs) - this.now) / 1000)));
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(180000)]);
@@ -132,8 +132,9 @@ export class Darus implements Source {
       if (body.model !== DARUS_MODEL || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected completion');
       const choice = object(body.choices[0]), message = object(choice.message), usage = object(body.usage);
       if (message.refusal) throw new SourceError('refused', 'Darus request refused');
+      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage);
       const calls = message.tool_calls;
-      if (!['stop', 'tool_calls', 'length'].includes(String(choice.finish_reason)) || choice.finish_reason === 'length' && Array.isArray(calls) && calls.length
+      if (!['stop', 'tool_calls'].includes(String(choice.finish_reason))
         || calls !== undefined && !validCalls(calls) || typeof message.content !== 'string' && !(validCalls(calls) && calls.length)
         || !message.content && !(validCalls(calls) && calls.length)) throw new Error('Invalid completion');
       return { text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),

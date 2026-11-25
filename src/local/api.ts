@@ -117,8 +117,9 @@ function measuredChatUsage(input: unknown, output: unknown): ChatUsage | null {
 }
 export function encode(result: Completion, model: string, api: string, namespaces?: ReadonlyMap<string, { namespace: string; name: string }>) {
   const id = randomUUID(), input = result.inputTokens ?? 0, output = result.outputTokens ?? 0;
-  if (api === 'messages') return { id: `msg_${id}`, type: 'message', role: 'assistant', model, content: [...(result.text ? [{ type: 'text', text: result.text }] : []), ...(result.calls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.function.name, input: toolInput(c.function.arguments) }))], stop_reason: result.calls?.length ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: input, output_tokens: output } };
-  if (api === 'responses') return { id: `resp_${id}`, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed', error: null, incomplete_details: null, model, output: [...(result.text ? [{ id: `msg_${id}`, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: result.text, annotations: [] }] }] : []), ...(result.calls ?? []).map(c => ({ id: `fc_${c.id}`, type: 'function_call', status: 'completed', call_id: c.id, ...(namespaces?.get(c.function.name) ?? { name: c.function.name }), arguments: c.function.arguments }))], usage: { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } }, parallel_tool_calls: true, tools: [], tool_choice: 'auto' };
+  if (api === 'messages') return { id: `msg_${id}`, type: 'message', role: 'assistant', model, content: [...(result.text ? [{ type: 'text', text: result.text }] : []), ...(result.calls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.function.name, input: toolInput(c.function.arguments) }))], stop_reason: result.finishReason === 'length' ? 'max_tokens' : result.calls?.length ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: input, output_tokens: output } };
+  const status = result.finishReason === 'length' ? 'incomplete' : 'completed';
+  if (api === 'responses') return { id: `resp_${id}`, object: 'response', created_at: Math.floor(Date.now() / 1000), status, error: null, incomplete_details: status === 'incomplete' ? { reason: 'max_output_tokens' } : null, model, output: [...(result.text ? [{ id: `msg_${id}`, type: 'message', status, role: 'assistant', content: [{ type: 'output_text', text: result.text, annotations: [] }] }] : []), ...(result.calls ?? []).map(c => ({ id: `fc_${c.id}`, type: 'function_call', status, call_id: c.id, ...(namespaces?.get(c.function.name) ?? { name: c.function.name }), arguments: c.function.arguments }))], usage: { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } }, parallel_tool_calls: true, tools: [], tool_choice: 'auto' };
   const value = { id: `chatcmpl-${id}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, message: { role: 'assistant', content: result.text || null, ...(result.calls?.length ? { tool_calls: result.calls } : {}) }, finish_reason: result.finishReason ?? (result.calls?.length ? 'tool_calls' : 'stop') }], usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output } };
   encodedChatUsage.set(value, measuredChatUsage(result.inputTokens, result.outputTokens));
   return value;
@@ -153,7 +154,7 @@ export function events(value: Obj, api: string, options: { includeUsage?: boolea
     push('message_delta', { type: 'message_delta', delta: { stop_reason: value.stop_reason, stop_sequence: null }, usage: { output_tokens: object(value.usage).output_tokens } });
     push('message_stop', { type: 'message_stop' });
   } else {
-    for (const type of ['response.created', 'response.in_progress']) push(type, { type, response: { ...value, status: 'in_progress', output: [], usage: null } });
+    for (const type of ['response.created', 'response.in_progress']) push(type, { type, response: { ...value, status: 'in_progress', incomplete_details: null, output: [], usage: null } });
     array(value.output).forEach((v, output_index) => {
       const item = object(v), tool = item.type === 'function_call';
       push('response.output_item.added', { type: 'response.output_item.added', output_index, item: tool ? { ...item, status: 'in_progress', arguments: '' } : { ...item, status: 'in_progress', content: [] } });
@@ -170,7 +171,8 @@ export function events(value: Obj, api: string, options: { includeUsage?: boolea
       }
       push('response.output_item.done', { type: 'response.output_item.done', output_index, item });
     });
-    push('response.completed', { type: 'response.completed', response: value });
+    const terminal = value.status === 'incomplete' ? 'response.incomplete' : 'response.completed';
+    push(terminal, { type: terminal, response: value });
   }
   return out;
 }

@@ -1,4 +1,4 @@
-import { SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, ToolCall } from './source.js';
 
 export const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -16,11 +16,12 @@ export async function selectedStatus(id: string, response: Response) {
 
 export function selectedReply(id: string, payload: unknown, request: ModelRequest, exactModel: (model: unknown) => boolean): Completion {
   const body = object(payload);
-  const message = object(Array.isArray(body.choices) && body.choices.length === 1 ? object(body.choices[0]).message : undefined);
+  const choice = object(Array.isArray(body.choices) && body.choices.length === 1 ? body.choices[0] : undefined), message = object(choice.message);
   const usage = object(body.usage);
   if (!exactModel(body.model) || message.refusal || (message.tool_calls != null && !Array.isArray(message.tool_calls))) {
     throw new SourceError('upstream', `${id} returned an unexpected model or completion`);
   }
+  if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage);
   const functions = new Set(request.tools.map(tool => object(tool.function).name));
   const ids = new Set(request.messages.flatMap(message => message.tool_calls?.map(call => call.id) ?? []));
   const calls: ToolCall[] = [];

@@ -35,11 +35,12 @@ function rotatingFixture(respond: (model: string) => Response | Promise<Response
   const source = new BeatAPI({ directory, fetcher, now: () => now, timeout });
   return { source, dispatched, advance: (ms: number) => { now += ms; } };
 }
-it('routes only the explicit free model through Grunt and caps output without spending signup credit', async () => {
+it('routes only the explicit free model through Grunt with provider-default output without spending signup credit', async () => {
   const f = fixture(); const app = createLocalApp(new Sources([f.source]));
   const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request()) });
   expect(response.status).toBe(200); expect((await response.json()).usage.prompt_tokens).toBe(210081);
-  const post = f.calls.find(c => c.init?.method === 'POST')!; expect(JSON.parse(String(post.init!.body))).toMatchObject({ model: BEATAPI_MODEL, max_tokens: 4096, stream: false });
+  const post = f.calls.find(c => c.init?.method === 'POST')!; expect(JSON.parse(String(post.init!.body))).toMatchObject({ model: BEATAPI_MODEL, stream: false });
+  expect(JSON.parse(String(post.init!.body))).not.toHaveProperty('max_tokens');
   expect(f.calls.map(c => c.url.split('/').at(-1))).toEqual(['usage', 'completions', 'usage']);
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'quota', retryAfter: 60 }); expect(f.calls).toHaveLength(3);
 });

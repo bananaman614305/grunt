@@ -45,7 +45,7 @@ it('uses only the fixed native Free model, private prompt files, and native usag
     const sent = JSON.parse(await readFile(f.snapshot, 'utf8'));
     expect(sent.prompt).toBe(prompt); expect(sent.args).toContain('--prompt-file'); expect(sent.args).not.toContain(prompt); expect(sent.promptMode).toBe(0o600);
     expect(sent.args.slice(0, 4)).toEqual(['--model', MISTRAL_VIBE_MODEL, '--disabled-tools', '*']);
-    expect(sent.compaction.name).toBe(MISTRAL_VIBE_WIRE_MODEL); expect(sent.hasShellApiKey).toBe(false); expect(sent.outputCap).toBe('4096'); expect(sent.allowed).toEqual([MISTRAL_VIBE_WIRE_MODEL]);
+    expect(sent.compaction.name).toBe(MISTRAL_VIBE_WIRE_MODEL); expect(sent.hasShellApiKey).toBe(false); expect(sent.outputCap).toBe('10000'); expect(sent.allowed).toEqual([MISTRAL_VIBE_WIRE_MODEL]);
     expect(sent.models).toEqual([{ name: MISTRAL_VIBE_WIRE_MODEL, alias: MISTRAL_VIBE_MODEL, provider: 'mistral', max_context_length: 262144, auto_compact_threshold: 202144, thinking: 'high', thinking_levels: ['low', 'high', 'max'] }]);
     expect(sent.providers[0].api_base).toBe('https://api.mistral.ai/v1'); expect(sent.enableMcp).toBe('false'); expect(sent.workdir).toBe(f.paths.work);
     await expect(readFile(sent.args[sent.args.indexOf('--prompt-file') + 1])).rejects.toMatchObject({ code: 'ENOENT' });
@@ -127,7 +127,6 @@ it.each(['wrong-model', 'wrong-host', 'paid-compactor', 'malformed', 'native-too
   } finally { await f.source.close(); }
 });
 it.each([
-  ['answer', 'length', 'upstream', 'length'],
   ['quota', 'turn_limit', 'quota', 'turn_limit'],
   ['answer', 'refusal', 'refused', 'refusal'],
   ['answer', 'private-secret-upstream-error', 'upstream', undefined],
@@ -140,6 +139,14 @@ it.each([
       ...(failureReason ? { failureReason } : {}) });
     expect(error.message).not.toContain('private-secret-upstream-error');
   } finally { await f.source.close(); }
+});
+it.each(['length', 'token_limit'])('returns the native %s cutoff', async reason => {
+  const f = await fixture('answer', reason);
+  try {
+    await expect(f.source.complete(request(), AbortSignal.timeout(5000))).resolves.toMatchObject({ finishReason: 'length', outputTokens: 26 });
+    expect(JSON.parse(await readFile(f.snapshot, 'utf8'))).not.toHaveProperty('outputCap');
+  }
+  finally { await f.source.close(); }
 });
 it('requires a fresh Free/no-overage/no-payment receipt and private native authentication', async () => {
   const f = await fixture();

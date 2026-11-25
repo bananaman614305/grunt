@@ -29,7 +29,7 @@ it.each(Object.keys(FREE_API_PROVIDERS) as FreeApiProvider[])('pins %s to its ex
   const [url, init] = fetcher.mock.calls[0]!;
   expect(url).toBe(`${grant.base_url}${FREE_API_PROVIDERS[provider].prefix}/chat/completions`);
   expect(init?.redirect).toBe('error');
-  expect(JSON.parse(String(init?.body))).toMatchObject({ model: FREE_API_PROVIDERS[provider].model, max_tokens: provider === 'zro' ? 90000 : 4096, stream: false,
+  expect(JSON.parse(String(init?.body))).toMatchObject({ model: FREE_API_PROVIDERS[provider].model, max_tokens: 90000, stream: false,
     tools: [{ type: 'function', function: { name: 'read' } }] });
   await source.close();
 });
@@ -57,11 +57,20 @@ it.each([null, ''])('surfaces Zro reasoning-only truncation to Pi when content i
   await source.close();
 });
 
-it('lets Zro choose its output budget when the caller supplies none', async () => {
-  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ finish_reason: 'stop', message: { content: 'Hello' } }] }));
-  const source = new FreeApi('zro', { loadGrant: async () => grant, fetcher });
-  await expect(source.complete(request, AbortSignal.timeout(1000))).resolves.toMatchObject({ text: 'Hello', finishReason: 'stop' });
+it.each(Object.keys(FREE_API_PROVIDERS) as FreeApiProvider[])('lets %s choose its budget and reports an unfinished tool call', async provider => {
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ finish_reason: 'max_tokens',
+    message: { content: 'Starting work', tool_calls: [{ function: { arguments: '{"path":' } }] } }] }));
+  const source = new FreeApi(provider, { loadGrant: async () => grant, fetcher });
+  const app = createLocalApp(new Sources([source]));
+  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: provider, messages: request.messages, stream: true }) });
+  expect(response.status).toBe(200);
+  const stream = await response.text();
+  expect(stream).toContain('"finish_reason":"length"');
+  expect(stream).toContain('Starting work');
+  expect(stream).not.toContain('tool_calls');
   expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).not.toHaveProperty('max_tokens');
+  await source.close();
 });
 
 it('rejects unknown providers and arbitrary model requests before any HTTP call', async () => {

@@ -35,7 +35,7 @@ it('uses only fixed anonymous Particle with no inherited key, and checks live fr
   expect(await f.source.complete({ ...request(), model: 'arbitrary-paid-alias', maxTokens: 10000 }, new AbortController().signal)).toEqual({ text: 'Hello.', inputTokens: 20, outputTokens: 5 });
   expect(f.fetcher.mock.calls.map(([url]) => url)).toEqual([`${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/chat/completions`]);
   for (const [, init] of f.fetcher.mock.calls) { expect(init?.redirect).toBe('error'); expect(new Headers(init?.headers).has('authorization')).toBe(false); }
-  expect(JSON.parse(f.posts()[0]![1]!.body as string)).toMatchObject({ model: KILO_PARTICLE, max_tokens: 4096, stream: false });
+  expect(JSON.parse(f.posts()[0]![1]!.body as string)).toMatchObject({ model: KILO_PARTICLE, max_tokens: 10000, stream: false });
 });
 
 it('probes Kilo without its saved grant until setup switches to account bootstrap', async () => {
@@ -78,11 +78,12 @@ it.each([
   { usage: { ...usage(), completion_tokens: 5000 } }, { usage: { ...usage(), prompt_tokens: -1 } }
 ])('rejects unverified identity, charges and malformed usage without retrying (%j)', async patch => {
   const f = fixture({ infer: () => Response.json(result(patch)) });
-  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused' }); expect(f.posts()).toHaveLength(1);
+  await expect(f.source.complete({ ...request(), maxTokens: 4000 }, new AbortController().signal)).rejects.toMatchObject({ code: 'refused' }); expect(f.posts()).toHaveLength(1);
 });
 it('preserves native call IDs and validates arguments against the requested schema', async () => {
   const f = fixture({ infer: () => Response.json(result({ choices: [{ message: { content: null, tool_calls: [call] } }] })) });
   expect((await f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal)).calls).toEqual([call]);
+  expect(JSON.parse(String(f.posts()[0]![1]?.body))).not.toHaveProperty('max_tokens');
   const invalid = fixture({ infer: () => Response.json(result({ choices: [{ message: { content: null, tool_calls: [{ ...call, function: { ...call.function, arguments: '{"nonce":"wrong"}' } }] } }] })) });
   await expect(invalid.source.complete({ ...request(), tools: [tool] }, new AbortController().signal)).rejects.toMatchObject({ code: 'upstream' });
 });
@@ -204,7 +205,7 @@ it.each([
   ['refused', 'refusal', () => Response.json(result({ choices: [{ message: { refusal: 'private upstream rationale' } }] }))]
 ] as const)('records bounded HTTP 200 failure metadata for %s %s', async (code, failureReason, infer) => {
   const f = fixture({ infer });
-  const completion = f.source.complete(request(), new AbortController().signal);
+  const completion = f.source.complete({ ...request(), maxTokens: 4000 }, new AbortController().signal);
   await expect(completion).rejects.toHaveProperty('code', code);
   await expect(completion).rejects.toHaveProperty('diagnostics', {
     transport: 'http', endpointLabel: 'chat.completions', httpStatus: 200, failureReason

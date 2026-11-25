@@ -53,6 +53,7 @@ it('uses only the exact free route and returns its native tools through Grunt', 
     const [url, init] = fetcher.mock.calls[1]!;
     expect(url).toBe(`${grant.base_url}/v1/chat/completions`);
     expect(JSON.parse(String(init?.body))).toMatchObject({ model: KENARI_FREE_MODEL, stream: false });
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty('max_tokens');
     expect(init?.redirect).toBe('error');
   } finally { await sources.close(); }
 });
