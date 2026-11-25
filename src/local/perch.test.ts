@@ -161,6 +161,8 @@ it('preserves the user payload verbatim while clearly identifying the Grunt call
   const params = f.requests.find(r => r.method === 'session/prompt')!.params;
   const prompt = (params.prompt as { text: string }[])[0]!.text; expect(prompt).toContain('Grunt caller');
   const payload = JSON.parse(prompt.split('\n').at(-1)!); expect(payload.messages[0].content).toBe(content);
+  // Our instructions never name Pi; only the caller's own payload does.
+  expect(prompt.split('\n').slice(0, -1).join('\n')).not.toMatch(/\bPi\b/); expect(prompt).toContain('is available to you now');
 });
 it('surfaces native truncation and omits the budget instruction by default', async () => {
   const f = fake({ stopReason: 'max_tokens', envelope: '{"type":"calls",' });

@@ -186,6 +186,7 @@ export class Pollinations implements Source {
   readonly inferenceOnly = true;
   readonly id = 'pollinations';
   readonly supportsFunctionTools = true;
+  readonly jsonToolBridge = true;
   private shutdown = new AbortController();
   private pending = new Set<Promise<unknown>>();
   private metadata = new MetadataFlights();

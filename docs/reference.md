@@ -198,10 +198,21 @@ Set it only when the full text and tool
 payload can be retained, reviewed by staff and used for training, and contains
 no secrets, confidential business information or other people’s personal data.
 
+An image in a conversation (a user turn, a tool result such as a Read of a PNG, or
+older history) no longer ends the conversation: no free source takes images, so the
+local API replaces each image with a short text note and routes the request as text,
+unless an eligible adapter lists image input
+([details](router.md#2-score-back-off-retirement)).
+
 Automatic selection (`grunt`) sends requests containing function tools
 only to sources that return tool calls to the caller's harness. Native API
 sources forward function definitions; validated JSON bridges return correlated
-calls for the caller's harness to execute. OpenCode runs its own delegate tools
+calls for the caller's harness to execute. Native sources are drawn first and a
+JSON bridge (Mistral Vibe, Perch, Pollinations) only when none is eligible, see
+[native tool sources first](router.md#2-score-back-off-retirement). A bridge tells the
+model that every listed tool can be called in this reply, several at once, and that
+the caller's harness runs them. It names no particular harness, and its call ids
+keep their opaque `pi_` prefix. OpenCode runs its own delegate tools
 and returns final text, so it receives only requests without function tools,
 unless the caller names `opencode` explicitly. A task bound to OpenCode moves,
 with a handoff, to a tool-capable source when the harness attaches tools. When
@@ -632,7 +643,13 @@ different model, the Kilo source tries another verified free model from the
 same live catalog: exact `:free` models and `reflection/beam-free` are eligible.
 A timeout or any other failure does not move on. The initial order is Particle,
 then Reflection Beam, then the rest in catalog order. Router aliases
-such as `kilo-auto/free` and `openrouter/free` are never used. The model that
+such as `kilo-auto/free` and `openrouter/free` are never used. For a request
+with function tools the rotation leaves out models with evidence against agentic
+tool work: today only `liquid/lfm-3-1.7b:free`, a 1.73B-parameter model with an
+8192-token output cap whose own model card advises against agentic coding. The
+other nine free models stay, and text-only requests and the model list used for
+availability checks are unchanged. If a tool request would have no model left the
+whole rotation is used (`KILO_NOT_FOR_TOOL_WORK` in `src/local/kilo.ts`). The model that
 answered last is tried first on the next request. When every listed model fails
 this way, Kilo reports quota with the earliest reported refill only if every model
 returned 429; otherwise it reports the last non-quota failure. The pool moves to

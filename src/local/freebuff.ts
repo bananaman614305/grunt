@@ -56,7 +56,7 @@ export function parseChat(value: unknown, prompt: string, forbidNative = false):
   const userIndex = messages.findLastIndex(m => matchesUser(m, prompt));
   if (userIndex < 0) return;
   const replies = messages.slice(userIndex + 1).filter(m => m.variant === 'ai');
-  if (forbidNative && replies.some(m => m.blocks?.some(b => b.type !== 'text'))) throw new SourceError('refused', 'Freebuff used native tools during a Pi JSON bridge request');
+  if (forbidNative && replies.some(m => m.blocks?.some(b => b.type !== 'text'))) throw new SourceError('refused', 'Freebuff used native tools during a JSON bridge request');
   const last = replies.at(-1);
   if (!last || last.isComplete !== true) return;
   if (!Array.isArray(last.blocks)) throw new SourceError('upstream', 'Freebuff chat format changed: missing reply blocks');
@@ -80,6 +80,7 @@ export class Freebuff implements Source {
   readonly reportsOutput = true;
   constructor(private options: { mux?: Multiplexer; home?: string; pool?: number; timeout?: number; poll?: number; startup?: number; toolBridge?: boolean; doctor?: (signal: AbortSignal) => Promise<string> } = {}) {}
   get supportsFunctionTools() { return this.options.toolBridge === true; }
+  get jsonToolBridge() { return this.options.toolBridge === true; }
   private get mux() { return this.options.mux ?? (this.options.mux = new Tmux()); }
   async available() {
     try {

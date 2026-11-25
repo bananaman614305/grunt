@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { RequestError, SourceError, answeredBy, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
+import { RequestError, SourceError, answeredBy, bridgedTools, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -39,6 +39,14 @@ export function recommendedAdapters(registry: Registry, now = Date.now()) {
 export function registryScoreFactor(score: number | null | undefined) {
   return typeof score === 'number' && Number.isFinite(score) ? 0.5 + Math.max(0, Math.min(100, score)) / 100 : 1;
 }
+
+// A request with function tools draws from sources that call tools through the provider's own interface before it
+// draws from JSON-bridged ones (Source.jsonToolBridge), whose model is only asked, in prose, to answer with a tool
+// envelope and may decline. Only the draw set narrows: weights, consent, quota and cooldowns are untouched, and a
+// bridged source still serves when no native tool source is eligible. See docs/router.md.
+export const NATIVE_TOOL_SOURCES_FIRST = true;
+// An image-capable source benched for longer than this no longer keeps the image in the conversation (see imageUsable).
+export const IMAGE_WAIT_SECONDS = 300;
 
 export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
 interface Task {
@@ -159,6 +167,18 @@ export class StickyRouter {
   supportsInput(id: string, imageInput = false) {
     return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));
   }
+  // An adapter that lists image input in the current registry, whatever its state right now.
+  private imageListed(id: string) {
+    return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && adapter.modalities.includes('image') && !scoutRetired(adapter, this.now()));
+  }
+  // An image-capable source that can serve soon: listed, set up, not retired, and not benched longer than
+  // IMAGE_WAIT_SECONDS. The caller keeps the image for it (a short wait or a true 429 retry is honest); beyond that
+  // the conversation is better served as text now than held for a source that is gone for hours.
+  imageUsable(id: string) {
+    if (!this.imageListed(id) || this.options.disabled?.has(id) || this.options.pending?.has(id) || this.retired(id)) return false;
+    const until = this.cooldown(id)?.until;
+    return until === undefined || until <= this.now() + IMAGE_WAIT_SECONDS * 1000;
+  }
   private async git(cwd: string, args: string[], signal: AbortSignal) {
     return (await exec('git', ['-C', cwd, ...args], { signal, timeout: 10000, maxBuffer: 1024 * 1024 })).stdout.trim();
   }
@@ -197,7 +217,7 @@ export class StickyRouter {
   }
   private fasterContinuation(task: Task, request: ModelRequest, candidates: Candidate[], adapters: Adapter[], workload: RoutingWorkload) {
     const reset = () => { delete task.reassessment; return undefined; };
-    // Native agents retain private tool/session state. Only Pi tool routes carry
+    // Native agents retain private tool/session state. Only function-tool routes carry
     // the complete continuation transcript across this safe request boundary.
     if (!needsFunctionTools(request) || this.sources.some(source => source.id === request.model)
       || task.lastPerformanceSwitchAt !== undefined && this.now() - task.lastPerformanceSwitchAt < 5 * 60 * 1000) return reset();
@@ -249,8 +269,8 @@ export class StickyRouter {
       if (task.busy) throw new SourceError('upstream', 'A request for this task is already running; retry when it finishes');
       task.busy = true;
     }
-    // A turn bound to a source without Pi tool support switches (with handoff)
-    // when Pi attaches tools, unless the caller named that source explicitly.
+    // A turn bound to a source without function-tool support switches (with handoff)
+    // when the client attaches tools, unless the caller named that source explicitly.
     const toolsRequired = needsFunctionTools(request) && !explicit;
     const attempted = new Set<string>(), refused = new Set<string>();
     const observedEligible = new Set<string>();
@@ -349,20 +369,33 @@ export class StickyRouter {
         }
         if (!eligible.length) {
           if (unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-          const failure = this.exhausted(toolsRequired, retryTimes, refused.size, transient);
+          // No source lists image input at all: that is the request's shape, not quota, so say so as an invalid request.
+          const imageRefused = request.imageInput === true && !this.sources.some(source => (!explicit || source.id === request.model) && !this.options.unrouted?.has(source.id) && this.imageListed(source.id));
+          const failure = imageRefused ? new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text')
+            : this.exhausted(toolsRequired, retryTimes, refused.size, transient);
           // Keep the task reserved until its fallback has settled.
           if (!explicit && fallback) return await fallback(failure, signal);
           throw failure;
         }
-        const idle = eligible.filter(candidate => !this.busy(candidate.source.id));
+        const boundMain = eligible.some(candidate => candidate.source.id === task.source);
+        // A task that is not bound yet (a first draw or a fallback) takes a native tool source when one is eligible, so
+        // a model that must be asked in prose to call tools is not drawn while a provider-native one could answer. A
+        // bound task keeps its source: it is mid-session, and leaving costs a handoff for no known failure.
+        const native = NATIVE_TOOL_SOURCES_FIRST && toolsRequired && !boundMain && eligible.some(candidate => !bridgedTools(candidate.source));
+        const draw = native ? eligible.filter(candidate => !bridgedTools(candidate.source)) : eligible;
+        // Only bridged sources are ready, but a native one is still being checked: wait for that check (deadline
+        // bounded) instead of drawing a bridged source on a cold cache.
+        if (NATIVE_TOOL_SOURCES_FIRST && toolsRequired && !boundMain && !native && unknown.some(source => toolCapable(source) && !bridgedTools(source)) && this.availability.hasPending()) {
+          await this.availability.changed(signal); continue;
+        }
+        const idle = draw.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
         // prefer idle capacity but must not wait behind background work.
-        const boundMain = eligible.some(candidate => candidate.source.id === task.source);
         // A fallback (the bound source failed or is benched) prefers idle capacity like a first draw. Sources whose
         // admission metadata is still being fetched may be idle, so wait briefly for those checks (each is deadline
         // bounded) before sharing a source that is busy with another task. A healthy bound source never waits.
         if (!boundMain && task.source !== undefined && !idle.length && unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
-        const ready = boundMain || !idle.length ? eligible : idle;
+        const ready = boundMain || !idle.length ? draw : idle;
         let selected = ready.find(candidate => candidate.source.id === task.source);
         let performanceSwitch = false;
         if (selected && !attempted.size) {

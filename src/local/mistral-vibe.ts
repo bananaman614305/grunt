@@ -152,6 +152,7 @@ export function parseMistralVibeCompletion(stdout: string, exported: unknown): C
 export class MistralVibe implements Source {
   readonly id = 'mistral-vibe';
   readonly supportsFunctionTools = true;
+  readonly jsonToolBridge = true;
   private shutdown = new AbortController();
   private pending = new Set<Promise<unknown>>();
   constructor(private options: { directory?: string; binary?: string; timeout?: number } = {}) {}

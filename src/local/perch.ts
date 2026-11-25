@@ -270,7 +270,7 @@ function outputBudget(value: number | undefined) {
   return value;
 }
 export class Perch implements Source {
-  readonly id = 'perch'; readonly supportsFunctionTools = true;
+  readonly id = 'perch'; readonly supportsFunctionTools = true; readonly jsonToolBridge = true;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>(); private busy = false;
   constructor(private options: { directory?: string; timeout?: number; processes?: PerchProcesses } = {}) {}
   private get directory() { return this.options.directory ?? directoryDefault(); }
@@ -305,7 +305,7 @@ export class Perch implements Source {
       const lines = bridge.prompt().split('\n'), payload = lines.pop();
       // Change only our adapter instructions. The caller's JSON payload stays byte-for-byte intact.
       const prompt = `This is a Grunt caller request using the account owner's official Perch CLI.${limit === undefined ? '' : ` Keep total output, including the JSON envelope, below ${limit} tokens.`}\n`
-        + lines.map(line => line.replaceAll('Pi', 'Grunt caller').replaceAll('Freebuff', 'Perch')).join('\n') + '\n' + payload;
+        + lines.map(line => line.replaceAll('Freebuff', 'Perch')).join('\n') + '\n' + payload;
       if (Buffer.byteLength(prompt) > 2 * 1024 * 1024) throw new SourceError('refused', 'Perch prompt exceeds the supported size');
       const r = await this.ready(signal);
       if ((await verifyPerchMemory(this.directory, signal, this.processes)).email !== r.email) throw eligibilityError();
