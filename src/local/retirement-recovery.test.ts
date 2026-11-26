@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
-import { RETIRED_REOPEN_MS, MAX_RETIRED_REOPEN_MS, retiredReopenDelay } from './routing-history.js';
+import { RETIRED_REOPEN_MS, MAX_RETIRED_REOPEN_MS, nextRoutingBackoff, retiredReopenDelay, type RoutingBackoff } from './routing-history.js';
 import { RETIRE_AFTER_FAILURES } from './routing.js';
 import { SourceError, Sources, requestRefusal } from './source.js';
 import type { ModelRequest, Source } from './source.js';
@@ -66,6 +66,31 @@ it('counts gateway failures toward retirement while honoring their retry hints',
       }
     }
   } finally { await routes.sources.close(); }
+});
+
+it('flapping-outage-streak-reset counts timeouts alternating with hinted gateway errors', () => {
+  const timeout = new SourceError('timeout', 'timed out');
+  const gateway = new SourceError('upstream', 'HTTP 503', 20, undefined, { httpStatus: 503 });
+  let hold: RoutingBackoff | undefined;
+  let at = 1000;
+  for (const [index, failure] of [timeout, gateway, timeout, gateway, timeout].entries()) {
+    hold = nextRoutingBackoff(hold, failure, failure.retryAfter ?? 300, false, at);
+    expect(hold).toMatchObject({ signature: 'outage:::', streak: index + 1 });
+    if (failure === gateway) expect(hold.until - at).toBe(20000);
+    at = hold.until;
+  }
+  expect(hold?.streak).toBe(RETIRE_AFTER_FAILURES);
+  expect(nextRoutingBackoff(hold, gateway, 20, false, at)).toMatchObject({ trials: 1, until: at + retiredReopenDelay(1) });
+});
+
+it('keeps a hinted non-gateway server error on cooldown without accumulating an outage streak', () => {
+  const failure = new SourceError('upstream', 'HTTP 500', 20, undefined, { httpStatus: 500 });
+  let hold: RoutingBackoff | undefined;
+  for (let i = 0; i <= RETIRE_AFTER_FAILURES; i++) {
+    const at = hold?.until ?? 1000;
+    hold = nextRoutingBackoff(hold, failure, 20, false, at);
+    expect(hold).toMatchObject({ signature: 'hint:::', streak: 1, until: at + 20000 });
+  }
 });
 
 it('computes a bounded doubling reopen wait', () => {
