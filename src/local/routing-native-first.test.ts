@@ -3,7 +3,6 @@ import { bundledRegistry } from '../registry.js';
 import { StickyRouter } from './routing.js';
 import { SourceError } from './source.js';
 import { ConsentSource } from './consent-source.js';
-import { Freebuff } from './freebuff.js';
 import { Kilo } from './kilo.js';
 import { MistralVibe } from './mistral-vibe.js';
 import { Perch } from './perch.js';
@@ -173,10 +172,10 @@ it('spreads concurrent text-only tasks across all idle sources as before', async
 });
 
 it('marks exactly the JSON-bridged adapters, and keeps the mark through a consent guard', async () => {
-  const bridged = [new MistralVibe(), new Perch(), new Pollinations(), new Freebuff({ toolBridge: true })];
-  const native = [new Kilo(), new Zro(), new Freebuff()];
-  expect(bridged.map(item => item.jsonToolBridge)).toEqual([true, true, true, true]);
-  expect(native.map(item => item.jsonToolBridge === true)).toEqual([false, false, false]);
+  const bridged = [new MistralVibe(), new Perch(), new Pollinations()];
+  const native = [new Kilo(), new Zro()];
+  expect(bridged.map(item => item.jsonToolBridge)).toEqual([true, true, true]);
+  expect(native.map(item => item.jsonToolBridge === true)).toEqual([false, false]);
   expect(new ConsentSource(bridged[0]!, '/nonexistent').jsonToolBridge).toBe(true);
   expect(new ConsentSource(native[0]!, '/nonexistent').jsonToolBridge).toBeUndefined();
   await Promise.all([...bridged, ...native].map(item => item.close?.()));

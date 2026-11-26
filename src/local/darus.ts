@@ -96,7 +96,7 @@ export class Darus implements Source {
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     caller.throwIfAborted();
     if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Darus source closed');
-    if (!['darus', 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported Darus request');
+    if (!['darus', 'grunt'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported Darus request');
     let checked: Awaited<ReturnType<Darus['freeGrant']>>;
     try { checked = await this.freeGrant(caller); } catch (error) { caller.throwIfAborted(); if (error instanceof SourceError) throw error; }
     caller.throwIfAborted();

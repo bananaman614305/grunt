@@ -91,7 +91,7 @@ export class PromotionalApi implements Source {
   async available() { try { return !!await this.freeGrant(); } catch { return false; } }
   async complete(request: ModelRequest, caller: AbortSignal, progress?: () => void): Promise<Completion> {
     caller.throwIfAborted();
-    if (![this.id, 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported promotional request');
+    if (![this.id, 'grunt'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported promotional request');
     const grant = await this.freeGrant(caller).catch(() => undefined);
     caller.throwIfAborted();
     if (this.now >= Date.parse(this.spec.expires)) throw new SourceError('refused', `${this.id} vetted free promotion expired; select another free route`);

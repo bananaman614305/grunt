@@ -15,8 +15,9 @@ disable background account acquisition for all [acquisition triggers](#3-slow-lo
 Registry refresh, automatic source discovery, routing, existing
 provider access and daily health checks continue. Explicit foreground
 `usegrunt setup` and `usegrunt add` keep their normal behavior. The default
-enables acquisition; the legacy `MILO_BACKGROUND_ACCOUNT_ACQUISITION` alias is
-accepted, with `GRUNT_*` taking precedence.
+enables acquisition. The legacy `MILO_BACKGROUND_ACCOUNT_ACQUISITION` alias is
+no longer accepted; operators who previously used it must set
+`GRUNT_BACKGROUND_ACCOUNT_ACQUISITION=0` before upgrading.
 
 ## 1. Greedy first pass, driver, cap
 

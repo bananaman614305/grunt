@@ -1,4 +1,4 @@
-// Built HTTP-path stand-in for Reproduction milo-freellmapi-logged-out.
+// Built HTTP-path stand-in for router login recovery.
 // Real Pi deployment follows merge; all credentials here are synthetic.
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -53,7 +53,7 @@ try {
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).choices[0].message.content, 'router answered');
-    console.log(`Reproduction milo-freellmapi-logged-out: ${phase}: HTTP reply from freellmapi`);
+    console.log(`Router login proof: ${phase}: HTTP reply from freellmapi`);
     await sources.close();
     await new Promise(resolve => daemon.close(resolve));
     daemon = undefined;

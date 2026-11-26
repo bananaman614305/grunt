@@ -1,5 +1,3 @@
-import { spawn, execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { bootstrapKilo, BrowserSquire, setup } from './setup.js';
@@ -9,48 +7,12 @@ import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
 import { disabledAdapters } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { OpenCode } from './opencode.js';
-import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
 import type { Source } from './source.js';
 import { setupFailureReason } from './setup-failure.js';
 
-const exec = promisify(execFile);
-class FreebuffCompatibilityError extends Error {}
 export type Signup = Pick<BrowserSquire, 'signup' | 'credentials'>;
-// The CLI keeps the local login exchange alive while Squire completes its URL.
-export async function loginFreebuff(squire: Signup, signal?: AbortSignal) {
-  const child = spawn('freebuff', ['login'], { stdio: ['ignore', 'pipe', 'pipe'], ...(signal ? { signal } : {}) });
-  let output = '', started = false;
-  let browser: Promise<void> | undefined;
-  let rejectLogin: (error: Error) => void = () => {};
-  const exited = new Promise<void>((resolve, reject) => {
-    rejectLogin = reject;
-    child.once('error', () => reject(new Error('Freebuff login could not start')));
-    child.once('exit', code => code === 0 ? resolve() : reject(new Error('Freebuff login did not complete')));
-  });
-  const capture = (chunk: Buffer) => {
-    output = (output + chunk.toString()).slice(-16384);
-    const url = output.match(/https:\/\/freebuff\.com\/login\?[^\s\x1b]+/)?.[0];
-    if (started || !url) return;
-    started = true;
-    browser = squire.signup('freebuff', url, "Complete this Freebuff CLI login using the user's existing account, or sign up if none exists. This URL pairs the local CLI; finish that pairing. No paid plan, payment method, extra account or account switching. Stop on refusal; stop on captcha, passkey or email verification. Do not bypass verification.");
-    void browser.catch(() => rejectLogin(new Error('Freebuff browser signup did not complete; rerun setup to resume')));
-  };
-  child.stdout.on('data', capture); child.stderr.on('data', capture);
-  const timer = setTimeout(() => rejectLogin(new Error('Freebuff login timed out; rerun setup to resume')), 600000);
-  try {
-    await exited;
-    if (!started) throw new Error('Freebuff did not provide a browser login URL');
-    await browser;
-  } finally { clearTimeout(timer); child.kill(); }
-}
-export async function freebuffSignedIn() {
-  const { stdout } = await exec('freebuff', ['doctor'], { timeout: DOCTOR_TIMEOUT_MS, maxBuffer: 65536 });
-  if (/not signed in|logged.?out|login required/i.test(stdout)) return false;
-  if (!/Freebuff doctor/i.test(stdout)) throw new Error('Unrecognized Freebuff diagnostics; run freebuff doctor');
-  return true;
-}
 export async function verifyOpenCode(source: Source = new OpenCode(), signal = AbortSignal.timeout(120000)) {
   const sources = new Sources([source]);
   try {
@@ -63,8 +25,6 @@ export async function setupFallbacks(options: {
   notify(line: string): void;
   squire?: Signup & Partial<Pick<SetupSquire, 'runs'>>;
   setupProvider?: typeof setup;
-  signedIn?: () => Promise<boolean>;
-  login?: (squire: Signup) => Promise<void>;
   verify?: () => Promise<void>;
   adapters?: string[];
   connect?: () => Promise<void>;
@@ -127,41 +87,6 @@ export async function setupFallbacks(options: {
   options.notify('Free routes run their own tools with your filesystem permissions in the working directory. Free model providers may retain prompts.');
   try {
     const tasks: Record<string, () => Promise<void>> = {
-      freebuff: async () => { try {
-        await install('freebuff', 'freebuff');
-        // Older CLIs accept --version but cannot run the login diagnostic.
-        try { await options.run('freebuff', ['doctor']); }
-        catch {
-          options.notify('Freebuff: repairing the installed CLI before checking sign-in');
-          try {
-            await options.run('npm', ['install', '--global', 'freebuff@latest']);
-            await options.run('freebuff', ['doctor']);
-          } catch {
-            throw new FreebuffCompatibilityError('Freebuff CLI repair incomplete. The active freebuff on PATH must support doctor. Run npm install --global freebuff@latest, remove older Freebuff binaries earlier on PATH, then rerun usegrunt setup. Continuing with OpenCode.');
-          }
-        }
-        try { await options.run('tmux', ['-V']); }
-        catch {
-          if (process.platform === 'darwin') await options.run('brew', ['install', 'tmux'], true);
-          else {
-            let manager: string | undefined;
-            for (const candidate of ['apt-get', 'dnf']) {
-              try { await options.run(candidate, ['--version']); manager = candidate; break; } catch { /* Try the next supported OS package manager. */ }
-            }
-            if (!manager) throw new Error('Install tmux with your OS package manager');
-            const args = ['install', '-y', 'tmux'];
-            await options.run(process.getuid?.() === 0 ? manager : 'sudo', process.getuid?.() === 0 ? args : [manager, ...args], true);
-          }
-        }
-        const signedIn = options.signedIn ?? freebuffSignedIn;
-        if (!await signedIn()) { await connect(); if (options.login) await options.login(squire); else await loginFreebuff(squire, options.signal); }
-        if (!await signedIn()) throw new Error('Freebuff is still signed out; rerun setup to resume');
-        options.notify('Freebuff: signed in; grunt will start its loopback bridge with the background service');
-      } catch (error) {
-        failedSetup('freebuff', error);
-        if (error instanceof FreebuffCompatibilityError) options.notify(error.message);
-        else options.notify('Freebuff setup incomplete. Run freebuff doctor, install tmux if missing, then rerun usegrunt setup. Continuing with OpenCode.');
-      } },
       opencode: async () => { try {
         await install('opencode', 'opencode-ai');
         const verify = options.verify ?? (() => verifyOpenCode(new OpenCode(), options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000)));

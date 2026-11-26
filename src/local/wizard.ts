@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { setupFallbacks } from './fallback-setup.js';
 import { parallelMap } from './parallel.js';
 import { withTerminal } from './terminal.js';
-import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
+import { localRuntimeDependencies } from './runtime-dependencies.js';
 import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
@@ -169,7 +169,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
   await stage(() => mkdir(runtime, { recursive: true, mode: 0o700 }));
   await stage(() => cp(join(root, 'dist'), join(runtime, 'dist'), { recursive: true }));
   const pkg = JSON.parse(await stage(() => readFile(join(root, 'package.json'), 'utf8')));
-  await stage(() => writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'grunt-runtime', private: true, type: 'module', dependencies: pkg.dependencies }), { mode: 0o600 }));
+  await stage(() => writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'grunt-runtime', private: true, type: 'module', dependencies: localRuntimeDependencies(pkg.dependencies) }), { mode: 0o600 }));
   await stage(() => command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], false, options.signal));
   const entry = join(runtime, 'dist', 'local', 'main.js');
   const port = gruntEnv('PORT') || '8788';
@@ -271,10 +271,11 @@ export async function installBackgroundService(name: string, entry: string, env:
 }
 // /v1/models asks every source whether it is available. Bound the combined probe
 // so a hung native CLI cannot leave the installer waiting forever.
+const SERVICE_PROBE_TIMEOUT_MS = 35000;
 export async function checkService(port = 8788, totalMs = 90000) {
   const deadline = Date.now() + totalMs;
   while (Date.now() < deadline) {
-    const timeout = Math.max(1, Math.min(DOCTOR_TIMEOUT_MS + 5000, deadline - Date.now()));
+    const timeout = Math.max(1, Math.min(SERVICE_PROBE_TIMEOUT_MS, deadline - Date.now()));
     try { const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(timeout) }); if (response.ok) return; } catch { /* Wait for the service manager. */ }
     await delay(Math.max(0, Math.min(1000, deadline - Date.now())));
   }
@@ -309,7 +310,7 @@ async function setupPort() {
   } catch { /* A new installation uses its requested port until service admission. */ }
   return Number(gruntEnv('PORT') || '8788');
 }
-export async function checkServiceSources(unavailable: string[], notify = console.log, adapters = ['freebuff', 'opencode'], read = serviceSources) {
+export async function checkServiceSources(unavailable: string[], notify = console.log, adapters = ['opencode'], read = serviceSources) {
   const unit = await read();
   if (!unit) return;
   for (const id of adapters) {

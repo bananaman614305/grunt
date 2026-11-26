@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { MetadataFlights } from './metadata-flight.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -156,7 +156,7 @@ function tools(request: ModelRequest) {
       } else messages.push({ ...message });
     }
     // Validation only; this does not prompt a bridge or execute a function.
-    new FreebuffTools({ ...request, messages });
+    new JsonToolBridge({ ...request, messages });
     return { validators: compileToolSchemas(request.tools, 'BeatAPI rejected a function tool schema'), messages };
   } catch (error) { throw error instanceof SourceError ? error : requestRefusal('BeatAPI rejected invalid function tools or an uncorrelated tool conversation'); }
 }
@@ -211,7 +211,7 @@ export class BeatAPI implements Source {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     let awaitingInferenceResponse = false;
     try {
-      signal.throwIfAborted(); if (![this.id, 'grunt', 'milo'].includes(request.model) || request.imageInput) throw new SourceError('refused', 'BeatAPI requires its pinned text-only free route');
+      signal.throwIfAborted(); if (![this.id, 'grunt'].includes(request.model) || request.imageInput) throw new SourceError('refused', 'BeatAPI requires its pinned text-only free route');
       const { validators, messages } = tools(request); if (!await this.approved()) throw new SourceError('refused', 'BeatAPI data sharing is not approved; rerun usegrunt setup');
       const grant = await this.grant(), guards = { ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), signal };
       const before = await this.preflightUsage(grant, signal); if (before.credit_balance !== grant.baseline_balance) throw new SourceError('refused', 'BeatAPI account balance changed; rerun usegrunt setup');

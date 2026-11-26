@@ -176,7 +176,7 @@ export interface SlowUpstreamPolicy { baseSeconds: number; maxSeconds: number }
 export interface Source {
   id: string;
   supportsFunctionTools?: boolean;
-  // Function tools reach the model as a JSON envelope inside a prompt (FreebuffTools) instead of the provider's own
+  // Function tools reach the model as a JSON envelope inside a prompt (JsonToolBridge) instead of the provider's own
   // tool-calling interface. Such a model can only be told, not made, to call tools, so routing tries sources with
   // native tool calling first. See docs/router.md.
   jsonToolBridge?: boolean;
@@ -353,7 +353,7 @@ export class Sources {
       caller.removeEventListener('abort', cancel);
     });
   }
-  private safeModel(model: string) { return ['grunt', 'milo', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
+  private safeModel(model: string) { return ['grunt', ...this.sources.map(source => source.id)].includes(model) ? model : 'grunt'; }
   healthy(id: string) { this.registeredRouter?.healthy(id); this.observation.healthy(id); }
   available(source: Source) {
     return this.metadata.run(source.id, signal => this.observation.available(source, false, undefined, signal), undefined, source.availabilityTimeoutMs);
@@ -601,7 +601,7 @@ export class Sources {
     signal.throwIfAborted();
     // Automatic selection translates function tools only. Naming a source keeps
     // that source's own behavior (OpenCode and Codex run their own tools).
-    if (request.model === 'grunt' || request.model === 'milo' || !this.sources.some(source => source.id === request.model)) {
+    if (request.model === 'grunt' || !this.sources.some(source => source.id === request.model)) {
       const unsupported = unsupportedToolTypes(request);
       if (unsupported.length) throw new RequestError(`Unsupported tool type${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')}. Grunt accepts function tools only; remove the hosted tool from the client (for Codex, set web_search = "disabled").`);
     }
@@ -640,9 +640,8 @@ export class Sources {
     await this.observation.refreshRoutingHistory();
     signal.throwIfAborted();
     const known = this.sources.some(s => s.id === request.model);
-    // Older harness configurations may still request the former model name.
-    const automatic = request.model === 'grunt' || request.model === 'milo' || !known;
-    if (automatic && !['grunt', 'milo'].includes(request.model)) console.error('grunt model mapping: unrecognized model -> grunt');
+    const automatic = request.model === 'grunt' || !known;
+    if (automatic && request.model !== 'grunt') console.error('grunt model mapping: unrecognized model -> grunt');
     const toolsRequired = automatic && needsFunctionTools(request);
     const candidates = automatic ? pool : pool.filter(s => s.id === request.model);
     let last = routedFailure ?? new SourceError('not_installed', toolsRequired ? NO_TOOL_SOURCE : `No source for model ${this.safeModel(request.model)}`);

@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { completionEnding, preventReplay, replayTimeout, SourceError, requestRefusal, withEnding } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { openPerchACP, runPerchCommand, runPerchMemorySettings, verifyPerchCoreFiles } from './perch-process.js';
@@ -262,7 +262,7 @@ function validatedBridge(request: ModelRequest) {
         previous.tool_calls = [...previous.tool_calls, ...message.tool_calls];
       } else messages.push({ ...message });
     }
-    const bridge = new FreebuffTools({ ...request, messages });
+    const bridge = new JsonToolBridge({ ...request, messages });
     compileToolSchemas(request.tools, 'Perch rejected a function tool schema');
     return bridge;
   } catch (error) { throw error instanceof SourceError ? error : requestRefusal('Perch rejected unsupported function definitions or an invalid tool conversation'); }

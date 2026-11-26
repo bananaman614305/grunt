@@ -2,7 +2,7 @@ import { compileToolSchemas } from './tool-schema.js';
 import type { ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPromotionalStream } from './promotional-api.js';
 import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
 import { diagnosticFetch, observeAttemptDispatch, recordAttemptFailure } from './diagnostics.js';
@@ -129,7 +129,7 @@ function conversation(request: ModelRequest) {
         });
       }
     }
-    new FreebuffTools({ ...request, messages }); // Validate roles and actual correlated results; no JSON bridge or tool execution.
+    new JsonToolBridge({ ...request, messages }); // Validate roles and actual correlated results; no JSON bridge or tool execution.
   } catch { throw requestFailure('Kilo rejected invalid function tools or an uncorrelated tool conversation', 'request_tools'); }
   return { messages, validators: compileToolSchemas(request.tools, 'Kilo rejected a function tool schema') };
 }

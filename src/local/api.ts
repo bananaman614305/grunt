@@ -155,7 +155,9 @@ export function decode(original: Obj, api: string, fallback?: string, options: {
   if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
   const imageInput = !options.omitImages && /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
-  return { model: String(body.model ?? 'grunt'), messages, userMessages, tools, cwd, cwdSource, ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  const rawModel = String(body.model ?? 'grunt');
+  const model = rawModel === 'milo' ? 'grunt' : rawModel;
+  return { model, messages, userMessages, tools, cwd, cwdSource, ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
