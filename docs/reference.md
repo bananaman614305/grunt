@@ -1457,10 +1457,18 @@ write, using its own GitHub token as `Authorization: Bearer <token>`; a person
 can use `gh auth token`, and a bot a token from its secret store. The server reads
 only `/user` and the repository's `permissions.push` with that token and never
 stores it. `PUT /v1/registry/entries/{id}` adds or replaces one entry and
-`DELETE /v1/registry/entries/{id}` removes one. A shipped adapter id, or an entry
-whose `install` is `npm:<package>`, goes in `adapters`; any other id goes in a
-top-level `candidates` list of providers awaiting an adapter, which every client
-ignores. The server validates the whole next document with `validateRegistry`,
+`DELETE /v1/registry/entries/{id}` removes one. A shipped adapter id, an entry
+whose `install` is `declarative:openai` (with a strictly validated `declarative`
+OpenAI-compatible config), or an entry whose `install` is `npm:<package>`, goes
+in `adapters`; any other id goes in a top-level `candidates` list of providers
+awaiting an adapter, which every client ignores. Declarative entries carry
+public HTTPS origins only (never IP literals, loopback, link-local, or private
+hosts, with public resolved IP enforcement at connection time), pinned free
+models, signup URLs and hints, required `expires` cutoffs, zero-price
+verification settings, and versioned data-sharing disclosures, so running
+daemons hot-add and route new ephemeral free API promos on the next sync
+without a code release (see [router](router.md#3-slow-loop-hot-add-and-scout-mapping)).
+The server validates the whole next document with `validateRegistry`,
 requires `hints` on any written entry with a `signup`, rescales tier weights,
 stamps a strictly newer `published` and swaps `/data/registry.json` atomically, so
 an entry and its hints publish together. Invalid writes return 422 with

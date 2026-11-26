@@ -154,7 +154,7 @@ function completion(text: string, calls: ToolCall[], usage: Record<string, unkno
 // SSE is transport even when the harness requests a non-streamed completion.
 // Bound memory, assemble indexed function fragments, require an explicit finish,
 // and reject errors/truncated streams instead of passing partial output as success.
-export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void;
+export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; event?: (chunk: Record<string, unknown>) => void; result?: (usage: Record<string, unknown>) => void;
   // Optional: receives each reasoning delta (one field per delta), and raises the 4 MiB stream cap for a long reply.
   reasoning?: (delta: string) => void; maxBytes?: number }): Promise<Completion> {
   // Observers receive fixed reason codes only. Preserve thrown values (even
@@ -181,6 +181,9 @@ export async function readPromotionalStream(response: Response, model: string, s
     const chunk = object(observed('response_json', () => JSON.parse(data)));
     if (chunk.error) throw invalid('stream_format', 'Stream failed');
     if (chunk.model !== undefined) { if (chunk.model !== model) throw invalid('completion_model', 'Unexpected model'); seenModel = true; }
+    // Allow callers to inspect every parsed stream event (for example, to reject
+    // nonzero monetary fields even if a later chunk overwrites usage).
+    observe?.event?.(chunk);
     if (chunk.usage) usage = object(chunk.usage);
     // A usage-only chunk may omit `choices`; any other chunk must carry them.
     if (chunk.choices === undefined && chunk.usage) return;

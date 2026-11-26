@@ -3,6 +3,8 @@ import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { gruntEnv } from '../brand.js';
+import { isDeclarativeAdapter } from '../registry.js';
+import type { DeclarativeAdapter, Registry } from '../registry.js';
 
 export interface DataSharingPolicy {
   provider: string;
@@ -138,12 +140,41 @@ type Receipt = { version: 1; approved: Record<string, Approval> };
 const emptyReceipt = (): Receipt => ({ version: 1, approved: {} });
 const fingerprint = (policy: DataSharingPolicy) => createHash('sha256').update(JSON.stringify(policy)).digest('hex');
 
-export function dataSharingPolicies(providers: readonly string[]): DataSharingPolicy[] {
-  const selected = new Set(providers);
-  return DATA_SHARING_POLICIES.filter(policy => selected.has(policy.provider));
+export function declarativeDataSharingPolicy(adapter: DeclarativeAdapter): DataSharingPolicy {
+  return {
+    provider: adapter.id,
+    name: adapter.declarative.name ?? adapter.id,
+    version: adapter.declarative.policyVersion,
+    disclosure: adapter.declarative.disclosure,
+    url: adapter.declarative.policyUrl,
+    approval: 'explicit'
+  };
 }
-export const requiresDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider);
-export const requiresExplicitDataSharing = (provider: string) => DATA_SHARING_POLICIES.some(policy => policy.provider === provider && policy.approval !== undefined);
+
+export function registryDataSharingPolicies(registry: Registry): DataSharingPolicy[] {
+  return registry.adapters.filter(isDeclarativeAdapter).map(declarativeDataSharingPolicy);
+}
+
+function allDataSharingPolicies(extraPolicies: readonly DataSharingPolicy[] = []): readonly DataSharingPolicy[] {
+  if (!extraPolicies.length) return DATA_SHARING_POLICIES;
+  const known = new Set(DATA_SHARING_POLICIES.map(policy => policy.provider));
+  const extra: DataSharingPolicy[] = [];
+  for (const policy of extraPolicies) {
+    if (known.has(policy.provider)) continue;
+    known.add(policy.provider);
+    extra.push(policy);
+  }
+  return [...DATA_SHARING_POLICIES, ...extra];
+}
+
+export function dataSharingPolicies(providers: readonly string[], extraPolicies?: readonly DataSharingPolicy[]): DataSharingPolicy[] {
+  const selected = new Set(providers);
+  return allDataSharingPolicies(extraPolicies).filter(policy => selected.has(policy.provider));
+}
+export const requiresDataSharing = (provider: string, extraPolicies?: readonly DataSharingPolicy[]) =>
+  allDataSharingPolicies(extraPolicies).some(policy => policy.provider === provider);
+export const requiresExplicitDataSharing = (provider: string, extraPolicies?: readonly DataSharingPolicy[]) =>
+  allDataSharingPolicies(extraPolicies).some(policy => policy.provider === provider && policy.approval !== undefined);
 
 async function receipt(directory: string): Promise<Receipt> {
   try {
@@ -161,9 +192,9 @@ async function receipt(directory: string): Promise<Receipt> {
 }
 
 // Routing requires a receipt matching the current policy fingerprint.
-export async function readDataSharingConsent(directory: string, providers: readonly string[]): Promise<string[]> {
+export async function readDataSharingConsent(directory: string, providers: readonly string[], extraPolicies?: readonly DataSharingPolicy[]): Promise<string[]> {
   const saved = await receipt(directory);
-  return dataSharingPolicies(providers).filter(policy => saved.approved[policy.provider]?.policy === fingerprint(policy)).map(policy => policy.provider);
+  return dataSharingPolicies(providers, extraPolicies).filter(policy => saved.approved[policy.provider]?.policy === fingerprint(policy)).map(policy => policy.provider);
 }
 
 async function writeReceipt(directory: string, saved: Receipt) {
@@ -175,8 +206,8 @@ async function writeReceipt(directory: string, saved: Receipt) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-export async function recordDataSharingConsent(directory: string, providers: readonly string[]): Promise<void> {
-  const policies = dataSharingPolicies(providers);
+export async function recordDataSharingConsent(directory: string, providers: readonly string[], extraPolicies?: readonly DataSharingPolicy[]): Promise<void> {
+  const policies = dataSharingPolicies(providers, extraPolicies);
   if (!policies.length) return;
   const saved = await receipt(directory);
   const approvedAt = new Date().toISOString();
@@ -197,11 +228,11 @@ async function revokeDataSharingConsent(directory: string, providers: readonly s
 // again for the current one. The setup opt-out still keeps explicit and
 // material policies off. This renewal only covers existing approvals;
 // acquisition uses approveDataSharing for new providers.
-export async function refreshDataSharingConsent(directory: string, env?: NodeJS.ProcessEnv): Promise<string[]> {
+export async function refreshDataSharingConsent(directory: string, env?: NodeJS.ProcessEnv, extraPolicies?: readonly DataSharingPolicy[]): Promise<string[]> {
   const saved = await receipt(directory), optOut = gruntEnv('SETUP_NO_DATA_SHARING', env) === '1';
-  const stale = DATA_SHARING_POLICIES.filter(policy => Object.hasOwn(saved.approved, policy.provider)
+  const stale = allDataSharingPolicies(extraPolicies).filter(policy => Object.hasOwn(saved.approved, policy.provider)
     && saved.approved[policy.provider]!.policy !== fingerprint(policy) && !policy.manual && !(optOut && policy.approval !== undefined)).map(policy => policy.provider);
-  await recordDataSharingConsent(directory, stale);
+  await recordDataSharingConsent(directory, stale, extraPolicies);
   return stale;
 }
 
@@ -212,6 +243,7 @@ export const DATA_SHARING_MANUAL_APPROVAL = 'GRUNT_APPROVE_DATA_SHARING';
 export interface DataSharingApprovalOptions {
   directory: string;
   providers: readonly string[];
+  extraPolicies?: readonly DataSharingPolicy[];
   env?: NodeJS.ProcessEnv;
   notice?: (line: string) => void;
 }
@@ -219,8 +251,8 @@ export interface DataSharingApprovalOptions {
 // Setup records current policies automatically unless the existing opt-out applies.
 export async function approveDataSharing(options: DataSharingApprovalOptions): Promise<{ approved: string[]; skipped: string[] }> {
   const providers = options.providers.includes('numes') ? [...options.providers, NUMES_DEEPSEEK_FLASH_CONSENT] : options.providers;
-  const policies = dataSharingPolicies(providers);
-  const saved = new Set(await readDataSharingConsent(options.directory, providers));
+  const policies = dataSharingPolicies(providers, options.extraPolicies);
+  const saved = new Set(await readDataSharingConsent(options.directory, providers, options.extraPolicies));
   const optOut = gruntEnv('SETUP_NO_DATA_SHARING', options.env) === '1';
   const skipped = optOut ? policies.filter(policy => policy.approval !== undefined).map(policy => policy.provider) : [];
   if (skipped.length) await revokeDataSharingConsent(options.directory, skipped);
@@ -230,7 +262,7 @@ export async function approveDataSharing(options: DataSharingApprovalOptions): P
   skipped.push(...waiting);
   const approved = policies.map(policy => policy.provider).filter(provider => !skipped.includes(provider));
   const added = approved.filter(provider => !saved.has(provider));
-  await recordDataSharingConsent(options.directory, added);
+  await recordDataSharingConsent(options.directory, added, options.extraPolicies);
   const explicit = policies.filter(policy => policy.approval !== undefined && added.includes(policy.provider));
   if (explicit.length) {
     (options.notice ?? console.log)(`Data sharing on: ${explicit.map(policy => policy.provider).join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);

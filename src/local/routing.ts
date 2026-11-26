@@ -166,7 +166,11 @@ export class StickyRouter {
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 
-  private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }
+  registered(id: string) {
+    if (knownAdapters.has(id) || this.options.localOptIns?.has(id)) return true;
+    const adapter = this.options.registry().adapters.find(item => item.id === id);
+    return adapter?.install === 'declarative:openai' && adapter.declarative !== undefined;
+  }
   listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {
     return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));

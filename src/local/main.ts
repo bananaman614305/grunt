@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { gruntEnv } from '../brand.js';
-import { disabledAdapters, knownAdapters, localOptInAdapters } from '../registry.js';
+import { disabledAdapters, isDeclarativeAdapter, isSupportedAdapter, knownAdapters, localOptInAdapters } from '../registry.js';
 import { recommendedAdapters, scoutRetired } from './routing.js';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -28,6 +28,7 @@ import { Perch } from './perch.js';
 import { Nous } from './nous.js';
 import { Kenari } from './kenari.js';
 import { PromotionalApi } from './promotional-api.js';
+import { DeclarativeApi } from './declarative-api.js';
 import { CrowLLM } from './crowllm.js';
 import { Ifm } from './ifm.js';
 import { Aperture } from './aperture.js';
@@ -38,7 +39,7 @@ import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
-import { DATA_SHARING_OPT_OUT, readDataSharingConsent, refreshDataSharingConsent, requiresDataSharing } from './data-sharing.js';
+import { DATA_SHARING_OPT_OUT, readDataSharingConsent, refreshDataSharingConsent, registryDataSharingPolicies, requiresDataSharing } from './data-sharing.js';
 import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
 import { Dots } from './dots.js';
@@ -86,7 +87,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
   const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new Ifm({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
-  const curated = registry().adapters.filter(adapter => knownAdapters.has(adapter.id)).map(adapter => adapter.id);
+  const curated = registry().adapters.filter(adapter => isSupportedAdapter(adapter)).map(adapter => adapter.id);
   const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1')
     : { sources: curated, automatic: true, explicit: [] };
   const configured = selection.sources;
@@ -121,33 +122,37 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   // A managed automatic pool must not lose weighted, sticky routing because one preserved
   // source, such as an earlier FreeLLMAPI setup, has no registry entry. Those sources stay
   // selectable by model id and run only after every routed source fails.
-  const unrouted = new Set(ids.filter(id => !knownAdapters.has(id) && !localOptIns.has(id)));
+  const isDeclarative = (id: string, current: Registry = routingRegistry()) =>
+    isDeclarativeAdapter(current.adapters.find(adapter => adapter.id === id));
+  const unrouted = new Set(ids.filter(id => !knownAdapters.has(id) && !localOptIns.has(id) && !isDeclarative(id)));
   const routing = !unrouted.size || selection.automatic
     ? { registry: routingRegistry, localOptIns, ...(unrouted.size ? { unrouted } : {}) } : undefined;
   if (routing && unrouted.size) {
     console.error(`grunt routing: ${[...unrouted].join(', ')} ${unrouted.size === 1 ? 'is' : 'are'} not in the provider registry, so ${unrouted.size === 1 ? 'it is' : 'they are'} not weighted or sticky-routed; ${unrouted.size === 1 ? 'it runs' : 'they run'} only when named as a model or after every routed source fails.`);
   }
-  const build = (id: string) => {
+  const build = (id: string, current: Registry = routingRegistry()) => {
     let source = registered.find(source => source.id === id);
     if (!source && id === 'antseed-vikey') {
       const port = gruntEnv('ANTSEED_VIKEY_PORT', env);
       source = new AntseedVikey(port ? { port } : {});
     }
     if (!source && id === 'reflection-beam') source = new Kilo({ directory: configDir(env), reflectionBeam: true });
+    const declarative = isDeclarative(id, current);
+    if (!source && declarative) source = new DeclarativeApi(id, { directory: configDir(env), registry: routingRegistry });
     if (source && !registered.includes(source)) registered.push(source);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
-    return !routing && (knownAdapters.has(id) || localOptIns.has(id)) ? new RegistrySource(consent, routingRegistry) : consent;
+    return !routing && (knownAdapters.has(id) || localOptIns.has(id) || declarative) ? new RegistrySource(consent, routingRegistry) : consent;
   };
-  const sources = new Sources(ids.map(build), routing, disabledAdapters);
+  const sources = new Sources(ids.map(id => build(id)), routing, disabledAdapters);
   sources.setChainRegistry(routingRegistry, localOptIns);
   // Hot-add (docs/router.md): an automatic pool routes a newly listed shipped
-  // adapter without a restart. A manual GRUNT_SOURCES list stays fixed.
+  // or declarative adapter without a restart. A manual GRUNT_SOURCES list stays fixed.
   const adopt = (current: Registry) => {
     if (!selection.automatic) return;
     for (const adapter of current.adapters) {
-      if (knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)
-        && !sources.sources.some(source => source.id === adapter.id)) sources.add(build(adapter.id));
+      if (isSupportedAdapter(adapter)
+        && !sources.sources.some(source => source.id === adapter.id)) sources.add(build(adapter.id, current));
     }
   };
   return Object.assign(sources, { adopt });
@@ -211,7 +216,7 @@ export function start(env = process.env) {
   // Open routes (docs/router.md): listed, not scout-retired or router-retired, and configured.
   const routable = (id: string) => {
     const adapter = registry.adapters.find(adapter => adapter.id === id);
-    return !!adapter && knownAdapters.has(id) && !disabledAdapters.has(id) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
+    return !!adapter && isSupportedAdapter(adapter) && !scoutRetired(adapter) && !sources.pending.has(id) && !sources.retired(id);
   };
   const configuredAccess = async (source: Source) => {
     if (!routable(source.id)) return false;
@@ -263,19 +268,20 @@ export function start(env = process.env) {
       published = current.published;
       registry = current;
       sources.adopt(current);
+      void refreshDataSharingConsent(directory, env, registryDataSharingPolicies(current)).catch(() => {});
     },
     exchange: () => feedback.exchange(),
     synced: () => { if (acquireAccounts) recovery.synced(); }, notify: console.error
   });
-  const maintenance = createSourceMaintenance(sources, { directory, refreshSession, notify: console.error });
+  const maintenance = createSourceMaintenance(sources, { directory, registry: () => registry, refreshSession, notify: console.error });
   // Registry downloads and access maintenance are independent. Only the route
   // pass above provisions accounts, in the background, after each registry sync
   // and when no source can answer. It never hands a browser to a person.
   // Renew approvals for changed provider policies before serving, so an update never turns a route off.
-  const consent = refreshDataSharingConsent(directory, env).then(renewed => {
+  const consent = sync.load().then(() => refreshDataSharingConsent(directory, env, registryDataSharingPolicies(registry))).then(renewed => {
     if (renewed.length) console.error(`Data sharing on: ${renewed.join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);
   }).catch(() => console.error('Data-sharing approvals could not be renewed; rerun usegrunt setup'));
-  const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready, consent]).then(refreshSession);
+  const ready = Promise.all([diagnosticReady, routingHistory.ready, consent]).then(refreshSession);
   let readiness: NonNullable<ObservationRuntime['readiness']> = 'starting';
   void ready.then(() => { readiness = 'ready'; }, () => { readiness = 'failed'; });
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));

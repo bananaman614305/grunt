@@ -21,7 +21,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { freeConfig, loopback } from './freellmapi.js';
-import { bundledRegistry } from '../registry.js';
+import { bundledRegistry, disabledAdapters, isDeclarativeAdapter } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
@@ -36,6 +36,7 @@ import { setupPerch } from './perch-setup.js';
 import { setupNous } from './nous-setup.js';
 import { setupKenari } from './kenari-setup.js';
 import { setupPromotionalApi } from './promotional-setup.js';
+import { declarativeSquireStore, setupDeclarativeApi } from './declarative-api.js';
 import { setupCrowLLM } from './crowllm-setup.js';
 import { setupAperture } from './aperture-setup.js';
 import { setupAntseedVikey } from './antseed-vikey-setup.js';
@@ -45,10 +46,9 @@ import { setupIfm } from './ifm-setup.js';
 import { setupFreePi } from './freepi-setup.js';
 import { setupGoedel } from './goedel-setup.js';
 import { setupNumes } from './numes-setup.js';
-import { disabledAdapters } from '../registry.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
-import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, requiresExplicitDataSharing } from './data-sharing.js';
+import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, registryDataSharingPolicies, requiresExplicitDataSharing } from './data-sharing.js';
 import { resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { SquireGrantSource } from './provider-grant.js';
 import {
@@ -345,8 +345,11 @@ function keyNameField(label: string, url: unknown) {
   if (/^(?:(?:api )?(?:key|token) )?(?:alias|label)$|^(?:api )?(?:key|token) name$/.test(field)) return true;
   return field === 'name' && typeof url === 'string' && URL.canParse(url) && /key|token/i.test(new URL(url).pathname);
 }
-export function squireStore(service: string) {
-  return [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, PROMOTIONAL_STORE, DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
+export function squireStore(service: string, registry?: Registry) {
+  const builtin = [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, PROMOTIONAL_STORE, DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
+  if (builtin) return builtin;
+  const entry = registry?.adapters.find(adapter => adapter.id === service);
+  return isDeclarativeAdapter(entry) ? declarativeSquireStore(entry) : undefined;
 }
 
 // operate_drive rejects a longer goal.
@@ -676,12 +679,14 @@ export class BrowserSquire implements SetupSquire {
       throw new Error(`${service}: signup timed out; rerun setup to resume`);
     } finally { this.signupFacts.delete(service); await this.finishSession(service); }
   }
-  private async drive(provider: string, url = PROVIDERS[provider], goal?: string): Promise<Run> {
+  private async drive(provider: string, url?: string, goal?: string): Promise<Run> {
     if (this.closed) throw new Error('Squire setup is closed');
+    const currentRegistry = this.options.registry?.() ?? bundledRegistry;
+    const resolvedUrl = url ?? PROVIDERS[provider] ?? registryEntry(currentRegistry, provider, undefined)?.signup;
     this.failures.delete(provider);
     this.failureDetails.delete(provider);
     let started = false;
-    const pending = this.driveOnce(provider, url, goal, () => { started = true; }).catch(async error => {
+    const pending = this.driveOnce(provider, resolvedUrl, goal, () => { started = true; }).catch(async error => {
       await this.finishSession(provider); throw error;
     });
     this.pending.add(pending);
@@ -691,14 +696,15 @@ export class BrowserSquire implements SetupSquire {
     catch (error) { await this.finishSession(provider); throw error; }
     finally {
       if (started && !this.serviceSignal(provider).aborted && result?.run.state !== 'running') {
-        const id = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.id ?? provider;
+        const id = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, resolvedUrl)?.id ?? provider;
         this.options.signedUp?.(id, result?.run.state === 'completed');
       }
     }
   }
   private async driveOnce(provider: string, url: string | undefined, goal: string | undefined, started: () => void): Promise<Run> {
-    const hinted = registryEntry(this.options.registry?.() ?? bundledRegistry, provider, url)?.hints;
-    const store = squireStore(provider);
+    const currentRegistry = this.options.registry?.() ?? bundledRegistry;
+    const hinted = registryEntry(currentRegistry, provider, url)?.hints;
+    const store = squireStore(provider, currentRegistry);
     const termsInstruction = ' Accept required provider Terms of Service for this free signup. Never accept a terms control that also selects a paid plan, payment, upgrade, billing change, or another account. Leave optional consent unchecked.';
     // Hints precede the shared safety rules (data sharing, no paid plan, terms), which stay last.
     const compose = (hints: string) => {
@@ -1336,18 +1342,34 @@ export async function bootstrapKilo(squire: SetupSquire, directory: string, noti
   if (result.dropped.length) throw new SetupFailure('no verified Kilo credential');
 }
 
-export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean } = {}) {
+export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean; registry?: () => Registry } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
-  const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id)),
-    ...await readDataSharingConsent(location, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
-  const unapproved = dataSharingPolicies(providers).filter(policy => !approved.includes(policy.provider));
+  const currentRegistry = options.registry?.() ?? bundledRegistry;
+  const extraPolicies = registryDataSharingPolicies(currentRegistry);
+  const allPolicies = [...DATA_SHARING_POLICIES, ...extraPolicies];
+  const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id, extraPolicies)),
+    ...await readDataSharingConsent(location, allPolicies.map(policy => policy.provider), extraPolicies)])];
+  const unapproved = dataSharingPolicies(providers, extraPolicies).filter(policy => !approved.includes(policy.provider));
   if (unapproved.length) throw new Error(`${unapproved.map(policy => policy.name).join(', ')} data sharing requires the grouped setup approval`);
-  const owned = options.squire ? undefined : new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: approved });
-  if (options.squire instanceof BrowserSquire) options.squire.approveDataSharing(approved);
+  const owned = options.squire ? undefined : new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: approved, ...(options.registry ? { registry: options.registry } : {}) });
+  if (options.squire instanceof BrowserSquire) {
+    options.squire.approveDataSharing(approved);
+    if (options.registry) options.squire.useRegistry(options.registry);
+  }
   const squire = options.squire ?? owned!;
   try {
+    for (const provider of [...providers]) {
+      const declarative = currentRegistry.adapters.find(adapter => adapter.id === provider);
+      if (!isDeclarativeAdapter(declarative)) continue;
+      await setupDeclarativeApi(declarative, {
+        directory: location, squire, notify, background: options.background ?? false,
+        connect: async () => { if (options.connect) await options.connect(); else await owned?.connect(); },
+        ...(options.signal ? { signal: options.signal } : {})
+      });
+      providers = providers.filter(id => id !== provider);
+    }
     if (providers.includes('antseed-vikey')) {
       await setupAntseedVikey({ directory: location, dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'antseed-vikey');
