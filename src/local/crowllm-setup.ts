@@ -1,6 +1,8 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { CrowLLM } from './crowllm.js';
-import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
@@ -13,7 +15,7 @@ interface SummaryCredential {
   auth_strategy?: string;
 }
 
-export async function setupCrowLLM({ directory, squire, notify, connect, signal }: {
+export async function setupCrowLLM({ directory, squire, notify, connect, signal, background }: {
   directory: string;
   squire: Squire;
   notify(line: string): void;
@@ -53,10 +55,19 @@ export async function setupCrowLLM({ directory, squire, notify, connect, signal 
   }
   if (!matches.length) throw new Error('CrowLLM needs one unambiguous zero-price GLM route vault entry');
   signal?.throwIfAborted();
-  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
-    grant => new CrowLLM({ directory, loadGrant: async () => grant }).available(), signal);
+  const grant = await firstWorkingGrant(
+    matches.map(item => item.reference!),
+    reference => resolveSquireGrant(id, reference, squire, { directory, ...(signal ? { signal } : {}), background, notify }),
+    grant => new CrowLLM({ directory, loadGrant: async () => grant }).available(),
+    signal
+  );
   if (!grant) throw new Error('CrowLLM zero-price GLM route could not be verified');
   signal?.throwIfAborted();
-  await writePrivateProviderGrant(id, grant, directory);
+  if (grant.storedInVault) {
+    await rm(join(directory, `${id}.json`), { force: true });
+    notify('CrowLLM: verified zero-price GLM route connected through local Grunt vault');
+    return;
+  }
+  await writePrivateProviderGrant(id, { base_url: grant.base_url, token: grant.token }, directory);
   notify('CrowLLM: verified zero-price GLM route connected through Trusty Squire');
 }

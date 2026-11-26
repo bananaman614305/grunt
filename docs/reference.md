@@ -569,13 +569,17 @@ the user's machine without routing prompts, source code or tool results through
 - Trusty Squire remains the browser signup engine. In `@trusty-squire/mcp`,
   `operate_extract` writes captured keys directly into Squire's vault without
   returning plaintext, and raw key export (`fetch_credential`) requires an explicit
-  human passkey approval (`BrowserSquire.materializeDirectVaultGrant` supports that
-  passkey-approved export directly into Grunt's local vault). When no local vault
-  key is present, existing Squire egress grants continue to work seamlessly as a
-  backwards-compatible fallback.
-- BeatAPI, Pollinations and all other provider adapters preserve every free-account
-  receipt, zero-price check and balance guard on direct HTTPS calls, and never write
-  keys or tokens to diagnostics, logs, terminal output or harness configs.
+  human passkey approval. Foreground setup attempts `BrowserSquire.materializeDirectVaultGrant`
+  after signup to store the key directly in `vault.json` and falls back cleanly to a
+  Squire egress grant when passkey export is unavailable or declined (background
+  setup falls back immediately without waiting on passkey approval).
+- BeatAPI, Pollinations, Runcrate, APInex and Zro bind their free-account
+  verification receipts to a SHA-256 fingerprint of the verified credential and
+  never copy raw direct keys into provider receipt files. Removing a key with
+  `usegrunt vault remove <provider>` immediately revokes direct access, and
+  replacing a key invalidates the prior receipt until fresh verification succeeds.
+  Existing Squire egress grants remain supported as a backwards-compatible fallback,
+  and no key or token enters diagnostics, logs, terminal output or harness configs.
 
 Setup helpers can cancel one provider without stopping other jobs or the shared
 broker. A pending initial browser operation may finish before its owned tab can

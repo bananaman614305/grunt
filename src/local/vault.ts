@@ -1,14 +1,18 @@
 import { configRoot, gruntEnv } from '../brand.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const SQUIRE_EGRESS_ORIGIN = 'https://trusty-squire-api.fly.dev';
 const MAX_VAULT_BYTES = 512 * 1024;
+const VAULT_LOCK_TIMEOUT_MS = 10_000;
+const VAULT_LOCK_STALE_MS = 30_000;
 const TOKEN_PATTERN = /^[\x21-\x7e]{1,16384}$/;
 const STRICT_EGRESS_PATH = /^\/v1\/egress\/g_[A-Za-z0-9_-]{16,64}\/?$/;
 const COMPAT_EGRESS_PATH = /^\/v1\/egress\/g_[A-Za-z0-9_-]+\/?$/;
+const SHA256_HEX = /^[a-f0-9]{64}$/;
 
 /**
  * Exact pinned HTTPS origins each provider's local vault key is allowed to call.
@@ -88,6 +92,24 @@ export function defaultProviderOrigin(provider: VaultProvider): string {
 
 export function vaultPath(directory = configRoot()): string {
   return join(directory, 'vault.json');
+}
+
+export function vaultLockPath(directory = configRoot()): string {
+  return join(directory, '.vault.lock');
+}
+
+export function isCredentialFingerprint(value: unknown): value is string {
+  return typeof value === 'string' && SHA256_HEX.test(value);
+}
+
+/**
+ * Cryptographic fingerprint binding a verification receipt to the exact
+ * normalized origin and credential secret without storing the secret itself.
+ */
+export function credentialFingerprint(grant: { base_url: string; token: string }): string {
+  return createHash('sha256')
+    .update(`${grant.base_url.replace(/\/$/, '')}\0${grant.token}`)
+    .digest('hex');
 }
 
 const envSlug = (provider: VaultProvider) => provider.toUpperCase().replace(/-/g, '_');
@@ -223,10 +245,96 @@ async function readVaultStore(directory = configRoot()): Promise<VaultStore | un
 
 const writeQueues = new Map<string, Promise<unknown>>();
 
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function readLockOwner(lockPath: string): Promise<{ pid?: number; token?: string; mtimeMs: number } | undefined> {
+  let handle;
+  try {
+    handle = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size > 4096) {
+      throw new Error('Unsafe local vault lockfile');
+    }
+    const raw = await handle.readFile('utf8');
+    let parsed: Record<string, unknown> = {};
+    try {
+      const value: unknown = JSON.parse(raw);
+      if (isRecord(value)) parsed = value;
+    } catch { /* Handle partially written or corrupt lock metadata via age fallback. */ }
+    return {
+      ...(typeof parsed.pid === 'number' ? { pid: parsed.pid } : {}),
+      ...(typeof parsed.token === 'string' ? { token: parsed.token } : {}),
+      mtimeMs: stat.mtimeMs
+    };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return undefined;
+    if (error instanceof Error && error.message === 'Unsafe local vault lockfile') throw error;
+    throw new Error('Unsafe local vault lockfile');
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function withVaultFileLock<T>(directory: string, work: () => Promise<T>): Promise<T> {
+  await assertPrivateDirectory(directory, true);
+  const lockPath = vaultLockPath(directory);
+  const token = randomUUID();
+  const startedAt = Date.now();
+  const deadline = startedAt + VAULT_LOCK_TIMEOUT_MS;
+  let acquired = false;
+
+  while (!acquired) {
+    let handle;
+    try {
+      handle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      await handle.writeFile(JSON.stringify({ pid: process.pid, token, at: Date.now() }), 'utf8');
+      acquired = true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) throw new Error('Timed out waiting for local Grunt vault lock');
+      if (Date.now() - startedAt >= 150) {
+        const owner = await readLockOwner(lockPath);
+        if (owner) {
+          const dead = owner.pid !== undefined && !processAlive(owner.pid);
+          const stale = Date.now() - owner.mtimeMs > VAULT_LOCK_STALE_MS;
+          if (dead || stale) {
+            await rm(lockPath, { force: true }).catch(() => {});
+            continue;
+          }
+        }
+      }
+      await delay(10 + Math.floor(Math.random() * 15));
+    } finally {
+      await handle?.close();
+    }
+  }
+
+  try {
+    return await work();
+  } finally {
+    try {
+      const current = await readLockOwner(lockPath);
+      if (current?.token === token) {
+        await rm(lockPath, { force: true });
+      }
+    } catch { /* Never mask the primary result or error. */ }
+  }
+}
+
 function serializeWrite<T>(directory: string, work: () => Promise<T>): Promise<T> {
   const key = resolve(directory);
   const previous = writeQueues.get(key) ?? Promise.resolve();
-  const next = previous.catch(() => {}).then(work);
+  const next = previous.catch(() => {}).then(() => withVaultFileLock(directory, work));
   writeQueues.set(key, next);
   void next.finally(() => {
     if (writeQueues.get(key) === next) writeQueues.delete(key);

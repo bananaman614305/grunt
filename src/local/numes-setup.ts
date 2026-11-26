@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { Numes } from './numes.js';
 
-import { firstWorkingGrant } from './provider-grant.js';
+import { firstWorkingGrant, resolveSquireGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
@@ -50,15 +50,29 @@ export async function setupNumes(options: {
   }
   if (!matches.length) throw new Error('Numes needs one unambiguous free-route vault credential');
   signal?.throwIfAborted();
-  const grant = await firstWorkingGrant(matches.map(item => item.reference), reference => squire.credentials.grant(reference),
-    grant => new Numes({ directory, loadGrant: async () => grant }).available(), signal);
+  const grant = await firstWorkingGrant(
+    matches.map(item => item.reference),
+    reference => resolveSquireGrant(id, reference, squire, {
+      directory,
+      ...(signal ? { signal } : {}),
+      ...(options.background !== undefined ? { background: options.background } : {}),
+      notify
+    }),
+    grant => new Numes({ directory, loadGrant: async () => grant }).available(),
+    signal
+  );
   if (!grant) throw new Error('Numes free routes are unavailable');
   signal?.throwIfAborted();
 
+  if (grant.storedInVault) {
+    await rm(join(directory, 'numes.json'), { force: true });
+    notify('Numes: verified free route connected through local Grunt vault');
+    return;
+  }
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = join(directory, `numes.${randomUUID()}.tmp`);
   try {
-    await writeFile(temporary, JSON.stringify(grant), { flag: 'wx', mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ base_url: grant.base_url, token: grant.token }), { flag: 'wx', mode: 0o600 });
     signal?.throwIfAborted();
     await rename(temporary, join(directory, 'numes.json'));
   } finally { await rm(temporary, { force: true }); }

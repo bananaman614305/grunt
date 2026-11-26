@@ -1,12 +1,14 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { MillionSeek, MILLIONSEEK_HOST, MILLIONSEEK_MODEL, MILLIONSEEK_SERVICE } from './millionseek.js';
-import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 export const MILLIONSEEK_STORE = { service: MILLIONSEEK_SERVICE, label: 'Grunt Free', api_hosts: [MILLIONSEEK_HOST], auth_shape: 'bearer' };
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
-export async function setupMillionSeek({ directory, squire, notify, connect, signal }: {
+export async function setupMillionSeek({ directory, squire, notify, connect, signal, background }: {
   directory: string; squire: Squire; notify(line: string): void; connect?: () => Promise<void>; signal?: AbortSignal; background: boolean;
 }) {
   if (!(await readDataSharingConsent(directory, ['millionseek'])).includes('millionseek')) throw new Error('100milionseek requires current data-sharing approval');
@@ -30,10 +32,19 @@ export async function setupMillionSeek({ directory, squire, notify, connect, sig
     matches = await select();
   }
   if (!matches.length) throw new Error('100milionseek requires one unambiguous scoped free key');
-  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
-    grant => new MillionSeek({ directory, loadGrant: async () => grant }).available(), signal);
+  const grant = await firstWorkingGrant(
+    matches.map(item => item.reference!),
+    reference => resolveSquireGrant('millionseek', reference, squire, { directory, ...(signal ? { signal } : {}), background, notify }),
+    grant => new MillionSeek({ directory, loadGrant: async () => grant }).available(),
+    signal
+  );
   if (!grant) throw new Error('100milionseek recurring free entitlement could not be verified');
   signal?.throwIfAborted();
-  await writePrivateProviderGrant('millionseek', grant, directory);
+  if (grant.storedInVault) {
+    await rm(join(directory, 'millionseek.json'), { force: true });
+    notify('100milionseek: recurring free route connected through local Grunt vault; Grunt will verify a live reply.');
+    return;
+  }
+  await writePrivateProviderGrant('millionseek', { base_url: grant.base_url, token: grant.token }, directory);
   notify('100milionseek: recurring free route connected; Grunt will verify a live reply.');
 }

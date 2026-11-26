@@ -1,6 +1,8 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { Goedel } from './goedel.js';
-import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 export const GOEDEL_STORE = { service: 'goedel', label: 'Grunt Free', api_hosts: ['api.goedelmachines.com'], auth_shape: 'bearer' } as const;
@@ -14,7 +16,7 @@ interface SummaryCredential {
   auth_strategy?: string;
 }
 
-export async function setupGoedel({ directory, squire, notify, connect, signal }: {
+export async function setupGoedel({ directory, squire, notify, connect, signal, background }: {
   directory: string;
   squire: Squire;
   notify(line: string): void;
@@ -58,10 +60,19 @@ export async function setupGoedel({ directory, squire, notify, connect, signal }
   }
   if (!matches.length) throw new Error('Gödel needs one unambiguous Free Key vault entry');
   signal?.throwIfAborted();
-  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
-    grant => new Goedel({ directory, loadGrant: async () => grant }).available(), signal);
+  const grant = await firstWorkingGrant(
+    matches.map(item => item.reference!),
+    reference => resolveSquireGrant(id, reference, squire, { directory, ...(signal ? { signal } : {}), background, notify }),
+    grant => new Goedel({ directory, loadGrant: async () => grant }).available(),
+    signal
+  );
   if (!grant) throw new Error('Gödel Free Key could not be verified');
   signal?.throwIfAborted();
-  await writePrivateProviderGrant(id, grant, directory);
+  if (grant.storedInVault) {
+    await rm(join(directory, `${id}.json`), { force: true });
+    notify('Gödel: verified Free Key connected through local Grunt vault for public requests');
+    return;
+  }
+  await writePrivateProviderGrant(id, { base_url: grant.base_url, token: grant.token }, directory);
   notify('Gödel: verified Free Key connected through Trusty Squire for public requests');
 }

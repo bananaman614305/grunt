@@ -5,8 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { FreeApiGrant } from './free-api.js';
 import {
+  credentialFingerprint,
   defaultProviderOrigin,
+  isCredentialFingerprint,
+  isVaultProvider,
   readVaultGrant,
+  validateDirectOrigin,
   validateProviderEndpoint,
   validateVaultToken,
   writeVaultEntry
@@ -16,6 +20,28 @@ import type { VaultEntrySource, VaultProvider } from './vault.js';
 export const providerGrantDirectory = () => configRoot();
 type Provider = 'runcrate' | 'apinex' | 'kilo' | 'goedel' | 'crowllm' | 'fikra' | 'openference' | 'darus' | 'aperture-ai' | 'millionseek' | 'ifm';
 const RECEIPT_PROVIDERS = new Set<Provider>(['runcrate', 'apinex']);
+export interface SquireGrantSource {
+  credentials: { grant(reference: string): Promise<{ base_url: string; token: string }> };
+  materializeDirectVaultGrant?(
+    provider: VaultProvider,
+    reference: string,
+    options?: {
+      directory?: string;
+      origin?: string;
+      field?: string;
+      reason?: string;
+      onApproval?: (info: { approvalId: string; approvalUrl: string }) => Promise<void> | void;
+      waitForApproval?: boolean;
+      pollIntervalMs?: number;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    }
+  ): Promise<{ base_url: string; token: string }>;
+}
+export interface ResolvedSquireGrant extends FreeApiGrant {
+  transport: 'direct' | 'egress';
+  storedInVault: boolean;
+}
 function name(provider: Provider) {
   if (provider !== 'runcrate' && provider !== 'apinex' && provider !== 'kilo' && provider !== 'goedel' && provider !== 'crowllm' && provider !== 'fikra' && provider !== 'openference' && provider !== 'darus' && provider !== 'aperture-ai' && provider !== 'millionseek' && provider !== 'ifm') throw new Error('Invalid private provider');
   return provider;
@@ -51,14 +77,84 @@ export async function materializeDirectGrant(
   }, location);
   return { base_url: saved.origin, token: validateVaultToken(input.token) };
 }
+function isDirectOrigin(provider: string, baseUrl: string): boolean {
+  if (!isVaultProvider(provider)) return false;
+  try {
+    validateDirectOrigin(provider, baseUrl);
+    return true;
+  } catch {
+    return false;
+  }
+}
+/**
+ * Resolves a Squire credential reference into a direct local Grunt vault grant
+ * via passkey-approved export when available, falling back seamlessly to a
+ * Squire egress grant when direct export is unavailable or declined.
+ */
+export async function resolveSquireGrant(
+  provider: string,
+  reference: string,
+  squire: SquireGrantSource,
+  options: {
+    directory?: string;
+    signal?: AbortSignal;
+    background?: boolean;
+    notify?: (line: string) => void;
+    onApproval?: (info: { approvalId: string; approvalUrl: string }) => Promise<void> | void;
+  } = {}
+): Promise<ResolvedSquireGrant> {
+  options.signal?.throwIfAborted();
+  if (isVaultProvider(provider) && typeof squire.materializeDirectVaultGrant === 'function') {
+    try {
+      const direct = await squire.materializeDirectVaultGrant(provider, reference, {
+        ...(options.directory ? { directory: options.directory } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+        waitForApproval: !options.background,
+        onApproval: info => {
+          if (options.onApproval) return options.onApproval(info);
+          options.notify?.(`${provider}: confirm Squire passkey export at ${info.approvalUrl} to store key in local Grunt vault`);
+        }
+      });
+      return { base_url: direct.base_url, token: direct.token, transport: 'direct', storedInVault: true };
+    } catch {
+      options.signal?.throwIfAborted();
+    }
+  }
+  const grant = validateProviderGrant(await squire.credentials.grant(reference));
+  return {
+    ...grant,
+    transport: isDirectOrigin(provider, grant.base_url) ? 'direct' : 'egress',
+    storedInVault: false
+  };
+}
 // Several vault entries can match a provider. Use the first whose grant passes the
 // provider's own free-route check; undefined when none does.
-export async function firstWorkingGrant(references: readonly string[], grant: (reference: string) => Promise<unknown>,
-  works: (grant: FreeApiGrant) => Promise<boolean>, signal?: AbortSignal): Promise<FreeApiGrant | undefined> {
+export async function firstWorkingGrant<T extends FreeApiGrant>(
+  references: readonly string[],
+  grant: (reference: string) => Promise<T>,
+  works: (grant: T) => Promise<boolean>,
+  signal?: AbortSignal
+): Promise<T | undefined>;
+export async function firstWorkingGrant(
+  references: readonly string[],
+  grant: (reference: string) => Promise<unknown>,
+  works: (grant: FreeApiGrant) => Promise<boolean>,
+  signal?: AbortSignal
+): Promise<FreeApiGrant | undefined>;
+export async function firstWorkingGrant<T extends FreeApiGrant = FreeApiGrant>(
+  references: readonly string[],
+  grant: (reference: string) => Promise<unknown>,
+  works: (grant: T) => Promise<boolean>,
+  signal?: AbortSignal
+): Promise<T | undefined> {
   for (const reference of references) {
     signal?.throwIfAborted();
     try {
-      const candidate = validateProviderGrant(await grant(reference));
+      const raw = await grant(reference);
+      const validated = validateProviderGrant(raw);
+      const candidate = (raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? { ...(raw as Record<string, unknown>), ...validated }
+        : validated) as T;
       const available = await works(candidate);
       signal?.throwIfAborted();
       if (available) return candidate;
@@ -66,7 +162,7 @@ export async function firstWorkingGrant(references: readonly string[], grant: (r
   }
   return undefined;
 }
-async function readProviderGrantFile(provider: Provider, location: string): Promise<unknown> {
+export async function readPrivateProviderGrantFile(provider: Provider, location: string): Promise<unknown> {
   const file = await open(join(location, `${name(provider)}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
@@ -84,16 +180,34 @@ export async function readPrivateProviderGrant(
   if (vaulted && !RECEIPT_PROVIDERS.has(id)) {
     return { base_url: vaulted.base_url, token: vaulted.token };
   }
-  if (vaulted && RECEIPT_PROVIDERS.has(id)) {
-    const saved = await readProviderGrantFile(id, location);
-    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
-      return { ...(saved as Record<string, unknown>), base_url: vaulted.base_url, token: vaulted.token };
+  if (RECEIPT_PROVIDERS.has(id)) {
+    const saved = await readPrivateProviderGrantFile(id, location);
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return saved;
+    const record = saved as Record<string, unknown>;
+    if (record.credential_source === 'vault') {
+      if (record.token !== undefined || !isCredentialFingerprint(record.credential_sha256) || !vaulted) {
+        throw new Error(`Invalid ${id} vault-backed verification receipt`);
+      }
+      if (credentialFingerprint(vaulted) !== record.credential_sha256) {
+        throw new Error(`${id} verification receipt does not match the current local vault credential`);
+      }
+      return { ...record, base_url: vaulted.base_url, token: vaulted.token };
     }
-    return saved;
+    const access = validateProviderGrant(record);
+    const expected = isCredentialFingerprint(record.credential_sha256)
+      ? record.credential_sha256
+      : credentialFingerprint(access);
+    if (record.credential_sha256 !== undefined && record.credential_sha256 !== credentialFingerprint(access)) {
+      throw new Error(`${id} verification receipt does not match its saved credential`);
+    }
+    if (vaulted && credentialFingerprint(vaulted) !== expected) {
+      throw new Error(`${id} verification receipt does not match the current local vault credential`);
+    }
+    return record;
   }
-  return readProviderGrantFile(id, location);
+  return readPrivateProviderGrantFile(id, location);
 }
-export async function writePrivateProviderGrant(provider: Provider, value: FreeApiGrant, location: string) {
+export async function writePrivateProviderGrant(provider: Provider, value: Record<string, unknown> | FreeApiGrant, location: string) {
   const temporary = join(location, `${name(provider)}.${randomUUID()}.tmp`);
   await mkdir(location, { recursive: true, mode: 0o700 });
   try {

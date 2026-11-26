@@ -1,12 +1,14 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BeatAPI, BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, readBeatAPIGrant, writeBeatAPIGrant } from './beatapi.js';
+import { BeatAPI, BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, writeBeatAPIGrant } from './beatapi.js';
 import type { BeatAPIGrant } from './beatapi.js';
 import { setupBeatAPI } from './beatapi-setup.js';
 import { recordDataSharingConsent } from './data-sharing.js';
@@ -17,15 +19,18 @@ import {
   POLLINATIONS_MODEL,
   POLLINATIONS_ORIGIN,
   POLLINATIONS_RETURNED_MODEL,
+  pollinationsGrantPath,
   readPollinationsGrant,
   writePollinationsGrant
 } from './pollinations.js';
 import type { PollinationsGrant } from './pollinations.js';
 import { setupPollinations } from './pollinations-setup.js';
 import { materializeDirectGrant, readPrivateProviderGrant, validatePinnedProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { Runcrate, RUNCRATE_DEEPSEEK, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
 import { BrowserSquire, setupProviders } from './setup.js';
 import {
   SQUIRE_EGRESS_ORIGIN,
+  credentialFingerprint,
   deleteVaultEntry,
   listVaultEntries,
   readVaultEntry,
@@ -35,10 +40,14 @@ import {
   validateDirectOrigin,
   validateProviderEndpoint,
   vaultEnvKeyName,
+  vaultLockPath,
   vaultPath,
   writeVaultEntry
 } from './vault.js';
 import { vaultCommand } from './vault-cli.js';
+import { readZroGrant, writeZroGrant } from './zro.js';
+
+const execFileAsync = promisify(execFile);
 
 let directory: string;
 
@@ -128,6 +137,35 @@ it('stores local vault entries with 0700 dir, 0600 file, atomic writes, and seri
   expect(await deleteVaultEntry('darus', nested)).toBe(false);
   expect(await readVaultEntry('darus', nested)).toBeUndefined();
 });
+
+it('serializes concurrent vault updates across independent OS processes and cleans up stale locks', async () => {
+  const providers = ['beatapi', 'pollinations', 'darus', 'ifm', 'crowllm', 'goedel'] as const;
+  const vaultModule = pathToFileURL(join(process.cwd(), 'src/local/vault.ts')).href;
+  const tsxBin = join(process.cwd(), 'node_modules/.bin/tsx');
+  const script = `(async () => {
+    const { writeVaultEntry } = await import(${JSON.stringify(vaultModule)});
+    await writeVaultEntry(process.env.VAULT_TEST_PROVIDER, { api_key: process.env.VAULT_TEST_KEY, source: 'import' }, process.env.VAULT_TEST_DIR);
+  })().catch(error => { console.error(error); process.exit(1); });`;
+
+  await Promise.all(providers.map(provider =>
+    execFileAsync(tsxBin, ['-e', script], {
+      timeout: 15_000,
+      env: { ...process.env, VAULT_TEST_PROVIDER: provider, VAULT_TEST_KEY: `sk-proc-${provider}-secret`, VAULT_TEST_DIR: directory }
+    })
+  ));
+
+  expect(await readdir(directory)).toEqual(['vault.json']);
+  expect((await stat(vaultPath(directory))).mode & 0o777).toBe(0o600);
+  for (const provider of providers) {
+    expect(await readVaultEntry(provider, directory)).toMatchObject({ api_key: `sk-proc-${provider}-secret` });
+  }
+
+  // Plant a stale lockfile owned by a dead process and confirm recovery succeeds cleanly.
+  await writeFile(vaultLockPath(directory), JSON.stringify({ pid: 99999999, token: 'dead-lock', at: Date.now() - 60_000 }), { mode: 0o600 });
+  await writeVaultEntry('zro', { api_key: 'sk-after-stale-lock', source: 'local' }, directory);
+  expect(await readVaultEntry('zro', directory)).toMatchObject({ api_key: 'sk-after-stale-lock' });
+  expect(await readdir(directory)).toEqual(['vault.json']);
+}, 20_000);
 
 it('rejects insecure vault permissions, symlinks, broad directories, and FIFOs', async () => {
   await writeVaultEntry('beatapi', { api_key: 'sk-beatapi-secret' }, directory);
@@ -247,7 +285,7 @@ it('supports vault CLI set/list/remove without echoing secrets or accepting keys
   expect(combined).toContain('removed from local Grunt vault');
 });
 
-it('dispatches BeatAPI directly over HTTPS via local vault against a fake upstream server with zero diagnostic secret leakage', async () => {
+it('dispatches BeatAPI directly via local vault without copying raw keys into beatapi.json, and revokes on vault remove or key swap', async () => {
   await recordDataSharingConsent(directory, ['beatapi']);
   const secret = 'sk-beatapi-direct-secret-key-42';
   await writeVaultEntry('beatapi', { api_key: secret, source: 'import' }, directory);
@@ -283,6 +321,14 @@ it('dispatches BeatAPI directly over HTTPS via local vault against a fake upstre
     expect(squire.credentials.grant).not.toHaveBeenCalled();
     expect(JSON.stringify(notify.mock.calls)).not.toContain(secret);
 
+    // Receipt on disk stores metadata + fingerprint only, never the raw API key.
+    const rawReceiptText = await readFile(beatapiGrantPath(directory), 'utf8');
+    expect(rawReceiptText).not.toContain(secret);
+    const rawReceipt = JSON.parse(rawReceiptText) as Record<string, unknown>;
+    expect(rawReceipt).not.toHaveProperty('token');
+    expect(rawReceipt.credential_source).toBe('vault');
+    expect(rawReceipt.credential_sha256).toBe(credentialFingerprint({ base_url: BEATAPI_ORIGIN, token: secret }));
+
     const saved = await readBeatAPIGrant(directory, {});
     expect(saved.base_url).toBe(BEATAPI_ORIGIN);
     expect(saved.version).toBe(2);
@@ -296,6 +342,17 @@ it('dispatches BeatAPI directly over HTTPS via local vault against a fake upstre
     expect(events).not.toContain(secret);
     expect(events).not.toContain('trusty-squire-api.fly.dev');
     expect(server.seen.map(call => call.url)).toEqual(['/v1/usage', '/v1/models', '/v1/usage', '/v1/chat/completions', '/v1/usage']);
+
+    // Removing the key from the vault immediately revokes BeatAPI access (no fallback key in receipt).
+    await vaultCommand(['remove', 'beatapi'], { directory, env: {}, log: () => {} });
+    await expect(readBeatAPIGrant(directory, {})).rejects.toMatchObject({ code: 'logged_out' });
+    expect(await source.available()).toBe(false);
+
+    // Replacing with a different unverified key also fails closed until setup re-verifies.
+    await writeVaultEntry('beatapi', { api_key: 'sk-beatapi-replacement-unverified', source: 'import' }, directory);
+    await expect(readBeatAPIGrant(directory, {})).rejects.toMatchObject({ code: 'logged_out' });
+    expect(await source.available()).toBe(false);
+    expect(server.seen).toHaveLength(5);
   } finally {
     await source.close();
     await diagnostics.close();
@@ -303,7 +360,7 @@ it('dispatches BeatAPI directly over HTTPS via local vault against a fake upstre
   }
 });
 
-it('dispatches Pollinations directly over HTTPS via local vault against a fake upstream server with zero-budget guards intact', async () => {
+it('dispatches Pollinations directly via local vault without copying raw keys into pollinations.json, and revokes on vault remove or key swap', async () => {
   await recordDataSharingConsent(directory, ['pollinations']);
   const secret = 'sk-pollinations-direct-secret-key-99';
   await writeVaultEntry('pollinations', { api_key: secret, source: 'import' }, directory);
@@ -348,6 +405,14 @@ it('dispatches Pollinations directly over HTTPS via local vault against a fake u
     expect(squire.credentials.grant).not.toHaveBeenCalled();
     expect(JSON.stringify(notify.mock.calls)).not.toContain(secret);
 
+    // Receipt on disk stores metadata + fingerprint only, never the raw API key.
+    const rawReceiptText = await readFile(pollinationsGrantPath(directory), 'utf8');
+    expect(rawReceiptText).not.toContain(secret);
+    const rawReceipt = JSON.parse(rawReceiptText) as Record<string, unknown>;
+    expect(rawReceipt).not.toHaveProperty('token');
+    expect(rawReceipt.credential_source).toBe('vault');
+    expect(rawReceipt.credential_sha256).toBe(credentialFingerprint({ base_url: POLLINATIONS_ORIGIN, token: secret }));
+
     const saved = await readPollinationsGrant(directory, {});
     expect(saved.base_url).toBe(POLLINATIONS_ORIGIN);
 
@@ -359,6 +424,16 @@ it('dispatches Pollinations directly over HTTPS via local vault against a fake u
     const events = JSON.stringify((await diagnostics.list({ includeDetails: true })).events);
     expect(events).not.toContain(secret);
     expect(events).not.toContain('trusty-squire-api.fly.dev');
+
+    const countBeforeRevoke = server.seen.length;
+    await vaultCommand(['remove', 'pollinations'], { directory, env: {}, log: () => {} });
+    await expect(readPollinationsGrant(directory, {})).rejects.toMatchObject({ code: 'logged_out' });
+    expect(await source.available()).toBe(false);
+
+    await writeVaultEntry('pollinations', { api_key: 'sk-pollinations-replacement-unverified', source: 'import' }, directory);
+    await expect(readPollinationsGrant(directory, {})).rejects.toMatchObject({ code: 'logged_out' });
+    expect(await source.available()).toBe(false);
+    expect(server.seen).toHaveLength(countBeforeRevoke);
   } finally {
     await source.close();
     await diagnostics.close();
@@ -366,7 +441,63 @@ it('dispatches Pollinations directly over HTTPS via local vault against a fake u
   }
 });
 
-it('keeps backwards compatibility with existing Squire egress grants and upgrades cleanly when local vault is populated', async () => {
+it('binds Runcrate key_topups_disabled and Zro receipts to the verified credential fingerprint and invalidates on key replacement', async () => {
+  await recordDataSharingConsent(directory, ['runcrate']);
+  const verifiedKey = 'sk-runcrate-verified-key-1';
+  const replacementKey = 'sk-runcrate-replacement-key-2';
+  await writeVaultEntry('runcrate', { api_key: verifiedKey, source: 'import' }, directory);
+  await writeRuncrateGrant({ base_url: 'https://api.runcrate.ai', token: verifiedKey }, directory);
+
+  // Direct receipt stores fingerprint only, never the raw key.
+  const rawText = await readFile(join(directory, 'runcrate.json'), 'utf8');
+  expect(rawText).not.toContain(verifiedKey);
+  expect(JSON.parse(rawText)).toMatchObject({
+    credential_source: 'vault',
+    credential_sha256: credentialFingerprint({ base_url: 'https://api.runcrate.ai', token: verifiedKey }),
+    key_topups_disabled: true
+  });
+
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: RUNCRATE_DEEPSEEK }] }));
+  const source = new Runcrate({ directory, fetcher });
+  expect(await source.available()).toBe(true);
+  expect(fetcher).toHaveBeenCalledOnce();
+  fetcher.mockClear();
+
+  // Replacing the key in vault.json invalidates the old key_topups_disabled receipt.
+  await writeVaultEntry('runcrate', { api_key: replacementKey, source: 'import' }, directory);
+  await expect(readRuncrateGrant(directory, {})).rejects.toThrow('does not match');
+  expect(await source.available()).toBe(false);
+  await expect(source.complete({ model: 'runcrate', cwd: directory, messages: [{ role: 'user', content: 'hi' }], tools: [], stream: false }, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'logged_out' });
+  expect(fetcher).not.toHaveBeenCalled();
+
+  // Replacing via env var also invalidates the old receipt.
+  await writeVaultEntry('runcrate', { api_key: verifiedKey, source: 'import' }, directory);
+  expect(await readRuncrateGrant(directory, {})).toMatchObject({ token: verifiedKey, key_topups_disabled: true });
+  await expect(readRuncrateGrant(directory, { [vaultEnvKeyName('runcrate')]: replacementKey })).rejects.toThrow('does not match');
+
+  // Removing from vault also revokes the vault-backed receipt immediately.
+  await deleteVaultEntry('runcrate', directory);
+  await expect(readRuncrateGrant(directory, {})).rejects.toThrow('Invalid runcrate vault-backed verification receipt');
+
+  // Legacy egress Runcrate receipt also refuses an unverified replacement vault key.
+  const legacyEgress = { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'r'.repeat(24)}`, token: 'synthetic-egress-runcrate' };
+  await writeRuncrateGrant(legacyEgress, directory);
+  expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...legacyEgress, key_topups_disabled: true });
+  await writeVaultEntry('runcrate', { api_key: replacementKey, source: 'import' }, directory);
+  await expect(readRuncrateGrant(directory, {})).rejects.toThrow('does not match');
+  await source.close();
+
+  // Zro receipts are likewise bound to the verified credential fingerprint.
+  const zroKey = 'sk-zro-verified-1';
+  await writeVaultEntry('zro', { api_key: zroKey, source: 'import' }, directory);
+  await writeZroGrant({ base_url: 'https://zro.moonmath.ai', token: zroKey }, directory);
+  expect(await readFile(join(directory, 'zro.json'), 'utf8')).not.toContain(zroKey);
+  expect(await readZroGrant(directory, {})).toMatchObject({ base_url: 'https://zro.moonmath.ai', token: zroKey });
+  await writeVaultEntry('zro', { api_key: 'sk-zro-unverified-2', source: 'import' }, directory);
+  await expect(readZroGrant(directory, {})).rejects.toThrow('verification is missing');
+});
+
+it('keeps backwards compatibility with existing Squire egress grants and rejects tampered raw-key direct receipts', async () => {
   const egressBeat: BeatAPIGrant = {
     version: 1,
     base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'b'.repeat(24)}`,
@@ -384,13 +515,9 @@ it('keeps backwards compatibility with existing Squire egress grants and upgrade
   await writeBeatAPIGrant(egressBeat, directory);
   expect(await readBeatAPIGrant(directory, {})).toEqual(egressBeat);
 
-  // Adding a local vault key upgrades BeatAPI to direct HTTPS while keeping the verified receipt.
-  await writeVaultEntry('beatapi', { api_key: 'sk-upgraded-beat-direct' }, directory);
-  expect(await readBeatAPIGrant(directory, {})).toMatchObject({
-    base_url: BEATAPI_ORIGIN,
-    token: 'sk-upgraded-beat-direct',
-    free_account_verified: true
-  });
+  // Tampered beatapi.json embedding a raw direct token without vault source is rejected.
+  await writeFile(beatapiGrantPath(directory), JSON.stringify({ ...egressBeat, base_url: BEATAPI_ORIGIN, token: 'sk-raw-in-receipt' }), { mode: 0o600 });
+  await expect(readBeatAPIGrant(directory, {})).rejects.toMatchObject({ code: 'logged_out' });
 
   // Legacy Pollinations egress grant works seamlessly without a vault entry.
   const egressPoll: PollinationsGrant = {
@@ -426,25 +553,126 @@ it('keeps backwards compatibility with existing Squire egress grants and upgrade
   });
 });
 
-it('connects setupProviders through local Grunt vault without minting a Squire egress grant', async () => {
-  const secret = 'sk-groq-local-vault-secret';
-  await writeVaultEntry('groq', { api_key: secret }, directory);
-  const squire = {
-    credentials: { list: vi.fn(async () => []), grant: vi.fn(async () => { throw new Error('must not mint egress grant'); }) },
-    runs: { start: vi.fn(async () => { throw new Error('must not start signup'); }), get: vi.fn(async () => ({ state: 'dropped' })) }
-  };
+it('wires passkey-approved export into production setupProviders and falls back to Squire egress when declined or unavailable', async () => {
+  const squire = new BrowserSquire();
+  const secret = 'sk-groq-passkey-exported-secret';
+  const callSpy = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'list_credentials') return { credentials: [{ service: 'groq', reference: 'vault://groq', field_names: ['api_key'] }] };
+    if (name === 'fetch_credential' && args.action === 'start') {
+      return { status: 'approval_pending', approval_id: 'apr_groq', approval_url: 'https://trusty-squire.example/approve/apr_groq' };
+    }
+    if (name === 'fetch_credential' && args.action === 'resume') {
+      return { status: 'credential_fetched', fields: { api_key: secret } };
+    }
+    if (name === 'grant_app_access') throw new Error('must not mint egress grant when passkey export succeeds');
+    return {};
+  });
+  vi.spyOn(squire, 'materializeDirectVaultGrant').mockImplementationOnce((provider, reference, opts) =>
+    BrowserSquire.prototype.materializeDirectVaultGrant.call(squire, provider, reference, { ...opts, pollIntervalMs: 50 })
+  );
+
   const added: { platform: string; grant: { base_url: string; token: string } }[] = [];
   const notifications: string[] = [];
-
   await setupProviders(squire, {
     addGrant: async (platform, grant) => { added.push({ platform, grant }); }
   }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory });
 
   expect(added).toEqual([{ platform: 'groq', grant: { base_url: 'https://api.groq.com', token: secret } }]);
-  expect(squire.credentials.list).not.toHaveBeenCalled();
-  expect(squire.credentials.grant).not.toHaveBeenCalled();
+  expect(await readVaultEntry('groq', directory)).toMatchObject({ api_key: secret, origin: 'https://api.groq.com', source: 'squire' });
+  expect(callSpy.mock.calls.some(([name]) => name === 'grant_app_access')).toBe(false);
+  expect(notifications.join('\n')).toContain('confirm Squire passkey export');
   expect(notifications.join('\n')).toContain('connected through local Grunt vault');
   expect(notifications.join('\n')).not.toContain(secret);
+
+  // When passkey export is declined, setupProviders cleanly falls back to Squire egress.
+  await deleteVaultEntry('groq', directory);
+  added.length = 0;
+  notifications.length = 0;
+  callSpy.mockImplementation(async name => {
+    if (name === 'list_credentials') return { credentials: [{ service: 'groq', reference: 'vault://groq', field_names: ['api_key'] }] };
+    if (name === 'fetch_credential') return { status: 'credential_fetch_refused', reason: 'user_denied' };
+    if (name === 'grant_app_access') return { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'e'.repeat(24)}`, token: 'synthetic-egress-fallback' };
+    return {};
+  });
+  await setupProviders(squire, {
+    addGrant: async (platform, grant) => { added.push({ platform, grant }); }
+  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory });
+
+  expect(added).toEqual([{ platform: 'groq', grant: { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'e'.repeat(24)}`, token: 'synthetic-egress-fallback' } }]);
+  expect(notifications.join('\n')).toContain('connected through Squire grant');
+  expect(notifications.join('\n')).not.toContain('synthetic-egress-fallback');
+});
+
+it('wires passkey-approved export into setupBeatAPI and setupPollinations after browser signup, with immediate egress fallback in background mode', async () => {
+  await recordDataSharingConsent(directory, ['beatapi', 'pollinations']);
+  const beatSecret = 'sk-beat-exported-via-signup';
+  const pollSecret = 'sk-poll-exported-via-signup';
+  const squire = new BrowserSquire();
+  vi.spyOn(squire, 'signup').mockResolvedValue();
+  const callSpy = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'list_credentials') {
+      return {
+        credentials: [
+          { service: 'beatapi', label: 'grunt', reference: 'vault://beatapi-new', field_names: ['value'], allowed_hosts: ['api.beatapi.io'] },
+          { service: 'pollinations', label: 'grunt-free-pollinations', reference: 'vault://poll-new', field_names: ['api_key'], allowed_hosts: ['gen.pollinations.ai'] }
+        ]
+      };
+    }
+    if (name === 'fetch_credential' && args.action === 'start') {
+      const secret = args.reference === 'vault://beatapi-new' ? beatSecret : pollSecret;
+      return { status: 'credential_fetched', fields: { api_key: secret } };
+    }
+    if (name === 'grant_app_access') throw new Error('must not call grant_app_access when export succeeds');
+    return {};
+  });
+
+  const beatFetcher = vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url).startsWith(BEATAPI_ORIGIN)).toBe(true);
+    expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${beatSecret}`);
+    return String(url).endsWith('/v1/models')
+      ? Response.json({ data: BEATAPI_MODELS.map(id => ({ id })) })
+      : Response.json({ data: { object: 'usage', credit_balance: 0, credits_settled: 0 } });
+  });
+  await setupBeatAPI({ directory, squire, fetcher: beatFetcher });
+  expect(await readVaultEntry('beatapi', directory)).toMatchObject({ api_key: beatSecret, origin: BEATAPI_ORIGIN, source: 'squire' });
+  expect(await readFile(beatapiGrantPath(directory), 'utf8')).not.toContain(beatSecret);
+  expect(await readBeatAPIGrant(directory, {})).toMatchObject({ base_url: BEATAPI_ORIGIN, token: beatSecret, version: 2 });
+
+  const pollFetcher = vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url).startsWith(POLLINATIONS_ORIGIN)).toBe(true);
+    expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${pollSecret}`);
+    const route = String(url).slice(POLLINATIONS_ORIGIN.length);
+    if (route === '/account/key') return Response.json({ valid: true, type: 'secret', expiresAt: null, pollenBudget: 0, questPollenOnly: true, permissions: { models: null, account: ['usage'] } });
+    if (route === '/account/balance') return Response.json({ balance: 0, accountBalance: { total: 0.25, tier: 0.25, paid: 0 } });
+    return Response.json({ id: POLLINATIONS_MODEL, object: 'model', owned_by: 'OSAII', category: 'text', community: true, paid_only: false, pricing: { currency: 'pollen' }, supported_endpoints: ['/v1/chat/completions'] });
+  });
+  await setupPollinations({ directory, squire, fetcher: pollFetcher });
+  expect(await readVaultEntry('pollinations', directory)).toMatchObject({ api_key: pollSecret, origin: POLLINATIONS_ORIGIN, source: 'squire' });
+  expect(await readFile(pollinationsGrantPath(directory), 'utf8')).not.toContain(pollSecret);
+  expect(await readPollinationsGrant(directory, {})).toMatchObject({ base_url: POLLINATIONS_ORIGIN, token: pollSecret });
+
+  // In background mode, approval_pending falls back immediately to Squire egress without polling.
+  await deleteVaultEntry('beatapi', directory);
+  await rm(beatapiGrantPath(directory), { force: true });
+  const egressUrl = `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'f'.repeat(24)}`;
+  callSpy.mockImplementation(async name => {
+    if (name === 'list_credentials') {
+      return { credentials: [{ service: 'beatapi', label: 'grunt', reference: 'vault://beatapi-bg', field_names: ['value'], allowed_hosts: ['api.beatapi.io'] }] };
+    }
+    if (name === 'fetch_credential') {
+      return { status: 'approval_pending', approval_id: 'apr_bg', approval_url: 'https://trusty-squire.example/approve/apr_bg' };
+    }
+    if (name === 'grant_app_access') return { base_url: egressUrl, token: 'synthetic-bg-egress-token' };
+    return {};
+  });
+  const bgFetcher = vi.fn<typeof fetch>(async url => {
+    expect(String(url).startsWith(egressUrl)).toBe(true);
+    return String(url).endsWith('/v1/models')
+      ? Response.json({ data: BEATAPI_MODELS.map(id => ({ id })) })
+      : Response.json({ data: { object: 'usage', credit_balance: 0, credits_settled: 0 } });
+  });
+  await setupBeatAPI({ directory, squire, fetcher: bgFetcher, background: true });
+  expect(await readBeatAPIGrant(directory, {})).toMatchObject({ base_url: egressUrl, token: 'synthetic-bg-egress-token' });
 });
 
 it('materializes a direct local vault grant from Squire passkey-approved credential export and handles refusal safely', async () => {

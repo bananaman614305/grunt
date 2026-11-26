@@ -99,15 +99,16 @@ it.each([true, false])('never fetches or stores local admin credentials and reus
   expect(logins).toEqual([saved.password, saved.password]);
 });
 
-it('mints a provider grant once and reuses the grant-backed router entry without revealing keys', async () => {
+it('falls back to a Squire egress grant when direct export is unavailable and reuses the router entry without revealing keys', async () => {
   const output: string[] = [];
   await setup(line => output.push(line));
   expect(squireCall.mock.calls.filter(([name]) => name === 'grant_app_access')).toEqual([['grant_app_access', { reference: 'vault://groq' }]]);
-  expect(squireCall.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
   expect(JSON.stringify(output)).not.toContain('synthetic-grant-token');
+  keys = keys.map(row => ({ ...row, models: [{ modelId: 'openai/gpt-oss-120b' }] })) as typeof keys;
   squireCall.mockClear(); question.mockClear(); output.length = 0;
   await setup(line => output.push(line));
   expect(squireCall.mock.calls.filter(([name]) => name === 'fetch_credential')).toEqual([]);
+  expect(squireCall.mock.calls.filter(([name]) => name === 'grant_app_access')).toEqual([]);
   expect(output.some(line => line.includes('approve'))).toBe(false);
   expect(question).toHaveBeenCalledTimes(0);
 });

@@ -51,9 +51,11 @@ import { disabledAdapters } from '../registry.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, requiresExplicitDataSharing } from './data-sharing.js';
-import { writePrivateProviderGrant } from './provider-grant.js';
+import { resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
+import type { SquireGrantSource } from './provider-grant.js';
 import {
   defaultProviderOrigin,
+  deleteVaultEntry,
   extractCredentialSecret,
   isVaultProvider,
   readVaultGrant,
@@ -179,7 +181,7 @@ function connectionReason(value: string): string {
 }
 // The browser adapter implements this narrow setup contract. It does not use
 // the SDK's legacy runs API: signup is driven by local operate_drive calls.
-export interface SetupSquire {
+export interface SetupSquire extends SquireGrantSource {
   credentials: {
     list(): Promise<Credential[]>;
     grant(reference: string): Promise<{ base_url: string; token: string }>;
@@ -206,7 +208,7 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
   } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
 }
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined; directory?: string } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined; directory?: string; background?: boolean } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string, diagnostic?: SquireDiagnostic) => {
@@ -246,12 +248,25 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     const connect = async (credentials: Credential[]) => {
       for (const credential of credentials) {
         options.signal?.throwIfAborted();
+        let materialized = false;
         try {
-          await router.addGrant(provider, await squire.credentials.grant(credential.reference));
+          const resolved = await resolveSquireGrant(provider, credential.reference, squire, {
+            directory: options.directory ?? configRoot(),
+            ...(options.signal ? { signal: options.signal } : {}),
+            ...(options.background !== undefined ? { background: options.background } : {}),
+            notify: options.notify
+          });
+          materialized = resolved.transport === 'direct';
+          await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token });
           options.signal?.throwIfAborted();
-          options.notify(`${provider}: connected through Squire grant`);
+          options.notify(resolved.transport === 'direct'
+            ? `${provider}: connected through local Grunt vault`
+            : `${provider}: connected through Squire grant`);
           return true;
         } catch (error) {
+          if (materialized && isVaultProvider(provider)) {
+            await deleteVaultEntry(provider, options.directory ?? configRoot()).catch(() => {});
+          }
           const status = rejectedStatus(error);
           if (!status) rememberFailure(error);
           else { options.signal?.throwIfAborted(); options.notify(`${provider}: saved key rejected (HTTP ${status})`); }
@@ -290,8 +305,16 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     if (await router.hasKey?.(provider)) { options.notify(`${provider}: connected`); continue; }
     const credential = (await squire.credentials.list()).find(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     if (!credential) { options.notify(`${provider}: skipped; no saved API access`); continue; }
-    await router.addGrant(provider, await squire.credentials.grant(credential.reference));
-    options.notify(`${provider}: connected through Squire grant`);
+    const resolved = await resolveSquireGrant(provider, credential.reference, squire, {
+      directory: options.directory ?? configRoot(),
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.background !== undefined ? { background: options.background } : {}),
+      notify: options.notify
+    });
+    await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token });
+    options.notify(resolved.transport === 'direct'
+      ? `${provider}: connected through local Grunt vault`
+      : `${provider}: connected through Squire grant`);
   }
   return { pending, dropped };
 }
@@ -576,6 +599,7 @@ export class BrowserSquire implements SetupSquire {
       field?: string;
       reason?: string;
       onApproval?: (info: { approvalId: string; approvalUrl: string }) => Promise<void> | void;
+      waitForApproval?: boolean;
       pollIntervalMs?: number;
       timeoutMs?: number;
       signal?: AbortSignal;
@@ -589,6 +613,9 @@ export class BrowserSquire implements SetupSquire {
       ...(options.reason ? { reason: options.reason } : {})
     });
     if (exported.status === 'approval_pending') {
+      if (options.waitForApproval === false) {
+        throw new Error(`Squire passkey approval required to export ${provider} key`);
+      }
       await options.onApproval?.({ approvalId: exported.approval_id, approvalUrl: exported.approval_url });
       const deadline = Date.now() + (options.timeoutMs ?? 120000);
       const interval = Math.max(50, options.pollIntervalMs ?? 2000);
@@ -1445,7 +1472,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: [provider], notify, reuseSaved: false, signal: options.signal, directory: location });
+        }, { providers: [provider], notify, reuseSaved: false, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
       } finally { await source.close(); }
       providers = providers.filter(id => id !== provider);
@@ -1461,7 +1488,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeZroGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: ['zro'], notify, reuseSaved: false, signal: options.signal, directory: location });
+        }, { providers: ['zro'], notify, reuseSaved: false, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'zro');
@@ -1477,7 +1504,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeTokenHarborGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: ['tokenharbor'], notify, reuseSaved: false, signal: options.signal, directory: location });
+        }, { providers: ['tokenharbor'], notify, reuseSaved: false, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error('Token Harbor setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'tokenharbor');
@@ -1492,7 +1519,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             if (provider !== 'nvidia') throw new Error('Unexpected NVIDIA credential');
             await writeNvidiaGrant(grant, location);
           }
-        }, { providers: ['nvidia'], notify, reuseSaved: false, directory: location });
+        }, { providers: ['nvidia'], notify, reuseSaved: false, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error('NVIDIA setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'nvidia');
@@ -1501,7 +1528,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
     const router = await readyRouter(options.signal);
     options.signal?.throwIfAborted();
     for (const provider of providers) if (providerURL(provider)) await setupURL(squire as BrowserSquire, router, provider, notify);
-    const result = await setupProviders(squire, router, { providers: providers.filter(provider => !providerURL(provider)) as Provider[], notify, dataSharingApproved: approved, directory: location });
+    const result = await setupProviders(squire, router, { providers: providers.filter(provider => !providerURL(provider)) as Provider[], notify, dataSharingApproved: approved, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
     const dropped = new Set(result.dropped);
     if (dropped.size) throw new Error(`Provider setup incomplete: ${[...dropped].join(', ')}`);
     await router.configureChain([...dropped], approved);

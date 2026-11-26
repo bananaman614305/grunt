@@ -2,8 +2,11 @@ import { rm } from 'node:fs/promises';
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
 import {
   POLLINATIONS_MODEL, POLLINATIONS_ORIGIN, pollinationsGrantPath, readPollinationsGrant,
-  verifyPollinationsAccess, writePollinationsGrant
+  verifyPollinationsAccess, writePollinationsGrant, writePollinationsVaultReceipt
 } from './pollinations.js';
+import type { PollinationsGrant } from './pollinations.js';
+import { resolveSquireGrant } from './provider-grant.js';
+import type { SquireGrantSource } from './provider-grant.js';
 import { readVaultGrant, writeVaultEntry } from './vault.js';
 
 export const POLLINATIONS_STORE = { service: 'pollinations', label: 'grunt-free-pollinations', api_hosts: ['gen.pollinations.ai'], auth_shape: 'bearer' };
@@ -17,7 +20,7 @@ interface Credential {
   label?: string;
   name?: string;
 }
-export interface PollinationsSetupSquire {
+export interface PollinationsSetupSquire extends SquireGrantSource {
   signup(service: string, url: string, goal: string, facts?: Record<string, string>): Promise<void>;
   credentials: {
     list(): Promise<Credential[]>;
@@ -97,7 +100,7 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
       try {
         await bounded(() => verifyPollinationsAccess(localVault, guards), signal);
         if (signal.aborted) throw failure();
-        await writePollinationsGrant({
+        await writePollinationsVaultReceipt({
           version: 1, base_url: localVault.base_url, token: localVault.token,
           upstream_origin: POLLINATIONS_ORIGIN, model: POLLINATIONS_MODEL,
           verified_at: new Date().toISOString(), free_account_verified: true,
@@ -117,19 +120,30 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
     const credentials = (await bounded(() => options.squire.credentials.list(), signal)).filter(eligible);
     const credential = credentials.find(item => !references.has(item.reference)) ?? credentials.find(owned) ?? credentials[0];
     if (!credential) throw failure();
-    const grant = await bounded(() => options.squire.credentials.grant(credential.reference), signal);
+    const grant = await bounded(() => resolveSquireGrant('pollinations', credential.reference, options.squire, {
+      directory: options.directory,
+      signal,
+      ...(options.background !== undefined ? { background: options.background } : {}),
+      ...(options.notify ? { notify: options.notify } : {})
+    }), signal);
     await bounded(() => verifyPollinationsAccess(grant, guards), signal);
     if (signal.aborted) throw failure();
-    if (grant.base_url.replace(/\/$/, '') === POLLINATIONS_ORIGIN) {
-      await writeVaultEntry('pollinations', { api_key: grant.token, origin: POLLINATIONS_ORIGIN, source: 'squire' }, options.directory);
-    }
-    await writePollinationsGrant({
-      version: 1, ...grant, upstream_origin: POLLINATIONS_ORIGIN, model: POLLINATIONS_MODEL,
+    const receipt: PollinationsGrant = {
+      version: 1, base_url: grant.base_url, token: grant.token,
+      upstream_origin: POLLINATIONS_ORIGIN, model: POLLINATIONS_MODEL,
       verified_at: new Date().toISOString(), free_account_verified: true,
       key_zero_budget_verified: true, quest_pollen_only: true
-    }, options.directory);
-    if (signal.aborted) throw failure();
-    options.notify?.('Pollinations: zero-budget Quest-only free community GLM access connected through Squire');
+    };
+    if (grant.transport === 'direct') {
+      await writeVaultEntry('pollinations', { api_key: grant.token, origin: POLLINATIONS_ORIGIN, source: 'squire' }, options.directory);
+      await writePollinationsVaultReceipt(receipt, options.directory);
+      if (signal.aborted) throw failure();
+      options.notify?.('Pollinations: zero-budget Quest-only free community GLM access connected through local Grunt vault');
+    } else {
+      await writePollinationsGrant(receipt, options.directory);
+      if (signal.aborted) throw failure();
+      options.notify?.('Pollinations: zero-budget Quest-only free community GLM access connected through Squire');
+    }
   } catch {
     await invalidate().catch(() => {});
     throw failure();

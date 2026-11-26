@@ -8,7 +8,15 @@ import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { readVaultGrant, validateProviderEndpoint, validateVaultToken } from './vault.js';
+import {
+  credentialFingerprint,
+  isCredentialFingerprint,
+  readVaultEnvGrant,
+  readVaultGrant,
+  validateProviderEndpoint,
+  validateVaultToken,
+  writeVaultEntry
+} from './vault.js';
 import { lengthLimited, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { MetadataFlights } from './metadata-flight.js';
@@ -64,19 +72,64 @@ export async function readPollinationsGrant(
     file = await open(pollinationsGrantPath(location), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
     if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) throw rejected();
-    const saved = validateGrant(JSON.parse(await file.readFile('utf8')));
+    const raw = object(JSON.parse(await file.readFile('utf8')));
     const vaulted = await readVaultGrant('pollinations', location, env);
-    return vaulted ? validateGrant({ ...saved, base_url: vaulted.base_url, token: vaulted.token }) : saved;
+    if (raw.credential_source === 'vault') {
+      if (raw.token !== undefined || raw.base_url !== POLLINATIONS_ORIGIN || !isCredentialFingerprint(raw.credential_sha256)
+        || !vaulted || credentialFingerprint(vaulted) !== raw.credential_sha256) {
+        throw rejected();
+      }
+      return validateGrant({ ...raw, base_url: vaulted.base_url, token: vaulted.token });
+    }
+    // Direct provider keys live exclusively in the local vault or env, never copied into pollinations.json.
+    if (typeof raw.base_url !== 'string' || validateProviderEndpoint('pollinations', raw.base_url, { strictEgressLength: true }).transport !== 'egress') {
+      throw rejected();
+    }
+    const saved = validateGrant(raw);
+    if (vaulted) throw rejected();
+    return saved;
   } catch { throw rejected(); }
   finally { await file?.close(); }
 }
-// Setup supplies these facts only after ordinary browser verification and a
-// successful read-only access check. No raw provider key is persisted by Grunt.
-export async function writePollinationsGrant(grant: PollinationsGrant, location = directory()): Promise<void> {
-  const value = validateGrant(grant), temporary = join(location, `.pollinations-${randomUUID()}.tmp`);
+async function persistPollinationsFile(payload: Record<string, unknown>, location: string): Promise<void> {
+  const temporary = join(location, `.pollinations-${randomUUID()}.tmp`);
   await mkdir(location, { recursive: true, mode: 0o700 });
-  try { await writeFile(temporary, JSON.stringify(value), { flag: 'wx', mode: 0o600 }); await rename(temporary, pollinationsGrantPath(location)); }
+  try { await writeFile(temporary, JSON.stringify(payload), { flag: 'wx', mode: 0o600 }); await rename(temporary, pollinationsGrantPath(location)); }
   finally { await rm(temporary, { force: true }); }
+}
+/**
+ * Persists verification metadata and a SHA-256 credential fingerprint for a
+ * direct Pollinations key stored in the local Grunt vault or environment,
+ * without copying the raw API key into pollinations.json.
+ */
+export async function writePollinationsVaultReceipt(grant: PollinationsGrant, location = directory()): Promise<void> {
+  const value = validateGrant(grant);
+  if (validateProviderEndpoint('pollinations', value.base_url, { strictEgressLength: true }).transport !== 'direct') throw rejected();
+  const { token, ...metadata } = value;
+  await persistPollinationsFile({
+    ...metadata,
+    credential_source: 'vault',
+    credential_sha256: credentialFingerprint({ base_url: value.base_url, token })
+  }, location);
+}
+// Setup supplies these facts only after ordinary browser verification and a
+// successful read-only access check. Direct keys stay in vault.json or env.
+export async function writePollinationsGrant(
+  grant: PollinationsGrant,
+  location = directory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<void> {
+  const value = validateGrant(grant);
+  const endpoint = validateProviderEndpoint('pollinations', value.base_url, { strictEgressLength: true });
+  if (endpoint.transport === 'direct') {
+    const envGrant = readVaultEnvGrant('pollinations', env);
+    if (!envGrant || credentialFingerprint(envGrant) !== credentialFingerprint(value)) {
+      await writeVaultEntry('pollinations', { api_key: value.token, origin: POLLINATIONS_ORIGIN, source: 'local' }, location);
+    }
+    await writePollinationsVaultReceipt(value, location);
+    return;
+  }
+  await persistPollinationsFile(value as unknown as Record<string, unknown>, location);
 }
 async function readJSON(response: Response, signal: AbortSignal, limit: number): Promise<unknown> {
   if (signal.aborted) { void response.body?.cancel().catch(() => {}); signal.throwIfAborted(); }

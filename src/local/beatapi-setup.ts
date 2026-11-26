@@ -1,10 +1,12 @@
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
-import { BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, readBeatAPIGrant, verifyBeatAPIAccess, verifyBeatAPIModelAccess, writeBeatAPIGrant } from './beatapi.js';
+import { BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, readBeatAPIGrant, verifyBeatAPIAccess, verifyBeatAPIModelAccess, writeBeatAPIGrant, writeBeatAPIVaultReceipt } from './beatapi.js';
 import type { BeatAPIGrant } from './beatapi.js';
+import { resolveSquireGrant } from './provider-grant.js';
+import type { SquireGrantSource } from './provider-grant.js';
 import { readVaultGrant, writeVaultEntry } from './vault.js';
 export const BEATAPI_STORE = { service: 'beatapi', label: 'grunt', api_hosts: [new URL(BEATAPI_ORIGIN).hostname], auth_shape: 'bearer' };
 interface Credential { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null; label?: string; allowed_hosts?: string[] }
-export interface BeatAPISetupSquire {
+export interface BeatAPISetupSquire extends SquireGrantSource {
   signup(service: string, url: string, goal: string): Promise<void>;
   call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
   credentials: { list(): Promise<Credential[]>; grant(reference: string): Promise<{ base_url: string; token: string }> };
@@ -54,7 +56,9 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
       // verified key. A receipt migration does not renew its billing checks.
       if (await verifyBeatAPIModelAccess(verifiedLegacy, guards)) {
         signal.throwIfAborted();
-        await writeBeatAPIGrant({ ...verifiedLegacy, version: 2, models: BEATAPI_MODELS }, options.directory);
+        const upgraded: BeatAPIGrant = { ...verifiedLegacy, version: 2, models: BEATAPI_MODELS };
+        if (verifiedLegacy.base_url === BEATAPI_ORIGIN) await writeBeatAPIVaultReceipt(upgraded, options.directory);
+        else await writeBeatAPIGrant(upgraded, options.directory);
         options.notify?.(connected);
         return;
       }
@@ -72,7 +76,7 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
             free_account_verified: true, lifetime_paid: 0, payment_method_present: false, auto_recharge: false,
             credit_provenance: usage.credit_balance === 0 ? 'zero' : 'signup', baseline_balance: usage.credit_balance
           };
-          await writeBeatAPIGrant(hasGLM ? { ...verified, version: 2, models: BEATAPI_MODELS } : { ...verified, version: 1 }, options.directory);
+          await writeBeatAPIVaultReceipt(hasGLM ? { ...verified, version: 2, models: BEATAPI_MODELS } : { ...verified, version: 1 }, options.directory);
           options.notify?.(hasGLM ? connected : deepseekOnly);
           return;
         } catch { if (signal.aborted) throw failure(); }
@@ -90,19 +94,27 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
     const credentials = await fresh();
     const credential = credentials[0];
     if (!credential || credentials.length !== 1 || (before[0] && before[0].reference !== credential.reference)) throw failure();
-    const grant = await bounded(() => options.squire.credentials.grant(credential.reference), signal);
+    const grant = await bounded(() => resolveSquireGrant('beatapi', credential.reference, options.squire, {
+      directory: options.directory,
+      signal,
+      ...(options.background !== undefined ? { background: options.background } : {}),
+      ...(options.notify ? { notify: options.notify } : {})
+    }), signal);
     const usage = await bounded(() => verifyBeatAPIAccess(grant, guards), signal);
     if (verifiedLegacy && usage.credit_balance !== verifiedLegacy.baseline_balance) throw failure();
     const hasGLM = await verifyBeatAPIModelAccess(grant, guards);
     signal.throwIfAborted();
     if (hasGLM || !verifiedLegacy) {
-      if (grant.base_url.replace(/\/$/, '') === BEATAPI_ORIGIN) {
-        await writeVaultEntry('beatapi', { api_key: grant.token, origin: BEATAPI_ORIGIN, source: 'squire' }, options.directory);
-      }
-      const verified: Omit<BeatAPIGrant, 'version'> = { ...grant, upstream_origin: BEATAPI_ORIGIN, model: BEATAPI_MODEL, verified_at: verifiedLegacy?.verified_at ?? new Date().toISOString(),
+      const verified: Omit<BeatAPIGrant, 'version'> = { base_url: grant.base_url, token: grant.token, upstream_origin: BEATAPI_ORIGIN, model: BEATAPI_MODEL, verified_at: verifiedLegacy?.verified_at ?? new Date().toISOString(),
         free_account_verified: true, lifetime_paid: 0, payment_method_present: false, auto_recharge: false,
         credit_provenance: usage.credit_balance === 0 ? 'zero' : 'signup', baseline_balance: usage.credit_balance };
-      await writeBeatAPIGrant(hasGLM ? { ...verified, version: 2, models: BEATAPI_MODELS } : { ...verified, version: 1 }, options.directory);
+      const receipt: BeatAPIGrant = hasGLM ? { ...verified, version: 2, models: BEATAPI_MODELS } : { ...verified, version: 1 };
+      if (grant.transport === 'direct') {
+        await writeVaultEntry('beatapi', { api_key: grant.token, origin: BEATAPI_ORIGIN, source: 'squire' }, options.directory);
+        await writeBeatAPIVaultReceipt(receipt, options.directory);
+      } else {
+        await writeBeatAPIGrant(receipt, options.directory);
+      }
     }
     options.notify?.(hasGLM ? connected : deepseekOnly);
   } catch { throw failure(); }

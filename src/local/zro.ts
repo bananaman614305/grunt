@@ -8,11 +8,15 @@ import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
-import { readVaultGrant } from './vault.js';
+import { credentialFingerprint, isCredentialFingerprint, readVaultGrant, validateDirectOrigin } from './vault.js';
 
 export const ZRO_STORE = { service: 'zro', label: 'grunt', api_hosts: ['zro.moonmath.ai'], auth_shape: 'bearer' };
 export const ZRO_DEEPSEEK = 'deepseek-v4.1-flash';
-export interface ZroGrant extends FreeApiGrant { free_account_verified: true; verified_at: string }
+export interface ZroGrant extends FreeApiGrant {
+  free_account_verified: true;
+  verified_at: string;
+  credential_sha256?: string;
+}
 const directory = () => configRoot();
 function validate(value: unknown): ZroGrant {
   const grant = value as Partial<ZroGrant> | null;
@@ -20,26 +24,49 @@ function validate(value: unknown): ZroGrant {
     || grant.free_account_verified !== true || typeof grant.verified_at !== 'string' || !Number.isFinite(Date.parse(grant.verified_at))) throw new Error('Zro free account verification is missing');
   const url = new URL(grant.base_url);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Invalid Zro grant endpoint');
-  return { base_url: grant.base_url.replace(/\/$/, ''), token: grant.token, free_account_verified: true, verified_at: grant.verified_at };
+  const base_url = grant.base_url.replace(/\/$/, '');
+  const expected = credentialFingerprint({ base_url, token: grant.token });
+  if (grant.credential_sha256 !== undefined && (!isCredentialFingerprint(grant.credential_sha256) || grant.credential_sha256 !== expected)) {
+    throw new Error('Zro free account verification does not match the current credential');
+  }
+  return { base_url, token: grant.token, free_account_verified: true, verified_at: grant.verified_at, credential_sha256: expected };
 }
 export async function readZroGrant(location = directory(), env: NodeJS.ProcessEnv = process.env): Promise<ZroGrant> {
   const file = await open(join(location, 'zro.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe Zro grant file');
-    const saved = validate(JSON.parse(await file.readFile('utf8')));
+    const raw = JSON.parse(await file.readFile('utf8')) as Record<string, unknown>;
     const vaulted = await readVaultGrant('zro', location, env);
-    return vaulted ? validate({ ...saved, base_url: vaulted.base_url, token: vaulted.token }) : saved;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.credential_source === 'vault') {
+      if (raw.token !== undefined || !isCredentialFingerprint(raw.credential_sha256) || !vaulted
+        || credentialFingerprint(vaulted) !== raw.credential_sha256) {
+        throw new Error('Zro free account verification is missing');
+      }
+      return validate({ ...raw, base_url: vaulted.base_url, token: vaulted.token });
+    }
+    const saved = validate(raw);
+    if (vaulted && credentialFingerprint(vaulted) !== saved.credential_sha256) {
+      throw new Error('Zro free account verification does not match the current credential');
+    }
+    return saved;
   } finally { await file.close(); }
 }
 // Called after Squire has confirmed Free plan, no purchased balance and no payment method.
 // This is a setup receipt, not a guarantee that an externally upgraded account stays free.
-export async function writeZroGrant(grant: FreeApiGrant, location = directory()) {
+export async function writeZroGrant(grant: FreeApiGrant, location = directory(), env: NodeJS.ProcessEnv = process.env) {
   const value = validate({ ...grant, free_account_verified: true, verified_at: new Date().toISOString() });
+  const fingerprint = value.credential_sha256!;
+  let isDirect = false;
+  try { validateDirectOrigin('zro', value.base_url); isDirect = true; } catch { /* Legacy egress or test URL. */ }
+  const vaulted = isDirect ? await readVaultGrant('zro', location, env).catch(() => undefined) : undefined;
+  const persisted = isDirect && vaulted && credentialFingerprint(vaulted) === fingerprint
+    ? { base_url: value.base_url, credential_source: 'vault', credential_sha256: fingerprint, free_account_verified: true, verified_at: value.verified_at }
+    : value;
   const temporary = join(location, `zro.${randomUUID()}.tmp`);
   await mkdir(location, { recursive: true, mode: 0o700 });
   try {
-    await writeFile(temporary, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+    await writeFile(temporary, JSON.stringify(persisted), { mode: 0o600, flag: 'wx' });
     await rename(temporary, join(location, 'zro.json'));
   } finally { await rm(temporary, { force: true }); }
 }

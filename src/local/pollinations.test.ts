@@ -261,10 +261,11 @@ it('rejects unsafe receipt files, endpoint substitutions, invented verification 
   ]) await expect(writePollinationsGrant({ ...receipt(), ...patch } as PollinationsGrant, path)).rejects.toMatchObject({ code: 'logged_out' });
 });
 
-it('accepts direct verified HTTPS origin gen.pollinations.ai alongside legacy Squire egress grants', async () => {
+it('accepts direct verified HTTPS origin gen.pollinations.ai without copying the raw key into pollinations.json', async () => {
   const path = await directory();
   const direct: PollinationsGrant = { ...receipt(), base_url: POLLINATIONS_ORIGIN, token: 'synthetic-direct-pollinations-key' };
   await writePollinationsGrant(direct, path);
+  expect(await readFile(pollinationsGrantPath(path), 'utf8')).not.toContain('synthetic-direct-pollinations-key');
   expect(await readPollinationsGrant(path)).toEqual(direct);
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
     expect(String(url).startsWith(POLLINATIONS_ORIGIN)).toBe(true);

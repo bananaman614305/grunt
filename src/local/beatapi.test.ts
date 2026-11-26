@@ -241,9 +241,10 @@ it('writes private receipts and rejects links, modes, stale billing and arbitrar
   }
 });
 
-it('accepts direct verified HTTPS origin api.beatapi.io alongside legacy Squire egress grants', async () => {
+it('accepts direct verified HTTPS origin api.beatapi.io without copying the raw key into beatapi.json', async () => {
   const direct: BeatAPIGrant = { ...poolGrant(), base_url: BEATAPI_ORIGIN, token: 'synthetic-direct-beatapi-key' };
   await writeBeatAPIGrant(direct, directory);
+  expect(await readFile(beatapiGrantPath(directory), 'utf8')).not.toContain('synthetic-direct-beatapi-key');
   expect(await readBeatAPIGrant(directory)).toEqual(direct);
   const calls: string[] = [];
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {

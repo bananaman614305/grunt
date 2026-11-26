@@ -3,24 +3,54 @@ import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { credentialFingerprint, isCredentialFingerprint, readVaultGrant, validateDirectOrigin } from './vault.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const APINEX_DEEPSEEK = 'free/deepseek-v4.1-flash';
-export interface ApinexGrant extends FreeApiGrant { free_account_verified: true; daily_checkin_at: string }
+export interface ApinexGrant extends FreeApiGrant {
+  free_account_verified: true;
+  daily_checkin_at: string;
+  credential_sha256?: string;
+}
 function validate(value: unknown): ApinexGrant {
   const grant = value as Partial<ApinexGrant> | null;
   const access = validateProviderGrant(value);
   if (grant?.free_account_verified !== true || typeof grant.daily_checkin_at !== 'string'
     || !Number.isFinite(Date.parse(grant.daily_checkin_at))) throw new Error('APInex daily free check-in verification is missing');
-  return { ...access, free_account_verified: true, daily_checkin_at: grant.daily_checkin_at };
+  const expected = credentialFingerprint(access);
+  if (grant.credential_sha256 !== undefined && (!isCredentialFingerprint(grant.credential_sha256) || grant.credential_sha256 !== expected)) {
+    throw new Error('APInex daily free check-in verification does not match the current credential');
+  }
+  return { ...access, free_account_verified: true, daily_checkin_at: grant.daily_checkin_at, credential_sha256: expected };
 }
-export async function readApinexGrant(location = providerGrantDirectory()): Promise<ApinexGrant> {
-  return validate(await readPrivateProviderGrant('apinex', location));
+export async function readApinexGrant(
+  location = providerGrantDirectory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ApinexGrant> {
+  return validate(await readPrivateProviderGrant('apinex', location, env));
 }
 // Called only after Squire has completed today's actual free-account check-in.
-export async function writeApinexGrant(grant: FreeApiGrant, location = providerGrantDirectory()) {
+export async function writeApinexGrant(
+  grant: FreeApiGrant,
+  location = providerGrantDirectory(),
+  env: NodeJS.ProcessEnv = process.env
+) {
   const value = validate({ ...grant, free_account_verified: true, daily_checkin_at: new Date().toISOString() });
+  const fingerprint = value.credential_sha256!;
+  let isDirect = false;
+  try { validateDirectOrigin('apinex', value.base_url); isDirect = true; } catch { /* Legacy egress or test URL. */ }
+  const vaulted = isDirect ? await readVaultGrant('apinex', location, env).catch(() => undefined) : undefined;
+  if (isDirect && vaulted && credentialFingerprint(vaulted) === fingerprint) {
+    await writePrivateProviderGrant('apinex', {
+      base_url: value.base_url,
+      credential_source: 'vault',
+      credential_sha256: fingerprint,
+      free_account_verified: true,
+      daily_checkin_at: value.daily_checkin_at
+    }, location);
+    return;
+  }
   await writePrivateProviderGrant('apinex', value, location);
 }
 export class Apinex implements Source {
