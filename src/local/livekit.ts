@@ -1,7 +1,8 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot } from '../brand.js';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -75,16 +76,16 @@ function validateReceipt(value: unknown): LiveKitFreeBuildReceipt {
 async function privateDirectory(path: string, create = false) {
   if (create) await mkdir(path, { recursive: true, mode: 0o700 });
   const stat = await lstat(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) {
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o700)) {
     throw new SourceError('logged_out', 'Unsafe LiveKit private directory; rerun usegrunt setup');
   }
 }
 export async function readLiveKitFreeBuildReceipt(directory = configDirectory()) {
   await privateDirectory(livekitPaths(directory).home);
-  const file = await open(livekitPaths(directory).receipt, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(livekitPaths(directory).receipt, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 4096) throw new SourceError('logged_out', 'Unsafe LiveKit Free Build receipt; rerun usegrunt setup');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 4096) throw new SourceError('logged_out', 'Unsafe LiveKit Free Build receipt; rerun usegrunt setup');
     return validateReceipt(JSON.parse(await file.readFile('utf8')));
   } finally { await file.close(); }
 }
@@ -100,8 +101,8 @@ export async function writeLiveKitFreeBuildReceipt(directory: string, receipt: L
 // native API keys and signing its short-lived inference token.
 export async function validateLiveKitNativeConfig(nativeDirectory = join(homedir(), '.livekit')) {
   const home = await lstat(nativeDirectory), auth = await lstat(join(nativeDirectory, 'cli-config.yaml'));
-  if (!home.isDirectory() || home.isSymbolicLink() || home.uid !== process.getuid?.() || (home.mode & 0o777) !== 0o700
-      || !auth.isFile() || auth.isSymbolicLink() || auth.uid !== process.getuid?.() || (auth.mode & 0o777) !== 0o600 || auth.size === 0) {
+  if (!home.isDirectory() || home.isSymbolicLink() || !hasOwnerMode(home, 0o700)
+      || !auth.isFile() || auth.isSymbolicLink() || !hasOwnerMode(auth, 0o600) || auth.size === 0) {
     throw new SourceError('logged_out', 'Unsafe LiveKit native login; rerun usegrunt setup');
   }
 }

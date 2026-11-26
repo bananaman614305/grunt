@@ -1,5 +1,6 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -110,16 +111,16 @@ export class DailyMaintenance {
   private async directory() {
     await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
     const stat = await lstat(this.options.directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw unsafeState();
+    if (!stat.isDirectory() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o700)) throw unsafeState();
   }
   private async load() {
     await this.directory();
     this.entries.clear();
     let file;
     try {
-      file = await open(join(this.options.directory, 'maintenance.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      file = await openPrivateFile(join(this.options.directory, 'maintenance.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const stat = await file.stat();
-      if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 65536) throw unsafeState();
+      if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 65536) throw unsafeState();
       let value: unknown;
       try { value = JSON.parse(await file.readFile('utf8')); }
       catch { this.nextStartAt = this.now() + MAINTENANCE_GAP; return; }
@@ -146,14 +147,14 @@ export class DailyMaintenance {
   private async openCoordination() {
     const path = join(this.options.directory, 'maintenance-lock.db');
     try {
-      const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      const file = await openPrivateFile(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       await file.close();
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw unsafeState(); }
     try {
-      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const file = await openPrivateFile(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
         const stat = await file.stat();
-        if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) throw unsafeState();
+        if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw unsafeState();
       } finally { await file.close(); }
     } catch { throw unsafeState(); }
     const { createClient } = await import('@libsql/client');
@@ -179,7 +180,7 @@ export class DailyMaintenance {
   private async persist() {
     await this.directory();
     const temporary = join(this.options.directory, `maintenance.${randomUUID()}.tmp`);
-    const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const file = await openPrivateFile(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
       await file.writeFile(JSON.stringify({ version: 1, nextStartAt: this.nextStartAt, entries: Object.fromEntries(this.entries) }));
       await file.close();

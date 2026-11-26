@@ -168,9 +168,9 @@ release. No other user's installation is enrolled automatically.
 
 ## Use grunt as your harness's model
 
-Run the separate local daemon on your own machine (Linux with systemd or macOS
-with launchd). Use Node 22 or 24 LTS for the setup wizard; npm and tar must be
-available. Squire also needs a usable browser/display path. A headless remote
+Run the separate local daemon on Linux with systemd, macOS with launchd, or
+Windows with Task Scheduler. Use an up-to-date Node 22 or 24 LTS for the setup
+wizard. Squire also needs a usable browser/display path. A headless remote
 server may need display helpers such as Xvfb/noVNC. Missing prerequisites are
 reported for repair. See the [signup verification rules](#free-api-and-account-setup).
 Mistral Vibe separately needs `uv` or Python 3.12+.
@@ -474,12 +474,12 @@ it is per user and uses that user's configured providers, consent and accounts.
 No separate cron job is required. New setup installs it with the daemon.
 Existing users run `npx usegrunt update` to replace their saved background
 runtime. The updater resolves the latest official npm release itself, verifies
-the package integrity, prepares dependencies without install scripts, then
+the package integrity, stages the daemon, then
 replaces the managed runtime and restarts the existing service. It preserves
 service configuration, custom ports and sources, account grants, consent,
 native authentication and `maintenance.json`. It does not invoke the signup
 wizard. If startup verification fails, it restores the previous runtime. A
-stopped Linux service remains stopped. On macOS, the existing launch agent must
+stopped Linux service or Windows task remains stopped. On macOS, the existing launch agent must
 be running before update; an unloaded or waiting job is rejected safely rather
 than changed while it might restart itself. An older local CLI that lacks the command can
 bootstrap with `npx usegrunt@latest update`.
@@ -1033,8 +1033,8 @@ zero-retention coverage have not been independently verified. Setup enables both
 
 NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain. Cloudflare Qwen is excluded from the pool by the owner's choice.
 
-Before making changes, setup checks Node, npm, tar and the user service
-manager. A missing prerequisite prints its install or repair step and stops.
+Before making changes, setup checks Node and the user service manager.
+A missing prerequisite prints its install or repair step and stops.
 Coding harnesses such as Pi are optional; setup can install the service before
 you install a harness.
 
@@ -1088,16 +1088,18 @@ It also preserves an existing `freellmapi` route from an earlier
 API-provider setup. Service installs save their selected sources in
 `installed-sources.json` under grunt's config directory so later installs retain
 them. The daemon loads the saved router login at startup and retries if the
-router is temporarily unavailable. Setup keeps a runtime outside the npx cache,
-so cache cleanup does not remove the service. On Linux the service is an enabled
+router is temporarily unavailable. Setup copies the bundled daemon and registry
+to a runtime outside the npx cache. On Linux the service is an enabled
 systemd user unit that restarts after a crash. Setup attempts to enable lingering
 without an authentication prompt so the service keeps running after logout and
 starts at boot. If that fails, installation continues, but persistence across
 logout and boot requires running `loginctl enable-linger` as the installing user;
 setup prints this repair command. Rerunning setup re-enables and restarts an
-existing unit, including a legacy `milo` unit, while preserving its configuration
-and custom drop-ins. On macOS a LaunchAgent restarts it after a crash and starts
-it at each login. In the ready-first flow, providers
+existing unit, including a legacy `milo` unit. It moves older services to the
+bundled entry point while preserving their environment and custom drop-ins.
+On macOS a LaunchAgent restarts it after a crash and starts it at each login.
+On Windows a limited Scheduled Task starts it in the installing user's session
+at sign-in. In the ready-first flow, providers
 join this installed runtime as their checks finish; the wizard does not reinstall
 or restart it for each provider. Pi's other providers are preserved.
 `PI_CODING_AGENT_DIR` selects a nondefault Pi agent directory.

@@ -1,5 +1,6 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { gruntEnv } from '../brand.js';
@@ -178,10 +179,10 @@ export const requiresExplicitDataSharing = (provider: string, extraPolicies?: re
 
 async function receipt(directory: string): Promise<Receipt> {
   try {
-    const file = await open(join(directory, fileName), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const file = await openPrivateFile(join(directory, fileName), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = await file.stat();
-      if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) return emptyReceipt();
+      if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) return emptyReceipt();
       const value = JSON.parse(await file.readFile('utf8')) as Partial<Receipt>;
       if (value.version !== 1 || !value.approved || typeof value.approved !== 'object' || Array.isArray(value.approved)) return emptyReceipt();
       const approved = Object.fromEntries(Object.entries(value.approved).filter(([, item]) => item

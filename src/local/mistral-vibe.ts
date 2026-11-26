@@ -1,9 +1,10 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { observeAttemptDispatch, recordAttemptFailure, recordTransport } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { replayTimeout, SourceError, requestRefusal } from './source.js';
@@ -46,10 +47,10 @@ function validateReceipt(value: unknown): MistralVibeFreePlanReceipt {
 // This receipt records the browser's Free/billing check, not a new entitlement.
 // Recheck it at least every 30 days; never enable overage billing during setup.
 export async function readMistralVibeFreePlanReceipt(directory = configDirectory()) {
-  const file = await open(mistralVibePaths(directory).receipt, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(mistralVibePaths(directory).receipt, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const st = await file.stat();
-    if (!st.isFile() || st.uid !== process.getuid?.() || (st.mode & 0o777) !== 0o600 || st.size > 4096) throw new SourceError('logged_out', 'Unsafe Mistral Vibe plan receipt; rerun usegrunt setup');
+    if (!st.isFile() || !hasOwnerMode(st, 0o600) || st.size > 4096) throw new SourceError('logged_out', 'Unsafe Mistral Vibe plan receipt; rerun usegrunt setup');
     return validateReceipt(JSON.parse(await file.readFile('utf8')));
   } finally { await file.close(); }
 }
@@ -162,8 +163,8 @@ export class MistralVibe implements Source {
     try {
       await readMistralVibeFreePlanReceipt(this.options.directory);
       const home = await lstat(paths.home), auth = await lstat(join(paths.home, '.env'));
-      if (!home.isDirectory() || home.isSymbolicLink() || home.uid !== process.getuid?.() || (home.mode & 0o077) !== 0
-          || !auth.isFile() || auth.isSymbolicLink() || auth.uid !== process.getuid?.() || (auth.mode & 0o777) !== 0o600 || auth.size === 0) throw new Error('Unsafe native auth');
+      if (!home.isDirectory() || home.isSymbolicLink() || !hasOwnerMode(home, 0, 0o077)
+          || !auth.isFile() || auth.isSymbolicLink() || !hasOwnerMode(auth, 0o600) || auth.size === 0) throw new Error('Unsafe native auth');
       await access(this.options.binary ?? paths.binary, constants.X_OK);
     } catch (error) {
       if (error instanceof SourceError) throw error;
@@ -240,7 +241,7 @@ export class MistralVibe implements Source {
       signal.throwIfAborted();
       let exported: unknown;
       try {
-        const file = await open(join(output, 'export.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+        const file = await openPrivateFile(join(output, 'export.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
         try { if ((await file.stat()).size > 1024 * 1024) throw new Error('Oversized export'); exported = JSON.parse(await file.readFile('utf8')); }
         finally { await file.close(); }
       } catch { throw new SourceError('upstream', 'Mistral Vibe produced no readable completion export'); }

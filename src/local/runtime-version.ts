@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 /** Package identity, never a model-supplied version or the status schema version. */
 export function installedRuntimeVersion(): string | undefined {
+  if (typeof GRUNT_BUNDLED_VERSION !== 'undefined') return GRUNT_BUNDLED_VERSION;
   try {
     const value: unknown = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
     const version = value && typeof value === 'object' && 'version' in value ? value.version : undefined;

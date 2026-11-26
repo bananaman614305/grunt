@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open } from 'node:fs/promises';
+import { lstat, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Client, Transaction } from '@libsql/client';
@@ -213,14 +214,14 @@ export class RoutingHistory {
   static async open(directory: string): Promise<RoutingHistory> {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const dir = await lstat(directory);
-    if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o077) !== 0) throw unsafe();
+    if (!dir.isDirectory() || dir.isSymbolicLink() || !hasOwnerMode(dir, 0, 0o077)) throw unsafe();
     const path = resolve(directory, 'routing-history.db');
-    try { const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); await file.close(); }
+    try { const file = await openPrivateFile(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); await file.close(); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw unsafe(); }
-    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const file = await openPrivateFile(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const stat = await file.stat();
-      if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw unsafe();
+      if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw unsafe();
     } finally { await file.close(); }
     const { createClient } = await import('@libsql/client');
     let client = createClient({ url: pathToFileURL(path).href, concurrency: 1 });

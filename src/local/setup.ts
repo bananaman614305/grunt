@@ -1,3 +1,5 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
+import { squireClientPath } from './squire-client-path.js';
 import { ZRO_STORE } from './zro.js';
 import { TOKENHARBOR_STORE } from './tokenharbor.js';
 import { POLLINATIONS_STORE } from './pollinations-setup.js';
@@ -12,10 +14,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -512,7 +513,7 @@ export class BrowserSquire implements SetupSquire {
     return this.connection ??= this.connectOnce().catch(error => { this.connection = undefined; throw error; });
   }
   private async connectOnce() {
-    const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
+    const bin = await squireClientPath(configRoot());
     const env = squireEnvironment();
     // Squire owns its account binding and vault. grunt never reads its files.
     const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'pipe', env });
@@ -1241,14 +1242,14 @@ function localAdminPath() {
 }
 async function readLocalAdmin(path = localAdminPath()): Promise<LocalAdmin | undefined> {
   let handle;
-  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  try { handle = await openPrivateFile(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw new Error('Cannot read the local router admin file; setup stopped');
   }
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('permissions');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('permissions');
     const saved = object(JSON.parse(await handle.readFile('utf8')));
     if (typeof saved.password !== 'string' || !/^[a-f0-9]{64}$/.test(saved.password)
       || typeof saved.encryption !== 'string' || !/^[a-f0-9]{64}$/.test(saved.encryption)) throw new Error('format');

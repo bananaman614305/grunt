@@ -35,7 +35,7 @@ export function gruntEnv(name: string, env: NodeJS.ProcessEnv = process.env) {
 export function configRoot(env: NodeJS.ProcessEnv = process.env, home = homedir()) {
   const configured = gruntEnv('CONFIG_DIR', env);
   if (configured) return configured;
-  const base = env.XDG_CONFIG_HOME || join(home, '.config');
+  const base = process.platform === 'win32' ? env.LOCALAPPDATA || join(home, 'AppData', 'Local') : env.XDG_CONFIG_HOME || join(home, '.config');
   const current = join(base, 'grunt');
   const legacy = join(base, 'milo');
   return existsSync(current) || !existsSync(legacy) ? current : legacy;

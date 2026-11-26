@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { observeAttemptDispatch, currentDiagnosticContext, diagnosticFetch } from './diagnostics.js';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
@@ -64,7 +65,7 @@ function validate(value: unknown): BeatAPIGrant {
 async function privateDirectory(directory: string, create = false) {
   if (create) await mkdir(directory, { recursive: true, mode: 0o700 });
   const stat = await lstat(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw rejected();
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o700)) throw rejected();
 }
 export async function readBeatAPIGrant(
   directory = providerGrantDirectory(),
@@ -73,9 +74,9 @@ export async function readBeatAPIGrant(
   let file;
   try {
     await privateDirectory(directory);
-    file = await open(beatapiGrantPath(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    file = await openPrivateFile(beatapiGrantPath(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) throw rejected();
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 32768) throw rejected();
     const raw = obj(JSON.parse(await file.readFile('utf8')));
     const vaulted = await readVaultGrant('beatapi', directory, env);
     if (raw.credential_source === 'vault') {

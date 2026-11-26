@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { constants, lstatSync, openSync, closeSync, fstatSync, readFileSync } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { disabledAdapters, knownAdapters, localOptInAdapterIds } from '../registry.js';
@@ -11,7 +12,7 @@ const ids = (value: unknown): value is string[] => Array.isArray(value) && value
   && value.every(id => typeof id === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(id)) && new Set(value).size === value.length;
 const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => b[i] === id);
 const selected = (value: unknown, allowRetired = false): value is string[] => ids(value) && value.every(id => knownAdapters.has(id) || localOptInAdapterIds.has(id) || id === 'freellmapi' || allowRetired && disabledAdapters.has(id));
-const owned = (stat: Stats, mode: number) => !stat.isSymbolicLink() && stat.uid === process.getuid?.() && (stat.mode & 0o777) === mode;
+const owned = (stat: Stats, mode: number) => !stat.isSymbolicLink() && hasOwnerMode(stat, mode);
 const serialized = (serviceSources: readonly string[], selectedSources: readonly string[] = serviceSources) => {
   if (!ids(serviceSources) || !selected(selectedSources)) throw new Error('Invalid managed Grunt source selection');
   return JSON.stringify({ version: 1, mode: 'automatic', serviceSources, selectedSources } satisfies AutomaticPool);
@@ -25,9 +26,14 @@ export function automaticPoolSelection(directory: string, configured: readonly s
   try {
     const parent = lstatSync(directory);
     if (!parent.isDirectory() || !owned(parent, 0o700)) return { sources: [...configured], automatic: false };
-    fd = openSync(join(directory, AUTOMATIC_POOL_FILE), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const path = join(directory, AUTOMATIC_POOL_FILE);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = fstatSync(fd);
     if (!info.isFile() || !owned(info, 0o600) || info.size > 16384) return { sources: [...configured], automatic: false };
+    if (process.platform === 'win32') {
+      const current = lstatSync(path);
+      if (!current.isFile() || current.dev !== info.dev || current.ino !== info.ino) return { sources: [...configured], automatic: false };
+    }
     const value = JSON.parse(readFileSync(fd, 'utf8')) as Partial<AutomaticPool>;
     if (value.version !== 1 || value.mode !== 'automatic' || !ids(value.serviceSources) || !same(value.serviceSources, configured)) return { sources: [...configured], automatic: false };
     // An upgrade can remove a formerly selected provider. Its retired ID remains
@@ -57,14 +63,14 @@ export async function writeAutomaticPool(directory: string, serviceSources: read
 // GRUNT_SOURCES override or unowned/malformed state cannot enroll new sources.
 export async function migrateAutomaticPool(directory: string, serviceSources: readonly string[] | undefined): Promise<(() => Promise<void>) | undefined> {
   if (!serviceSources || !ids(serviceSources)) return;
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let handle: Awaited<ReturnType<typeof openPrivateFile>> | undefined;
   try {
-    handle = await open(join(directory, AUTOMATIC_POOL_FILE), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await openPrivateFile(join(directory, AUTOMATIC_POOL_FILE), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     return; // Existing explicit state, including an opt-out, remains authoritative.
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return; }
   finally { await handle?.close(); }
   try {
-    handle = await open(join(directory, 'installed-sources.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await openPrivateFile(join(directory, 'installed-sources.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await handle.stat();
     if (!info.isFile() || !owned(info, 0o600) || info.size > 16384) return;
     const installed: unknown = JSON.parse(await handle.readFile('utf8'));

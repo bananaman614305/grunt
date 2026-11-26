@@ -1,3 +1,4 @@
+import { hasOwnerMode } from './private-file.js';
 import { spawn } from 'node:child_process';
 import { constants, existsSync } from 'node:fs';
 import { access, lstat, mkdtemp, rm } from 'node:fs/promises';
@@ -196,9 +197,8 @@ export async function hasNousProfile(directory: string, env?: NodeJS.ProcessEnv)
     await access(paths.python, constants.X_OK);
     const home = await lstat(paths.home);
     const auth = await lstat(join(paths.home, authFilename));
-    const owner = process.getuid?.();
-    return home.isDirectory() && home.uid === owner && (home.mode & 0o777) === 0o700
-      && auth.isFile() && auth.uid === owner && (auth.mode & 0o777) === 0o600;
+    return home.isDirectory() && hasOwnerMode(home, 0o700)
+      && auth.isFile() && hasOwnerMode(auth, 0o600);
   } catch { return false; }
 }
 

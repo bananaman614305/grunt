@@ -37,6 +37,9 @@ jobs:
       - id: build
         if: ${{ !cancelled() }}
         run: pnpm build
+      - name: Start the daemon offline without node_modules
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node scripts/smoke-daemon.mjs
       - name: Check the operator pipeline
         if: ${{ !cancelled() }}
         run: python3 -W error::ResourceWarning -m unittest discover -s ops/provider-scout -p 'test_*.py'

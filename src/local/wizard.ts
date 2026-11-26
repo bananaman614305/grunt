@@ -1,16 +1,17 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { mkdir, readFile, writeFile, cp, mkdtemp, rm, access, lstat, open, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, mkdtemp, rm, access, lstat, rename } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setupFallbacks } from './fallback-setup.js';
 import { parallelMap } from './parallel.js';
 import { withTerminal } from './terminal.js';
-import { localRuntimeDependencies } from './runtime-dependencies.js';
+import { copyDaemon, daemonFile, legacyDaemonFile } from './daemon-files.js';
 import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from './setup.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
@@ -27,6 +28,8 @@ import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.j
 import { fetchStatus } from './dashboard.js';
 import { select, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
+import { registerWindowsService, startWindowsService, stopWindowsService, taskScheduler, windowsService, writeWindowsLauncher } from './windows-service.js';
+import { saveSquireClientPath } from './squire-client-path.js';
 
 export const configDir = (env = process.env) => configRoot(env);
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal, env?: NodeJS.ProcessEnv) {
@@ -43,8 +46,10 @@ export async function squireBrokerExists() {
   const service = process.platform === 'darwin'
     ? ['launchctl', ['print', `gui/${process.getuid!()}/ai.trustysquire.trusty-squire-broker`]] as const
     : ['systemctl', ['--user', 'is-active', 'trusty-squire-broker']] as const;
-  try { await promisify(execFile)(service[0], [...service[1]], { timeout: 10000 }); return true; }
-  catch { /* An inactive service can still own the broker installation. */ }
+  if (process.platform !== 'win32') {
+    try { await promisify(execFile)(service[0], [...service[1]], { timeout: 10000 }); return true; }
+    catch { /* An inactive service can still own the broker installation. */ }
+  }
   if (process.platform === 'linux') {
     try {
       const { stdout } = await promisify(execFile)('systemctl', ['--user', 'list-unit-files', 'trusty-squire-broker*.service', '--no-legend', '--no-pager'], { timeout: 10000 });
@@ -67,14 +72,14 @@ async function squireBootstrapEnvironment(signal?: AbortSignal): Promise<NodeJS.
   await mkdir(directory, { recursive: true, mode: 0o700 });
   signal?.throwIfAborted();
   const parent = await lstat(directory);
-  if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== process.getuid?.() || (parent.mode & 0o777) !== 0o700) {
+  if (!parent.isDirectory() || parent.isSymbolicLink() || !hasOwnerMode(parent, 0o700)) {
     throw new Error('Squire setup requires a private grunt configuration directory');
   }
   const path = join(directory, 'squire-opencode.json');
-  const file = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  const file = await openPrivateFile(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 262144) {
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 262144) {
       throw new Error('Squire setup requires a private grunt-owned client configuration file');
     }
     signal?.throwIfAborted();
@@ -111,22 +116,17 @@ export async function connectSquire(options: { hasBroker?: () => Promise<boolean
   return 'installed' as const;
 }
 export async function preflight(run = command) {
-  const major = Number(process.versions.node.split('.')[0]);
-  if (major < 22 || major >= 25) throw new Error('Install Node.js 22 or 24 LTS, then run npx usegrunt setup.');
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Run setup on Linux with systemd or macOS with launchd.');
-  for (const [binary, args, fix] of [
-    ['npm', ['--version'], 'Install Node.js 22 or 24 LTS including npm.'],
-    ['tar', ['--version'], 'Install tar using your system package manager.']
-  ] as const) {
-    try { await run(binary, [...args]); } catch { throw new Error(fix + ' Then run npx usegrunt setup.'); }
-  }
+  const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
+  if (major < 22 || major >= 25 || (major === 22 && minor < 13)) throw new Error('Install an up-to-date Node.js 22 or 24 LTS, then run npx usegrunt setup.');
+  if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('Run setup on Linux with systemd, macOS with launchd, or Windows with Task Scheduler.');
   if (gruntEnv('ROUTER_RUNTIME') === 'docker') {
     try { await run('docker', ['info']); } catch { throw new Error('Install and start Docker Desktop, then run npx usegrunt setup.'); }
   }
   try {
     if (process.platform === 'linux') await run('systemctl', ['--user', 'show-environment']);
-    else await run('launchctl', ['print', `gui/${process.getuid!()}`]);
-  } catch { throw new Error('Start a normal user login with its systemd/launchd service manager, then run npx usegrunt setup.'); }
+    else if (process.platform === 'darwin') await run('launchctl', ['print', `gui/${process.getuid!()}`]);
+    else await run(taskScheduler, ['/query']);
+  } catch { throw new Error('Sign in to a user session with a working service manager, then run npx usegrunt setup.'); }
 }
 const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
 const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -160,21 +160,23 @@ export async function installService(adapters?: string[], options: { signal?: Ab
     return result;
   };
   options.signal?.throwIfAborted();
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
+  if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('grunt background service requires systemd, launchd, or Task Scheduler');
   const selected = [...new Set(adapters ?? (await stage(() => installedSources())).split(','))].filter(id => id && !disabledAdapters.has(id));
   if (selected.some(id => !knownAdapters.has(id) && id !== 'freellmapi')) throw new Error('Invalid grunt service selection');
-  const directory = configDir(), runtime = join(directory, 'runtime');
+  const directory = resolve(configDir()), runtime = join(directory, 'runtime');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
-  const root = fileURLToPath(new URL('../../', import.meta.url));
-  await stage(() => mkdir(runtime, { recursive: true, mode: 0o700 }));
-  await stage(() => cp(join(root, 'dist'), join(runtime, 'dist'), { recursive: true }));
-  const pkg = JSON.parse(await stage(() => readFile(join(root, 'package.json'), 'utf8')));
-  await stage(() => writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'grunt-runtime', private: true, type: 'module', dependencies: localRuntimeDependencies(pkg.dependencies) }), { mode: 0o600 }));
-  await stage(() => command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], false, options.signal));
-  const entry = join(runtime, 'dist', 'local', 'main.js');
+  const dist = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../dist/' : '../', import.meta.url));
   const port = gruntEnv('PORT') || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
-  const env: Record<string, string> = { GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: port, GRUNT_SOURCES: selected.join(','), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
+  await stage(() => mkdir(runtime, { recursive: true, mode: 0o700 }));
+  const info = await stage(() => lstat(runtime));
+  if (!info.isDirectory() || !hasOwnerMode(info, 0o700)) throw new Error('Grunt setup requires a private runtime directory');
+  await stage(() => copyDaemon(dist, runtime, options.signal));
+  const entry = join(runtime, daemonFile);
+  const env: Record<string, string> = { GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: port, GRUNT_SOURCES: selected.join(',') };
+  if (process.platform !== 'win32') env.PATH = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+  else if (process.env.PATH) env.PATH = process.env.PATH;
+  await stage(() => saveSquireClientPath(directory));
   const routerURL = gruntEnv('FREELLMAPI_URL');
   if (routerURL) env.GRUNT_FREELLMAPI_URL = routerURL;
   const opencodeConfig = join(directory, 'opencode-free.json');
@@ -198,26 +200,57 @@ export async function installBackgroundService(name: string, entry: string, env:
   const run = (binary: string, args: string[]) => stage(() => command(binary, args, false, options.signal));
   options.signal?.throwIfAborted();
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid service name');
+  if (process.platform === 'win32') {
+    const directory = env.GRUNT_CONFIG_DIR;
+    if (name !== 'grunt' || !directory || entry !== join(directory, 'runtime', daemonFile)) throw new Error('Windows Task Scheduler requires the managed Grunt daemon');
+    const scheduledCommand = (binary: string, args: string[]) => stage(() => promisify(execFile)(binary, args, { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) })).then(result => result.stdout);
+    const existing = await windowsService(directory, scheduledCommand);
+    const effective = existing?.environment ?? env;
+    const port = effective.GRUNT_PORT;
+    if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
+    if (options.automaticPool && effective.GRUNT_SOURCES) await stage(() => writeAutomaticPool(directory, [...new Set(effective.GRUNT_SOURCES!.split(','))], options.selectedSources));
+    if (existing) {
+      if (existing.state === 1) throw new Error('Enable the installed Grunt task in Task Scheduler, then rerun setup');
+      await stopWindowsService(directory, scheduledCommand);
+    } else {
+      await stage(() => writeWindowsLauncher(join(directory, 'runtime'), env));
+      await registerWindowsService(directory, scheduledCommand);
+    }
+    await startWindowsService(directory, scheduledCommand);
+    return port;
+  }
   // Existing service files can contain custom ports, endpoints and drop-ins.
   // Keep either installed identity and its configuration intact on reruns.
   const legacy = name === 'grunt' ? 'milo' : name === 'grunt-router' ? 'milo-router' : undefined;
   if (legacy) {
-    const existing: { identity: string; file: string; contents: string }[] = [];
+    const existing: { identity: string; file: string; contents: string; mode: number }[] = [];
     for (const identity of [name, legacy]) {
       const file = process.platform === 'linux'
         ? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', `${identity}.service`)
         : join(homedir(), 'Library', 'LaunchAgents', `ai.${identity}.service.plist`);
       try {
         const info = await stage(() => lstat(file));
-        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o022) || info.size > 262144) throw new Error('The existing Grunt service file is unsafe');
-        existing.push({ identity, file, contents: await stage(() => readFile(file, 'utf8')) });
+        if (!info.isFile() || info.isSymbolicLink() || !hasOwnerMode(info, 0, 0o022) || info.size > 262144) throw new Error('The existing Grunt service file is unsafe');
+        existing.push({ identity, file, mode: info.mode & 0o777, contents: await stage(() => readFile(file, 'utf8')) });
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
     if (existing.length > 1) throw new Error('Multiple Grunt service identities are installed; resolve the duplicate before setup');
     const installedService = existing[0];
     if (installedService) {
-      const { identity, file, contents } = installedService;
-      if (!contents.includes(process.platform === 'linux' ? systemdQuote(entry) : xml(entry))) throw new Error('The existing Grunt service uses a different runtime; its configuration was not changed');
+      const { identity, file, contents, mode } = installedService;
+      const linux = process.platform === 'linux';
+      const argument = linux ? systemdQuote(entry) : `<string>${xml(entry)}</string>`;
+      let next = contents;
+      if (!contents.includes(argument)) {
+        const previous = join(dirname(entry), legacyDaemonFile);
+        if (name === 'grunt' && linux) {
+          const previousArgument = systemdQuote(previous);
+          next = contents.replace(/^ExecStart=.*$/m, line => line.replace(previousArgument, () => argument));
+        } else if (name === 'grunt') {
+          next = contents.replace(`<string>${xml(previous)}</string>`, () => argument);
+        }
+        if (next === contents) throw new Error('The existing Grunt service uses a different runtime; its configuration was not changed');
+      }
       let port: string | undefined, serviceSources: string[] | undefined;
       if (name === 'grunt') {
         if (process.platform === 'linux') {
@@ -236,6 +269,14 @@ export async function installBackgroundService(name: string, entry: string, env:
         if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
       }
       if (name === 'grunt' && options.automaticPool && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources));
+      if (next !== contents) {
+        const temporary = file + '-' + randomUUID();
+        try {
+          await stage(() => writeFile(temporary, next, { mode, flag: 'wx' }));
+          await stage(() => rename(temporary, file));
+        } finally { await rm(temporary, { force: true }); }
+        if (linux) await run('systemctl', ['--user', 'daemon-reload']);
+      }
       if (process.platform === 'linux') {
         await run('systemctl', ['--user', 'enable', `${identity}.service`]);
         await stage(() => enableLinger(options.signal));

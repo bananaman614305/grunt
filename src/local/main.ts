@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { gruntEnv } from '../brand.js';
+import { configRoot as configDir, gruntEnv } from '../brand.js';
 import { disabledAdapters, isDeclarativeAdapter, isSupportedAdapter, knownAdapters, localOptInAdapters } from '../registry.js';
 import { recommendedAdapters, scoutRetired } from './routing.js';
 import { realpathSync } from 'node:fs';
@@ -51,7 +51,6 @@ import { REGISTRY_URLS, RegistrySync } from './registry.js';
 import { uploadFleet } from './fleet-upload.js';
 import { RouteFeedback } from './route-feedback.js';
 import { isDeepStrictEqual } from 'node:util';
-import { configDir } from './wizard.js';
 import { createSourceMaintenance } from './runtime-maintenance.js';
 import { MAX_OPEN_ROUTES, SourceRecovery, codingCapableRoute } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
@@ -308,7 +307,8 @@ export function start(env = process.env) {
   return { server, close };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  if (process.argv[2] === 'update') {
+  if (typeof GRUNT_DAEMON_BUNDLE !== 'undefined') start();
+  else if (process.argv[2] === 'update') {
     try {
       if (process.argv.length > 3) throw new Error('Usage: usegrunt update');
       const { updateRuntime } = await import('./update.js');

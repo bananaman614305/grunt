@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, readFile, chmod, mkdir, rm } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
-const root = process.cwd(), dir = await mkdtemp(join(tmpdir(), 'grunt-wizard-proof-'));
+const dir = await mkdtemp(join(tmpdir(), 'grunt-wizard-proof-'));
 const events = [], daemons = [];
 let routed = 0, login = 0;
 const backend = serve({ hostname: '127.0.0.1', port: 0, fetch: async request => {
@@ -72,13 +72,12 @@ for (const [name, content] of Object.entries({
   docker: '#!/bin/sh\nif [ "$1" = inspect ]; then echo 1; fi\nif [ "$1" = run ] && [ "$2" = --rm ]; then echo empty; fi\nexit 0\n',
   opencode: '#!' + process.execPath + '\nif (process.argv.includes("--version")) process.exit(0); const { createServer } = await import("node:http"); const server = createServer((req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(req.url === "/session" ? { id: "proof" } : { parts: [{ type: "text", text: "grunt is ready" }] })); }); server.listen(0, "127.0.0.1", () => console.log("http://127.0.0.1:" + server.address().port));\n',
 
-  npm: `#!/bin/sh\nif [ \"$1\" = --version ]; then echo 10; exit 0; fi\nln -s ${JSON.stringify(join(root, 'node_modules'))} "$3/node_modules"\n`,
   systemctl: `#!/bin/sh\nif [ "$2" = restart ]; then touch ${JSON.stringify(marker)}; fi\nexit 0\n`
 })) { await writeFile(join(bin, name), content); await chmod(join(bin, name), 0o755); }
 const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GRUNT_CONFIG_DIR: state, GRUNT_ROUTER_RUNTIME: 'docker', XDG_CONFIG_HOME: join(dir, 'config'), PI_CODING_AGENT_DIR: pi, GRUNT_FREELLMAPI_URL: routerUrl, GRUNT_PORT: String(port), GRUNT_SOURCES: 'freellmapi', NODE_OPTIONS: `--import=${hook}` };
 let logs = '';
 async function startDaemon() {
-  const child = spawn(process.execPath, [join(state, 'runtime/dist/local/main.js')], { env: { ...env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [join(state, 'runtime/daemon.mjs')], { env: { ...env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   daemons.push(child);
   child.stderr.on('data', chunk => { logs += chunk; });
   for (let i = 0; i < 100; i++) {

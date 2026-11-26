@@ -1,34 +1,36 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as ChildProcess from 'node:child_process';
 import type * as FileSystem from 'node:fs/promises';
 import type * as OperatingSystem from 'node:os';
 
 const fixture = vi.hoisted(() => ({
-  spawn: vi.fn(), execFile: vi.fn(), copy: vi.fn(async () => {}),
+  spawn: vi.fn(), execFile: vi.fn(), copy: vi.fn(),
   serviceEnvironment: '',
-  holdNpm: false, child: undefined as EventEmitter | undefined,
   abortAt: undefined as string | undefined, controller: undefined as AbortController | undefined
 }));
 vi.mock('node:child_process', async original => ({ ...await original<typeof ChildProcess>(), spawn: fixture.spawn,
   execFile: Object.assign(fixture.execFile, { [Symbol.for('nodejs.util.promisify.custom')]: fixture.execFile }) }));
-vi.mock('node:fs/promises', async original => ({ ...await original<typeof FileSystem>(), cp: fixture.copy }));
+vi.mock('node:fs/promises', async original => ({ ...await original<typeof FileSystem>(), copyFile: fixture.copy }));
 vi.mock('node:os', async original => {
   const actual = await original<typeof OperatingSystem>();
   return { ...actual, homedir: () => process.env.GRUNT_TEST_INSTALL_HOME || actual.homedir() };
 });
+vi.mock('./squire-client-path.js', () => ({ saveSquireClientPath: vi.fn(async () => {}) }));
 
-import { installService, installBackgroundService } from './wizard.js';
+import { installService, installBackgroundService, preflight } from './wizard.js';
 import { automaticPoolSelection } from './automatic-pool.js';
+import { installedPort } from './dashboard.js';
 
 let directory: string;
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 beforeEach(async () => {
-  vi.clearAllMocks(); fixture.holdNpm = false; fixture.child = undefined; fixture.abortAt = undefined;
+  vi.clearAllMocks(); fixture.abortAt = undefined;
   fixture.serviceEnvironment = '';
+  fixture.copy.mockImplementation(async (source: string, destination: string) => writeFile(destination, basename(source)));
   fixture.execFile.mockImplementation(async () => ({ stdout: fixture.serviceEnvironment, stderr: '' }));
   fixture.controller = new AbortController();
   directory = await mkdtemp(join(tmpdir(), 'grunt-install-cancel-'));
@@ -42,7 +44,6 @@ beforeEach(async () => {
   fixture.spawn.mockImplementation((binary: string, args: string[], options: { signal?: AbortSignal }) => {
     const child = new EventEmitter();
     options.signal?.addEventListener('abort', () => child.emit('error', new Error('Owned install cancelled')), { once: true });
-    if (binary === 'npm' && fixture.holdNpm) { fixture.child = child; return child; }
     queueMicrotask(() => {
       if (args.includes(fixture.abortAt ?? 'unmatched')) fixture.controller!.abort(new Error('Setup ownership lost'));
       else child.emit('exit', 0);
@@ -63,20 +64,24 @@ it('does not start an already-cancelled runtime installation', async () => {
   expect(await readFile(join(directory, 'grunt', 'installed-sources.json'), 'utf8')).toBe('["opencode"]');
 });
 
-it('cancels a held npm install without later publishing a unit, restarting or replacing saved sources', async () => {
+it('cancels a held daemon copy before publishing files or changing the service', async () => {
   const unit = join(directory, 'xdg', 'systemd', 'user', 'milo.service');
   await mkdir(join(directory, 'xdg', 'systemd', 'user'), { recursive: true });
   await writeFile(unit, 'previous service', { mode: 0o600 });
   const before = await stat(unit);
-  fixture.holdNpm = true;
+  let finishCopy!: () => void;
+  fixture.copy.mockImplementationOnce(async (source: string, destination: string) => {
+    await new Promise<void>(resolve => { finishCopy = resolve; });
+    await writeFile(destination, basename(source));
+  });
   const pending = installService(['kilo'], { signal: fixture.controller!.signal });
   const rejected = expect(pending).rejects.toThrow();
-  await vi.waitFor(() => expect(fixture.child).toBeDefined());
-  expect(fixture.spawn.mock.calls[0]![2].signal).toBe(fixture.controller!.signal);
+  await vi.waitFor(() => expect(finishCopy).toBeDefined());
   fixture.controller!.abort(new Error('Setup ownership lost'));
+  finishCopy();
   await rejected;
-  fixture.child!.emit('exit', 0); // A late completion cannot resume the obsolete owner.
-  expect(fixture.spawn.mock.calls.map(([binary]) => binary)).toEqual(['npm']);
+  expect(fixture.spawn).not.toHaveBeenCalled();
+  await expect(readFile(join(directory, 'grunt/runtime/daemon.mjs'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(await readFile(unit, 'utf8')).toBe('previous service');
   expect((await stat(unit)).mtimeMs).toBe(before.mtimeMs);
   expect(await readFile(join(directory, 'grunt', 'installed-sources.json'), 'utf8')).toBe('["opencode"]');
@@ -86,8 +91,7 @@ it('cancels a held npm install without later publishing a unit, restarting or re
 it('propagates ownership cancellation to systemd and does not continue with enable/restart/persistence', async () => {
   fixture.abortAt = 'daemon-reload';
   await expect(installService(['kilo'], { signal: fixture.controller!.signal })).rejects.toThrow();
-  expect(fixture.spawn.mock.calls.map(([binary, args]) => [binary, args])).toHaveLength(2);
-  expect(fixture.spawn.mock.calls[1]![1]).toEqual(['--user', 'daemon-reload']);
+  expect(fixture.spawn.mock.calls.map(([binary, args]) => [binary, args])).toEqual([['systemctl', ['--user', 'daemon-reload']]]);
   expect(await readFile(join(directory, 'grunt', 'installed-sources.json'), 'utf8')).toBe('["opencode"]');
 });
 
@@ -95,14 +99,14 @@ it('does not swallow cancellation of launchctl bootout and bootstrap an obsolete
   Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
   fixture.abortAt = 'bootout';
   await expect(installService(['kilo'], { signal: fixture.controller!.signal })).rejects.toThrow();
-  expect(fixture.spawn.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'launchctl']);
-  expect(fixture.spawn.mock.calls[1]![1][0]).toBe('bootout');
+  expect(fixture.spawn.mock.calls.map(([binary]) => binary)).toEqual(['launchctl']);
+  expect(fixture.spawn.mock.calls[0]![1][0]).toBe('bootout');
   expect(await readFile(join(directory, 'grunt', 'installed-sources.json'), 'utf8')).toBe('["opencode"]');
 });
 
 it('publishes a successful installation with the same owner signal on every child command', async () => {
   await installService(['kilo'], { signal: fixture.controller!.signal });
-  expect(fixture.spawn.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'systemctl', 'systemctl', 'loginctl', 'systemctl']);
+  expect(fixture.spawn.mock.calls.map(([binary]) => binary)).toEqual(['systemctl', 'systemctl', 'loginctl', 'systemctl']);
   for (const [, , options] of fixture.spawn.mock.calls) expect(options.signal).toBe(fixture.controller!.signal);
   expect(fixture.spawn.mock.calls.at(-1)![1]).toEqual(['--user', 'restart', 'grunt.service']);
   expect(await readFile(join(directory, 'grunt', 'installed-sources.json'), 'utf8')).toBe('["kilo"]');
@@ -144,22 +148,21 @@ it('keeps the no-options installation API compatible', async () => {
   for (const [, , options] of fixture.spawn.mock.calls) expect(options.signal).toBeUndefined();
 });
 
-it('writes Grunt service identity and primary environment names for a fresh install', async () => {
+it('copies just the daemon and registry and points the new systemd unit at the bundle', async () => {
   vi.stubEnv('GRUNT_FREELLMAPI_URL', 'http://127.0.0.1:3301/v1');
   await installService(['kilo']);
   const unit = await readFile(join(directory, 'xdg/systemd/user/grunt.service'), 'utf8');
   expect(unit).toContain('GRUNT_CONFIG_DIR='); expect(unit).toContain('GRUNT_PORT=18792');
   expect(unit).toContain('GRUNT_SOURCES=kilo'); expect(unit).toContain('GRUNT_FREELLMAPI_URL=http://127.0.0.1:3301/v1');
+  expect(unit).toContain(join(directory, 'grunt/runtime/daemon.mjs'));
   expect(unit).not.toContain('MILO_');
-  const runtimePkg = JSON.parse(await readFile(join(directory, 'grunt/runtime/package.json'), 'utf8'));
-  expect(runtimePkg.name).toBe('grunt-runtime');
-  expect(runtimePkg.dependencies).toHaveProperty('hono');
-  expect(runtimePkg.dependencies).not.toHaveProperty('standardwebhooks');
-  expect(runtimePkg.dependencies).not.toHaveProperty('ipaddr.js');
-  expect(runtimePkg.dependencies).not.toHaveProperty('@trusty-squire/sdk');
+  expect(await readFile(join(directory, 'grunt/runtime/daemon.mjs'), 'utf8')).toBe('daemon.mjs');
+  expect(await readFile(join(directory, 'grunt/runtime/registry/adapters.json'), 'utf8')).toBe('adapters.json');
+  await expect(stat(join(directory, 'grunt/runtime/package.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(stat(join(directory, 'grunt/runtime/node_modules'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and effective port without creating a duplicate', async identity => {
+it.each(['milo', 'grunt'])('moves the installed %s unit to the bundle and keeps its custom drop-in and port', async identity => {
   const units = join(directory, 'xdg/systemd/user'), unit = join(units, `${identity}.service`), dropIn = join(units, `${identity}.service.d/custom.conf`);
   const prefix = identity.toUpperCase();
   const entry = join(directory, 'grunt/runtime/dist/local/main.js');
@@ -169,9 +172,10 @@ it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and 
   await writeFile(unit, original, { mode: 0o600 }); await writeFile(dropIn, custom, { mode: 0o600 });
   fixture.serviceEnvironment = `${prefix}_CONFIG_DIR=${join(directory, 'grunt')} ${prefix}_PORT=8792 ${prefix}_SOURCES=opencode,kilo ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3301/v1`;
   await installService(['kilo', 'antseed-vikey', 'freellmapi']);
-  expect(await readFile(unit, 'utf8')).toBe(original); expect(await readFile(dropIn, 'utf8')).toBe(custom);
+  expect(await readFile(unit, 'utf8')).toBe(original.replace(entry, join(directory, 'grunt/runtime/daemon.mjs')));
+  expect(await readFile(dropIn, 'utf8')).toBe(custom);
   expect(fixture.spawn.mock.calls.map(([binary, args]) => [binary, args])).toEqual([
-    ['npm', expect.any(Array)], ['systemctl', ['--user', 'enable', `${identity}.service`]],
+    ['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', `${identity}.service`]],
     ['loginctl', ['--no-ask-password', 'enable-linger']], ['systemctl', ['--user', 'restart', `${identity}.service`]]
   ]);
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
@@ -225,10 +229,59 @@ it('reuses the legacy macOS launch agent and preserves its port and endpoint set
     throw new Error('Synthetic primary plist variable is absent');
   });
   await installService(['kilo']);
-  expect(await readFile(file, 'utf8')).toBe(original);
-  expect(fixture.spawn.mock.calls.slice(1).map(([, args]) => args)).toEqual([
+  expect(await readFile(file, 'utf8')).toBe(original.replace(entry, join(directory, 'grunt/runtime/daemon.mjs')));
+  expect(fixture.spawn.mock.calls.map(([, args]) => args)).toEqual([
     ['bootout', `gui/${process.getuid!()}/ai.milo.service`], ['bootstrap', `gui/${process.getuid!()}`, file]
   ]);
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
   await expect(readFile(join(directory, 'home/Library/LaunchAgents/ai.grunt.service.plist'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('preflights Windows through Task Scheduler without npm or tar', async () => {
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  const run = vi.fn(async () => {});
+  await preflight(run);
+  expect(run.mock.calls).toEqual([['schtasks.exe', ['/query']]]);
+});
+
+it('registers a limited Windows logon task and restarts it with the saved environment on rerun', async () => {
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  const config = join(directory, 'Grunt & local state');
+  vi.stubEnv('GRUNT_CONFIG_DIR', config);
+  vi.stubEnv('GRUNT_FREELLMAPI_URL', 'http://127.0.0.1:3301/v1?source="local"');
+  let definition = '', state = 0;
+  fixture.execFile.mockImplementation(async (binary: string, args: string[]) => {
+    if (binary === 'whoami.exe') return { stdout: '"LOCAL\\jellybean","S-1-5-21-123-456-789-1000"\r\n' };
+    if (binary === 'powershell.exe') {
+      return { stdout: state ? JSON.stringify({ state, node: process.execPath, args: `"${join(config, 'runtime/launch.mjs')}"`, limited: true }) : '' };
+    }
+    expect(binary).toBe('schtasks.exe');
+    if (args[0] === '/create') {
+      definition = await readFile(args[args.indexOf('/xml') + 1]!, 'utf16le');
+      state = 3;
+    }
+    if (args[0] === '/end') state = 3;
+    if (args[0] === '/run') state = 4;
+    return { stdout: '' };
+  });
+  await installService(['kilo']);
+  const path = join(config, 'runtime/launch.mjs');
+  const launcher = await readFile(path, 'utf8');
+  expect(definition).toContain('<LogonTrigger><UserId>S-1-5-21-123-456-789-1000</UserId>');
+  expect(definition).toContain('<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>');
+  expect(definition).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
+  expect(definition).toContain(`<Command>${process.execPath}</Command>`);
+  expect(definition).toContain(`<Arguments>&quot;${path.replace('&', '&amp;')}&quot;</Arguments>`);
+  expect(launcher).toContain("import('./daemon.mjs')");
+  const env = JSON.parse(launcher.split('\n')[0]!.slice('const environment = '.length, -1));
+  expect(env).toMatchObject({ GRUNT_DAEMON: '1', GRUNT_SOURCES: 'kilo', GRUNT_PORT: '18792', GRUNT_CONFIG_DIR: config, GRUNT_FREELLMAPI_URL: process.env.GRUNT_FREELLMAPI_URL });
+  vi.stubEnv('GRUNT_PORT', '18793');
+  await installService(['kilo', 'opencode']);
+  expect(await readFile(path, 'utf8')).toBe(launcher);
+  const commands = fixture.execFile.mock.calls.filter(([binary]) => binary === 'schtasks.exe').map(([, args]) => args[0]);
+  expect(commands).toEqual(['/create', '/run', '/end', '/run']);
+  expect(fixture.spawn).not.toHaveBeenCalled();
+  await chmod(join(config, 'installed-port.json'), 0o644);
+  expect(await installedPort({ GRUNT_CONFIG_DIR: config })).toBe(18792);
+  await expect(stat(join(config, 'runtime/package.json'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
