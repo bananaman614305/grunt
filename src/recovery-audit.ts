@@ -25,7 +25,7 @@ const unionDuration = (intervals: Interval[]) => {
   return duration;
 };
 
-function trace(events: Event[], finish: Event) {
+function tracePhases(events: Event[], finish: Event) {
   const starts = events.filter(e => e.type === 'request.start');
   const start = starts.length === 1 ? starts[0] : undefined;
   if (!start || start.at > finish.at || events.filter(e => e.type === 'request.finish').length !== 1) return;
@@ -52,6 +52,27 @@ function trace(events: Event[], finish: Event) {
     const replayable = blocked ? undefined : observedFailures.find(e => e.replaySafe === true);
     phases.push({ dispatch, terminal, detection, blocked, replayable });
   }
+  return { start, phases };
+}
+
+function describeAttempts(events: Event[], start: Event, phases: NonNullable<ReturnType<typeof tracePhases>>['phases']) {
+  const offset = (event: Event | undefined) => event ? event.at - start.at : null;
+  return phases.sort((a, b) => (a.dispatch.seq ?? 0) - (b.dispatch.seq ?? 0)).map(({ dispatch, terminal, detection, blocked, replayable }) => ({
+    source: dispatch.source!, startedMs: offset(dispatch)!, endedMs: offset(terminal)!,
+    durationMs: terminal.durationMs ?? null, outcome: terminal.outcome!,
+    failure: detection?.failureReason ?? terminal.failureReason ?? terminal.errorCode ?? null,
+    failureObservedMs: terminal.outcome === 'failed' ? offset(detection ?? terminal) : null,
+    replaySafeMs: terminal.outcome === 'failed' ? offset(replayable) : null,
+    replayBlockedMs: terminal.outcome === 'failed' ? offset(blocked) : null,
+    firstEligibleMs: offset(events.find(e => e.type === 'route.eligible' && e.source === dispatch.source
+      && e.at >= start.at && e.at <= dispatch.at && (e.seq ?? 0) <= (dispatch.seq ?? Infinity)))
+  }));
+}
+
+function trace(events: Event[], finish: Event) {
+  const validated = tracePhases(events, finish);
+  if (!validated) return;
+  const { start, phases } = validated;
   const winners = phases.filter(({ terminal }) => terminal.outcome === 'passed' && terminal.source === finish.source && !incomplete(terminal));
   const accepted = winners[0]?.terminal;
   if (winners.length !== 1 || !accepted || accepted.at > finish.at) return;
@@ -62,21 +83,30 @@ function trace(events: Event[], finish: Event) {
   const failed = phases.filter(({ terminal, dispatch }) => terminal.outcome === 'failed' && dispatch.at <= (output ?? accepted).at
     && (dispatch.seq ?? 0) < (accepted.seq ?? Infinity));
   const failedMs = unionDuration(failed.map(({ dispatch, terminal }) => [dispatch.at, Math.min(terminal.at, (output ?? accepted).at)]));
-  const offset = (event: Event | undefined) => event ? event.at - start.at : null;
   return {
     requestId: finish.requestId, runtimeVersion: finish.runtimeVersion ?? null, elapsedMs: elapsed,
     failedMs: Math.min(failedMs, elapsed ?? Infinity), recovered: failed.length > 0,
-    firstUsableMs: offset(output), acceptedMs: offset(accepted),
-    attempts: phases.sort((a, b) => (a.dispatch.seq ?? 0) - (b.dispatch.seq ?? 0)).map(({ dispatch, terminal, detection, blocked, replayable }) => ({
-      source: dispatch.source!, startedMs: offset(dispatch)!, endedMs: offset(terminal)!,
-      durationMs: terminal.durationMs ?? null, outcome: terminal.outcome!,
-      failure: detection?.failureReason ?? terminal.failureReason ?? terminal.errorCode ?? null,
-      failureObservedMs: terminal.outcome === 'failed' ? offset(detection ?? terminal) : null,
-      replaySafeMs: terminal.outcome === 'failed' ? offset(replayable) : null,
-      replayBlockedMs: terminal.outcome === 'failed' ? offset(blocked) : null,
-      firstEligibleMs: offset(events.find(e => e.type === 'route.eligible' && e.source === dispatch.source
-        && e.at >= start.at && e.at <= dispatch.at && (e.seq ?? 0) <= (dispatch.seq ?? Infinity)))
-    }))
+    firstUsableMs: output ? output.at - start.at : null, acceptedMs: accepted.at - start.at,
+    attempts: describeAttempts(events, start, phases)
+  };
+}
+
+function failureTrace(events: Event[], finish: Event) {
+  const validated = tracePhases(events, finish);
+  if (!validated) return;
+  const { start, phases } = validated;
+  if (!phases.length || phases.some(({ dispatch }) => dispatch.at > finish.at)) return;
+  // A request-level failure can lack a source. Use the last failed attempt
+  // visible by the time the request ended, before any later hedge cleanup.
+  const lastFailure = phases.map(({ terminal }) => terminal)
+    .filter(terminal => terminal.at <= finish.at && (terminal.outcome === 'failed' || incomplete(terminal)))
+    .sort((a, b) => b.at - a.at || (b.seq ?? 0) - (a.seq ?? 0))[0];
+  return {
+    requestId: finish.requestId, runtimeVersion: finish.runtimeVersion ?? null,
+    elapsedMs: finish.durationMs ?? finish.at - start.at,
+    source: finish.source ?? lastFailure?.source ?? null,
+    errorCode: finish.errorCode ?? null, failureReason: finish.failureReason ?? null,
+    attempts: describeAttempts(events, start, phases)
   };
 }
 
@@ -86,6 +116,8 @@ function matchingCounts(events: Event[], metrics: Coverage | undefined, window: 
     !metrics.coverage.available || metrics.coverage.startedAt === null || metrics.coverage.startedAt > window.since ||
     metrics.coverage.retainedFrom === null || metrics.coverage.retainedFrom > window.since ||
     metrics.coverage.droppedEvents || metrics.coverage.droppedLateEvents || metrics.coverage.overflowEvents) return false;
+  // retainedFrom covers hourly aggregates. Check each event count separately
+  // because selective pruning can leave gaps anywhere in the raw journal.
   const observed = events.filter(e => inWindow(e.at, window) && predicate(e)).length;
   const counted = metrics.buckets.filter(b => inWindow(b.hour, window) && predicate(b.dimensions)).reduce((sum, b) => sum + b.count, 0);
   return observed === counted;
@@ -129,11 +161,22 @@ export function buildRecoveryAudit(events: Event[], window: Window, metrics?: Co
   const successes = finishes.filter(e => e.outcome === 'passed' && e.reason !== 'local' && !incomplete(e));
   const classified = successes.flatMap(e => trace(byRequest.get(e.requestId) ?? [], e) ?? []);
   const recovered = classified.filter(t => t.recovered).sort((a, b) => b.failedMs - a.failedMs);
+  const failures = finishes.filter(e => e.outcome === 'failed');
+  const classifiedFailures = failures.flatMap(e => failureTrace(byRequest.get(e.requestId) ?? [], e) ?? []);
+  const failuresByReason = new Map<string, number>();
+  for (const failure of failures) {
+    const reason = failure.failureReason ?? failure.errorCode ?? 'unknown';
+    failuresByReason.set(reason, (failuresByReason.get(reason) ?? 0) + 1);
+  }
   const checks = windowEvents.filter(accountCheck);
   return {
     ...window,
     passed: successes.length, classified: classified.length, recovered: recovered.length,
     failedMs: recovered.reduce((sum, item) => sum + item.failedMs, 0),
+    failed: failures.length, classifiedFailures: classifiedFailures.length,
+    terminalFailedMs: classifiedFailures.reduce((sum, item) => sum + item.elapsedMs, 0),
+    failuresByReason: Object.fromEntries(failuresByReason),
+    slowestFailures: classifiedFailures.sort((a, b) => b.elapsedMs - a.elapsedMs).slice(0, 5),
     unfinished: windowEvents.filter(e => e.kind === 'user' && e.type === 'request.start'
       && !byRequest.get(e.requestId)?.some(end => end.type === 'request.finish' && end.at < window.until)).length,
     cancelled: finishes.filter(e => e.outcome === 'cancelled').length,

@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { Client, InValue } from '@libsql/client';
+import type { Client, InValue, Transaction } from '@libsql/client';
 import { diagnosticMetricSchema, pruneDiagnosticMetrics, readDiagnosticLosses, readDiagnosticMetrics, recordDiagnosticMetrics } from './diagnostic-metrics.js';
 export type { DiagnosticMetrics, DiagnosticMetricBucket } from './diagnostic-metrics.js';
 
@@ -219,6 +219,58 @@ function serializeDiagnosticWriter(key: string, write: () => Promise<void>) {
 }
 const attemptSummary = (): DiagnosticAttemptSummary => ({ total: 0, succeeded: 0, failed: 0, cancelled: 0, inputTokens: 0, outputTokens: 0, unknownInput: 0, unknownOutput: 0 });
 
+const evictionPriority = "CASE WHEN incident=1 THEN 2 WHEN type='route.skip' THEN 0 ELSE 1 END";
+const diagnosticBatchSize = 64;
+const maxInFlightRequests = 64;
+const maxInFlightEvents = 64;
+
+function isIncidentEvent(event: DiagnosticEvent) {
+  return event.outcome === 'failed' || event.type === 'attempt.failure' || event.failureReason === 'length';
+}
+
+function insertDiagnosticEvents(tx: Transaction, events: DiagnosticEvent[], incident = 0) {
+  return tx.execute({ sql: 'INSERT OR IGNORE INTO diagnostic_events(id,at,request_id,source,type,outcome,data,incident) VALUES '
+    + events.map(() => '(?,?,?,?,?,?,?,?)').join(',') + ' RETURNING id',
+    args: events.flatMap(event => [event.id, event.at, event.requestId, event.source ?? null, event.type,
+      event.outcome ?? null, JSON.stringify(event), incident]) });
+}
+
+async function initializeIncidentRetention(tx: Transaction) {
+  const { rows } = await tx.execute('PRAGMA table_info(diagnostic_events)');
+  if (rows.some(row => row.name === 'incident')) return;
+  // Backfill the existing journal without changing its cursor or metrics.
+  await tx.executeMultiple(`
+    ALTER TABLE diagnostic_events ADD COLUMN incident INTEGER NOT NULL DEFAULT 0;
+    UPDATE diagnostic_events SET incident=1 WHERE request_id IN (
+      SELECT request_id FROM diagnostic_events GROUP BY request_id
+      HAVING max(outcome='failed' OR type='attempt.failure'
+        OR (CASE WHEN json_valid(data) THEN json_extract(data,'$.failureReason') END)='length')
+        OR sum(type='attempt.start')>1
+    );
+    CREATE INDEX diagnostic_events_eviction ON diagnostic_events(${evictionPriority},seq);
+    CREATE INDEX diagnostic_events_incidents ON diagnostic_events(request_id) WHERE incident=1;
+    CREATE TRIGGER diagnostic_events_mark_incident AFTER INSERT ON diagnostic_events
+    WHEN NEW.outcome='failed' OR NEW.type='attempt.failure' OR json_extract(NEW.data,'$.failureReason')='length'
+      OR EXISTS (SELECT 1 FROM diagnostic_events WHERE request_id=NEW.request_id AND incident=1)
+      OR (NEW.type='attempt.start' AND EXISTS (
+        SELECT 1 FROM diagnostic_events WHERE request_id=NEW.request_id AND type='attempt.start' AND seq<NEW.seq
+      ))
+    BEGIN
+      UPDATE diagnostic_events SET incident=1 WHERE request_id=NEW.request_id AND incident=0;
+    END;
+  `);
+}
+
+async function pruneDiagnosticEvents(tx: Transaction, cutoff: number, maxEvents: number) {
+  await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE at<?', args: [cutoff] });
+  await tx.execute({ sql: `
+    DELETE FROM diagnostic_events WHERE seq IN (
+      SELECT seq FROM diagnostic_events ORDER BY ${evictionPriority},seq
+      LIMIT max(0,(SELECT count(*) FROM diagnostic_events)-?)
+    )
+  `, args: [maxEvents] });
+}
+
 export class DiagnosticsStore {
   private queue: Promise<void> = Promise.resolve();
   private queued = 0;
@@ -233,6 +285,9 @@ export class DiagnosticsStore {
   // Only requests started by this process can be live. A shared journal can
   // contain unfinished traces from other processes or an earlier daemon.
   private active = new Map<string, { events: DiagnosticEvent[]; positions: Map<string, () => number | null>; progress: Map<string, number> }>();
+  // Keep the earliest committed events until the finish drains, even if
+  // SQLite prunes them before a later batch reveals the request is an incident.
+  private inFlight = new Map<string, DiagnosticEvent[]>();
   private constructor(private db: Client | undefined, private options: { maxEvents: number; maxAgeMs: number; now: () => number; runtimeVersion?: string }, private streamId: string | null = null, private writerKey?: string) {
     if (!db) this.error = 'storage_unavailable';
   }
@@ -243,7 +298,7 @@ export class DiagnosticsStore {
   }
   static async open(options: { directory: string; adoptionConsent?: boolean; maxEvents?: number; maxAgeMs?: number; now?: () => number; runtimeVersion?: string }) {
     if (options.runtimeVersion !== undefined && !runtimeVersion.test(options.runtimeVersion)) throw new Error('Invalid runtime version');
-    const limits = { maxEvents: Math.min(100000, Math.max(100, options.maxEvents ?? 50000)), maxAgeMs: Math.min(90 * 86400000, Math.max(60000, options.maxAgeMs ?? 30 * 86400000)), now: options.now ?? Date.now, ...(options.runtimeVersion ? { runtimeVersion: options.runtimeVersion } : {}) };
+    const limits = { maxEvents: Math.min(100000, Math.max(0, Math.floor(options.maxEvents ?? 50000))), maxAgeMs: Math.min(90 * 86400000, Math.max(60000, options.maxAgeMs ?? 30 * 86400000)), now: options.now ?? Date.now, ...(options.runtimeVersion ? { runtimeVersion: options.runtimeVersion } : {}) };
     let db: Client | undefined;
     try {
       await mkdir(options.directory, { recursive: true, mode: 0o700 });
@@ -274,6 +329,13 @@ export class DiagnosticsStore {
           CREATE INDEX IF NOT EXISTS diagnostic_events_time ON diagnostic_events(at);
           CREATE INDEX IF NOT EXISTS diagnostic_events_source ON diagnostic_events(source,seq);
           ${diagnosticMetricSchema}`);
+        const tx = await db!.transaction('write');
+        try {
+          await initializeIncidentRetention(tx);
+          await pruneDiagnosticEvents(tx, limits.now() - limits.maxAgeMs, limits.maxEvents);
+          await tx.commit();
+        } catch (error) { await tx.rollback(); throw error; }
+        finally { tx.close(); }
         await chmod(path, 0o600);
         // Only daemon startup supplies a consent decision. Other journal readers leave it intact.
         if (options.adoptionConsent === true) {
@@ -371,10 +433,62 @@ export class DiagnosticsStore {
       this.queue = serializeDiagnosticWriter(this.writerKey!, () => this.drain());
     }
   }
+  private rememberFlushedEvents(accepted: DiagnosticEvent[], fresh: DiagnosticEvent[]) {
+    const inserted = new Set(fresh);
+    for (const event of accepted) {
+      const { requestId, type } = event;
+      if (type === 'request.finish') {
+        this.inFlight.delete(requestId);
+        continue;
+      }
+      if (!inserted.delete(event)) continue;
+      if (type === 'request.start' && !this.inFlight.has(requestId)) {
+        if (this.inFlight.size >= maxInFlightRequests) this.inFlight.delete(this.inFlight.keys().next().value!);
+        this.inFlight.set(requestId, []);
+      }
+      const trace = this.inFlight.get(requestId);
+      if (trace && trace.length < maxInFlightEvents && !trace.some(previous => previous.id === event.id)) trace.push(event);
+    }
+  }
+  private async restoreIncidentEvents(tx: Transaction, accepted: DiagnosticEvent[], cutoff: number) {
+    const candidates = new Map<string, DiagnosticEvent[]>();
+    for (const event of accepted) {
+      if (!this.inFlight.has(event.requestId) || (event.type !== 'attempt.start' && !isIncidentEvent(event))) continue;
+      const events = candidates.get(event.requestId) ?? [];
+      events.push(event);
+      candidates.set(event.requestId, events);
+    }
+    for (const [requestId, incoming] of candidates) {
+      const prior = this.inFlight.get(requestId)!.filter(event => event.at >= cutoff);
+      if (!prior.length) continue;
+      const { rows } = await tx.execute({
+        sql: `SELECT id,type FROM diagnostic_events WHERE request_id=?
+          AND (type='attempt.start' OR id IN (SELECT value FROM json_each(?)))`,
+        args: [requestId, JSON.stringify(prior.map(event => event.id))]
+      });
+      const retained = new Set(rows.map(row => String(row.id)));
+      const firstMissing = prior.findIndex(event => !retained.has(event.id));
+      if (firstMissing < 0) continue;
+      if (!incoming.some(isIncidentEvent)) {
+        const starts = new Set([...prior, ...incoming, ...rows].filter(event => event.type === 'attempt.start').map(event => String(event.id)));
+        if (starts.size < 2) continue;
+      }
+      // Reinsert any surviving rows after the gap so the restored prefix and
+      // the new batch retain their causal order in the ascending cursor.
+      const restore = prior.slice(firstMissing);
+      const surviving = restore.filter(event => retained.has(event.id));
+      if (surviving.length) {
+        await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE id IN (SELECT value FROM json_each(?))',
+          args: [JSON.stringify(surviving.map(event => event.id))] });
+      }
+      // The retention trigger promotes the remaining rows for this request.
+      await insertDiagnosticEvents(tx, restore, 1);
+    }
+  }
   private async drain() {
     try {
       while (this.pending.length || this.pendingLoss) {
-        const batch = this.pending.splice(0, 64), loss = this.pendingLoss; this.pendingLoss = 0;
+        const batch = this.pending.splice(0, diagnosticBatchSize), loss = this.pendingLoss; this.pendingLoss = 0;
         this.writing = batch;
         try {
           const tx = await this.db!.transaction('write');
@@ -389,23 +503,28 @@ export class DiagnosticsStore {
               }
               accepted.push(event);
             }
+            const cutoff = this.options.now() - this.options.maxAgeMs;
+            let fresh: DiagnosticEvent[] = [];
             if (accepted.length) {
-              const inserted = await tx.execute({ sql: 'INSERT OR IGNORE INTO diagnostic_events(id,at,request_id,source,type,outcome,data) VALUES ' + accepted.map(() => '(?,?,?,?,?,?,?)').join(',') + ' RETURNING id',
-                args: accepted.flatMap(event => [event.id, event.at, event.requestId, event.source ?? null, event.type, event.outcome ?? null, JSON.stringify(event)]) });
+              await this.restoreIncidentEvents(tx, accepted, cutoff);
+              // Restored rows already entered metrics in an earlier flush.
+              const inserted = await insertDiagnosticEvents(tx, accepted);
               const ids = new Set(inserted.rows.map(row => String(row.id)));
-              const fresh = accepted.filter(event => ids.delete(event.id));
+              fresh = accepted.filter(event => ids.delete(event.id));
               await recordDiagnosticMetrics(tx, fresh.filter(event => !traceDetailTypes.has(event.type)), this.options.now());
             }
-            await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE at<? OR seq IN (SELECT seq FROM diagnostic_events ORDER BY seq DESC LIMIT -1 OFFSET ?)', args: [this.options.now() - this.options.maxAgeMs, this.options.maxEvents] });
+            await pruneDiagnosticEvents(tx, cutoff, this.options.maxEvents);
             await pruneDiagnosticMetrics(tx, this.options.now());
             await tx.commit();
+            this.rememberFlushedEvents(accepted, fresh);
             this.lastWriteAt = this.options.now(); this.error = undefined;
           } catch (error) { await tx.rollback(); throw error; }
           finally { tx.close(); }
         } catch {
           this.error = 'write_failed';
-          const discarded = this.pending.splice(0).length; this.queued -= discarded;
-          this.droppedEvents += batch.length + discarded; this.pendingLoss += loss + batch.length + discarded;
+          const discarded = this.pending.splice(0); this.queued -= discarded.length;
+          this.rememberFlushedEvents([...batch, ...discarded], []);
+          this.droppedEvents += batch.length + discarded.length; this.pendingLoss += loss + batch.length + discarded.length;
           break; // Keep the loss count for the next successful write; never spin on a broken database.
         }
         finally { this.queued -= batch.length; this.writing = []; }
@@ -443,6 +562,8 @@ export class DiagnosticsStore {
   async trace(requestId: string) { return this.list({ requestId, limit: 500 }); }
   async metrics(options: { since?: number; until?: number } = {}) {
     await this.flush();
+    // coverage.retainedFrom is the first aggregate hour. Raw event retention
+    // is selective and can leave gaps after the oldest surviving event.
     const attachHealth = (result: Awaited<ReturnType<typeof readDiagnosticMetrics>>) => {
       result.ingestionHealth = this.health(); result.coverage.droppedEvents += this.pendingLoss;
       result.coverage.available = result.coverage.available && result.ingestionHealth.available;
@@ -477,6 +598,6 @@ export class DiagnosticsStore {
     if (this.closed) return;
     await this.flush();
     if (this.pendingLoss) await this.flush(); // One loss-only persistence attempt, never an unbounded retry.
-    this.closed = true; this.active.clear(); this.db?.close();
+    this.closed = true; this.active.clear(); this.inFlight.clear(); this.db?.close();
   }
 }
