@@ -52,10 +52,29 @@ it('uses only the exact free route and returns its native tools through Grunt', 
     expect(await result.json()).toMatchObject({ choices: [{ message: { tool_calls: calls } }] });
     const [url, init] = fetcher.mock.calls[1]!;
     expect(url).toBe(`${grant.base_url}/v1/chat/completions`);
-    expect(JSON.parse(String(init?.body))).toMatchObject({ model: KENARI_FREE_MODEL, stream: false });
+    expect(JSON.parse(String(init?.body))).toMatchObject({ model: KENARI_FREE_MODEL, stream: true, stream_options: { include_usage: true } });
     expect(JSON.parse(String(init?.body))).not.toHaveProperty('max_tokens');
     expect(init?.redirect).toBe('error');
   } finally { await sources.close(); }
+});
+
+it.each([KENARI_FREE_MODEL, KENARI_FREE_MODEL.slice(0, -5)])('verifies the exact free SSE model before forwarding text (%s)', async model => {
+  await recordDataSharingConsent(directory, ['kenari']);
+  const frames = [{ model, choices: [{ index: 0, delta: { content: 'Hello' }, finish_reason: 'stop' }] }, { usage: { completion_tokens: 1 } }];
+  const wire = frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(async () => catalog())
+    .mockResolvedValueOnce(new Response(wire, { headers: { 'content-type': 'text/event-stream' } }));
+  const pool = new Sources([source(fetcher)]), onText = vi.fn();
+  try {
+    const pending = pool.complete({ ...request, stream: true }, AbortSignal.timeout(1000), onText);
+    if (model === KENARI_FREE_MODEL) {
+      await expect(pending).resolves.toEqual({ text: 'Hello', outputTokens: 1 });
+      expect(onText).toHaveBeenCalledExactlyOnceWith('kenari', 'Hello');
+    } else {
+      await expect(pending).rejects.toMatchObject({ code: 'upstream' });
+      expect(onText).not.toHaveBeenCalled();
+    }
+  } finally { await pool.close(); }
 });
 
 it('stops before inference if the catalog no longer marks the model free', async () => {

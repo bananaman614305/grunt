@@ -14,6 +14,7 @@ const zeroPrice = { prompt: 0, completion: 0 };
 const preferredFreeEndpoint = 'amazee-ai-5149fc8341b341f3a6ebe026ae44f7c7/token-factory-df2d2988c4514d66a143237f387d4e64';
 const chatEndpoint = `${prefix}/chat/completions`;
 const DEEPSEEK_BACKOFF_MS = 15 * 60_000;
+const matchesModel = (value: unknown, selected: string) => value === selected || value === selected.slice(0, -':free'.length);
 interface Offer {
   id?: string; context_length?: number; pricing?: Record<string, unknown>; supported_parameters?: unknown;
 }
@@ -39,6 +40,8 @@ interface NumesOptions {
 
 export class Numes implements Source {
   readonly inferenceOnly = true;
+  readonly reportsOutput = true;
+  readonly reportsProgress = true;
   readonly id = 'numes';
   readonly supportsFunctionTools = true;
   private directory: string;
@@ -46,12 +49,19 @@ export class Numes implements Source {
   private fetcher: typeof fetch;
   private deepSeekRetryAt = 0;
   private metadata = new MetadataFlights();
+  private readonly selectedModels = new WeakMap<Response, string>();
 
   constructor(private options: NumesOptions = {}) {
     this.directory = options.directory ?? configRoot();
     this.fetcher = options.fetcher ?? fetch;
     this.client = new FreeApi(this.id, {
-      allowStream: false,
+      allowStream: true,
+      emitClientStream: false,
+      verifyModel: (value, response) => {
+        const selected = this.selectedModels.get(response);
+        return selected !== undefined && matchesModel(value, selected);
+      },
+      verifyUsage: usage => usage.cost === 0,
       loadGrant: () => this.grant(),
       fetcher: (input, init) => this.checkedCompletion(input, init)
     });
@@ -159,18 +169,21 @@ export class Numes implements Source {
       if (deepSeekFlash && !this.options.deepSeekFlash) this.deepSeekRetryAt = Date.now() + DEEPSEEK_BACKOFF_MS;
       return response;
     }
-    const result = await response.clone().json() as { model?: string; usage?: { cost?: number } };
-    if ((result.model !== selectedModel && result.model !== selectedModel.slice(0, -':free'.length)) || result.usage?.cost !== 0) {
-      await response.body?.cancel();
-      return new Response(null, { status: 502 });
+    if (!response.headers.get('content-type')?.includes('text/event-stream')) {
+      const result = await response.clone().json() as { model?: string; usage?: { cost?: number } };
+      if (!matchesModel(result.model, selectedModel) || result.usage?.cost !== 0) {
+        await response.body?.cancel();
+        return new Response(null, { status: 502 });
+      }
     }
+    this.selectedModels.set(response, selectedModel);
     return response;
   }
 
-  async complete(request: ModelRequest, signal: AbortSignal) {
+  async complete(request: ModelRequest, signal: AbortSignal, output?: () => void) {
     signal.throwIfAborted();
     if (!await this.approved()) throw new SourceError('refused', 'Numes data sharing needs approval before routing');
-    return this.client.complete({ ...request, model: this.id }, signal);
+    return this.client.complete({ ...request, model: this.id }, signal, output);
   }
 
   async close() { this.metadata.close(); await this.client.close(); }

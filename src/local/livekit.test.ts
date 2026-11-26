@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -63,13 +63,15 @@ it('runs the CLI with an explicit verified project in an isolated empty config, 
   expect(capture.args.slice(0, 2)).toEqual(['--project', 'test-free-project']);
   expect(capture.args.slice(4)).toEqual(['token', 'create', '--inference', '--token-only', '--valid-for', '10m', '--identity', 'agent']);
   expect(capture.ambient).toEqual([]); expect(capture.home).toBe(process.env.HOME); expect(capture.config).toBe(''); expect(capture.mode).toBe(0o600);
-  expect(capture.cwd.startsWith(livekitPaths(options.directory).work + '/.token-')).toBe(true);
+  const work = await realpath(livekitPaths(options.directory).work);
+  expect(capture.cwd.startsWith(join(work, '.token-'))).toBe(true);
   expect(await readdir(livekitPaths(options.directory).work)).toEqual([]);
   expect(fetcher).toHaveBeenCalledOnce();
   const [url, init] = fetcher.mock.calls[0]!;
   expect(url).toBe(`${LIVEKIT_GATEWAY}/v1/chat/completions`);
   expect(init?.headers).toMatchObject({ Authorization: `Bearer ${syntheticToken}` });
-  expect(JSON.parse(String(init?.body))).toMatchObject({ model: LIVEKIT_DEEPSEEK, max_tokens: 100000, stream: false });
+  expect(JSON.parse(String(init?.body))).toMatchObject({ model: LIVEKIT_DEEPSEEK, max_tokens: 100000,
+    stream: true, stream_options: { include_usage: true } });
   expect(init?.redirect).toBe('error');
 });
 
@@ -139,7 +141,8 @@ it.each([
 });
 
 it('rejects unsafe permissions, symlinks, missing native login, and writable token working directories', async () => {
-  const options = await fixture(), paths = livekitPaths(options.directory, options.nativeDirectory), item = source(options);
+  const options = await fixture(), paths = livekitPaths(options.directory, options.nativeDirectory);
+  const fetcher = vi.fn<typeof fetch>(), item = source({ ...options, fetcher });
   await chmod(paths.receipt, 0o644); expect(await item.available()).toBe(false); await chmod(paths.receipt, 0o600);
   const target = join(options.directory, 'target'); await writeFile(target, JSON.stringify(receipt()), { mode: 0o600 });
   await rm(paths.receipt); await symlink(target, paths.receipt); expect(await item.available()).toBe(false);
@@ -148,8 +151,10 @@ it('rejects unsafe permissions, symlinks, missing native login, and writable tok
   await chmod(paths.nativeConfig, 0o600); await chmod(paths.nativeHome, 0o755); expect(await item.available()).toBe(false);
   await chmod(paths.nativeHome, 0o700); await rm(paths.nativeConfig); await symlink(target, paths.nativeConfig); expect(await item.available()).toBe(false);
   await rm(paths.nativeConfig); await writeFile(paths.nativeConfig, 'synthetic', { mode: 0o600 });
-  await mkdir(paths.work, { mode: 0o755 });
+  await mkdir(paths.work);
+  await chmod(paths.work, 0o755);
   await expect(item.complete(request, AbortSignal.timeout(5000))).rejects.toThrow('Unsafe LiveKit private directory');
+  expect(fetcher).not.toHaveBeenCalled();
   await rm(paths.nativeConfig); expect(await item.available()).toBe(false);
 });
 

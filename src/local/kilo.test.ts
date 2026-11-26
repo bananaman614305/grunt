@@ -29,13 +29,29 @@ function fixture(options: { catalog?: unknown; catalogRows?: unknown[]; reflecti
   const source = new Kilo({ directory, fetcher, ...(options.reflectionBeam ? { reflectionBeam: true } : {}), ...(options.timeout ? { timeout: options.timeout } : {}), ...(options.anonymous ? { anonymous: options.anonymous } : {}) }); sources.push(source);
   return { source, fetcher, posts: () => fetcher.mock.calls.filter(([, init]) => init?.method === 'POST') };
 }
+it.each([false, true])('aborts a stalled Kilo stream after the first delta (client stream: %s)', async stream => {
+  const f = fixture({ infer: () => new Response(new ReadableStream({
+    start(controller) {
+      const frame = { model: KILO_PARTICLE, choices: [{ index: 0, delta: { content: 'Hello' } }] };
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+    }
+  }), { headers: { 'content-type': 'text/event-stream' } }) });
+  const pool = new Sources([f.source], undefined, new Set(), 50);
+  try {
+    await expect(pool.complete({ ...request(), stream }, AbortSignal.timeout(500))).rejects.toMatchObject({
+      code: 'timeout', replay: 'safe', message: expect.stringContaining('no further output')
+    });
+    expect(f.posts()[0]?.[1]?.signal?.aborted).toBe(true);
+  } finally { await pool.close(); }
+});
 it('uses only fixed anonymous Particle with no inherited key, and checks live free metadata before inference', async () => {
   vi.stubEnv('KILO_API_KEY', 'synthetic-unrelated-private-key'); const f = fixture();
   expect(await f.source.available()).toBe(true); expect(f.posts()).toHaveLength(0);
   expect(await f.source.complete({ ...request(), model: 'arbitrary-paid-alias', maxTokens: 10000 }, new AbortController().signal)).toEqual({ text: 'Hello.', inputTokens: 20, outputTokens: 5, free: true, servedModel: KILO_PARTICLE });
   expect(f.fetcher.mock.calls.map(([url]) => url)).toEqual([`${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/chat/completions`]);
   for (const [, init] of f.fetcher.mock.calls) { expect(init?.redirect).toBe('error'); expect(new Headers(init?.headers).has('authorization')).toBe(false); }
-  expect(JSON.parse(f.posts()[0]![1]!.body as string)).toMatchObject({ model: KILO_PARTICLE, max_tokens: 10000, stream: false });
+  expect(JSON.parse(f.posts()[0]![1]!.body as string)).toMatchObject({ model: KILO_PARTICLE, max_tokens: 10000,
+    stream: true, stream_options: { include_usage: true } });
 });
 
 it('probes Kilo without its saved grant until setup switches to account bootstrap', async () => {

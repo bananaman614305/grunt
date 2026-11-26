@@ -60,10 +60,17 @@ const validCalls = (value: unknown): value is ToolCall[] => Array.isArray(value)
 
 export class FreeApi implements Source {
   readonly inferenceOnly = true;
+  readonly reportsOutput = true;
+  readonly reportsProgress = true;
   readonly id: FreeApiProvider;
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
-  constructor(provider: FreeApiProvider, private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; expectedModel?: string; verifyModel?: (model: unknown) => boolean; allowStream?: boolean; loadGrant?: () => Promise<FreeApiGrant> } = {}) {
+  constructor(provider: FreeApiProvider, private options: {
+    directory?: string; fetcher?: typeof fetch; timeout?: number; expectedModel?: string;
+    verifyModel?: (model: unknown, response: Response) => boolean;
+    verifyUsage?: (usage: Record<string, unknown>) => boolean;
+    allowStream?: boolean; emitClientStream?: boolean; loadGrant?: () => Promise<FreeApiGrant>;
+  } = {}) {
     this.id = providerName(provider);
   }
   private get spec() { return FREE_API_PROVIDERS[this.id]; }
@@ -82,7 +89,7 @@ export class FreeApi implements Source {
     try { grant = verifiedGrant ?? await this.grant(); }
     catch { throw new SourceError('logged_out', `${this.id} access is not configured`); }
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
-    const wantStream = request.stream && this.options.allowStream !== false;
+    const wantStream = this.options.allowStream !== false;
     let response: Response;
     try {
       observeAttemptDispatch({ model: this.spec.model, account: 'configured', maxOutputTokens: request.maxTokens });
@@ -115,14 +122,27 @@ export class FreeApi implements Source {
         `${this.id} returned HTTP ${response.status}`, retry, undefined,
         { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
     }
+    const verifyModel = this.options.verifyModel;
+    const verifyUsage = this.options.verifyUsage;
+    const checkUsage = (usage: unknown) => {
+      if (verifyUsage && !verifyUsage(quotaObject(usage))) {
+        throw new SourceError('upstream', `${this.id} returned unverified usage`, undefined, undefined, {
+          failureReason: 'completion_billing', transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions'
+        });
+      }
+    };
     try {
       if (response.headers.get('content-type')?.includes('text/event-stream')) {
         const reply = await readPromotionalStream(response, this.options.expectedModel, signal, {
-          ...(this.options.verifyModel ? { verifyModel: this.options.verifyModel } : {}),
+          ...(verifyModel ? { verifyModel: model => verifyModel(model, response) } : {}),
+          ...(verifyUsage ? {
+            event: chunk => { if (chunk.usage != null) checkUsage(chunk.usage); },
+            result: checkUsage
+          } : {}),
           strictToolArgs: false,
           allowAnyFinishReason: true,
           ...(output ? { progress: output } : {}),
-          ...(wantStream ? { text: delta => emitStreamText(delta) } : {}),
+          ...(request.stream && this.options.emitClientStream !== false ? { text: delta => emitStreamText(delta) } : {}),
           failure: () => {},
           cleanup: () => {}
         });
@@ -145,9 +165,10 @@ export class FreeApi implements Source {
       if (this.options.expectedModel !== undefined && body.model !== this.options.expectedModel) {
         throw new SourceError('upstream', `${this.id} returned a different model`);
       }
-      if (this.options.verifyModel && !this.options.verifyModel(body.model)) {
+      if (verifyModel && !verifyModel(body.model, response)) {
         throw new SourceError('upstream', `${this.id} returned a different model`);
       }
+      checkUsage(body.usage);
       const choice = body.choices?.[0], message = choice?.message;
       const finishReason = this.id === 'zro' ? finishReasons.find(reason => reason === choice?.finish_reason) : undefined;
       if (message?.refusal) throw new SourceError('refused', `${this.id} refused the request`);

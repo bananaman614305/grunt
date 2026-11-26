@@ -16,6 +16,23 @@ const request = { model: 'zro', messages: [{ role: 'user', content: 'hello' }], 
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-free-api-')); locations.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(locations.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
+it('uses the idle watchdog after progress on a buffered FreeApi call', async () => {
+  const frame = { choices: [{ index: 0, delta: { content: 'Hello' } }] };
+  const cancelled = vi.fn(), onText = vi.fn();
+  const source = new FreeApi('nous', { loadGrant: async () => grant, fetcher: async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`)); },
+    cancel: cancelled
+  }), { headers: { 'content-type': 'text/event-stream' } }) });
+  const pool = new Sources([source], undefined, new Set(), 50);
+  try {
+    await expect(pool.complete({ ...request, model: 'nous' }, AbortSignal.timeout(500), onText)).rejects.toMatchObject({
+      code: 'timeout', replay: 'safe', message: expect.stringContaining('no further output')
+    });
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(onText).not.toHaveBeenCalled();
+  } finally { await pool.close(); }
+});
+
 it('fails over a buffered inference body timeout through the fixed registry chain (LIV-1)', async () => {
   let cancelled = false;
   const source = new FreeApi('zro', { loadGrant: async () => grant, timeout: 30, fetcher: async (_url, init) =>
@@ -53,7 +70,8 @@ it.each(Object.keys(FREE_API_PROVIDERS) as FreeApiProvider[])('pins %s to its ex
   const [url, init] = fetcher.mock.calls[0]!;
   expect(url).toBe(`${grant.base_url}${FREE_API_PROVIDERS[provider].prefix}/chat/completions`);
   expect(init?.redirect).toBe('error');
-  expect(JSON.parse(String(init?.body))).toMatchObject({ model: FREE_API_PROVIDERS[provider].model, max_tokens: 90000, stream: false,
+  expect(JSON.parse(String(init?.body))).toMatchObject({ model: FREE_API_PROVIDERS[provider].model, max_tokens: 90000,
+    stream: true, stream_options: { include_usage: true },
     tools: [{ type: 'function', function: { name: 'read' } }] });
   await source.close();
 });

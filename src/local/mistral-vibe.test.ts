@@ -82,16 +82,20 @@ it('bridges only validated caller function tools and never returns native reason
     expect(sent.prompt.split('\n').slice(0, -1).join('\n')).not.toMatch(/\bPi\b/); expect(sent.prompt).toContain('is available to you now'); expect(f.source.jsonToolBridge).toBe(true);
   } finally { await f.source.close(); }
 });
-it('allows one protocol repair and accounts for both native calls', async () => {
+it('fails over after the first malformed tool response', async () => {
   const f = await fixture('repair');
+  const backup = { id: 'backup', supportsFunctionTools: true, available: async () => true,
+    complete: vi.fn(async () => ({ text: 'backup reply' })) };
+  const pool = new Sources([f.source, backup]);
   try {
     const tools = [{ type: 'function' as const, function: { name: 'read_file', parameters: { type: 'object' } } }];
-    await expect(f.source.complete({ ...request(), tools, maxTokens: 60 }, AbortSignal.timeout(5000))).resolves.toEqual({ text: 'repaired', inputTokens: 401686, outputTokens: 52 });
-    expect(JSON.parse(await readFile(f.snapshot, 'utf8')).outputCap).toBe('34');
-    await expect(f.source.complete({ ...request(), tools, maxTokens: 26 }, AbortSignal.timeout(5000)))
-      .resolves.toMatchObject({ text: '', finishReason: 'length', outputTokens: 26 });
-    expect(JSON.parse(await readFile(f.snapshot, 'utf8')).prompt).not.toContain('only repair attempt');
-  } finally { await f.source.close(); }
+    await expect(pool.complete({ ...request(), model: 'grunt', tools, maxTokens: 60 }, AbortSignal.timeout(5000)))
+      .resolves.toEqual({ text: 'backup reply' });
+    expect(backup.complete).toHaveBeenCalledOnce();
+    const sent = JSON.parse(await readFile(f.snapshot, 'utf8'));
+    expect(sent.outputCap).toBe('60');
+    expect(sent.prompt).not.toContain('only repair attempt');
+  } finally { await pool.close(); }
 });
 
 it('falls back from a truncated bridge result without exposing its partial tool protocol', async () => {

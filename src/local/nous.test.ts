@@ -1,17 +1,18 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createLocalApp } from './api.js';
 import { recordDataSharingConsent } from './data-sharing.js';
-import { NOUS_FREE_MODEL, Nous, nousFreeAccountPolicy } from './nous.js';
+import { NOUS_FREE_MODEL, Nous, nousFreeAccountPolicy, nousHermesPaths } from './nous.js';
 import { Sources } from './source.js';
+import type { ModelRequest } from './source.js';
 
 const origin = 'https://inference-api.nousresearch.com';
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-nous-test-')); });
-afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); await rm(directory, { recursive: true, force: true }); });
 
 const free = {
   id: NOUS_FREE_MODEL,
@@ -19,6 +20,7 @@ const free = {
   pricing: { prompt: '0', completion: '0', input_cache_read: '0', input_cache_write: '0' },
   supported_parameters: ['tools', 'tool_choice']
 };
+const request: ModelRequest = { model: 'nous', messages: [{ role: 'user', content: 'Hello' }], tools: [], cwd: '/', stream: false };
 
 function fixture(catalog: unknown = [free]) {
   const fetcher = vi.fn<typeof fetch>(async input => {
@@ -29,6 +31,136 @@ function fixture(catalog: unknown = [free]) {
   const source = new Nous({ directory, fetcher, loadGrant });
   return { source, fetcher, loadGrant };
 }
+
+async function hermesFixture(mode: 'sse' | 'stall' | 'json' | 'quota') {
+  const env = { GRUNT_HERMES_ROOT: join(directory, 'hermes') };
+  const paths = nousHermesPaths(directory, env);
+  const proxy = join(paths.root, 'hermes_cli', 'proxy');
+  await mkdir(join(paths.root, 'venv', 'bin'), { recursive: true });
+  await mkdir(join(proxy, 'adapters'), { recursive: true });
+  await mkdir(paths.home, { mode: 0o700 });
+  const python = execFileSync('python3', ['-I', '-c', 'import sys; print(sys.executable)'], { encoding: 'utf8', timeout: 5000 }).trim();
+  await symlink(python, paths.python);
+  await writeFile(join(paths.home, 'auth.json'), '{}', { mode: 0o600 });
+  await writeFile(join(proxy, '..', 'auth.py'), String.raw`
+def get_provider_auth_state(_):
+    return {'portal_base_url': 'https://portal.nousresearch.com'}
+
+def resolve_nous_access_token(**_):
+    return 'synthetic'
+`);
+  await writeFile(join(proxy, 'adapters', 'nous_portal.py'), 'class NousPortalAdapter: pass\n');
+  await writeFile(join(proxy, 'server.py'), 'def create_app(adapter): return adapter\n');
+  await writeFile(join(paths.root, 'aiohttp.py'), String.raw`
+import asyncio
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+print('Hermes library log')
+mode = ${JSON.stringify(mode)}
+
+class Response:
+    def __init__(self, status=200, content_type='application/json', headers=None, payload=None, chunks=()):
+        self.status, self.content_type, self.headers = status, content_type, headers or {}
+        self.ok, self.payload, self.chunks = status < 300, payload, chunks
+        self.content = self
+
+    async def __aenter__(self): return self
+    async def __aexit__(self, *_): pass
+    async def json(self): return self.payload
+
+    async def iter_chunked(self, _):
+        for chunk in self.chunks:
+            yield chunk
+        if mode == 'stall':
+            await asyncio.sleep(60)
+
+class ClientSession:
+    def __init__(self, **_): pass
+    async def __aenter__(self): return self
+    async def __aexit__(self, *_): pass
+
+    def get(self, *_args, **_kwargs):
+        access = dict.fromkeys(['allowed', 'paid_access', 'active_subscription_is_paid', 'has_active_subscription'], False)
+        access.update(dict.fromkeys(['subscription_credits_remaining', 'purchased_credits_remaining', 'total_usable_credits'], 0))
+        return Response(payload={'paid_service_access': access, 'purchased_credits_remaining': 0})
+
+    def post(self, _url, data, **_):
+        payload = json.loads(data)
+        assert payload['model'] == ${JSON.stringify(NOUS_FREE_MODEL)} and payload['stream'] is True
+        assert payload['stream_options'] == {'include_usage': True}
+        if mode == 'quota':
+            return Response(status=429, headers={'Retry-After': '60', 'x-ratelimit-reset-requests-1h': '240'},
+                            chunks=[b'{"error":{"resets_in_seconds":180}}'])
+        if mode == 'json':
+            return Response(chunks=[b'{"choices":[{"message":{"content":"Hello"}}]}'])
+        chunks = [b'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n']
+        if mode == 'sse':
+            chunks.append(b'data: {"choices":[{"index":0,"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+        return Response(content_type='text/event-stream', chunks=chunks)
+
+class Runner:
+    def __init__(self, *_args, **_kwargs): self.server = None
+    async def setup(self): pass
+    async def cleanup(self):
+        if self.server is not None:
+            self.server.close()
+            await self.server.wait_closed()
+
+class Site:
+    def __init__(self, runner, path): self.runner, self.path = runner, path
+    async def start(self):
+        assert Path(self.path).parent.stat().st_mode & 0o777 == 0o700
+        self.runner.server = await asyncio.start_unix_server(lambda _, writer: writer.close(), path=self.path)
+        Path('process.json').write_text(json.dumps({'pid': os.getpid(), 'path': self.path}))
+
+web = SimpleNamespace(AppRunner=Runner, UnixSite=Site)
+ClientTimeout = UnixConnector = SimpleNamespace
+`);
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({ data: [free] })));
+  await recordDataSharingConsent(directory, ['nous']);
+  return { source: new Nous({ directory, env }), processInfo: join(paths.root, 'process.json') };
+}
+
+it.each([false, true])('stops a stalled Hermes SSE child after its first delta (client stream: %s)', async stream => {
+  const { source, processInfo } = await hermesFixture('stall');
+  const sources = new Sources([Object.assign(source, { firstOutputMs: 2000, idleMs: 50 })]);
+  const onText = vi.fn();
+  try {
+    await expect(sources.complete({ ...request, stream }, AbortSignal.timeout(4000), onText)).rejects.toMatchObject({
+      code: 'timeout', replay: stream ? 'unsafe' : 'safe', message: expect.stringContaining('no further output')
+    });
+    expect(onText).toHaveBeenCalledTimes(stream ? 1 : 0);
+    const child = JSON.parse(await readFile(processInfo, 'utf8')) as { pid: number; path: string };
+    await vi.waitFor(async () => {
+      expect(() => process.kill(child.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+      await expect(lstat(join(child.path, '..'))).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  } finally { await sources.close(); }
+});
+
+it.each(['sse', 'json', 'quota'] as const)('preserves %s replies through the Hermes bridge', async mode => {
+  const { source } = await hermesFixture(mode);
+  try {
+    const reply = source.complete(request, AbortSignal.timeout(2000));
+    if (mode === 'quota') await expect(reply).rejects.toMatchObject({ code: 'quota', retryAfter: 240 });
+    else await expect(reply).resolves.toEqual({ text: 'Hello' });
+  } finally { await source.close(); }
+});
+
+it('streams after a real Unix socket bind when TMPDIR is too long for its path', async () => {
+  const { source } = await hermesFixture('sse');
+  const longTmp = join(directory, 'x'.repeat(120));
+  await mkdir(longTmp);
+  vi.stubEnv('TMPDIR', longTmp);
+  const sources = new Sources([source]), onText = vi.fn();
+  try {
+    await expect(sources.complete({ ...request, stream: true }, AbortSignal.timeout(2000), onText)).resolves.toEqual({ text: 'Hello' });
+    expect(onText).toHaveBeenCalledExactlyOnceWith('nous', 'Hello');
+  } finally { await sources.close(); }
+});
 
 it('routes a Grunt reply through the pinned Nous model after a fresh public catalog check', async () => {
   await recordDataSharingConsent(directory, ['nous']);
