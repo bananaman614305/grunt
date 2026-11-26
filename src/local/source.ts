@@ -266,6 +266,7 @@ export class Sources {
   private get registeredRouter() { return this.router ?? this.chainRouter; }
   private createRouter(routing: RoutingOptions) {
     return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
+      scheduleRecovery: (id, at) => this.maintenanceRecovery?.(id, at),
       dropped: id => { if (this.observation.observedAvailable(id) !== false) this.dropped?.(id); },
       observeEligible: (source, at) => {
         const context = currentDiagnosticContext();
@@ -461,15 +462,21 @@ export class Sources {
     const now = () => (this.routing?.now ?? Date.now)();
     const source = this.sources.find(source => source.id === id);
     if (!source) return { outcome: 'deferred', code: 'not_installed' };
+    const recoveryEvidence = (state: PoolSnapshot['sources'][number]): MaintenanceResult | undefined => {
+      const deadline = this.registeredRouter?.nextRecoveryAt(id);
+      const retryAt = deadline ?? state.retryAt;
+      if (retryAt !== undefined && retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt };
+      if (deadline === undefined && state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
+        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
+      }
+    };
     const eligible = (): MaintenanceResult | undefined => {
       if (this.disabledModels.has(id) || this.router && !this.router.listed(id)) return { outcome: 'deferred', code: 'not_installed' };
       if (this.pending.has(id) || this.verifying.has(id)) return { outcome: 'deferred', code: 'foreground' };
       const snapshot = this.status(), state = snapshot.sources.find(source => source.id === id)!;
       if (state.active || this.checking.has(id)) return { outcome: 'deferred', code: 'busy' };
-      if (state.retryAt !== undefined && state.retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt: state.retryAt };
-      if (state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
-        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
-      }
+      const evidence = recoveryEvidence(state);
+      if (evidence) return evidence;
       if (snapshot.activeRequests) return { outcome: 'deferred', code: 'busy' };
     };
     const previous = eligible();
@@ -477,14 +484,11 @@ export class Sources {
     this.checking.add(id);
     let cwd: string | undefined;
     let guard: ObservationGuard | undefined;
+    let probeTools = false;
     const newerEvidence = (): MaintenanceResult | undefined => {
       if (!guard || !this.observation.changed(id, guard)) return;
       const state = this.status().sources.find(source => source.id === id)!;
-      if (state.retryAt !== undefined && state.retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt: state.retryAt };
-      if (state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
-        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
-      }
-      return { outcome: 'deferred', code: state.errorCode ?? 'busy' };
+      return recoveryEvidence(state) ?? { outcome: 'deferred', code: state.errorCode ?? 'busy' };
     };
     const signal = AbortSignal.any([caller, AbortSignal.timeout(MAINTENANCE_CHECK_TIMEOUT)]);
     try {
@@ -506,19 +510,33 @@ export class Sources {
       const changed = eligible();
       this.checking.add(id);
       if (changed) return changed;
+      probeTools = this.registeredRouter?.needsToolProbe(id) === true;
+      if (probeTools && !toolCapable(source)) return { outcome: 'deferred', code: 'upstream' };
+      const name = 'check_access';
+      const tools: Tool[] = probeTools ? [{ type: 'function', function: { name, parameters: { type: 'object', properties: {}, additionalProperties: false } } }] : [];
+      const prompt = probeTools ? 'Call check_access once with an empty object.' : 'Say hello in one short sentence.';
       const guarded: Source = { id, available: () => source.available(), complete: async (request, signal) => {
         const reply = await source.complete(request, signal);
         signal.throwIfAborted();
+        if (probeTools) {
+          const checked = guardToolCalls(reply, request);
+          const call = checked.calls?.[0];
+          if (checked.calls?.length !== 1 || !call?.id || call.type !== 'function' || call.function.name !== name
+            || Object.keys(JSON.parse(call.function.arguments)).length) {
+            throw new SourceError('upstream', 'Maintenance received no valid probe call', undefined, undefined, { httpStatus: 200, failureReason: 'response_tools' });
+          }
+          return checked;
+        }
         if (!reply.text.trim()) throw new SourceError('upstream', 'Maintenance received no reply');
         return reply;
       } };
       guard = this.observation.guard(id);
       // This fixed synthetic probe never contains caller or repository data.
-      await this.observation.complete(guarded, { model: id, cwd, messages: [{ role: 'user', content: 'Say hello in one short sentence.' }], tools: [], stream: false, maxTokens: 1024, publicContext: true }, signal, guard);
+      await this.observation.complete(guarded, { model: id, cwd, messages: [{ role: 'user', content: prompt }], tools, stream: false, maxTokens: 1024, publicContext: true }, signal, guard);
       signal.throwIfAborted();
       const newer = newerEvidence();
       if (newer) return newer;
-      this.registeredRouter?.verified(id);
+      this.registeredRouter?.verified(id, probeTools);
       return { outcome: 'passed', evidence: 'reply', lastSuccessAt: now() };
     } catch (error) {
       caller.throwIfAborted();
@@ -529,6 +547,9 @@ export class Sources {
       if (failure.code === 'cancelled') return { outcome: 'deferred', code: 'cancelled' };
       const retryAfter = failure.code === 'quota' ? (typeof failure.retryAfter === 'number' && Number.isFinite(failure.retryAfter) && failure.retryAfter >= 0 ? failure.retryAfter : 3600) : undefined;
       this.observation.failed(id, failure.code, retryAfter);
+      // A failed recovery trial extends its existing hold. Routine access
+      // checks keep their observation and can recover on fresh availability.
+      if (this.observation.routingBackoff(id)) await this.registeredRouter?.recordFailure(id, failure, probeTools);
       const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
       return { outcome: 'failed', code: failure.code, ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
     } finally {
@@ -558,6 +579,16 @@ export class Sources {
   // A route left the open set, including an observed availability loss.
   setRouteDropped(dropped: (id: string) => void) { this.dropped = dropped; }
   private dropped: ((id: string) => void) | undefined;
+  private maintenanceRecovery?: (id: string, at: number) => void;
+  setMaintenanceRecovery(schedule: (id: string, at: number) => void) {
+    this.maintenanceRecovery = schedule;
+    this.observation.onRestoredBackoff(schedule);
+  }
+  static withStreamTextGate<T>(allow: () => boolean, work: () => T): T {
+    const current = streamObserverStorage.getStore();
+    if (!current) return work();
+    return streamObserverStorage.run((id, text) => allow() ? current(id, text) : false, work);
+  }
   // Whether some source could take this request with its image kept: one that lists image input, is set up, and is not
   // benched for long (an explicitly named source only counts itself; a tools request needs a tool-capable one).
   // Without a registry each source decides for itself, so this stays true and nothing is rewritten.

@@ -47,6 +47,22 @@ const unsafeState = () => new Error('Provider maintenance requires private local
 /** Independent from onboarding: one owned check, followed by a quiet gap. */
 export class DailyMaintenance {
   private entries = new Map<string, MaintenanceEntry>();
+  private recoveries = new Map<string, number>();
+  scheduleRecovery(id: string, at: number) {
+    if (this.closed || !time(at) || !this.ids().includes(id)) return;
+    this.recoveries.set(id, at);
+    if (this.coordination) this.schedule();
+  }
+  private recoveryAt(id: string) {
+    const at = this.recoveries.get(id);
+    if (at === undefined) return Infinity;
+    // Another daemon may already have checked this deadline under the shared lock.
+    if ((this.entries.get(id)?.lastAttemptAt ?? -1) >= at) {
+      this.recoveries.delete(id);
+      return Infinity;
+    }
+    return at;
+  }
   private nextStartAt = 0;
   private contentionUntil = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -174,7 +190,7 @@ export class DailyMaintenance {
     if (this.closed || this.active) return;
     if (this.timer) clearTimeout(this.timer);
     this.reconcile();
-    const due = Math.min(...this.ids().map(id => this.entries.get(id)?.nextCheckAt ?? this.now()));
+    const due = Math.min(...this.ids().map(id => Math.min(this.entries.get(id)?.nextCheckAt ?? this.now(), this.recoveryAt(id))));
     // Revisit the provider list at least every minute, even if all current
     // providers are checked for today, so registry additions do not wait a day.
     const delay = Math.min(MAINTENANCE_GAP, Math.max(0, Math.max(this.nextStartAt, this.contentionUntil, due) - this.now()));
@@ -200,10 +216,13 @@ export class DailyMaintenance {
   }
   private async checkNext() {
     const ids = this.reconcile();
-    const id = ids.filter(id => this.entries.get(id)!.nextCheckAt <= this.now())
+    const recovery = ids.filter(id => this.recoveryAt(id) <= this.now())
+      .sort((a, b) => this.recoveryAt(a) - this.recoveryAt(b))[0];
+    const id = recovery ?? ids.filter(id => this.entries.get(id)!.nextCheckAt <= this.now())
       .sort((a, b) => this.entries.get(a)!.nextCheckAt - this.entries.get(b)!.nextCheckAt)[0];
     if (!id) return;
     const entry = this.entries.get(id)!;
+    if (recovery) this.recoveries.delete(id);
     entry.lastAttemptAt = this.now();
     // A crash during a check does not replay it immediately on the next boot.
     entry.nextCheckAt = this.now() + DEFER_INTERVAL;
@@ -229,7 +248,8 @@ export class DailyMaintenance {
     const successAt = outcome === 'passed' && result.evidence === 'reply' && time(result.lastSuccessAt)
       && result.lastSuccessAt <= this.now() && result.lastSuccessAt > this.now() - MAINTENANCE_INTERVAL ? result.lastSuccessAt : this.now();
     entry.nextCheckAt = outcome === 'deferred' ? this.now() + DEFER_INTERVAL : successAt + MAINTENANCE_INTERVAL;
-    if (time(result?.retryAt)) entry.nextCheckAt = Math.max(entry.nextCheckAt, result.retryAt);
+    if (time(result?.retryAt)) entry.nextCheckAt = recovery ? result.retryAt : Math.max(entry.nextCheckAt, result.retryAt);
+    if (recovery && outcome === 'deferred') this.recoveries.set(id, entry.nextCheckAt);
     this.nextStartAt = this.now() + this.gap();
     await this.persist();
   }

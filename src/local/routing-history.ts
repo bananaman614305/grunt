@@ -19,9 +19,12 @@ export const routingWorkloads = ['interactive-text', 'interactive-tools', 'backg
 export type RoutingWorkload = typeof routingWorkloads[number];
 export type RoutingProfile = RoutingWorkload | 'all';
 export interface RoutingPerformance { samples: number; reliability: number; latencyMs: number; failureCostMs: number; at: number; lastSuccessAt?: number }
-export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number; quotaUntil?: number; trials?: number }
+interface Hold { streak: number; at: number; until: number; trials?: number }
+export interface RoutingBackoff extends Hold { code: ErrorCode; signature: string; quotaUntil?: number; tool?: Hold }
 export interface RoutingHistorySnapshot { performance: { source: string; profile: RoutingProfile; value: RoutingPerformance }[]; backoff: { source: string; value: RoutingBackoff }[] }
 const workloads = new AsyncLocalStorage<RoutingWorkload>();
+export const activeRoutingWorkload = () => workloads.getStore();
+export const toolFailureSignature = (signature?: string) => signature?.split(':')[2] === 'response_tools';
 export const withRoutingWorkload = <T>(workload: RoutingWorkload, run: () => T) => workloads.run(workload, run);
 export function routingWorkload(request: ModelRequest, background = false): RoutingWorkload {
   return `${background ? 'background' : 'interactive'}-${request.tools.some(tool => tool.type === 'function') ? 'tools' : 'text'}`;
@@ -52,8 +55,7 @@ export function nextRoutingPerformance(previous: RoutingPerformance | undefined,
 export function localRequestRefusal(error: SourceError) {
   return sanitizeSafeDiagnosticMetadata(error.diagnostics).failureReason?.startsWith('request_') === true;
 }
-// A 5xx carrying Retry-After is the provider asking for a pause (overloaded, restarting). It is a cooldown
-// that honors the hint, not evidence the route is broken.
+// A valid server retry hint supplies the delay independently of the failure class.
 export function upstreamRetryHint(error: SourceError) {
   const status = error.diagnostics?.httpStatus, retry = error.retryAfter;
   return error.code === 'upstream' && status !== undefined && Number.isInteger(status) && status >= 500 && status < 600
@@ -69,12 +71,52 @@ export function slowUpstreamFailure(error: SourceError) {
     || safe.failureReason === 'stream_read' || safe.failureReason === 'stream_incomplete';
 }
 export function routingFailureSignature(error: SourceError) {
+  if (slowUpstreamFailure(error)) return 'outage:::';
   const safe = sanitizeSafeDiagnosticMetadata(error.diagnostics);
   return [error.code, safe.httpStatus ?? '', safe.failureReason ?? '', safe.networkCode ?? ''].join(':').toLowerCase();
 }
 // Parallel admitted calls can finish out of order. A quota is an absolute reset
 // deadline, not a delay to restart when another failure arrives.
+const TOOL_SIGNATURE = 'upstream:200:response_tools:';
+
+function holdFields({ at, until, streak, trials }: Hold): Hold {
+  return { at, until, streak, ...(trials === undefined ? {} : { trials }) };
+}
+export function toolHold(value?: RoutingBackoff): Hold | undefined {
+  return value?.tool ?? (value && toolFailureSignature(value.signature) ? holdFields(value) : undefined);
+}
+export function generalHold(value?: RoutingBackoff): RoutingBackoff | undefined {
+  if (!value) return;
+  if (toolFailureSignature(value.signature)) return value.code === 'quota' ? quotaAfterRecovery(value) : undefined;
+  if (!value.tool) return value;
+  const { tool: _tool, ...general } = value;
+  return general;
+}
+// A tool-only row keeps the original top-level shape for older readers. In a
+// mixed row the top-level fields always describe the general hold.
+function combineHolds(general: RoutingBackoff | undefined, tool: Hold): RoutingBackoff;
+function combineHolds(general: RoutingBackoff, tool?: Hold): RoutingBackoff;
+function combineHolds(general?: RoutingBackoff, tool?: Hold): RoutingBackoff | undefined;
+function combineHolds(general?: RoutingBackoff, tool?: Hold): RoutingBackoff | undefined {
+  if (!tool) return general;
+  return { ...(general ?? { code: 'upstream', signature: TOOL_SIGNATURE, ...tool }), tool };
+}
+// General availability gates every probe. A later tool deadline can be
+// checked separately once a text probe has cleared the general hold.
+export function recoveryDeadline(value: RoutingBackoff, observedQuota = 0) {
+  const general = generalHold(value);
+  const quota = value.code === 'quota' ? value.quotaUntil ?? value.until : 0;
+  return Math.max(general?.until ?? toolHold(value)!.until, quota, observedQuota);
+}
+
 export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
+  const left = generalHold(previous), right = generalHold(incoming);
+  const general = right ? mergeGeneral(left, right) : left;
+  const old = toolHold(previous), next = toolHold(incoming);
+  const tool = old && next ? { ...(old.at > next.at || old.at === next.at && old.streak > next.streak ? old : next), until: Math.max(old.until, next.until) } : old ?? next;
+  return combineHolds(general, tool)!;
+}
+function mergeGeneral(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
   if (!previous) return incoming;
   const until = Math.max(previous.until, incoming.until);
   const quotaUntil = Math.max(previous.code === 'quota' ? previous.quotaUntil ?? previous.until : 0,
@@ -90,17 +132,40 @@ export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incomi
   return { ...incoming, code, until, ...(quota ? { quotaUntil } : {}) };
 }
 export function quotaAfterRecovery(value: RoutingBackoff): RoutingBackoff {
-  return { ...value, until: value.quotaUntil ?? value.until, signature: 'quota:::', streak: 1 };
+  return { code: 'quota', at: value.at, quotaUntil: value.quotaUntil ?? value.until, until: value.quotaUntil ?? value.until, signature: 'quota:::', streak: 1 };
 }
-export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
+export function afterRoutingSuccess(value: RoutingBackoff, generalAt: number, toolsAt: number, verified = false) {
+  let general = generalHold(value);
+  const tool = toolHold(value);
+  if (general && (verified ? generalAt >= general.at : generalAt > general.at)) {
+    general = general.code === 'quota' && (general.quotaUntil ?? general.until) > generalAt ? quotaAfterRecovery(general) : undefined;
+  }
+  return combineHolds(general, tool && (verified ? toolsAt < tool.at : toolsAt <= tool.at) ? tool : undefined);
+}
+export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number, toolProbe = false): RoutingBackoff {
+  const general = generalHold(previous);
+  let tool = toolHold(previous);
+  if (toolFailureSignature(routingFailureSignature(error))) {
+    const old = tool && { ...tool, code: 'upstream' as const, signature: TOOL_SIGNATURE };
+    return combineHolds(general, holdFields(nextGeneral(old, error, seconds, adaptive, at)));
+  }
+  if (toolProbe && tool && tool.streak >= RETIRE_AFTER_FAILURES && at >= tool.until) {
+    const trials = (tool.trials ?? 0) + 1;
+    tool = { ...tool, at, trials, until: at + retiredReopenDelay(trials) };
+    if (error.code === 'not_installed' || error.code === 'logged_out') return combineHolds(general, tool);
+  }
+  return combineHolds(nextGeneral(general, error, seconds, adaptive, at), tool);
+}
+function nextGeneral(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
+  const hintOnly = upstreamRetryHint(error) && !slowUpstreamFailure(error);
   if (previous && previous.streak >= RETIRE_AFTER_FAILURES && error.code !== 'quota') {
     // Half-open: only a failure at or after the reopen time is a failed trial. Earlier stragglers change nothing.
     if (at < previous.until) return previous;
-    if (upstreamRetryHint(error)) return { ...previous, until: Math.max(previous.until, at + seconds * 1000) };
+    if (hintOnly) return { ...previous, until: Math.max(previous.until, at + seconds * 1000) };
     const trials = (previous.trials ?? 0) + 1;
-    return { ...previous, at: Math.max(previous.at, at), until: at + retiredReopenDelay(trials), trials };
+    return { ...previous, at: Math.max(previous.at, at), until: at + Math.max(retiredReopenDelay(trials), slowUpstreamFailure(error) ? seconds * 1000 : 0), trials };
   }
-  if (upstreamRetryHint(error)) {
+  if (hintOnly) {
     const until = at + seconds * 1000;
     return previous ? { ...previous, until: Math.max(previous.until, until) } : { code: error.code, signature: 'hint:::', streak: 1, at, until };
   }
@@ -108,9 +173,9 @@ export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: 
   const repeated = error.code !== 'quota' && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
   const streak = repeated ? Math.min(RETIRE_AFTER_FAILURES, previous.streak + 1) : 1;
   // Explicit provider/reset hints bypass adaptive multiplication, including zero.
-  const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
+  const delay = adaptive && !upstreamRetryHint(error) ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
   const retiring = error.code !== 'quota' && streak >= RETIRE_AFTER_FAILURES;
-  return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + (retiring ? RETIRED_REOPEN_MS : delay * 1000) });
+  return mergeGeneral(previous, { code: error.code, signature, streak, at, until: at + (retiring ? Math.max(RETIRED_REOPEN_MS, signature === 'outage:::' ? delay * 1000 : 0) : delay * 1000) });
 }
 function performanceValue(raw: unknown): RoutingPerformance | undefined {
   const value = object(raw);
@@ -126,7 +191,12 @@ function backoffValue(raw: unknown): RoutingBackoff | undefined {
     || !Number.isSafeInteger(value.streak) || Number(value.streak) < 1 || Number(value.streak) > RETIRE_AFTER_FAILURES
     || !validTime(value.at) || !validTime(value.until) || value.until < value.at || value.until - value.at > 32 * 86400000
     || value.quotaUntil !== undefined && (value.code !== 'quota' || !validTime(value.quotaUntil) || value.quotaUntil < value.at || value.quotaUntil > value.until)) return;
-  return { code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number, ...(value.quotaUntil !== undefined ? { quotaUntil: value.quotaUntil as number } : {}), ...(Number.isSafeInteger(value.trials) && Number(value.trials) > 0 && Number(value.trials) <= 1000 ? { trials: Number(value.trials) } : {}) };
+  const nested = object(value.tool);
+  const tool = validTime(nested.at) && validTime(nested.until) && nested.until >= nested.at && nested.until - nested.at <= 32 * 86400000
+    && Number.isSafeInteger(nested.streak) && Number(nested.streak) >= 1 && Number(nested.streak) <= RETIRE_AFTER_FAILURES
+    && (nested.trials === undefined || Number.isSafeInteger(nested.trials) && Number(nested.trials) > 0 && Number(nested.trials) <= 1000)
+    ? { at: nested.at, until: nested.until, streak: Number(nested.streak), ...(nested.trials === undefined ? {} : { trials: Number(nested.trials) }) } : undefined;
+  return { ...(tool ? { tool } : {}), code: value.code as ErrorCode, signature: value.signature as string, streak: Number(value.streak), at: value.at as number, until: value.until as number, ...(value.quotaUntil !== undefined ? { quotaUntil: value.quotaUntil as number } : {}), ...(Number.isSafeInteger(value.trials) && Number(value.trials) > 0 && Number(value.trials) <= 1000 ? { trials: Number(value.trials) } : {}) };
 }
 
 /** Only fixed source/workload IDs, bounded numbers and allowlisted failure classes. */
@@ -242,7 +312,11 @@ export class RoutingHistory {
       for (const row of (await this.client.execute({ sql: 'SELECT source,value FROM routing_backoff ORDER BY at DESC LIMIT 100' })).rows) {
         if (typeof row.source !== 'string' || !identifier.test(row.source)) continue;
         let value; try { value = backoffValue(JSON.parse(String(row.value))); } catch { continue; }
-        if (value && value.at <= now && (value.at >= cutoff || value.until > now)) result.backoff.push({ source: row.source, value });
+        if (!value) continue;
+        const general = generalHold(value), tool = toolHold(value);
+        const fresh = (hold: Hold) => hold.at <= now && (hold.at >= cutoff || hold.until > now);
+        const kept = combineHolds(general && fresh(general) ? general : undefined, tool && fresh(tool) ? tool : undefined);
+        if (kept) result.backoff.push({ source: row.source, value: kept });
       }
       return result;
     });
@@ -258,37 +332,56 @@ export class RoutingHistory {
         await tx.execute({ sql: 'INSERT INTO routing_performance(source,profile,value,at) VALUES (?,?,?,?) ON CONFLICT(source,profile) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, key, JSON.stringify(value), value.at] });
         result.push({ source, profile: key, value });
       }
-      if (success) {
-        await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
-        await tx.execute({ sql: "UPDATE routing_backoff SET value=json_set(value,'$.until',COALESCE(json_extract(value,'$.quotaUntil'),json_extract(value,'$.until')),'$.signature','quota:::','$.streak',1) WHERE source=? AND json_extract(value,'$.code')='quota' AND at<?", args: [source, now] });
-      }
+      if (success) await this.recover(tx, source, now, profile.endsWith('-tools'));
       await tx.execute({ sql: 'DELETE FROM routing_performance WHERE rowid NOT IN (SELECT rowid FROM routing_performance ORDER BY at DESC LIMIT 500)', args: [] });
       return result;
     }));
   }
-  failure(source: string, error: SourceError, seconds: number, adaptive: boolean, now: number): Promise<RoutingBackoff> {
-    if (!identifier.test(source) || !backoffCodes.has(error.code) || !validTime(now) || !Number.isFinite(seconds) || seconds < 0 || seconds > 32 * 86400) return Promise.reject(unsafe());
+  failure(source: string, error: SourceError, seconds: number, adaptive: boolean, now: number, toolProbe = false): Promise<RoutingBackoff> {
+    const authProbe = toolProbe && (error.code === 'logged_out' || error.code === 'not_installed');
+    if (!identifier.test(source) || !backoffCodes.has(error.code) && !authProbe || !validTime(now) || !Number.isFinite(seconds) || seconds < 0 || seconds > 32 * 86400) return Promise.reject(unsafe());
     return this.run(() => this.transaction(async tx => {
       const row = (await tx.execute({ sql: 'SELECT value FROM routing_backoff WHERE source=?', args: [source] })).rows[0];
       let old; try { old = backoffValue(JSON.parse(String(row?.value))); } catch { /* Discard corrupt advisory state. */ }
+      if (authProbe) {
+        const tool = toolHold(old);
+        if (!tool || tool.streak < RETIRE_AFTER_FAILURES || tool.until > now) {
+          return old ?? { code: error.code, at: now, until: now, signature: '', streak: 1 };
+        }
+      }
       if (error.code !== 'quota') {
-        const row = (await tx.execute({ sql: "SELECT value FROM routing_performance WHERE source=? AND profile='all'", args: [source] })).rows[0];
-        let performance; try { performance = performanceValue(JSON.parse(String(row?.value))); } catch { /* Invalid recovery is not authority. */ }
-        if ((performance?.lastSuccessAt ?? 0) > now) {
+        const matching = toolFailureSignature(routingFailureSignature(error)) ? "profile IN ('interactive-tools','background-tools')" : "profile='all'";
+        const rows = await tx.execute({ sql: `SELECT value FROM routing_performance WHERE source=? AND ${matching}`, args: [source] });
+        let recoveredAt = 0;
+        for (const row of rows.rows) {
+          try { recoveredAt = Math.max(recoveredAt, performanceValue(JSON.parse(String(row.value)))?.lastSuccessAt ?? 0); }
+          catch { /* Invalid recovery is not authority. */ }
+        }
+        if (recoveredAt > now) {
+          if (toolHold(old) && old) return old;
           if (old?.code === 'quota' && old.until > now) return old;
-          if (old && old.at >= performance!.lastSuccessAt!) return old;
+          if (old && old.at >= recoveredAt) return old;
           // Report no active hold without resurrecting a late pre-recovery failure.
           return { code: error.code, signature: routingFailureSignature(error), streak: 1, at: now, until: now };
         }
       }
-      const value = nextRoutingBackoff(old, error, seconds, adaptive, now);
-      await tx.execute({ sql: 'INSERT INTO routing_backoff(source,value,at) VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, JSON.stringify(value), value.at] });
+      const value = nextRoutingBackoff(old, error, seconds, adaptive, now, toolProbe);
+      await tx.execute({ sql: 'INSERT INTO routing_backoff(source,value,at) VALUES (?,?,?) ON CONFLICT(source) DO UPDATE SET value=excluded.value,at=excluded.at', args: [source, JSON.stringify(value), Math.max(value.at, value.tool?.at ?? 0)] });
       await tx.execute('DELETE FROM routing_backoff WHERE rowid NOT IN (SELECT rowid FROM routing_backoff ORDER BY at DESC LIMIT 100)');
       return value;
     }));
   }
-  clear(source: string): Promise<void> {
-    return this.run(async () => { await this.client.execute({ sql: 'DELETE FROM routing_backoff WHERE source=?', args: [source] }); });
+  private async recover(tx: Transaction, source: string, at: number, tools: boolean, verified = false) {
+    const row = (await tx.execute({ sql: 'SELECT value FROM routing_backoff WHERE source=?', args: [source] })).rows[0];
+    if (!row) return;
+    let old; try { old = backoffValue(JSON.parse(String(row.value))); } catch { /* Ignore malformed history. */ }
+    if (!old) return;
+    const keep = afterRoutingSuccess(old, at, tools ? at : -1, verified);
+    if (keep) await tx.execute({ sql: 'UPDATE routing_backoff SET value=?,at=? WHERE source=?', args: [JSON.stringify(keep), Math.max(keep.at, keep.tool?.at ?? 0), source] });
+    else await tx.execute({ sql: 'DELETE FROM routing_backoff WHERE source=?', args: [source] });
+  }
+  clear(source: string, at = Date.now(), tools = true): Promise<void> {
+    return this.run(() => this.transaction(tx => this.recover(tx, source, at, tools, true)));
   }
   async flush() { await this.pending.catch(() => {}); }
   close(): Promise<void> { return this.closing ??= (async () => { this.closed = true; await this.flush(); this.client.close(); if (--this.serial.users === 0) localQueues.delete(this.path); })(); }

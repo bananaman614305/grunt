@@ -7,6 +7,11 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { bundledRegistry } from '../registry.js';
+import { Sources, SourceError } from './source.js';
+import type { ModelRequest } from './source.js';
+import { createSourceMaintenance } from './runtime-maintenance.js';
+import { RoutingHistory } from './routing-history.js';
 import { DailyMaintenance, MAINTENANCE_CHECK_TIMEOUT, MAINTENANCE_GAP, MAINTENANCE_INTERVAL, MAINTENANCE_JITTER } from './maintenance.js';
 import type { MaintenanceResult } from './maintenance.js';
 
@@ -312,4 +317,108 @@ it.each(['permissions', 'symlink'] as const)('refuses unsafe coordination %s bef
   const check = vi.fn(async () => passed()), item = queue({ directory: path, providers: () => ['kilo'], check });
   await expect(item.start()).rejects.toThrow('private local state'); expect(check).not.toHaveBeenCalled();
   if (kind === 'symlink') expect(await readFile(join(path, 'protected.db'), 'utf8')).toBe('preserved');
+});
+
+it('rechecks a recently verified provider at its recovery deadline after the quiet gap', async () => {
+  const check = vi.fn(async () => passed());
+  const item = queue({ directory: await directory(), providers: () => ['kilo'], check, random: () => 0 });
+  await item.start(); await vi.advanceTimersByTimeAsync(0); await completed(item, 'kilo');
+  item.scheduleRecovery('kilo', epoch + MAINTENANCE_GAP / 2);
+  await vi.advanceTimersByTimeAsync(MAINTENANCE_GAP - 1);
+  expect(check).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  await until(() => check.mock.calls.length === 2);
+});
+
+it('probes a failed live route at its deadline and reschedules a failed probe', async () => {
+  const complete = vi.fn(async () => ({ text: 'healthy' }));
+  const sources = new Sources([{ id: 'livekit', available: async () => true, complete }], { registry: () => bundledRegistry });
+  const maintenance = createSourceMaintenance(sources, { directory: await directory(), refreshSession: async () => undefined });
+  queues.push(maintenance);
+  try {
+    await maintenance.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await completed(maintenance, 'livekit');
+    expect(complete).toHaveBeenCalledTimes(1);
+    const failure = new SourceError('upstream', 'gateway', undefined, undefined, { httpStatus: 502 });
+    complete.mockRejectedValueOnce(failure).mockRejectedValueOnce(failure);
+    const request = { model: 'livekit', tools: [], messages: [{ role: 'user', content: 'live' }], cwd: tmpdir(), stream: false };
+    await expect(sources.complete(request, new AbortController().signal)).rejects.toThrow();
+    const first = sources.status().sources[0]!.retryAt!;
+    expect(first).toBe(epoch + 300000);
+    await vi.advanceTimersByTimeAsync(first - Date.now());
+    await until(() => maintenance.snapshot().livekit?.outcome === 'failed' && vi.getTimerCount() === 1);
+    expect(complete).toHaveBeenCalledTimes(3);
+    const second = sources.status().sources[0]!.retryAt!;
+    expect(second).toBe(first + 600000);
+    await vi.advanceTimersByTimeAsync(second - Date.now());
+    await until(() => complete.mock.calls.length === 4 && maintenance.snapshot().livekit?.outcome === 'passed');
+    expect(sources.status().sources[0]!.retryAt).toBeUndefined();
+  } finally { await sources.close(); }
+});
+
+it('recovers a tool hold only after the provider returns the requested probe call', async () => {
+  let returnsCall = false;
+  const complete = vi.fn(async (request: ModelRequest) => {
+    const name = (request.tools[0] as { function?: { name: string } } | undefined)?.function?.name;
+    if (name === 'user_tool') throw new SourceError('upstream', 'invalid call', undefined, undefined, { httpStatus: 200, failureReason: 'response_tools' });
+    if (returnsCall && name) return { text: '', calls: [{ id: 'probe', type: 'function' as const, function: { name, arguments: '{}' } }] };
+    return { text: 'hello' };
+  });
+  const sources = new Sources([{ id: 'kilo', supportsFunctionTools: true, available: async () => true, complete }], { registry: () => bundledRegistry });
+  const signal = new AbortController().signal;
+  try {
+    await expect(sources.complete({ model: 'kilo', messages: [], tools: [{ type: 'function', function: { name: 'user_tool', parameters: {} } }], cwd: tmpdir(), stream: false }, signal)).rejects.toThrow();
+    const first = sources.status().sources[0]!.retryAt!;
+    vi.setSystemTime(first + 1);
+    expect(await sources.check('kilo', signal)).toMatchObject({ outcome: 'failed' });
+    expect(complete.mock.lastCall?.[0].tools).toHaveLength(1);
+    const next = sources.status().sources[0]!.retryAt!;
+    expect(next - Date.now()).toBe(60000);
+    vi.setSystemTime(next + 1);
+    returnsCall = true;
+    expect(await sources.check('kilo', signal)).toMatchObject({ outcome: 'passed' });
+    expect(sources.status().sources[0]!.retryAt).toBeUndefined();
+  } finally { await sources.close(); }
+});
+
+it('reopens text at the general deadline and verifies tools at their later deadline', async () => {
+  const start = Date.parse('2026-11-16T10:00:00Z');
+  vi.setSystemTime(start);
+  const generalAt = start + 5 * 60000, toolAt = start + 60 * 60000;
+  const path = await directory(), history = await RoutingHistory.open(path);
+  const complete = vi.fn(async (request: ModelRequest) => {
+    const name = (request.tools[0] as { function?: { name: string } } | undefined)?.function?.name;
+    return name ? { text: '', calls: [{ id: 'ok', type: 'function' as const, function: { name, arguments: '{}' } }] } : { text: 'ok' };
+  });
+  const sources = new Sources([{ id: 'livekit', supportsFunctionTools: true, available: async () => true, complete }], { registry: () => bundledRegistry });
+  const queue = createSourceMaintenance(sources, { directory: path, refreshSession: async () => undefined });
+  queues.push(queue);
+  const schedule = vi.spyOn(queue, 'scheduleRecovery');
+  const signal = new AbortController().signal;
+  const text: ModelRequest = { model: 'livekit', tools: [], messages: [{ role: 'user', content: 'hello' }], cwd: tmpdir(), stream: false };
+  const tools = { ...text, tools: [{ type: 'function', function: { name: 'user_tool', parameters: {} } }] };
+  try {
+    await history.failure('livekit', new SourceError('upstream', 'Invalid tool call', undefined, undefined, { httpStatus: 200, failureReason: 'response_tools' }), 3600, false, start);
+    await history.failure('livekit', new SourceError('timeout', 'Outage'), 300, false, start);
+    await sources.setRoutingHistory(history);
+    expect(schedule).toHaveBeenLastCalledWith('livekit', generalAt);
+    await queue.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await completed(queue, 'livekit');
+    await vi.advanceTimersByTimeAsync(generalAt - Date.now() - 1);
+    expect(complete).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => queue.snapshot().livekit?.lastCheckedAt === generalAt && vi.getTimerCount() === 1);
+    expect(complete.mock.calls.map(([request]) => request.tools)).toEqual([[]]);
+    expect(schedule).toHaveBeenLastCalledWith('livekit', toolAt);
+    await expect(sources.complete(text, signal)).resolves.toEqual({ text: 'ok' });
+    await expect(sources.complete(tools, signal)).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(toolAt - Date.now() - 1);
+    expect(complete).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => queue.snapshot().livekit?.lastCheckedAt === toolAt && vi.getTimerCount() === 1);
+    expect(complete.mock.lastCall?.[0].tools).toMatchObject([{ function: { name: 'check_access' } }]);
+    await expect(sources.complete(tools, signal)).resolves.toMatchObject({ calls: [{ function: { name: 'user_tool' } }] });
+  } finally { await queue.close(); await sources.close(); await history.close(); }
 });

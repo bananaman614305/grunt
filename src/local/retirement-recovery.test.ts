@@ -2,13 +2,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
-import { RETIRED_REOPEN_MS, MAX_RETIRED_REOPEN_MS, retiredReopenDelay } from './routing-history.js';
+import { RETIRED_REOPEN_MS, MAX_RETIRED_REOPEN_MS, nextRoutingBackoff, retiredReopenDelay, type RoutingBackoff } from './routing-history.js';
 import { RETIRE_AFTER_FAILURES } from './routing.js';
 import { SourceError, Sources, requestRefusal } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
-// Retirement must follow provider health: local request-shape refusals never count, short Retry-After hints are
-// cooldowns, and a retired route gets one real trial after a bounded wait instead of waiting a day.
+// Exercise provider health transitions through real route selection.
 afterEach(() => vi.restoreAllMocks());
 const registry: Registry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(id => ({ ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5 })) };
 const ask = (content: string): ModelRequest => ({ model: 'grunt', messages: [{ role: 'user', content }], cwd: '/tmp', tools: [], stream: false });
@@ -53,16 +52,45 @@ it('marks the JsonToolBridge conversation refusal as a local request refusal', (
   expect(requestRefusal('x', 'request_tool_schema').diagnostics).toEqual({ failureReason: 'request_tool_schema' });
 });
 
-it('treats a 503 with a short Retry-After as a cooldown that never retires the route', async () => {
+it('counts gateway failures toward retirement while honoring their retry hints', async () => {
   const routes = pool(() => new SourceError('upstream', 'Overloaded', 20, undefined, { httpStatus: 503 }));
   try {
-    for (let i = 0; i < RETIRE_AFTER_FAILURES * 2; i++) {
+    for (let i = 1; i <= RETIRE_AFTER_FAILURES; i++) {
       await turn(routes);
-      expect(routes.sources.retired('opencode')).toBe(false);
-      routes.advance(21 * 1000);
+      expect(routes.sources.retired('opencode')).toBe(i === RETIRE_AFTER_FAILURES);
+      if (i < RETIRE_AFTER_FAILURES) {
+        routes.advance(19000);
+        await turn(routes);
+        expect(routes.a.complete).toHaveBeenCalledTimes(i);
+        routes.advance(2000);
+      }
     }
-    expect(routes.a.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES * 2);
   } finally { await routes.sources.close(); }
+});
+
+it('flapping-outage-streak-reset counts timeouts alternating with hinted gateway errors', () => {
+  const timeout = new SourceError('timeout', 'timed out');
+  const gateway = new SourceError('upstream', 'HTTP 503', 20, undefined, { httpStatus: 503 });
+  let hold: RoutingBackoff | undefined;
+  let at = 1000;
+  for (const [index, failure] of [timeout, gateway, timeout, gateway, timeout].entries()) {
+    hold = nextRoutingBackoff(hold, failure, failure.retryAfter ?? 300, false, at);
+    expect(hold).toMatchObject({ signature: 'outage:::', streak: index + 1 });
+    if (failure === gateway) expect(hold.until - at).toBe(20000);
+    at = hold.until;
+  }
+  expect(hold?.streak).toBe(RETIRE_AFTER_FAILURES);
+  expect(nextRoutingBackoff(hold, gateway, 20, false, at)).toMatchObject({ trials: 1, until: at + retiredReopenDelay(1) });
+});
+
+it('keeps a hinted non-gateway server error on cooldown without accumulating an outage streak', () => {
+  const failure = new SourceError('upstream', 'HTTP 500', 20, undefined, { httpStatus: 500 });
+  let hold: RoutingBackoff | undefined;
+  for (let i = 0; i <= RETIRE_AFTER_FAILURES; i++) {
+    const at = hold?.until ?? 1000;
+    hold = nextRoutingBackoff(hold, failure, 20, false, at);
+    expect(hold).toMatchObject({ signature: 'hint:::', streak: 1, until: at + 20000 });
+  }
 });
 
 it('computes a bounded doubling reopen wait', () => {
@@ -77,13 +105,15 @@ it('gives a retired route one real request after 15 minutes, doubling the wait p
     await retire(routes);
     let calls = vi.mocked(routes.a.complete).mock.calls.length;
     for (const wait of [15, 30, 60, 120, 240, 240]) {
+      vi.mocked(routes.b.available).mockResolvedValue(true);
       routes.advance(wait * MIN - 2 * MIN);
       await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
       expect(routes.sources.retired('opencode')).toBe(true);
       expect(routes.a.complete).toHaveBeenCalledTimes(calls);
+      vi.mocked(routes.b.available).mockResolvedValue(false);
       routes.advance(3 * MIN);
       expect(routes.sources.retired('opencode')).toBe(false);
-      await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
+      await expect(turn(routes)).rejects.toMatchObject({ code: 'quota' });
       expect(routes.a.complete).toHaveBeenCalledTimes(++calls);
       expect(routes.sources.retired('opencode')).toBe(true);
     }
@@ -95,9 +125,15 @@ it('clears retirement when the trial request succeeds', async () => {
   try {
     await retire(routes);
     routes.advance(16 * MIN);
+    await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
+    expect(routes.a.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
+    vi.mocked(routes.b.available).mockResolvedValue(false);
+    routes.advance(MIN);
     vi.mocked(routes.a.complete).mockResolvedValueOnce({ text: 'opencode back' });
     await expect(turn(routes)).resolves.toEqual({ text: 'opencode back' });
     expect(routes.sources.retired('opencode')).toBe(false);
+    vi.mocked(routes.b.available).mockResolvedValue(true);
+    routes.advance(MIN);
     // A later failure starts a fresh streak instead of re-retiring at once.
     await expect(turn(routes)).resolves.toBeDefined();
     routes.advance(16 * MIN);
@@ -114,8 +150,12 @@ it('lets only one request through while a half-open trial is in flight', async (
     let finish!: () => void;
     vi.mocked(routes.a.complete).mockClear();
     vi.mocked(routes.a.complete).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ text: 'opencode back' }); }));
+    vi.mocked(routes.b.available).mockResolvedValue(false);
     const first = turn(routes);
     await vi.waitFor(() => expect(routes.a.complete).toHaveBeenCalledTimes(1));
+    await expect(turn(routes)).rejects.toMatchObject({ code: 'quota' });
+    vi.mocked(routes.b.available).mockResolvedValue(true);
+    routes.advance(MIN);
     await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
     await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
     expect(routes.a.complete).toHaveBeenCalledTimes(1);

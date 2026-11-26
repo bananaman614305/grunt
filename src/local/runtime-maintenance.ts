@@ -38,6 +38,7 @@ export function createSourceMaintenance(sources: Sources, options: RuntimeMainte
       return sources.check(id, signal);
     }, ...(options.notify ? { notify: options.notify } : {})
   });
+  sources.setMaintenanceRecovery((id, at) => maintenance.scheduleRecovery(id, at));
   sources.setMaintenance(() => maintenance.snapshot());
   return maintenance;
 }
